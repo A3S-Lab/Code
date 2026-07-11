@@ -26,8 +26,9 @@ use crate::tools::AgentDirScriptTool;
 /// the session registry via the same non-shadowing `register_dynamic_tool` path
 /// builtins/MCP use — it cannot replace a builtin, and the model's call to it is
 /// permission-gated like any tool. The script's *inner* `ctx.tool` calls are
-/// bounded by the spec's pinned (fail-closed) allow-list and the QuickJS sandbox
-/// rather than the session permission policy — see [`AgentDirScriptTool`].
+/// bounded by the spec's pinned (fail-closed) allow-list and QuickJS sandbox and
+/// are also re-evaluated by the session's governed tool invoker — see
+/// [`AgentDirScriptTool`].
 pub async fn install_agent_dir_tools(session: &AgentSession, specs: &[ToolSpec]) -> Result<()> {
     for spec in specs {
         match spec {
@@ -64,7 +65,7 @@ providers "anthropic" {
     #[tokio::test]
     async fn install_with_no_tools_is_ok() {
         let agent = Agent::from_config(test_config()).await.unwrap();
-        let session = agent.session("/tmp/ws", None).unwrap();
+        let session = agent.session_async("/tmp/ws", None).await.unwrap();
         // Empty specs → no MCP connect attempted, returns Ok without a live server.
         install_agent_dir_tools(&session, &[]).await.unwrap();
     }
@@ -82,7 +83,7 @@ providers "anthropic" {
     #[tokio::test]
     async fn install_registers_script_tool_visibly() {
         let agent = Agent::from_config(test_config()).await.unwrap();
-        let session = agent.session("/tmp/ws", None).unwrap();
+        let session = agent.session_async("/tmp/ws", None).await.unwrap();
 
         install_agent_dir_tools(&session, &[script_spec("repo-search", "search the repo")])
             .await
@@ -100,7 +101,7 @@ providers "anthropic" {
     #[tokio::test]
     async fn install_mcp_with_bad_command_fails_at_startup() {
         let agent = Agent::from_config(test_config()).await.unwrap();
-        let session = agent.session("/tmp/ws", None).unwrap();
+        let session = agent.session_async("/tmp/ws", None).await.unwrap();
 
         // A stdio MCP server whose command does not exist must surface at install
         // time (fail at startup, not silently at first call). Built via the same
@@ -120,7 +121,7 @@ providers "anthropic" {
     #[tokio::test]
     async fn install_script_cannot_shadow_a_builtin() {
         let agent = Agent::from_config(test_config()).await.unwrap();
-        let session = agent.session("/tmp/ws", None).unwrap();
+        let session = agent.session_async("/tmp/ws", None).await.unwrap();
         let registry = session.tool_executor().registry();
         let builtin_bash_desc = registry.get("bash").unwrap().description().to_string();
 

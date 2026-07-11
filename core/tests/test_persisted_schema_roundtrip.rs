@@ -31,7 +31,7 @@ use a3s_code_core::llm::{
 };
 use a3s_code_core::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
 use a3s_code_core::orchestration::{
-    AgentStepSpec, StepOutcome, WorkflowCheckpoint, WorkflowStepRecord,
+    AgentStepSpec, StepOutcome, ToolSourceAnchor, WorkflowCheckpoint, WorkflowStepRecord,
     WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
 };
 use a3s_code_core::permissions::{PermissionPolicy, PermissionRule};
@@ -342,6 +342,12 @@ fn gen_subagent_task(rng: &mut Rng) -> SubagentTaskSnapshot {
         } else {
             None
         },
+        source_anchors: (0..rng.below(3))
+            .map(|_| ToolSourceAnchor {
+                tool: rng.string(),
+                url_or_path: rng.string(),
+            })
+            .collect(),
         progress: (0..progress_n)
             .map(|_| SubagentProgressEntry {
                 timestamp_ms: rng.u64_small(),
@@ -352,13 +358,13 @@ fn gen_subagent_task(rng: &mut Rng) -> SubagentTaskSnapshot {
     }
 }
 
-/// Cheap-to-construct, representative `AgentEvent`s — including the three
-/// variants added in 3.3.0 (`BudgetThresholdHit`, `PassivationRequested`,
-/// `PeerInvocation`), since these are persisted inside `RunRecord.events`
-/// and an old reader/writer mismatch around them is the live cross-version
-/// risk.
+/// Cheap-to-construct, representative `AgentEvent`s, including the tool-call
+/// preparation/execution lifecycle and the three variants added in 3.3.0
+/// (`BudgetThresholdHit`, `PassivationRequested`, `PeerInvocation`). These are
+/// persisted inside `RunRecord.events`, so reader/writer drift is a live
+/// cross-version risk.
 fn gen_agent_event(rng: &mut Rng) -> AgentEvent {
-    match rng.below(9) {
+    match rng.below(11) {
         0 => AgentEvent::Start {
             prompt: rng.string(),
         },
@@ -369,9 +375,27 @@ fn gen_agent_event(rng: &mut Rng) -> AgentEvent {
             id: rng.string(),
             name: rng.string(),
         },
-        3 => AgentEvent::ToolEnd {
+        3 => AgentEvent::ToolInputDelta {
+            id: if rng.boolean() {
+                Some(rng.string())
+            } else {
+                None
+            },
+            delta: rng.string(),
+        },
+        4 => AgentEvent::ToolExecutionStart {
             id: rng.string(),
             name: rng.string(),
+            args: rng.json_value_non_null(2),
+        },
+        5 => AgentEvent::ToolEnd {
+            id: rng.string(),
+            name: rng.string(),
+            args: if rng.boolean() {
+                Some(rng.json_value_non_null(2))
+            } else {
+                None
+            },
             output: rng.string(),
             exit_code: rng.i32_small(),
             metadata: if rng.boolean() {
@@ -381,21 +405,21 @@ fn gen_agent_event(rng: &mut Rng) -> AgentEvent {
             },
             error_kind: None,
         },
-        4 => AgentEvent::Error {
+        6 => AgentEvent::Error {
             message: rng.string(),
         },
-        5 => AgentEvent::TurnEnd {
+        7 => AgentEvent::TurnEnd {
             turn: rng.usize_below(100),
             usage: gen_token_usage(rng),
         },
-        6 => AgentEvent::BudgetThresholdHit {
+        8 => AgentEvent::BudgetThresholdHit {
             resource: rng.string(),
             kind: rng.string(),
             consumed: rng.f64_finite(),
             limit: rng.f64_finite(),
             message: rng.opt_string(),
         },
-        7 => AgentEvent::PassivationRequested {
+        9 => AgentEvent::PassivationRequested {
             reason: rng.string(),
             deadline_ms: rng.opt_u64(),
         },
@@ -617,6 +641,7 @@ fn gen_step_outcome(rng: &mut Rng) -> StepOutcome {
         } else {
             None
         },
+        source_anchors: Vec::new(),
     }
 }
 
@@ -763,6 +788,7 @@ fn backward_compat_minimal_subagent_task_loads() {
     assert_eq!(task.finished_ms, None);
     assert_eq!(task.output, None);
     assert_eq!(task.success, None);
+    assert!(task.source_anchors.is_empty());
     assert!(matches!(task.status, SubagentStatus::Running));
 }
 

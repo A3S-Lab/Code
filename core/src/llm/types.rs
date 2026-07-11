@@ -459,8 +459,9 @@ pub enum StreamEvent {
     ReasoningDelta(String),
     /// Tool use started (id, name)
     ToolUseStart { id: String, name: String },
-    /// Tool use input delta (for the current tool)
-    ToolUseInputDelta(String),
+    /// Tool use input delta. `id` is present when the provider exposes the
+    /// authoritative call id for interleaved parallel tool arguments.
+    ToolUseInputDelta { id: Option<String>, delta: String },
     /// Response complete
     Done(LlmResponse),
 }

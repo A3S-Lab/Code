@@ -4,6 +4,7 @@
 //! (Anthropic Claude, OpenAI, Zhipu AI GLM, and OpenAI-compatible providers).
 
 pub mod anthropic;
+mod error;
 pub mod factory;
 pub mod http;
 pub mod openai;
@@ -13,6 +14,8 @@ pub mod zhipu;
 
 // Re-export public types
 pub use anthropic::AnthropicClient;
+pub(crate) use error::non_retryable_llm_error_message;
+pub use error::NonRetryableLlmError;
 pub use factory::{create_client_with_config, LlmConfig};
 pub use http::{
     clear_http_metrics_callback, default_http_client, set_http_metrics_callback, HttpClient,

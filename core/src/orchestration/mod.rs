@@ -31,6 +31,8 @@ pub use checkpoint::{WorkflowCheckpoint, WorkflowStepRecord, WORKFLOW_CHECKPOINT
 pub use combinators::{
     execute_loop, execute_pipeline, execute_steps_parallel_resumable, LoopDecision, PipelineStage,
 };
-pub use executor::{execute_steps_parallel, AgentExecutor, AgentStepSpec, StepOutcome};
+pub use executor::{
+    execute_steps_parallel, AgentExecutor, AgentStepSpec, StepOutcome, ToolSourceAnchor,
+};
 pub use workflow::{Workflow, WorkflowBuilder, WorkflowEvent};
 pub use workflow_budget::{BudgetSnapshot, WorkflowBudget};

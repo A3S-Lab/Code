@@ -11,6 +11,432 @@ fn test_tool_context() -> ToolContext {
     ToolContext::new(PathBuf::from("/tmp"))
 }
 
+struct AllowDelegatedTools;
+
+impl crate::permissions::PermissionChecker for AllowDelegatedTools {
+    fn check(
+        &self,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+    ) -> crate::permissions::PermissionDecision {
+        crate::permissions::PermissionDecision::Allow
+    }
+}
+
+fn allow_delegated_tools(mut config: AgentConfig) -> AgentConfig {
+    config.permission_checker = Some(Arc::new(AllowDelegatedTools));
+    config
+}
+
+struct BlockingPreAnalysisClient {
+    calls: AtomicUsize,
+    pre_analysis_started: tokio::sync::Notify,
+}
+
+impl BlockingPreAnalysisClient {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            pre_analysis_started: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for BlockingPreAnalysisClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
+            self.pre_analysis_started.notify_one();
+            return std::future::pending().await;
+        }
+        Ok(MockLlmClient::text_response(
+            "execution must not start after cancellation",
+        ))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("execution must not start after cancellation")
+    }
+}
+
+#[derive(Default)]
+struct DenyPlanningBudgetGuard {
+    checks: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::budget::BudgetGuard for DenyPlanningBudgetGuard {
+    async fn check_before_llm(
+        &self,
+        _session_id: &str,
+        _estimated_prompt_tokens: usize,
+    ) -> crate::budget::BudgetDecision {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        crate::budget::BudgetDecision::Deny {
+            resource: "planning_tokens".to_string(),
+            reason: "planning budget denied in test".to_string(),
+        }
+    }
+}
+
+struct CountingPlanningClient {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for CountingPlanningClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("budget guard should have denied before the client was called")
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("budget guard should have denied before the client was called")
+    }
+}
+
+#[derive(Default)]
+struct CountingAllowPlanningBudgetGuard {
+    checks: AtomicUsize,
+    records: AtomicUsize,
+    recorded_tokens: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::budget::BudgetGuard for CountingAllowPlanningBudgetGuard {
+    async fn check_before_llm(
+        &self,
+        _session_id: &str,
+        _estimated_prompt_tokens: usize,
+    ) -> crate::budget::BudgetDecision {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        crate::budget::BudgetDecision::Allow
+    }
+
+    async fn record_after_llm(&self, _session_id: &str, usage: &crate::llm::TokenUsage) {
+        self.records.fetch_add(1, Ordering::SeqCst);
+        self.recorded_tokens
+            .fetch_add(usage.total_tokens, Ordering::SeqCst);
+    }
+}
+
+struct RepairingPreAnalysisClient {
+    responses: std::sync::Mutex<Vec<LlmResponse>>,
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for RepairingPreAnalysisClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut responses = self.responses.lock().unwrap();
+        if responses.is_empty() {
+            anyhow::bail!("no repair response available");
+        }
+        Ok(responses.remove(0))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming is not used by pre-analysis")
+    }
+}
+
+struct CancellablePlanStepClient {
+    calls: AtomicUsize,
+    step_started: tokio::sync::Notify,
+}
+
+impl CancellablePlanStepClient {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            step_started: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for CancellablePlanStepClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.step_started.notify_one();
+        std::future::pending().await
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.step_started.notify_one();
+        let (tx, rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            cancel_token.cancelled().await;
+            drop(tx);
+        });
+        Ok(rx)
+    }
+}
+
+#[tokio::test]
+async fn pre_analysis_stops_on_parent_cancellation_before_execution() {
+    let client = Arc::new(BlockingPreAnalysisClient::new());
+    let agent = AgentLoop::new(
+        client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig::default(),
+    );
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let run_token = cancel_token.clone();
+    let run = tokio::spawn(async move {
+        agent
+            .execute_with_session(
+                &[],
+                "analyze this request",
+                Some("planning-cancel"),
+                None,
+                Some(&run_token),
+            )
+            .await
+    });
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        client.pre_analysis_started.notified(),
+    )
+    .await
+    .expect("pre-analysis should start");
+    cancel_token.cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), run)
+        .await
+        .expect("parent cancellation should stop pre-analysis")
+        .expect("run task should not panic");
+    assert!(
+        result.is_err(),
+        "cancelled routing should terminate the run"
+    );
+    assert_eq!(
+        client.calls.load(Ordering::SeqCst),
+        1,
+        "execution must not start after pre-analysis is cancelled"
+    );
+}
+
+#[tokio::test]
+async fn pre_analysis_budget_deny_skips_the_llm_client() {
+    let client = Arc::new(CountingPlanningClient {
+        calls: AtomicUsize::new(0),
+    });
+    let budget = Arc::new(DenyPlanningBudgetGuard::default());
+    let config = AgentConfig {
+        budget_guard: Some(budget.clone()),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        config,
+    );
+
+    let error = agent
+        .execute_with_session(
+            &[],
+            "analyze this request",
+            Some("planning-budget-deny"),
+            None,
+            None,
+        )
+        .await
+        .expect_err("budget denial should terminate routing");
+
+    let error_chain = format!("{error:#}");
+    assert!(
+        error_chain.contains("planning_tokens"),
+        "unexpected error: {error_chain}"
+    );
+    assert_eq!(budget.checks.load(Ordering::SeqCst), 1);
+    assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn pre_analysis_repair_checks_and_records_each_llm_call() {
+    let valid_pre_analysis = serde_json::json!({
+        "intent": "plan",
+        "requires_planning": true,
+        "goal": {
+            "description": "Repair planning output",
+            "success_criteria": []
+        },
+        "execution_plan": {
+            "complexity": "Simple",
+            "steps": [],
+            "required_tools": []
+        },
+        "optimized_input": "Repair planning output"
+    });
+    let client = Arc::new(RepairingPreAnalysisClient {
+        responses: std::sync::Mutex::new(vec![
+            MockLlmClient::text_response("not valid JSON"),
+            MockLlmClient::text_response(&valid_pre_analysis.to_string()),
+        ]),
+        calls: AtomicUsize::new(0),
+    });
+    let budget = Arc::new(CountingAllowPlanningBudgetGuard::default());
+    let config = AgentConfig {
+        budget_guard: Some(budget.clone()),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        config,
+    );
+
+    agent
+        .execute_with_session(
+            &[],
+            "Repair planning output",
+            Some("planning-repair-budget"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(budget.checks.load(Ordering::SeqCst), 2);
+    assert_eq!(budget.records.load(Ordering::SeqCst), 2);
+    assert_eq!(budget.recorded_tokens.load(Ordering::SeqCst), 30);
+}
+
+#[tokio::test]
+async fn serial_plan_steps_stop_starting_llm_calls_after_parent_cancellation() {
+    use crate::planning::{Complexity, ExecutionPlan, Task};
+
+    let client = Arc::new(CancellablePlanStepClient::new());
+    let agent = AgentLoop::new(
+        client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig::default(),
+    );
+    let mut plan = ExecutionPlan::new("serial cancellation", Complexity::Simple);
+    plan.add_step(Task::new("s1", "First serial step"));
+    plan.add_step(Task::new("s2", "Second serial step").with_dependencies(vec!["s1".into()]));
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let run_token = cancel_token.clone();
+    let run = tokio::spawn(async move {
+        agent
+            .execute_plan(&[], &plan, Some("serial-cancel"), None, &run_token)
+            .await
+    });
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        client.step_started.notified(),
+    )
+    .await
+    .expect("first serial step should start");
+    cancel_token.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(1), run)
+        .await
+        .expect("serial plan should stop on cancellation")
+        .expect("serial plan task should not panic")
+        .expect("serial plan should return its interrupted result");
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn parallel_plan_steps_stop_starting_llm_calls_after_parent_cancellation() {
+    use crate::planning::{Complexity, ExecutionPlan, Task};
+
+    let client = Arc::new(CancellablePlanStepClient::new());
+    let config = AgentConfig {
+        max_parallel_tasks: 1,
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        config,
+    );
+    let mut plan = ExecutionPlan::new("parallel cancellation", Complexity::Simple);
+    plan.add_step(Task::new("s1", "First parallel step"));
+    plan.add_step(Task::new("s2", "Second parallel step"));
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let run_token = cancel_token.clone();
+    let run = tokio::spawn(async move {
+        agent
+            .execute_plan(&[], &plan, Some("parallel-cancel"), None, &run_token)
+            .await
+    });
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        client.step_started.notified(),
+    )
+    .await
+    .expect("first parallel step should start");
+    cancel_token.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(1), run)
+        .await
+        .expect("parallel plan should stop on cancellation")
+        .expect("parallel plan task should not panic")
+        .expect("parallel plan should return its interrupted result");
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+}
+
 struct PlanDelegationChildClient;
 
 impl PlanDelegationChildClient {
@@ -252,6 +678,7 @@ async fn test_execute_with_planning_fires_pre_and_post_planning_hooks() {
             Some("planning-hooks-session"),
             None,
             None,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -313,6 +740,7 @@ async fn test_pre_planning_hook_can_block_planning_before_start_event() {
             Some("blocked-planning-session"),
             Some(tx),
             None,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap_err();
@@ -388,6 +816,7 @@ async fn test_pre_planning_hook_modification_updates_planner_input() {
             Some("modified-planning-session"),
             Some(tx),
             None,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -498,6 +927,7 @@ async fn test_pre_planning_hook_modification_discards_pre_analysis_plan() {
             Some("discard-pre-analysis-session"),
             None,
             Some(pre_analysis),
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -573,6 +1003,7 @@ fn test_agent_event_serialize_tool_end() {
     let event = AgentEvent::ToolEnd {
         id: "t1".to_string(),
         name: "bash".to_string(),
+        args: None,
         output: "hello".to_string(),
         exit_code: 0,
         metadata: None,
@@ -587,6 +1018,7 @@ fn test_agent_event_tool_end_has_metadata_field() {
     let event = AgentEvent::ToolEnd {
         id: "t1".to_string(),
         name: "write".to_string(),
+        args: None,
         output: "Wrote 5 bytes".to_string(),
         exit_code: 0,
         metadata: Some(
@@ -1070,7 +1502,13 @@ async fn test_extract_goal_with_json_response() {
         AgentConfig::default(),
     );
 
-    let goal = agent.extract_goal("Build a web app").await.unwrap();
+    let goal = agent
+        .extract_goal(
+            "Build a web app",
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
     assert_eq!(goal.description, "Build web app");
     assert_eq!(goal.success_criteria.len(), 2);
     assert_eq!(goal.success_criteria[0], "App runs on port 3000");
@@ -1090,7 +1528,10 @@ async fn test_extract_goal_fallback_on_non_json() {
         AgentConfig::default(),
     );
 
-    let goal = agent.extract_goal("Do something").await.unwrap();
+    let goal = agent
+        .extract_goal("Do something", &tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
     // Fallback uses the original prompt as description
     assert_eq!(goal.description, "Do something");
     // Fallback adds 2 generic criteria
@@ -1112,7 +1553,11 @@ async fn test_check_goal_achievement_json_yes() {
 
     let goal = crate::planning::AgentGoal::new("Test goal".to_string());
     let achieved = agent
-        .check_goal_achievement(&goal, "All done")
+        .check_goal_achievement(
+            &goal,
+            "All done",
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
     assert!(achieved);
@@ -1135,7 +1580,11 @@ async fn test_check_goal_achievement_fallback_not_done() {
     let goal = crate::planning::AgentGoal::new("Test goal".to_string());
     // "still working" doesn't contain "complete"/"done"/"finished"
     let achieved = agent
-        .check_goal_achievement(&goal, "still working")
+        .check_goal_achievement(
+            &goal,
+            "still working",
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
     assert!(!achieved);
@@ -1288,8 +1737,7 @@ async fn test_tool_command_command_type() {
         tool_executor: executor,
         tool_name: "read".to_string(),
         tool_args: serde_json::json!({"file": "test.rs"}),
-        skill_registry: None,
-        enforce_active_skill_tool_restrictions: false,
+        tool_timeout_ms: None,
         tool_context: test_tool_context(),
     };
     assert_eq!(cmd.command_type(), "read");
@@ -1303,76 +1751,261 @@ async fn test_tool_command_payload() {
         tool_executor: executor,
         tool_name: "read".to_string(),
         tool_args: args.clone(),
-        skill_registry: None,
-        enforce_active_skill_tool_restrictions: false,
+        tool_timeout_ms: None,
         tool_context: test_tool_context(),
     };
     assert_eq!(cmd.payload(), args);
 }
 
 #[tokio::test]
-async fn test_tool_command_ignores_active_skill_restrictions_by_default() {
-    let registry = crate::skills::SkillRegistry::new();
-    registry.register_unchecked(Arc::new(crate::skills::Skill {
-        name: "read-only".to_string(),
-        description: String::new(),
-        allowed_tools: Some("read(*)".to_string()),
-        disable_model_invocation: false,
-        kind: crate::skills::SkillKind::Instruction,
-        content: String::new(),
-        tags: Vec::new(),
-        version: None,
-    }));
+async fn test_queued_tool_command_is_cancelled_before_side_effect_completion() {
+    struct NeverCompletes;
 
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for NeverCompletes {
+        fn name(&self) -> &str {
+            "never_completes"
+        }
+
+        fn description(&self) -> &str {
+            "blocks until its future is dropped"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> anyhow::Result<crate::tools::ToolOutput> {
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    }
+
+    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    executor.register_dynamic_tool(Arc::new(NeverCompletes));
+    let cancellation = tokio_util::sync::CancellationToken::new();
     let cmd = ToolCommand {
-        tool_executor: Arc::new(ToolExecutor::new("/tmp".to_string())),
-        tool_name: "not_a_tool".to_string(),
+        tool_executor: executor,
+        tool_name: "never_completes".to_string(),
         tool_args: serde_json::json!({}),
-        skill_registry: Some(Arc::new(registry)),
-        enforce_active_skill_tool_restrictions: false,
-        tool_context: test_tool_context(),
+        tool_timeout_ms: None,
+        tool_context: test_tool_context().with_cancellation(cancellation.clone()),
     };
 
-    let output = cmd.execute().await.unwrap();
-    let output = output["output"].as_str().unwrap_or_default();
-    assert!(
-        !output.contains("not allowed by any active skill"),
-        "default mode must let the command reach the tool executor, got: {output}"
-    );
-    assert!(
-        output.contains("Unknown tool"),
-        "default mode should reach the tool executor, got: {output}"
-    );
+    let task = tokio::spawn(async move { cmd.execute().await });
+    tokio::task::yield_now().await;
+    cancellation.cancel();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+        .await
+        .expect("queued execution must observe cancellation")
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("cancelled"));
 }
 
 #[tokio::test]
-async fn test_tool_command_enforces_active_skill_restrictions_in_legacy_mode() {
-    let registry = crate::skills::SkillRegistry::new();
-    registry.register_unchecked(Arc::new(crate::skills::Skill {
-        name: "read-only".to_string(),
-        description: String::new(),
-        allowed_tools: Some("read(*)".to_string()),
-        disable_model_invocation: false,
-        kind: crate::skills::SkillKind::Instruction,
-        content: String::new(),
-        tags: Vec::new(),
-        version: None,
-    }));
+async fn test_queued_tool_command_applies_execution_timeout() {
+    struct NeverCompletes;
 
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for NeverCompletes {
+        fn name(&self) -> &str {
+            "never_completes_timeout"
+        }
+
+        fn description(&self) -> &str {
+            "blocks until timed out"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> anyhow::Result<crate::tools::ToolOutput> {
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    }
+
+    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    executor.register_dynamic_tool(Arc::new(NeverCompletes));
     let cmd = ToolCommand {
-        tool_executor: Arc::new(ToolExecutor::new("/tmp".to_string())),
-        tool_name: "not_a_tool".to_string(),
+        tool_executor: executor,
+        tool_name: "never_completes_timeout".to_string(),
         tool_args: serde_json::json!({}),
-        skill_registry: Some(Arc::new(registry)),
-        enforce_active_skill_tool_restrictions: true,
+        tool_timeout_ms: Some(10),
         tool_context: test_tool_context(),
     };
 
-    let err = cmd.execute().await.unwrap_err().to_string();
-    assert!(
-        err.contains("not allowed by any active skill"),
-        "legacy mode must deny before tool execution, got: {err}"
+    let error = cmd.execute().await.unwrap_err();
+    assert!(error.to_string().contains("timed out after 10ms"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_queued_tool_result_preserves_metadata() {
+    struct MetadataTool;
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for MetadataTool {
+        fn name(&self) -> &str {
+            "metadata_tool"
+        }
+
+        fn description(&self) -> &str {
+            "returns structured metadata"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> anyhow::Result<crate::tools::ToolOutput> {
+            Ok(crate::tools::ToolOutput::success("ok")
+                .with_metadata(serde_json::json!({"source": "queue"}))
+                .with_images(vec![crate::llm::Attachment::png(vec![1, 2, 3, 4])]))
+        }
+    }
+
+    use tokio::sync::broadcast;
+
+    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    executor.register_dynamic_tool(Arc::new(MetadataTool));
+    let (event_tx, _) = broadcast::channel(100);
+    let queue = SessionLaneQueue::new("metadata-session", SessionQueueConfig::default(), event_tx)
+        .await
+        .unwrap();
+    queue.start().await.unwrap();
+    let agent = AgentLoop::new(
+        Arc::new(MockLlmClient::new(vec![])),
+        executor,
+        test_tool_context(),
+        AgentConfig::default(),
+    )
+    .with_queue(Arc::new(queue));
+
+    let result = agent
+        .execute_tool_queued_or_direct(
+            "metadata_tool",
+            &serde_json::json!({}),
+            &test_tool_context(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.metadata,
+        Some(serde_json::json!({"source": "queue"}))
     );
+    assert_eq!(result.images.len(), 1);
+    assert_eq!(result.images[0].media_type, "image/png");
+    assert_eq!(result.images[0].data, vec![1, 2, 3, 4]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn queued_orchestrators_do_not_resubmit_nested_tools_into_the_owned_lane() {
+    struct NestedEcho;
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for NestedEcho {
+        fn name(&self) -> &str {
+            "nested_echo"
+        }
+
+        fn description(&self) -> &str {
+            "returns from a nested queued invocation"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> anyhow::Result<crate::tools::ToolOutput> {
+            Ok(crate::tools::ToolOutput::success("nested-ok"))
+        }
+    }
+
+    use tokio::sync::broadcast;
+
+    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    executor.register_dynamic_tool(Arc::new(NestedEcho));
+    let config = AgentConfig {
+        tool_timeout_ms: Some(500),
+        ..AgentConfig::default()
+    };
+    let queue_config = SessionQueueConfig {
+        execute_max_concurrency: 1,
+        ..SessionQueueConfig::default()
+    };
+    let (queue_events, _) = broadcast::channel(100);
+    let queue = SessionLaneQueue::new("nested-queue", queue_config, queue_events)
+        .await
+        .unwrap();
+    queue.start().await.unwrap();
+    let tool_context = test_tool_context().with_session_id("nested-queue");
+    let agent = AgentLoop::new(
+        Arc::new(MockLlmClient::new(vec![])),
+        executor,
+        tool_context.clone(),
+        config,
+    )
+    .with_queue(Arc::new(queue));
+    let cancellation = tokio_util::sync::CancellationToken::new();
+
+    let calls = [
+        (
+            "batch",
+            serde_json::json!({
+                "invocations": [{"tool": "nested_echo", "args": {}}]
+            }),
+        ),
+        (
+            "program",
+            serde_json::json!({
+                "type": "script",
+                "language": "javascript",
+                "source": "async function run(ctx) { return await ctx.tool('nested_echo', {}); }",
+                "allowed_tools": ["nested_echo"]
+            }),
+        ),
+    ];
+
+    for (name, args) in calls {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            agent.invoke_host_tool(
+                crate::tools::ToolInvocation::host_direct(format!("host-{name}"), name, args),
+                "nested-queue",
+                &None,
+                &cancellation,
+                &tool_context,
+            ),
+        )
+        .await
+        .expect("a nested tool must not deadlock its owning queue lane");
+
+        assert_eq!(result.exit_code, 0, "{name}: {}", result.output);
+        assert!(
+            result.output.contains("nested-ok"),
+            "{name}: {}",
+            result.output
+        );
+    }
 }
 
 // ========================================================================
@@ -1445,7 +2078,13 @@ async fn test_execute_plan_parallel_independent() {
 
     let (tx, mut rx) = mpsc::channel(100);
     let result = agent
-        .execute_plan(&[], &plan, Some("test-session"), Some(tx))
+        .execute_plan(
+            &[],
+            &plan,
+            Some("test-session"),
+            Some(tx),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -1495,7 +2134,13 @@ async fn test_execute_plan_emits_task_list_snapshots() {
 
     let (tx, mut rx) = mpsc::channel(100);
     let _ = agent
-        .execute_plan(&[], &plan, Some("task-session"), Some(tx))
+        .execute_plan(
+            &[],
+            &plan,
+            Some("task-session"),
+            Some(tx),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -1547,7 +2192,7 @@ async fn test_execute_plan_delegates_task_tool_steps() {
         Arc::new(MockLlmClient::new(vec![])),
         tool_executor,
         test_tool_context(),
-        AgentConfig::default(),
+        allow_delegated_tools(AgentConfig::default()),
     );
 
     let mut plan = ExecutionPlan::new("Delegate a step", Complexity::Simple);
@@ -1555,7 +2200,13 @@ async fn test_execute_plan_delegates_task_tool_steps() {
 
     let (tx, mut rx) = mpsc::channel(100);
     let result = agent
-        .execute_plan(&[], &plan, Some("task-session"), Some(tx))
+        .execute_plan(
+            &[],
+            &plan,
+            Some("task-session"),
+            Some(tx),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -1566,13 +2217,13 @@ async fn test_execute_plan_delegates_task_tool_steps() {
         result.text
     );
 
-    let mut saw_task_tool_start = false;
+    let mut saw_task_execution_start = false;
     let mut saw_completed_step = false;
     rx.close();
     while let Some(event) = rx.recv().await {
         match event {
-            AgentEvent::ToolStart { name, .. } if name == "task" => {
-                saw_task_tool_start = true;
+            AgentEvent::ToolExecutionStart { name, .. } if name == "task" => {
+                saw_task_execution_start = true;
             }
             AgentEvent::StepEnd {
                 status: TaskStatus::Completed,
@@ -1584,7 +2235,7 @@ async fn test_execute_plan_delegates_task_tool_steps() {
         }
     }
 
-    assert!(saw_task_tool_start);
+    assert!(saw_task_execution_start);
     assert!(saw_completed_step);
 }
 
@@ -1606,7 +2257,7 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
         Arc::new(MockLlmClient::new(vec![])),
         tool_executor,
         test_tool_context(),
-        AgentConfig::default(),
+        allow_delegated_tools(AgentConfig::default()),
     );
 
     let mut plan = ExecutionPlan::new("Delegate independent wave", Complexity::Medium);
@@ -1615,7 +2266,13 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
 
     let (tx, mut rx) = mpsc::channel(100);
     let result = agent
-        .execute_plan(&[], &plan, Some("parallel-task-session"), Some(tx))
+        .execute_plan(
+            &[],
+            &plan,
+            Some("parallel-task-session"),
+            Some(tx),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -1640,7 +2297,7 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
     rx.close();
     while let Some(event) = rx.recv().await {
         match event {
-            AgentEvent::ToolStart { name, .. } if name == "parallel_task" => {
+            AgentEvent::ToolExecutionStart { name, .. } if name == "parallel_task" => {
                 parallel_task_starts += 1;
             }
             AgentEvent::StepEnd {
@@ -1689,6 +2346,7 @@ async fn test_execute_plan_auto_delegates_unmarked_parallel_wave_when_enabled() 
     let config = AgentConfig {
         auto_delegation,
         agent_registry: Some(agent_registry),
+        permission_checker: Some(Arc::new(AllowDelegatedTools)),
         ..AgentConfig::default()
     };
     let agent = AgentLoop::new(
@@ -1704,7 +2362,13 @@ async fn test_execute_plan_auto_delegates_unmarked_parallel_wave_when_enabled() 
 
     let (tx, mut rx) = mpsc::channel(100);
     let result = agent
-        .execute_plan(&[], &plan, Some("auto-plan-parallel-session"), Some(tx))
+        .execute_plan(
+            &[],
+            &plan,
+            Some("auto-plan-parallel-session"),
+            Some(tx),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -1720,7 +2384,7 @@ async fn test_execute_plan_auto_delegates_unmarked_parallel_wave_when_enabled() 
     rx.close();
     while let Some(event) = rx.recv().await {
         match event {
-            AgentEvent::ToolStart { name, .. } if name == "parallel_task" => {
+            AgentEvent::ToolExecutionStart { name, .. } if name == "parallel_task" => {
                 parallel_task_starts += 1;
             }
             AgentEvent::StepEnd {
@@ -1759,7 +2423,7 @@ async fn test_execute_plan_delegated_parallel_wave_maps_child_failure() {
         Arc::new(MockLlmClient::new(vec![])),
         tool_executor,
         test_tool_context(),
-        AgentConfig::default(),
+        allow_delegated_tools(AgentConfig::default()),
     );
 
     let mut plan = ExecutionPlan::new("Delegate partially failing wave", Complexity::Medium);
@@ -1768,7 +2432,13 @@ async fn test_execute_plan_delegated_parallel_wave_maps_child_failure() {
 
     let (tx, mut rx) = mpsc::channel(100);
     let result = agent
-        .execute_plan(&[], &plan, Some("parallel-task-failure-session"), Some(tx))
+        .execute_plan(
+            &[],
+            &plan,
+            Some("parallel-task-failure-session"),
+            Some(tx),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -1850,6 +2520,7 @@ async fn test_auto_delegation_runs_parallel_specialists_when_enabled() {
         planning_mode: PlanningMode::Disabled,
         auto_delegation,
         agent_registry: Some(agent_registry),
+        permission_checker: Some(Arc::new(AllowDelegatedTools)),
         ..AgentConfig::default()
     };
     let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
@@ -1872,7 +2543,7 @@ async fn test_auto_delegation_runs_parallel_specialists_when_enabled() {
     let mut parallel_task_starts = 0;
     rx.close();
     while let Some(event) = rx.recv().await {
-        if let AgentEvent::ToolStart { name, .. } = event {
+        if let AgentEvent::ToolExecutionStart { name, .. } = event {
             if name == "parallel_task" {
                 parallel_task_starts += 1;
             }
@@ -1909,6 +2580,7 @@ async fn test_auto_delegation_global_parallel_switch_uses_single_task() {
         planning_mode: PlanningMode::Disabled,
         auto_delegation,
         agent_registry: Some(agent_registry),
+        permission_checker: Some(Arc::new(AllowDelegatedTools)),
         ..AgentConfig::default()
     };
     let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
@@ -1931,7 +2603,7 @@ async fn test_auto_delegation_global_parallel_switch_uses_single_task() {
     let mut parallel_task_starts = 0;
     rx.close();
     while let Some(event) = rx.recv().await {
-        if let AgentEvent::ToolStart { name, .. } = event {
+        if let AgentEvent::ToolExecutionStart { name, .. } = event {
             if name == "task" {
                 task_starts += 1;
             } else if name == "parallel_task" {
@@ -1988,7 +2660,7 @@ async fn test_auto_delegation_disabled_does_not_start_subagents() {
     let mut task_tool_starts = 0;
     rx.close();
     while let Some(event) = rx.recv().await {
-        if let AgentEvent::ToolStart { name, .. } = event {
+        if let AgentEvent::ToolExecutionStart { name, .. } = event {
             if name == "task" || name == "parallel_task" {
                 task_tool_starts += 1;
             }
@@ -2028,7 +2700,13 @@ async fn test_execute_plan_respects_dependencies() {
 
     let (tx, mut rx) = mpsc::channel(100);
     let result = agent
-        .execute_plan(&[], &plan, Some("test-session"), Some(tx))
+        .execute_plan(
+            &[],
+            &plan,
+            Some("test-session"),
+            Some(tx),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -2107,7 +2785,13 @@ async fn test_execute_plan_handles_step_failure() {
 
     let (tx, mut rx) = mpsc::channel(100);
     let _result = agent
-        .execute_plan(&[], &plan, Some("test-session"), Some(tx))
+        .execute_plan(
+            &[],
+            &plan,
+            Some("test-session"),
+            Some(tx),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -2329,6 +3013,81 @@ async fn test_circuit_breaker_retries_non_streaming() {
     );
 }
 
+#[tokio::test]
+async fn test_circuit_breaker_backoff_stops_immediately_on_cancellation() {
+    struct AlwaysFails {
+        calls: AtomicUsize,
+        first_failure: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for AlwaysFails {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.first_failure.notify_one();
+            anyhow::bail!("transient provider failure")
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+            anyhow::bail!("streaming is not used by this test")
+        }
+    }
+
+    let client = Arc::new(AlwaysFails {
+        calls: AtomicUsize::new(0),
+        first_failure: tokio::sync::Notify::new(),
+    });
+    let agent = AgentLoop::new(
+        client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig {
+            circuit_breaker_threshold: 10,
+            planning_mode: crate::prompts::PlanningMode::Disabled,
+            ..AgentConfig::default()
+        },
+    );
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let run_cancellation = cancellation.clone();
+    let run = tokio::spawn(async move {
+        agent
+            .execute_with_session(
+                &[],
+                "Hello",
+                Some("retry-cancel"),
+                None,
+                Some(&run_cancellation),
+            )
+            .await
+    });
+
+    client.first_failure.notified().await;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    cancellation.cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(50), run)
+        .await
+        .expect("cancellation must interrupt retry backoff")
+        .unwrap()
+        .unwrap();
+    assert!(result
+        .messages
+        .last()
+        .is_some_and(|message| message.text().contains("interrupted")));
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+}
+
 /// 4.3 — Circuit breaker: threshold=1 bails on the very first failure
 #[tokio::test]
 async fn test_circuit_breaker_threshold_one_no_retry() {
@@ -2402,8 +3161,11 @@ async fn test_circuit_breaker_succeeds_if_llm_recovers() {
     });
 
     let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let budget = Arc::new(CountingAllowPlanningBudgetGuard::default());
     let config = AgentConfig {
         circuit_breaker_threshold: 3,
+        planning_mode: crate::prompts::PlanningMode::Disabled,
+        budget_guard: Some(budget.clone()),
         ..AgentConfig::default()
     };
     let agent = AgentLoop::new(mock.clone(), tool_executor, test_tool_context(), config);
@@ -2419,6 +3181,12 @@ async fn test_circuit_breaker_succeeds_if_llm_recovers() {
         2,
         "should have made exactly 2 calls (1 fail + 1 success)"
     );
+    assert_eq!(
+        budget.checks.load(Ordering::SeqCst),
+        2,
+        "each provider retry must pass through the budget gateway"
+    );
+    assert_eq!(budget.records.load(Ordering::SeqCst), 1);
 }
 
 // ── Continuation detection tests ─────────────────────────────────────────

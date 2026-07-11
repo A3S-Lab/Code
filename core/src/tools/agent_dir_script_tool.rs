@@ -7,13 +7,11 @@
 //! are all the program tool's.
 //!
 //! Safety boundary: the model's call to THIS tool is permission-gated like any
-//! tool (the harness owns visibility and the gate). But the script's inner
-//! `ctx.tool` calls go through `ToolRegistry::execute_with_context` directly —
-//! they are bounded by the pinned `allowed_tools` list, the `maxToolCalls`
-//! counter, and the QuickJS sandbox (no fs/net/proc/env), and they run against the
-//! session workspace, but they are NOT re-evaluated against the session permission
-//! policy / HITL. The allow-list is therefore the boundary for what a script may
-//! reach, which is why the agent-dir loader fails it closed (empty by default).
+//! tool (the harness owns visibility and the gate). The script's inner
+//! `ctx.tool` calls use the governed invoker installed in the session
+//! [`ToolContext`], so permission/HITL, hooks, budget, queue/timeout,
+//! cancellation, and output sanitization are applied again to every hop. The
+//! pinned allow-list and QuickJS limits are an additional fail-closed boundary.
 
 use std::sync::Arc;
 

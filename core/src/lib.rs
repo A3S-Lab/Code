@@ -15,7 +15,7 @@
 //! let agent = Agent::new("agent.acl").await?;
 //!
 //! // Create a workspace-bound session
-//! let session = agent.session("/my-project", None)?;
+//! let session = agent.session_async("/my-project", None).await?;
 //!
 //! // Non-streaming
 //! let result = session.send("What files handle auth?", None).await?;
@@ -48,10 +48,10 @@
 //! .with_model_ref("openai/gpt-4o")
 //! .with_max_steps(24);
 //!
-//! let session = agent.session(
+//! let session = agent.session_async(
 //!     "/my-project",
 //!     Some(SessionOptions::new().with_worker_agent(frontend)),
-//! )?;
+//! ).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -76,8 +76,6 @@
 
 pub(crate) mod agent;
 pub(crate) mod agent_api;
-#[cfg(feature = "ahp")]
-pub mod ahp;
 pub mod budget;
 pub(crate) mod child_run;
 pub mod commands;
@@ -86,7 +84,7 @@ pub mod config;
 pub mod context;
 pub mod dynamic_workflow;
 pub mod error;
-pub(crate) mod file_history;
+pub mod event_protocol;
 pub(crate) mod git;
 pub mod hitl;
 pub mod hooks;
@@ -129,15 +127,23 @@ pub mod workspace;
 
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentEvent, AgentResult};
-pub use agent_api::{Agent, AgentSession, ReadFileOptions, SessionOptions, ToolCallResult};
+pub use agent_api::{
+    Agent, AgentSession, ReadFileOptions, SessionBuilder, SessionOptions, ToolCallResult,
+};
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,
 };
 pub use dynamic_workflow::{
-    DynamicWorkflowRuntime, DynamicWorkflowScriptLimits, DynamicWorkflowTool,
+    dynamic_workflow_store_path, DynamicWorkflowRuntime, DynamicWorkflowScriptLimits,
+    DynamicWorkflowTool, DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,
 };
+pub use error::SessionBuildResource;
 pub use error::{CodeError, Result};
+pub use event_protocol::{
+    run_event_envelope_v1, AgentEventProjectionV1, AgentEventTypeV1, EventEnvelopeV1,
+    EventProtocolError, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
+};
 pub use llm::{
     clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,
     ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource, LlmClient, LlmResponse,
@@ -175,9 +181,10 @@ pub use workspace::{
     WorkspaceGitDiffRequest, WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest,
     WorkspaceGitStash, WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus,
     WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
-    WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult,
-    WorkspacePath, WorkspacePathResolver, WorkspaceRef, WorkspaceResult, WorkspaceSearch,
-    WorkspaceServices, WorkspaceServicesBuilder, WorkspaceVersionConflict, WorkspaceWriteOutcome,
+    WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest,
+    WorkspaceGrepResult, WorkspacePath, WorkspacePathResolver, WorkspaceRef, WorkspaceResult,
+    WorkspaceSearch, WorkspaceServices, WorkspaceServicesBuilder, WorkspaceVersionConflict,
+    WorkspaceWriteOutcome,
 };
 #[cfg(feature = "s3")]
 pub use workspace::{S3BackendConfig, S3WorkspaceBackend};

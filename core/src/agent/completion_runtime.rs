@@ -5,6 +5,7 @@ use crate::prompts::CONTINUATION;
 use crate::verification::VerificationSummary;
 use futures::future::join_all;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 const REASONING_ONLY_REPAIR: &str = "\
 Your previous assistant message contained reasoning/thinking content but no \
@@ -32,6 +33,7 @@ impl AgentLoop {
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         emit_end: bool,
+        cancel_token: &CancellationToken,
     ) -> CompletionFlow {
         let candidate_text = response.text();
 
@@ -63,6 +65,7 @@ impl AgentLoop {
                 &final_text,
                 sid,
                 event_tx,
+                cancel_token,
             )
             .await;
             self.notify_turn_complete(sid, effective_prompt, &final_text)

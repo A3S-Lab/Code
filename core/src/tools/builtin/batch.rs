@@ -3,10 +3,11 @@
 //! Allows the LLM to dispatch several independent tool calls in a single
 //! turn, reducing round-trips when operations don't depend on each other.
 
-use crate::tools::registry::ToolRegistry;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
+use crate::tools::{registry_tool_invoker, ToolInvocation, ToolInvoker, ToolRegistry, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::future::join_all;
 use std::sync::Arc;
 
 /// Executes multiple tool calls concurrently in a single LLM turn.
@@ -14,12 +15,14 @@ use std::sync::Arc;
 /// Each invocation in the `invocations` array is dispatched in parallel.
 /// Results are returned in the same order as the input array.
 pub struct BatchTool {
-    registry: Arc<ToolRegistry>,
+    fallback_invoker: Arc<dyn ToolInvoker>,
 }
 
 impl BatchTool {
     pub fn new(registry: Arc<ToolRegistry>) -> Self {
-        Self { registry }
+        Self {
+            fallback_invoker: registry_tool_invoker(registry),
+        }
     }
 }
 
@@ -88,59 +91,49 @@ impl Tool for BatchTool {
         }
 
         // Dispatch all calls in parallel
-        let registry = Arc::clone(&self.registry);
+        let invoker = ctx
+            .tool_invoker()
+            .unwrap_or_else(|| Arc::clone(&self.fallback_invoker));
         let ctx = ctx.clone();
-        let handles: Vec<_> = invocations
-            .into_iter()
-            .map(|inv| {
-                let registry = Arc::clone(&registry);
-                let ctx = ctx.clone();
-                tokio::spawn(async move {
-                    let tool_name = inv
-                        .get("tool")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let tool_args = inv
-                        .get("args")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Object(Default::default()));
+        let calls = invocations.into_iter().map(|inv| {
+            let invoker = Arc::clone(&invoker);
+            let ctx = ctx.clone();
+            async move {
+                let tool_name = inv
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tool_args = inv
+                    .get("args")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
 
-                    if tool_name.is_empty() {
-                        return (tool_name, Err(anyhow::anyhow!("tool name is required")));
-                    }
+                if tool_name.is_empty() {
+                    return (
+                        tool_name,
+                        ToolResult::error("", "tool name is required".to_string()),
+                    );
+                }
 
-                    let result = registry
-                        .execute_with_context(&tool_name, &tool_args, &ctx)
-                        .await;
-                    (tool_name, result)
-                })
-            })
-            .collect();
+                let result = invoker
+                    .invoke(ToolInvocation::nested(tool_name.clone(), tool_args), &ctx)
+                    .await;
+                (tool_name, result)
+            }
+        });
 
         // Collect results in order
         let mut output = String::new();
         let mut all_success = true;
 
-        for (i, handle) in handles.into_iter().enumerate() {
-            let (tool_name, result) = handle
-                .await
-                .map_err(|e| anyhow::anyhow!("task panicked: {}", e))?;
-
+        for (i, (tool_name, result)) in join_all(calls).await.into_iter().enumerate() {
             output.push_str(&format!("--- [{}: {}] ---\n", i + 1, tool_name));
-            match result {
-                Ok(r) => {
-                    if r.exit_code != 0 {
-                        all_success = false;
-                        output.push_str(&format!("ERROR: {}\n", r.output));
-                    } else {
-                        output.push_str(&r.output);
-                    }
-                }
-                Err(e) => {
-                    all_success = false;
-                    output.push_str(&format!("ERROR: {}\n", e));
-                }
+            if result.exit_code != 0 {
+                all_success = false;
+                output.push_str(&format!("ERROR: {}\n", result.output));
+            } else {
+                output.push_str(&result.output);
             }
             output.push('\n');
         }
@@ -163,6 +156,7 @@ mod tests {
     use crate::tools::types::ToolOutput;
     use async_trait::async_trait;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct EchoTool;
 
@@ -220,6 +214,40 @@ mod tests {
             _ctx: &ToolContext,
         ) -> Result<ToolOutput> {
             Ok(ToolOutput::error("intentional failure"))
+        }
+    }
+
+    struct DelayedSideEffectTool {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Tool for DelayedSideEffectTool {
+        fn name(&self) -> &str {
+            "delayed_side_effect"
+        }
+
+        fn description(&self) -> &str {
+            "records a delayed side effect"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+            })
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput::success("done"))
         }
     }
 
@@ -377,6 +405,34 @@ mod tests {
             .unwrap();
         assert!(!result.success);
         assert!(result.content.contains("nested batch"));
+    }
+
+    #[tokio::test]
+    async fn dropping_batch_execution_drops_nested_tool_futures() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+        registry.register(Arc::new(DelayedSideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        let tool = BatchTool::new(registry);
+        let ctx = make_ctx();
+        let args = serde_json::json!({
+            "invocations": [{"tool": "delayed_side_effect", "args": {}}]
+        });
+
+        let timed_out = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            tool.execute(&args, &ctx),
+        )
+        .await;
+        assert!(timed_out.is_err(), "the parent batch should time out first");
+
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "nested tools must not outlive a dropped batch future"
+        );
     }
 
     #[tokio::test]

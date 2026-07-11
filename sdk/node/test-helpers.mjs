@@ -7,8 +7,7 @@ assert.equal(typeof mod.LocalWorkspaceBackend, 'function')
 
 const skills = mod.builtinSkills()
 assert.equal(Array.isArray(skills), true)
-assert.equal(skills.length > 0, true)
-assert.equal(typeof skills[0].name, 'string')
+assert.equal(skills.length, 0, 'embedded built-in skills were removed; compatibility API is empty')
 
 const summary = mod.formatVerificationSummary({
   status: 'skipped',

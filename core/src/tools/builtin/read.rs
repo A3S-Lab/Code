@@ -68,6 +68,9 @@ impl Tool for ReadTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::error(format!("Failed to resolve path: {}", e))),
         };
+        let source_metadata = serde_json::json!({
+            "source_anchors": [workspace_path.as_str()],
+        });
 
         let fs = ctx.workspace_services.fs();
         let path_for_read = workspace_path.clone();
@@ -102,7 +105,8 @@ impl Tool for ReadTool {
             return Ok(ToolOutput::success(format!(
                 "(end of file: offset {} equals file length)\n",
                 offset
-            )));
+            ))
+            .with_metadata(source_metadata));
         }
 
         let end = (offset + limit).min(total_lines);
@@ -122,7 +126,7 @@ impl Tool for ReadTool {
             ));
         }
 
-        Ok(ToolOutput::success(output))
+        Ok(ToolOutput::success(output).with_metadata(source_metadata))
     }
 }
 
@@ -148,6 +152,10 @@ mod tests {
         assert!(result.content.contains("line1"));
         assert!(result.content.contains("line2"));
         assert!(result.content.contains("line3"));
+        assert_eq!(
+            result.metadata.unwrap()["source_anchors"],
+            serde_json::json!(["test.txt"])
+        );
     }
 
     #[tokio::test]

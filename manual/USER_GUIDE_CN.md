@@ -370,7 +370,6 @@ opts.hitl_enabled = True
 | **显式权限** | 默认拒绝，需明确授权 |
 | **人机确认** | 工具调用前提示确认 |
 | **Skill 限制** | `allowed-tools` 限制可调用工具 |
-| **AHP 集成** | 运行时拦截和清理工具调用 |
 | **自动压缩** | 达到令牌限制前自动压缩上下文 |
 | **熔断器** | 3次连续失败后停止，防止无限重试 |
 | **延续注入** | 防止 LLM 提前停止任务 |
@@ -457,8 +456,8 @@ session = agent.session(".", model="openai/gpt-4o")
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ Trace/Verify │  │ AHP/Hooks    │  │Permissions   │      │
-│  │ (证据与验证) │  │ (拦截协议)   │  │  (权限控制)   │      │
+│  │ Trace/Verify │  │    Hooks     │  │Permissions   │      │
+│  │ (证据与验证) │  │  (策略钩子)   │  │  (权限控制)   │      │
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -534,49 +533,34 @@ just --list
 
 ## 14. 核心模块解析
 
-### 14.1 Agent 模块 (`agent.rs`)
+### 14.1 Agent 模块 (`agent_api.rs`)
 
 ```rust
-// Agent 结构
-pub struct Agent {
-    config: Config,
-    provider_registry: ProviderRegistry,
-}
+let agent = Agent::create("agent.acl").await?;
+let session = agent
+    .session_builder("/repo")
+    .options(options)
+    .build()
+    .await?;
 
-impl Agent {
-    // 创建 Agent
-    pub async fn create(config_path: &str) -> Result<Self>;
-    
-    // 创建会话
-    pub fn session(&self, workspace: &str, options: Option<SessionOptions>) -> Result<AgentSession>;
-    
-    // 恢复会话
-    pub fn resume_session(&self, session_id: &str, options: SessionOptions) -> Result<AgentSession>;
-}
+let resumed = agent
+    .resume_session_async("session-id", resume_options)
+    .await?;
 ```
+
+Rust 构建以异步为先。`session_async`、异步 agent/worker factory 与
+`resume_session_async` 共用同一个 resolved construction kernel。同步 `session`
+只用于兼容：它要求显式传入已初始化的 memory store，绝不阻塞 async runtime；
+资源仍需异步 setup 时返回 `AsyncSessionBuildRequired`。
+`SessionOptions` 中的宿主 MCP manager 始终需要异步 discovery；同步路径只能继承
+agent 初始化时已经缓存的 global MCP tools。
 
 ### 14.2 AgentSession 模块 (`agent_api.rs`)
 
-```rust
-pub struct AgentSession {
-    id: String,
-    workspace: PathBuf,
-    tool_executor: ToolExecutor,
-    llm_client: LlmClient,
-    skill_registry: SkillRegistry,
-}
-
-impl AgentSession {
-    // 发送消息
-    pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult>;
-    
-    // 流式事件
-    pub async fn stream(&self, prompt: &str, history: Option<&[Message]>) -> Result<EventStream>;
-
-    // 直接工具调用
-    pub async fn tool(&self, name: &str, args: Value) -> Result<ToolCallResult>;
-}
-```
+`AgentSession` 暴露异步 `send`、`stream` 与 direct tool call。Conversation
+operation 使用 fail-fast single-flight；发生 overlap 时返回 `SessionBusy`。每个 run
+通过同一个 invocation context 传递 identity、cancellation、event 与 governance。
+SDK event 投影稳定、无损的 `EventEnvelopeV1` wire shape。
 
 ### 14.3 Tool 模块 (`tools/`)
 

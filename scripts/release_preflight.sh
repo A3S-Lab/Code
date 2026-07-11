@@ -14,44 +14,43 @@ done
 
 cd "$WORKSPACE"
 
-echo "[1/13] Checking patch hygiene"
+echo "[1/12] Checking patch hygiene"
 git diff --check
 
-echo "[2/13] Checking release version consistency"
+echo "[2/12] Checking release version consistency"
 scripts/check_release_versions.sh
 
-echo "[3/13] Checking formatting"
+echo "[3/12] Checking formatting"
 cargo fmt --all --check
 
-echo "[4/13] Checking SDK API alignment"
+echo "[4/12] Checking SDK API alignment"
+node scripts/generate_event_protocol_artifacts.mjs --check
 node scripts/sdk_api_alignment_check.mjs
+node sdk/node/scripts/patch-loader.mjs --check
 
-echo "[5/13] Running core library tests"
-cargo test -p a3s-code-core --lib
+echo "[5/12] Running default Rust test suite"
+cargo test --workspace
 
-echo "[6/13] Running core integration tests"
-cargo test -p a3s-code-core --tests
+echo "[6/12] Running feature-gated library tests"
+cargo test --workspace --all-features --lib
 
-echo "[7/13] Running AHP feature tests"
-cargo test -p a3s-code-core --features ahp --test test_ahp_idle_with_llm
-
-echo "[8/13] Running Node SDK smoke tests"
+echo "[7/12] Running Node SDK smoke tests"
 (
   unset A3S_CONFIG_FILE A3S_OPENAI_API_KEY A3S_OPENAI_BASE_URL MINIMAX_API_KEY MINIMAX_BASE_URL
   cd sdk/node && npm test && npm run test:helpers
 )
 
-echo "[9/13] Type-checking Node examples"
+echo "[8/12] Type-checking Node examples"
 (cd sdk/node/examples && npm run typecheck)
 
-echo "[10/13] Compiling Python SDK shim"
+echo "[9/12] Compiling Python SDK shim"
 PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/private/tmp/a3s-code-pycache}" \
   python3 -m compileall sdk/python/python >/dev/null
 
-echo "[11/13] Checking ACL env injection dry run"
+echo "[10/12] Checking ACL env injection dry run"
 scripts/real_config_env_integration.sh --dry-run
 
-echo "[12/13] Checking real-provider ACL env smoke availability"
+echo "[11/12] Checking real-provider ACL env smoke availability"
 CONFIG_FILE="${A3S_CONFIG_FILE:-$CONFIG_ROOT/.a3s/config.acl}"
 CONFIG_HAS_LITERAL_OPENAI_CREDS=0
 if [ -f "$CONFIG_FILE" ]; then
@@ -74,20 +73,27 @@ PY
   )"
 fi
 
-if [ -n "${A3S_OPENAI_API_KEY:-${MINIMAX_API_KEY:-}}" ] && [ -n "${A3S_OPENAI_BASE_URL:-${MINIMAX_BASE_URL:-}}" ]; then
+if [ "${SKIP_REAL_PROVIDER:-0}" = "1" ]; then
+  if [ "${REQUIRE_REAL_PROVIDER:-0}" = "1" ]; then
+    echo "SKIP_REAL_PROVIDER and REQUIRE_REAL_PROVIDER cannot both be enabled" >&2
+    exit 2
+  fi
+  echo "skipped real-provider smoke by explicit SKIP_REAL_PROVIDER=1" >&2
+  echo "[12/12] Skipping SDK real-provider smoke"
+elif [ -n "${A3S_OPENAI_API_KEY:-${MINIMAX_API_KEY:-}}" ] && [ -n "${A3S_OPENAI_BASE_URL:-${MINIMAX_BASE_URL:-}}" ]; then
   scripts/real_config_env_integration.sh
-  echo "[13/13] Running SDK real-provider smoke"
+  echo "[12/12] Running SDK real-provider smoke"
   scripts/sdk_real_config_env_integration.sh
 elif [ "$CONFIG_HAS_LITERAL_OPENAI_CREDS" = "1" ]; then
   scripts/real_config_env_integration.sh
-  echo "[13/13] Running SDK real-provider smoke"
+  echo "[12/12] Running SDK real-provider smoke"
   scripts/sdk_real_config_env_integration.sh
 elif [ "${REQUIRE_REAL_PROVIDER:-0}" = "1" ]; then
   echo "missing A3S_OPENAI_* / MINIMAX_* variables or literal openai credentials in config; real-provider smoke is required" >&2
   exit 2
 else
   echo "skipped real-provider smoke; inject A3S_OPENAI_*, MINIMAX_*, or literal openai config credentials before tagging" >&2
-  echo "[13/13] Skipping SDK real-provider smoke"
+  echo "[12/12] Skipping SDK real-provider smoke"
 fi
 
 echo "release preflight completed"

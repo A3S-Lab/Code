@@ -103,6 +103,7 @@ mod tests {
             output: "o".to_string(),
             success: true,
             structured: None,
+            source_anchors: Vec::new(),
         }
     }
 

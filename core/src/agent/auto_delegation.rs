@@ -3,6 +3,7 @@ use crate::subagent::{AgentDefinition, AgentRegistry};
 use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 struct AutoDelegationTask {
@@ -29,6 +30,7 @@ impl AgentLoop {
         prompt: &str,
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &CancellationToken,
     ) -> Result<Option<AutoDelegationOutcome>> {
         let Some(plan) = self.build_auto_delegation_plan(prompt) else {
             return Ok(None);
@@ -48,7 +50,7 @@ impl AgentLoop {
         };
 
         let (output, _exit_code, is_error, metadata) = self
-            .execute_delegated_plan_tool(tool_name, &args, session_id, event_tx)
+            .execute_delegated_plan_tool(tool_name, &args, session_id, event_tx, cancel_token)
             .await;
 
         let envelope = json!({

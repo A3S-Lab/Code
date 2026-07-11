@@ -181,18 +181,7 @@ pub struct ConditionalHook {
 
 # Chapter 6: Security Hardening
 
-## 6.1 AHP Integration
-
-```rust
-pub struct AHPConfig {
-    enabled: bool,
-    harness_endpoint: String,
-    timeout: Duration,
-    retry_policy: RetryPolicy,
-}
-```
-
-## 6.2 Sandboxing
+## 6.1 Sandboxing
 
 ```rust
 // 2.0 exposes sandboxing through a concrete BashSandbox handle.

@@ -12,6 +12,7 @@ pub(crate) mod conformance;
 mod error;
 mod local;
 mod manifest;
+mod path;
 mod remote_git;
 #[cfg(feature = "s3")]
 mod s3;
@@ -22,14 +23,20 @@ pub use manifest::{
     scan_workspace_files, LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifest,
     LocalWorkspaceManifestSnapshot, ManifestWorkspaceBackend, RecentWorkspaceFile,
 };
+pub(crate) use path::validate_relative_pattern;
+pub use path::VirtualPathResolver;
+use path::{
+    default_path_input, escape_control_chars_for_display, has_windows_path_prefix,
+    normalize_relative_path, pathbuf_to_workspace_path,
+};
 pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict};
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Identity and display metadata for a workspace.
@@ -192,6 +199,15 @@ pub struct WorkspaceGrepResult {
     pub match_count: usize,
     pub file_count: usize,
     pub truncated: bool,
+}
+
+/// Grep result plus structured source evidence when supplied by a backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceGrepOutcome {
+    pub result: WorkspaceGrepResult,
+    /// Distinct paths that contributed rendered match lines, in result order.
+    /// `None` denotes a legacy/custom backend with display output only.
+    pub matched_paths: Option<Vec<WorkspacePath>>,
 }
 
 /// Repository status returned by a workspace Git provider.
@@ -426,6 +442,21 @@ pub trait WorkspaceCommandRunner: Send + Sync {
 pub trait WorkspaceSearch: Send + Sync {
     async fn glob(&self, request: WorkspaceGlobRequest) -> Result<WorkspaceGlobResult>;
     async fn grep(&self, request: WorkspaceGrepRequest) -> Result<WorkspaceGrepResult>;
+
+    /// Run grep with structured source paths when the backend can provide them.
+    ///
+    /// The default preserves compatibility for custom backends implementing
+    /// only [`Self::grep`]. Callers must treat its display output as untrusted.
+    async fn grep_with_sources(
+        &self,
+        request: WorkspaceGrepRequest,
+    ) -> Result<WorkspaceGrepOutcome> {
+        let result = self.grep(request).await?;
+        Ok(WorkspaceGrepOutcome {
+            result,
+            matched_paths: None,
+        })
+    }
 }
 
 /// Core Git operations supported by virtually every workspace Git backend.
@@ -926,354 +957,6 @@ impl WorkspaceServicesBuilder {
     }
 }
 
-/// Lexical resolver suitable for virtual/browser/DFS workspaces.
-#[derive(Debug, Default)]
-pub struct VirtualPathResolver;
-
-impl WorkspacePathResolver for VirtualPathResolver {
-    fn normalize(&self, input: &str) -> Result<WorkspacePath> {
-        normalize_virtual_path(input)
-    }
-}
-
-fn normalize_virtual_path(input: &str) -> Result<WorkspacePath> {
-    let input = default_path_input(input);
-    if has_windows_path_prefix(input) {
-        bail!("Absolute paths are not supported by this workspace backend");
-    }
-
-    let normalized_input = input.replace('\\', "/");
-    let path = Path::new(&normalized_input);
-    if path.is_absolute() {
-        bail!("Absolute paths are not supported by this workspace backend");
-    }
-
-    let relative = normalize_relative_path(path)?;
-    Ok(pathbuf_to_workspace_path(&relative))
-}
-
-fn default_path_input(input: &str) -> &str {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        "."
-    } else {
-        trimmed
-    }
-}
-
-fn has_windows_path_prefix(input: &str) -> bool {
-    let bytes = input.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        return true;
-    }
-
-    input.starts_with("\\\\") || input.starts_with("//")
-}
-
-pub(crate) fn validate_relative_pattern(pattern: &str, label: &str) -> Result<()> {
-    let pattern = pattern.trim();
-    if pattern.is_empty() {
-        bail!("{label} cannot be empty");
-    }
-    if has_windows_path_prefix(pattern) || Path::new(pattern).is_absolute() {
-        bail!("{label} must be relative to the workspace");
-    }
-
-    let normalized = pattern.replace('\\', "/");
-    if normalized.split('/').any(|component| component == "..") {
-        bail!("{label} must not contain parent directory traversal");
-    }
-
-    Ok(())
-}
-
-fn normalize_relative_path(path: &Path) -> Result<PathBuf> {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(part) => out.push(part),
-            Component::ParentDir => {
-                if !out.pop() {
-                    bail!("Workspace boundary violation: path escapes workspace");
-                }
-            }
-            Component::RootDir | Component::Prefix(_) => {
-                bail!("Absolute paths are not supported by this workspace backend");
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn pathbuf_to_workspace_path(path: &Path) -> WorkspacePath {
-    let display = path.to_string_lossy().replace('\\', "/");
-    WorkspacePath::from_normalized(display)
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn virtual_resolver_normalizes_relative_paths() {
-        let resolver = VirtualPathResolver;
-        let path = resolver.normalize("./src/../README.md").unwrap();
-        assert_eq!(path.as_str(), "README.md");
-    }
-
-    #[test]
-    fn virtual_resolver_normalizes_backslash_separators() {
-        let resolver = VirtualPathResolver;
-        let path = resolver.normalize(r"src\main.rs").unwrap();
-        assert_eq!(path.as_str(), "src/main.rs");
-    }
-
-    #[test]
-    fn virtual_resolver_rejects_escape() {
-        let resolver = VirtualPathResolver;
-        let err = resolver.normalize("../secret.txt").unwrap_err();
-        assert!(err.to_string().contains("escapes workspace"));
-    }
-
-    #[test]
-    fn virtual_resolver_rejects_backslash_escape() {
-        let resolver = VirtualPathResolver;
-        let err = resolver.normalize(r"..\secret.txt").unwrap_err();
-        assert!(err.to_string().contains("escapes workspace"));
-    }
-
-    #[test]
-    fn virtual_resolver_rejects_absolute_paths() {
-        let resolver = VirtualPathResolver;
-        let err = resolver.normalize("/tmp/secret.txt").unwrap_err();
-        assert!(err.to_string().contains("Absolute paths"));
-    }
-
-    #[test]
-    fn virtual_resolver_rejects_windows_absolute_paths() {
-        let resolver = VirtualPathResolver;
-
-        let drive_err = resolver.normalize(r"C:\Users\secret.txt").unwrap_err();
-        assert!(drive_err.to_string().contains("Absolute paths"));
-
-        let unc_err = resolver
-            .normalize(r"\\server\share\secret.txt")
-            .unwrap_err();
-        assert!(unc_err.to_string().contains("Absolute paths"));
-    }
-
-    #[test]
-    fn workspace_services_disable_exec_without_runner() {
-        struct EmptyFs;
-
-        #[async_trait]
-        impl WorkspaceFileSystem for EmptyFs {
-            async fn read_text(&self, _path: &WorkspacePath) -> WorkspaceResult<String> {
-                Err(WorkspaceError::Unsupported("not implemented".into()))
-            }
-
-            async fn write_text(
-                &self,
-                _path: &WorkspacePath,
-                _content: &str,
-            ) -> WorkspaceResult<WorkspaceWriteOutcome> {
-                Err(WorkspaceError::Unsupported("not implemented".into()))
-            }
-
-            async fn list_dir(
-                &self,
-                _path: &WorkspacePath,
-            ) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
-                Err(WorkspaceError::Unsupported("not implemented".into()))
-            }
-        }
-
-        let fs_backend: Arc<dyn WorkspaceFileSystem> = Arc::new(EmptyFs);
-        let services = WorkspaceServices::builder(
-            WorkspaceRef::new("virtual", "virtual://workspace"),
-            fs_backend,
-        )
-        .capabilities(WorkspaceCapabilities {
-            exec: true,
-            ..WorkspaceCapabilities::read_write()
-        })
-        .build();
-
-        assert!(!services.capabilities().exec);
-        assert!(services.command_runner().is_none());
-    }
-
-    // --- helpers for fs_ext / read_for_edit / write_for_edit coverage ---
-    //
-    // The mock backend used here is `InMemoryFileSystem` from the
-    // `workspace::conformance` module — the same fixture the conformance
-    // suite runs against, so any drift between the test fixture and the
-    // contract documented for new backends shows up immediately. Tests
-    // capture the auto-generated version at read time rather than
-    // hard-coding it, which keeps assertions decoupled from the version
-    // scheme of the mock.
-
-    use super::conformance::InMemoryFileSystem;
-
-    fn versioned_services(fs: Arc<InMemoryFileSystem>) -> Arc<WorkspaceServices> {
-        let fs_ws: Arc<dyn WorkspaceFileSystem> = fs.clone();
-        let fs_ext: Arc<dyn WorkspaceFileSystemExt> = fs;
-        WorkspaceServices::builder(WorkspaceRef::new("mem", "mem://ws"), fs_ws)
-            .file_system_ext(fs_ext)
-            .build()
-    }
-
-    /// Seed a file into the mock and return its current version, so callers
-    /// can use it as an expected value without hardcoding the version
-    /// scheme.
-    async fn seed(fs: &Arc<InMemoryFileSystem>, path: &str, content: &str) -> String {
-        use super::WorkspaceFileSystemExt;
-        let ws_path = WorkspacePath::from_normalized(path);
-        (*fs).write_text(&ws_path, content).await.unwrap();
-        let (_, version) = (*fs).read_text_with_version(&ws_path).await.unwrap();
-        version
-    }
-
-    #[test]
-    fn version_conflict_is_downcastable_from_anyhow() {
-        let e: anyhow::Error = anyhow::Error::new(WorkspaceVersionConflict {
-            path: "a/b.txt".to_string(),
-            expected: "etag-1".to_string(),
-            actual: Some("etag-2".to_string()),
-        });
-        let c = e.downcast_ref::<WorkspaceVersionConflict>().unwrap();
-        assert_eq!(c.path, "a/b.txt");
-        assert_eq!(c.expected, "etag-1");
-        assert_eq!(c.actual.as_deref(), Some("etag-2"));
-        // Display must include the path and both versions so logs are useful.
-        let msg = e.to_string();
-        assert!(msg.contains("a/b.txt"), "msg: {msg}");
-        assert!(msg.contains("etag-1"), "msg: {msg}");
-    }
-
-    #[tokio::test]
-    async fn read_for_edit_returns_version_when_ext_available() {
-        let fs = Arc::new(InMemoryFileSystem::new());
-        let seeded_version = seed(&fs, "notes.md", "hello").await;
-        let services = versioned_services(fs);
-
-        let path = WorkspacePath::from_normalized("notes.md");
-        let (content, version) = services.read_for_edit(&path).await.unwrap();
-        assert_eq!(content, "hello");
-        assert_eq!(
-            version.as_deref(),
-            Some(seeded_version.as_str()),
-            "read_for_edit must return the version produced by the prior write"
-        );
-    }
-
-    #[tokio::test]
-    async fn read_for_edit_returns_no_version_when_ext_absent() {
-        struct PlainFs;
-        #[async_trait]
-        impl WorkspaceFileSystem for PlainFs {
-            async fn read_text(&self, _path: &WorkspacePath) -> WorkspaceResult<String> {
-                Ok("plain".to_string())
-            }
-            async fn write_text(
-                &self,
-                _path: &WorkspacePath,
-                content: &str,
-            ) -> WorkspaceResult<WorkspaceWriteOutcome> {
-                Ok(WorkspaceWriteOutcome {
-                    bytes: content.len(),
-                    lines: content.lines().count(),
-                })
-            }
-            async fn list_dir(
-                &self,
-                _path: &WorkspacePath,
-            ) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
-                Ok(Vec::new())
-            }
-        }
-        let fs: Arc<dyn WorkspaceFileSystem> = Arc::new(PlainFs);
-        let services =
-            WorkspaceServices::builder(WorkspaceRef::new("plain", "plain://ws"), fs).build();
-
-        let path = WorkspacePath::from_normalized("any.txt");
-        let (content, version) = services.read_for_edit(&path).await.unwrap();
-        assert_eq!(content, "plain");
-        assert!(version.is_none());
-        assert!(services.fs_ext().is_none());
-    }
-
-    #[tokio::test]
-    async fn write_for_edit_succeeds_on_matching_version() {
-        let fs = Arc::new(InMemoryFileSystem::new());
-        seed(&fs, "doc.md", "alpha").await;
-        let services = versioned_services(fs.clone());
-        let path = WorkspacePath::from_normalized("doc.md");
-
-        let (content, version) = services.read_for_edit(&path).await.unwrap();
-        assert_eq!(content, "alpha");
-
-        services
-            .write_for_edit(&path, "beta", version.as_deref())
-            .await
-            .expect("write should succeed with matching version");
-
-        let current = fs.read_text(&path).await.unwrap();
-        assert_eq!(current, "beta");
-    }
-
-    #[tokio::test]
-    async fn write_for_edit_surfaces_conflict_when_version_changed() {
-        let fs = Arc::new(InMemoryFileSystem::new());
-        let seeded_version = seed(&fs, "doc.md", "alpha").await;
-        let services = versioned_services(fs.clone());
-        let path = WorkspacePath::from_normalized("doc.md");
-
-        let (_, version) = services.read_for_edit(&path).await.unwrap();
-        // Simulate a concurrent overwrite — a real "second writer" doing
-        // exactly what the conflict protection is meant to catch.
-        fs.write_text(&path, "from-concurrent-writer")
-            .await
-            .unwrap();
-
-        let err = services
-            .write_for_edit(&path, "beta", version.as_deref())
-            .await
-            .expect_err("write should reject with conflict");
-        let WorkspaceError::VersionConflict(conflict) = err else {
-            panic!("expected WorkspaceError::VersionConflict, got {err:?}");
-        };
-        assert_eq!(conflict.path, "doc.md");
-        assert_eq!(conflict.expected, seeded_version);
-        // We don't pin the actual version's exact value — only that the
-        // backend supplies one and that it differs from what we expected.
-        let actual = conflict
-            .actual
-            .as_deref()
-            .expect("conflict must report the current version");
-        assert_ne!(actual, seeded_version);
-    }
-
-    #[tokio::test]
-    async fn write_for_edit_falls_back_to_plain_write_when_version_is_none() {
-        // Even with fs_ext present, passing version=None must route through
-        // unconditional write_text (e.g. for fresh-create paths).
-        let fs = Arc::new(InMemoryFileSystem::new());
-        seed(&fs, "doc.md", "alpha").await;
-        let services = versioned_services(fs.clone());
-        let path = WorkspacePath::from_normalized("doc.md");
-
-        // Concurrent overwriter, but caller did not request CAS semantics:
-        fs.write_text(&path, "from-concurrent-writer")
-            .await
-            .unwrap();
-
-        services
-            .write_for_edit(&path, "beta", None)
-            .await
-            .expect("plain write should not check version");
-        let current = fs.read_text(&path).await.unwrap();
-        assert_eq!(current, "beta");
-    }
-}
+#[path = "tests.rs"]
+mod tests;

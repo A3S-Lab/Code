@@ -125,9 +125,9 @@ async fn build_session(
         None => false,
     };
     let session = if resume {
-        agent.resume_session(&session_id, opts)?
+        agent.resume_session_async(&session_id, opts).await?
     } else {
-        agent.session(workspace, Some(opts))?
+        agent.session_async(workspace, Some(opts)).await?
     };
 
     // Install the agent dir's tools/ (MCP servers + sandboxed scripts) into the
@@ -224,7 +224,8 @@ providers "anthropic" {
             .with_session_store(store.clone())
             .with_session_id("schedule:tick");
         agent
-            .session("/tmp/ws", Some(seed_opts))
+            .session_async("/tmp/ws", Some(seed_opts))
+            .await
             .unwrap()
             .save()
             .await

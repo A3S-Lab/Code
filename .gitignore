@@ -41,6 +41,7 @@ agent.local.hcl
 
 # Logs
 logs/
+/.a3s/workflow/
 
 # Git Worktrees
 .worktrees/

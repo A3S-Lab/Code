@@ -50,7 +50,8 @@ async fn auto_delegation_triggers_builtin_parallel_task_with_real_provider() {
         .with_auto_delegation(auto);
 
     let session = agent
-        .session(workspace.path().display().to_string(), Some(opts))
+        .session_async(workspace.path().display().to_string(), Some(opts))
+        .await
         .expect("session");
 
     let prompt = "Search and inspect this tiny smoke-test workspace, plan the approach, \
@@ -65,11 +66,11 @@ async fn auto_delegation_triggers_builtin_parallel_task_with_real_provider() {
 
             while let Some(event) = rx.recv().await {
                 match event {
-                    AgentEvent::ToolStart { name, .. } if name == "parallel_task" => {
+                    AgentEvent::ToolExecutionStart { name, .. } if name == "parallel_task" => {
                         parallel_task_starts += 1;
                         return (parallel_task_starts, task_starts);
                     }
-                    AgentEvent::ToolStart { name, .. } if name == "task" => {
+                    AgentEvent::ToolExecutionStart { name, .. } if name == "task" => {
                         task_starts += 1;
                     }
                     AgentEvent::Error { message } => {
@@ -119,7 +120,8 @@ async fn builtin_subagents_execute_with_real_provider() {
     .expect("write smoke file");
 
     let session = agent
-        .session(workspace.path().display().to_string(), None)
+        .session_async(workspace.path().display().to_string(), None)
+        .await
         .expect("session");
 
     let tasks = serde_json::json!({

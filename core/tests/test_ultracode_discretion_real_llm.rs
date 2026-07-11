@@ -87,10 +87,11 @@ async fn ultracode_trivial_greeting_does_not_plan_or_fan_out() {
     std::fs::write(workspace.path().join("billing.rs"), "// billing module\n").unwrap();
 
     let session = agent
-        .session(
+        .session_async(
             workspace.path().display().to_string(),
             Some(ultracode_opts()),
         )
+        .await
         .expect("session");
 
     let (mut rx, handle) = session.stream("hi", None).await.expect("stream starts");
@@ -104,7 +105,9 @@ async fn ultracode_trivial_greeting_does_not_plan_or_fan_out() {
             match event {
                 AgentEvent::PlanningStart { .. } => planned = true,
                 AgentEvent::SubagentStart { .. } => fanned_out = true,
-                AgentEvent::ToolStart { name, .. } if name == "parallel_task" || name == "task" => {
+                AgentEvent::ToolExecutionStart { name, .. }
+                    if name == "parallel_task" || name == "task" =>
+                {
                     fanned_out = true;
                 }
                 AgentEvent::TextDelta { text } if !text.trim().is_empty() => got_text = true,
@@ -153,10 +156,11 @@ async fn ultracode_parallel_task_still_fans_out() {
     }
 
     let session = agent
-        .session(
+        .session_async(
             workspace.path().display().to_string(),
             Some(ultracode_opts()),
         )
+        .await
         .expect("session");
 
     let prompt = "These three modules are independent. In parallel, separately inspect \
@@ -168,7 +172,9 @@ async fn ultracode_parallel_task_still_fans_out() {
     let fanned_out = tokio::time::timeout(Duration::from_secs(300), async {
         while let Some(event) = rx.recv().await {
             match event {
-                AgentEvent::ToolStart { name, .. } if name == "parallel_task" => return true,
+                AgentEvent::ToolExecutionStart { name, .. } if name == "parallel_task" => {
+                    return true;
+                }
                 AgentEvent::SubagentStart { .. } => return true,
                 AgentEvent::End { .. } => return false,
                 AgentEvent::Error { message } => panic!("stream error: {message}"),
@@ -205,7 +211,8 @@ async fn ultracode_parallel_fans_out_runs_and_completes() {
         std::fs::write(ws.path().join(n), b).unwrap();
     }
     let session = agent
-        .session(ws.path().display().to_string(), Some(ultracode_opts()))
+        .session_async(ws.path().display().to_string(), Some(ultracode_opts()))
+        .await
         .unwrap();
     let prompt = "These three files are independent: auth.rs, billing.rs, search.rs. In parallel, \
         inspect each separately and give a one-line summary of each. Investigate them concurrently, \
@@ -224,7 +231,7 @@ async fn ultracode_parallel_fans_out_runs_and_completes() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(360), async {
         while let Some(ev) = rx.recv().await {
             match ev {
-                AgentEvent::ToolStart { name, .. } if name == "parallel_task" => {
+                AgentEvent::ToolExecutionStart { name, .. } if name == "parallel_task" => {
                     parallel_calls += 1
                 }
                 AgentEvent::ToolEnd { name, output, .. } if name == "parallel_task" => {

@@ -7,21 +7,21 @@ use super::{safe_canonicalize, Agent, AgentSession, SessionOptions};
 use crate::agent::AgentConfig;
 use crate::commands::CommandRegistry;
 use crate::error::Result;
-use crate::llm::LlmClient;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use super::capabilities::{
-    build_session_capabilities, register_skill_capability, SessionCapabilityInput,
+    build_session_capabilities, register_skill_capability, SessionCapabilities,
+    SessionCapabilityInput,
 };
-use super::session_config::{
-    resolve_auto_delegation_config, resolve_session_memory, resolve_session_store,
+use super::session_config::{resolve_auto_delegation_config, ResolvedSessionConfig};
+use super::session_runtime::{
+    build_session_runtime, build_session_runtime_sync, SessionRuntime, SessionRuntimeInput,
 };
-use super::session_runtime::{build_session_runtime, SessionRuntimeInput};
 
 pub(super) fn prepare_session_options(agent: &Agent, opts: SessionOptions) -> SessionOptions {
-    let mut opts = merge_mcp_managers(agent, opts);
+    let mut opts = opts;
     if opts.session_id.is_none() {
         // Use the host-provided ID generator if one was supplied via
         // SessionOptions — this is the entry point that enables
@@ -35,77 +35,72 @@ pub(super) fn prepare_session_options(agent: &Agent, opts: SessionOptions) -> Se
     opts
 }
 
-fn merge_mcp_managers(agent: &Agent, opts: SessionOptions) -> SessionOptions {
-    match (&agent.global_mcp, &opts.mcp_manager) {
-        (Some(global), Some(session)) => {
-            merge_session_mcp_into_global(global, session);
-            SessionOptions {
-                mcp_manager: Some(Arc::clone(global)),
-                ..opts
-            }
-        }
-        (Some(global), None) => SessionOptions {
-            mcp_manager: Some(Arc::clone(global)),
-            ..opts
-        },
-        _ => opts,
-    }
-}
-
-fn merge_session_mcp_into_global(
-    global: &Arc<crate::mcp::manager::McpManager>,
-    session: &Arc<crate::mcp::manager::McpManager>,
-) {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            let global = Arc::clone(global);
-            let session = Arc::clone(session);
-            tokio::task::block_in_place(|| {
-                handle.block_on(async move {
-                    for config in session.all_configs().await {
-                        let name = config.name.clone();
-                        global.register_server(config).await;
-                        if let Err(e) = global.connect(&name).await {
-                            tracing::warn!(
-                                server = %name,
-                                error = %e,
-                                "Failed to connect session-level MCP server - skipping"
-                            );
-                        }
-                    }
-                })
-            });
-        }
-        Err(_) => {
-            tracing::warn!(
-                "No async runtime available to merge session-level MCP servers \
-                 into global manager - session MCP servers will not be available"
-            );
-        }
-    }
-}
-
-pub(super) fn build_agent_session(
+pub(super) async fn build_agent_session(
     agent: &Agent,
     workspace: String,
-    llm_client: Arc<dyn LlmClient>,
-    opts: &SessionOptions,
+    resolved: ResolvedSessionConfig,
 ) -> Result<AgentSession> {
     let canonical = safe_canonicalize(Path::new(&workspace));
+    let capabilities = build_resolved_capabilities(agent, &canonical, &resolved);
+    let session_id = resolved_session_id(&resolved);
+    let runtime = build_session_runtime(SessionRuntimeInput {
+        code_config: &agent.code_config,
+        workspace: &canonical,
+        session_id: &session_id,
+        opts: &resolved.options,
+        tool_executor: Arc::clone(&capabilities.tool_executor),
+    })
+    .await?;
+    finish_agent_session(agent, canonical, resolved, capabilities, runtime)
+}
 
-    let capabilities = build_session_capabilities(SessionCapabilityInput {
+pub(super) fn build_agent_session_sync(
+    agent: &Agent,
+    workspace: String,
+    resolved: ResolvedSessionConfig,
+) -> Result<AgentSession> {
+    let canonical = safe_canonicalize(Path::new(&workspace));
+    let capabilities = build_resolved_capabilities(agent, &canonical, &resolved);
+    let session_id = resolved_session_id(&resolved);
+    let runtime = build_session_runtime_sync(SessionRuntimeInput {
+        code_config: &agent.code_config,
+        workspace: &canonical,
+        session_id: &session_id,
+        opts: &resolved.options,
+        tool_executor: Arc::clone(&capabilities.tool_executor),
+    });
+    finish_agent_session(agent, canonical, resolved, capabilities, runtime)
+}
+
+fn resolved_session_id(resolved: &ResolvedSessionConfig) -> String {
+    resolved.session_id.clone()
+}
+
+fn build_resolved_capabilities(
+    agent: &Agent,
+    canonical: &Path,
+    resolved: &ResolvedSessionConfig,
+) -> SessionCapabilities {
+    let opts = &resolved.options;
+    build_session_capabilities(SessionCapabilityInput {
         code_config: &agent.code_config,
         base_config: &agent.config,
-        workspace: &canonical,
-        llm_client: Arc::clone(&llm_client),
+        workspace: canonical,
+        llm_client: Arc::clone(&resolved.llm_client),
         opts,
-        global_mcp: agent.global_mcp.as_ref(),
-        cached_global_mcp_tools: agent
-            .global_mcp_tools
-            .lock()
-            .expect("global_mcp_tools lock poisoned")
-            .clone(),
-    });
+        mcp_sources: resolved.mcp_sources.clone(),
+    })
+}
+
+fn finish_agent_session(
+    agent: &Agent,
+    canonical: std::path::PathBuf,
+    resolved: ResolvedSessionConfig,
+    capabilities: SessionCapabilities,
+    runtime: SessionRuntime,
+) -> Result<AgentSession> {
+    let opts = &resolved.options;
+    let llm_client = Arc::clone(&resolved.llm_client);
     let tool_executor = capabilities.tool_executor;
     let trace_sink = capabilities.trace_sink;
     let agent_registry = capabilities.agent_registry;
@@ -119,31 +114,13 @@ pub(super) fn build_agent_session(
         .clone()
         .unwrap_or_else(|| agent.config.prompt_slots.clone());
 
-    let session_id = opts
-        .session_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let session_id = resolved.session_id.clone();
 
-    let runtime = build_session_runtime(SessionRuntimeInput {
-        code_config: &agent.code_config,
-        workspace: &canonical,
-        session_id: &session_id,
-        opts,
-        tool_executor: Arc::clone(&tool_executor),
-    });
-
-    let resolved_memory = resolve_session_memory(&agent.code_config, opts, &canonical);
-    let memory = Some(resolved_memory.memory);
-    let init_warning = resolved_memory.init_warning;
+    let memory = Some(Arc::clone(&resolved.memory));
 
     let base = agent.config.clone();
     let auto_delegation = resolve_auto_delegation_config(&agent.code_config, opts);
-    let rl_trajectory_config = match opts.rl_trajectory.clone() {
-        Some(config) => Some(config),
-        None => crate::rl_trajectory::RlTrajectoryConfig::from_env()?,
-    };
-    let rl_trajectory_recorder =
-        crate::rl_trajectory::RlTrajectoryRecorder::from_config(rl_trajectory_config)?;
+    let rl_trajectory_recorder = resolved.rl_trajectory_recorder.clone();
     let config = AgentConfig {
         prompt_slots,
         tools: tool_defs,
@@ -152,7 +129,7 @@ pub(super) fn build_agent_session(
         permission_policy: opts.permission_policy.clone(),
         confirmation_manager: runtime.confirmation_manager.clone(),
         confirmation_policy: opts.confirmation_policy.clone(),
-        queue_config: opts.queue_config.clone(),
+        queue_config: resolved.queue_config.clone(),
         context_providers,
         planning_mode: opts.planning_mode,
         goal_tracking: opts.goal_tracking,
@@ -160,15 +137,11 @@ pub(super) fn build_agent_session(
         enforce_active_skill_tool_restrictions: opts
             .enforce_active_skill_tool_restrictions
             .unwrap_or(base.enforce_active_skill_tool_restrictions),
-        max_parse_retries: opts.max_parse_retries.unwrap_or(base.max_parse_retries),
-        tool_timeout_ms: opts.tool_timeout_ms.or(base.tool_timeout_ms),
-        llm_api_timeout_ms: opts.llm_api_timeout_ms.or(base.llm_api_timeout_ms),
-        circuit_breaker_threshold: opts
-            .circuit_breaker_threshold
-            .unwrap_or(base.circuit_breaker_threshold),
-        duplicate_tool_call_threshold: opts
-            .duplicate_tool_call_threshold
-            .unwrap_or(base.duplicate_tool_call_threshold),
+        max_parse_retries: resolved.limits.max_parse_retries,
+        tool_timeout_ms: resolved.limits.tool_timeout_ms,
+        llm_api_timeout_ms: resolved.limits.llm_api_timeout_ms,
+        circuit_breaker_threshold: resolved.limits.circuit_breaker_threshold,
+        duplicate_tool_call_threshold: resolved.limits.duplicate_tool_call_threshold,
         auto_compact: opts.auto_compact,
         auto_compact_threshold: opts
             .auto_compact_threshold
@@ -181,14 +154,11 @@ pub(super) fn build_agent_session(
         max_continuation_turns: opts
             .max_continuation_turns
             .unwrap_or(base.max_continuation_turns),
-        max_tool_rounds: opts.max_tool_rounds.unwrap_or(base.max_tool_rounds),
-        max_parallel_tasks: opts
-            .max_parallel_tasks
-            .unwrap_or(base.max_parallel_tasks)
-            .max(1),
+        max_tool_rounds: resolved.limits.max_tool_rounds,
+        max_parallel_tasks: resolved.limits.max_parallel_tasks,
         auto_delegation,
         agent_registry: Some(Arc::clone(&agent_registry)),
-        max_execution_time_ms: opts.max_execution_time_ms.or(base.max_execution_time_ms),
+        max_execution_time_ms: resolved.limits.max_execution_time_ms,
         budget_guard: opts.budget_guard.clone().or(base.budget_guard.clone()),
         rl_trajectory_recorder,
         host_env: opts
@@ -209,7 +179,12 @@ pub(super) fn build_agent_session(
 
     let command_queue = runtime.command_queue;
     let tool_context = runtime.tool_context;
-    let session_store = resolve_session_store(&agent.code_config, opts);
+    let session_store = resolved.session_store.clone();
+    let mcp_managers = resolved
+        .mcp_sources
+        .iter()
+        .map(|source| Arc::clone(&source.manager))
+        .collect();
     let command_registry = CommandRegistry::new();
 
     let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -217,10 +192,11 @@ pub(super) fn build_agent_session(
     let cancel_token = Arc::new(tokio::sync::Mutex::new(None));
     let current_run_id = Arc::new(tokio::sync::Mutex::new(None));
     let run_store = Arc::new({
-        let limits = opts.retention_limits;
-        crate::run::InMemoryRunStore::with_retention(
+        let limits = resolved.limits.retention;
+        crate::run::InMemoryRunStore::with_retention_limits(
             limits.and_then(|l| l.max_runs_retained),
             limits.and_then(|l| l.max_events_per_run),
+            limits.and_then(|l| l.max_event_bytes_per_run),
         )
     });
 
@@ -234,9 +210,15 @@ pub(super) fn build_agent_session(
         subagent_tasks: Arc::clone(&subagent_tasks),
         confirmation_manager: config.confirmation_manager.clone(),
         hook_executor: opts.hook_executor.clone(),
+        command_queue: command_queue.clone(),
+        mcp_manager: Arc::clone(&resolved.mcp_manager),
+        tool_executor: Arc::clone(&tool_executor),
+        extension_mutation: tokio::sync::Mutex::new(()),
+        immediate_extension_mutation: std::sync::Mutex::new(()),
+        mcp_tool_ownership: std::sync::Mutex::new(
+            super::session_extensions::SessionMcpToolOwnership::default(),
+        ),
     });
-
-    super::agent_sessions::register_session(agent, &close_handle);
 
     let session = AgentSession {
         llm_client,
@@ -247,23 +229,21 @@ pub(super) fn build_agent_session(
         workspace: canonical,
         session_id,
         history: Arc::new(RwLock::new(Vec::new())),
+        run_admission: Arc::new(super::run_admission::RunAdmission::default()),
         command_queue,
         session_store,
+        persistence_state: Arc::new(RwLock::new(
+            super::session_persistence::SessionPersistenceState::default(),
+        )),
         auto_save: opts.auto_save,
         hook_engine: Arc::new(crate::hooks::HookEngine::new()),
-        ahp_executor: opts.hook_executor.clone(),
-        init_warning,
+        hook_executor: opts.hook_executor.clone(),
+        init_warning: None,
         command_registry: std::sync::Mutex::new(command_registry),
-        model_name: opts
-            .model
-            .clone()
-            .or_else(|| agent.code_config.default_model.clone())
-            .unwrap_or_else(|| "unknown".to_string()),
-        mcp_manager: opts
-            .mcp_manager
-            .clone()
-            .or_else(|| agent.global_mcp.clone())
-            .unwrap_or_else(|| Arc::new(crate::mcp::manager::McpManager::new())),
+        model_name: resolved.model_name.clone(),
+        mcp_manager: Arc::clone(&resolved.mcp_manager),
+        inherited_mcp_managers: resolved.inherited_mcp_managers.clone(),
+        mcp_managers,
         agent_registry,
         cancel_token,
         current_run_id,

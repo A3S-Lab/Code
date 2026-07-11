@@ -2,10 +2,12 @@ use super::execution_state::ExecutionLoopState;
 use super::tool_result_runtime::{push_tool_result_message, NormalizedToolResult};
 use super::{AgentEvent, AgentLoop};
 use crate::llm::ToolCall;
+use crate::tools::ToolInvocation;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 impl AgentLoop {
     pub(super) async fn execute_parallel_write_batch(
@@ -13,6 +15,8 @@ impl AgentLoop {
         tool_calls: &[ToolCall],
         state: &mut ExecutionLoopState,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        session_id: Option<&str>,
+        cancel_token: &CancellationToken,
     ) {
         tracing::info!(
             count = tool_calls.len(),
@@ -21,20 +25,29 @@ impl AgentLoop {
         );
 
         let tool_calls = tool_calls.to_vec();
-        let tool_context = self.tool_context.clone();
-        let tool_executor = Arc::clone(&self.tool_executor);
+        let invoker = self.scoped_tool_invoker(session_id, event_tx);
+        let tool_context = self
+            .tool_context
+            .clone()
+            .with_cancellation(cancel_token.clone())
+            .with_tool_invoker(Arc::clone(&invoker));
         let results = crate::ordered_parallel::run_ordered_parallel_with_limit(
             tool_calls.clone(),
             self.config.max_parallel_tasks,
             {
                 let tool_context = tool_context.clone();
-                let tool_executor = Arc::clone(&tool_executor);
+                let invoker = Arc::clone(&invoker);
                 move |_index, tc| {
                     let ctx = tool_context.clone();
-                    let executor = Arc::clone(&tool_executor);
-                    let name = tc.name.clone();
-                    let args = tc.args.clone();
-                    async move { executor.execute_with_context(&name, &args, &ctx).await }
+                    let invoker = Arc::clone(&invoker);
+                    async move {
+                        invoker
+                            .invoke(
+                                ToolInvocation::agent(tc.id, tc.name, tc.args, Vec::new()),
+                                &ctx,
+                            )
+                            .await
+                    }
                 }
             },
         )
@@ -42,27 +55,24 @@ impl AgentLoop {
 
         for (tc, result) in tool_calls.iter().zip(results) {
             state.record_tool_call();
-            let execution_result = match result.output {
-                Ok(result) => result,
-                Err(error) => Err(anyhow::anyhow!("parallel tool execution failed: {}", error)),
+            let normalized = match result.output {
+                Ok(result) => NormalizedToolResult::from_tool_result(result),
+                Err(error) => NormalizedToolResult::from_execution(Err(anyhow::anyhow!(
+                    "parallel tool execution failed: {}",
+                    error
+                ))),
             };
-            let normalized = NormalizedToolResult::from_execution(execution_result);
             Self::collect_verification_report(
                 &mut state.verification_reports,
                 &normalized.metadata,
             );
-            self.track_tool_result(&tc.name, &tc.args, normalized.exit_code);
-
-            let output = if let Some(ref sp) = self.config.security_provider {
-                sp.sanitize_output(&normalized.output)
-            } else {
-                normalized.output.clone()
-            };
+            let output = normalized.output.clone();
 
             if let Some(tx) = event_tx {
                 tx.send(AgentEvent::ToolEnd {
                     id: tc.id.clone(),
                     name: tc.name.clone(),
+                    args: Some(tc.args.clone()),
                     output: output.clone(),
                     exit_code: normalized.exit_code,
                     metadata: normalized.metadata.clone(),
@@ -83,38 +93,13 @@ impl AgentLoop {
     }
 
     pub(super) fn can_run_parallel_write_batch(&self, tool_calls: &[ToolCall]) -> bool {
-        // The parallel fast path executes tools directly via the ToolExecutor
-        // (see `execute_parallel_write_batch`), bypassing `ToolSafetyGate`. It is
-        // only safe when the gate would unconditionally EXECUTE every call.
-        //
-        // Hooks and HITL confirmation make the decision stateful/interactive
-        // (pre-tool hooks have side effects; an `Ask` must round-trip to a
-        // human), so never fast-path when either is configured.
-        if self.config.hook_engine.is_some()
-            || self.config.confirmation_manager.is_some()
-            || tool_calls.len() <= 1
-        {
+        if tool_calls.len() <= 1 {
             return false;
         }
 
-        // Skill restrictions and permission checks live in `ToolSafetyGate`,
-        // which the parallel path skips entirely. Consult the gate itself (the
-        // single source of truth) and only fast-path when, for EVERY call, no
-        // active skill restriction forbids the tool AND the permission checker
-        // explicitly Allows it. A missing checker resolves to `Ask`, which with
-        // no confirmation manager is a Deny — so it correctly refuses here.
-        let gate = crate::safety_gate::ToolSafetyGate::new(&self.config);
-        let all_allowed = tool_calls.iter().all(|tc| {
-            gate.check_skill_restrictions(&tc.name).is_none()
-                && matches!(
-                    gate.permission_decision(&tc.name, &tc.args),
-                    crate::permissions::PermissionDecision::Allow
-                )
-        });
-        if !all_allowed {
-            return false;
-        }
-
+        // Governance is applied independently to every branch by ToolInvoker.
+        // This predicate is therefore limited to data-race safety: only known
+        // write operations targeting distinct paths may execute concurrently.
         if !tool_calls
             .iter()
             .all(|tc| is_parallel_safe_write(&tc.name, &tc.args))

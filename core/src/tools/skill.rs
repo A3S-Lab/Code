@@ -345,8 +345,23 @@ The skill's allowed-tools are granted during execution and revoked after complet
             .prompt
             .unwrap_or_else(|| format!("Execute the '{}' skill", skill.name));
 
-        // Execute the agent loop with skill permissions
-        let result = agent_loop.execute(&[], &prompt, None).await?;
+        // The skill is a child run, but it remains inside the owning run's
+        // cancellation and budget scope. The child AgentLoop wraps the raw
+        // provider with its own scoped LLM invoker, while the inherited token
+        // ensures parent cancellation reaches every provider/tool call.
+        let cancellation = ctx.cancellation_token();
+        let result = agent_loop
+            .execute_with_session(
+                &[],
+                &prompt,
+                ctx.session_id.as_deref(),
+                None,
+                Some(&cancellation),
+            )
+            .await?;
+        if cancellation.is_cancelled() {
+            anyhow::bail!("Skill '{}' cancelled by caller", skill.name);
+        }
 
         // Return the final response as tool output
         Ok(ToolOutput {
@@ -366,6 +381,7 @@ The skill's allowed-tools are granted during execution and revoked after complet
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::budget::{BudgetDecision, BudgetGuard};
     use crate::llm::{
         ContentBlock, LlmClient, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition,
     };
@@ -374,8 +390,11 @@ mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
-    use tokio::sync::mpsc;
+    use std::time::Duration;
+    use tokio::sync::{mpsc, Notify};
+    use tokio_util::sync::CancellationToken;
 
     struct MockLlmClient {
         responses: Mutex<Vec<LlmResponse>>,
@@ -435,6 +454,74 @@ mod tests {
         ) -> Result<mpsc::Receiver<StreamEvent>> {
             anyhow::bail!("streaming not used in SkillTool tests")
         }
+    }
+
+    #[derive(Default)]
+    struct SkillBudgetGuard {
+        checks: AtomicUsize,
+        records: AtomicUsize,
+        sessions: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl BudgetGuard for SkillBudgetGuard {
+        async fn check_before_llm(
+            &self,
+            session_id: &str,
+            _estimated_prompt_tokens: usize,
+        ) -> BudgetDecision {
+            self.checks.fetch_add(1, Ordering::SeqCst);
+            self.sessions.lock().unwrap().push(session_id.to_string());
+            BudgetDecision::Allow
+        }
+
+        async fn record_after_llm(&self, _session_id: &str, _usage: &TokenUsage) {
+            self.records.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct BlockingSkillClient {
+        started: Arc<Notify>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LlmClient for BlockingSkillClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.started.notify_one();
+            std::future::pending::<Result<LlmResponse>>().await
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: CancellationToken,
+        ) -> Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming not used in SkillTool cancellation tests")
+        }
+    }
+
+    fn test_skill_registry() -> Arc<SkillRegistry> {
+        let registry = Arc::new(SkillRegistry::new());
+        registry.register_unchecked(Arc::new(Skill {
+            name: "test-skill".to_string(),
+            description: "Run a focused skill".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Reply with the skill result.".to_string(),
+            tags: vec!["focus".to_string()],
+            version: None,
+        }));
+        registry
     }
 
     #[test]
@@ -731,6 +818,84 @@ mod tests {
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["skill_name"], "test-skill");
         assert_eq!(metadata["tool_calls"], 0);
+    }
+
+    #[tokio::test]
+    async fn skill_child_llm_call_uses_parent_session_budget_scope() {
+        use crate::prompts::PlanningMode;
+
+        let guard = Arc::new(SkillBudgetGuard::default());
+        let config = AgentConfig {
+            planning_mode: PlanningMode::Disabled,
+            continuation_enabled: false,
+            budget_guard: Some(Arc::clone(&guard) as Arc<dyn BudgetGuard>),
+            ..Default::default()
+        };
+        let tool = SkillTool::new(
+            test_skill_registry(),
+            Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+                "skill completed",
+            )])),
+            Arc::new(ToolExecutor::new("/tmp".to_string())),
+            config,
+        );
+        let ctx = ToolContext::new(PathBuf::from("/tmp")).with_session_id("parent-session");
+
+        let result = tool
+            .execute(&serde_json::json!({"skill_name": "test-skill"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(guard.checks.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.records.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            guard.sessions.lock().unwrap().as_slice(),
+            &["parent-session".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_child_llm_call_stops_on_parent_cancellation() {
+        use crate::prompts::PlanningMode;
+
+        let started = Arc::new(Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let tool = SkillTool::new(
+            test_skill_registry(),
+            Arc::new(BlockingSkillClient {
+                started: Arc::clone(&started),
+                calls: Arc::clone(&calls),
+            }),
+            Arc::new(ToolExecutor::new("/tmp".to_string())),
+            AgentConfig {
+                planning_mode: PlanningMode::Disabled,
+                continuation_enabled: false,
+                ..Default::default()
+            },
+        );
+        let cancellation = CancellationToken::new();
+        let ctx = ToolContext::new(PathBuf::from("/tmp"))
+            .with_session_id("parent-session")
+            .with_cancellation(cancellation.clone());
+        let started_wait = started.notified();
+        let run = tokio::spawn(async move {
+            tool.execute(&serde_json::json!({"skill_name": "test-skill"}), &ctx)
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), started_wait)
+            .await
+            .expect("skill provider call should start");
+        cancellation.cancel();
+        let error = tokio::time::timeout(Duration::from_secs(1), run)
+            .await
+            .expect("parent cancellation must stop the skill child")
+            .expect("skill join should succeed")
+            .expect_err("cancelled skill must not return success");
+
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

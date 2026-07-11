@@ -12,6 +12,28 @@
 
 use thiserror::Error;
 
+/// Async resource whose initialization is part of building a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionBuildResource {
+    MemoryStore,
+    SessionStore,
+    Queue,
+    Mcp,
+    RlTrajectory,
+}
+
+impl std::fmt::Display for SessionBuildResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::MemoryStore => "memory store",
+            Self::SessionStore => "session store",
+            Self::Queue => "session queue",
+            Self::Mcp => "MCP",
+            Self::RlTrajectory => "RL trajectory recorder",
+        })
+    }
+}
+
 /// Crate-wide result type alias.
 pub type Result<T> = std::result::Result<T, CodeError>;
 
@@ -37,6 +59,27 @@ pub enum CodeError {
     #[error("Session error: {0}")]
     Session(String),
 
+    /// A session option is missing, malformed, or conflicts with another option.
+    #[error("Invalid session configuration for '{field}': {message}")]
+    SessionConfiguration {
+        field: &'static str,
+        message: String,
+    },
+
+    /// A session resource could not be initialized.
+    #[error("Failed to initialize {resource}: {message}")]
+    SessionInitialization {
+        resource: SessionBuildResource,
+        message: String,
+    },
+
+    /// The synchronous compatibility factory was asked to initialize an
+    /// async-only resource. Call `Agent::session_builder(...).build().await`.
+    #[error(
+        "{resource} requires asynchronous session construction; use Agent::session_builder(...).build().await"
+    )]
+    AsyncSessionBuildRequired { resource: SessionBuildResource },
+
     /// Session has been closed; further operations are rejected.
     ///
     /// Returned by `send`/`stream` (and their variants) after
@@ -44,6 +87,14 @@ pub enum CodeError {
     /// — or [`Agent::close`](crate::agent_api::Agent::close) — has been called.
     #[error("Session '{session_id}' is closed")]
     SessionClosed { session_id: String },
+
+    /// Another conversation operation is already active on this session.
+    ///
+    /// Sessions serialize conversation state, so callers must wait for the
+    /// active operation's returned future or stream handle to finish before
+    /// starting another one.
+    #[error("Session '{session_id}' already has an active operation")]
+    SessionBusy { session_id: String },
 
     /// A host-supplied [`BudgetGuard`](crate::budget::BudgetGuard) denied
     /// the operation. The session is not closed — callers can re-try
@@ -82,6 +133,31 @@ pub enum CodeError {
     /// a function returning `crate::error::Result` without changes.
     #[error("{0:#}")]
     Internal(#[from] anyhow::Error),
+}
+
+impl CodeError {
+    /// Stable machine-readable code for SDK and service boundaries.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Config(_) => "CONFIG_ERROR",
+            Self::Llm(_) => "LLM_ERROR",
+            Self::Tool { .. } => "TOOL_ERROR",
+            Self::Session(_) => "SESSION_ERROR",
+            Self::SessionConfiguration { .. } => "SESSION_CONFIGURATION_ERROR",
+            Self::SessionInitialization { .. } => "SESSION_INITIALIZATION_ERROR",
+            Self::AsyncSessionBuildRequired { .. } => "ASYNC_SESSION_BUILD_REQUIRED",
+            Self::SessionClosed { .. } => "SESSION_CLOSED",
+            Self::SessionBusy { .. } => "SESSION_BUSY",
+            Self::BudgetExhausted { .. } => "BUDGET_EXHAUSTED",
+            Self::Security(_) => "SECURITY_ERROR",
+            Self::Context(_) => "CONTEXT_ERROR",
+            Self::Mcp(_) => "MCP_ERROR",
+            Self::Queue(_) => "QUEUE_ERROR",
+            Self::Io(_) => "IO_ERROR",
+            Self::Serialization(_) => "SERIALIZATION_ERROR",
+            Self::Internal(_) => "INTERNAL_ERROR",
+        }
+    }
 }
 
 // ============================================================================
@@ -141,6 +217,25 @@ mod tests {
     }
 
     #[test]
+    fn test_code_error_session_configuration_keeps_field_identity() {
+        let err = CodeError::SessionConfiguration {
+            field: "session_id",
+            message: "must not be empty".to_string(),
+        };
+        assert!(err.to_string().contains("session_id"));
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn test_code_error_session_busy() {
+        let err = CodeError::SessionBusy {
+            session_id: "session-1".to_string(),
+        };
+        assert!(err.to_string().contains("session-1"));
+        assert!(err.to_string().contains("active operation"));
+    }
+
+    #[test]
     fn test_code_error_security() {
         let err = CodeError::Security("taint detected".to_string());
         assert!(err.to_string().contains("Security error"));
@@ -185,6 +280,32 @@ mod tests {
         let err: CodeError = anyhow_err.into();
         assert!(matches!(err, CodeError::Internal(_)));
         assert!(err.to_string().contains("something went wrong"));
+    }
+
+    #[test]
+    fn stable_error_codes_cover_control_flow_variants() {
+        assert_eq!(
+            CodeError::SessionBusy {
+                session_id: "session-1".to_string(),
+            }
+            .code(),
+            "SESSION_BUSY"
+        );
+        assert_eq!(
+            CodeError::SessionClosed {
+                session_id: "session-1".to_string(),
+            }
+            .code(),
+            "SESSION_CLOSED"
+        );
+        assert_eq!(
+            CodeError::BudgetExhausted {
+                resource: "tokens".to_string(),
+                reason: "limit".to_string(),
+            }
+            .code(),
+            "BUDGET_EXHAUSTED"
+        );
     }
 
     #[test]

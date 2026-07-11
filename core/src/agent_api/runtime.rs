@@ -3,11 +3,11 @@ use super::{
     run_lifecycle::{
         BlockingRunLifecycle, RunControlState, StreamRunLifecycle, StreamRunWorkerState,
     },
-    runtime_events::RuntimeEventSink,
+    runtime_events::{run_agent_event_channel, RuntimeEventSink},
     session_persistence::SessionPersistenceContext,
     AgentSession,
 };
-use crate::agent::{AgentEvent, AgentLoop, AgentResult};
+use crate::agent::{AgentEvent, AgentLoop, AgentResult, InvocationContext};
 use crate::error::{read_or_recover, Result};
 use crate::llm::{Attachment, Message};
 use tokio::sync::mpsc;
@@ -47,8 +47,7 @@ impl ConversationInput {
 
 pub(super) struct BlockingRunContext {
     agent_loop: AgentLoop,
-    runtime_tx: mpsc::Sender<AgentEvent>,
-    cancel_token: tokio_util::sync::CancellationToken,
+    invocation: InvocationContext,
     runtime_collector: JoinHandle<()>,
     lifecycle: BlockingRunLifecycle,
 }
@@ -66,21 +65,24 @@ impl BlockingRunContext {
         let mut agent_loop = build_agent_loop(session);
         agent_loop.set_checkpoint_run(&run_id);
         let (runtime_tx, runtime_rx) = mpsc::channel(2048);
-        let session_events = session
-            .tool_context
-            .agent_event_tx
-            .as_ref()
-            .map(|tx| tx.subscribe());
-        let runtime_collector = RuntimeEventSink::from_session(session, &run_id)
-            .spawn_collector(runtime_rx, session_events);
         let lifecycle = BlockingRunLifecycle::from_session(session, &run_id, persistence);
         let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;
+        let (agent_event_tx, agent_event_barrier, agent_events) = run_agent_event_channel(2048);
+        let invocation = agent_loop
+            .invocation_context(
+                run_id.clone(),
+                Some(&session.session_id),
+                Some(runtime_tx),
+                cancel_token,
+            )
+            .with_agent_events(agent_event_tx, agent_event_barrier);
+        let runtime_collector = RuntimeEventSink::from_session(session, &run_id)
+            .spawn_collector(runtime_rx, Some(agent_events));
 
         Self {
             agent_loop,
-            runtime_tx,
-            cancel_token,
+            invocation,
             runtime_collector,
             lifecycle,
         }
@@ -90,33 +92,29 @@ impl BlockingRunContext {
         self,
         messages: &[Message],
         prompt: &str,
-        session_id: &str,
+        _session_id: &str,
     ) -> Result<AgentResult> {
         let Self {
             agent_loop,
-            runtime_tx,
-            cancel_token,
+            invocation,
             runtime_collector,
             lifecycle,
         } = self;
         let result = agent_loop
-            .execute_with_session(
-                messages,
-                prompt,
-                Some(session_id),
-                Some(runtime_tx),
-                Some(&cancel_token),
-            )
+            .execute_with_invocation(messages, prompt, &invocation)
             .await;
+        // Drop the run-owned event sender before waiting for the collector;
+        // otherwise the receiver can never observe channel closure.
+        drop(invocation);
         lifecycle.complete(runtime_collector, result).await
     }
 
     pub(super) async fn execute_from_messages(
         self,
         messages: Vec<Message>,
-        session_id: &str,
+        _session_id: &str,
     ) -> Result<AgentResult> {
-        self.execute_from_messages_seeded(messages, session_id, None)
+        self.execute_from_messages_seeded(messages, _session_id, None)
             .await
     }
 
@@ -127,34 +125,26 @@ impl BlockingRunContext {
     pub(super) async fn execute_from_messages_seeded(
         self,
         messages: Vec<Message>,
-        session_id: &str,
+        _session_id: &str,
         seed: Option<crate::agent::ExecutionSeed>,
     ) -> Result<AgentResult> {
         let Self {
             agent_loop,
-            runtime_tx,
-            cancel_token,
+            invocation,
             runtime_collector,
             lifecycle,
         } = self;
         let result = agent_loop
-            .execute_from_messages_seeded(
-                messages,
-                Some(session_id),
-                Some(runtime_tx),
-                Some(&cancel_token),
-                seed,
-            )
+            .execute_from_messages_with_invocation_seeded(messages, &invocation, seed)
             .await;
+        drop(invocation);
         lifecycle.complete(runtime_collector, result).await
     }
 }
 
 pub(super) struct StreamRunContext {
     agent_loop: AgentLoop,
-    runtime_tx: mpsc::Sender<AgentEvent>,
-    session_id: String,
-    cancel_token: tokio_util::sync::CancellationToken,
+    invocation: InvocationContext,
     worker_state: StreamRunWorkerState,
     forwarder: JoinHandle<()>,
     lifecycle: StreamRunLifecycle,
@@ -178,23 +168,25 @@ impl StreamRunContext {
         let lifecycle = StreamRunLifecycle::from_session(session, &run_id, persistence);
         let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;
+        let (agent_event_tx, agent_event_barrier, agent_events) = run_agent_event_channel(2048);
+        let invocation = agent_loop
+            .invocation_context(
+                run_id.clone(),
+                Some(&session.session_id),
+                Some(runtime_tx),
+                cancel_token,
+            )
+            .with_agent_events(agent_event_tx, agent_event_barrier);
         let worker_state = lifecycle.worker_state();
-        let session_events = session
-            .tool_context
-            .agent_event_tx
-            .as_ref()
-            .map(|tx| tx.subscribe());
         let forwarder = RuntimeEventSink::from_session(session, &run_id).spawn_forwarder(
             runtime_rx,
             tx,
-            session_events,
+            Some(agent_events),
         );
 
         Self {
             agent_loop,
-            runtime_tx,
-            session_id: session.session_id.clone(),
-            cancel_token,
+            invocation,
             worker_state,
             forwarder,
             lifecycle,
@@ -209,9 +201,7 @@ impl StreamRunContext {
     ) -> (mpsc::Receiver<AgentEvent>, JoinHandle<()>) {
         let Self {
             agent_loop,
-            runtime_tx,
-            session_id,
-            cancel_token,
+            invocation,
             worker_state,
             forwarder,
             lifecycle,
@@ -219,13 +209,7 @@ impl StreamRunContext {
         } = self;
         let handle = tokio::spawn(async move {
             let result = agent_loop
-                .execute_with_session(
-                    &messages,
-                    &prompt,
-                    Some(&session_id),
-                    Some(runtime_tx),
-                    Some(&cancel_token),
-                )
+                .execute_with_invocation(&messages, &prompt, &invocation)
                 .await;
             worker_state.complete(result).await;
         });
@@ -238,9 +222,7 @@ impl StreamRunContext {
     ) -> (mpsc::Receiver<AgentEvent>, JoinHandle<()>) {
         let Self {
             agent_loop,
-            runtime_tx,
-            session_id,
-            cancel_token,
+            invocation,
             worker_state,
             forwarder,
             lifecycle,
@@ -248,12 +230,7 @@ impl StreamRunContext {
         } = self;
         let handle = tokio::spawn(async move {
             let result = agent_loop
-                .execute_from_messages(
-                    messages,
-                    Some(&session_id),
-                    Some(runtime_tx),
-                    Some(&cancel_token),
-                )
+                .execute_from_messages_with_invocation_seeded(messages, &invocation, None)
                 .await;
             worker_state.complete(result).await;
         });

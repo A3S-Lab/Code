@@ -54,3 +54,27 @@ export interface ToolArtifact {
   original_bytes: number
   shown_bytes: number
 }
+
+/** Stable codes attached to errors originating in the Rust core. */
+export type A3sCodeErrorCode =
+  | 'CONFIG_ERROR'
+  | 'LLM_ERROR'
+  | 'TOOL_ERROR'
+  | 'SESSION_ERROR'
+  | 'SESSION_CONFIGURATION_ERROR'
+  | 'SESSION_INITIALIZATION_ERROR'
+  | 'ASYNC_SESSION_BUILD_REQUIRED'
+  | 'SESSION_CLOSED'
+  | 'SESSION_BUSY'
+  | 'BUDGET_EXHAUSTED'
+  | 'SECURITY_ERROR'
+  | 'CONTEXT_ERROR'
+  | 'MCP_ERROR'
+  | 'QUEUE_ERROR'
+  | 'IO_ERROR'
+  | 'SERIALIZATION_ERROR'
+  | 'INTERNAL_ERROR'
+
+export interface A3sCodeError extends Error {
+  code: A3sCodeErrorCode
+}

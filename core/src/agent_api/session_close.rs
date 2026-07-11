@@ -23,6 +23,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+const QUEUE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Bundle of `Arc`-shared session state needed to perform a graceful close
 /// from anywhere holding (a clone of) the handle.
 pub(crate) struct SessionCloseHandle {
@@ -42,6 +44,25 @@ pub(crate) struct SessionCloseHandle {
     pub(crate) subagent_tasks: Arc<InMemorySubagentTaskTracker>,
     pub(crate) confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
     pub(crate) hook_executor: Option<Arc<dyn HookExecutor>>,
+    /// Optional session-owned lane queue. Close first shuts it down to reject
+    /// new work, then drains commands admitted before the close boundary.
+    pub(crate) command_queue: Option<Arc<crate::session_lane_queue::SessionLaneQueue>>,
+    /// Session-owned MCP source. Inherited/global managers are deliberately
+    /// absent so closing one session cannot tear down shared connections.
+    pub(crate) mcp_manager: Arc<crate::mcp::manager::McpManager>,
+    /// Session tool executor used to unwind exact local MCP registrations at
+    /// close while restoring their captured shadows.
+    pub(crate) tool_executor: Arc<crate::tools::ToolExecutor>,
+    /// Serializes session-local extension mutation. `closed` is the admission
+    /// bit; close takes this mutex before its final MCP cleanup so a mutation
+    /// admitted before close either rolls back or is subsequently cleaned up.
+    pub(crate) extension_mutation: Mutex<()>,
+    /// Linearizes immediate, non-async capability changes (dynamic tools,
+    /// workers, hooks, and commands) with the close admission boundary.
+    pub(crate) immediate_extension_mutation: std::sync::Mutex<()>,
+    /// Exact MCP wrapper identities installed by each session-local server.
+    pub(crate) mcp_tool_ownership:
+        std::sync::Mutex<super::session_extensions::SessionMcpToolOwnership>,
 }
 
 impl SessionCloseHandle {
@@ -56,25 +77,39 @@ impl SessionCloseHandle {
     /// Sequence (see [`AgentSession::close`](super::AgentSession::close)
     /// for the public-facing contract):
     /// 1. Flip the `closed` flag so further `send`/`stream` fast-fail;
-    /// 2. Fire the session-level cancellation token so every derived run
+    /// 2. Stop the lane queue from accepting new commands;
+    /// 3. Fire the session-level cancellation token so every derived run
     ///    and subagent task token fires;
-    /// 3. Mark the active run as `Cancelled` in the run store and emit the
-    ///    AHP `record_run_cancelled` hook;
-    /// 4. Mark every still-running delegated subagent task as `Cancelled`
+    /// 4. Mark the active run as `Cancelled` in the run store and notify the
+    ///    configured hook executor;
+    /// 5. Mark every still-running delegated subagent task as `Cancelled`
     ///    in the tracker;
-    /// 5. Cancel pending HITL tool confirmations so blocked tool callers
+    /// 6. Cancel pending HITL tool confirmations so blocked tool callers
     ///    receive a rejection instead of hanging.
+    /// 7. Drain commands admitted before queue shutdown;
+    /// 8. Disconnect MCP servers owned by this session only.
     pub(crate) async fn close(&self) {
-        if self.closed.swap(true, Ordering::AcqRel) {
-            return;
+        {
+            let _mutation = self
+                .immediate_extension_mutation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.closed.swap(true, Ordering::AcqRel) {
+                return;
+            }
         }
 
-        // 1. Fire the session-level token so children cascade.
+        // 1. Establish the queue admission boundary before the first
+        // cancellation await so close cannot race with a new queued command.
+        if let Some(queue) = &self.command_queue {
+            queue.shutdown().await;
+        }
+
+        // 2. Fire the session-level token so children cascade.
         self.session_cancel.cancel();
 
-        // 2. Mark the active run cancelled and fire AHP hook bookkeeping.
-        //    The per-run token has already fired via step 1; this loop
-        //    just updates the run store and emits the hook event.
+        // 3. Mark the active run cancelled and notify the hook executor. The
+        //    per-run token has already fired via step 1.
         let had_active_token = self.cancel_token.lock().await.is_some();
         if had_active_token {
             if let Some(run_id) = self.current_run_id.lock().await.clone() {
@@ -86,7 +121,7 @@ impl SessionCloseHandle {
             }
         }
 
-        // 3. Mark every still-running subagent task cancelled.
+        // 4. Mark every still-running subagent task cancelled.
         let pending: Vec<String> = self
             .subagent_tasks
             .list_for_parent(&self.session_id)
@@ -99,11 +134,74 @@ impl SessionCloseHandle {
             let _ = self.subagent_tasks.cancel(&task_id).await;
         }
 
-        // 4. Cancel pending HITL confirmations.
+        // 5. Cancel pending HITL confirmations.
         if let Some(manager) = &self.confirmation_manager {
             let _ = manager.cancel_all().await;
         }
 
+        // 6. Let work admitted before shutdown finish after cancellation has
+        // propagated. A misbehaving command cannot block close indefinitely.
+        if let Some(queue) = &self.command_queue {
+            if let Err(error) = queue.drain(QUEUE_DRAIN_TIMEOUT).await {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    error = %error,
+                    "Session lane queue did not drain before close timeout"
+                );
+            }
+        }
+
+        // 7. Wait for any extension mutation admitted before `closed` was
+        // flipped, then release only session-owned MCP resources. Removing all
+        // configurations (not only connected clients) also cleans up a failed
+        // add transaction. Agent-global and host-owned inherited managers have
+        // independent lifetimes.
+        let _extension_mutation = self.extension_mutation.lock().await;
+        let mut server_names: std::collections::HashSet<String> = self
+            .mcp_manager
+            .all_configs()
+            .await
+            .into_iter()
+            .map(|config| config.name)
+            .collect();
+        server_names.extend(self.mcp_manager.list_connected().await);
+        server_names.extend(
+            self.mcp_tool_ownership
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .server_names(),
+        );
+        for name in server_names {
+            if let Err(error) = self.mcp_manager.remove_server(&name).await {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    server = %name,
+                    error = %error,
+                    "Failed to clean up session MCP transport during close"
+                );
+            }
+            self.mcp_tool_ownership
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .remove(&name, &self.tool_executor);
+        }
+
         tracing::info!(session_id = %self.session_id, "AgentSession closed");
+    }
+
+    pub(crate) fn mutate_immediate<T>(
+        &self,
+        mutate: impl FnOnce() -> T,
+    ) -> crate::error::Result<T> {
+        let _mutation = self
+            .immediate_extension_mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.closed.load(Ordering::Acquire) {
+            return Err(crate::error::CodeError::SessionClosed {
+                session_id: self.session_id.clone(),
+            });
+        }
+        Ok(mutate())
     }
 }

@@ -1,9 +1,10 @@
 use super::execution_state::ExecutionLoopState;
+use super::llm_invoker::estimate_prompt_tokens;
 use super::{AgentEvent, AgentLoop};
 use crate::hooks::{
     ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, TokenUsageInfo, ToolCallInfo,
 };
-use crate::llm::{LlmResponse, Message, ToolCall, ToolDefinition};
+use crate::llm::{non_retryable_llm_error_message, LlmResponse, Message, ToolCall, ToolDefinition};
 use anyhow::Context;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -24,6 +25,12 @@ struct LlmCallRequest<'a> {
     session_id: Option<&'a str>,
     event_tx: &'a Option<mpsc::Sender<AgentEvent>>,
     cancel_token: &'a tokio_util::sync::CancellationToken,
+}
+
+fn is_budget_exhausted(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<crate::error::CodeError>()
+        .is_some_and(|error| matches!(error, crate::error::CodeError::BudgetExhausted { .. }))
 }
 
 impl AgentLoop {
@@ -137,56 +144,19 @@ impl AgentLoop {
         &self,
         request: LlmCallRequest<'_>,
     ) -> anyhow::Result<LlmResponse> {
-        // Consult the host's BudgetGuard once per turn (not per retry).
-        // A `Deny` bails out before the LLM is touched; a `SoftLimit`
-        // surfaces a BudgetThresholdHit event and proceeds.
-        if let Some(guard) = &self.config.budget_guard {
-            let sid = request.session_id.unwrap_or("");
-            let estimate = estimate_prompt_tokens(request.messages, request.system);
-            match guard.check_before_llm(sid, estimate).await {
-                crate::budget::BudgetDecision::Allow => {}
-                crate::budget::BudgetDecision::SoftLimit {
-                    resource,
-                    consumed,
-                    limit,
-                    message,
-                } => {
-                    if let Some(tx) = request.event_tx {
-                        let _ = tx
-                            .send(AgentEvent::BudgetThresholdHit {
-                                resource,
-                                kind: "soft".to_string(),
-                                consumed,
-                                limit,
-                                message,
-                            })
-                            .await;
-                    }
-                }
-                crate::budget::BudgetDecision::Deny { resource, reason } => {
-                    if let Some(tx) = request.event_tx {
-                        let _ = tx
-                            .send(AgentEvent::BudgetThresholdHit {
-                                resource: resource.clone(),
-                                kind: "hard".to_string(),
-                                consumed: 0.0,
-                                limit: 0.0,
-                                message: Some(reason.clone()),
-                            })
-                            .await;
-                    }
-                    anyhow::bail!("Budget exhausted on '{resource}': {reason}");
-                }
-            }
-        }
-
         let threshold = self.config.circuit_breaker_threshold.max(1);
         let mut attempt = 0u32;
+        let llm_client = self.scoped_llm_client_for_parts(
+            request.session_id,
+            request.event_tx,
+            request.cancel_token,
+        );
 
         loop {
             attempt += 1;
             let result = self
                 .call_llm(
+                    &llm_client,
                     request.messages,
                     request.system,
                     request.tools,
@@ -195,31 +165,44 @@ impl AgentLoop {
                 )
                 .await;
             match result {
-                Ok(response) => {
-                    if let Some(guard) = &self.config.budget_guard {
-                        guard
-                            .record_after_llm(request.session_id.unwrap_or(""), &response.usage)
-                            .await;
-                    }
-                    return Ok(response);
-                }
-                Err(error) if request.cancel_token.is_cancelled() => {
-                    anyhow::bail!(error);
-                }
-                Err(error)
-                    if attempt < threshold && (request.event_tx.is_none() || attempt == 1) =>
-                {
-                    tracing::warn!(
-                        turn = request.turn,
-                        attempt = attempt,
-                        threshold = threshold,
-                        error = %error,
-                        "LLM call failed, will retry"
-                    );
-                    tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
-                }
+                Ok(response) => return Ok(response),
                 Err(error) => {
-                    let msg = if attempt > 1 {
+                    if request.cancel_token.is_cancelled() {
+                        anyhow::bail!(error);
+                    }
+
+                    // A host budget denial is a control decision, not a
+                    // transient provider failure. Retrying would bypass the
+                    // denied check on a later attempt and can overspend.
+                    if is_budget_exhausted(&error) {
+                        return Err(error);
+                    }
+
+                    let non_retryable_message = non_retryable_llm_error_message(&error);
+                    if non_retryable_message.is_none()
+                        && attempt < threshold
+                        && (request.event_tx.is_none() || attempt == 1)
+                    {
+                        tracing::warn!(
+                            turn = request.turn,
+                            attempt = attempt,
+                            threshold = threshold,
+                            error = %error,
+                            "LLM call failed, will retry"
+                        );
+                        tokio::select! {
+                            biased;
+                            _ = request.cancel_token.cancelled() => {
+                                anyhow::bail!("Operation cancelled by user")
+                            }
+                            _ = tokio::time::sleep(Duration::from_millis(100 * attempt as u64)) => {}
+                        }
+                        continue;
+                    }
+
+                    let msg = if let Some(message) = non_retryable_message {
+                        message.to_string()
+                    } else if attempt > 1 {
                         format!(
                             "LLM circuit breaker triggered: failed after {} attempt(s): {}",
                             attempt, error
@@ -347,6 +330,8 @@ impl AgentLoop {
             .llm_api_timeout_ms
             .unwrap_or(DEFAULT_AUTO_COMPACT_TIMEOUT_MS)
             .max(1);
+        let compaction_client =
+            self.scoped_llm_client_for_parts(session_id, event_tx, cancel_token);
         let compact_result = tokio::select! {
             _ = cancel_token.cancelled() => {
                 tracing::warn!("Auto-compact cancelled before summary generation completed");
@@ -357,7 +342,7 @@ impl AgentLoop {
                 crate::compaction::compact_messages(
                     session_id.unwrap_or(""),
                     &state.messages,
-                    &self.llm_client,
+                    &compaction_client,
                 ),
             ) => {
                 match result {
@@ -417,6 +402,7 @@ impl AgentLoop {
     /// `execute_loop` wraps this call with retry logic for non-streaming mode.
     async fn call_llm(
         &self,
+        llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
         messages: &[Message],
         system: Option<&str>,
         tools: &[ToolDefinition],
@@ -425,8 +411,7 @@ impl AgentLoop {
     ) -> anyhow::Result<LlmResponse> {
         if event_tx.is_some() {
             let mut stream_rx = match self
-                .llm_client
-                .complete_streaming(messages, system, tools, cancel_token.clone())
+                .scoped_streaming_completion(llm_client, messages, system, tools, cancel_token)
                 .await
             {
                 Ok(rx) => rx,
@@ -435,13 +420,26 @@ impl AgentLoop {
                     if cancel_token.is_cancelled() {
                         anyhow::bail!("Operation cancelled by user");
                     }
+                    // A provider can mark errors that require external state to
+                    // change (for example, an account quota reset). Repeating the
+                    // same request through the fallback cannot make them succeed.
+                    if is_budget_exhausted(&stream_error)
+                        || non_retryable_llm_error_message(&stream_error).is_some()
+                    {
+                        return Err(stream_error);
+                    }
                     tracing::warn!(
                         error = %stream_error,
                         "LLM streaming setup failed; falling back to non-streaming completion"
                     );
                     return self
-                        .llm_client
-                        .complete(messages, system, tools)
+                        .call_non_streaming_llm(
+                            llm_client,
+                            messages,
+                            system,
+                            tools,
+                            cancel_token,
+                        )
                         .await
                         .with_context(|| {
                             format!(
@@ -475,9 +473,9 @@ impl AgentLoop {
                                     tx.send(AgentEvent::ToolStart { id, name }).await.ok();
                                 }
                             }
-                            Some(crate::llm::StreamEvent::ToolUseInputDelta(delta)) => {
+                            Some(crate::llm::StreamEvent::ToolUseInputDelta { id, delta }) => {
                                 if let Some(tx) = event_tx {
-                                    tx.send(AgentEvent::ToolInputDelta { delta }).await.ok();
+                                    tx.send(AgentEvent::ToolInputDelta { id, delta }).await.ok();
                                 }
                             }
                             Some(crate::llm::StreamEvent::Done(resp)) => {
@@ -491,11 +489,38 @@ impl AgentLoop {
             }
             final_response.context("Stream ended without final response")
         } else {
-            self.llm_client
-                .complete(messages, system, tools)
+            self.call_non_streaming_llm(llm_client, messages, system, tools, cancel_token)
                 .await
                 .context("LLM call failed")
         }
+    }
+
+    async fn call_non_streaming_llm(
+        &self,
+        llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        cancel_token: &tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<LlmResponse> {
+        tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => anyhow::bail!("Operation cancelled by user"),
+            response = llm_client.complete(messages, system, tools) => response,
+        }
+    }
+
+    async fn scoped_streaming_completion(
+        &self,
+        llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        cancel_token: &tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+        llm_client
+            .complete_streaming(messages, system, tools, cancel_token.clone())
+            .await
     }
 
     /// Fire GenerateStart hook event before an LLM call.
@@ -558,17 +583,4 @@ impl AgentLoop {
             let _ = he.fire(&event).await;
         }
     }
-}
-
-/// Cheap, framework-internal estimator of prompt tokens for
-/// `BudgetGuard::check_before_llm`. Roughly counts characters / 4
-/// across system + messages, matching the well-known "1 token ≈ 4
-/// English characters" heuristic. Impls that need precision should
-/// rely on `record_after_llm` with the provider's actual usage.
-fn estimate_prompt_tokens(messages: &[Message], system: Option<&str>) -> usize {
-    let mut chars = system.map(|s| s.len()).unwrap_or(0);
-    for msg in messages {
-        chars += msg.text().len();
-    }
-    chars / 4
 }

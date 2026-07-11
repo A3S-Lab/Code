@@ -10,6 +10,8 @@ use a3s_code_core::config::CodeConfig;
 use a3s_code_core::llm::{create_client_with_config, Message};
 use a3s_code_core::{Agent, AgentEvent, PlanningMode, RunStatus, SessionOptions};
 
+const REAL_PROVIDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 fn repo_config_path() -> PathBuf {
     std::env::var_os("A3S_CONFIG_FILE")
         .map(PathBuf::from)
@@ -253,16 +255,19 @@ async fn test_config_acl_env_default_llm_completion() {
     assert_eq!(llm_config.model, expected_model);
 
     let client = create_client_with_config(llm_config);
-    let response = client
-        .complete(
+    let response = tokio::time::timeout(
+        REAL_PROVIDER_TIMEOUT,
+        client.complete(
             &[Message::user(
                 "Return exactly this token and nothing else: A3S_ENV_OK",
             )],
             None,
             &[],
-        )
-        .await
-        .expect("real default model completion should succeed");
+        ),
+    )
+    .await
+    .expect("real default model completion timed out")
+    .expect("real default model completion should succeed");
 
     let text = response.text();
     assert!(
@@ -286,16 +291,20 @@ async fn test_agent_create_uses_config_acl_env_injection() {
 
     let workspace = tempfile::tempdir().expect("temp workspace");
     let session = agent
-        .session(workspace.path().to_string_lossy().to_string(), None)
+        .session_async(workspace.path().to_string_lossy().to_string(), None)
+        .await
         .expect("session should be created");
 
-    let result = session
-        .send(
+    let result = tokio::time::timeout(
+        REAL_PROVIDER_TIMEOUT,
+        session.send(
             "Return exactly this token and nothing else: A3S_AGENT_OK",
             None,
-        )
-        .await
-        .expect("real agent session should complete");
+        ),
+    )
+    .await
+    .expect("real agent session timed out")
+    .expect("real agent session should complete");
 
     assert!(
         result.text.contains("A3S_AGENT_OK"),
@@ -322,15 +331,19 @@ async fn test_env_config_real_llm_planning_records_run_and_task_events() {
         .with_session_id("real-env-planning-session")
         .with_planning_mode(PlanningMode::Enabled);
     let session = agent
-        .session(workspace.path().to_string_lossy().to_string(), Some(opts))
+        .session_async(workspace.path().to_string_lossy().to_string(), Some(opts))
+        .await
         .expect("session should be created");
 
-    let result = session
-        .send(
+    let result = tokio::time::timeout(
+        REAL_PROVIDER_TIMEOUT,
+        session.send(
             "Do not edit files. Use planning mode to answer, then include exactly this token in the final answer: A3S_PLANNING_OK",
             None,
-        )
+        ),
+    )
         .await
+        .expect("real planning session timed out")
         .expect("real planning session should complete");
 
     assert!(

@@ -40,7 +40,9 @@ impl std::fmt::Debug for SessionOptions {
                 &self.enforce_active_skill_tool_restrictions,
             )
             .field("memory_store", &self.memory_store.is_some())
+            .field("file_memory_dir", &self.file_memory_dir)
             .field("session_store", &self.session_store.is_some())
+            .field("file_session_store_dir", &self.file_session_store_dir)
             .field("session_id", &self.session_id)
             .field("rl_trajectory", &self.rl_trajectory)
             .field("llm_logprobs", &self.llm_logprobs)
@@ -230,7 +232,7 @@ impl SessionOptions {
     /// Enable or disable legacy global active-skill `allowed-tools` restrictions.
     ///
     /// The default is disabled: active skills do not block ordinary session
-    /// tools before the host permission/AHP/HITL approval chain runs.
+    /// tools before the host permission/HITL approval chain runs.
     pub fn with_active_skill_tool_restrictions(mut self, enabled: bool) -> Self {
         self.enforce_active_skill_tool_restrictions = Some(enabled);
         self
@@ -264,6 +266,7 @@ impl SessionOptions {
     /// Sessions resolve a default memory store when no override is provided.
     pub fn with_memory(mut self, store: Arc<dyn MemoryStore>) -> Self {
         self.memory_store = Some(store);
+        self.file_memory_dir = None;
         self
     }
 
@@ -273,6 +276,7 @@ impl SessionOptions {
     /// This stores the directory path; `FileMemoryStore::new()` is called during
     /// session construction.
     pub fn with_file_memory(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.memory_store = None;
         self.file_memory_dir = Some(dir.into());
         self
     }
@@ -280,32 +284,17 @@ impl SessionOptions {
     /// Set a session store for persistence
     pub fn with_session_store(mut self, store: Arc<dyn crate::store::SessionStore>) -> Self {
         self.session_store = Some(store);
+        self.file_session_store_dir = None;
         self
     }
 
-    /// Use a file-based session store at the given directory
+    /// Use a file-based session store at the given directory.
+    ///
+    /// The path is a typed construction specification. No I/O occurs until
+    /// [`SessionBuilder::build`](super::SessionBuilder::build) is awaited.
     pub fn with_file_session_store(mut self, dir: impl Into<PathBuf>) -> Self {
-        let dir = dir.into();
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                match tokio::task::block_in_place(|| {
-                    handle.block_on(crate::store::FileSessionStore::new(dir))
-                }) {
-                    Ok(store) => {
-                        self.session_store =
-                            Some(Arc::new(store) as Arc<dyn crate::store::SessionStore>);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to create file session store: {}", e);
-                    }
-                }
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "No async runtime available for file session store — persistence disabled"
-                );
-            }
-        }
+        self.session_store = None;
+        self.file_session_store_dir = Some(dir.into());
         self
     }
 
@@ -530,10 +519,12 @@ impl SessionOptions {
         self
     }
 
-    /// Set an MCP manager to connect to external MCP servers.
+    /// Inherit tools from an existing MCP manager.
     ///
-    /// All tools from connected servers will be available during execution
-    /// with names like `mcp__<server>__<tool>`.
+    /// The session reads the manager as a capability source but never mutates
+    /// or disconnects it. Live [`AgentSession::add_mcp_server`](super::AgentSession::add_mcp_server)
+    /// calls use a separate session-owned manager. Delegated child agents
+    /// inherit both sources, with session-owned tools taking precedence.
     pub fn with_mcp(mut self, manager: Arc<crate::mcp::manager::McpManager>) -> Self {
         self.mcp_manager = Some(manager);
         self
@@ -614,9 +605,8 @@ impl SessionOptions {
 
     /// Replace the built-in hook engine with an external hook executor.
     ///
-    /// Use this to attach an AHP harness server (or any custom `HookExecutor`)
-    /// to the session. All lifecycle events will be forwarded to the executor
-    /// instead of the in-process `HookEngine`.
+    /// All lifecycle events are forwarded to the executor instead of the
+    /// in-process `HookEngine`.
     pub fn with_hook_executor(mut self, executor: Arc<dyn crate::hooks::HookExecutor>) -> Self {
         self.hook_executor = Some(executor);
         self

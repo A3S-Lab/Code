@@ -313,6 +313,7 @@ mod tests {
                 output: spec.prompt.clone(),
                 success: spec.agent != "fail",
                 structured: None,
+                source_anchors: Vec::new(),
             }
         }
         fn concurrency_hint(&self) -> usize {
@@ -454,6 +455,7 @@ mod tests {
                 output: format!("ran:{}", spec.task_id),
                 success: true,
                 structured: None,
+                source_anchors: Vec::new(),
             }
         }
         fn concurrency_hint(&self) -> usize {
@@ -478,6 +480,7 @@ mod tests {
                 output: "cached-a".into(),
                 success: true,
                 structured: None,
+                source_anchors: Vec::new(),
             },
         );
         store
@@ -571,6 +574,7 @@ mod tests {
                 output: "ok".to_string(),
                 success: true,
                 structured: None,
+                source_anchors: Vec::new(),
             }
         }
         fn concurrency_hint(&self) -> usize {
@@ -640,6 +644,7 @@ mod tests {
             output: output.to_string(),
             success: true,
             structured: None,
+            source_anchors: Vec::new(),
         }
     }
 

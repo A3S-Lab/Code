@@ -8,6 +8,10 @@ use super::{session_persistence::SessionPersistenceContext, AgentSession};
 use crate::error::Result;
 
 pub(super) async fn save(session: &AgentSession) -> Result<()> {
+    // A manual save must not sample history, usage, tasks, and artifacts from
+    // different points in an active conversation. Auto-save runs inside the
+    // admitted run lifecycle and calls `SessionPersistenceContext` directly.
+    let _lease = session.run_admission.try_acquire(&session.session_id)?;
     SessionPersistenceContext::from_session(session)
         .save()
         .await

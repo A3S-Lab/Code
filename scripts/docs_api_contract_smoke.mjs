@@ -10,11 +10,7 @@ import {
   DefaultSecurityProvider,
   FileMemoryStore,
   FileSessionStore,
-  HttpTransport,
   MemorySessionStore,
-  StdioTransport,
-  UnixSocketTransport,
-  WebSocketTransport,
   formatVerificationSummary,
 } from '../sdk/node/index.js';
 
@@ -586,11 +582,6 @@ sessions_dir = "${aclSessionDir}"
   assert.equal(session.toolNames().some(name => name.startsWith('mcp__echo__')), false);
 
   assert.equal(new MemorySessionStore().backend, 'memory');
-  assert.equal(new HttpTransport('http://localhost:8080/ahp', 'token').kind, 'http');
-  assert.equal(new WebSocketTransport('ws://localhost:8080/ahp', 'token').kind, 'websocket');
-  assert.equal(new StdioTransport('node', ['server.mjs']).kind, 'stdio');
-  assert.equal(new UnixSocketTransport('/tmp/a3s.sock').kind, 'unix_socket');
-
   session.close();
   resumed.close();
   queued.close();

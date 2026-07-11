@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 pub(super) fn build_agent_loop(session: &AgentSession) -> AgentLoop {
     let mut config = session.config.clone();
-    config.hook_engine = Some(match &session.ahp_executor {
-        Some(ahp) => ahp.clone(),
+    config.hook_engine = Some(match &session.hook_executor {
+        Some(executor) => executor.clone(),
         None => Arc::clone(&session.hook_engine) as Arc<dyn crate::hooks::HookExecutor>,
     });
 

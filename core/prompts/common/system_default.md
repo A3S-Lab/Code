@@ -29,8 +29,6 @@ is genuinely complete.
 - Use `task` and `parallel_task` for focused delegation. They are the supported
   multi-agent path.
 - Use `web_search`/`web_fetch` only when current external information is needed.
-- Use AHP-provided context and suggestions as harness input; the agent remains
-  responsible for decisions and verification.
 
 ## Verification
 

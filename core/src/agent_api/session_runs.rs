@@ -41,4 +41,16 @@ impl<'a> RunControl<'a> {
     pub(super) async fn run_events(&self, run_id: &str) -> Vec<crate::run::RunEventRecord> {
         self.session.run_store.events(run_id).await
     }
+
+    pub(super) async fn run_event_page(
+        &self,
+        run_id: &str,
+        after_sequence: Option<usize>,
+        limit: usize,
+    ) -> Option<crate::run::RunEventPage> {
+        self.session
+            .run_store
+            .event_page(run_id, after_sequence, limit)
+            .await
+    }
 }

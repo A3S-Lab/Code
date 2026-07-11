@@ -79,7 +79,7 @@ impl RunControlState {
             run_store: Arc::clone(&session.run_store),
             cancel_token: Arc::clone(&session.cancel_token),
             current_run_id: Arc::clone(&session.current_run_id),
-            hook_executor: session.ahp_executor.clone(),
+            hook_executor: session.hook_executor.clone(),
             host_env: Arc::clone(&session.config.host_env),
         }
     }

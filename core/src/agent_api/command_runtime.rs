@@ -22,7 +22,7 @@ pub(super) async fn dispatch_blocking(
     };
 
     Ok(Some(command_result(
-        output.text,
+        sanitize_text(session, &output.text),
         command_messages(session, history),
         crate::llm::TokenUsage::default(),
     )))
@@ -60,12 +60,21 @@ pub(super) async fn dispatch_streaming(
     let output = session_commands::dispatch(session, prompt, &ctx)?;
     let (tx, rx) = mpsc::channel(256);
 
-    let text = output.text;
+    let text = sanitize_text(session, &output.text);
     let handle = tokio::spawn(async move {
         send_text_output(&tx, text).await;
     });
 
     Some((rx, handle))
+}
+
+fn sanitize_text(session: &AgentSession, text: &str) -> String {
+    session
+        .config
+        .security_provider
+        .as_deref()
+        .map(|provider| provider.sanitize_output(text))
+        .unwrap_or_else(|| text.to_string())
 }
 
 fn build_command_context(session: &AgentSession) -> CommandContext {

@@ -7,6 +7,20 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
+/// A source location that a delegated step actually observed through a
+/// successful built-in research tool call.
+///
+/// The value is deliberately narrow: callers get a normalized URL or
+/// workspace-relative path, never the raw tool output or arguments.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ToolSourceAnchor {
+    /// Built-in tool that observed the source (for example `web_fetch` or
+    /// `read`).
+    pub tool: String,
+    /// Canonical HTTP(S) URL or workspace-relative path.
+    pub url_or_path: String,
+}
+
 /// A single unit of orchestrated agent work — *what* to run, independent of
 /// *where* it runs.
 ///
@@ -91,6 +105,9 @@ pub struct StepOutcome {
     /// Schema-validated structured output, when the step requested one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured: Option<serde_json::Value>,
+    /// Source anchors observed by successful child tool calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_anchors: Vec<ToolSourceAnchor>,
 }
 
 impl StepOutcome {
@@ -111,6 +128,7 @@ impl StepOutcome {
             output: message.into(),
             success: false,
             structured: None,
+            source_anchors: Vec::new(),
         }
     }
 }
@@ -236,6 +254,7 @@ mod tests {
                 output: format!("ran: {}", spec.prompt),
                 success: spec.agent != "fail",
                 structured: None,
+                source_anchors: Vec::new(),
             }
         }
         fn concurrency_hint(&self) -> usize {
@@ -337,13 +356,17 @@ mod tests {
             output: "ok".into(),
             success: true,
             structured: Some(serde_json::json!({ "v": "x" })),
+            source_anchors: vec![ToolSourceAnchor {
+                tool: "read".into(),
+                url_or_path: "docs/source.md".into(),
+            }],
         };
         let back: StepOutcome =
             serde_json::from_str(&serde_json::to_string(&outcome).unwrap()).unwrap();
         assert_eq!(back, outcome);
 
-        // Backward-compat: a pre-Phase-2 payload lacking the new optional
-        // fields still loads (they default to None).
+        // Backward-compat: an older payload lacking the new optional fields
+        // still loads with empty defaults.
         let old_spec: AgentStepSpec =
             serde_json::from_str(r#"{"task_id":"t","agent":"a","description":"d","prompt":"p"}"#)
                 .unwrap();
@@ -353,5 +376,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(old_outcome.structured, None);
+        assert!(old_outcome.source_anchors.is_empty());
     }
 }

@@ -53,7 +53,8 @@ async fn tools_mcp_parsed_and_install_fails_closed_on_bad_command() {
     let agent = Agent::from_config(fake_config()).await.expect("agent");
     let workspace = tempfile::tempdir().expect("workspace");
     let session = agent
-        .session(workspace.path().to_string_lossy().to_string(), None)
+        .session_async(workspace.path().to_string_lossy().to_string(), None)
+        .await
         .expect("session");
 
     let result = install_agent_dir_tools(&session, &agent_dir.tools).await;
@@ -74,7 +75,8 @@ async fn install_with_empty_tools_is_ok() {
     let agent = Agent::from_config(fake_config()).await.expect("agent");
     let workspace = tempfile::tempdir().expect("workspace");
     let session = agent
-        .session(workspace.path().to_string_lossy().to_string(), None)
+        .session_async(workspace.path().to_string_lossy().to_string(), None)
+        .await
         .expect("session");
 
     install_agent_dir_tools(&session, &agent_dir.tools)

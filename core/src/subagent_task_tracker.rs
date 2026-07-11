@@ -6,6 +6,7 @@
 //! without scanning `run_events()`.
 
 use crate::agent::AgentEvent;
+use crate::orchestration::ToolSourceAnchor;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::RwLock;
@@ -44,6 +45,8 @@ pub struct SubagentTaskSnapshot {
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub success: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_anchors: Vec<ToolSourceAnchor>,
     pub progress: Vec<SubagentProgressEntry>,
 }
 
@@ -192,6 +195,7 @@ impl InMemorySubagentTaskTracker {
                         finished_ms: None,
                         output: None,
                         success: None,
+                        source_anchors: Vec::new(),
                         progress: Vec::new(),
                     });
             }
@@ -217,6 +221,7 @@ impl InMemorySubagentTaskTracker {
                         finished_ms: None,
                         output: None,
                         success: None,
+                        source_anchors: Vec::new(),
                         progress: Vec::new(),
                     });
                 entry.updated_ms = now;
@@ -253,6 +258,7 @@ impl InMemorySubagentTaskTracker {
                                 finished_ms: None,
                                 output: None,
                                 success: None,
+                                source_anchors: Vec::new(),
                                 progress: Vec::new(),
                             });
                     let was_running = entry.status == SubagentStatus::Running;
@@ -277,6 +283,16 @@ impl InMemorySubagentTaskTracker {
                 }
             }
             _ => {}
+        }
+    }
+
+    pub(crate) async fn record_source_anchors(
+        &self,
+        task_id: &str,
+        source_anchors: &[ToolSourceAnchor],
+    ) {
+        if let Some(task) = self.tasks.write().await.get_mut(task_id) {
+            task.source_anchors = source_anchors.to_vec();
         }
     }
 
@@ -413,6 +429,38 @@ mod tests {
         assert_eq!(snap.success, Some(true));
         assert_eq!(snap.output.as_deref(), Some("done"));
         assert!(snap.finished_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_preserves_source_anchors_through_json_roundtrip() {
+        let tracker = InMemorySubagentTaskTracker::new();
+        tracker
+            .record_event(&start_event("task-sources", "parent", "child"))
+            .await;
+        tracker
+            .record_source_anchors(
+                "task-sources",
+                &[ToolSourceAnchor {
+                    tool: "read".to_string(),
+                    url_or_path: "docs/source.md".to_string(),
+                }],
+            )
+            .await;
+        tracker
+            .record_event(&end_event("task-sources", "child", true))
+            .await;
+
+        let snapshot = tracker.get("task-sources").await.unwrap();
+        assert_eq!(snapshot.status, SubagentStatus::Completed);
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        let decoded: SubagentTaskSnapshot = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            decoded.source_anchors,
+            vec![ToolSourceAnchor {
+                tool: "read".to_string(),
+                url_or_path: "docs/source.md".to_string(),
+            }]
+        );
     }
 
     #[tokio::test]

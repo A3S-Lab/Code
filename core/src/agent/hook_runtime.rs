@@ -33,10 +33,7 @@ impl AgentLoop {
                 working_directory: self.tool_context.workspace.to_string_lossy().to_string(),
                 recent_tools,
             });
-            let result = he.fire(&event).await;
-            if result.is_block() {
-                return Some(result);
-            }
+            return normalize_pre_tool_gate_result(he.fire(&event).await);
         }
         None
     }
@@ -216,6 +213,30 @@ impl AgentLoop {
     }
 }
 
+/// Normalize hook outcomes to the decisions supported by the tool gateway.
+///
+/// The gateway has no retry scheduler or human-escalation wait state. Allowing
+/// either outcome to fall through would execute the protected tool without the
+/// requested policy action, so both fail closed until such a path exists.
+fn normalize_pre_tool_gate_result(result: HookResult) -> Option<HookResult> {
+    match result {
+        HookResult::Continue(_) | HookResult::Skip => None,
+        block @ HookResult::Block(_) => Some(block),
+        HookResult::Retry(delay_ms) => Some(HookResult::Block(format!(
+            "Pre-tool hook requested retry after {delay_ms} ms, but tool-hook retries are not supported"
+        ))),
+        HookResult::Escalate { reason, target } => {
+            let target = target
+                .as_deref()
+                .map(|value| format!(" to {value}"))
+                .unwrap_or_default();
+            Some(HookResult::Block(format!(
+                "Pre-tool hook escalated{target}: {reason}"
+            )))
+        }
+    }
+}
+
 fn apply_pre_planning_modifications(
     task_description: &str,
     modified: Option<serde_json::Value>,
@@ -291,5 +312,42 @@ fn planning_hints(value: Option<&serde_json::Value>) -> Option<String> {
             (!hints.is_empty()).then(|| hints.join("\n"))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_pre_tool_gate_result;
+    use crate::hooks::HookResult;
+
+    #[test]
+    fn pre_tool_retry_fails_closed_without_retry_runtime() {
+        let result = normalize_pre_tool_gate_result(HookResult::Retry(250));
+
+        assert!(matches!(
+            result,
+            Some(HookResult::Block(reason))
+                if reason.contains("retry after 250 ms") && reason.contains("not supported")
+        ));
+    }
+
+    #[test]
+    fn pre_tool_escalation_fails_closed_without_escalation_runtime() {
+        let result = normalize_pre_tool_gate_result(HookResult::Escalate {
+            reason: "approval required".to_string(),
+            target: Some("security-team".to_string()),
+        });
+
+        assert!(matches!(
+            result,
+            Some(HookResult::Block(reason))
+                if reason.contains("security-team") && reason.contains("approval required")
+        ));
+    }
+
+    #[test]
+    fn explicit_pre_tool_continue_and_skip_remain_non_blocking() {
+        assert!(normalize_pre_tool_gate_result(HookResult::Continue(None)).is_none());
+        assert!(normalize_pre_tool_gate_result(HookResult::Skip).is_none());
     }
 }

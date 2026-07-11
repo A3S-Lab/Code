@@ -75,11 +75,7 @@ assert.equal(toolChecks, 0, 'no tool was attempted; toolChecks must stay 0')
 // that setBudgetGuard(null) is accepted without error.
 session.setBudgetGuard(null)
 
-// Fail-closed semantics for HANGS / malformed returns are enforced in
-// the bridge (timeout -> Deny, unreadable return -> Deny). We do not
-// exercise a THROWING guard here: due to a napi-rs limitation a JS throw
-// from the callback aborts the host process at return-value conversion
-// (documented on setBudgetGuard — guards must not throw). The Python SDK
-// budget-guard test (test_budget_guard.py) covers the throw-safe path.
+// Throw, timeout, malformed-return, and host-process survival regressions run
+// independently in test_callback_safety.mjs.
 
 console.log('node sdk budget guard ok')

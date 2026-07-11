@@ -6,6 +6,7 @@
 use super::SessionOptions;
 use crate::agent::AgentEvent;
 use crate::config::CodeConfig;
+use crate::error::{CodeError, Result, SessionBuildResource};
 use crate::hitl::ConfirmationProvider;
 use crate::session_lane_queue::SessionLaneQueue;
 use crate::tools::{ToolContext, ToolExecutor};
@@ -27,11 +28,14 @@ pub(super) struct SessionRuntime {
     pub(super) tool_context: ToolContext,
 }
 
-pub(super) fn build_session_runtime(input: SessionRuntimeInput<'_>) -> SessionRuntime {
+pub(super) async fn build_session_runtime(
+    input: SessionRuntimeInput<'_>,
+) -> Result<SessionRuntime> {
     let (agent_event_tx, _) = broadcast::channel::<AgentEvent>(2048);
 
     let confirmation_manager = build_confirmation_manager(input.opts, agent_event_tx.clone());
-    let command_queue = build_command_queue(input.opts, input.session_id, agent_event_tx.clone());
+    let command_queue =
+        build_command_queue(input.opts, input.session_id, agent_event_tx.clone()).await?;
     let tool_context = build_tool_context(
         input.code_config,
         input.workspace,
@@ -41,9 +45,27 @@ pub(super) fn build_session_runtime(input: SessionRuntimeInput<'_>) -> SessionRu
         agent_event_tx,
     );
 
-    SessionRuntime {
+    Ok(SessionRuntime {
         confirmation_manager,
         command_queue,
+        tool_context,
+    })
+}
+
+pub(super) fn build_session_runtime_sync(input: SessionRuntimeInput<'_>) -> SessionRuntime {
+    let (agent_event_tx, _) = broadcast::channel::<AgentEvent>(2048);
+    let confirmation_manager = build_confirmation_manager(input.opts, agent_event_tx.clone());
+    let tool_context = build_tool_context(
+        input.code_config,
+        input.workspace,
+        input.session_id,
+        input.opts,
+        Arc::clone(&input.tool_executor),
+        agent_event_tx,
+    );
+    SessionRuntime {
+        confirmation_manager,
+        command_queue: None,
         tool_context,
     }
 }
@@ -65,43 +87,30 @@ fn build_confirmation_manager(
     }
 }
 
-fn build_command_queue(
+async fn build_command_queue(
     opts: &SessionOptions,
     session_id: &str,
     agent_event_tx: broadcast::Sender<AgentEvent>,
-) -> Option<Arc<SessionLaneQueue>> {
-    let queue_config = opts.queue_config.as_ref()?;
+) -> Result<Option<Arc<SessionLaneQueue>>> {
+    let Some(queue_config) = opts.queue_config.as_ref() else {
+        return Ok(None);
+    };
 
-    let rt = tokio::runtime::Handle::try_current();
-    match rt {
-        Ok(handle) => {
-            let queue = tokio::task::block_in_place(|| {
-                handle.block_on(SessionLaneQueue::new(
-                    session_id,
-                    queue_config.clone(),
-                    agent_event_tx,
-                ))
-            });
-            match queue {
-                Ok(queue) => {
-                    let queue = Arc::new(queue);
-                    let queue_to_start = Arc::clone(&queue);
-                    tokio::task::block_in_place(|| {
-                        handle.block_on(async { queue_to_start.start().await.ok() })
-                    });
-                    Some(queue)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to create session lane queue: {}", e);
-                    None
-                }
-            }
-        }
-        Err(_) => {
-            tracing::warn!("No async runtime available for queue creation - queue disabled");
-            None
-        }
-    }
+    let queue = SessionLaneQueue::new(session_id, queue_config.clone(), agent_event_tx)
+        .await
+        .map_err(|error| CodeError::SessionInitialization {
+            resource: SessionBuildResource::Queue,
+            message: format!("session '{session_id}': {error:#}"),
+        })?;
+    let queue = Arc::new(queue);
+    queue
+        .start()
+        .await
+        .map_err(|error| CodeError::SessionInitialization {
+            resource: SessionBuildResource::Queue,
+            message: format!("session '{session_id}': {error:#}"),
+        })?;
+    Ok(Some(queue))
 }
 
 fn build_tool_context(

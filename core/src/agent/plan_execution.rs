@@ -7,6 +7,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Result of a single parallel step execution, emitted as structured JSON
 /// so the frontend can render it dynamically in the user's language.
@@ -226,7 +227,11 @@ impl AgentLoop {
         plan: &ExecutionPlan,
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &CancellationToken,
     ) -> Result<AgentResult> {
+        if cancel_token.is_cancelled() {
+            anyhow::bail!("Operation cancelled by user");
+        }
         let mut plan = plan.clone();
         let task_session_id = session_id.unwrap_or("").to_string();
         let mut current_history = history.to_vec();
@@ -250,6 +255,9 @@ impl AgentLoop {
             .await;
 
         loop {
+            if cancel_token.is_cancelled() {
+                break;
+            }
             let ready: Vec<String> = plan
                 .get_ready_steps()
                 .iter()
@@ -315,7 +323,13 @@ impl AgentLoop {
                         )
                     };
                     let (output, _exit_code, is_error, _metadata) = self
-                        .execute_delegated_plan_tool(tool_name, &args, session_id, &event_tx)
+                        .execute_delegated_plan_tool(
+                            tool_name,
+                            &args,
+                            session_id,
+                            &event_tx,
+                            cancel_token,
+                        )
                         .await;
                     tool_calls_count += 1;
 
@@ -376,7 +390,7 @@ impl AgentLoop {
                             AgentStyle::GeneralPurpose,
                             None,
                             event_tx.clone(),
-                            &tokio_util::sync::CancellationToken::new(),
+                            cancel_token,
                             false, // emit_end: false — End is emitted by execute_with_planning after execute_plan
                         )
                         .await
@@ -387,6 +401,22 @@ impl AgentLoop {
                             total_usage.completion_tokens += result.usage.completion_tokens;
                             total_usage.total_tokens += result.usage.total_tokens;
                             tool_calls_count += result.tool_calls_count;
+                            if cancel_token.is_cancelled() {
+                                plan.mark_status(&step.id, TaskStatus::Cancelled);
+                                self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                                    .await;
+                                if let Some(tx) = &event_tx {
+                                    tx.send(AgentEvent::StepEnd {
+                                        step_id: step.id.clone(),
+                                        status: TaskStatus::Cancelled,
+                                        step_number,
+                                        total_steps,
+                                    })
+                                    .await
+                                    .ok();
+                                }
+                                break;
+                            }
                             plan.mark_status(&step.id, TaskStatus::Completed);
                             self.emit_task_updated(&event_tx, &task_session_id, &plan)
                                 .await;
@@ -403,6 +433,22 @@ impl AgentLoop {
                             }
                         }
                         Err(e) => {
+                            if cancel_token.is_cancelled() {
+                                plan.mark_status(&step.id, TaskStatus::Cancelled);
+                                self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                                    .await;
+                                if let Some(tx) = &event_tx {
+                                    tx.send(AgentEvent::StepEnd {
+                                        step_id: step.id.clone(),
+                                        status: TaskStatus::Cancelled,
+                                        step_number,
+                                        total_steps,
+                                    })
+                                    .await
+                                    .ok();
+                                }
+                                break;
+                            }
                             tracing::error!("Plan step '{}' failed: {}", step.id, e);
                             plan.mark_status(&step.id, TaskStatus::Failed);
                             self.emit_task_updated(&event_tx, &task_session_id, &plan)
@@ -467,7 +513,13 @@ impl AgentLoop {
                         total_steps,
                     );
                     let (output, _exit_code, is_error, metadata) = self
-                        .execute_delegated_plan_tool("parallel_task", &args, session_id, &event_tx)
+                        .execute_delegated_plan_tool(
+                            "parallel_task",
+                            &args,
+                            session_id,
+                            &event_tx,
+                            cancel_token,
+                        )
                         .await;
                     tool_calls_count += 1;
 
@@ -556,11 +608,16 @@ impl AgentLoop {
                             let base_history = current_history.clone();
                             let agent = self.clone();
                             let tx = event_tx.clone();
+                            let cancel_token = cancel_token.clone();
                             move |_index, (step, step_number)| {
                                 let base_history = base_history.clone();
                                 let agent_clone = agent.clone();
                                 let tx = tx.clone();
+                                let cancel_token = cancel_token.clone();
                                 async move {
+                                    if cancel_token.is_cancelled() {
+                                        anyhow::bail!("Operation cancelled by user");
+                                    }
                                     let prompt = crate::prompts::render(
                                         crate::prompts::PLAN_EXECUTE_STEP,
                                         &[
@@ -575,7 +632,7 @@ impl AgentLoop {
                                             AgentStyle::GeneralPurpose,
                                             None,
                                             tx,
-                                            &tokio_util::sync::CancellationToken::new(),
+                                            &cancel_token,
                                             false, // emit_end: false — End is emitted by execute_with_planning after execute_plan
                                         )
                                         .await
@@ -584,6 +641,25 @@ impl AgentLoop {
                         },
                     )
                     .await;
+
+                    if cancel_token.is_cancelled() {
+                        for (step, step_number) in &ready_steps {
+                            plan.mark_status(&step.id, TaskStatus::Cancelled);
+                            if let Some(tx) = &event_tx {
+                                tx.send(AgentEvent::StepEnd {
+                                    step_id: step.id.clone(),
+                                    status: TaskStatus::Cancelled,
+                                    step_number: *step_number,
+                                    total_steps,
+                                })
+                                .await
+                                .ok();
+                            }
+                        }
+                        self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                            .await;
+                        break;
+                    }
 
                     for outcome in outcomes {
                         let (step_id, step_number) = step_lookup

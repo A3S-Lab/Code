@@ -13,7 +13,7 @@ pub(super) fn registry(session: &AgentSession) -> MutexGuard<'_, CommandRegistry
     session
         .command_registry
         .lock()
-        .expect("command_registry lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub(super) fn register(session: &AgentSession, cmd: Arc<dyn SlashCommand>) {

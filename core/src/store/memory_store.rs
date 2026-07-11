@@ -1,9 +1,9 @@
-use super::{SessionData, SessionStore};
+use super::{SessionData, SessionSnapshotV1, SessionStore, SessionStoreCapabilities};
 use crate::loop_checkpoint::LoopCheckpoint;
 use crate::orchestration::WorkflowCheckpoint;
 use crate::run::RunRecord;
 use crate::subagent_task_tracker::SubagentTaskSnapshot;
-use crate::tools::ArtifactStore;
+use crate::tools::{ArtifactStore, ToolArtifact};
 use crate::trace::TraceEvent;
 use crate::verification::VerificationReport;
 use anyhow::Result;
@@ -15,25 +15,53 @@ use std::collections::HashMap;
 
 /// In-memory session store for testing
 pub struct MemorySessionStore {
-    sessions: tokio::sync::RwLock<HashMap<String, SessionData>>,
-    artifacts: tokio::sync::RwLock<HashMap<String, ArtifactStore>>,
-    trace_events: tokio::sync::RwLock<HashMap<String, Vec<TraceEvent>>>,
-    run_records: tokio::sync::RwLock<HashMap<String, Vec<RunRecord>>>,
-    verification_reports: tokio::sync::RwLock<HashMap<String, Vec<VerificationReport>>>,
-    subagent_tasks: tokio::sync::RwLock<HashMap<String, Vec<SubagentTaskSnapshot>>>,
+    /// One lock owns every persisted component of a session. Replacing an
+    /// entry therefore publishes a complete generation to readers at once.
+    sessions: tokio::sync::RwLock<HashMap<String, MemorySessionEntry>>,
     loop_checkpoints: tokio::sync::RwLock<HashMap<String, LoopCheckpoint>>,
     workflow_checkpoints: tokio::sync::RwLock<HashMap<String, WorkflowCheckpoint>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MemorySessionEntry {
+    session: Option<SessionData>,
+    artifacts: Vec<ToolArtifact>,
+    trace_events: Vec<TraceEvent>,
+    run_records: Vec<RunRecord>,
+    verification_reports: Vec<VerificationReport>,
+    subagent_tasks: Vec<SubagentTaskSnapshot>,
+}
+
+impl MemorySessionEntry {
+    fn from_snapshot(snapshot: &SessionSnapshotV1) -> Self {
+        Self {
+            session: Some(snapshot.session.clone()),
+            artifacts: snapshot.artifacts.clone(),
+            trace_events: snapshot.trace_events.clone(),
+            run_records: snapshot.run_records.clone(),
+            verification_reports: snapshot.verification_reports.clone(),
+            subagent_tasks: snapshot.subagent_tasks.clone(),
+        }
+    }
+
+    fn snapshot(&self) -> Option<SessionSnapshotV1> {
+        let session = self.session.clone()?;
+        Some(SessionSnapshotV1 {
+            schema_version: super::SESSION_SNAPSHOT_SCHEMA_VERSION,
+            session,
+            artifacts: self.artifacts.clone(),
+            trace_events: self.trace_events.clone(),
+            run_records: self.run_records.clone(),
+            verification_reports: self.verification_reports.clone(),
+            subagent_tasks: self.subagent_tasks.clone(),
+        })
+    }
 }
 
 impl MemorySessionStore {
     pub fn new() -> Self {
         Self {
             sessions: tokio::sync::RwLock::new(HashMap::new()),
-            artifacts: tokio::sync::RwLock::new(HashMap::new()),
-            trace_events: tokio::sync::RwLock::new(HashMap::new()),
-            run_records: tokio::sync::RwLock::new(HashMap::new()),
-            verification_reports: tokio::sync::RwLock::new(HashMap::new()),
-            subagent_tasks: tokio::sync::RwLock::new(HashMap::new()),
             loop_checkpoints: tokio::sync::RwLock::new(HashMap::new()),
             workflow_checkpoints: tokio::sync::RwLock::new(HashMap::new()),
         }
@@ -50,23 +78,46 @@ impl Default for MemorySessionStore {
 impl SessionStore for MemorySessionStore {
     async fn save(&self, session: &SessionData) -> Result<()> {
         let mut sessions = self.sessions.write().await;
-        sessions.insert(session.id.clone(), session.clone());
+        sessions.entry(session.id.clone()).or_default().session = Some(session.clone());
         Ok(())
     }
 
     async fn load(&self, id: &str) -> Result<Option<SessionData>> {
         let sessions = self.sessions.read().await;
-        Ok(sessions.get(id).cloned())
+        Ok(sessions.get(id).and_then(|entry| entry.session.clone()))
+    }
+
+    async fn save_snapshot(&self, snapshot: &SessionSnapshotV1) -> Result<()> {
+        snapshot.ensure_loadable()?;
+        self.sessions.write().await.insert(
+            snapshot.session.id.clone(),
+            MemorySessionEntry::from_snapshot(snapshot),
+        );
+        Ok(())
+    }
+
+    async fn load_snapshot(&self, id: &str) -> Result<Option<SessionSnapshotV1>> {
+        let snapshot = self
+            .sessions
+            .read()
+            .await
+            .get(id)
+            .and_then(MemorySessionEntry::snapshot);
+        if let Some(snapshot) = &snapshot {
+            snapshot.ensure_loadable()?;
+        }
+        Ok(snapshot)
+    }
+
+    fn capabilities(&self) -> SessionStoreCapabilities {
+        SessionStoreCapabilities {
+            atomic_session_snapshots: true,
+        }
     }
 
     async fn delete(&self, id: &str) -> Result<()> {
         let mut sessions = self.sessions.write().await;
         sessions.remove(id);
-        self.artifacts.write().await.remove(id);
-        self.trace_events.write().await.remove(id);
-        self.run_records.write().await.remove(id);
-        self.verification_reports.write().await.remove(id);
-        self.subagent_tasks.write().await.remove(id);
         // Loop checkpoints are keyed by run_id, not session_id, so a
         // session-level delete can't address them. They are removed by
         // `delete_loop_checkpoint(run_id)` — called automatically by the
@@ -76,48 +127,76 @@ impl SessionStore for MemorySessionStore {
 
     async fn list(&self) -> Result<Vec<String>> {
         let sessions = self.sessions.read().await;
-        Ok(sessions.keys().cloned().collect())
+        Ok(sessions
+            .iter()
+            .filter(|(_, entry)| entry.session.is_some())
+            .map(|(id, _)| id.clone())
+            .collect())
     }
 
     async fn exists(&self, id: &str) -> Result<bool> {
         let sessions = self.sessions.read().await;
-        Ok(sessions.contains_key(id))
+        Ok(sessions
+            .get(id)
+            .is_some_and(|entry| entry.session.is_some()))
     }
 
     async fn save_artifacts(&self, id: &str, artifacts: &ArtifactStore) -> Result<()> {
-        self.artifacts
+        self.sessions
             .write()
             .await
-            .insert(id.to_string(), artifacts.clone());
+            .entry(id.to_string())
+            .or_default()
+            .artifacts = artifacts.artifacts();
         Ok(())
     }
 
     async fn load_artifacts(&self, id: &str) -> Result<Option<ArtifactStore>> {
-        Ok(self.artifacts.read().await.get(id).cloned())
+        let artifacts = self
+            .sessions
+            .read()
+            .await
+            .get(id)
+            .map(|entry| entry.artifacts.clone());
+        Ok(artifacts.map(|artifacts| super::session_snapshot::artifact_store_from(&artifacts)))
     }
 
     async fn save_trace_events(&self, id: &str, events: &[TraceEvent]) -> Result<()> {
-        self.trace_events
+        self.sessions
             .write()
             .await
-            .insert(id.to_string(), events.to_vec());
+            .entry(id.to_string())
+            .or_default()
+            .trace_events = events.to_vec();
         Ok(())
     }
 
     async fn load_trace_events(&self, id: &str) -> Result<Option<Vec<TraceEvent>>> {
-        Ok(self.trace_events.read().await.get(id).cloned())
+        Ok(self
+            .sessions
+            .read()
+            .await
+            .get(id)
+            .map(|entry| entry.trace_events.clone()))
     }
 
     async fn save_run_records(&self, id: &str, records: &[RunRecord]) -> Result<()> {
-        self.run_records
+        self.sessions
             .write()
             .await
-            .insert(id.to_string(), records.to_vec());
+            .entry(id.to_string())
+            .or_default()
+            .run_records = records.to_vec();
         Ok(())
     }
 
     async fn load_run_records(&self, id: &str) -> Result<Option<Vec<RunRecord>>> {
-        Ok(self.run_records.read().await.get(id).cloned())
+        Ok(self
+            .sessions
+            .read()
+            .await
+            .get(id)
+            .map(|entry| entry.run_records.clone()))
     }
 
     async fn save_verification_reports(
@@ -125,30 +204,45 @@ impl SessionStore for MemorySessionStore {
         id: &str,
         reports: &[VerificationReport],
     ) -> Result<()> {
-        self.verification_reports
+        self.sessions
             .write()
             .await
-            .insert(id.to_string(), reports.to_vec());
+            .entry(id.to_string())
+            .or_default()
+            .verification_reports = reports.to_vec();
         Ok(())
     }
 
     async fn load_verification_reports(&self, id: &str) -> Result<Option<Vec<VerificationReport>>> {
-        Ok(self.verification_reports.read().await.get(id).cloned())
+        Ok(self
+            .sessions
+            .read()
+            .await
+            .get(id)
+            .map(|entry| entry.verification_reports.clone()))
     }
 
     async fn save_subagent_tasks(&self, id: &str, tasks: &[SubagentTaskSnapshot]) -> Result<()> {
-        self.subagent_tasks
+        self.sessions
             .write()
             .await
-            .insert(id.to_string(), tasks.to_vec());
+            .entry(id.to_string())
+            .or_default()
+            .subagent_tasks = tasks.to_vec();
         Ok(())
     }
 
     async fn load_subagent_tasks(&self, id: &str) -> Result<Option<Vec<SubagentTaskSnapshot>>> {
-        Ok(self.subagent_tasks.read().await.get(id).cloned())
+        Ok(self
+            .sessions
+            .read()
+            .await
+            .get(id)
+            .map(|entry| entry.subagent_tasks.clone()))
     }
 
     async fn save_loop_checkpoint(&self, run_id: &str, checkpoint: &LoopCheckpoint) -> Result<()> {
+        checkpoint.ensure_addressed_by(run_id)?;
         self.loop_checkpoints
             .write()
             .await
@@ -162,6 +256,7 @@ impl SessionStore for MemorySessionStore {
             // the contract holds uniformly across backends.
             Some(cp) => {
                 cp.ensure_loadable()?;
+                cp.ensure_addressed_by(run_id)?;
                 Ok(Some(cp))
             }
             None => Ok(None),
@@ -178,6 +273,13 @@ impl SessionStore for MemorySessionStore {
         workflow_id: &str,
         checkpoint: &WorkflowCheckpoint,
     ) -> Result<()> {
+        if checkpoint.workflow_id != workflow_id {
+            anyhow::bail!(
+                "workflow checkpoint key mismatch: requested workflow {:?}, payload belongs to {:?}",
+                workflow_id,
+                checkpoint.workflow_id
+            );
+        }
         self.workflow_checkpoints
             .write()
             .await
@@ -198,6 +300,13 @@ impl SessionStore for MemorySessionStore {
         {
             Some(cp) => {
                 cp.ensure_loadable()?;
+                if cp.workflow_id != workflow_id {
+                    anyhow::bail!(
+                        "workflow checkpoint key mismatch: requested workflow {:?}, payload belongs to {:?}",
+                        workflow_id,
+                        cp.workflow_id
+                    );
+                }
                 Ok(Some(cp))
             }
             None => Ok(None),

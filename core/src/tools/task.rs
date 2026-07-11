@@ -18,7 +18,7 @@ use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
 use crate::llm::structured::{generate_blocking, StructuredMode, StructuredRequest};
 use crate::llm::LlmClient;
 use crate::mcp::manager::McpManager;
-use crate::orchestration::{AgentExecutor, AgentStepSpec, StepOutcome};
+use crate::orchestration::{AgentExecutor, AgentStepSpec, StepOutcome, ToolSourceAnchor};
 use crate::subagent::AgentRegistry;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
@@ -31,10 +31,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 const TASK_OUTPUT_CONTEXT_LIMIT: usize = 4_000;
 const TASK_OUTPUT_CONTEXT_HEAD: usize = 3_000;
 const TASK_OUTPUT_CONTEXT_TAIL: usize = 800;
+const MAX_TASK_SOURCE_ANCHORS: usize = 64;
+const MAX_TASK_SOURCE_CANDIDATES: usize = MAX_TASK_SOURCE_ANCHORS * 4;
+const MAX_TASK_SOURCE_TOOL_BYTES: usize = 64;
+const MAX_TASK_SOURCE_VALUE_BYTES: usize = 4 * 1024;
+const MAX_PARALLEL_TASK_SOURCE_ANCHORS: usize = MAX_TASK_SOURCE_ANCHORS;
 
 /// Task tool parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,133 +79,15 @@ pub struct TaskResult {
     /// Structured child output validated against an optional output schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured: Option<serde_json::Value>,
+    /// Source locations observed by successful built-in child tool calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_anchors: Vec<ToolSourceAnchor>,
 }
 
-fn compact_task_output(output: &str) -> (String, bool) {
-    if output.len() <= TASK_OUTPUT_CONTEXT_LIMIT {
-        return (output.to_string(), false);
-    }
+mod result_projection;
+use result_projection::*;
 
-    let head = crate::text::truncate_utf8(output, TASK_OUTPUT_CONTEXT_HEAD);
-    let tail_start = output
-        .char_indices()
-        .find_map(|(idx, _)| {
-            if output.len().saturating_sub(idx) <= TASK_OUTPUT_CONTEXT_TAIL {
-                Some(idx)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(output.len());
-    let tail = &output[tail_start..];
-
-    (
-        format!(
-            "{}\n\n[{} bytes omitted from delegated task output]\n\n{}",
-            head,
-            output.len().saturating_sub(head.len() + tail.len()),
-            tail
-        ),
-        true,
-    )
-}
-
-/// Translate selected child-loop events into a `SubagentProgress` milestone
-/// for the parent broadcast. Returns `None` for events that aren't worth
-/// surfacing as progress (text deltas, tool starts, subagent events from
-/// nested delegation, etc.).
-///
-/// Currently emits progress for:
-/// - `ToolEnd`   → `status = "tool_completed"`,
-///   `metadata = { tool, exit_code, output_bytes, error_kind? }`
-/// - `TurnEnd`   → `status = "turn_completed"`,
-///   `metadata = { turn, total_tokens, prompt_tokens, completion_tokens }`
-fn synthesize_subagent_progress(
-    event: &AgentEvent,
-    task_id: &str,
-    session_id: &str,
-) -> Option<AgentEvent> {
-    match event {
-        AgentEvent::ToolEnd {
-            name,
-            output,
-            exit_code,
-            error_kind,
-            ..
-        } => {
-            let mut metadata = serde_json::json!({
-                "tool": name,
-                "exit_code": exit_code,
-                "output_bytes": output.len(),
-            });
-            if let Some(kind) = error_kind {
-                metadata["error_kind"] =
-                    serde_json::to_value(kind).unwrap_or(serde_json::Value::Null);
-            }
-            Some(AgentEvent::SubagentProgress {
-                task_id: task_id.to_string(),
-                session_id: session_id.to_string(),
-                status: "tool_completed".to_string(),
-                metadata,
-            })
-        }
-        AgentEvent::TurnEnd { turn, usage } => Some(AgentEvent::SubagentProgress {
-            task_id: task_id.to_string(),
-            session_id: session_id.to_string(),
-            status: "turn_completed".to_string(),
-            metadata: serde_json::json!({
-                "turn": turn,
-                "total_tokens": usage.total_tokens,
-                "prompt_tokens": usage.prompt_tokens,
-                "completion_tokens": usage.completion_tokens,
-            }),
-        }),
-        _ => None,
-    }
-}
-
-fn task_artifact_id(result: &TaskResult) -> String {
-    format!("task-output:{}", result.task_id)
-}
-
-fn task_artifact_uri(result: &TaskResult) -> String {
-    format!(
-        "a3s://tasks/{}/runs/{}/output",
-        result.session_id, result.task_id
-    )
-}
-
-fn epoch_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn format_task_result_for_context(result: &TaskResult) -> (String, bool) {
-    let (output, truncated) = compact_task_output(&result.output);
-    let status = if result.success {
-        "completed"
-    } else {
-        "failed"
-    };
-    let artifact_id = task_artifact_id(result);
-    let artifact_uri = task_artifact_uri(result);
-    let mut formatted = format!(
-        "Task {status}: {}\nAgent: {}\nSession: {}\nTask ID: {}\nArtifact ID: {}\nArtifact URI: {}\n",
-        result.task_id, result.agent, result.session_id, result.task_id, artifact_id, artifact_uri
-    );
-    if truncated {
-        formatted.push_str(
-            "Output excerpt: truncated for parent context. Use the artifact URI or child run session/events if exact omitted content is needed.\n",
-        );
-    } else {
-        formatted.push_str("Output:\n");
-    }
-    formatted.push_str(&output);
-    (formatted, truncated)
-}
+mod parallel_execution;
 
 /// Task executor for delegated child runs.
 pub struct TaskExecutor {
@@ -209,10 +97,14 @@ pub struct TaskExecutor {
     llm_client: Arc<dyn LlmClient>,
     /// Workspace path shared with child agents
     workspace: String,
-    /// Optional MCP manager for registering MCP tools in child sessions
-    mcp_manager: Option<Arc<McpManager>>,
+    /// Ordered MCP managers for registering inherited tools in child sessions.
+    mcp_managers: Vec<Arc<McpManager>>,
     /// Parent capabilities to inherit into child runs.
     parent_context: Option<crate::child_run::ChildRunContext>,
+    /// Optional lifetime boundary inherited from the session that created this
+    /// executor. Keeping it on the executor prevents cached workflow/executor
+    /// handles from starting new child runs after their session is closed.
+    parent_cancellation: Option<CancellationToken>,
     max_parallel_tasks: usize,
     /// Optional shared tracker — when present each task registers a
     /// `CancellationToken` so callers can cancel by `task_id`.
@@ -230,8 +122,9 @@ impl TaskExecutor {
             registry,
             llm_client,
             workspace,
-            mcp_manager: None,
+            mcp_managers: Vec::new(),
             parent_context: None,
+            parent_cancellation: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
             subagent_tracker: None,
         }
@@ -244,12 +137,23 @@ impl TaskExecutor {
         workspace: String,
         mcp_manager: Arc<McpManager>,
     ) -> Self {
+        Self::with_mcp_managers(registry, llm_client, workspace, vec![mcp_manager])
+    }
+
+    /// Create a task executor with ordered MCP capability sources.
+    pub fn with_mcp_managers(
+        registry: Arc<AgentRegistry>,
+        llm_client: Arc<dyn LlmClient>,
+        workspace: String,
+        mcp_managers: Vec<Arc<McpManager>>,
+    ) -> Self {
         Self {
             registry,
             llm_client,
             workspace,
-            mcp_manager: Some(mcp_manager),
+            mcp_managers,
             parent_context: None,
+            parent_cancellation: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
             subagent_tracker: None,
         }
@@ -261,6 +165,17 @@ impl TaskExecutor {
             self.max_parallel_tasks = max_parallel_tasks.max(1);
         }
         self.parent_context = Some(ctx);
+        self
+    }
+
+    /// Bind every run started by this executor to a parent lifetime.
+    ///
+    /// A token that is already cancelled makes execution fail before emitting
+    /// `SubagentStart` or performing MCP/LLM work. In-flight children derive
+    /// their own token so cancellation still cascades without granting them the
+    /// ability to cancel the parent.
+    pub fn with_parent_cancellation(mut self, cancellation: CancellationToken) -> Self {
+        self.parent_cancellation = Some(cancellation);
         self
     }
 
@@ -290,9 +205,32 @@ impl TaskExecutor {
         event_tx: Option<broadcast::Sender<AgentEvent>>,
         parent_session_id: Option<&str>,
     ) -> Result<TaskResult> {
+        self.execute_with_parent_cancellation(
+            params,
+            event_tx,
+            parent_session_id,
+            self.parent_cancellation.as_ref(),
+        )
+        .await
+    }
+
+    async fn execute_with_parent_cancellation(
+        &self,
+        params: TaskParams,
+        event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<&str>,
+        parent_cancellation: Option<&CancellationToken>,
+    ) -> Result<TaskResult> {
         let task_id = format!("task-{}", uuid::Uuid::new_v4());
-        self.execute_with_task_id(task_id, params, event_tx, parent_session_id, true)
-            .await
+        self.execute_with_task_id_scoped(
+            task_id,
+            params,
+            event_tx,
+            parent_session_id,
+            true,
+            parent_cancellation,
+        )
+        .await
     }
 
     /// Execute a task using a caller-supplied task id. Used by `execute_background`
@@ -307,24 +245,61 @@ impl TaskExecutor {
         parent_session_id: Option<&str>,
         emit_start: bool,
     ) -> Result<TaskResult> {
+        self.execute_with_task_id_scoped(
+            task_id,
+            params,
+            event_tx,
+            parent_session_id,
+            emit_start,
+            self.parent_cancellation.as_ref(),
+        )
+        .await
+    }
+
+    async fn execute_with_task_id_scoped(
+        &self,
+        task_id: String,
+        params: TaskParams,
+        event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<&str>,
+        emit_start: bool,
+        parent_cancellation: Option<&CancellationToken>,
+    ) -> Result<TaskResult> {
+        if parent_cancellation.is_some_and(CancellationToken::is_cancelled) {
+            anyhow::bail!("Operation cancelled by parent session");
+        }
+
         let session_id = format!("task-run-{}", task_id);
         let started_ms = epoch_ms();
+        let output_schema = params.output_schema.clone();
 
         let agent = self
             .registry
             .get(&params.agent)
             .context(format!("Unknown agent type: '{}'", params.agent))?;
+        let inherited_security_provider = self
+            .parent_context
+            .as_ref()
+            .and_then(|context| context.security_provider.clone());
 
         if emit_start {
+            let event = AgentEvent::SubagentStart {
+                task_id: task_id.clone(),
+                session_id: session_id.clone(),
+                parent_session_id: parent_session_id.unwrap_or_default().to_string(),
+                agent: params.agent.clone(),
+                description: params.description.clone(),
+                started_ms,
+            };
+            let event = inherited_security_provider
+                .as_deref()
+                .map(|provider| crate::security::sanitize_agent_event(provider, &event))
+                .unwrap_or(event);
+            if let Some(ref tracker) = self.subagent_tracker {
+                tracker.record_event(&event).await;
+            }
             if let Some(ref tx) = event_tx {
-                let _ = tx.send(AgentEvent::SubagentStart {
-                    task_id: task_id.clone(),
-                    session_id: session_id.clone(),
-                    parent_session_id: parent_session_id.unwrap_or_default().to_string(),
-                    agent: params.agent.clone(),
-                    description: params.description.clone(),
-                    started_ms,
-                });
+                let _ = tx.send(event);
             }
         }
 
@@ -345,8 +320,19 @@ impl TaskExecutor {
         };
 
         // Register MCP tools so child agents can access MCP servers.
-        if let Some(ref mcp) = self.mcp_manager {
-            let all_tools = mcp.get_all_tools().await;
+        for mcp in &self.mcp_managers {
+            let all_tools = match parent_cancellation {
+                Some(cancellation) => {
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => {
+                            anyhow::bail!("Operation cancelled by parent session");
+                        }
+                        tools = mcp.get_all_tools() => tools,
+                    }
+                }
+                None => mcp.get_all_tools().await,
+            };
             let mut by_server: std::collections::HashMap<
                 String,
                 Vec<crate::mcp::protocol::McpTool>,
@@ -376,15 +362,22 @@ impl TaskExecutor {
         if let Some(max_steps) = params.max_steps {
             child_config.max_tool_rounds = max_steps;
         }
+        let child_security_provider = child_config.security_provider.clone();
+        let source_security_provider = child_security_provider.clone();
 
-        let mut tool_context =
-            ToolContext::new(PathBuf::from(&self.workspace)).with_session_id(session_id.clone());
+        let cancel_token = parent_cancellation
+            .map(CancellationToken::child_token)
+            .unwrap_or_default();
+        let mut tool_context = ToolContext::new(PathBuf::from(&self.workspace))
+            .with_session_id(session_id.clone())
+            .with_cancellation(cancel_token.clone());
         if let Some(ref parent_ctx) = self.parent_context {
             if let Some(ref services) = parent_ctx.workspace_services {
                 tool_context = tool_context.with_workspace_services(Arc::clone(services));
             }
         }
 
+        let source_context = tool_context.clone();
         let agent_loop = AgentLoop::new(
             Arc::clone(&self.llm_client),
             child_executor,
@@ -392,44 +385,54 @@ impl TaskExecutor {
             child_config,
         );
 
-        // Create an mpsc channel for the child agent and forward events to broadcast.
-        // Selected child events (ToolEnd, TurnEnd) are also surfaced to the parent
-        // broadcast as synthetic `SubagentProgress` events so dashboards can observe
-        // mid-task milestones without subscribing to the raw event stream.
-        let child_event_tx = if let Some(ref broadcast_tx) = event_tx {
-            let (mpsc_tx, mut mpsc_rx) = tokio::sync::mpsc::channel(100);
-            let broadcast_tx_clone = broadcast_tx.clone();
-            let progress_task_id = task_id.clone();
-            let progress_session_id = session_id.clone();
-
-            tokio::spawn(async move {
-                while let Some(event) = mpsc_rx.recv().await {
+        // Always observe the child event stream so successful source tool calls
+        // survive in TaskResult metadata even when nobody subscribed to live
+        // progress. Forward the same events when a parent broadcast exists.
+        let (mpsc_tx, mut mpsc_rx) = tokio::sync::mpsc::channel(100);
+        let broadcast_tx = event_tx.clone();
+        let progress_task_id = task_id.clone();
+        let progress_session_id = session_id.clone();
+        let child_event_forwarder = tokio::spawn(async move {
+            let mut source_anchors = Vec::new();
+            let mut seen_source_anchors = std::collections::HashSet::new();
+            let mut scanned_source_candidates = 0usize;
+            while let Some(event) = mpsc_rx.recv().await {
+                let event = source_security_provider
+                    .as_deref()
+                    .map(|provider| crate::security::sanitize_agent_event(provider, &event))
+                    .unwrap_or(event);
+                collect_tool_source_anchors(
+                    &event,
+                    &source_context,
+                    &mut source_anchors,
+                    &mut seen_source_anchors,
+                    &mut scanned_source_candidates,
+                );
+                if let Some(ref broadcast_tx) = broadcast_tx {
                     if let Some(progress) = synthesize_subagent_progress(
                         &event,
                         &progress_task_id,
                         &progress_session_id,
                     ) {
-                        let _ = broadcast_tx_clone.send(progress);
+                        let _ = broadcast_tx.send(progress);
                     }
-                    let _ = broadcast_tx_clone.send(event);
+                    let _ = broadcast_tx.send(event);
                 }
-            });
-
-            Some(mpsc_tx)
-        } else {
-            None
-        };
+            }
+            source_anchors
+        });
+        let child_event_tx = Some(mpsc_tx);
+        let child_llm_event_tx = child_event_tx.clone();
 
         // Register a CancellationToken with the tracker (if shared) so the
         // parent session's `cancel_subagent_task` can interrupt this run.
-        let cancel_token = tokio_util::sync::CancellationToken::new();
         if let Some(ref tracker) = self.subagent_tracker {
             tracker
                 .register_canceller(&task_id, cancel_token.clone())
                 .await;
         }
 
-        let (output, success) = match agent_loop
+        let (mut output, mut success) = match agent_loop
             .execute_with_session(
                 &[],
                 &params.prompt,
@@ -446,19 +449,64 @@ impl TaskExecutor {
             Err(e) => (format!("Task failed: {}", e), false),
         };
 
-        if let Some(ref tracker) = self.subagent_tracker {
-            tracker.clear_canceller(&task_id).await;
+        let mut structured = None;
+        if success {
+            if let Some(schema) = output_schema {
+                let llm_client = agent_loop.scoped_llm_client_for_parts(
+                    Some(&session_id),
+                    &child_llm_event_tx,
+                    &cancel_token,
+                );
+                match Self::coerce_to_schema(&*llm_client, &output, schema, &cancel_token).await {
+                    Ok(object) => structured = Some(object),
+                    Err(error) => {
+                        success = false;
+                        output = format!("{output}\n\n[structured output failed: {error}]");
+                    }
+                }
+            }
+        }
+        if let Some(provider) = child_security_provider.as_deref() {
+            output = provider.sanitize_output(&output);
+            if let Some(value) = &mut structured {
+                *value = sanitize_task_json(provider, value);
+            }
         }
 
+        // The child loop and optional structured-output pass are the only
+        // producers. Close their sender and drain the bridge before emitting
+        // SubagentEnd so callers never observe a terminal event followed by
+        // stale child deltas or progress events.
+        drop(child_llm_event_tx);
+        let source_anchors = match child_event_forwarder.await {
+            Ok(source_anchors) => source_anchors,
+            Err(error) => {
+                tracing::warn!(%error, task_id = %task_id, "subagent event bridge failed");
+                Vec::new()
+            }
+        };
+
+        let end_event = AgentEvent::SubagentEnd {
+            task_id: task_id.clone(),
+            session_id: session_id.clone(),
+            agent: params.agent.clone(),
+            output: output.clone(),
+            success,
+            finished_ms: epoch_ms(),
+        };
+        if let Some(ref tracker) = self.subagent_tracker {
+            // The tracker is authoritative even when a background child
+            // finishes after the parent run's event forwarder has closed.
+            if success {
+                tracker
+                    .record_source_anchors(&task_id, &source_anchors)
+                    .await;
+            }
+            tracker.record_event(&end_event).await;
+            tracker.clear_canceller(&task_id).await;
+        }
         if let Some(ref tx) = event_tx {
-            let _ = tx.send(AgentEvent::SubagentEnd {
-                task_id: task_id.clone(),
-                session_id: session_id.clone(),
-                agent: params.agent.clone(),
-                output: output.clone(),
-                success,
-                finished_ms: epoch_ms(),
-            });
+            let _ = tx.send(end_event);
         }
 
         Ok(TaskResult {
@@ -467,7 +515,8 @@ impl TaskExecutor {
             agent: params.agent,
             success,
             task_id,
-            structured: None,
+            structured,
+            source_anchors,
         })
     }
 
@@ -484,410 +533,89 @@ impl TaskExecutor {
         event_tx: Option<broadcast::Sender<AgentEvent>>,
         parent_session_id: Option<String>,
     ) -> String {
+        let parent_cancellation = self.parent_cancellation.clone();
+        self.execute_background_with_parent_cancellation(
+            params,
+            event_tx,
+            parent_session_id,
+            parent_cancellation,
+        )
+    }
+
+    fn execute_background_with_parent_cancellation(
+        self: Arc<Self>,
+        params: TaskParams,
+        event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<String>,
+        parent_cancellation: Option<CancellationToken>,
+    ) -> String {
         let task_id = format!("task-{}", uuid::Uuid::new_v4());
         let session_id = format!("task-run-{}", task_id);
+        let failure_session_id = session_id.clone();
+        let failure_agent = params.agent.clone();
+        let start_event = AgentEvent::SubagentStart {
+            task_id: task_id.clone(),
+            session_id,
+            parent_session_id: parent_session_id.clone().unwrap_or_default(),
+            agent: params.agent.clone(),
+            description: params.description.clone(),
+            started_ms: epoch_ms(),
+        };
+        let security_provider = self
+            .parent_context
+            .as_ref()
+            .and_then(|context| context.security_provider.clone());
+        let start_event = security_provider
+            .as_deref()
+            .map(|provider| crate::security::sanitize_agent_event(provider, &start_event))
+            .unwrap_or(start_event);
 
         if let Some(ref tx) = event_tx {
-            let _ = tx.send(AgentEvent::SubagentStart {
-                task_id: task_id.clone(),
-                session_id,
-                parent_session_id: parent_session_id.clone().unwrap_or_default(),
-                agent: params.agent.clone(),
-                description: params.description.clone(),
-                started_ms: epoch_ms(),
-            });
+            let _ = tx.send(start_event.clone());
         }
 
         let task_id_for_spawn = task_id.clone();
         let task_id_for_log = task_id.clone();
         tokio::spawn(async move {
-            if let Err(e) = self
-                .execute_with_task_id(
+            if let Some(ref tracker) = self.subagent_tracker {
+                tracker.record_event(&start_event).await;
+            }
+            let failure_event_tx = event_tx.clone();
+            if let Err(error) = self
+                .execute_with_task_id_scoped(
                     task_id_for_spawn,
                     params,
                     event_tx,
                     parent_session_id.as_deref(),
                     false,
+                    parent_cancellation.as_ref(),
                 )
                 .await
             {
-                tracing::error!("Background task {} failed: {}", task_id_for_log, e);
+                let end_event = AgentEvent::SubagentEnd {
+                    task_id: task_id_for_log.clone(),
+                    session_id: failure_session_id,
+                    agent: failure_agent,
+                    output: format!("Task failed before child execution started: {error}"),
+                    success: false,
+                    finished_ms: epoch_ms(),
+                };
+                let end_event = security_provider
+                    .as_deref()
+                    .map(|provider| crate::security::sanitize_agent_event(provider, &end_event))
+                    .unwrap_or(end_event);
+                if let Some(ref tracker) = self.subagent_tracker {
+                    tracker.record_event(&end_event).await;
+                    tracker.clear_canceller(&task_id_for_log).await;
+                }
+                if let Some(tx) = failure_event_tx {
+                    let _ = tx.send(end_event);
+                }
+                tracing::error!("Background task {} failed: {}", task_id_for_log, error);
             }
         });
 
         task_id
-    }
-
-    /// Execute multiple tasks in parallel.
-    ///
-    /// Spawns all tasks concurrently and waits for all to complete.
-    /// Returns results in the same order as the input tasks. Routed through
-    /// the [`AgentExecutor`](crate::orchestration::AgentExecutor) seam so the
-    /// same fan-out works whether steps run locally (default) or are placed
-    /// on remote nodes by a host.
-    pub async fn execute_parallel(
-        self: &Arc<Self>,
-        tasks: Vec<TaskParams>,
-        event_tx: Option<broadcast::Sender<AgentEvent>>,
-        parent_session_id: Option<&str>,
-    ) -> Vec<TaskResult> {
-        let parent = parent_session_id.map(|s| s.to_string());
-        let specs = tasks
-            .into_iter()
-            .map(|params| AgentStepSpec {
-                task_id: format!("task-{}", uuid::Uuid::new_v4()),
-                agent: params.agent,
-                description: params.description,
-                prompt: params.prompt,
-                max_steps: params.max_steps,
-                parent_session_id: parent.clone(),
-                output_schema: params.output_schema,
-            })
-            .collect();
-
-        let executor: Arc<dyn AgentExecutor> = Arc::<Self>::clone(self);
-        crate::orchestration::execute_steps_parallel(executor, specs, event_tx)
-            .await
-            .into_iter()
-            .map(TaskResult::from)
-            .collect()
-    }
-
-    async fn execute_parallel_for_tool(
-        self: &Arc<Self>,
-        tasks: Vec<TaskParams>,
-        event_tx: Option<broadcast::Sender<AgentEvent>>,
-        parent_session_id: Option<&str>,
-        timeout_ms: Option<u64>,
-        min_success_count: Option<usize>,
-        allow_partial_failure: bool,
-    ) -> ParallelTaskRun {
-        let should_return_early = allow_partial_failure && min_success_count.is_some();
-        if timeout_ms.is_none() && !should_return_early {
-            return ParallelTaskRun {
-                results: self
-                    .execute_parallel(tasks, event_tx, parent_session_id)
-                    .await,
-                timed_out: false,
-                returned_early: false,
-                timeout_ms: None,
-                min_success_count: None,
-            };
-        }
-
-        let task_count = tasks.len();
-        let parent = parent_session_id.map(ToString::to_string);
-        let specs = tasks
-            .into_iter()
-            .map(|params| AgentStepSpec {
-                task_id: format!("task-{}", uuid::Uuid::new_v4()),
-                agent: params.agent,
-                description: params.description,
-                prompt: params.prompt,
-                max_steps: params.max_steps,
-                parent_session_id: parent.clone(),
-                output_schema: params.output_schema,
-            })
-            .collect::<Vec<_>>();
-        let labels = specs
-            .iter()
-            .map(|spec| (spec.task_id.clone(), spec.agent.clone()))
-            .collect::<Vec<_>>();
-        let target_successes = min_success_count
-            .unwrap_or(task_count)
-            .clamp(1, task_count.max(1));
-
-        let max_concurrency = self.max_parallel_tasks.max(1);
-        let mut pending = specs.into_iter().enumerate();
-        let mut join_set = JoinSet::new();
-        let mut active_count = 0usize;
-        while active_count < max_concurrency {
-            let Some((index, spec)) = pending.next() else {
-                break;
-            };
-            spawn_parallel_task_step(
-                &mut join_set,
-                Arc::clone(self),
-                event_tx.clone(),
-                index,
-                spec,
-            );
-            active_count += 1;
-        }
-
-        let mut results: Vec<Option<TaskResult>> = vec![None; task_count];
-        let mut completed_count = 0usize;
-        let mut success_count = 0usize;
-        let mut timed_out = false;
-        let mut returned_early = false;
-        let deadline = timeout_ms.map(|timeout| {
-            tokio::time::Instant::now() + std::time::Duration::from_millis(timeout.max(1))
-        });
-
-        while completed_count < task_count {
-            if should_return_early && success_count >= target_successes {
-                returned_early = true;
-                break;
-            }
-
-            let next = match deadline {
-                Some(deadline) => {
-                    tokio::select! {
-                        result = join_set.join_next() => result,
-                        _ = tokio::time::sleep_until(deadline) => {
-                            timed_out = true;
-                            break;
-                        }
-                    }
-                }
-                None => join_set.join_next().await,
-            };
-
-            let Some(joined) = next else {
-                break;
-            };
-            active_count = active_count.saturating_sub(1);
-            let (index, outcome) = match joined {
-                Ok((index, Ok(outcome))) => (index, outcome),
-                Ok((index, Err(error))) => {
-                    let (task_id, agent) = labels
-                        .get(index)
-                        .cloned()
-                        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
-                    (index, StepOutcome::failed(task_id, agent, error))
-                }
-                Err(error) => {
-                    let index = completed_count;
-                    let (task_id, agent) = labels
-                        .get(index)
-                        .cloned()
-                        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
-                    (
-                        index,
-                        StepOutcome::failed(task_id, agent, error.to_string()),
-                    )
-                }
-            };
-            if index >= task_count || results[index].is_some() {
-                continue;
-            }
-            if outcome.success {
-                success_count += 1;
-            }
-            results[index] = Some(TaskResult::from(outcome));
-            completed_count += 1;
-
-            if should_return_early && success_count >= target_successes {
-                returned_early = true;
-                break;
-            }
-
-            while active_count < max_concurrency {
-                let Some((index, spec)) = pending.next() else {
-                    break;
-                };
-                spawn_parallel_task_step(
-                    &mut join_set,
-                    Arc::clone(self),
-                    event_tx.clone(),
-                    index,
-                    spec,
-                );
-                active_count += 1;
-            }
-        }
-
-        if timed_out || returned_early || active_count > 0 {
-            join_set.abort_all();
-        }
-
-        let unfinished_message = if timed_out {
-            format!(
-                "Task timed out before parallel_task finished collecting child results after {} ms.",
-                timeout_ms.unwrap_or_default()
-            )
-        } else if returned_early {
-            format!(
-                "Task cancelled after parallel_task collected {success_count} successful child result(s)."
-            )
-        } else {
-            "Task did not return a result before parallel_task ended.".to_string()
-        };
-        let results = results
-            .into_iter()
-            .enumerate()
-            .map(|(index, result)| {
-                result.unwrap_or_else(|| {
-                    let (task_id, agent) = labels
-                        .get(index)
-                        .cloned()
-                        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
-                    TaskResult::from(StepOutcome::failed(
-                        task_id,
-                        agent,
-                        unfinished_message.clone(),
-                    ))
-                })
-            })
-            .collect();
-
-        ParallelTaskRun {
-            results,
-            timed_out,
-            returned_early,
-            timeout_ms,
-            min_success_count,
-        }
-    }
-}
-
-fn spawn_parallel_task_step(
-    join_set: &mut JoinSet<(usize, std::result::Result<StepOutcome, String>)>,
-    executor: Arc<TaskExecutor>,
-    event_tx: Option<broadcast::Sender<AgentEvent>>,
-    index: usize,
-    spec: AgentStepSpec,
-) {
-    join_set.spawn(async move {
-        let outcome = AssertUnwindSafe(executor.execute_step(spec, event_tx))
-            .catch_unwind()
-            .await
-            .map_err(panic_payload_to_string);
-        (index, outcome)
-    });
-}
-
-fn panic_payload_to_string(payload: Box<dyn Any + Send>) -> String {
-    if let Some(message) = payload.downcast_ref::<&str>() {
-        return format!("parallel branch panicked: {message}");
-    }
-    if let Some(message) = payload.downcast_ref::<String>() {
-        return format!("parallel branch panicked: {message}");
-    }
-    "parallel branch panicked: unknown panic payload".to_string()
-}
-
-struct ParallelTaskRun {
-    results: Vec<TaskResult>,
-    timed_out: bool,
-    returned_early: bool,
-    timeout_ms: Option<u64>,
-    min_success_count: Option<usize>,
-}
-
-impl From<TaskResult> for StepOutcome {
-    fn from(r: TaskResult) -> Self {
-        StepOutcome {
-            task_id: r.task_id,
-            session_id: r.session_id,
-            agent: r.agent,
-            output: r.output,
-            success: r.success,
-            structured: r.structured,
-        }
-    }
-}
-
-impl From<StepOutcome> for TaskResult {
-    fn from(o: StepOutcome) -> Self {
-        TaskResult {
-            output: o.output,
-            session_id: o.session_id,
-            agent: o.agent,
-            success: o.success,
-            task_id: o.task_id,
-            structured: o.structured,
-        }
-    }
-}
-
-/// The local, in-process executor: every step runs as a child `AgentLoop` on
-/// this node's tokio runtime. This is the default; a host substitutes
-/// its own [`AgentExecutor`] to place steps across a cluster.
-#[async_trait]
-impl AgentExecutor for TaskExecutor {
-    async fn execute_step(
-        &self,
-        spec: AgentStepSpec,
-        event_tx: Option<broadcast::Sender<AgentEvent>>,
-    ) -> StepOutcome {
-        let agent = spec.agent.clone();
-        let task_id = spec.task_id.clone();
-        let output_schema = spec.output_schema.clone();
-        let params = TaskParams {
-            agent: spec.agent,
-            description: spec.description,
-            prompt: spec.prompt,
-            background: false,
-            max_steps: spec.max_steps,
-            output_schema: None,
-        };
-        let mut outcome: StepOutcome = match self
-            .execute_with_task_id(
-                task_id.clone(),
-                params,
-                event_tx,
-                spec.parent_session_id.as_deref(),
-                true,
-            )
-            .await
-        {
-            Ok(result) => result.into(),
-            Err(e) => return StepOutcome::failed(task_id, agent, format!("Task failed: {e}")),
-        };
-
-        // When the step requested structured output, coerce the (succeeded)
-        // free-text result to the schema. A coercion failure demotes the step
-        // to unsuccessful so callers never treat unvalidated text as the
-        // promised object.
-        if outcome.success {
-            if let Some(schema) = output_schema {
-                match self.coerce_to_schema(&outcome.output, schema).await {
-                    Ok(object) => outcome.structured = Some(object),
-                    Err(e) => {
-                        outcome.success = false;
-                        outcome.output =
-                            format!("{}\n\n[structured output failed: {e}]", outcome.output);
-                    }
-                }
-            }
-        }
-        outcome
-    }
-
-    fn concurrency_hint(&self) -> usize {
-        self.max_parallel_tasks
-    }
-}
-
-impl TaskExecutor {
-    /// Coerce a step's free-text output into a JSON object validated against
-    /// `schema`, reusing the structured-output machinery with built-in repair.
-    /// This is one extra LLM call beyond the step's own run.
-    async fn coerce_to_schema(
-        &self,
-        output: &str,
-        schema: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let req = StructuredRequest {
-            prompt: format!(
-                "Convert the following task result into a single JSON object that conforms to \
-                 the required schema. Use only information present in the result.\n\n\
-                 --- TASK RESULT ---\n{output}"
-            ),
-            system: Some(
-                "You output exactly one JSON object matching the provided schema.".to_string(),
-            ),
-            schema,
-            schema_name: "step_output".to_string(),
-            schema_description: None,
-            // Request tool mode when available; unknown providers safely
-            // downgrade to prompt+schema parsing.
-            mode: StructuredMode::Tool,
-            max_repair_attempts: 2,
-        };
-        let result = generate_blocking(&*self.llm_client, &req).await?;
-        Ok(result.object)
     }
 }
 
@@ -970,12 +698,14 @@ impl Tool for TaskTool {
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let params: TaskParams =
             serde_json::from_value(args.clone()).context("Invalid task parameters")?;
+        let parent_cancellation = ctx.cancellation_token();
 
         if params.background {
-            let task_id = Arc::clone(&self.executor).execute_background(
+            let task_id = Arc::clone(&self.executor).execute_background_with_parent_cancellation(
                 params,
                 ctx.agent_event_tx.clone(),
                 ctx.session_id.clone(),
+                Some(parent_cancellation),
             );
             return Ok(ToolOutput::success(format!(
                 "Task started in background. Task ID: {}",
@@ -985,10 +715,11 @@ impl Tool for TaskTool {
 
         let result = self
             .executor
-            .execute(
+            .execute_with_parent_cancellation(
                 params,
                 ctx.agent_event_tx.clone(),
                 ctx.session_id.as_deref(),
+                Some(&parent_cancellation),
             )
             .await?;
         let (content, truncated) = format_task_result_for_context(&result);
@@ -1001,6 +732,8 @@ impl Tool for TaskTool {
             "truncated_for_context": truncated,
             "artifact_id": task_artifact_id(&result),
             "artifact_uri": task_artifact_uri(&result),
+            "structured": result.structured,
+            "source_anchors": result.source_anchors,
         });
 
         if result.success {
@@ -1149,6 +882,7 @@ impl Tool for ParallelTaskTool {
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let params: ParallelTaskParams =
             serde_json::from_value(args.clone()).context("Invalid parallel task parameters")?;
+        let parent_cancellation = ctx.cancellation_token();
 
         if params.tasks.is_empty() {
             return Ok(ToolOutput::error("No tasks provided".to_string()));
@@ -1161,10 +895,13 @@ impl Tool for ParallelTaskTool {
             .execute_parallel_for_tool(
                 params.tasks,
                 ctx.agent_event_tx.clone(),
-                ctx.session_id.as_deref(),
-                params.timeout_ms,
-                params.min_success_count,
-                params.allow_partial_failure,
+                parallel_execution::ParallelToolOptions {
+                    parent_session_id: ctx.session_id.as_deref(),
+                    timeout_ms: params.timeout_ms,
+                    min_success_count: params.min_success_count,
+                    allow_partial_failure: params.allow_partial_failure,
+                    parent_cancellation: Some(&parent_cancellation),
+                },
             )
             .await;
         let results = run.results;
@@ -1172,9 +909,11 @@ impl Tool for ParallelTaskTool {
         // Format results with compact per-task excerpts for parent context.
         let mut output = format!("Executed {} tasks in parallel:\n\n", task_count);
         let mut metadata_results = Vec::new();
+        let source_anchor_counts = parallel_source_anchor_counts(&results);
         for (i, result) in results.iter().enumerate() {
             let status = if result.success { "[OK]" } else { "[ERR]" };
             let (formatted, truncated) = format_task_result_for_context(result);
+            let source_anchors = &result.source_anchors[..source_anchor_counts[i]];
             metadata_results.push(serde_json::json!({
                 "task_id": result.task_id,
                 "session_id": result.session_id,
@@ -1182,6 +921,7 @@ impl Tool for ParallelTaskTool {
                 "success": result.success,
                 "output": formatted.clone(),
                 "structured": result.structured,
+                "source_anchors": source_anchors,
                 "output_bytes": result.output.len(),
                 "truncated_for_context": truncated,
                 "artifact_id": task_artifact_id(result),
@@ -1242,2144 +982,4 @@ impl Tool for ParallelTaskTool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_task_params_deserialize() {
-        let json = r#"{
-            "agent": "explore",
-            "description": "Find auth code",
-            "prompt": "Search for authentication files"
-        }"#;
-
-        let params: TaskParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.agent, "explore");
-        assert_eq!(params.description, "Find auth code");
-        assert!(!params.background);
-    }
-
-    #[test]
-    fn test_task_params_with_background() {
-        let json = r#"{
-            "agent": "general",
-            "description": "Long task",
-            "prompt": "Do something complex",
-            "background": true
-        }"#;
-
-        let params: TaskParams = serde_json::from_str(json).unwrap();
-        assert!(params.background);
-    }
-
-    #[test]
-    fn test_task_params_with_max_steps() {
-        let json = r#"{
-            "agent": "plan",
-            "description": "Planning task",
-            "prompt": "Create a plan",
-            "max_steps": 10
-        }"#;
-
-        let params: TaskParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.agent, "plan");
-        assert_eq!(params.max_steps, Some(10));
-        assert!(!params.background);
-    }
-
-    #[test]
-    fn test_task_params_all_fields() {
-        let json = r#"{
-            "agent": "general",
-            "description": "Complex task",
-            "prompt": "Do everything",
-            "background": true,
-            "max_steps": 20
-        }"#;
-
-        let params: TaskParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.agent, "general");
-        assert_eq!(params.description, "Complex task");
-        assert_eq!(params.prompt, "Do everything");
-        assert!(params.background);
-        assert_eq!(params.max_steps, Some(20));
-    }
-
-    #[test]
-    fn test_task_params_missing_required_field() {
-        let json = r#"{
-            "agent": "explore",
-            "description": "Missing prompt"
-        }"#;
-
-        let result: Result<TaskParams, _> = serde_json::from_str(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_task_params_serialize() {
-        let params = TaskParams {
-            agent: "explore".to_string(),
-            description: "Test task".to_string(),
-            prompt: "Test prompt".to_string(),
-            background: false,
-            max_steps: Some(5),
-            output_schema: None,
-        };
-
-        let json = serde_json::to_string(&params).unwrap();
-        assert!(json.contains("explore"));
-        assert!(json.contains("Test task"));
-        assert!(json.contains("Test prompt"));
-    }
-
-    #[test]
-    fn test_task_params_clone() {
-        let params = TaskParams {
-            agent: "explore".to_string(),
-            description: "Test".to_string(),
-            prompt: "Prompt".to_string(),
-            background: true,
-            max_steps: None,
-            output_schema: None,
-        };
-
-        let cloned = params.clone();
-        assert_eq!(params.agent, cloned.agent);
-        assert_eq!(params.description, cloned.description);
-        assert_eq!(params.background, cloned.background);
-    }
-
-    #[test]
-    fn test_task_result_serialize() {
-        let result = TaskResult {
-            output: "Found 5 files".to_string(),
-            session_id: "session-123".to_string(),
-            agent: "explore".to_string(),
-            success: true,
-            task_id: "task-456".to_string(),
-            structured: None,
-        };
-
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("Found 5 files"));
-        assert!(json.contains("explore"));
-    }
-
-    #[test]
-    fn test_task_result_deserialize() {
-        let json = r#"{
-            "output": "Task completed",
-            "session_id": "sess-789",
-            "agent": "general",
-            "success": false,
-            "task_id": "task-123"
-        }"#;
-
-        let result: TaskResult = serde_json::from_str(json).unwrap();
-        assert_eq!(result.output, "Task completed");
-        assert_eq!(result.session_id, "sess-789");
-        assert_eq!(result.agent, "general");
-        assert!(!result.success);
-        assert_eq!(result.task_id, "task-123");
-    }
-
-    #[test]
-    fn test_task_result_clone() {
-        let result = TaskResult {
-            output: "Output".to_string(),
-            session_id: "session-1".to_string(),
-            agent: "explore".to_string(),
-            success: true,
-            task_id: "task-1".to_string(),
-            structured: None,
-        };
-
-        let cloned = result.clone();
-        assert_eq!(result.output, cloned.output);
-        assert_eq!(result.success, cloned.success);
-    }
-
-    #[test]
-    fn test_compact_task_output_preserves_small_output() {
-        let (output, truncated) = compact_task_output("short result");
-        assert_eq!(output, "short result");
-        assert!(!truncated);
-    }
-
-    #[test]
-    fn test_format_task_result_for_context_truncates_large_output() {
-        let result = TaskResult {
-            output: format!("{}TAIL", "x".repeat(TASK_OUTPUT_CONTEXT_LIMIT + 500)),
-            session_id: "session-1".to_string(),
-            agent: "explore".to_string(),
-            success: true,
-            task_id: "task-1".to_string(),
-            structured: None,
-        };
-
-        let (formatted, truncated) = format_task_result_for_context(&result);
-        assert!(truncated);
-        assert!(formatted.contains("Output excerpt"));
-        assert!(formatted.contains("bytes omitted"));
-        assert!(formatted.contains("Artifact ID: task-output:task-1"));
-        assert!(formatted.contains("Artifact URI: a3s://tasks/session-1/runs/task-1/output"));
-        assert!(formatted.contains("TAIL"));
-        assert!(formatted.len() < result.output.len());
-    }
-
-    #[test]
-    fn test_task_artifact_reference_is_stable() {
-        let result = TaskResult {
-            output: "done".to_string(),
-            session_id: "session-1".to_string(),
-            agent: "explore".to_string(),
-            success: true,
-            task_id: "task-1".to_string(),
-            structured: None,
-        };
-
-        assert_eq!(task_artifact_id(&result), "task-output:task-1");
-        assert_eq!(
-            task_artifact_uri(&result),
-            "a3s://tasks/session-1/runs/task-1/output"
-        );
-
-        let (formatted, truncated) = format_task_result_for_context(&result);
-        assert!(!truncated);
-        assert!(formatted.contains("Artifact URI: a3s://tasks/session-1/runs/task-1/output"));
-    }
-
-    #[test]
-    fn test_task_params_schema() {
-        let schema = task_params_schema();
-        assert_eq!(schema["type"], "object");
-        assert_eq!(schema["additionalProperties"], false);
-        assert!(schema["properties"]["agent"].is_object());
-        assert!(schema["properties"]["prompt"].is_object());
-    }
-
-    #[test]
-    fn test_task_params_schema_required_fields() {
-        let schema = task_params_schema();
-        let required = schema["required"].as_array().unwrap();
-        assert!(required.contains(&serde_json::json!("agent")));
-        assert!(required.contains(&serde_json::json!("description")));
-        assert!(required.contains(&serde_json::json!("prompt")));
-    }
-
-    #[test]
-    fn test_task_params_schema_properties() {
-        let schema = task_params_schema();
-        let props = &schema["properties"];
-
-        assert_eq!(props["agent"]["type"], "string");
-        assert_eq!(props["description"]["type"], "string");
-        assert_eq!(props["prompt"]["type"], "string");
-        assert_eq!(props["background"]["type"], "boolean");
-        assert_eq!(props["background"]["default"], false);
-        assert_eq!(props["max_steps"]["type"], "integer");
-        assert_eq!(props["output_schema"]["type"], "object");
-    }
-
-    #[test]
-    fn test_task_params_schema_descriptions() {
-        let schema = task_params_schema();
-        let props = &schema["properties"];
-
-        assert!(props["agent"]["description"].is_string());
-        assert!(props["description"]["description"].is_string());
-        assert!(props["prompt"]["description"].is_string());
-        assert!(props["background"]["description"].is_string());
-        assert!(props["max_steps"]["description"].is_string());
-        assert!(props["output_schema"]["description"].is_string());
-    }
-
-    #[test]
-    fn test_task_params_default_background() {
-        let params = TaskParams {
-            agent: "explore".to_string(),
-            description: "Test".to_string(),
-            prompt: "Test prompt".to_string(),
-            background: false,
-            max_steps: None,
-            output_schema: None,
-        };
-        assert!(!params.background);
-    }
-
-    #[test]
-    fn test_task_params_serialize_skip_none() {
-        let params = TaskParams {
-            agent: "explore".to_string(),
-            description: "Test".to_string(),
-            prompt: "Test prompt".to_string(),
-            background: false,
-            max_steps: None,
-            output_schema: None,
-        };
-        let json = serde_json::to_string(&params).unwrap();
-        // max_steps should not appear when None
-        assert!(!json.contains("max_steps"));
-    }
-
-    #[test]
-    fn test_task_params_serialize_with_max_steps() {
-        let params = TaskParams {
-            agent: "explore".to_string(),
-            description: "Test".to_string(),
-            prompt: "Test prompt".to_string(),
-            background: false,
-            max_steps: Some(15),
-            output_schema: None,
-        };
-        let json = serde_json::to_string(&params).unwrap();
-        assert!(json.contains("max_steps"));
-        assert!(json.contains("15"));
-    }
-
-    #[test]
-    fn test_task_result_success_true() {
-        let result = TaskResult {
-            output: "Success".to_string(),
-            session_id: "sess-1".to_string(),
-            agent: "explore".to_string(),
-            success: true,
-            task_id: "task-1".to_string(),
-            structured: None,
-        };
-        assert!(result.success);
-    }
-
-    #[test]
-    fn test_task_result_success_false() {
-        let result = TaskResult {
-            output: "Failed".to_string(),
-            session_id: "sess-1".to_string(),
-            agent: "explore".to_string(),
-            success: false,
-            task_id: "task-1".to_string(),
-            structured: None,
-        };
-        assert!(!result.success);
-    }
-
-    #[test]
-    fn test_task_params_empty_strings() {
-        let params = TaskParams {
-            agent: "".to_string(),
-            description: "".to_string(),
-            prompt: "".to_string(),
-            background: false,
-            max_steps: None,
-            output_schema: None,
-        };
-        let json = serde_json::to_string(&params).unwrap();
-        let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.agent, "");
-        assert_eq!(deserialized.description, "");
-        assert_eq!(deserialized.prompt, "");
-    }
-
-    #[test]
-    fn test_task_result_empty_output() {
-        let result = TaskResult {
-            output: "".to_string(),
-            session_id: "sess-1".to_string(),
-            agent: "explore".to_string(),
-            success: true,
-            task_id: "task-1".to_string(),
-            structured: None,
-        };
-        assert_eq!(result.output, "");
-    }
-
-    #[test]
-    fn test_task_params_debug_format() {
-        let params = TaskParams {
-            agent: "explore".to_string(),
-            description: "Test".to_string(),
-            prompt: "Test prompt".to_string(),
-            background: false,
-            max_steps: None,
-            output_schema: None,
-        };
-        let debug_str = format!("{:?}", params);
-        assert!(debug_str.contains("explore"));
-        assert!(debug_str.contains("Test"));
-    }
-
-    #[test]
-    fn test_task_result_debug_format() {
-        let result = TaskResult {
-            output: "Output".to_string(),
-            session_id: "sess-1".to_string(),
-            agent: "explore".to_string(),
-            success: true,
-            task_id: "task-1".to_string(),
-            structured: None,
-        };
-        let debug_str = format!("{:?}", result);
-        assert!(debug_str.contains("Output"));
-        assert!(debug_str.contains("explore"));
-    }
-
-    #[test]
-    fn test_task_params_roundtrip() {
-        let original = TaskParams {
-            agent: "general".to_string(),
-            description: "Roundtrip test".to_string(),
-            prompt: "Test roundtrip serialization".to_string(),
-            background: true,
-            max_steps: Some(42),
-            output_schema: None,
-        };
-        let json = serde_json::to_string(&original).unwrap();
-        let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
-        assert_eq!(original.agent, deserialized.agent);
-        assert_eq!(original.description, deserialized.description);
-        assert_eq!(original.prompt, deserialized.prompt);
-        assert_eq!(original.background, deserialized.background);
-        assert_eq!(original.max_steps, deserialized.max_steps);
-    }
-
-    #[test]
-    fn test_task_result_roundtrip() {
-        let original = TaskResult {
-            output: "Roundtrip output".to_string(),
-            session_id: "sess-roundtrip".to_string(),
-            agent: "plan".to_string(),
-            success: false,
-            task_id: "task-roundtrip".to_string(),
-            structured: None,
-        };
-        let json = serde_json::to_string(&original).unwrap();
-        let deserialized: TaskResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(original.output, deserialized.output);
-        assert_eq!(original.session_id, deserialized.session_id);
-        assert_eq!(original.agent, deserialized.agent);
-        assert_eq!(original.success, deserialized.success);
-        assert_eq!(original.task_id, deserialized.task_id);
-    }
-
-    #[test]
-    fn test_parallel_task_params_deserialize() {
-        let json = r#"{
-            "tasks": [
-                { "agent": "explore", "description": "Find auth", "prompt": "Search auth files" },
-                { "agent": "general", "description": "Fix bug", "prompt": "Fix the login bug" }
-            ]
-        }"#;
-
-        let params: ParallelTaskParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.tasks.len(), 2);
-        assert_eq!(params.tasks[0].agent, "explore");
-        assert_eq!(params.tasks[1].agent, "general");
-    }
-
-    #[test]
-    fn test_parallel_task_params_single_task() {
-        let json = r#"{
-            "tasks": [
-                { "agent": "plan", "description": "Plan work", "prompt": "Create a plan" }
-            ]
-        }"#;
-
-        let params: ParallelTaskParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.tasks.len(), 1);
-    }
-
-    #[test]
-    fn test_parallel_task_params_empty_tasks() {
-        let json = r#"{ "tasks": [] }"#;
-        let params: ParallelTaskParams = serde_json::from_str(json).unwrap();
-        assert!(params.tasks.is_empty());
-        assert!(!params.allow_partial_failure);
-    }
-
-    #[test]
-    fn test_parallel_task_params_missing_tasks() {
-        let json = r#"{}"#;
-        let result: Result<ParallelTaskParams, _> = serde_json::from_str(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parallel_task_params_serialize() {
-        let params = ParallelTaskParams {
-            tasks: vec![
-                TaskParams {
-                    agent: "explore".to_string(),
-                    description: "Task 1".to_string(),
-                    prompt: "Prompt 1".to_string(),
-                    background: false,
-                    max_steps: None,
-                    output_schema: None,
-                },
-                TaskParams {
-                    agent: "general".to_string(),
-                    description: "Task 2".to_string(),
-                    prompt: "Prompt 2".to_string(),
-                    background: false,
-                    max_steps: Some(10),
-                    output_schema: None,
-                },
-            ],
-            allow_partial_failure: false,
-            timeout_ms: None,
-            min_success_count: None,
-        };
-        let json = serde_json::to_string(&params).unwrap();
-        assert!(json.contains("explore"));
-        assert!(json.contains("general"));
-        assert!(json.contains("Prompt 1"));
-        assert!(json.contains("Prompt 2"));
-    }
-
-    #[test]
-    fn test_parallel_task_params_roundtrip() {
-        let original = ParallelTaskParams {
-            tasks: vec![
-                TaskParams {
-                    agent: "explore".to_string(),
-                    description: "Explore".to_string(),
-                    prompt: "Find files".to_string(),
-                    background: false,
-                    max_steps: None,
-                    output_schema: None,
-                },
-                TaskParams {
-                    agent: "plan".to_string(),
-                    description: "Plan".to_string(),
-                    prompt: "Make plan".to_string(),
-                    background: false,
-                    max_steps: Some(5),
-                    output_schema: None,
-                },
-            ],
-            allow_partial_failure: true,
-            timeout_ms: None,
-            min_success_count: None,
-        };
-        let json = serde_json::to_string(&original).unwrap();
-        let deserialized: ParallelTaskParams = serde_json::from_str(&json).unwrap();
-        assert_eq!(original.tasks.len(), deserialized.tasks.len());
-        assert_eq!(original.tasks[0].agent, deserialized.tasks[0].agent);
-        assert_eq!(original.tasks[1].agent, deserialized.tasks[1].agent);
-        assert_eq!(original.tasks[1].max_steps, deserialized.tasks[1].max_steps);
-        assert_eq!(
-            original.allow_partial_failure,
-            deserialized.allow_partial_failure
-        );
-    }
-
-    #[test]
-    fn test_parallel_task_params_clone() {
-        let params = ParallelTaskParams {
-            tasks: vec![TaskParams {
-                agent: "explore".to_string(),
-                description: "Test".to_string(),
-                prompt: "Prompt".to_string(),
-                background: false,
-                max_steps: None,
-                output_schema: None,
-            }],
-            allow_partial_failure: false,
-            timeout_ms: None,
-            min_success_count: None,
-        };
-        let cloned = params.clone();
-        assert_eq!(params.tasks.len(), cloned.tasks.len());
-        assert_eq!(params.tasks[0].agent, cloned.tasks[0].agent);
-    }
-
-    #[test]
-    fn test_parallel_task_params_schema() {
-        let schema = parallel_task_params_schema();
-        assert_eq!(schema["type"], "object");
-        assert_eq!(schema["additionalProperties"], false);
-        assert!(schema["properties"]["tasks"].is_object());
-        assert_eq!(schema["properties"]["tasks"]["type"], "array");
-        assert_eq!(schema["properties"]["tasks"]["minItems"], 1);
-        assert_eq!(
-            schema["properties"]["allow_partial_failure"]["type"],
-            "boolean"
-        );
-        assert_eq!(
-            schema["properties"]["allow_partial_failure"]["default"],
-            false
-        );
-        assert_eq!(schema["properties"]["timeout_ms"]["type"], "integer");
-        assert_eq!(schema["properties"]["min_success_count"]["type"], "integer");
-    }
-
-    #[test]
-    fn test_parallel_task_params_schema_required() {
-        let schema = parallel_task_params_schema();
-        let required = schema["required"].as_array().unwrap();
-        assert!(required.contains(&serde_json::json!("tasks")));
-    }
-
-    #[test]
-    fn test_parallel_task_params_schema_items() {
-        let schema = parallel_task_params_schema();
-        let items = &schema["properties"]["tasks"]["items"];
-        assert_eq!(items["type"], "object");
-        assert_eq!(items["additionalProperties"], false);
-        let item_required = items["required"].as_array().unwrap();
-        assert!(item_required.contains(&serde_json::json!("agent")));
-        assert!(item_required.contains(&serde_json::json!("description")));
-        assert!(item_required.contains(&serde_json::json!("prompt")));
-        assert_eq!(items["properties"]["background"]["type"], "boolean");
-        assert_eq!(items["properties"]["background"]["default"], false);
-        assert_eq!(items["properties"]["max_steps"]["type"], "integer");
-        assert_eq!(items["properties"]["output_schema"]["type"], "object");
-    }
-
-    #[test]
-    fn test_task_schema_examples_use_delegation_core() {
-        let task = task_params_schema();
-        let task_examples = task["examples"].as_array().unwrap();
-        assert_eq!(task_examples[0]["agent"], "explore");
-        assert!(task_examples[0].get("task").is_none());
-
-        let parallel = parallel_task_params_schema();
-        let parallel_examples = parallel["examples"].as_array().unwrap();
-        assert!(!parallel_examples[0]["tasks"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_parallel_task_params_debug() {
-        let params = ParallelTaskParams {
-            tasks: vec![TaskParams {
-                agent: "explore".to_string(),
-                description: "Debug test".to_string(),
-                prompt: "Test".to_string(),
-                background: false,
-                max_steps: None,
-                output_schema: None,
-            }],
-            allow_partial_failure: false,
-            timeout_ms: None,
-            min_success_count: None,
-        };
-        let debug_str = format!("{:?}", params);
-        assert!(debug_str.contains("explore"));
-        assert!(debug_str.contains("Debug test"));
-    }
-
-    #[test]
-    fn test_parallel_task_params_large_count() {
-        // Validate that ParallelTaskParams can hold 150 tasks without truncation
-        let tasks: Vec<TaskParams> = (0..150)
-            .map(|i| TaskParams {
-                agent: "explore".to_string(),
-                description: format!("Task {}", i),
-                prompt: format!("Prompt for task {}", i),
-                background: false,
-                max_steps: Some(10),
-                output_schema: None,
-            })
-            .collect();
-
-        let params = ParallelTaskParams {
-            tasks,
-            allow_partial_failure: false,
-            timeout_ms: None,
-            min_success_count: None,
-        };
-        let json = serde_json::to_string(&params).unwrap();
-        let deserialized: ParallelTaskParams = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.tasks.len(), 150);
-        assert_eq!(deserialized.tasks[0].description, "Task 0");
-        assert_eq!(deserialized.tasks[149].description, "Task 149");
-    }
-
-    #[test]
-    fn test_task_params_max_steps_zero() {
-        // max_steps = 0 is a valid edge case (callers decide enforcement)
-        let params = TaskParams {
-            agent: "explore".to_string(),
-            description: "Edge case".to_string(),
-            prompt: "Zero steps".to_string(),
-            background: false,
-            max_steps: Some(0),
-            output_schema: None,
-        };
-        let json = serde_json::to_string(&params).unwrap();
-        let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.max_steps, Some(0));
-    }
-
-    #[test]
-    fn test_parallel_task_params_all_background() {
-        let tasks: Vec<TaskParams> = (0..5)
-            .map(|i| TaskParams {
-                agent: "general".to_string(),
-                description: format!("BG task {}", i),
-                prompt: "Run in background".to_string(),
-                background: true,
-                max_steps: None,
-                output_schema: None,
-            })
-            .collect();
-        let params = ParallelTaskParams {
-            tasks,
-            allow_partial_failure: false,
-            timeout_ms: None,
-            min_success_count: None,
-        };
-        for task in &params.tasks {
-            assert!(task.background);
-        }
-    }
-
-    #[test]
-    fn test_task_params_rejects_permissive_field() {
-        let json = r#"{
-            "agent": "general",
-            "description": "Legacy field rejection",
-            "prompt": "Verify legacy fields are rejected",
-            "permissive": true
-        }"#;
-
-        let result: Result<TaskParams, _> = serde_json::from_str(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_task_params_schema_hides_permissive_field() {
-        let schema = task_params_schema();
-        let props = &schema["properties"];
-
-        assert!(props.get("permissive").is_none());
-    }
-
-    // ========================================================================
-    // Contract tests — verify task delegation with MockLlmClient (no network)
-    // ========================================================================
-
-    use crate::agent::tests::MockLlmClient;
-    use crate::llm::{ContentBlock, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition};
-    use crate::permissions::PermissionPolicy;
-    use crate::subagent::AgentRegistry;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
-    use tokio::sync::{mpsc, Barrier};
-
-    fn text_response(text: impl Into<String>) -> LlmResponse {
-        LlmResponse {
-            message: Message {
-                role: "assistant".to_string(),
-                content: vec![ContentBlock::Text { text: text.into() }],
-                reasoning_content: None,
-            },
-            usage: TokenUsage {
-                prompt_tokens: 10,
-                completion_tokens: 5,
-                total_tokens: 15,
-                cache_read_tokens: None,
-                cache_write_tokens: None,
-            },
-            stop_reason: Some("end_turn".to_string()),
-            token_logprobs: Vec::new(),
-            meta: None,
-        }
-    }
-
-    fn pre_analysis_response(messages: &[Message]) -> LlmResponse {
-        let prompt = last_text(messages);
-        let response = serde_json::json!({
-            "intent": "GeneralPurpose",
-            "requires_planning": false,
-            "goal": {
-                "description": prompt,
-                "success_criteria": []
-            },
-            "execution_plan": {
-                "complexity": "Simple",
-                "steps": [{
-                    "id": "step-1",
-                    "description": prompt,
-                    "dependencies": [],
-                    "success_criteria": "Complete the request"
-                }],
-                "required_tools": []
-            },
-            "optimized_input": prompt
-        });
-        text_response(response.to_string())
-    }
-
-    fn is_pre_analysis_system(system: Option<&str>) -> bool {
-        system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM))
-    }
-
-    fn last_text(messages: &[Message]) -> String {
-        messages
-            .last()
-            .and_then(|message| {
-                message.content.iter().find_map(|block| {
-                    if let ContentBlock::Text { text } = block {
-                        Some(text.clone())
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unwrap_or_default()
-    }
-
-    /// Client for the schema-coercion tests. The agent's own turn returns
-    /// plain text (which ends the loop); the structured-output coercion call
-    /// — recognizable by the injected `step_output` tool — returns a tool call
-    /// carrying the object.
-    struct SchemaCoercionClient;
-
-    #[async_trait::async_trait]
-    impl LlmClient for SchemaCoercionClient {
-        async fn complete(
-            &self,
-            messages: &[Message],
-            system: Option<&str>,
-            tools: &[ToolDefinition],
-        ) -> Result<LlmResponse> {
-            if is_pre_analysis_system(system) {
-                return Ok(pre_analysis_response(messages));
-            }
-            // The structured-output coercion injects a synthetic tool named
-            // `emit_<schema_name>` (here `emit_step_output`).
-            if tools.iter().any(|t| t.name == "emit_step_output") {
-                return Ok(MockLlmClient::tool_call_response(
-                    "coerce-1",
-                    "emit_step_output",
-                    serde_json::json!({ "verdict": "ok" }),
-                ));
-            }
-            Ok(text_response("The verdict is ok."))
-        }
-
-        async fn complete_streaming(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-            _cancel_token: tokio_util::sync::CancellationToken,
-        ) -> Result<mpsc::Receiver<StreamEvent>> {
-            anyhow::bail!("streaming is not used by schema coercion tests")
-        }
-
-        fn native_structured_support(&self) -> crate::llm::structured::NativeStructuredSupport {
-            crate::llm::structured::NativeStructuredSupport::ForcedTool
-        }
-    }
-
-    fn verdict_schema() -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": { "verdict": { "type": "string" } },
-            "required": ["verdict"]
-        })
-    }
-
-    #[tokio::test]
-    async fn execute_step_with_schema_coerces_structured_output() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = TaskExecutor::new(
-            Arc::new(AgentRegistry::new()),
-            Arc::new(SchemaCoercionClient),
-            workspace.path().to_string_lossy().to_string(),
-        );
-        let spec = AgentStepSpec::new("step-1", "general", "assess", "Assess the thing.")
-            .with_output_schema(verdict_schema());
-
-        let outcome = executor.execute_step(spec, None).await;
-
-        assert!(outcome.success, "step should succeed: {}", outcome.output);
-        assert_eq!(
-            outcome.structured,
-            Some(serde_json::json!({ "verdict": "ok" })),
-            "a schema'd step returns the validated object in `structured`"
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_step_without_schema_has_no_structured_output() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = TaskExecutor::new(
-            Arc::new(AgentRegistry::new()),
-            Arc::new(SchemaCoercionClient),
-            workspace.path().to_string_lossy().to_string(),
-        );
-        let spec = AgentStepSpec::new("step-2", "general", "assess", "Assess the thing.");
-
-        let outcome = executor.execute_step(spec, None).await;
-
-        assert!(outcome.success, "step should succeed: {}", outcome.output);
-        assert_eq!(
-            outcome.structured, None,
-            "no schema requested → no structured output, no coercion call"
-        );
-    }
-
-    /// The agent's turn returns text; the coercion call (`emit_step_output`)
-    /// always returns an object that VIOLATES the schema, so `generate_blocking`
-    /// exhausts its repairs and bails.
-    struct SchemaFailClient;
-
-    #[async_trait::async_trait]
-    impl LlmClient for SchemaFailClient {
-        async fn complete(
-            &self,
-            messages: &[Message],
-            system: Option<&str>,
-            tools: &[ToolDefinition],
-        ) -> Result<LlmResponse> {
-            if is_pre_analysis_system(system) {
-                return Ok(pre_analysis_response(messages));
-            }
-            if tools.iter().any(|t| t.name == "emit_step_output") {
-                // `{}` is missing the required `verdict` field → schema invalid.
-                return Ok(MockLlmClient::tool_call_response(
-                    "coerce-fail",
-                    "emit_step_output",
-                    serde_json::json!({}),
-                ));
-            }
-            Ok(text_response("some answer"))
-        }
-
-        async fn complete_streaming(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-            _cancel_token: tokio_util::sync::CancellationToken,
-        ) -> Result<mpsc::Receiver<StreamEvent>> {
-            anyhow::bail!("streaming unused")
-        }
-    }
-
-    #[tokio::test]
-    async fn execute_step_with_schema_demotes_step_on_coercion_failure() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = TaskExecutor::new(
-            Arc::new(AgentRegistry::new()),
-            Arc::new(SchemaFailClient),
-            workspace.path().to_string_lossy().to_string(),
-        );
-        let spec = AgentStepSpec::new("step-x", "general", "assess", "Assess the thing.")
-            .with_output_schema(verdict_schema());
-
-        let outcome = executor.execute_step(spec, None).await;
-
-        assert!(
-            !outcome.success,
-            "a step whose output can't satisfy the schema is demoted to failure"
-        );
-        assert_eq!(outcome.structured, None, "no validated object on failure");
-        assert!(
-            outcome.output.contains("[structured output failed"),
-            "the demotion marker is appended: {}",
-            outcome.output
-        );
-    }
-
-    #[tokio::test]
-    async fn parallel_isolates_schema_coercion_failure_from_sibling() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor: Arc<dyn AgentExecutor> = Arc::new(TaskExecutor::new(
-            Arc::new(AgentRegistry::new()),
-            Arc::new(SchemaFailClient),
-            workspace.path().to_string_lossy().to_string(),
-        ));
-        // A plain step (no schema → succeeds) alongside a schema'd step whose
-        // coercion fails. The failure must not drop or fail the sibling.
-        let specs = vec![
-            AgentStepSpec::new("plain", "general", "d", "p"),
-            AgentStepSpec::new("schemad", "general", "d", "p").with_output_schema(verdict_schema()),
-        ];
-        let out = crate::orchestration::execute_steps_parallel(executor, specs, None).await;
-
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].task_id, "plain");
-        assert!(out[0].success, "no-schema sibling unaffected");
-        assert_eq!(out[0].structured, None);
-        assert_eq!(out[1].task_id, "schemad");
-        assert!(!out[1].success, "schema-failing step surfaces as failure");
-        assert_eq!(out[1].structured, None);
-        assert!(out[1].output.contains("[structured output failed"));
-    }
-
-    #[tokio::test]
-    async fn failed_step_with_schema_skips_coercion() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = TaskExecutor::new(
-            Arc::new(AgentRegistry::new()),
-            Arc::new(SchemaCoercionClient),
-            workspace.path().to_string_lossy().to_string(),
-        );
-        // Unknown agent → the run fails BEFORE coercion. The failure is the
-        // run error, not a coercion failure — coercion must not run.
-        let spec = AgentStepSpec::new("step-y", "no-such-agent", "d", "p")
-            .with_output_schema(verdict_schema());
-
-        let outcome = executor.execute_step(spec, None).await;
-
-        assert!(!outcome.success);
-        assert_eq!(outcome.structured, None);
-        assert!(
-            !outcome.output.contains("[structured output failed"),
-            "coercion never ran — failure is the run error, not a coercion failure: {}",
-            outcome.output
-        );
-    }
-
-    struct StaticLlmClient {
-        text: String,
-    }
-
-    impl StaticLlmClient {
-        fn new(text: impl Into<String>) -> Self {
-            Self { text: text.into() }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl LlmClient for StaticLlmClient {
-        async fn complete(
-            &self,
-            messages: &[Message],
-            system: Option<&str>,
-            _tools: &[ToolDefinition],
-        ) -> Result<LlmResponse> {
-            if is_pre_analysis_system(system) {
-                return Ok(pre_analysis_response(messages));
-            }
-            Ok(text_response(self.text.clone()))
-        }
-
-        async fn complete_streaming(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-            _cancel_token: tokio_util::sync::CancellationToken,
-        ) -> Result<mpsc::Receiver<StreamEvent>> {
-            anyhow::bail!("streaming is not used by task executor tests")
-        }
-    }
-
-    struct ConcurrentLlmClient {
-        barrier: Arc<Barrier>,
-        active: AtomicUsize,
-        max_active: AtomicUsize,
-    }
-
-    impl ConcurrentLlmClient {
-        fn new(task_count: usize) -> Self {
-            Self {
-                barrier: Arc::new(Barrier::new(task_count)),
-                active: AtomicUsize::new(0),
-                max_active: AtomicUsize::new(0),
-            }
-        }
-
-        fn max_active(&self) -> usize {
-            self.max_active.load(Ordering::SeqCst)
-        }
-
-        fn record_active(&self) {
-            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            let mut observed = self.max_active.load(Ordering::SeqCst);
-            while active > observed {
-                match self.max_active.compare_exchange(
-                    observed,
-                    active,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(_) => break,
-                    Err(next) => observed = next,
-                }
-            }
-        }
-    }
-
-    struct LimitedConcurrencyLlmClient {
-        active: AtomicUsize,
-        max_active: AtomicUsize,
-    }
-
-    impl LimitedConcurrencyLlmClient {
-        fn new() -> Self {
-            Self {
-                active: AtomicUsize::new(0),
-                max_active: AtomicUsize::new(0),
-            }
-        }
-
-        fn max_active(&self) -> usize {
-            self.max_active.load(Ordering::SeqCst)
-        }
-
-        fn record_active(&self) {
-            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            self.max_active.fetch_max(active, Ordering::SeqCst);
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl LlmClient for LimitedConcurrencyLlmClient {
-        async fn complete(
-            &self,
-            messages: &[Message],
-            system: Option<&str>,
-            _tools: &[ToolDefinition],
-        ) -> Result<LlmResponse> {
-            if is_pre_analysis_system(system) {
-                return Ok(pre_analysis_response(messages));
-            }
-
-            let prompt = last_text(messages);
-            self.record_active();
-            tokio::time::sleep(Duration::from_millis(40)).await;
-            self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(text_response(format!("completed: {prompt}")))
-        }
-
-        async fn complete_streaming(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-            _cancel_token: tokio_util::sync::CancellationToken,
-        ) -> Result<mpsc::Receiver<StreamEvent>> {
-            anyhow::bail!("streaming is not used by task executor tests")
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl LlmClient for ConcurrentLlmClient {
-        async fn complete(
-            &self,
-            messages: &[Message],
-            system: Option<&str>,
-            _tools: &[ToolDefinition],
-        ) -> Result<LlmResponse> {
-            if is_pre_analysis_system(system) {
-                return Ok(pre_analysis_response(messages));
-            }
-
-            let prompt = last_text(messages);
-            self.record_active();
-            self.barrier.wait().await;
-            if prompt.contains("slow") {
-                tokio::time::sleep(Duration::from_millis(1_000)).await;
-            } else {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(text_response(format!("completed: {prompt}")))
-        }
-
-        async fn complete_streaming(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-            _cancel_token: tokio_util::sync::CancellationToken,
-        ) -> Result<mpsc::Receiver<StreamEvent>> {
-            anyhow::bail!("streaming is not used by task executor tests")
-        }
-    }
-
-    fn test_registry_with_writer() -> Arc<AgentRegistry> {
-        let registry = AgentRegistry::new();
-        let spec = crate::subagent::WorkerAgentSpec::custom("writer", "Write files")
-            .with_permissions(PermissionPolicy::new().allow("write(*)").allow("read(*)"))
-            .with_prompt("Write files when asked.")
-            .with_max_steps(3);
-        registry.register(spec.into_agent_definition());
-        Arc::new(registry)
-    }
-
-    fn test_registry_with_text_worker() -> Arc<AgentRegistry> {
-        let registry = AgentRegistry::new();
-        let spec = crate::subagent::WorkerAgentSpec::custom("worker", "Text worker")
-            .with_prompt("Return a concise result.")
-            .with_max_steps(1);
-        registry.register(spec.into_agent_definition());
-        Arc::new(registry)
-    }
-
-    #[tokio::test]
-    async fn task_child_run_permission_allow() {
-        let workspace = tempfile::tempdir().unwrap();
-        let mock = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::tool_call_response(
-                "t1",
-                "write",
-                serde_json::json!({
-                    "file_path": workspace.path().join("out.txt").to_string_lossy(),
-                    "content": "WRITTEN"
-                }),
-            ),
-            MockLlmClient::text_response("Done."),
-        ]));
-
-        let executor = TaskExecutor::new(
-            test_registry_with_writer(),
-            mock,
-            workspace.path().to_string_lossy().to_string(),
-        );
-
-        let result = executor
-            .execute(
-                TaskParams {
-                    agent: "writer".to_string(),
-                    description: "Write file".to_string(),
-                    prompt: "Write out.txt".to_string(),
-                    background: false,
-                    max_steps: Some(3),
-                    output_schema: None,
-                },
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            result.success,
-            "child run should succeed: {}",
-            result.output
-        );
-        assert!(
-            !result.output.contains("Permission denied"),
-            "no permission denial: {}",
-            result.output
-        );
-        let content = std::fs::read_to_string(workspace.path().join("out.txt")).unwrap();
-        assert_eq!(content, "WRITTEN");
-    }
-
-    #[tokio::test]
-    async fn task_child_run_permission_deny() {
-        let workspace = tempfile::tempdir().unwrap();
-        let registry = AgentRegistry::new();
-        let spec = crate::subagent::WorkerAgentSpec::custom("restricted", "Restricted agent")
-            .with_permissions(PermissionPolicy::new().allow("read(*)").deny("bash(*)"))
-            .with_max_steps(3);
-        registry.register(spec.into_agent_definition());
-
-        let mock = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::tool_call_response(
-                "t1",
-                "bash",
-                serde_json::json!({"command": "echo hello"}),
-            ),
-            MockLlmClient::text_response("Could not run bash."),
-        ]));
-
-        let executor = TaskExecutor::new(
-            Arc::new(registry),
-            mock,
-            workspace.path().to_string_lossy().to_string(),
-        );
-
-        let result = executor
-            .execute(
-                TaskParams {
-                    agent: "restricted".to_string(),
-                    description: "Try bash".to_string(),
-                    prompt: "Run echo hello".to_string(),
-                    background: false,
-                    max_steps: Some(3),
-                    output_schema: None,
-                },
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-
-        // The agent completes (LLM responds after denial), but bash was denied.
-        // The denial is sent as a tool result to the LLM, which then responds.
-        assert!(result.success, "agent should complete: {}", result.output);
-    }
-
-    #[tokio::test]
-    async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
-        let workspace = tempfile::tempdir().unwrap();
-        let mock = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::tool_call_response(
-                "t1",
-                "bash",
-                serde_json::json!({"command": "echo inherited-deep-research-bash"}),
-            ),
-            MockLlmClient::text_response("Done."),
-        ]));
-        let parent_policy = PermissionPolicy::new().allow("bash(*)");
-        let parent_context = crate::child_run::ChildRunContext {
-            security_provider: None,
-            hook_engine: None,
-            skill_registry: None,
-            permission_checker: Some(Arc::new(parent_policy.clone())),
-            permission_policy: Some(parent_policy),
-            tool_timeout_ms: None,
-            llm_api_timeout_ms: None,
-            max_parallel_tasks: None,
-            max_execution_time_ms: None,
-            circuit_breaker_threshold: None,
-            duplicate_tool_call_threshold: None,
-            confirmation_manager: None,
-            enforce_active_skill_tool_restrictions: None,
-            workspace_services: None,
-            budget_guard: None,
-        };
-
-        let executor = TaskExecutor::new(
-            Arc::new(AgentRegistry::new()),
-            mock,
-            workspace.path().to_string_lossy().to_string(),
-        )
-        .with_parent_context(parent_context);
-
-        let result = executor
-            .execute(
-                TaskParams {
-                    agent: "deep-research".to_string(),
-                    description: "Gather evidence".to_string(),
-                    prompt: "Run a harmless bash evidence command.".to_string(),
-                    background: false,
-                    max_steps: Some(3),
-                    output_schema: None,
-                },
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            result.success,
-            "deep-research child should inherit parent bash permission: {}",
-            result.output
-        );
-        assert!(
-            !result.output.contains("Permission denied"),
-            "no inherited child permission denial: {}",
-            result.output
-        );
-    }
-
-    #[tokio::test]
-    async fn task_child_run_confirmation_auto_approve() {
-        let workspace = tempfile::tempdir().unwrap();
-        let registry = AgentRegistry::new();
-        // Agent with allow("read(*)") — write is not in allow list, so it returns Ask.
-        // With AutoApproveConfirmation (default for agents with permissions), Ask → approve.
-        let spec = crate::subagent::WorkerAgentSpec::custom("reader-writer", "Read and write")
-            .with_permissions(PermissionPolicy::new().allow("read(*)"))
-            .with_max_steps(3);
-        registry.register(spec.into_agent_definition());
-
-        let mock = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::tool_call_response(
-                "t1",
-                "write",
-                serde_json::json!({
-                    "file_path": workspace.path().join("auto.txt").to_string_lossy(),
-                    "content": "AUTO_APPROVED"
-                }),
-            ),
-            MockLlmClient::text_response("Written."),
-        ]));
-
-        let executor = TaskExecutor::new(
-            Arc::new(registry),
-            mock,
-            workspace.path().to_string_lossy().to_string(),
-        );
-
-        let result = executor
-            .execute(
-                TaskParams {
-                    agent: "reader-writer".to_string(),
-                    description: "Write via auto-approve".to_string(),
-                    prompt: "Write auto.txt".to_string(),
-                    background: false,
-                    max_steps: Some(3),
-                    output_schema: None,
-                },
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            result.success,
-            "Ask should be auto-approved: {}",
-            result.output
-        );
-        assert!(
-            !result.output.contains("MissingConfirmationManager"),
-            "no MissingConfirmationManager: {}",
-            result.output
-        );
-    }
-
-    #[tokio::test]
-    async fn task_child_run_step_budget_enforced() {
-        let workspace = tempfile::tempdir().unwrap();
-        let mock = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::tool_call_response(
-                "t1",
-                "read",
-                serde_json::json!({"file_path": "/tmp/a.txt"}),
-            ),
-            MockLlmClient::tool_call_response(
-                "t2",
-                "read",
-                serde_json::json!({"file_path": "/tmp/b.txt"}),
-            ),
-            MockLlmClient::tool_call_response(
-                "t3",
-                "read",
-                serde_json::json!({"file_path": "/tmp/c.txt"}),
-            ),
-            MockLlmClient::text_response("Should not reach here."),
-        ]));
-
-        let executor = TaskExecutor::new(
-            test_registry_with_writer(),
-            mock,
-            workspace.path().to_string_lossy().to_string(),
-        );
-
-        let result = executor
-            .execute(
-                TaskParams {
-                    agent: "writer".to_string(),
-                    description: "Exceed budget".to_string(),
-                    prompt: "Read many files".to_string(),
-                    background: false,
-                    max_steps: Some(2),
-                    output_schema: None,
-                },
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-
-        // The agent should fail after exceeding 2 tool rounds
-        assert!(
-            !result.success,
-            "should fail when exceeding step budget: {}",
-            result.output
-        );
-        assert!(
-            result.output.contains("Max tool rounds") || result.output.contains("max tool rounds"),
-            "error should mention tool rounds: {}",
-            result.output
-        );
-    }
-
-    #[tokio::test]
-    async fn parallel_task_executor_runs_children_concurrently_and_preserves_input_order() {
-        let workspace = tempfile::tempdir().unwrap();
-        let client = Arc::new(ConcurrentLlmClient::new(2));
-        let executor = Arc::new(TaskExecutor::new(
-            test_registry_with_text_worker(),
-            client.clone(),
-            workspace.path().to_string_lossy().to_string(),
-        ));
-
-        let tasks = vec![
-            TaskParams {
-                agent: "worker".to_string(),
-                description: "Slow task".to_string(),
-                prompt: "slow branch".to_string(),
-                background: false,
-                max_steps: Some(1),
-                output_schema: None,
-            },
-            TaskParams {
-                agent: "worker".to_string(),
-                description: "Fast task".to_string(),
-                prompt: "fast branch".to_string(),
-                background: false,
-                max_steps: Some(1),
-                output_schema: None,
-            },
-        ];
-
-        let results = tokio::time::timeout(
-            Duration::from_secs(2),
-            executor.execute_parallel(tasks, None, None),
-        )
-        .await
-        .expect("parallel children should reach the barrier and complete");
-
-        assert_eq!(results.len(), 2);
-        assert!(
-            client.max_active() >= 2,
-            "expected concurrent child execution, max_active={}",
-            client.max_active()
-        );
-        assert!(results[0].success);
-        assert!(results[0].output.contains("slow branch"));
-        assert!(results[1].success);
-        assert!(results[1].output.contains("fast branch"));
-    }
-
-    #[tokio::test]
-    async fn parallel_task_executor_respects_configured_concurrency_limit() {
-        let workspace = tempfile::tempdir().unwrap();
-        let client = Arc::new(LimitedConcurrencyLlmClient::new());
-        let executor = Arc::new(
-            TaskExecutor::new(
-                test_registry_with_text_worker(),
-                client.clone(),
-                workspace.path().to_string_lossy().to_string(),
-            )
-            .with_max_parallel_tasks(2),
-        );
-
-        let tasks = (0..5)
-            .map(|idx| TaskParams {
-                agent: "worker".to_string(),
-                description: format!("Task {idx}"),
-                prompt: format!("branch {idx}"),
-                background: false,
-                max_steps: Some(1),
-                output_schema: None,
-            })
-            .collect::<Vec<_>>();
-
-        let results = executor.execute_parallel(tasks, None, None).await;
-
-        assert_eq!(results.len(), 5);
-        assert!(results.iter().all(|result| result.success));
-        assert_eq!(client.max_active(), 2);
-    }
-
-    #[tokio::test]
-    async fn parallel_task_executor_isolates_unknown_agent_failure() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = Arc::new(TaskExecutor::new(
-            test_registry_with_text_worker(),
-            Arc::new(StaticLlmClient::new("valid branch done")),
-            workspace.path().to_string_lossy().to_string(),
-        ));
-
-        let tasks = vec![
-            TaskParams {
-                agent: "missing-agent".to_string(),
-                description: "Missing".to_string(),
-                prompt: "should fail".to_string(),
-                background: false,
-                max_steps: Some(1),
-                output_schema: None,
-            },
-            TaskParams {
-                agent: "worker".to_string(),
-                description: "Valid".to_string(),
-                prompt: "should succeed".to_string(),
-                background: false,
-                max_steps: Some(1),
-                output_schema: None,
-            },
-        ];
-
-        let results = executor.execute_parallel(tasks, None, None).await;
-
-        assert_eq!(results.len(), 2);
-        assert!(!results[0].success);
-        assert_eq!(results[0].agent, "missing-agent");
-        assert!(results[0].output.contains("Unknown agent type"));
-        assert!(results[1].success);
-        assert_eq!(results[1].agent, "worker");
-        assert!(results[1].output.contains("valid branch done"));
-    }
-
-    #[tokio::test]
-    async fn parallel_task_executor_emits_subagent_events_for_each_child() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = Arc::new(TaskExecutor::new(
-            test_registry_with_text_worker(),
-            Arc::new(StaticLlmClient::new("done")),
-            workspace.path().to_string_lossy().to_string(),
-        ));
-        let (tx, mut rx) = broadcast::channel(64);
-
-        let tasks = vec![
-            TaskParams {
-                agent: "worker".to_string(),
-                description: "One".to_string(),
-                prompt: "first".to_string(),
-                background: false,
-                max_steps: Some(1),
-                output_schema: None,
-            },
-            TaskParams {
-                agent: "worker".to_string(),
-                description: "Two".to_string(),
-                prompt: "second".to_string(),
-                background: false,
-                max_steps: Some(1),
-                output_schema: None,
-            },
-        ];
-
-        let results = executor.execute_parallel(tasks, Some(tx), None).await;
-        assert_eq!(results.len(), 2);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-
-        let mut starts = Vec::new();
-        let mut ends = Vec::new();
-        let mut progress_statuses: Vec<String> = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            match event {
-                AgentEvent::SubagentStart { description, .. } => starts.push(description),
-                AgentEvent::SubagentEnd { agent, success, .. } => ends.push((agent, success)),
-                AgentEvent::SubagentProgress { status, .. } => progress_statuses.push(status),
-                _ => {}
-            }
-        }
-
-        starts.sort();
-        assert_eq!(starts, vec!["One".to_string(), "Two".to_string()]);
-        assert_eq!(ends.len(), 2);
-        assert!(ends
-            .iter()
-            .all(|(agent, success)| agent == "worker" && *success));
-        // Each child loop emits at least one TurnEnd, so we expect at least
-        // two synthesized turn_completed progress events across the run.
-        assert!(
-            progress_statuses
-                .iter()
-                .filter(|s| s == &"turn_completed")
-                .count()
-                >= 2,
-            "expected at least two turn_completed progress events, got {:?}",
-            progress_statuses
-        );
-    }
-
-    #[tokio::test]
-    async fn parallel_task_tool_reports_error_when_any_child_fails() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = Arc::new(TaskExecutor::new(
-            test_registry_with_text_worker(),
-            Arc::new(StaticLlmClient::new("valid branch done")),
-            workspace.path().to_string_lossy().to_string(),
-        ));
-        let tool = ParallelTaskTool::new(executor);
-        let ctx = ToolContext::new(workspace.path().to_path_buf());
-
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "tasks": [
-                        {
-                            "agent": "missing-agent",
-                            "description": "Missing",
-                            "prompt": "should fail"
-                        },
-                        {
-                            "agent": "worker",
-                            "description": "Valid",
-                            "prompt": "should succeed"
-                        }
-                    ]
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            !output.success,
-            "parallel_task should fail when any child result fails"
-        );
-        assert!(output.content.contains("[ERR]"));
-        assert!(output.content.contains("[OK]"));
-        let metadata = output.metadata.expect("metadata");
-        assert_eq!(metadata["task_count"], 2);
-        assert_eq!(metadata["success_count"], 1);
-        assert_eq!(metadata["failed_count"], 1);
-        assert_eq!(metadata["all_success"], false);
-        assert_eq!(metadata["partial_failure"], true);
-        assert_eq!(metadata["allow_partial_failure"], false);
-        assert_eq!(metadata["results"][0]["success"], false);
-        assert_eq!(metadata["results"][1]["success"], true);
-    }
-
-    #[tokio::test]
-    async fn parallel_task_tool_allows_partial_failure_when_requested() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = Arc::new(TaskExecutor::new(
-            test_registry_with_text_worker(),
-            Arc::new(StaticLlmClient::new("valid branch done")),
-            workspace.path().to_string_lossy().to_string(),
-        ));
-        let tool = ParallelTaskTool::new(executor);
-        let ctx = ToolContext::new(workspace.path().to_path_buf());
-
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "allow_partial_failure": true,
-                    "tasks": [
-                        {
-                            "agent": "missing-agent",
-                            "description": "Missing",
-                            "prompt": "should fail"
-                        },
-                        {
-                            "agent": "worker",
-                            "description": "Valid",
-                            "prompt": "should succeed"
-                        }
-                    ]
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            output.success,
-            "parallel_task should continue when partial failures are allowed"
-        );
-        assert!(output.content.contains("[ERR]"));
-        assert!(output.content.contains("[OK]"));
-        assert!(output.content.contains("Partial failure tolerated"));
-        let metadata = output.metadata.expect("metadata");
-        assert_eq!(metadata["task_count"], 2);
-        assert_eq!(metadata["success_count"], 1);
-        assert_eq!(metadata["failed_count"], 1);
-        assert_eq!(metadata["all_success"], false);
-        assert_eq!(metadata["partial_failure"], true);
-        assert_eq!(metadata["allow_partial_failure"], true);
-        assert_eq!(metadata["results"][0]["success"], false);
-        assert_eq!(metadata["results"][1]["success"], true);
-    }
-
-    #[tokio::test]
-    async fn parallel_task_tool_timeout_returns_completed_partial_results() {
-        let workspace = tempfile::tempdir().unwrap();
-        let client = Arc::new(ConcurrentLlmClient::new(2));
-        let executor = Arc::new(TaskExecutor::new(
-            test_registry_with_text_worker(),
-            client.clone(),
-            workspace.path().to_string_lossy().to_string(),
-        ));
-        let tool = ParallelTaskTool::new(executor);
-        let ctx = ToolContext::new(workspace.path().to_path_buf());
-
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "allow_partial_failure": true,
-                    "timeout_ms": 500,
-                    "tasks": [
-                        {
-                            "agent": "worker",
-                            "description": "Slow",
-                            "prompt": "slow branch"
-                        },
-                        {
-                            "agent": "worker",
-                            "description": "Fast",
-                            "prompt": "fast branch"
-                        }
-                    ]
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            output.success,
-            "parallel_task should return completed evidence on timeout: {}",
-            output.content
-        );
-        assert!(output.content.contains("Parallel task timed out"));
-        assert!(client.max_active() >= 2);
-        let metadata = output.metadata.expect("metadata");
-        assert_eq!(metadata["timed_out"], true);
-        assert_eq!(metadata["returned_early"], false);
-        assert_eq!(metadata["success_count"], 1);
-        assert_eq!(metadata["failed_count"], 1);
-        assert_eq!(metadata["results"][0]["success"], false);
-        assert!(
-            metadata["results"][0]["output"]
-                .as_str()
-                .is_some_and(|text| text.contains("timed out")),
-            "{metadata}"
-        );
-        assert_eq!(metadata["results"][1]["success"], true);
-        assert!(
-            metadata["results"][1]["output"]
-                .as_str()
-                .is_some_and(|text| text.contains("fast branch")),
-            "{metadata}"
-        );
-    }
-
-    #[tokio::test]
-    async fn parallel_task_tool_timeout_path_respects_configured_concurrency_limit() {
-        let workspace = tempfile::tempdir().unwrap();
-        let client = Arc::new(LimitedConcurrencyLlmClient::new());
-        let executor = Arc::new(
-            TaskExecutor::new(
-                test_registry_with_text_worker(),
-                client.clone(),
-                workspace.path().to_string_lossy().to_string(),
-            )
-            .with_max_parallel_tasks(2),
-        );
-        let tool = ParallelTaskTool::new(executor);
-        let ctx = ToolContext::new(workspace.path().to_path_buf());
-
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "allow_partial_failure": true,
-                    "timeout_ms": 1_000,
-                    "tasks": (0..5)
-                        .map(|idx| serde_json::json!({
-                            "agent": "worker",
-                            "description": format!("Task {idx}"),
-                            "prompt": format!("branch {idx}")
-                        }))
-                        .collect::<Vec<_>>()
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            output.success,
-            "parallel_task should complete: {}",
-            output.content
-        );
-        assert_eq!(client.max_active(), 2);
-        let metadata = output.metadata.expect("metadata");
-        assert_eq!(metadata["timed_out"], false);
-        assert_eq!(metadata["success_count"], 5);
-        assert_eq!(metadata["failed_count"], 0);
-    }
-
-    #[tokio::test]
-    async fn parallel_task_tool_can_return_after_min_success_count() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = Arc::new(TaskExecutor::new(
-            test_registry_with_text_worker(),
-            Arc::new(ConcurrentLlmClient::new(2)),
-            workspace.path().to_string_lossy().to_string(),
-        ));
-        let tool = ParallelTaskTool::new(executor);
-        let ctx = ToolContext::new(workspace.path().to_path_buf());
-
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "allow_partial_failure": true,
-                    "min_success_count": 1,
-                    "tasks": [
-                        {
-                            "agent": "worker",
-                            "description": "Slow",
-                            "prompt": "slow branch"
-                        },
-                        {
-                            "agent": "worker",
-                            "description": "Fast",
-                            "prompt": "fast branch"
-                        }
-                    ]
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            output.success,
-            "parallel_task should return once enough branches succeed: {}",
-            output.content
-        );
-        assert!(output.content.contains("min_success_count=1"));
-        let metadata = output.metadata.expect("metadata");
-        assert_eq!(metadata["timed_out"], false);
-        assert_eq!(metadata["returned_early"], true);
-        assert_eq!(metadata["success_count"], 1);
-        assert_eq!(metadata["failed_count"], 1);
-        assert_eq!(metadata["results"][0]["success"], false);
-        assert_eq!(metadata["results"][1]["success"], true);
-    }
-
-    #[tokio::test]
-    async fn parallel_task_tool_returns_structured_child_output_when_schema_requested() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = Arc::new(TaskExecutor::new(
-            test_registry_with_text_worker(),
-            Arc::new(SchemaCoercionClient),
-            workspace.path().to_string_lossy().to_string(),
-        ));
-        let tool = ParallelTaskTool::new(executor);
-        let ctx = ToolContext::new(workspace.path().to_path_buf());
-
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "tasks": [{
-                        "agent": "worker",
-                        "description": "Structured verdict",
-                        "prompt": "Return a verdict.",
-                        "output_schema": verdict_schema()
-                    }]
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            output.success,
-            "parallel_task should succeed: {}",
-            output.content
-        );
-        let metadata = output.metadata.expect("metadata");
-        assert_eq!(metadata["results"][0]["success"], true);
-        assert_eq!(metadata["results"][0]["structured"]["verdict"], "ok");
-    }
-
-    #[tokio::test]
-    async fn parallel_task_tool_still_fails_when_all_children_fail() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = Arc::new(TaskExecutor::new(
-            test_registry_with_text_worker(),
-            Arc::new(StaticLlmClient::new("unused")),
-            workspace.path().to_string_lossy().to_string(),
-        ));
-        let tool = ParallelTaskTool::new(executor);
-        let ctx = ToolContext::new(workspace.path().to_path_buf());
-
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "allow_partial_failure": true,
-                    "tasks": [
-                        {
-                            "agent": "missing-one",
-                            "description": "Missing one",
-                            "prompt": "should fail"
-                        },
-                        {
-                            "agent": "missing-two",
-                            "description": "Missing two",
-                            "prompt": "should also fail"
-                        }
-                    ]
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            !output.success,
-            "parallel_task should fail if every child task fails"
-        );
-        let metadata = output.metadata.expect("metadata");
-        assert_eq!(metadata["success_count"], 0);
-        assert_eq!(metadata["failed_count"], 2);
-        assert_eq!(metadata["all_success"], false);
-        assert_eq!(metadata["partial_failure"], false);
-        assert_eq!(metadata["allow_partial_failure"], true);
-    }
-
-    #[tokio::test]
-    async fn parallel_task_both_inherit_permissions() {
-        let workspace = tempfile::tempdir().unwrap();
-        let mock = Arc::new(MockLlmClient::new(vec![
-            // Task 1 responses
-            MockLlmClient::tool_call_response(
-                "t1",
-                "write",
-                serde_json::json!({
-                    "file_path": workspace.path().join("p1.txt").to_string_lossy(),
-                    "content": "P1"
-                }),
-            ),
-            MockLlmClient::text_response("Done 1."),
-            // Task 2 responses
-            MockLlmClient::tool_call_response(
-                "t2",
-                "write",
-                serde_json::json!({
-                    "file_path": workspace.path().join("p2.txt").to_string_lossy(),
-                    "content": "P2"
-                }),
-            ),
-            MockLlmClient::text_response("Done 2."),
-        ]));
-
-        let executor = Arc::new(TaskExecutor::new(
-            test_registry_with_writer(),
-            mock,
-            workspace.path().to_string_lossy().to_string(),
-        ));
-
-        let tasks = vec![
-            TaskParams {
-                agent: "writer".to_string(),
-                description: "Write p1".to_string(),
-                prompt: "Write p1.txt".to_string(),
-                background: false,
-                max_steps: Some(3),
-                output_schema: None,
-            },
-            TaskParams {
-                agent: "writer".to_string(),
-                description: "Write p2".to_string(),
-                prompt: "Write p2.txt".to_string(),
-                background: false,
-                max_steps: Some(3),
-                output_schema: None,
-            },
-        ];
-
-        let results = executor.execute_parallel(tasks, None, None).await;
-        assert_eq!(results.len(), 2);
-
-        for result in &results {
-            assert!(
-                result.success,
-                "parallel child should succeed: {}",
-                result.output
-            );
-        }
-    }
-
-    #[test]
-    fn synthesize_progress_emits_tool_completed_for_tool_end() {
-        let event = AgentEvent::ToolEnd {
-            id: "call-1".to_string(),
-            name: "bash".to_string(),
-            output: "hello".to_string(),
-            exit_code: 0,
-            metadata: None,
-            error_kind: None,
-        };
-        let progress =
-            synthesize_subagent_progress(&event, "task-1", "task-run-task-1").expect("some");
-        match progress {
-            AgentEvent::SubagentProgress {
-                task_id,
-                session_id,
-                status,
-                metadata,
-            } => {
-                assert_eq!(task_id, "task-1");
-                assert_eq!(session_id, "task-run-task-1");
-                assert_eq!(status, "tool_completed");
-                assert_eq!(metadata["tool"], "bash");
-                assert_eq!(metadata["exit_code"], 0);
-                assert_eq!(metadata["output_bytes"], 5);
-                assert!(metadata.get("error_kind").is_none());
-            }
-            other => panic!("expected SubagentProgress, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn synthesize_progress_includes_error_kind_when_present() {
-        let event = AgentEvent::ToolEnd {
-            id: "call-2".to_string(),
-            name: "edit".to_string(),
-            output: "boom".to_string(),
-            exit_code: 1,
-            metadata: None,
-            error_kind: Some(crate::tools::ToolErrorKind::NotFound {
-                path: "missing.txt".to_string(),
-            }),
-        };
-        let progress =
-            synthesize_subagent_progress(&event, "task-x", "task-run-task-x").expect("some");
-        if let AgentEvent::SubagentProgress { metadata, .. } = progress {
-            assert!(
-                metadata.get("error_kind").is_some(),
-                "error_kind should propagate into metadata"
-            );
-        } else {
-            panic!("expected SubagentProgress");
-        }
-    }
-
-    #[test]
-    fn synthesize_progress_emits_turn_completed_for_turn_end() {
-        let event = AgentEvent::TurnEnd {
-            turn: 3,
-            usage: crate::llm::TokenUsage {
-                prompt_tokens: 100,
-                completion_tokens: 25,
-                total_tokens: 125,
-                cache_read_tokens: None,
-                cache_write_tokens: None,
-            },
-        };
-        let progress =
-            synthesize_subagent_progress(&event, "task-1", "task-run-task-1").expect("some");
-        if let AgentEvent::SubagentProgress {
-            status, metadata, ..
-        } = progress
-        {
-            assert_eq!(status, "turn_completed");
-            assert_eq!(metadata["turn"], 3);
-            assert_eq!(metadata["total_tokens"], 125);
-            assert_eq!(metadata["prompt_tokens"], 100);
-            assert_eq!(metadata["completion_tokens"], 25);
-        } else {
-            panic!("expected SubagentProgress");
-        }
-    }
-
-    #[test]
-    fn synthesize_progress_ignores_unrelated_events() {
-        let ignored = [
-            AgentEvent::TextDelta {
-                text: "hi".to_string(),
-            },
-            AgentEvent::ToolStart {
-                id: "x".to_string(),
-                name: "bash".to_string(),
-            },
-            AgentEvent::TurnStart { turn: 1 },
-            AgentEvent::SubagentStart {
-                task_id: "nested".to_string(),
-                session_id: "nested-run".to_string(),
-                parent_session_id: "parent".to_string(),
-                agent: "explore".to_string(),
-                description: "nested".to_string(),
-                started_ms: 0,
-            },
-        ];
-        for event in &ignored {
-            assert!(
-                synthesize_subagent_progress(event, "task", "session").is_none(),
-                "{:?} should not emit progress",
-                event
-            );
-        }
-    }
-}
+mod tests;

@@ -2,10 +2,14 @@
 
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::tools::MAX_OUTPUT_SIZE;
-use crate::workspace::WorkspaceGrepRequest;
+use crate::workspace::{WorkspaceGrepRequest, WorkspaceGrepResult, WorkspacePath};
 use anyhow::Result;
 use async_trait::async_trait;
 use regex::Regex;
+use std::collections::{HashMap, HashSet};
+
+const MAX_GREP_SOURCE_ANCHORS: usize = 64;
+const MAX_GREP_FALLBACK_CANDIDATES: usize = MAX_GREP_SOURCE_ANCHORS * 4;
 
 pub struct GrepTool;
 
@@ -74,12 +78,15 @@ impl Tool for GrepTool {
             pattern_str.to_string()
         };
 
-        if let Err(e) = Regex::new(&regex_pattern) {
-            return Ok(ToolOutput::error(format!(
-                "Invalid regex pattern '{}': {}",
-                pattern_str, e
-            )));
-        }
+        let regex = match Regex::new(&regex_pattern) {
+            Ok(regex) => regex,
+            Err(e) => {
+                return Ok(ToolOutput::error(format!(
+                    "Invalid regex pattern '{}': {}",
+                    pattern_str, e
+                )))
+            }
+        };
 
         let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let base = match ctx.resolve_workspace_path(path_str) {
@@ -103,31 +110,181 @@ impl Tool for GrepTool {
             case_insensitive,
             max_output_size: MAX_OUTPUT_SIZE,
         };
-        let result = match ctx
+        let anchor_request = request.clone();
+        let outcome = match ctx
             .workspace_services
-            .run_with_timeout("grep", async move { search.grep(request).await })
+            .run_with_timeout(
+                "grep",
+                async move { search.grep_with_sources(request).await },
+            )
             .await
         {
             Ok(result) => result,
             Err(e) => return Ok(ToolOutput::error(format!("Grep search failed: {}", e))),
         };
 
-        if result.match_count == 0 {
-            Ok(ToolOutput::success(format!(
-                "No matches found for pattern: {}",
-                pattern_str
-            )))
+        let source_anchors = grep_source_anchors(
+            &outcome.result,
+            outcome.matched_paths.as_deref(),
+            &anchor_request,
+            &regex,
+            ctx,
+        )
+        .await;
+        let result = outcome.result;
+        let content = if result.match_count == 0 {
+            format!("No matches found for pattern: {}", pattern_str)
         } else if result.truncated {
-            Ok(ToolOutput::success(format!(
+            format!(
                 "{}\n... (output truncated)\nFound {} matches in {} files (output truncated)",
                 result.output, result.match_count, result.file_count
-            )))
+            )
         } else {
-            Ok(ToolOutput::success(format!(
+            format!(
                 "{}\n{} match(es) in {} file(s)",
                 result.output, result.match_count, result.file_count
-            )))
+            )
+        };
+        let output = ToolOutput::success(content);
+        if source_anchors.is_empty() {
+            Ok(output)
+        } else {
+            Ok(output.with_metadata(serde_json::json!({
+                "source_anchors": source_anchors,
+            })))
         }
+    }
+}
+
+async fn grep_source_anchors(
+    result: &WorkspaceGrepResult,
+    matched_paths: Option<&[WorkspacePath]>,
+    request: &WorkspaceGrepRequest,
+    regex: &Regex,
+    ctx: &ToolContext,
+) -> Vec<String> {
+    let mut anchors = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(matched_paths) = matched_paths {
+        for path in matched_paths {
+            let Ok(path) = ctx.resolve_workspace_path(path.as_str()) else {
+                continue;
+            };
+            if !path.is_root() {
+                let path = path.as_str().to_string();
+                if !seen.insert(path.clone()) {
+                    continue;
+                }
+                anchors.push(path);
+                if anchors.len() >= MAX_GREP_SOURCE_ANCHORS {
+                    break;
+                }
+            }
+        }
+        return anchors;
+    }
+
+    // Legacy/custom backends may provide only display output. Treat it as
+    // untrusted: parse only actual-match lines, bound delimiter scanning, and
+    // verify every candidate against the original request and file contents.
+    let mut candidates: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut candidate_indices: HashMap<String, usize> = HashMap::new();
+    let mut scanned_candidates = 0usize;
+    'lines: for line in result.output.lines() {
+        let Some(line) = line.strip_prefix('>') else {
+            continue;
+        };
+        for (delimiter, _) in line.match_indices(':') {
+            if scanned_candidates >= MAX_GREP_FALLBACK_CANDIDATES {
+                break 'lines;
+            }
+            scanned_candidates += 1;
+
+            let remainder = &line[delimiter + 1..];
+            let digit_count = remainder.bytes().take_while(u8::is_ascii_digit).count();
+            if digit_count == 0 || remainder.as_bytes().get(digit_count) != Some(&b':') {
+                continue;
+            }
+            let candidate = &line[..delimiter];
+            if candidate.is_empty() || candidate.chars().any(char::is_control) {
+                continue;
+            }
+            let Ok(line_number) = remainder[..digit_count].parse::<usize>() else {
+                continue;
+            };
+            if line_number == 0 {
+                continue;
+            }
+            let Ok(path) = ctx.resolve_workspace_path(candidate) else {
+                continue;
+            };
+            if path.is_root() || !path_matches_grep_request(&path, request) {
+                continue;
+            }
+            let path = path.as_str().to_string();
+            if let Some(index) = candidate_indices.get(&path).copied() {
+                candidates[index].1.push(line_number);
+            } else {
+                candidate_indices.insert(path.clone(), candidates.len());
+                candidates.push((path, vec![line_number]));
+            }
+        }
+    }
+
+    let fs = ctx.workspace_services.fs();
+    for (path, line_numbers) in candidates {
+        let workspace_path = WorkspacePath::from_normalized(path.clone());
+        let Ok(content) = ctx
+            .workspace_services
+            .run_with_timeout("grep source verification", fs.read_text(&workspace_path))
+            .await
+        else {
+            continue;
+        };
+        if line_numbers.into_iter().any(|line_number| {
+            content
+                .lines()
+                .nth(line_number - 1)
+                .is_some_and(|line| regex.is_match(line))
+        }) {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            anchors.push(path);
+            if anchors.len() >= MAX_GREP_SOURCE_ANCHORS {
+                break;
+            }
+        }
+    }
+    anchors
+}
+
+fn path_matches_grep_request(path: &WorkspacePath, request: &WorkspaceGrepRequest) -> bool {
+    let relative = if request.base.is_root() {
+        path.as_str()
+    } else if path == &request.base {
+        path.as_str().rsplit('/').next().unwrap_or(path.as_str())
+    } else {
+        let Some(relative) = path
+            .as_str()
+            .strip_prefix(request.base.as_str())
+            .and_then(|suffix| suffix.strip_prefix('/'))
+        else {
+            return false;
+        };
+        relative
+    };
+
+    let Some(glob) = request.glob.as_deref() else {
+        return true;
+    };
+    let Ok(pattern) = glob::Pattern::new(glob) else {
+        return false;
+    };
+    if glob.contains('/') {
+        pattern.matches(relative)
+    } else {
+        pattern.matches(relative.rsplit('/').next().unwrap_or(relative))
     }
 }
 
@@ -158,6 +315,10 @@ mod tests {
         assert!(result.content.contains("hello world"));
         assert!(result.content.contains("hello again"));
         assert!(result.content.contains("2 match(es)"));
+        assert_eq!(
+            result.metadata.unwrap()["source_anchors"],
+            serde_json::json!(["a.txt"])
+        );
     }
 
     #[tokio::test]
@@ -192,6 +353,80 @@ mod tests {
 
         assert!(result.success);
         assert!(result.content.contains("2 match(es)"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_grep_source_anchor_preserves_newline_filename_without_injection() {
+        let temp = tempfile::tempdir().unwrap();
+        let filename = "actual\n>injected.txt";
+        std::fs::write(temp.path().join(filename), "needle").unwrap();
+        let tool = GrepTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = tool
+            .execute(&serde_json::json!({"pattern": "needle"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.content.contains(r"actual\n>injected.txt"));
+        assert!(!result
+            .content
+            .lines()
+            .any(|line| line.starts_with(">injected.txt:")));
+        assert_eq!(
+            result.metadata.unwrap()["source_anchors"],
+            serde_json::json!([filename])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grep_source_anchor_preserves_colon_filename() {
+        let temp = tempfile::tempdir().unwrap();
+        let filename = "notes:2026.txt";
+        std::fs::write(temp.path().join(filename), "needle").unwrap();
+        let tool = GrepTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = tool
+            .execute(&serde_json::json!({"pattern": "needle"}), &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.metadata.unwrap()["source_anchors"],
+            serde_json::json!([filename])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grep_source_anchor_rejects_nonexistent_injected_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let request = WorkspaceGrepRequest {
+            base: WorkspacePath::root(),
+            pattern: "needle".to_string(),
+            glob: None,
+            context_lines: 0,
+            case_insensitive: false,
+            max_output_size: MAX_OUTPUT_SIZE,
+        };
+        let result = WorkspaceGrepResult {
+            output: ">ghost.txt:1: needle\n".to_string(),
+            match_count: 1,
+            file_count: 1,
+            truncated: false,
+        };
+
+        assert!(grep_source_anchors(
+            &result,
+            None,
+            &request,
+            &Regex::new("needle").unwrap(),
+            &ctx
+        )
+        .await
+        .is_empty());
     }
 
     #[tokio::test]

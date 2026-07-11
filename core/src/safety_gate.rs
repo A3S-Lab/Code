@@ -11,6 +11,7 @@ use crate::permissions::PermissionDecision;
 pub(crate) enum ToolGateApproval {
     PermissionAllow,
     ConfirmationNotRequired,
+    HostDirectTrusted,
 }
 
 impl ToolGateApproval {
@@ -18,6 +19,7 @@ impl ToolGateApproval {
         match self {
             ToolGateApproval::PermissionAllow => "permission_allow",
             ToolGateApproval::ConfirmationNotRequired => "confirmation_not_required",
+            ToolGateApproval::HostDirectTrusted => "host_direct_trusted",
         }
     }
 }

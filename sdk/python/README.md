@@ -40,6 +40,77 @@ result = session.send({"prompt": "What files handle authentication?"})
 print(result.text)
 ```
 
+## Async Lifecycle APIs
+
+Asyncio applications should use the awaitable lifecycle methods so session
+stores, workspace setup, cancellation, and shutdown do not block the current
+event-loop task:
+
+```python
+agent = await Agent.create_async("agent.acl")
+session = await agent.session_async("/my-project", options)
+resumed = await agent.resume_session_async(session_id, resume_options)
+
+result = await session.send_async("Inspect the authentication flow")
+tool_result = await session.tool_async(
+    "read", {"file_path": "src/auth.py", "offset": 0, "limit": 200}
+)
+runs = await session.runs_async()
+events = await session.run_events_async(run_id)
+page = await session.run_event_page_async(run_id, after_sequence=cursor, limit=256)
+
+await session.save_async()
+await session.cancel_async()
+await session.close_async()
+await agent.close_async()
+```
+
+`session_async()` intentionally accepts a typed `SessionOptions` object instead
+of the legacy collection of primitive keyword overrides. The synchronous
+methods remain available for compatibility.
+
+`tool_async(name, args)` is the generic asynchronous direct-tool API. It uses
+the same governed Core gateway as `tool()`, including hooks, budgets,
+permissions, output sanitization, timeouts, and session cancellation. The
+synchronous convenience methods remain useful outside asyncio; async hosts can
+call their underlying tool names through `tool_async()`.
+
+## Session Operation Concurrency
+
+A session admits one transcript-affecting operation at a time. `send`, `stream`,
+attachment requests, slash commands, and run resumption share a fail-fast gate.
+An overlap raises a busy-session error (`CodeError::SessionBusy` in Rust)
+instead of waiting in a hidden queue. A stream retains admission until its
+producer stops, even if the public iterator is dropped. Finish or cancel the
+active operation before starting another one.
+
+Fully consuming `EventStream` is a lifecycle barrier: iteration does not finish
+ahead of core cleanup, so an immediate next conversation operation is not
+rejected because the prior stream still owns admission.
+
+## Streaming Event Protocol
+
+Every streamed `AgentEvent` carries the stable version-1 envelope fields
+`version`, `type`, `payload`, and optional `metadata`. `event_type` remains a
+compatibility alias for `type`. The payload is complete and is preserved for
+unknown future event names; convenience fields such as `text`, `tool_name`,
+and `exit_code` are derived from the same core projection.
+
+```python
+from a3s_code import EventType
+
+for event in session.stream("Explain the current test failures"):
+    if event.type == EventType.TEXT_DELTA:
+        print(event.text or "", end="")
+    elif event.type == EventType.AGENT_END:
+        print(event.verification_summary_text or "")
+    print(event.version, event.type, event.payload, event.metadata)
+```
+
+`agent_event_types_v1()` returns the ordered catalog known by the native
+runtime. `AgentEventTypeV1` and `EventType` are generated from the core catalog;
+callers should still retain a default branch for future values.
+
 ## Slash Commands
 
 Every session includes built-in slash commands dispatched before the LLM:
@@ -80,7 +151,6 @@ from a3s_code import (
     DefaultSecurityProvider,
     FileMemoryStore,
     FileSessionStore,
-    HttpTransport,
     LocalWorkspaceBackend,
     S3WorkspaceBackend,
 )
@@ -112,10 +182,23 @@ for event in session.stream({"prompt": "Refactor auth"}):
 runs = session.runs()
 if runs:
     print(runs[-1]["id"], runs[-1]["status"])
-    print(session.run_events(runs[-1]["id"]))
+    for event in session.run_events(runs[-1]["id"]):
+        print(event["version"], event["type"], event["payload"], event["metadata"]["sequence"])
     print(session.active_tools())
     # Cancels only if that run is still active; stale IDs are ignored.
     session.cancel_run(runs[-1]["id"])
+
+# run_events() uses the same versioned envelope as live streams. Replay
+# metadata carries run_id, session_id, sequence, and timestamp_ms.
+
+# Incremental replay uses an exclusive cursor. retention_gap means the
+# requested cursor predates the retained FIFO window.
+page = session.run_event_page(runs[-1]["id"], limit=256) if runs else None
+if page and page["retention_gap"]:
+    raise RuntimeError("Requested run events were evicted")
+
+# RuntimeError instances originating in the core expose a stable `.code`, such
+# as SESSION_BUSY, SESSION_CLOSED, or BUDGET_EXHAUSTED. Do not parse messages.
 
 # Direct tools (bypass LLM)
 opts = SessionOptions()
@@ -139,6 +222,12 @@ session.grep("TODO")
 session.tool_names()
 session.tool_definitions()
 artifact = session.get_artifact("a3s://tool-output/read/abc123")
+
+# Direct helpers are trusted host-control-plane operations. They skip
+# model-facing permission/HITL, while hooks, budget, queue/timeout,
+# cancellation, recursion protection, and output sanitization remain active.
+# Authorize end users before exposing them. They do not claim the
+# transcript-operation gate.
 
 # Dynamic workflow is opt-in for SDK sessions.
 session.register_dynamic_workflow_runtime()
@@ -242,13 +331,6 @@ worker_session = agent.session_for_worker(
     WorkerAgentSpec.reviewer("review-cow", "Adversarial code review"),
 )
 
-# AHP-supervised background advice
-opts = SessionOptions()
-opts.ahp_transport = HttpTransport("http://localhost:8080/ahp")
-session = agent.session("/my-project", opts)
-# The AHP harness owns background advice, context supplements, and PTC proposals.
-# Proposed scripts should be run explicitly with session.program(...) if approved.
-
 # Slash commands
 session.list_commands()
 session.register_command("ping", "Pong!", lambda args, ctx: "pong")
@@ -273,6 +355,8 @@ session.add_mcp({
 session.mcps()
 session.tool_names()
 session.remove_mcp("github")
+# Live add/remove mutates only this session's private manager. Global and
+# host-supplied managers are inherited read-only capability sources.
 
 # Evidence
 session.record_verification_reports([{
@@ -298,6 +382,12 @@ opts.auto_save = True
 session2 = agent.session(".", opts)
 resumed = agent.resume_session('my-session', opts)
 ```
+
+`save()` and `auto_save` publish one versioned `SessionSnapshotV1` generation:
+conversation, artifacts, traces, run records, verification reports, and
+subagent task snapshots are committed together. Built-in file and memory stores
+publish the aggregate atomically; legacy fragmented records remain readable for
+migration.
 
 ## HITL Confirmations
 

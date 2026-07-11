@@ -6,16 +6,125 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 /// Sender for streaming tool output deltas during execution.
 pub type ToolEventSender = mpsc::Sender<ToolStreamEvent>;
+
+/// Internal acknowledgement channel used to preserve causal ordering between
+/// high-level events emitted by a tool and the tool's terminal runtime event.
+///
+/// `broadcast::Sender::send` only confirms that an event was enqueued. A tool
+/// can therefore return before the run event sink has observed its final
+/// `SubagentEnd`. This barrier lets the invocation gateway wait until all
+/// already-enqueued high-level events have been drained without adding an
+/// internal marker to the public [`crate::agent::AgentEvent`] protocol.
+#[derive(Clone)]
+pub(crate) struct AgentEventBarrier {
+    tx: mpsc::Sender<oneshot::Sender<()>>,
+}
+
+pub(crate) struct AgentEventBarrierReceiver {
+    rx: mpsc::Receiver<oneshot::Sender<()>>,
+}
+
+impl AgentEventBarrier {
+    pub(crate) fn channel(capacity: usize) -> (Self, AgentEventBarrierReceiver) {
+        let (tx, rx) = mpsc::channel(capacity);
+        (Self { tx }, AgentEventBarrierReceiver { rx })
+    }
+
+    pub(crate) async fn flush(&self) {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self.tx.send(ack_tx).await.is_ok() {
+            // A dropped acknowledgement means the owning run sink has already
+            // stopped. There is no later ToolEnd in that sink to order against.
+            let _ = ack_rx.await;
+        }
+    }
+}
+
+impl AgentEventBarrierReceiver {
+    pub(crate) async fn recv(&mut self) -> Option<oneshot::Sender<()>> {
+        self.rx.recv().await
+    }
+}
 
 /// Events emitted by tools during execution
 #[derive(Debug, Clone)]
 pub enum ToolStreamEvent {
     /// Intermediate output delta (e.g., a line of stdout from bash)
     OutputDelta(String),
+}
+
+/// Governed capabilities available to a tool during an agent/session
+/// invocation.
+///
+/// Custom meta-tools should use this facade for nested tools and model calls.
+/// It preserves the caller's permission, HITL, hook, budget, timeout, queue,
+/// cancellation, and sanitization scope, and cannot manufacture the trusted
+/// host-direct origin.
+#[derive(Clone)]
+pub struct InvocationRuntime {
+    context: ToolContext,
+}
+
+impl std::fmt::Debug for InvocationRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvocationRuntime")
+            .field("session_id", &self.context.session_id)
+            .field("cancelled", &self.context.is_cancelled())
+            .field("has_tool_invoker", &self.context.tool_invoker.is_some())
+            .field("has_llm_client", &self.context.llm_client.is_some())
+            .finish()
+    }
+}
+
+impl InvocationRuntime {
+    /// Invoke another registered tool inside the current governance scope.
+    pub async fn invoke_tool(
+        &self,
+        name: impl Into<String>,
+        args: serde_json::Value,
+    ) -> Result<super::ToolResult> {
+        let invoker = self.context.tool_invoker.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "governed nested tool invocation is unavailable outside an agent/session runtime"
+            )
+        })?;
+        Ok(invoker
+            .invoke(
+                super::invocation::ToolInvocation::nested(name, args),
+                &self.context,
+            )
+            .await)
+    }
+
+    /// Return tool names visible through the current invocation gateway.
+    pub fn available_tools(&self) -> Vec<String> {
+        self.context
+            .tool_invoker
+            .as_ref()
+            .map(|invoker| invoker.available_tools())
+            .unwrap_or_default()
+    }
+
+    /// Make a governed model sub-call using the current budget and
+    /// cancellation scope.
+    pub async fn complete(
+        &self,
+        messages: &[crate::llm::Message],
+        system: Option<&str>,
+        tools: &[crate::llm::ToolDefinition],
+    ) -> Result<crate::llm::LlmResponse> {
+        let client = self.context.llm_client.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "governed model invocation is unavailable outside an agent/session runtime"
+            )
+        })?;
+        client.complete(messages, system, tools).await
+    }
 }
 
 /// Tool execution context
@@ -31,6 +140,8 @@ pub struct ToolContext {
     pub event_tx: Option<ToolEventSender>,
     /// Optional agent event sender for tools that emit high-level agent events (e.g., SubagentStart)
     pub agent_event_tx: Option<broadcast::Sender<crate::agent::AgentEvent>>,
+    /// Run-owned acknowledgement barrier paired with `agent_event_tx`.
+    agent_event_barrier: Option<AgentEventBarrier>,
     /// Optional search configuration for web_search tool
     pub search_config: Option<Arc<crate::config::SearchConfig>>,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
@@ -39,6 +150,27 @@ pub struct ToolContext {
     pub command_env: Option<Arc<HashMap<String, String>>>,
     /// Host-provided workspace capabilities used by built-in tools.
     pub workspace_services: Arc<crate::workspace::WorkspaceServices>,
+    /// Scoped invocation gateway installed by the agent runtime.
+    pub(crate) tool_invoker: Option<Arc<dyn super::invocation::ToolInvoker>>,
+    /// Per-run governed LLM facade for tools that perform model sub-calls.
+    pub(crate) llm_client: Option<Arc<dyn crate::llm::LlmClient>>,
+    /// Trust policy inherited by nested calls of a host-direct orchestrator.
+    pub(crate) host_direct_policy: Option<super::invocation::HostDirectPolicy>,
+    /// Cancellation for the invocation that owns this tool call.
+    ///
+    /// Session construction installs the session lifetime token. Agent runs
+    /// replace it with their per-run child token before dispatch, so a host
+    /// cancellation interrupts queued and directly executing tools as well as
+    /// model calls.
+    cancellation: CancellationToken,
+    /// Orchestrator call stack used to reject recursive `batch` / `program` calls.
+    invocation_stack: Vec<String>,
+    /// True while a queue worker owns this invocation scope.
+    ///
+    /// Nested orchestrator calls stay inside the already-admitted queue command
+    /// instead of submitting back into the same lane and deadlocking a
+    /// single-concurrency queue.
+    inside_tool_queue: bool,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -48,6 +180,16 @@ impl std::fmt::Debug for ToolContext {
             .field("session_id", &self.session_id)
             .field("sandbox", &self.sandbox.is_some())
             .field("workspace_services", &self.workspace_services)
+            .field("has_tool_invoker", &self.tool_invoker.is_some())
+            .field("has_llm_client", &self.llm_client.is_some())
+            .field(
+                "has_agent_event_barrier",
+                &self.agent_event_barrier.is_some(),
+            )
+            .field("host_direct_policy", &self.host_direct_policy)
+            .field("cancelled", &self.cancellation.is_cancelled())
+            .field("invocation_stack", &self.invocation_stack)
+            .field("inside_tool_queue", &self.inside_tool_queue)
             .finish()
     }
 }
@@ -62,10 +204,17 @@ impl ToolContext {
             session_id: None,
             event_tx: None,
             agent_event_tx: None,
+            agent_event_barrier: None,
             search_config: None,
             sandbox: None,
             command_env: None,
             workspace_services: crate::workspace::WorkspaceServices::local(workspace),
+            tool_invoker: None,
+            llm_client: None,
+            host_direct_policy: None,
+            cancellation: CancellationToken::new(),
+            invocation_stack: Vec::new(),
+            inside_tool_queue: false,
         }
     }
 
@@ -84,7 +233,23 @@ impl ToolContext {
     /// Set the agent event sender for high-level agent events (e.g., SubagentStart/End)
     pub fn with_agent_event_tx(mut self, tx: broadcast::Sender<crate::agent::AgentEvent>) -> Self {
         self.agent_event_tx = Some(tx);
+        // A barrier is paired with one specific receiver. Replacing only the
+        // sender must not retain an acknowledgement path for the old channel.
+        self.agent_event_barrier = None;
         self
+    }
+
+    pub(crate) fn with_agent_event_barrier(mut self, barrier: AgentEventBarrier) -> Self {
+        self.agent_event_barrier = Some(barrier);
+        self
+    }
+
+    /// Wait until the owning run sink has consumed every high-level agent
+    /// event that the current tool enqueued before this call.
+    pub(crate) async fn flush_agent_events(&self) {
+        if let Some(barrier) = &self.agent_event_barrier {
+            barrier.flush().await;
+        }
     }
 
     /// Set the search configuration
@@ -115,6 +280,90 @@ impl ToolContext {
     ) -> Self {
         self.workspace_services = services;
         self
+    }
+
+    /// Return the governed nested-invocation facade for this tool call.
+    ///
+    /// The facade is always constructible so tools can be tested with a plain
+    /// context; individual methods return a contextual error when no agent or
+    /// session runtime installed the corresponding capability.
+    pub fn invocation_runtime(&self) -> InvocationRuntime {
+        InvocationRuntime {
+            context: self.clone(),
+        }
+    }
+
+    pub(crate) fn with_tool_invoker(
+        mut self,
+        invoker: Arc<dyn super::invocation::ToolInvoker>,
+    ) -> Self {
+        self.tool_invoker = Some(invoker);
+        self
+    }
+
+    /// Bind this context to the lifetime of the owning session or run.
+    pub(crate) fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
+    /// Cancellation token for cooperative tools and invocation gateways.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    /// Whether the owning invocation has already been cancelled.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+
+    pub(crate) fn tool_invoker(&self) -> Option<Arc<dyn super::invocation::ToolInvoker>> {
+        self.tool_invoker.clone()
+    }
+
+    pub(crate) fn with_llm_client(mut self, client: Arc<dyn crate::llm::LlmClient>) -> Self {
+        self.llm_client = Some(client);
+        self
+    }
+
+    pub(crate) fn llm_client(&self) -> Option<Arc<dyn crate::llm::LlmClient>> {
+        self.llm_client.clone()
+    }
+
+    pub(crate) fn with_host_direct_policy(
+        mut self,
+        policy: super::invocation::HostDirectPolicy,
+    ) -> Self {
+        self.host_direct_policy = Some(policy);
+        self
+    }
+
+    pub(crate) fn host_direct_policy(&self) -> Option<super::invocation::HostDirectPolicy> {
+        self.host_direct_policy
+    }
+
+    pub(crate) fn enter_tool_invocation(
+        &self,
+        tool_name: &str,
+    ) -> std::result::Result<Self, String> {
+        if matches!(tool_name, "batch" | "program")
+            && self.invocation_stack.iter().any(|name| name == tool_name)
+        {
+            return Err(format!("recursive {tool_name} calls are not allowed"));
+        }
+
+        let mut ctx = self.clone();
+        ctx.invocation_stack.push(tool_name.to_string());
+        Ok(ctx)
+    }
+
+    pub(crate) fn with_tool_queue_scope(mut self) -> Self {
+        self.inside_tool_queue = true;
+        self
+    }
+
+    pub(crate) fn is_inside_tool_queue(&self) -> bool {
+        self.inside_tool_queue
     }
 
     /// Normalize a user-supplied path through the configured workspace backend.
@@ -325,6 +574,26 @@ pub trait Tool: Send + Sync {
 mod tests {
     use super::*;
 
+    struct RecordingInvoker {
+        origin: Arc<std::sync::Mutex<Option<super::super::invocation::InvocationOrigin>>>,
+    }
+
+    #[async_trait]
+    impl super::super::invocation::ToolInvoker for RecordingInvoker {
+        async fn invoke(
+            &self,
+            invocation: super::super::invocation::ToolInvocation,
+            _ctx: &ToolContext,
+        ) -> super::super::ToolResult {
+            *self.origin.lock().unwrap() = Some(invocation.origin);
+            super::super::ToolResult::success(&invocation.name, "nested result".to_string())
+        }
+
+        fn available_tools(&self) -> Vec<String> {
+            vec!["child".to_string()]
+        }
+    }
+
     #[test]
     #[allow(deprecated)]
     fn test_tool_context_resolve_path() {
@@ -342,6 +611,55 @@ mod tests {
         // Non-existent file should return error
         let resolved = ctx.resolve_path("nonexistent.txt");
         assert!(resolved.is_err());
+    }
+
+    #[test]
+    fn tool_context_rejects_recursive_orchestrator_invocations() {
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+
+        let program_ctx = ctx.enter_tool_invocation("program").unwrap();
+        assert_eq!(
+            program_ctx.enter_tool_invocation("program").unwrap_err(),
+            "recursive program calls are not allowed"
+        );
+
+        let batch_ctx = ctx.enter_tool_invocation("batch").unwrap();
+        assert_eq!(
+            batch_ctx.enter_tool_invocation("batch").unwrap_err(),
+            "recursive batch calls are not allowed"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_invocation_runtime_forces_nested_origin() {
+        let origin = Arc::new(std::sync::Mutex::new(None));
+        let ctx =
+            ToolContext::new(PathBuf::from("/tmp")).with_tool_invoker(Arc::new(RecordingInvoker {
+                origin: Arc::clone(&origin),
+            }));
+        let runtime = ctx.invocation_runtime();
+
+        assert_eq!(runtime.available_tools(), vec!["child"]);
+        let result = runtime
+            .invoke_tool("child", serde_json::json!({"value": 1}))
+            .await
+            .unwrap();
+        assert_eq!(result.output, "nested result");
+        assert_eq!(
+            *origin.lock().unwrap(),
+            Some(super::super::invocation::InvocationOrigin::Nested)
+        );
+    }
+
+    #[tokio::test]
+    async fn invocation_runtime_fails_closed_without_a_governed_gateway() {
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+        let error = ctx
+            .invocation_runtime()
+            .invoke_tool("read", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("unavailable outside"));
     }
 
     #[test]

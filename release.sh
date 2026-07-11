@@ -167,9 +167,8 @@ git commit -m "chore: bump version to ${VERSION}
 git tag -a "v${VERSION}" -m "Release v${VERSION}
 
 ## Tests
-- cargo test -p a3s-code-core --lib
-- cargo test -p a3s-code-core --tests
-- cargo test -p a3s-code-core --features ahp --test test_ahp_idle_with_llm
+- cargo test --workspace
+- cargo test --workspace --all-features --lib
 - git diff --check
 - scripts/check_release_versions.sh
 - REQUIRE_REAL_PROVIDER=1 scripts/release_preflight.sh

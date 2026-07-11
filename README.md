@@ -118,13 +118,13 @@ views, and engineered automation loops.
 | Context and memory | The footer tracks context fill and auto-compaction. `/ctx` searches past sessions, `/ctx <n>` attaches a transcript window, `/ctx save <n>` promotes it to memory, `/sleep` consolidates the day, and `/memory` browses durable memories as an event/entity graph. |
 | Dynamic workflows | `ultracode` and `?` DeepResearch can use `DynamicWorkflowRuntime`, a local A3S Flow-backed runtime that records workflow and step history while sandboxed PTC scripts perform tool work. |
 | Parallel work | Local fan-out uses the native host-side `parallel_task` tool. Dynamic workflows schedule a Flow step named `parallel_task` when they need local parallel subagents; QuickJS/PTC scripts do not call `parallel_task` directly. |
-| Optional runtime tools | A configured host can register additional runtime tools after `/login`; local tools and `parallel_task` remain available without an account. |
-| Deep research | Prefix a prompt with `?` to start DeepResearch. The TUI gathers evidence through `DynamicWorkflowRuntime`, uses registered runtime tools when available, falls back to local `parallel_task` when needed, then asks the model to synthesize a cited report and artifacts. |
+| Optional runtime tools | A3S OS can register runtime tools after `/login`; local tools and `parallel_task` remain available without an account. |
+| Deep research | Prefix a prompt with `?` to start DeepResearch. The TUI gathers a bounded web seed, then either takes a direct fast path or runs local `parallel_task` tracks and bounded follow-up rounds before synthesizing cited report artifacts. A3S OS Runtime tool-call fan-out is currently disabled for DeepResearch until Function-as-a-Service support is available. |
 | Asset development | `/agent`, `/mcp`, `/skill`, and `/okf` enter local development modes with an active asset, review commands, clone/draft flows, and publish/deploy/status surfaces. |
 | Workflow assets | `/flow` selects or drafts workflow DAG files for local review and optional host publication. |
 | Knowledge | `/kb` manages a local personal knowledge vault. `/okf` manages shareable OKF knowledge-package assets. |
 | Engineered loops | `/loop init`, `/loop run`, `/loop audit`, and `/loop logs` manage durable maker/checker loops under `.a3s/loops` with reports, budgets, state files, and optional runtime/view evidence. |
-| Operations | `/help` opens the command guide, `/theme` changes syntax themes, `/plugin` and `/reload` refresh skills/plugins, `/top` observes local agent process activity, `/view` reopens the latest trusted runtime view, and `/update` upgrades and restarts the CLI. |
+| Operations | `/help` opens the command guide, `/theme` changes syntax themes, `/plugin` and `/reload` refresh skills/plugins, `/top` observes local agent process activity, inline `Open view` actions reopen trusted runtime views, and `/update` upgrades and restarts the CLI. |
 
 ## TUI Command Catalog
 
@@ -138,7 +138,7 @@ forms live under the asset or context family that owns them.
 | Workspace | `/ide`, `/config`, `/output`, `/theme`, `/top`, `! <command>` | Browse and edit files, edit the active config, inspect completed tool calls, change syntax highlighting, view local agent process activity, or run a direct shell turn. |
 | Context | `/ctx <query>`, `/ctx <n>`, `/ctx save <n>`, `/sleep` | Search indexed past sessions, attach a transcript window to the next prompt, promote a hit to memory, or consolidate the day's work into durable memory. |
 | Memory and knowledge | `/memory`, `/kb`, `/kb add`, `/kb import`, `/kb search`, `/kb vault` | Browse the memory event/entity graph and manage the local personal knowledge vault. |
-| Account integration | `/login`, `/logout`, `/view` | Sign in to the configured account integration, sign out, and reopen the most recent trusted runtime view. |
+| Account integration | `/login`, `/logout`, inline `Open view` actions | Sign in to A3S OS, sign out, and open trusted runtime views returned by signed-in operations. |
 | Agents | `/agent`, `/agent <description>`, `/agent review`, `/agent publish agentic`, `/agent publish application`, `/agent publish tool`, `/agent run`, `/agent deploy`, `/agent open`, `/agent logs`, `/agent status`, `/agent activity`, `/agent list`, `/agent clone`, `/agent off` | Draft, select, review, publish, run, deploy, inspect, clone, and develop agent assets locally or through optional host services. |
 | MCP servers | `/mcp`, `/mcp <description>`, `/mcp review`, `/mcp publish`, `/mcp deploy`, `/mcp debug`, `/mcp test`, `/mcp open`, `/mcp logs`, `/mcp status`, `/mcp activity`, `/mcp list`, `/mcp clone`, `/mcp off` | Draft and develop MCP server assets, then publish or test them through optional host integrations. |
 | Skills | `/skill`, `/skill <description>`, `/skill review`, `/skill publish`, `/skill deploy`, `/skill open`, `/skill status`, `/skill activity`, `/skill list`, `/skill clone`, `/skill off` | Draft, review, publish, deploy, inspect, and hot-reload reusable skill assets. |
@@ -153,7 +153,7 @@ forms live under the asset or context family that owns them.
 | --- | --- | --- |
 | Default chat | Type a prompt | The agent plans when useful, streams text/tool events, and asks before gated operations. |
 | Plan mode | Shift+Tab until Plan | Read-only discovery tools are approved automatically; mutating tools still ask. |
-| Auto mode | `a`, `/auto`, or Shift+Tab until Auto | Tool approvals are granted for the session according to the active permission policy. |
+| Auto mode | Press `a` in an approval prompt, run `/auto`, or use Shift+Tab until Auto | Tool approvals are granted for the session according to the active permission policy. |
 | Direct shell | Start input with `!` | Runs a shell command as a user-directed turn through the same workspace output surface. |
 | DeepResearch | Start input with `?` | Uses `DynamicWorkflowRuntime` for evidence fan-out, then synthesizes a cited report and artifacts. |
 | Asset development | Enter `/agent`, `/mcp`, `/skill`, or `/okf` | Subsequent prompts are scoped to the selected local asset until the matching `off` command. |
@@ -168,9 +168,9 @@ Config discovery checks:
 3. `~/.a3s/config.acl`
 
 On first launch, the TUI can create a starter user config. Project-local config
-can set models, providers, an optional platform endpoint, `flow_dir`,
-`agent_dir`, `mcp_dir`, `skill_dir`, storage, memory, delegation, and asset
-paths.
+can set models, providers, an optional A3S OS endpoint with `os = "https://..."`,
+`flow_dir`, `agent_dir`, `mcp_dir`, `skill_dir`, storage, memory, delegation,
+and asset paths.
 
 Sessions auto-save under the workspace session store. Exiting prints the exact
 resume command; `a3s code resume` without an id resumes the newest saved session
@@ -206,14 +206,14 @@ scales work on three axes:
 - Tool-round budget and continuation count for all providers.
 - Model-agnostic prompt guidance for rigor, verification, and decomposition.
 
-| Level | Thinking budget | Tool rounds | Continuations | Intended behavior |
-| --- | ---: | ---: | ---: | --- |
-| `low` | 1,024 | 120 | 2 | Fast, minimal changes with narrow verification. |
-| `medium` | 4,096 | 200 | 3 | Balanced default behavior without extra depth steering. |
-| `high` | 8,192 | 300 | 4 | More deliberate planning, relevant tests, and self-review. |
-| `xhigh` | 16,384 | 400 | 6 | Compare alternatives, probe edge cases, and verify thoroughly. |
-| `max` | 32,768 | 500 | 8 | Maximum rigor for correctness, adversarial checks, and completeness. |
-| `ultracode` | 32,768 | 600 | 8 | Message-gated dynamic workflow mode. Trivial turns stay direct; complex turns may use `dynamic_workflow`, A3S Flow replay, native `parallel_task`, and signed-in `runtime`. |
+| Level | Thinking budget | Tool rounds | Continuations | Parallel tasks | Intended behavior |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `low` | 2,048 | 240 | 4 | 4 | Fast, minimal changes with narrow verification. |
+| `medium` | 8,192 | 800 | 8 | 8 | Balanced default behavior without extra depth steering. |
+| `high` | 16,384 | 1,200 | 12 | 12 | More deliberate planning, relevant tests, and self-review. |
+| `xhigh` | 32,768 | 1,800 | 16 | 16 | Compare alternatives, probe edge cases, and verify thoroughly. |
+| `max` | 65,536 | 2,400 | 24 | 24 | Maximum rigor for correctness, adversarial checks, and completeness. |
+| `ultracode` | 65,536 | 3,200 | 32 | 32 | Message-gated dynamic workflow mode. Trivial turns stay direct; complex turns may use `dynamic_workflow`, A3S Flow replay, native `parallel_task`, and signed-in `runtime`. |
 
 All effort levels keep local `task` and `parallel_task` available, with the TUI
 session limiting sibling fan-out through `max_parallel_tasks`. `ultracode` adds
@@ -308,15 +308,16 @@ Important runtime rules:
   `step_name: "parallel_task"` and the host executes it outside QuickJS.
 - `program`, `dynamic_workflow`, and recursive `parallel_task` calls are removed
   from the default PTC allow-list.
-- Local workflow history is stored under `.a3s-flow/dynamic-workflows` when the
+- Local workflow history is stored under `.a3s/workflow` when the
   workspace has a local root; otherwise it uses an in-memory store.
 
-DeepResearch uses the same boundary. A `?` prompt asks the host-controlled
-dynamic workflow to gather evidence first. When a configured host runtime is
-available, the workflow can call `runtime` for hosted batch execution; otherwise
-it schedules a host-side `parallel_task` step for local subagents. The final
-synthesis turn must cite the gathered evidence and link the generated report or
-trusted runtime view.
+DeepResearch uses a stricter local boundary. A `?` prompt gathers a bounded web
+seed unless the query explicitly requests no web. Sufficient low-complexity
+evidence can take a direct fast path; otherwise local `parallel_task` tracks and
+bounded follow-up rounds resolve remaining gaps before synthesis. A3S OS Runtime
+tool-call fan-out is currently disabled until Function-as-a-Service support is
+available. The final synthesis turn must cite gathered evidence and produce the
+validated report artifacts.
 
 ## Context And Memory
 
@@ -338,25 +339,26 @@ TUI memory defaults to the user's durable memory store, while embedded Rust
 sessions can provide a typed memory store or a file memory directory through
 `SessionOptions`.
 
-## Optional Platform Runtime And Views
+## Optional A3S OS Runtime And Views
 
-Add a platform endpoint to config and sign in from the TUI:
+Add an A3S OS endpoint to config and sign in from the TUI:
 
 ```acl
-platform_endpoint = "https://platform.example.com"
+os = "https://os.example.com"
 ```
 
 ```text
 /login
 ```
 
-After login, a configured host can add runtime capabilities to normal model
-turns, asset commands, loops, DeepResearch, and dynamic workflow steps.
+After login, A3S OS can add runtime capabilities to normal model turns, asset
+commands, loops, and dynamic workflow steps. DeepResearch fan-out remains local
+for now.
 
 | Integration | TUI path |
 | --- | --- |
 | Agent assets | `/agent` commands draft, review, run, publish, deploy, inspect, clone, and develop agent assets locally or through optional host services. |
-| Tool-like workers | `/mcp`, `/skill`, and selected `/agent` publish/deploy flows can use configured host bindings when the account integration exposes them. |
+| Tool-like workers | `/mcp`, `/skill`, and selected `/agent` publish/deploy flows can use A3S OS bindings when the account integration exposes them. |
 | Workflow assets | `/flow` commands create, review, run, publish, open, log, and inspect workflow assets. `DynamicWorkflowRuntime` remains the local per-turn orchestration path. |
 | Knowledge packages | `/okf` commands develop shareable knowledge-package assets; `/kb` remains the local personal knowledge-base browser. |
 | Runtime views | Hosted progressive responses can return `.view` or `viewUrl`. The TUI stores the latest view, renders an `Open view` action, opens it with `a3s-webview` when available, and falls back to a browser URL. |
@@ -443,22 +445,23 @@ use a3s_code_core::{Agent, AgentEvent, SessionOptions};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let agent = Agent::new("agent.acl").await?;
-    let session = agent.session(
-        "/path/to/workspace",
-        Some(
+    let session = agent
+        .session_builder("/path/to/workspace")
+        .options(
             SessionOptions::new()
                 .with_planning(true)
                 .with_max_parallel_tasks(4)
                 .with_tool_timeout(120_000),
-        ),
-    )?;
+        )
+        .build()
+        .await?;
 
     let result = session
         .send("Find the authentication entry points.", None)
         .await?;
     println!("{}", result.text);
 
-    let (mut rx, _handle) = session
+    let (mut rx, handle) = session
         .stream("Summarize the test strategy.", None)
         .await?;
     while let Some(event) = rx.recv().await {
@@ -468,10 +471,47 @@ async fn main() -> anyhow::Result<()> {
             _ => {}
         }
     }
+    // End is observable before final persistence/cleanup. Await the lifecycle
+    // handle before starting another transcript operation on this session.
+    let _ = handle.await;
 
     Ok(())
 }
 ```
+
+Session construction is async-first. `SessionBuilder::build()` resolves the
+merged configuration once, initializes file-backed memory/session stores,
+queues, trajectory recording, and session MCP sources without blocking Tokio,
+then hands one resolved configuration to the construction kernel.
+`Agent::session_async(...)`, `resume_session_async(...)`, and the async
+agent/worker factories use the same path.
+
+`Agent::session(...)` is a strict compatibility entry point. It never starts or
+blocks an async runtime, requires an explicitly pre-initialized memory store,
+and accepts only other resources that the host has already initialized. If an
+option would require filesystem setup, queue startup, MCP
+discovery, or another async initialization step, it returns
+`CodeError::AsyncSessionBuildRequired` instead of partially constructing a
+session or silently changing the requested backend.
+
+In particular, a manager passed with `SessionOptions::with_mcp(...)` always
+uses the async path because its capabilities must be discovered. The sync path
+may only inherit the agent-global MCP tools that were already cached during
+agent initialization.
+
+Migration for Rust embedders:
+
+```rust
+// Before: synchronous factory with implicit/default resources
+// let session = agent.session(workspace, options)?;
+
+// Now: resolve those resources asynchronously.
+let session = agent.session_async(workspace, options).await?;
+// Or use session_builder(...).options(...).build().await.
+```
+
+Keep the synchronous call only when `SessionOptions` contains an explicit
+pre-initialized memory store and every other selected resource is already ready.
 
 ## Rust Host Tool Calls
 
@@ -484,7 +524,10 @@ use serde_json::json;
 
 async fn inspect_workspace() -> anyhow::Result<()> {
     let agent = Agent::new("agent.acl").await?;
-    let session = agent.session("/path/to/workspace", None)?;
+    let session = agent
+        .session_builder("/path/to/workspace")
+        .build()
+        .await?;
 
     let source = session.read_file("src/main.rs").await?;
     let window = session
@@ -517,20 +560,74 @@ async fn inspect_workspace() -> anyhow::Result<()> {
 ```
 
 Direct host calls are privileged. Gate them in the embedding application before
-exposing them to end users.
+exposing them to end users. They use the explicit trusted-control-plane policy:
+model-facing permission and confirmation prompts are skipped, while lifecycle
+hooks, budget checks, queue/timeout handling, cancellation, recursive-call
+protection, and output sanitization remain active.
+
+## Runtime Architecture Invariants
+
+- **One resolved session configuration.** Public options are a patch; after
+  validation and async resource initialization, one internal resolved value is
+  the source of truth for session assembly.
+- **One transcript-affecting operation.** `send`, `stream`, attachment variants,
+  slash commands, and run resumption are single-flight per session. Overlap
+  fails immediately with `CodeError::SessionBusy`; a stream keeps its admission
+  lease until the stream runtime finishes, even if the public handle is dropped.
+- **One run scope.** Every run has one invocation context carrying run/session
+  identity, cancellation, the event sink, and its governance snapshot. The same
+  cancellation scope reaches provider calls, tools, nested programs, planning,
+  delegation, compaction, and helper LLM work.
+- **One provider boundary.** Run-owned LLM calls go through the scoped LLM
+  invoker, including streaming, structured-output repair calls, planning, and
+  compaction. Budget is checked before each provider call and successful usage
+  is recorded at that boundary.
+- **One governed tool boundary.** Model calls, nested `batch`/`program` calls,
+  delegation tools, and explicit host-direct calls use the same tool invocation
+  kernel with an explicit origin policy.
+- **One run-owned event domain.** Delegated-agent events use a channel owned by
+  the invoking run, with an acknowledgement barrier before the parent
+  `ToolEnd`. A detached child from an earlier run cannot be attributed to a
+  later run in the same session.
+- **One complete-field sanitization boundary.** With a security provider
+  enabled, text/reasoning deltas are buffered for their run and tool input/output
+  deltas are buffered per tool before sanitization. This deliberately trades
+  token-level latency for protection against secrets split across chunks. If
+  buffered delta data exceeds 8 MiB, the runtime fails closed and drops the
+  deltas rather than exposing a truncated prefix.
+- **One stable event wire shape.** `AgentEvent` remains the Rust runtime enum;
+  `EventEnvelopeV1 { version, type, payload, metadata }` is the lossless SDK
+  contract. Unknown future types retain their complete payload and metadata.
+- **One atomic persistence generation.** Session state and its artifacts,
+  traces, run records, verification reports, and subagent task snapshots are
+  saved together as `SessionSnapshotV1`. File and memory stores publish the
+  aggregate atomically; legacy fragmented records remain loadable for migration.
+- **One bounded file document.** `FileSessionStore` rejects JSON documents over
+  256 MiB before allocating their contents, and applies the same limit to
+  writes. This remains above the supported large-artifact resume boundary while
+  preventing corrupt or untrusted files from requesting unbounded memory.
+- **One retention policy on write and restore.** Run count plus per-run event
+  count and serialized-byte FIFO caps apply both to live recording and snapshot
+  rehydration. The default per-run byte budget is 8 MiB. Restored event buffers
+  may be trimmed, but cumulative `event_count` and retained sequence numbers are
+  preserved as replay cursors.
+- **Explicit MCP ownership.** Agent-global and host-supplied managers are
+  read-only capability sources for a session. Every session owns a private live
+  manager, so `add_mcp_server`/`remove_mcp_server` never mutate global or sibling
+  session state. Delegated children inherit the ordered capability sources.
 
 ## Runtime Surfaces
 
 | Surface | Rust API or TUI path | What it gives you |
 | --- | --- | --- |
-| Sessions | `Agent`, `AgentSession`, `SessionOptions` | `send`, `stream`, direct tools, cancellation, persistence, memory, verification, and lifecycle cleanup. |
+| Sessions | `Agent`, `SessionBuilder`, `AgentSession`, `SessionOptions` | Async-first construction, single-flight `send`/`stream`, direct tools, cancellation, persistence, memory, verification, and lifecycle cleanup. |
 | Tools | Built-in tools, MCP tools, AgentDir tools, `program`, `dynamic_workflow`, `task`, `parallel_task` | Workspace operations, web/search, shell, structured output, sandboxed PTC, external tools, and child-agent delegation. |
 | Commands | `commands::CommandRegistry`, TUI slash commands | Built-in and host-defined `/command` control surfaces without forking the loop. |
 | Dynamic workflows | `DynamicWorkflowRuntime`, `DynamicWorkflowTool` | A3S Flow-backed per-turn orchestration using sandboxed PTC scripts and native host steps. |
 | Memory | `a3s-memory`, `SessionOptions::with_file_memory`, `/memory`, `/ctx`, `/sleep` | Recall, durable facts, session promotion, consolidation, and graph browsing. |
-| Persistence | File or memory session stores, run snapshots, trace artifacts | Resume, replay, event history, active-tool state, and verification evidence. |
+| Persistence | `SessionSnapshotV1`, file or memory session stores, run snapshots, trace artifacts | Atomic session generations, resume, replay, event history, active-tool state, and verification evidence. |
 | Workspaces | `WorkspaceServices`, local backend, optional S3 backend, remote git backend | Replace filesystem, search, shell, git, or object storage behavior with typed host services. |
-| Hooks and supervision | Hooks, AHP feature, confirmation providers, permission policies | External governance, HITL, policy checks, observability, and safe tool execution. |
+| Hooks and supervision | Hooks, confirmation providers, permission policies | External governance, HITL, policy checks, observability, and safe tool execution. |
 | Orchestration | `execute_steps_parallel`, pipelines, resumable checkpoints, workflow budget ledgers | Host-driven deterministic fan-out, pipelines, loop caps, and shared budget accounting. |
 
 ## Testing Evidence

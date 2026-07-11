@@ -63,17 +63,17 @@ test:
 
         echo -ne "${CYAN}▶${RESET} ${BOLD}${display_name}${RESET} "
 
-        if OUTPUT=$(cargo test -p "$crate_name" --lib 2>&1); then
+        if OUTPUT=$(cargo test -p "$crate_name" 2>&1); then
             TEST_EXIT=0
         else
             TEST_EXIT=1
         fi
 
-        RESULT_LINE=$(echo "$OUTPUT" | grep -E "^test result:" | tail -1)
-        if [ -n "$RESULT_LINE" ]; then
-            PASSED=$(echo "$RESULT_LINE" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
-            FAILED=$(echo "$RESULT_LINE" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo "0")
-            IGNORED=$(echo "$RESULT_LINE" | grep -oE '[0-9]+ ignored' | grep -oE '[0-9]+' || echo "0")
+        RESULT_LINES=$(echo "$OUTPUT" | grep -E "^test result:" || true)
+        if [ -n "$RESULT_LINES" ]; then
+            PASSED=$(echo "$RESULT_LINES" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' | awk '{ total += $1 } END { print total + 0 }')
+            FAILED=$(echo "$RESULT_LINES" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' | awk '{ total += $1 } END { print total + 0 }')
+            IGNORED=$(echo "$RESULT_LINES" | grep -oE '[0-9]+ ignored' | grep -oE '[0-9]+' | awk '{ total += $1 } END { print total + 0 }')
 
             TOTAL_PASSED=$((TOTAL_PASSED + PASSED))
             TOTAL_FAILED=$((TOTAL_FAILED + FAILED))
@@ -121,11 +121,11 @@ test:
 
 # Run tests without progress (raw cargo output)
 test-raw:
-    cargo test --workspace --lib
+    cargo test --workspace
 
 # Run tests with verbose output
 test-v:
-    cargo test --workspace --lib -- --nocapture
+    cargo test --workspace -- --nocapture
 
 # ============================================================================
 # Test Subsets
@@ -368,7 +368,8 @@ lint:
 ci:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
-    cargo test --workspace --lib
+    cargo test --workspace
+    cargo test --workspace --all-features --lib
 
 # ============================================================================
 # Utilities

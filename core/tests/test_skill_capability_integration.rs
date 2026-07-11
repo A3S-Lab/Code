@@ -45,10 +45,11 @@ Check migrations, schema drift, and tests.
 
     let agent = Agent::from_config(test_config()).await.expect("agent");
     let session = agent
-        .session(
+        .session_async(
             workspace.path().display().to_string(),
             Some(SessionOptions::new().with_skill_dirs([skill_dir.path()])),
         )
+        .await
         .expect("session");
 
     let tool_names = session.tool_names();

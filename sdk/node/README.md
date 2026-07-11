@@ -15,7 +15,7 @@ const { Agent } = require('@a3s-lab/code')
 
 async function main() {
   const agent = await Agent.create('agent.acl')
-  const session = agent.session('/my-project')
+  const session = await agent.sessionAsync('/my-project')
 
   const result = await session.send({
     prompt: 'What files handle authentication?',
@@ -25,6 +25,65 @@ async function main() {
 
 main().catch(console.error)
 ```
+
+## Async Lifecycle APIs
+
+Session construction, resume, cancellation, and close may wait for stores,
+workspace services, MCP resources, or running children. Prefer the Promise APIs
+so those waits never block the JavaScript event loop:
+
+```js
+const session = await agent.sessionAsync('/my-project', options)
+const resumed = await agent.resumeSessionAsync(sessionId, resumeOptions)
+const specialist = await agent.sessionForAgentAsync('/my-project', 'explore')
+const worker = await agent.sessionForWorkerAsync('/my-project', workerSpec)
+
+await session.cancelAsync()
+await session.closeAsync()
+```
+
+The synchronous `session()`, `resumeSession()`, `sessionForAgent()`,
+`sessionForWorker()`, `cancel()`, and `close()` methods remain available for
+compatibility. New event-loop applications should not use them.
+
+## Session Operation Concurrency
+
+A session admits one transcript-affecting operation at a time. `send`, `stream`,
+attachment requests, slash commands, and run resumption share a fail-fast gate.
+An overlap rejects as a busy session (`CodeError::SessionBusy` in Rust) instead
+of waiting in a hidden queue. A stream retains admission until its producer has
+stopped, even if the public stream handle is dropped. Finish or cancel the
+active operation before starting the next one.
+
+Fully consuming `EventStream` is a lifecycle barrier: the terminal event and
+the following `{ done: true }` are not returned ahead of core cleanup, so an
+immediate next conversation operation is not rejected because the prior stream
+still owns admission.
+
+## Streaming Event Protocol
+
+Every streamed `AgentEvent` carries the stable version-1 envelope fields
+`version`, `type`, `payload`, and optional `metadata`. `payload` is the complete
+event payload; convenience fields such as `text`, `toolName`, and `exitCode`
+are derived from that same core projection. Keep a default branch when
+switching on `type`: future event names remain intact instead of becoming
+`unknown`, and their payload is still available.
+
+```js
+const stream = await session.stream('Explain the current test failures')
+while (true) {
+  const { value: event, done } = await stream.next()
+  if (!event) break
+  if (event.type === 'text_delta') process.stdout.write(event.text ?? '')
+  if (event.type === 'agent_end') console.log(event.verificationSummaryText ?? '')
+  console.debug(event.version, event.type, event.payload, event.metadata)
+  if (done) break
+}
+```
+
+`agentEventTypesV1()` returns the ordered catalog known by this build, while
+the exported `AgentEventTypeV1` TypeScript type deliberately remains open for
+forward compatibility.
 
 ## Programmatic Tool Calling
 
@@ -274,6 +333,14 @@ await session.git({ command: 'worktree', subcommand: 'list' })
 The older positional `git(...)` overload and `gitCommand(...)` remain for
 compatibility.
 
+Direct helpers use the trusted host-control-plane policy. They bypass
+model-facing permission and HITL decisions because application code selected
+the call, but pre/post hooks, budget checks, queue/timeout handling,
+cancellation, recursion protection, and security-provider output sanitization
+remain active. Authenticate and authorize end users before exposing these
+helpers. Direct tools do not mutate transcript history and therefore do not
+claim the conversation gate.
+
 ## Disposable Worker Agents
 
 A3S Code treats subagents as cattle, not pets: define reproducible worker specs
@@ -313,7 +380,8 @@ session.registerWorkerAgent({
 })
 ```
 
-For a worker as the top-level actor, use `agent.sessionForWorker(workspace, spec)`.
+For a worker as the top-level actor, use
+`await agent.sessionForWorkerAsync(workspace, spec)`.
 
 ### Confirmation Inheritance
 
@@ -335,23 +403,6 @@ const session = agent.session('/my-project', {
   ],
 })
 ```
-
-## AHP-Supervised Advice
-
-Background advice belongs in the host or AHP harness. A3S Code forwards hooks,
-run lifecycle events, task updates, verification summaries, confirmations, idle
-signals, and errors; the harness decides when to surface suggestions, add host
-context, or propose PTC scripts.
-
-```js
-const session = agent.session('/my-project', {
-  ahpTransport: new HttpTransport('http://localhost:8080/ahp'),
-})
-```
-
-PTC scripts proposed by an AHP harness are not executed automatically. Run them
-explicitly through `session.program(...)` so existing permission, confirmation,
-and trace policies stay in force.
 
 ## Live MCP Servers
 
@@ -375,6 +426,11 @@ console.log(await session.mcps())
 
 The positional `addMcpServer(...)` overload and longer
 `addMcpServerConfig(...)` alias remain for compatibility.
+
+Every session owns the manager mutated by `addMcp` and `removeMcp`. Global MCP
+configuration is inherited as a read-only capability source: a local server can
+shadow it only in this session, and removing the local shadow reveals the
+inherited tools again. Sibling sessions and the global manager are unchanged.
 
 ## Filesystem-First Agents
 
@@ -429,10 +485,47 @@ await session.send('Fix the failing test')
 
 const [run] = await session.runs()
 console.log(run.id, run.status)
-console.log(await session.runEvents(run.id))
+const replay = await session.runEvents(run.id)
+for (const event of replay) {
+  console.log(event.version, event.type, event.payload, event.metadata.sequence)
+}
 console.log(await session.activeTools())
 ```
+
+`runEvents()` returns the same `{ version, type, payload, metadata }` v1
+envelope as live streams. Replay metadata includes `run_id`, `session_id`,
+`sequence`, and `timestamp_ms`.
+
+For incremental replay, use the exclusive cursor returned by
+`runEventPage()`:
+
+```js
+let after
+do {
+  const page = await session.runEventPage(run.id, after, 256)
+  if (!page) break
+  if (page.retentionGap) throw new Error('Requested run events were evicted')
+  for (const event of page.events) render(event)
+  after = page.nextAfterSequence ?? after
+  if (!page.hasMore) break
+} while (true)
+```
+
+`retentionGap` means the requested cursor predates the retained FIFO window;
+it must not be treated as complete history.
 
 Use `session.currentRun()` while a stream is active to inspect the current run.
 Use `session.cancelRun(run.id)` to cancel only that run; stale IDs will not
 cancel a newer operation.
+
+Core failures expose a stable `error.code` (for example `SESSION_BUSY`,
+`SESSION_CLOSED`, or `BUDGET_EXHAUSTED`) in addition to the human-readable
+message. Match the code instead of parsing message text.
+
+## Persistence Generations
+
+`session.save()` and `autoSave` publish one versioned session generation. The
+conversation, artifacts, traces, run records, verification reports, and
+subagent task snapshots are committed together as `SessionSnapshotV1`; the
+built-in file and memory stores publish the aggregate atomically. Legacy
+fragmented records remain readable for migration.

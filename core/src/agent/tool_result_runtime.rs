@@ -40,6 +40,28 @@ impl NormalizedToolResult {
         }
     }
 
+    pub(super) fn from_tool_result(result: ToolResult) -> Self {
+        Self {
+            output: result.output,
+            exit_code: result.exit_code,
+            is_error: result.exit_code != 0,
+            metadata: result.metadata,
+            images: result.images,
+            error_kind: result.error_kind,
+        }
+    }
+
+    pub(super) fn into_tool_result(self, name: impl Into<String>) -> ToolResult {
+        ToolResult {
+            name: name.into(),
+            output: self.output,
+            exit_code: self.exit_code,
+            metadata: self.metadata,
+            images: self.images,
+            error_kind: self.error_kind,
+        }
+    }
+
     fn tool_error(message: String) -> Self {
         let hint = if AgentLoop::is_transient_tool_error(&message) {
             " [transient - you may retry this tool call]"

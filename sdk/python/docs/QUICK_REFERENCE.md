@@ -18,6 +18,10 @@ for event in session.stream({"prompt": "Refactor the tests around that code path
         print(event.text, end="", flush=True)
 ```
 
+Streaming events use envelope version `1`: `event.type` is the canonical open
+discriminant, `event.payload` is lossless, and `event.metadata` preserves
+optional protocol metadata. `event.event_type` is a compatibility alias.
+
 Use the short object-shaped request APIs first. They own normal model execution,
 built-in tools,
 slash commands, memory, persistence, trace events, artifacts, and verification
@@ -37,6 +41,8 @@ individual steps.
 runs = session.runs()
 latest = runs[-1] if runs else None
 events = session.run_events(latest["id"]) if latest else []
+# events are v1 {version, type, payload, metadata} envelopes; replay position
+# is in metadata["sequence"] and metadata["timestamp_ms"].
 active_tools = session.active_tools()
 cancelled = session.cancel_run(latest["id"]) if latest else False
 ```
@@ -129,20 +135,6 @@ session.add_mcp({
 Prefer the compact object-shaped API for new integrations;
 `add_mcp_server_config(...)` and `add_mcp_server(...)` remain available for
 existing callers.
-
-## AHP-Supervised Advice
-
-```python
-from a3s_code import HttpTransport, SessionOptions
-
-opts = SessionOptions()
-opts.ahp_transport = HttpTransport("http://localhost:8080/ahp")
-session = agent.session(".", opts)
-```
-
-Use the AHP harness for background advice, context supplements, and PTC script
-proposals. A3S Code only executes proposed scripts when the caller explicitly
-runs them through `session.program(...)`.
 
 The standalone 1.x lifecycle control plane and team shortcuts are intentionally
 absent in 2.0.

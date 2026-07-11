@@ -66,7 +66,8 @@ async fn schedule_fires_a_real_harness_turn() {
     let workspace = tempfile::tempdir().expect("temp workspace");
     let session = Arc::new(
         agent
-            .session(workspace.path().to_string_lossy().to_string(), None)
+            .session_async(workspace.path().to_string_lossy().to_string(), None)
+            .await
             .expect("session"),
     );
     let fires = Arc::new(Mutex::new(Vec::new()));

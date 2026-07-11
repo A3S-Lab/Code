@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,6 +10,10 @@ const INTENTIONAL_AGENT_OMISSIONS = new Map([
   [
     'from_config',
     'Rust-only constructor that accepts CodeConfig; SDKs construct from string config sources.',
+  ],
+  [
+    'session_builder',
+    'Rust lifetime-based builder; SDK session methods resolve SessionOptions through the async core builder internally.',
   ],
 ]);
 
@@ -40,7 +44,13 @@ const INTENTIONAL_SESSION_OMISSIONS = new Map([
   ],
 ]);
 
-const AGENT_ALIASES = new Map([['new', 'create']]);
+const AGENT_ALIASES = new Map([
+  ['new', 'create'],
+  ['session_async', 'session'],
+  ['resume_session_async', 'resume_session'],
+  ['session_for_agent_async', 'session_for_agent'],
+  ['session_for_worker_async', 'session_for_worker'],
+]);
 const SESSION_ALIASES = new Map([['read_file_with_options', 'read_file']]);
 
 const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
@@ -62,6 +72,7 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
   ['host_env', 'Rust HostEnv ID/Clock pair; no SDK-safe deterministic replay provider yet.'],
   ['sandbox_handle', 'Rust BashSandbox trait object; no SDK-safe sandbox provider yet.'],
   ['mcp_manager', 'Rust McpManager handle; SDKs expose add_mcp/remove_mcp runtime APIs.'],
+  ['hook_executor', 'Rust HookExecutor trait object; SDKs expose register_hook instead.'],
 ]);
 
 const SESSION_OPTION_ALIASES = new Map([
@@ -69,7 +80,6 @@ const SESSION_OPTION_ALIASES = new Map([
   ['auto_parallel_delegation', 'auto_parallel'],
   ['rl_trajectory', 'trajectory_path'],
   ['prompt_slots', 'role'],
-  ['hook_executor', 'ahp_transport'],
 ]);
 
 const SDK_AGENT_EXTRAS = ['serve_agent_dir'];
@@ -111,11 +121,18 @@ const SDK_SESSION_OPTION_EXTRAS = [
   'trajectory_mode',
   'trajectory_max_text_bytes',
   'trajectory_include_messages',
-  'ahp_transport',
 ];
 
 function read(rel) {
   return readFileSync(path.join(root, rel), 'utf8');
+}
+
+function readRustModule(rootFile, moduleDir) {
+  const files = readdirSync(path.join(root, moduleDir), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.rs'))
+    .map((entry) => `${moduleDir}/${entry.name}`)
+    .sort();
+  return [read(rootFile), ...files.map(read)].join('\n');
 }
 
 function stripLineForBraceCounting(line) {
@@ -157,38 +174,44 @@ function stripLineForBraceCounting(line) {
 
 function extractImpl(src, name) {
   const lines = src.split(/\r?\n/);
-  const start = lines.findIndex((line) => new RegExp(`^\\s*impl\\s+${name}\\s*\\{`).test(line));
-  assert.notEqual(start, -1, `could not find impl ${name}`);
+  const starts = lines
+    .map((line, index) => (new RegExp(`^\\s*impl\\s+${name}\\s*\\{`).test(line) ? index : -1))
+    .filter((index) => index !== -1);
+  assert.ok(starts.length > 0, `could not find impl ${name}`);
 
-  const block = [];
-  let depth = 0;
-  let opened = false;
-  for (let i = start; i < lines.length; i += 1) {
-    const line = lines[i];
-    const stripped = stripLineForBraceCounting(line);
-    if (opened) {
-      block.push(line);
-    }
-    for (const ch of stripped) {
-      if (ch === '{') {
-        depth += 1;
-        opened = true;
-      } else if (ch === '}') {
-        depth -= 1;
+  const blocks = [];
+  for (const start of starts) {
+    const block = [];
+    let depth = 0;
+    let opened = false;
+    for (let i = start; i < lines.length; i += 1) {
+      const line = lines[i];
+      const stripped = stripLineForBraceCounting(line);
+      if (opened) {
+        block.push(line);
+      }
+      for (const ch of stripped) {
+        if (ch === '{') {
+          depth += 1;
+          opened = true;
+        } else if (ch === '}') {
+          depth -= 1;
+        }
+      }
+      if (opened && depth === 0) {
+        block.pop();
+        break;
       }
     }
-    if (opened && depth === 0) {
-      block.pop();
-      break;
-    }
+    blocks.push(block.join('\n'));
   }
-  return block.join('\n');
+  return blocks.join('\n');
 }
 
 function extractStruct(src, name) {
   const lines = src.split(/\r?\n/);
   const start = lines.findIndex((line) =>
-    new RegExp(`^\\s*(?:pub\\s+)?struct\\s+${name}\\s*\\{`).test(line),
+    new RegExp(`^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?struct\\s+${name}\\s*\\{`).test(line),
   );
   assert.notEqual(start, -1, `could not find struct ${name}`);
 
@@ -231,7 +254,9 @@ function rustPublicMethods(block) {
 function pythonMethods(block) {
   const methods = [];
   for (const line of block.split(/\r?\n/)) {
-    const match = line.match(/^\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)/);
+    const match = line.match(
+      /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)/,
+    );
     if (match && !match[1].startsWith('__')) {
       methods.push(match[1]);
     }
@@ -253,7 +278,7 @@ function rustPublicFields(block) {
 function pythonFields(block) {
   const fields = [];
   for (const line of block.split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:/);
+    const match = line.match(/^\s*(?:pub(?:\([^)]*\))?\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:/);
     if (match) {
       fields.push(match[1]);
     }
@@ -321,10 +346,28 @@ function assertContainsAll(label, actual, required) {
   }
 }
 
-const core = read('core/src/agent_api.rs');
-const node = read('sdk/node/src/lib.rs');
+function eventProtocolCatalog(source) {
+  const block = source.match(/define_agent_event_types_v1!\s*\{([\s\S]*?)\n\}/);
+  assert.ok(block, 'could not find the core event protocol catalog');
+  const entries = [...block[1].matchAll(
+    /^\s*([A-Za-z0-9_]+)\s*=>\s*([A-Z0-9_]+)\s*=\s*"([a-z0-9_]+)",?\s*$/gm,
+  )].map(([, variant, constant, wireName]) => ({ variant, constant, wireName }));
+  assert.ok(entries.length > 0, 'core event protocol catalog must not be empty');
+  assert.equal(
+    new Set(entries.map(entry => entry.wireName)).size,
+    entries.length,
+    'core event protocol wire names must be unique',
+  );
+  return entries;
+}
+
+const core = readRustModule('core/src/agent_api.rs', 'core/src/agent_api');
+const node = readRustModule('sdk/node/src/lib.rs', 'sdk/node/src');
 const nodeTypes = read('sdk/node/generated.d.ts');
-const python = read('sdk/python/src/lib.rs');
+const python = readRustModule('sdk/python/src/lib.rs', 'sdk/python/src');
+const eventProtocol = read('core/src/event_protocol.rs');
+const nodeEventTypes = read('sdk/node/event-protocol-v1.d.ts');
+const pythonEventTypes = read('sdk/python/python/a3s_code/event_protocol_v1.py');
 
 const coreAgent = rustPublicMethods(extractImpl(core, 'Agent'));
 const coreSession = rustPublicMethods(extractImpl(core, 'AgentSession'));
@@ -366,6 +409,65 @@ assertContainsAll(
   nodeTypeSession,
   requiredSession.map(toLowerCamel),
 );
+
+const eventCatalog = eventProtocolCatalog(eventProtocol);
+for (const { constant, wireName } of eventCatalog) {
+  assert.ok(
+    nodeEventTypes.includes(`'${wireName}'`),
+    `Node event declaration is missing ${wireName}`,
+  );
+  assert.ok(
+    pythonEventTypes.includes(`${constant}: Final[str] = "${wireName}"`),
+    `Python EventType is missing ${constant}=${wireName}`,
+  );
+}
+assert.ok(
+  nodeEventTypes.includes("AgentEventTypeV1 = KnownAgentEventTypeV1 | (string & {})"),
+  'Node event types must remain open for future wire values',
+);
+assert.ok(
+  pythonEventTypes.includes('AgentEventTypeV1 = str'),
+  'Python event types must remain open for future wire values',
+);
+assert.match(
+  node,
+  /RustAgentEventProjectionV1::try_from\(event\)/,
+  'Node AgentEvent must consume the core event projection',
+);
+assert.match(
+  python,
+  /RustAgentEventProjectionV1::try_from\(event\)/,
+  'Python AgentEvent must consume the core event projection',
+);
+for (const [label, source] of [['Node', node], ['Python', python]]) {
+  assert.doesNotMatch(
+    source,
+    /impl From<RustAgentEvent>/,
+    `${label} must not maintain an independent AgentEvent match`,
+  );
+  assert.doesNotMatch(
+    source,
+    /Self::empty\("unknown"\)/,
+    `${label} must not relabel future events as unknown`,
+  );
+}
+
+const nodeEventFields = tsInterfaceFields(extractTsBlock(nodeTypes, 'interface', 'AgentEvent'));
+assertContainsAll('Node generated.d.ts AgentEvent', nodeEventFields, [
+  'version',
+  'type',
+  'payload',
+  'metadata',
+  'payloadJson',
+  'metadataJson',
+]);
+const pythonEventFields = pythonFields(extractStruct(python, 'PyAgentEvent'));
+assertContainsAll('Python AgentEvent', pythonEventFields, [
+  'version',
+  'event_type',
+  'payload_json',
+  'metadata_json',
+]);
 assertContainsAll(
   'Node generated.d.ts SessionOptions',
   nodeTypeSessionOptions,
@@ -378,6 +480,7 @@ console.log(
     `core Agent required=${expectedAgent.length}`,
     `core Session required=${expectedSession.length}`,
     `core SessionOptions required=${expectedSessionOptions.length}`,
+    `event protocol types=${eventCatalog.length}`,
     `intentional omissions=${
       INTENTIONAL_AGENT_OMISSIONS.size
       + INTENTIONAL_SESSION_OMISSIONS.size

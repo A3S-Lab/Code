@@ -5,7 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [5.0.0] - 2026-07-11
+
+### Added
+
+- Added a versioned, lossless event envelope shared by the Rust core and both
+  SDKs, including generated event catalogs and forward-compatible preservation
+  of unknown event types, payloads, and metadata.
+- Added async-first Rust session construction through `SessionBuilder::build`,
+  `session_async`, async agent/worker factories, and `resume_session_async`, with
+  typed configuration and resource-initialization errors.
+- Added `SessionSnapshotV1`, a versioned aggregate containing conversation
+  state, artifacts, traces, run records, verification reports, and delegated
+  task snapshots. File and memory stores commit the aggregate as one atomic
+  generation while retaining legacy fragmented-load compatibility.
+- Added sanitized `source_anchors` to delegated `TaskResult`, `StepOutcome`, and
+  successful background-task snapshots. Successful `read`, `grep`,
+  `web_search`, and `web_fetch` calls now carry only normalized workspace paths
+  or credential/query-free URLs, so hosts can distinguish runtime-observed
+  sources from model-attested strings.
+
+### Changed
+
+- `web_search` now falls back to DuckDuckGo and Wikipedia when a request
+  contains only known browser-backed engines such as Baidu or Bing China but
+  no headless browser is configured. Unknown engine names still return a
+  configuration error.
+- Split streamed tool preparation from execution lifecycle events:
+  `ToolStart` now opens a stable call ID, `ToolExecutionStart` carries the
+  authorized arguments when execution actually begins, input deltas retain
+  provider call IDs, and `ToolEnd` includes authoritative arguments for
+  lossless replay and UI projection.
+- Moved A3S Code dynamic workflow history from the former sibling state
+  directory to the project-local `.a3s/workflow` directory.
+- Session construction now validates and asynchronously resolves memory,
+  persistence, queue, trajectory, and MCP resources once before assembly. The
+  synchronous Rust factory is a non-blocking compatibility path that requires
+  an explicit pre-initialized memory store and returns
+  `AsyncSessionBuildRequired` for async-only configuration.
+- **Rust migration:** callers that relied on `Agent::session` to create default
+  or file-backed resources must switch to `session_async(...).await` or
+  `session_builder(...).build().await`. The synchronous factory remains only for
+  explicitly pre-initialized memory and other already-ready resources; persisted
+  resume uses `resume_session_async(...).await`.
+- **Rust migration:** external `TaskResult`, `StepOutcome`, and
+  `SubagentTaskSnapshot` struct literals must initialize the new
+  `source_anchors` field (usually with `Vec::new()`). Existing serialized values
+  remain readable because the field defaults to an empty list during
+  deserialization.
+- Conversation operations are now fail-fast single-flight per session. An
+  overlapping send, stream, attachment call, slash command, or run resumption
+  returns `SessionBusy`, and streaming retains admission until its runtime has
+  actually finished.
+- Run identity, cancellation, events, and governance now travel in one
+  invocation context. Scoped LLM and tool invokers apply cancellation, budget,
+  policy, hooks, confirmation, queue/timeout, recursion protection, and output
+  sanitization at the provider/tool boundaries, including nested and delegated
+  work.
+- Direct SDK tool helpers now use an explicit trusted host-control-plane policy:
+  they bypass model-facing permission and confirmation decisions but still use
+  hooks, budget checks, queue/timeout handling, cancellation, recursion
+  protection, and output sanitization.
+- Session MCP mutation is isolated from agent-global and host-supplied managers.
+  Each session owns its live manager while inherited managers remain read-only
+  capability sources and are propagated to delegated child agents.
+
+### Removed
+
+- Removed the in-core AHP integration and its SDK bindings. External governance
+  now composes through the unified hook, permission, confirmation, and scoped
+  invocation boundaries instead of a second parallel control plane.
+- Removed the unused internal file-history module; durable session snapshots,
+  run events, artifacts, and workspace version checks are the maintained
+  persistence and conflict-detection paths.
 
 ## [4.3.3] - 2026-07-09
 
@@ -31,6 +103,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserved `SearchResult::published_date` in both JSON and default text
+  `web_search` output so research clients can compare source recency instead of
+  losing engine dates. Engine provenance is now emitted in stable sorted order.
+- Sanitized HTTP(S) URLs in `web_search` queries at the Core tool boundary.
+  Search engines and result headers retain the useful base URL without receiving
+  embedded credentials, query parameters, or fragments from any caller.
+- Made the initial `web_fetch` network request use the same credential/query/
+  fragment-free URL stored in source metadata, and sanitized URL-bearing fetch
+  errors. Ordinary TUI calls can no longer send a sensitive raw URL while only
+  presenting a safe anchor afterward.
+- Unified `web_search` result URL safety across JSON, text, and source-anchor
+  metadata. Credentials, query parameters, and fragments are removed before
+  results reach the model, and non-HTTP(S) result URLs are excluded before the
+  requested result limit is applied. HTTP(S) URLs embedded in result titles and
+  snippets receive the same safe projection.
 - Accepted both `data:` and `data: ` SSE frames so OpenAI-compatible streaming
   providers that omit the optional space no longer produce empty model output.
 - Updated release workspace setup for the current `a3s-lane` and `a3s-search`
@@ -126,7 +213,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Active skill `allowed-tools` no longer globally deny ordinary session tool calls
-  by default. Tool calls continue through permission policy, hooks, HITL, and AHP;
+  by default. Tool calls continue through permission policy, hooks, and HITL;
   `SessionOptions::with_active_skill_tool_restrictions(true)` (Node:
   `enforceActiveSkillToolRestrictions`) restores the legacy global restriction
   behavior. Skill-local execution still enforces each skill's `allowed-tools`.
@@ -214,8 +301,8 @@ on any toolchain when the lock isn't honored.)
 
 Release-engineering fix for 3.6.0 (no library code changes). The 3.6.0 tag
 published `a3s-code-core` to crates.io, but the native SDK build jobs failed
-because **brotli 8.0.3** (pulled transitively via `tower-http` under the
-`ahp`/`s3` features) no longer compiles on the newest stable Rust — so the npm,
+because **brotli 8.0.3** (pulled transitively via `tower-http` under optional SDK
+features) no longer compiles on the newest stable Rust — so the npm,
 PyPI, and GitHub Release artifacts were skipped. This release ships those.
 
 ### Fixed
@@ -840,12 +927,6 @@ conflicts. They now `switch` / `match` on `error_kind.type` instead.
   `ToolContext::resolve_workspace_path`, removing duplicated canonicalization
   logic from `ToolExecutor::execute`.
 
-### Fixed
-
-- Removed two `clippy::useless_conversion` warnings in
-  `core/tests/test_ahp_idle_with_llm.rs` so `cargo clippy --all-targets` is
-  clean.
-
 ### Documentation
 
 - Updated `README.md`, Node SDK README, and Python SDK README with workspace
@@ -927,8 +1008,6 @@ conflicts. They now `switch` / `match` on `error_kind.type` instead.
 
 - Split the large agent and session API implementation files into focused
   runtime modules for maintainability.
-- Made AHP the single harness/advisory/control plane with richer event context,
-  heartbeat state, runtime state snapshots, and decision mapping.
 - Updated docs and examples to prefer short SDK method names while retaining
   long compatibility aliases.
 - Re-exported `ActiveToolSnapshot` from the Rust core crate root.
@@ -937,7 +1016,7 @@ conflicts. They now `switch` / `match` on `error_kind.type` instead.
 
 - Removed the obsolete sidecar/copilot/BTW/strategize/BTE mechanism and related
   prompts, docs, configs, and examples. Background advice, context supplements,
-  and PTC proposals now belong to the caller or AHP harness.
+  and PTC proposals now belong to the caller or an external harness.
 
 ---
 
@@ -953,7 +1032,7 @@ conflicts. They now `switch` / `match` on `error_kind.type` instead.
 
 - Release-blocking real-provider integration test for `.a3s/config.acl` environment-variable injection.
 - No-network integration coverage, script dry-run support, and literal-config extraction for MiniMax ACL `env(...)` resolution.
-- Release validation scripts for local core tests, AHP feature tests, version consistency, patch hygiene, and real-provider ACL smoke tests.
+- Release validation scripts for local core tests, version consistency, patch hygiene, and real-provider ACL smoke tests.
 
 ### Removed
 

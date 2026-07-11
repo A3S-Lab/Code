@@ -134,7 +134,9 @@ impl LlmClient for MockStructuredClient {
                     let json_str = serde_json::to_string(input).unwrap();
                     for chunk in json_str.as_bytes().chunks(10) {
                         let s = String::from_utf8_lossy(chunk).to_string();
-                        tx.send(StreamEvent::ToolUseInputDelta(s)).await.ok();
+                        tx.send(StreamEvent::ToolUseInputDelta { id: None, delta: s })
+                            .await
+                            .ok();
                     }
                 } else if let ContentBlock::Text { text } = block {
                     for chunk in text.as_bytes().chunks(10) {
@@ -912,6 +914,51 @@ fn test_validate_one_of() {
 }
 
 #[test]
+fn test_validate_one_of_requires_exactly_one_matching_branch() {
+    let schema = serde_json::json!({
+        "oneOf": [
+            {"type": "number"},
+            {"minimum": 0}
+        ]
+    });
+
+    assert!(validate_against_schema(&serde_json::json!(-1), &schema).is_ok());
+    let errors = validate_against_schema(&serde_json::json!(1), &schema).unwrap_err();
+    assert!(errors.iter().any(|error| error.contains("oneOf")));
+}
+
+#[test]
+fn test_validate_resolves_local_refs_without_ambient_io() {
+    let schema = serde_json::json!({
+        "$defs": {
+            "user": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"type": "string"}},
+                "additionalProperties": false
+            }
+        },
+        "$ref": "#/$defs/user"
+    });
+
+    assert!(validate_against_schema(&serde_json::json!({"name": "Ada"}), &schema).is_ok());
+    assert!(validate_against_schema(&serde_json::json!({"name": 42}), &schema).is_err());
+    assert!(
+        validate_against_schema(&serde_json::json!({"name": "Ada", "secret": true}), &schema)
+            .is_err()
+    );
+}
+
+#[test]
+fn test_validate_rejects_unresolvable_external_refs() {
+    let schema = serde_json::json!({"$ref": "https://example.invalid/schema.json"});
+    let errors = validate_against_schema(&serde_json::json!({}), &schema).unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.contains("invalid JSON Schema") || error.contains("example.invalid")));
+}
+
+#[test]
 fn test_validate_additional_properties_false() {
     let schema = serde_json::json!({
         "type": "object",
@@ -1603,9 +1650,10 @@ impl LlmClient for RecordingClient {
                     .ok();
                     let json_str = serde_json::to_string(input).unwrap();
                     for chunk in json_str.as_bytes().chunks(8) {
-                        tx.send(StreamEvent::ToolUseInputDelta(
-                            String::from_utf8_lossy(chunk).to_string(),
-                        ))
+                        tx.send(StreamEvent::ToolUseInputDelta {
+                            id: None,
+                            delta: String::from_utf8_lossy(chunk).to_string(),
+                        })
                         .await
                         .ok();
                     }

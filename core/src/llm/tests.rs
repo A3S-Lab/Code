@@ -830,6 +830,8 @@ mod extra_llm_tests2 {
         chunks: Vec<String>,
     }
 
+    struct PendingStreamingHttpClient;
+
     #[async_trait]
     impl HttpClient for MockStreamingHttpClient {
         async fn post(
@@ -859,6 +861,34 @@ mod extra_llm_tests2 {
                 status: 200,
                 retry_after: None,
                 byte_stream: Box::pin(stream::iter(items)),
+                error_body: String::new(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl HttpClient for PendingStreamingHttpClient {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+            _cancel_token: CancellationToken,
+        ) -> Result<HttpResponse> {
+            anyhow::bail!("post() not expected in streaming cancellation tests")
+        }
+
+        async fn post_streaming(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+            _cancel_token: CancellationToken,
+        ) -> Result<StreamingHttpResponse> {
+            Ok(StreamingHttpResponse {
+                status: 200,
+                retry_after: None,
+                byte_stream: Box::pin(stream::pending()),
                 error_body: String::new(),
             })
         }
@@ -1241,8 +1271,9 @@ mod extra_llm_tests2 {
                     assert_eq!(id, "tool-1");
                     assert_eq!(name, "Skill");
                 }
-                StreamEvent::ToolUseInputDelta(delta) => {
+                StreamEvent::ToolUseInputDelta { id, delta } => {
                     saw_input_delta = true;
+                    assert_eq!(id.as_deref(), Some("tool-1"));
                     assert_eq!(delta, r#"{"prompt":"run","skill_name":"hello-skill"}"#);
                 }
                 StreamEvent::Done(resp) => {
@@ -1262,6 +1293,24 @@ mod extra_llm_tests2 {
         assert_eq!(tool_calls[0].name, "Skill");
         assert_eq!(tool_calls[0].args["skill_name"], "hello-skill");
         assert_eq!(tool_calls[0].args["prompt"], "run");
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_streaming_parser_closes_when_caller_cancels() {
+        let client = AnthropicClient::new("key".to_string(), "model".to_string())
+            .with_http_client(Arc::new(PendingStreamingHttpClient));
+        let cancellation = CancellationToken::new();
+        let mut rx = client
+            .complete_streaming(&[Message::user("go")], None, &[], cancellation.clone())
+            .await
+            .expect("stream opened");
+
+        cancellation.cancel();
+
+        let next = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+            .await
+            .expect("provider parser must stop after cancellation");
+        assert!(next.is_none());
     }
 
     #[test]
@@ -1439,6 +1488,84 @@ mod extra_llm_tests2 {
         assert_eq!(
             response.message.reasoning_content.as_deref(),
             Some("I should answer the greeting.")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_openai_stream_tool_input_deltas_keep_interleaved_call_ids() {
+        let sse = vec![
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"bash","arguments":"{\"com"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"name":"read","arguments":"{\"file_"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1"}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call-2"}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"mand\":\"pwd\"}"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"path\":\"README.md\"}"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                "\n\n"
+            )
+            .to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ];
+
+        let client = OpenAiClient::new("key".to_string(), "model".to_string())
+            .with_http_client(Arc::new(MockStreamingHttpClient { chunks: sse }));
+        let mut rx = client
+            .complete_streaming(
+                &[Message::user("use tools")],
+                None,
+                &[],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let mut deltas = Vec::new();
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::ToolUseInputDelta { id, delta } => {
+                    deltas.push((id, delta));
+                }
+                StreamEvent::Done(_) => break,
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            deltas,
+            vec![
+                (Some("call-1".to_string()), r#"{"com"#.to_string()),
+                (Some("call-2".to_string()), r#"{"file_"#.to_string()),
+                (Some("call-1".to_string()), r#"mand":"pwd"}"#.to_string()),
+                (
+                    Some("call-2".to_string()),
+                    r#"path":"README.md"}"#.to_string(),
+                ),
+            ]
         );
     }
 

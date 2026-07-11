@@ -11,9 +11,64 @@
 use a3s_code_core::config::{CodeConfig, ModelConfig, ModelModalities, ProviderConfig};
 use a3s_code_core::llm::Message;
 use a3s_code_core::mcp::{McpServerConfig, McpTransportConfig};
+use a3s_code_core::queue::{LaneHandlerConfig, SessionLane, SessionQueueConfig, TaskHandlerMode};
 use a3s_code_core::subagent_task_tracker::SubagentStatus;
 use a3s_code_core::{Agent, AgentEvent, SessionOptions};
 use tokio_util::sync::CancellationToken;
+
+/// IT-0: close establishes a queue admission boundary, resolves SDK-owned
+/// external tasks, and waits for the already-admitted command to leave the
+/// queue before returning.
+#[tokio::test]
+async fn close_shuts_down_and_drains_the_session_lane_queue() {
+    let agent = Agent::from_config(offline_test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_session_id("it0-close-queue")
+        .with_queue_config(SessionQueueConfig::default());
+    let session = std::sync::Arc::new(
+        agent
+            .session_async("/tmp/it0-close-queue-workspace", Some(opts))
+            .await
+            .expect("session"),
+    );
+    session
+        .set_lane_handler(
+            SessionLane::Query,
+            LaneHandlerConfig {
+                mode: TaskHandlerMode::External,
+                timeout_ms: 30_000,
+            },
+        )
+        .await
+        .expect("query lane handler should be configurable before close");
+
+    let tool_task = {
+        let session = std::sync::Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .tool("read", serde_json::json!({"file_path": "missing.txt"}))
+                .await
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while session.pending_external_tasks().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("external task should become pending");
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), session.close())
+        .await
+        .expect("close should resolve and drain the external queue task");
+    assert!(session.is_closed());
+    assert!(session.pending_external_tasks().await.is_empty());
+    let result = tool_task.await.unwrap().unwrap();
+    assert_ne!(result.exit_code, 0);
+    let stats = session.queue_stats().await;
+    assert_eq!(stats.total_pending, 0);
+    assert_eq!(stats.total_active, 0);
+}
 
 /// Minimal offline config — no real provider is contacted because every
 /// test below avoids `send`/`stream`.
@@ -60,7 +115,8 @@ async fn close_with_subagent_in_flight_marks_task_cancelled_and_resists_regressi
     let agent = Agent::from_config(offline_test_config()).await.unwrap();
     let opts = SessionOptions::new().with_session_id("it1-close-subagent");
     let session = agent
-        .session("/tmp/it1-close-subagent-workspace", Some(opts))
+        .session_async("/tmp/it1-close-subagent-workspace", Some(opts))
+        .await
         .expect("session");
 
     // Simulate the in-flight state that the built-in `task` tool produces:
@@ -191,7 +247,8 @@ async fn agent_close_handles_global_mcp_branch_and_is_idempotent() {
         // proving close() ran the full close_agent path (not just the
         // MCP branch).
         let err = agent
-            .session("/tmp/it2-post-close", None)
+            .session_async("/tmp/it2-post-close", None)
+            .await
             .expect_err("session() after close must error");
         let msg = err.to_string();
         assert!(
@@ -227,7 +284,8 @@ async fn session_drop_prunes_registry_under_concurrency() {
             let id = format!("it3-session-{i:02}");
             let opts = SessionOptions::new().with_session_id(&id);
             let session = agent
-                .session(format!("/tmp/it3-ws-{i:02}"), Some(opts))
+                .session_async(format!("/tmp/it3-ws-{i:02}"), Some(opts))
+                .await
                 .expect("session");
 
             // Drop the even-indexed sessions immediately so the registry
@@ -290,7 +348,8 @@ async fn subagent_tasks_persist_across_save_and_resume() {
         .with_session_store(std::sync::Arc::clone(&store))
         .with_auto_save(true);
     let session_a = agent_a
-        .session("/tmp/pillar1-subagent-persist", Some(opts_a))
+        .session_async("/tmp/pillar1-subagent-persist", Some(opts_a))
+        .await
         .expect("phase A session");
 
     let tracker_a = session_a.subagent_tracker();
@@ -354,7 +413,8 @@ async fn subagent_tasks_persist_across_save_and_resume() {
     let agent_b = Agent::from_config(offline_test_config()).await.unwrap();
     let resume_opts = SessionOptions::new().with_session_store(std::sync::Arc::clone(&store));
     let session_b = agent_b
-        .resume_session("pillar1-subagent-persist", resume_opts)
+        .resume_session_async("pillar1-subagent-persist", resume_opts)
+        .await
         .expect("phase B resume");
 
     let mut post_resume: Vec<(String, SubagentStatus)> = session_b
@@ -409,7 +469,8 @@ async fn identity_labels_persist_across_save_and_resume() {
         .with_agent_template_id("ci-runner-v7")
         .with_correlation_id("trace-1234abcd");
     let session_a = agent_a
-        .session("/tmp/pillar5-labels", Some(opts_a))
+        .session_async("/tmp/pillar5-labels", Some(opts_a))
+        .await
         .expect("phase A session");
 
     session_a.save().await.expect("phase A save");
@@ -425,7 +486,8 @@ async fn identity_labels_persist_across_save_and_resume() {
     let agent_b = Agent::from_config(offline_test_config()).await.unwrap();
     let resume_opts = SessionOptions::new().with_session_store(std::sync::Arc::clone(&store));
     let session_b = agent_b
-        .resume_session("pillar5-labels", resume_opts)
+        .resume_session_async("pillar5-labels", resume_opts)
+        .await
         .expect("phase B resume");
 
     assert_eq!(session_b.tenant_id(), Some("acme-prod"));
@@ -440,7 +502,8 @@ async fn identity_labels_persist_across_save_and_resume() {
         .with_session_store(std::sync::Arc::clone(&store))
         .with_correlation_id("trace-followup");
     let session_c = agent_b
-        .resume_session("pillar5-labels", resume_relabel)
+        .resume_session_async("pillar5-labels", resume_relabel)
+        .await
         .expect("phase C resume");
     assert_eq!(
         session_c.correlation_id(),
@@ -492,7 +555,8 @@ async fn cluster_ops_consolidated_session_lifecycle() {
         .with_correlation_id("trace-cluster-ops")
         .with_retention_limits(limits_a);
     let session_a = agent_a
-        .session("/tmp/cluster-ops-node-a", Some(opts_a))
+        .session_async("/tmp/cluster-ops-node-a", Some(opts_a))
+        .await
         .expect("node A session");
 
     // Inject a completed subagent task — represents work that
@@ -564,7 +628,8 @@ async fn cluster_ops_consolidated_session_lifecycle() {
     let agent_b = Agent::from_config(offline_test_config()).await.unwrap();
     let resume_opts = SessionOptions::new().with_session_store(std::sync::Arc::clone(&store));
     let session_b = agent_b
-        .resume_session("cluster-ops-target", resume_opts)
+        .resume_session_async("cluster-ops-target", resume_opts)
+        .await
         .expect("node B resume");
 
     // Identity labels survive.
@@ -623,7 +688,8 @@ async fn retention_limits_are_plumbed_into_subagent_tracker() {
         .with_session_id("it9-retention")
         .with_retention_limits(limits);
     let session = agent
-        .session("/tmp/it9-retention-ws", Some(opts))
+        .session_async("/tmp/it9-retention-ws", Some(opts))
+        .await
         .expect("session");
     let tracker = session.subagent_tracker();
 
@@ -774,7 +840,8 @@ async fn send_without_tool_calls_does_not_emit_loop_checkpoint() {
         .with_session_store(std::sync::Arc::clone(&store))
         .with_auto_save(true);
     let session = agent
-        .session("/tmp/pillar3-no-tools", Some(opts))
+        .session_async("/tmp/pillar3-no-tools", Some(opts))
+        .await
         .expect("session");
 
     // Default session() routes through the real LLM (no mock client
@@ -810,7 +877,8 @@ async fn resume_run_error_paths_are_distinguishable() {
     {
         let agent = Agent::from_config(offline_test_config()).await.unwrap();
         let session = agent
-            .session("/tmp/it8-no-store", None)
+            .session_async("/tmp/it8-no-store", None)
+            .await
             .expect("session no store");
         let err = session.resume_run("any-id").await.unwrap_err();
         let msg = err.to_string();
@@ -830,7 +898,8 @@ async fn resume_run_error_paths_are_distinguishable() {
             .with_session_id("it8-no-checkpoint")
             .with_session_store(std::sync::Arc::clone(&store));
         let session = agent
-            .session("/tmp/it8-no-checkpoint", Some(opts))
+            .session_async("/tmp/it8-no-checkpoint", Some(opts))
+            .await
             .expect("session with store");
         let err = session.resume_run("does-not-exist").await.unwrap_err();
         let msg = err.to_string();

@@ -37,7 +37,10 @@ async fn main() {
         .with_skills_from_dir(workspace.join("skills"))
         .with_permission_checker(std::sync::Arc::new(permission_policy));
 
-    let session = match agent.session(workspace.to_str().unwrap(), Some(opts)) {
+    let session = match agent
+        .session_async(workspace.to_str().unwrap(), Some(opts))
+        .await
+    {
         Ok(s) => s,
         Err(e) => {
             eprintln!("❌ Failed to create session: {}", e);

@@ -203,13 +203,19 @@ impl LlmClient for CodexLoginClient {
                                 let item_id =
                                     event.get("item_id").and_then(Value::as_str).unwrap_or("");
                                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                                    if let Some((_, call)) =
+                                    let tool_id = if let Some((_, call)) =
                                         tool_calls.iter_mut().find(|(id, _)| id == item_id)
                                     {
                                         call.arguments.push_str(delta);
-                                    }
+                                        Some(call.call_id.clone())
+                                    } else {
+                                        None
+                                    };
                                     let _ = tx
-                                        .send(StreamEvent::ToolUseInputDelta(delta.to_string()))
+                                        .send(StreamEvent::ToolUseInputDelta {
+                                            id: tool_id,
+                                            delta: delta.to_string(),
+                                        })
                                         .await;
                                 }
                             }

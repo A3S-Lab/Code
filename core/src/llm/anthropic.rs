@@ -412,6 +412,7 @@ impl AnthropicClient {
             let provider_name = self.provider_name.clone();
             let request_model = self.model.clone();
             let request_url = url.clone();
+            let stream_cancellation = cancel_token.clone();
             tokio::spawn(async move {
                 let mut buffer = String::new();
                 let mut content_blocks: Vec<ContentBlock> = Vec::new();
@@ -426,7 +427,16 @@ impl AnthropicClient {
                 let mut response_object = Some("message".to_string());
                 let mut first_token_ms = None;
 
-                while let Some(chunk_result) = stream.next().await {
+                loop {
+                    let chunk_result = tokio::select! {
+                        biased;
+                        _ = stream_cancellation.cancelled() => break,
+                        _ = tx.closed() => break,
+                        chunk = stream.next() => match chunk {
+                            Some(chunk) => chunk,
+                            None => break,
+                        },
+                    };
                     let chunk = match chunk_result {
                         Ok(c) => c,
                         Err(e) => {
@@ -478,9 +488,10 @@ impl AnthropicClient {
                                                         );
                                                     }
                                                     let _ = tx
-                                                        .send(StreamEvent::ToolUseInputDelta(
-                                                            current_tool_input.clone(),
-                                                        ))
+                                                        .send(StreamEvent::ToolUseInputDelta {
+                                                            id: Some(current_tool_id.clone()),
+                                                            delta: current_tool_input.clone(),
+                                                        })
                                                         .await;
                                                 }
                                             }
@@ -508,9 +519,10 @@ impl AnthropicClient {
                                                 }
                                                 current_tool_input.push_str(&partial_json);
                                                 let _ = tx
-                                                    .send(StreamEvent::ToolUseInputDelta(
-                                                        partial_json,
-                                                    ))
+                                                    .send(StreamEvent::ToolUseInputDelta {
+                                                        id: Some(current_tool_id.clone()),
+                                                        delta: partial_json,
+                                                    })
                                                     .await;
                                             }
                                         },

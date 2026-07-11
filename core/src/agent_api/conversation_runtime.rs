@@ -5,7 +5,7 @@
 //! Lower-level runtime modules own run lifecycle and event forwarding.
 
 use super::{
-    command_runtime, runtime::BlockingRunContext, runtime::ConversationInput,
+    command_runtime, run_admission, runtime::BlockingRunContext, runtime::ConversationInput,
     runtime::StreamRunContext, AgentSession,
 };
 use crate::agent::{AgentEvent, AgentResult};
@@ -23,12 +23,18 @@ fn bail_if_closed(session: &AgentSession) -> Result<()> {
     Ok(())
 }
 
+fn admit(session: &AgentSession) -> Result<run_admission::RunAdmissionLease> {
+    bail_if_closed(session)?;
+    session.run_admission.try_acquire(&session.session_id)
+}
+
 pub(super) async fn send(
     session: &AgentSession,
     prompt: &str,
     history: Option<&[Message]>,
 ) -> Result<AgentResult> {
-    bail_if_closed(session)?;
+    // Admission must precede command dispatch and internal-history reads.
+    let _lease = admit(session)?;
 
     if let Some(result) = command_runtime::dispatch_blocking(session, prompt, history).await? {
         return Ok(result);
@@ -48,7 +54,8 @@ pub(super) async fn send_with_attachments(
     attachments: &[Attachment],
     history: Option<&[Message]>,
 ) -> Result<AgentResult> {
-    bail_if_closed(session)?;
+    // Admission must precede the attachment message's internal-history clone.
+    let _lease = admit(session)?;
 
     // Build one user message containing text and images, then execute from the
     // resulting message list so the loop does not append a duplicate prompt.
@@ -65,11 +72,12 @@ pub(super) async fn stream_with_attachments(
     attachments: &[Attachment],
     history: Option<&[Message]>,
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
-    bail_if_closed(session)?;
+    let lease = admit(session)?;
 
     let input = ConversationInput::with_attachments(session, history, prompt, attachments);
     let stream_run = StreamRunContext::start(session, prompt, input.persistence).await;
-    Ok(stream_run.spawn_from_messages(input.messages))
+    let (rx, handle) = stream_run.spawn_from_messages(input.messages);
+    Ok((rx, run_admission::guard_stream_handle(handle, lease)))
 }
 
 pub(super) async fn stream(
@@ -77,15 +85,18 @@ pub(super) async fn stream(
     prompt: &str,
     history: Option<&[Message]>,
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
-    bail_if_closed(session)?;
+    // Slash commands share admission because they read and may mutate the same
+    // session state as model-backed operations.
+    let lease = admit(session)?;
 
-    if let Some(stream) = command_runtime::dispatch_streaming(session, prompt).await {
-        return Ok(stream);
+    if let Some((rx, handle)) = command_runtime::dispatch_streaming(session, prompt).await {
+        return Ok((rx, run_admission::guard_stream_handle(handle, lease)));
     }
 
     let input = ConversationInput::from_history(session, history);
     let stream_run = StreamRunContext::start(session, prompt, input.persistence).await;
-    Ok(stream_run.spawn_with_prompt(input.messages, prompt.to_string()))
+    let (rx, handle) = stream_run.spawn_with_prompt(input.messages, prompt.to_string());
+    Ok((rx, run_admission::guard_stream_handle(handle, lease)))
 }
 
 /// Resume a previously-checkpointed run on this session (P3 cut 2).
@@ -102,7 +113,7 @@ pub(super) async fn resume_run(
     session: &AgentSession,
     checkpoint_run_id: &str,
 ) -> Result<crate::agent::AgentResult> {
-    bail_if_closed(session)?;
+    let _lease = admit(session)?;
 
     let store = session.session_store.as_ref().ok_or_else(|| {
         CodeError::Session("resume_run requires a session_store on this session".to_string())
@@ -119,6 +130,13 @@ pub(super) async fn resume_run(
         .ok_or_else(|| {
             CodeError::Session(format!(
                 "no loop checkpoint found for run '{checkpoint_run_id}'"
+            ))
+        })?;
+    checkpoint
+        .ensure_owned_by(checkpoint_run_id, &session.session_id)
+        .map_err(|error| {
+            CodeError::Session(format!(
+                "refusing to resume checkpoint '{checkpoint_run_id}': {error:#}"
             ))
         })?;
 

@@ -79,6 +79,7 @@ pub struct SessionCommandAdapter {
     lane: SessionLane,
     timeout_ms: u64,
     external_tasks: Arc<RwLock<HashMap<String, PendingExternalTask>>>,
+    is_shutting_down: Arc<std::sync::atomic::AtomicBool>,
     event_tx: broadcast::Sender<AgentEvent>,
 }
 
@@ -92,6 +93,7 @@ impl SessionCommandAdapter {
         lane: SessionLane,
         timeout_ms: u64,
         external_tasks: Arc<RwLock<HashMap<String, PendingExternalTask>>>,
+        is_shutting_down: Arc<std::sync::atomic::AtomicBool>,
         event_tx: broadcast::Sender<AgentEvent>,
     ) -> Self {
         Self {
@@ -102,6 +104,7 @@ impl SessionCommandAdapter {
             lane,
             timeout_ms,
             external_tasks,
+            is_shutting_down,
             event_tx,
         }
     }
@@ -120,6 +123,14 @@ impl SessionCommandAdapter {
         };
         {
             let mut tasks = self.external_tasks.write().await;
+            if self
+                .is_shutting_down
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(LaneError::CommandError(
+                    "Session queue is shutting down".to_string(),
+                ));
+            }
             tasks.insert(
                 self.task_id.clone(),
                 PendingExternalTask {
@@ -207,6 +218,7 @@ pub struct SessionLaneQueue {
     lane_handlers: Arc<RwLock<HashMap<SessionLane, LaneHandlerConfig>>>,
     event_tx: broadcast::Sender<AgentEvent>,
     task_id_counter: Arc<std::sync::atomic::AtomicU64>, // Fast task ID generation
+    is_shutting_down: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SessionLaneQueue {
@@ -234,6 +246,7 @@ impl SessionLaneQueue {
             lane_handlers: Arc::new(RwLock::new(lane_handlers)),
             event_tx,
             task_id_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -309,6 +322,37 @@ impl SessionLaneQueue {
             .await
             .map_err(|e| anyhow::anyhow!("Lane manager start failed: {}", e))
     }
+
+    /// Stop accepting commands and resolve every external task that is still
+    /// waiting on an SDK callback. This is the first phase of session close.
+    pub async fn shutdown(&self) {
+        self.is_shutting_down
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.manager.shutdown().await;
+        let pending = {
+            let mut external_tasks = self.external_tasks.write().await;
+            std::mem::take(&mut *external_tasks)
+        };
+        for (task_id, pending) in pending {
+            let _ = self.event_tx.send(AgentEvent::ExternalTaskCompleted {
+                task_id,
+                session_id: self.session_id.clone(),
+                success: false,
+            });
+            let _ = pending
+                .result_tx
+                .send(Err(anyhow::anyhow!("Session queue is shutting down")));
+        }
+    }
+
+    /// Wait until commands admitted before [`Self::shutdown`] have finished.
+    pub async fn drain(&self, timeout: Duration) -> Result<()> {
+        self.manager
+            .drain(timeout)
+            .await
+            .map_err(|error| anyhow::anyhow!("Lane manager drain failed: {error}"))
+    }
+
     pub async fn set_lane_handler(&self, lane: SessionLane, config: LaneHandlerConfig) {
         self.lane_handlers.write().await.insert(lane, config);
     }
@@ -347,6 +391,7 @@ impl SessionLaneQueue {
             lane,
             handler_config.timeout_ms,
             Arc::clone(&self.external_tasks),
+            Arc::clone(&self.is_shutting_down),
             self.event_tx.clone(),
         );
         match self.manager.submit(lane.lane_id(), Box::new(adapter)).await {
@@ -617,6 +662,59 @@ mod tests {
             error: None,
         };
         assert!(!q.complete_external_task("nope", r).await);
+    }
+
+    #[tokio::test]
+    async fn shutdown_rejects_new_commands_and_resolves_pending_external_tasks() {
+        let (tx, _) = broadcast::channel(100);
+        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
+        q.set_lane_handler(
+            SessionLane::Execute,
+            LaneHandlerConfig {
+                mode: TaskHandlerMode::External,
+                timeout_ms: 30_000,
+            },
+        )
+        .await;
+        q.start().await.unwrap();
+
+        let pending_result = q
+            .submit(
+                SessionLane::Execute,
+                Box::new(TestCommand {
+                    value: serde_json::json!({"side_effect": true}),
+                }),
+            )
+            .await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while q.pending_external_tasks().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("external task should become pending");
+
+        q.shutdown().await;
+        assert!(q.manager.is_shutting_down());
+        assert!(q.pending_external_tasks().await.is_empty());
+        let result = tokio::time::timeout(Duration::from_secs(1), pending_result)
+            .await
+            .expect("pending task should resolve during shutdown")
+            .expect("queue result sender should remain connected");
+        assert!(result.is_err());
+        q.drain(Duration::from_secs(2)).await.unwrap();
+
+        let rejected = q
+            .submit(
+                SessionLane::Execute,
+                Box::new(TestCommand {
+                    value: serde_json::json!({"late": true}),
+                }),
+            )
+            .await;
+        assert!(rejected.await.unwrap().is_err());
     }
 
     #[test]

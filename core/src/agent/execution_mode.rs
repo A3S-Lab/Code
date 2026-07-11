@@ -1,4 +1,4 @@
-use super::{AgentEvent, AgentLoop, AgentResult};
+use super::{AgentEvent, AgentLoop, AgentResult, InvocationContext};
 use crate::hooks::ErrorType;
 use crate::llm::Message;
 use crate::planning::{LlmPlanner, PreAnalysis};
@@ -55,19 +55,61 @@ impl AgentLoop {
         cancel_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<AgentResult> {
         let default_token = tokio_util::sync::CancellationToken::new();
-        let token = cancel_token.unwrap_or(&default_token);
+        let token = cancel_token.unwrap_or(&default_token).clone();
+        let run_id = self
+            .checkpoint_run_id
+            .clone()
+            .unwrap_or_else(|| format!("standalone-{}", uuid::Uuid::new_v4()));
+        let invocation = self.invocation_context(run_id, session_id, event_tx, token);
+        self.execute_with_invocation(history, prompt, &invocation)
+            .await
+    }
+
+    /// Execute using one immutable per-run context shared by routing, model,
+    /// planning, and tool paths.
+    pub(crate) async fn execute_with_invocation(
+        &self,
+        history: &[Message],
+        prompt: &str,
+        invocation: &InvocationContext,
+    ) -> Result<AgentResult> {
+        let agent = invocation.bind_agent_loop(self);
+        let session_id = invocation.session_id_option();
+        let event_tx = invocation.event_tx().clone();
+        let token = invocation.cancellation();
         tracing::info!(
+            a3s.run.id = invocation.run_id(),
             a3s.session.id = session_id.unwrap_or("none"),
-            a3s.agent.max_turns = self.config.max_tool_rounds,
+            a3s.agent.max_turns = agent.config.max_tool_rounds,
             "a3s.agent.execute started"
         );
 
-        let route = self.resolve_execution_route(prompt).await;
+        let route = match agent
+            .resolve_execution_route(prompt, session_id, &event_tx, token)
+            .await
+        {
+            Ok(route) => route,
+            Err(error) => {
+                if let Some(message) = crate::llm::non_retryable_llm_error_message(&error) {
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::Error {
+                            message: message.to_string(),
+                        })
+                        .await
+                        .ok();
+                    }
+                }
+                return Err(error);
+            }
+        };
+        if token.is_cancelled() {
+            anyhow::bail!("Operation cancelled by user");
+        }
         let mut effective_prompt = route.effective_prompt.clone();
         let mut auto_tool_calls_count = 0;
         if !route.use_planning {
-            if let Some(outcome) = self
-                .maybe_apply_auto_delegation(&effective_prompt, session_id, &event_tx)
+            if let Some(outcome) = agent
+                .maybe_apply_auto_delegation(&effective_prompt, session_id, &event_tx, token)
                 .await?
             {
                 effective_prompt = outcome.prompt;
@@ -76,36 +118,47 @@ impl AgentLoop {
         }
 
         let mut result = if route.use_planning {
-            self.execute_with_planning(
-                history,
-                &effective_prompt,
-                session_id,
-                event_tx,
-                route.pre_analysis,
-            )
-            .await
+            agent
+                .execute_with_planning(
+                    history,
+                    &effective_prompt,
+                    session_id,
+                    event_tx,
+                    route.pre_analysis,
+                    token,
+                )
+                .await
         } else {
-            self.execute_loop(
-                history,
-                &effective_prompt,
-                route.style,
-                session_id,
-                event_tx,
-                token,
-                true,
-            )
-            .await
+            agent
+                .execute_loop(
+                    history,
+                    &effective_prompt,
+                    route.style,
+                    session_id,
+                    event_tx,
+                    token,
+                    true,
+                )
+                .await
         };
         if let Ok(result) = &mut result {
             result.tool_calls_count += auto_tool_calls_count;
         }
 
-        self.record_execution_result(session_id, &result).await;
+        agent.record_execution_result(session_id, &result).await;
         result
     }
 
-    async fn resolve_execution_route(&self, prompt: &str) -> ExecutionRoute {
-        let pre_analysis = self.run_pre_analysis(prompt).await;
+    async fn resolve_execution_route(
+        &self,
+        prompt: &str,
+        session_id: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &tokio_util::sync::CancellationToken,
+    ) -> Result<ExecutionRoute> {
+        let pre_analysis = self
+            .run_pre_analysis(prompt, session_id, event_tx, cancel_token)
+            .await?;
         let style = self.resolve_execution_style(prompt, pre_analysis.as_ref());
         let use_planning = self.resolve_planning_decision(style, pre_analysis.as_ref());
         let effective_prompt = pre_analysis
@@ -115,20 +168,29 @@ impl AgentLoop {
             })
             .unwrap_or_else(|| prompt.to_string());
 
-        ExecutionRoute {
+        Ok(ExecutionRoute {
             style,
             use_planning,
             effective_prompt,
             pre_analysis,
-        }
+        })
     }
 
-    async fn run_pre_analysis(&self, prompt: &str) -> Option<PreAnalysis> {
+    async fn run_pre_analysis(
+        &self,
+        prompt: &str,
+        session_id: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &tokio_util::sync::CancellationToken,
+    ) -> Result<Option<PreAnalysis>> {
         if !self.should_run_pre_analysis() {
-            return None;
+            return Ok(None);
         }
 
-        match LlmPlanner::pre_analyze(&self.llm_client.clone(), prompt).await {
+        let llm_client = self.scoped_llm_client_for_parts(session_id, event_tx, cancel_token);
+        let result = LlmPlanner::pre_analyze(&llm_client, prompt).await;
+
+        match result {
             Ok(analysis) => {
                 tracing::debug!(
                     intent = ?analysis.intent,
@@ -136,11 +198,12 @@ impl AgentLoop {
                     plan_steps = analysis.execution_plan.steps.len(),
                     "Pre-analysis completed"
                 );
-                Some(analysis)
+                Ok(Some(analysis))
             }
+            Err(e) if Self::planning_control_error(&e, cancel_token) => Err(e),
             Err(e) => {
                 tracing::warn!(error = %e, "Pre-analysis failed; using local style fallback");
-                None
+                Ok(None)
             }
         }
     }

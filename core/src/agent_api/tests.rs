@@ -13,6 +13,82 @@ struct ScriptedStreamingClient {
     responses: Arc<std::sync::Mutex<Vec<LlmResponse>>>,
 }
 
+struct NamedSessionTool(String);
+struct NoopSessionCommand;
+
+struct FailingCloseSessionTransport;
+
+#[async_trait::async_trait]
+impl crate::tools::Tool for NamedSessionTool {
+    fn name(&self) -> &str {
+        &self.0
+    }
+
+    fn description(&self) -> &str {
+        "test session tool"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn execute(
+        &self,
+        _args: &serde_json::Value,
+        _ctx: &crate::tools::ToolContext,
+    ) -> anyhow::Result<crate::tools::ToolOutput> {
+        Ok(crate::tools::ToolOutput::success("ok"))
+    }
+}
+
+impl crate::commands::SlashCommand for NoopSessionCommand {
+    fn name(&self) -> &str {
+        "late-command"
+    }
+
+    fn description(&self) -> &str {
+        "test command"
+    }
+
+    fn execute(
+        &self,
+        _args: &str,
+        _ctx: &crate::commands::CommandContext,
+    ) -> crate::commands::CommandOutput {
+        crate::commands::CommandOutput::text("ok")
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::mcp::transport::McpTransport for FailingCloseSessionTransport {
+    async fn request(
+        &self,
+        _request: crate::mcp::protocol::JsonRpcRequest,
+    ) -> anyhow::Result<crate::mcp::protocol::JsonRpcResponse> {
+        anyhow::bail!("request is not used by this test transport")
+    }
+
+    async fn notify(
+        &self,
+        _notification: crate::mcp::protocol::JsonRpcNotification,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn notifications(&self) -> tokio::sync::mpsc::Receiver<crate::mcp::McpNotification> {
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        rx
+    }
+
+    async fn close(&self) -> anyhow::Result<()> {
+        anyhow::bail!("deterministic session transport close failure")
+    }
+
+    fn is_connected(&self) -> bool {
+        true
+    }
+}
+
 impl StaticStreamingClient {
     fn new(text: impl Into<String>) -> Self {
         Self { text: text.into() }
@@ -111,6 +187,12 @@ fn scripted_tool_call_response(
 #[derive(Clone)]
 struct FailingStreamingClient;
 
+#[derive(Clone, Default)]
+struct NonRetryableStreamingClient {
+    streaming_calls: Arc<std::sync::atomic::AtomicUsize>,
+    complete_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
 #[derive(Clone)]
 struct CancellableStreamingClient {
     text: String,
@@ -119,6 +201,7 @@ struct CancellableStreamingClient {
 #[derive(Debug, Default)]
 struct RecordingRuntimeHook {
     events: std::sync::Mutex<Vec<(String, String, AgentEvent)>>,
+    hook_events: std::sync::Mutex<Vec<crate::hooks::HookEvent>>,
 }
 
 #[derive(Debug, Default)]
@@ -243,7 +326,8 @@ impl crate::context::ContextProvider for CapturingContextProvider {
 
 #[async_trait::async_trait]
 impl crate::hooks::HookExecutor for RecordingRuntimeHook {
-    async fn fire(&self, _event: &crate::hooks::HookEvent) -> crate::hooks::HookResult {
+    async fn fire(&self, event: &crate::hooks::HookEvent) -> crate::hooks::HookResult {
+        self.hook_events.lock().unwrap().push(event.clone());
         crate::hooks::HookResult::Continue(None)
     }
 
@@ -369,6 +453,38 @@ impl LlmClient for FailingStreamingClient {
 }
 
 #[async_trait::async_trait]
+impl LlmClient for NonRetryableStreamingClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        self.complete_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(crate::llm::NonRetryableLlmError::new(
+            "Codex Pro usage limit reached. Quota resets in about 2h 45m.",
+        )
+        .into())
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        self.streaming_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(crate::llm::NonRetryableLlmError::new(
+            "Codex Pro usage limit reached. Quota resets in about 2h 45m.",
+        )
+        .into())
+    }
+}
+
+#[async_trait::async_trait]
 impl LlmClient for CancellableStreamingClient {
     async fn complete(
         &self,
@@ -393,6 +509,81 @@ impl LlmClient for CancellableStreamingClient {
             cancel_token.cancelled().await;
         });
         Ok(rx)
+    }
+}
+
+struct BlockingLoadSessionStore {
+    inner: Arc<crate::store::MemorySessionStore>,
+    entered: tokio::sync::Semaphore,
+    release: tokio::sync::Semaphore,
+}
+
+impl BlockingLoadSessionStore {
+    fn new(inner: Arc<crate::store::MemorySessionStore>) -> Self {
+        Self {
+            inner,
+            entered: tokio::sync::Semaphore::new(0),
+            release: tokio::sync::Semaphore::new(0),
+        }
+    }
+
+    async fn wait_until_load_is_blocked(&self) {
+        self.entered
+            .acquire()
+            .await
+            .expect("test semaphore remains open")
+            .forget();
+    }
+
+    fn release_one_load(&self) {
+        self.release.add_permits(1);
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionStore for BlockingLoadSessionStore {
+    async fn save(&self, session: &crate::store::SessionData) -> anyhow::Result<()> {
+        self.inner.save(session).await
+    }
+
+    async fn load(&self, id: &str) -> anyhow::Result<Option<crate::store::SessionData>> {
+        self.inner.load(id).await
+    }
+
+    async fn delete(&self, id: &str) -> anyhow::Result<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn list(&self) -> anyhow::Result<Vec<String>> {
+        self.inner.list().await
+    }
+
+    async fn exists(&self, id: &str) -> anyhow::Result<bool> {
+        self.inner.exists(id).await
+    }
+
+    async fn save_snapshot(
+        &self,
+        snapshot: &crate::store::SessionSnapshotV1,
+    ) -> anyhow::Result<()> {
+        self.inner.save_snapshot(snapshot).await
+    }
+
+    async fn load_snapshot(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<crate::store::SessionSnapshotV1>> {
+        self.entered.add_permits(1);
+        self.release
+            .acquire()
+            .await
+            .expect("test semaphore remains open")
+            .forget();
+        self.inner.load_snapshot(id).await
+    }
+
+    fn capabilities(&self) -> crate::store::SessionStoreCapabilities {
+        self.inner.capabilities()
     }
 }
 
@@ -453,6 +644,16 @@ fn test_config() -> CodeConfig {
     }
 }
 
+fn assert_session_busy<T>(result: crate::error::Result<T>, expected_session_id: &str) {
+    match result {
+        Err(crate::error::CodeError::SessionBusy { session_id }) => {
+            assert_eq!(session_id, expected_session_id);
+        }
+        Ok(_) => panic!("expected SessionBusy, operation was admitted"),
+        Err(other) => panic!("expected SessionBusy, got {other:?}"),
+    }
+}
+
 fn build_effective_registry_for_test(
     agent_registry: Option<Arc<crate::skills::SkillRegistry>>,
     opts: &SessionOptions,
@@ -469,7 +670,7 @@ async fn test_from_config() {
 #[tokio::test]
 async fn test_session_default() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-workspace", None);
+    let session = agent.session_async("/tmp/test-workspace", None).await;
     assert!(session.is_ok());
     let debug = format!("{:?}", session.unwrap());
     assert!(debug.contains("AgentSession"));
@@ -491,10 +692,15 @@ async fn test_session_uses_workspace_backend_for_direct_tools() {
 
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session(
+        .session_async(
             "/server/local-placeholder",
-            Some(SessionOptions::new().with_workspace_backend(services)),
+            Some(
+                SessionOptions::new()
+                    .with_workspace_backend(services)
+                    .with_memory(Arc::new(a3s_memory::InMemoryStore::new())),
+            ),
         )
+        .await
         .unwrap();
 
     let tool_names = session.tool_names();
@@ -565,7 +771,8 @@ async fn test_session_routes_agents_md_through_context_provider() {
 
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session(temp_dir.path().display().to_string(), None)
+        .session_async(temp_dir.path().display().to_string(), None)
+        .await
         .unwrap();
 
     let agents_provider = session
@@ -598,14 +805,17 @@ async fn test_session_routes_agents_md_through_context_provider() {
 #[tokio::test]
 async fn test_session_initializes_without_legacy_agentic_tools() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let _session = agent.session("/tmp/test-workspace", None).unwrap();
+    let _session = agent
+        .session_async("/tmp/test-workspace", None)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 async fn test_session_with_model_override() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_model("openai/gpt-4o");
-    let session = agent.session("/tmp/test-workspace", Some(opts));
+    let session = agent.session_async("/tmp/test-workspace", Some(opts)).await;
     assert!(session.is_ok());
 }
 
@@ -613,16 +823,28 @@ async fn test_session_with_model_override() {
 async fn test_session_with_invalid_model_format() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_model("gpt-4o");
-    let session = agent.session("/tmp/test-workspace", Some(opts));
-    assert!(session.is_err());
+    let error = agent
+        .session_async("/tmp/test-workspace", Some(opts))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::CodeError::SessionConfiguration { field: "model", .. }
+    ));
 }
 
 #[tokio::test]
 async fn test_session_with_model_not_found() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_model("openai/nonexistent");
-    let session = agent.session("/tmp/test-workspace", Some(opts));
-    assert!(session.is_err());
+    let error = agent
+        .session_async("/tmp/test-workspace", Some(opts))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::CodeError::SessionConfiguration { field: "model", .. }
+    ));
 }
 
 #[tokio::test]
@@ -757,12 +979,16 @@ async fn test_session_specific_skills_do_not_leak_across_sessions() {
     }));
 
     let session_one = agent
-        .session(
+        .session_async(
             "/tmp/test-workspace",
             Some(SessionOptions::new().with_skill_registry(session_registry)),
         )
+        .await
         .unwrap();
-    let session_two = agent.session("/tmp/test-workspace", None).unwrap();
+    let session_two = agent
+        .session_async("/tmp/test-workspace", None)
+        .await
+        .unwrap();
 
     assert!(session_one
         .config
@@ -805,14 +1031,16 @@ async fn test_session_for_agent_applies_definition_and_keeps_skill_overrides_iso
     }));
 
     let session_one = agent
-        .session_for_agent(
+        .session_for_agent_async(
             "/tmp/test-workspace",
             &definition,
             Some(SessionOptions::new().with_skill_registry(session_registry)),
         )
+        .await
         .unwrap();
     let session_two = agent
-        .session_for_agent("/tmp/test-workspace", &definition, None)
+        .session_for_agent_async("/tmp/test-workspace", &definition, None)
+        .await
         .unwrap();
 
     assert_eq!(session_one.config.max_tool_rounds, 7);
@@ -859,7 +1087,8 @@ async fn test_session_for_agent_preserves_existing_prompt_slots_when_injecting_d
     });
 
     let session = agent
-        .session_for_agent("/tmp/test-workspace", &definition, Some(opts))
+        .session_for_agent_async("/tmp/test-workspace", &definition, Some(opts))
+        .await
         .unwrap();
 
     assert_eq!(
@@ -923,8 +1152,14 @@ async fn test_create_and_new_produce_same_result() {
     assert!(agent_create.is_ok());
 
     // Both should produce working sessions
-    let session_new = agent_new.unwrap().session("/tmp/test-ws-new", None);
-    let session_create = agent_create.unwrap().session("/tmp/test-ws-create", None);
+    let session_new = agent_new
+        .unwrap()
+        .session_async("/tmp/test-ws-new", None)
+        .await;
+    let session_create = agent_create
+        .unwrap()
+        .session_async("/tmp/test-ws-create", None)
+        .await;
     assert!(session_new.is_ok());
     assert!(session_create.is_ok());
 }
@@ -996,7 +1231,10 @@ fn test_from_config_requires_default_model() {
 #[tokio::test]
 async fn test_history_empty_on_new_session() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-workspace", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-workspace", None)
+        .await
+        .unwrap();
     assert!(session.history().is_empty());
 }
 
@@ -1096,18 +1334,33 @@ async fn test_stream_bridges_subagent_lifecycle_events() {
     let (mut rx, handle) = session.stream("fan out this work", None).await.unwrap();
     let mut subagent_starts = 0;
     let mut subagent_ends = 0;
+    let mut event_index = 0usize;
+    let mut last_subagent_end = None;
+    let mut parent_tool_end = None;
     while let Some(event) = rx.recv().await {
         match event {
             AgentEvent::SubagentStart { .. } => subagent_starts += 1,
-            AgentEvent::SubagentEnd { .. } => subagent_ends += 1,
+            AgentEvent::SubagentEnd { .. } => {
+                subagent_ends += 1;
+                last_subagent_end = Some(event_index);
+            }
+            AgentEvent::ToolEnd { id, .. } if id == "call-parallel" => {
+                parent_tool_end = Some(event_index);
+            }
             AgentEvent::End { .. } => break,
             _ => {}
         }
+        event_index += 1;
     }
     handle.await.unwrap();
 
     assert_eq!(subagent_starts, 2);
     assert_eq!(subagent_ends, 2);
+    assert!(
+        last_subagent_end.expect("foreground tasks must emit SubagentEnd")
+            < parent_tool_end.expect("parallel_task must emit ToolEnd"),
+        "all foreground SubagentEnd events must precede the parent ToolEnd"
+    );
 
     let tasks = session.subagent_tasks().await;
     assert_eq!(tasks.len(), 2);
@@ -1171,6 +1424,93 @@ async fn test_stream_error_does_not_update_history_or_auto_save() {
     assert!(saw_error);
     assert!(session.history().is_empty());
     assert!(store.load("stream-error-test").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_non_retryable_stream_error_skips_fallback_and_circuit_retries() {
+    let client = Arc::new(NonRetryableStreamingClient::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .build_session(
+            "/tmp/test-non-retryable-stream-error".into(),
+            client.clone(),
+            &SessionOptions::new().with_planning_mode(PlanningMode::Disabled),
+        )
+        .unwrap();
+
+    let (mut rx, handle) = session.stream("hello", None).await.unwrap();
+    let mut error_message = None;
+    while let Some(event) = rx.recv().await {
+        if let AgentEvent::Error { message } = event {
+            error_message = Some(message);
+            break;
+        }
+    }
+    handle.await.unwrap();
+
+    assert_eq!(
+        error_message.as_deref(),
+        Some("Codex Pro usage limit reached. Quota resets in about 2h 45m.")
+    );
+    assert_eq!(
+        client
+            .streaming_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a non-retryable provider error must make one streaming call"
+    );
+    assert_eq!(
+        client
+            .complete_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a non-retryable provider error must not use non-streaming fallback"
+    );
+}
+
+#[tokio::test]
+async fn test_non_retryable_pre_analysis_stops_before_main_turn() {
+    let client = Arc::new(NonRetryableStreamingClient::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .build_session(
+            "/tmp/test-non-retryable-pre-analysis".into(),
+            client.clone(),
+            &SessionOptions::new().with_planning_mode(PlanningMode::Auto),
+        )
+        .unwrap();
+
+    let (mut rx, handle) = session
+        .stream("review this repository", None)
+        .await
+        .unwrap();
+    let mut error_message = None;
+    while let Some(event) = rx.recv().await {
+        if let AgentEvent::Error { message } = event {
+            error_message = Some(message);
+            break;
+        }
+    }
+    handle.await.unwrap();
+
+    assert_eq!(
+        error_message.as_deref(),
+        Some("Codex Pro usage limit reached. Quota resets in about 2h 45m.")
+    );
+    assert_eq!(
+        client
+            .complete_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "pre-analysis should make exactly one provider request"
+    );
+    assert_eq!(
+        client
+            .streaming_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a terminal pre-analysis error must stop before the main turn"
+    );
 }
 
 #[tokio::test]
@@ -1379,14 +1719,20 @@ async fn test_cancel_run_only_cancels_matching_current_run() {
 #[tokio::test]
 async fn test_is_closed_starts_false() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-close-default", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-close-default", None)
+        .await
+        .unwrap();
     assert!(!session.is_closed());
 }
 
 #[tokio::test]
 async fn test_close_marks_session_closed_and_is_idempotent() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-close-idempotent", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-close-idempotent", None)
+        .await
+        .unwrap();
     assert!(!session.is_closed());
 
     session.close().await;
@@ -1416,6 +1762,104 @@ async fn test_send_after_close_returns_session_closed_error() {
         }
         other => panic!("expected SessionClosed, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn test_direct_tools_after_close_return_session_closed_error() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("tool-after-close");
+    let session = agent
+        .build_session(
+            "/tmp/test-tool-after-close".into(),
+            Arc::new(StaticStreamingClient::new("never delivered")),
+            &opts,
+        )
+        .unwrap();
+
+    session.close().await;
+    let error = session
+        .tool("read", serde_json::json!({ "file_path": "missing.txt" }))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::CodeError::SessionClosed { ref session_id }
+            if session_id == "tool-after-close"
+    ));
+
+    let (_events, handle) = session.tool_with_events("read", serde_json::json!({}));
+    let error = handle.await.unwrap().unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::CodeError::SessionClosed { ref session_id }
+            if session_id == "tool-after-close"
+    ));
+}
+
+#[tokio::test]
+async fn test_immediate_capability_mutations_after_close_fail_closed() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("extensions-after-close");
+    let session = agent
+        .build_session(
+            "/tmp/test-extensions-after-close".into(),
+            Arc::new(StaticStreamingClient::new("never delivered")),
+            &opts,
+        )
+        .unwrap();
+    session.close().await;
+
+    let dynamic_name = "late-dynamic-tool";
+    let errors = [
+        session
+            .register_dynamic_tool(Arc::new(NamedSessionTool(dynamic_name.to_string())))
+            .unwrap_err(),
+        session.register_dynamic_workflow_runtime().unwrap_err(),
+        session.unregister_dynamic_tool(dynamic_name).unwrap_err(),
+        session
+            .register_command(Arc::new(NoopSessionCommand))
+            .unwrap_err(),
+        session
+            .register_hook(crate::hooks::Hook::new(
+                "late-hook",
+                crate::hooks::HookEventType::PreToolUse,
+            ))
+            .unwrap_err(),
+        session.unregister_hook("late-hook").unwrap_err(),
+        session
+            .register_worker_agent(crate::subagent::WorkerAgentSpec::planner(
+                "late-worker",
+                "Must not register",
+            ))
+            .unwrap_err(),
+        session
+            .register_agent_dir(std::path::Path::new("/nonexistent/late-agent-dir"))
+            .unwrap_err(),
+        session.set_budget_guard(None).unwrap_err(),
+    ];
+    assert!(errors.iter().all(|error| matches!(
+        error,
+        crate::error::CodeError::SessionClosed { session_id }
+            if session_id == "extensions-after-close"
+    )));
+    let lane_error = session
+        .set_lane_handler(
+            crate::queue::SessionLane::Execute,
+            crate::queue::LaneHandlerConfig {
+                mode: crate::queue::TaskHandlerMode::External,
+                timeout_ms: 1_000,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        lane_error,
+        crate::error::CodeError::SessionClosed { ref session_id }
+            if session_id == "extensions-after-close"
+    ));
+    assert!(!session.tool_names().iter().any(|name| name == dynamic_name));
+    assert!(!session.agent_registry.exists("late-worker"));
+    assert_eq!(session.hook_count(), 0);
 }
 
 #[tokio::test]
@@ -1491,6 +1935,11 @@ struct DenyingBudgetGuard {
     llm_records: std::sync::atomic::AtomicUsize,
 }
 
+#[derive(Debug, Default)]
+struct DenyingToolBudgetGuard {
+    checks: std::sync::atomic::AtomicUsize,
+}
+
 #[async_trait::async_trait]
 impl crate::budget::BudgetGuard for DenyingBudgetGuard {
     async fn check_before_llm(
@@ -1509,6 +1958,22 @@ impl crate::budget::BudgetGuard for DenyingBudgetGuard {
     async fn record_after_llm(&self, _session_id: &str, _usage: &crate::llm::TokenUsage) {
         self.llm_records
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::budget::BudgetGuard for DenyingToolBudgetGuard {
+    async fn check_before_tool(
+        &self,
+        _session_id: &str,
+        tool_name: &str,
+    ) -> crate::budget::BudgetDecision {
+        self.checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::budget::BudgetDecision::Deny {
+            resource: "tool_calls".to_string(),
+            reason: format!("test budget denied {tool_name}"),
+        }
     }
 }
 
@@ -1611,7 +2076,8 @@ async fn test_custom_host_env_yields_deterministic_session_and_run_ids() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts_a = SessionOptions::new().with_host_env(env.clone());
     let session_a = agent
-        .session("/tmp/test-host-env-a", Some(opts_a))
+        .session_async("/tmp/test-host-env-a", Some(opts_a))
+        .await
         .expect("session a");
 
     // First call to next_id() yields "test-0" — used as session_id.
@@ -1636,7 +2102,8 @@ async fn test_custom_host_env_yields_deterministic_session_and_run_ids() {
     // Second session reuses the same generator → continues the sequence.
     let opts_b = SessionOptions::new().with_host_env(env);
     let session_b = agent
-        .session("/tmp/test-host-env-b", Some(opts_b))
+        .session_async("/tmp/test-host-env-b", Some(opts_b))
+        .await
         .expect("session b");
     assert_eq!(session_b.id(), "test-1");
 }
@@ -1660,9 +2127,11 @@ async fn test_runtime_budget_guard_overrides_session_options_value() {
 
     // No guard installed at build time -> send would succeed. Install
     // a denying guard now and assert the next send is aborted.
-    session.set_budget_guard(Some(
-        runtime_guard.clone() as Arc<dyn crate::budget::BudgetGuard>
-    ));
+    session
+        .set_budget_guard(Some(
+            runtime_guard.clone() as Arc<dyn crate::budget::BudgetGuard>
+        ))
+        .unwrap();
     let err = session.send("hello", None).await.unwrap_err();
     assert!(err.to_string().contains("Budget exhausted"));
     assert_eq!(
@@ -1673,7 +2142,7 @@ async fn test_runtime_budget_guard_overrides_session_options_value() {
     );
 
     // Clearing the override should let a follow-up send succeed.
-    session.set_budget_guard(None);
+    session.set_budget_guard(None).unwrap();
     let result = session.send("hello again", None).await.unwrap();
     assert_eq!(result.text, "never-delivered");
 }
@@ -1691,7 +2160,10 @@ async fn test_disconnect_idle_mcp_is_safe_no_op_without_global_mcp() {
 #[tokio::test]
 async fn test_identity_labels_default_to_none() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-id-default", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-id-default", None)
+        .await
+        .unwrap();
     assert!(session.tenant_id().is_none());
     assert!(session.principal().is_none());
     assert!(session.agent_template_id().is_none());
@@ -1707,7 +2179,8 @@ async fn test_identity_labels_round_trip_via_session_options() {
         .with_agent_template_id("planner-v3")
         .with_correlation_id("trace-deadbeef");
     let session = agent
-        .session("/tmp/test-id-set", Some(opts))
+        .session_async("/tmp/test-id-set", Some(opts))
+        .await
         .expect("session");
 
     assert_eq!(session.tenant_id(), Some("acme-corp"));
@@ -1751,6 +2224,269 @@ async fn test_agent_list_sessions_tracks_live_sessions() {
 
     drop(session_b);
     assert!(agent.list_sessions().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_agent_rejects_duplicate_live_ids_across_sync_and_async_factories() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let memory = || Arc::new(a3s_memory::InMemoryStore::new());
+
+    let sync_session = agent
+        .session(
+            "/tmp/test-duplicate-sync-owner",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("duplicate-factory-id")
+                    .with_memory(memory()),
+            ),
+        )
+        .expect("first sync session");
+    let duplicate_async = agent
+        .session_async(
+            "/tmp/test-duplicate-async-contender",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("duplicate-factory-id")
+                    .with_memory(memory()),
+            ),
+        )
+        .await
+        .expect_err("async factory must not replace a live sync session");
+    assert!(matches!(
+        duplicate_async,
+        crate::error::CodeError::SessionConfiguration {
+            field: "session_id",
+            ..
+        }
+    ));
+
+    drop(sync_session);
+    let async_session = agent
+        .session_async(
+            "/tmp/test-duplicate-async-owner",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("duplicate-factory-id")
+                    .with_memory(memory()),
+            ),
+        )
+        .await
+        .expect("dropped weak entry must permit ID reuse");
+    let duplicate_sync = agent
+        .session(
+            "/tmp/test-duplicate-sync-contender",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("duplicate-factory-id")
+                    .with_memory(memory()),
+            ),
+        )
+        .expect_err("sync factory must not replace a live async session");
+    assert!(matches!(
+        duplicate_sync,
+        crate::error::CodeError::SessionConfiguration {
+            field: "session_id",
+            ..
+        }
+    ));
+    assert_eq!(
+        agent.list_sessions().await,
+        vec!["duplicate-factory-id".to_string()]
+    );
+    drop(async_session);
+}
+
+#[tokio::test]
+async fn test_closed_session_releases_id_while_old_handle_is_still_held() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session_id = "closed-id-reuse";
+    let first = agent
+        .session_async(
+            "/tmp/test-closed-id-first",
+            Some(SessionOptions::new().with_session_id(session_id)),
+        )
+        .await
+        .unwrap();
+
+    first.close().await;
+    assert!(first.is_closed());
+    assert!(agent.list_sessions().await.is_empty());
+
+    let replacement = agent
+        .session_async(
+            "/tmp/test-closed-id-replacement",
+            Some(SessionOptions::new().with_session_id(session_id)),
+        )
+        .await
+        .expect("a closed session is no longer a live ID owner");
+    assert_eq!(replacement.session_id(), session_id);
+
+    // Keep `first` alive through replacement construction to prove registry
+    // admission depends on lifecycle state, not garbage collection timing.
+    assert!(first.is_closed());
+}
+
+#[tokio::test]
+async fn test_failed_sync_and_async_builds_release_session_id_reservations() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+
+    let invalid_sync = SessionOptions::new()
+        .with_session_id("failed-sync-reservation")
+        .with_memory(Arc::new(a3s_memory::InMemoryStore::new()))
+        .with_tool_timeout(0);
+    agent
+        .session("/tmp/test-failed-sync-reservation", Some(invalid_sync))
+        .expect_err("conflicting sync options must fail");
+    let sync_session = agent
+        .session(
+            "/tmp/test-retry-sync-reservation",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("failed-sync-reservation")
+                    .with_memory(Arc::new(a3s_memory::InMemoryStore::new())),
+            ),
+        )
+        .expect("failed sync build must release its reservation");
+    drop(sync_session);
+
+    let invalid_async = SessionOptions::new()
+        .with_session_id("failed-async-reservation")
+        .with_memory(Arc::new(a3s_memory::InMemoryStore::new()))
+        .with_tool_timeout(0);
+    agent
+        .session_async("/tmp/test-failed-async-reservation", Some(invalid_async))
+        .await
+        .expect_err("conflicting async options must fail");
+    let async_session = agent
+        .session_async(
+            "/tmp/test-retry-async-reservation",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("failed-async-reservation")
+                    .with_memory(Arc::new(a3s_memory::InMemoryStore::new())),
+            ),
+        )
+        .await
+        .expect("failed async build must release its reservation");
+    drop(async_session);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_agent_close_rejects_blocked_resume_finalization() {
+    let backing = Arc::new(crate::store::MemorySessionStore::new());
+    let writer = Agent::from_config(test_config()).await.unwrap();
+    let source = writer
+        .session_async(
+            "/tmp/test-close-blocked-resume-source",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("close-blocked-resume")
+                    .with_session_store(backing.clone()),
+            ),
+        )
+        .await
+        .unwrap();
+    source.save().await.unwrap();
+    drop(source);
+    drop(writer);
+
+    let blocking = Arc::new(BlockingLoadSessionStore::new(Arc::clone(&backing)));
+    let agent = Arc::new(Agent::from_config(test_config()).await.unwrap());
+    let resume = tokio::spawn({
+        let agent = Arc::clone(&agent);
+        let store: Arc<dyn SessionStore> = blocking.clone();
+        async move {
+            agent
+                .resume_session_async(
+                    "close-blocked-resume",
+                    SessionOptions::new().with_session_store(store),
+                )
+                .await
+        }
+    });
+    blocking.wait_until_load_is_blocked().await;
+
+    assert!(agent.list_sessions().await.is_empty());
+    assert!(!agent.close_session("close-blocked-resume").await);
+    let duplicate = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        agent.resume_session_async(
+            "close-blocked-resume",
+            SessionOptions::new().with_session_store(blocking.clone() as Arc<dyn SessionStore>),
+        ),
+    )
+    .await
+    .expect("duplicate build must fail before entering the blocking store")
+    .expect_err("a building session ID must be reserved");
+    assert!(matches!(
+        duplicate,
+        crate::error::CodeError::SessionConfiguration {
+            field: "session_id",
+            ..
+        }
+    ));
+
+    agent.close().await;
+    blocking.release_one_load();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), resume)
+        .await
+        .expect("resume task must finish after its load is released")
+        .expect("resume task must not panic");
+    let error = result.expect_err("close must reject a pre-admitted resume at finalization");
+    assert!(matches!(
+        error,
+        crate::error::CodeError::SessionClosed { .. }
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cancelled_resume_releases_session_id_reservation() {
+    let backing = Arc::new(crate::store::MemorySessionStore::new());
+    let writer = Agent::from_config(test_config()).await.unwrap();
+    let source = writer
+        .session_async(
+            "/tmp/test-cancelled-resume-source",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("cancelled-resume-reservation")
+                    .with_session_store(backing.clone()),
+            ),
+        )
+        .await
+        .unwrap();
+    source.save().await.unwrap();
+    drop(source);
+    drop(writer);
+
+    let blocking = Arc::new(BlockingLoadSessionStore::new(Arc::clone(&backing)));
+    let agent = Arc::new(Agent::from_config(test_config()).await.unwrap());
+    let resume = tokio::spawn({
+        let agent = Arc::clone(&agent);
+        let store: Arc<dyn SessionStore> = blocking.clone();
+        async move {
+            agent
+                .resume_session_async(
+                    "cancelled-resume-reservation",
+                    SessionOptions::new().with_session_store(store),
+                )
+                .await
+        }
+    });
+    blocking.wait_until_load_is_blocked().await;
+    resume.abort();
+    assert!(resume
+        .await
+        .expect_err("task must be cancelled")
+        .is_cancelled());
+
+    let resumed = agent
+        .resume_session_async(
+            "cancelled-resume-reservation",
+            SessionOptions::new().with_session_store(backing.clone() as Arc<dyn SessionStore>),
+        )
+        .await
+        .expect("cancelling a build future must release its reservation");
+    assert_eq!(resumed.session_id(), "cancelled-resume-reservation");
 }
 
 #[tokio::test]
@@ -1804,7 +2540,8 @@ async fn test_agent_close_closes_every_live_session() {
     // After Agent::close(), session creation must fail fast — the agent has
     // already disposed of its resources.
     let err = agent
-        .session("/tmp/test-agent-closed", None)
+        .session_async("/tmp/test-agent-closed", None)
+        .await
         .expect_err("session() after close() must error");
     let msg = err.to_string();
     assert!(msg.contains("closed") || msg.contains("Closed"));
@@ -1814,7 +2551,8 @@ async fn test_agent_close_closes_every_live_session() {
 async fn test_session_cancel_token_starts_uncancelled() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session("/tmp/test-session-cancel-fresh", None)
+        .session_async("/tmp/test-session-cancel-fresh", None)
+        .await
         .unwrap();
     let tok = session.session_cancel_token();
     assert!(!tok.is_cancelled());
@@ -1824,7 +2562,8 @@ async fn test_session_cancel_token_starts_uncancelled() {
 async fn test_close_cancels_session_token() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session("/tmp/test-session-cancel-on-close", None)
+        .session_async("/tmp/test-session-cancel-on-close", None)
+        .await
         .unwrap();
     let observer = session.session_cancel_token();
     assert!(!observer.is_cancelled());
@@ -2008,6 +2747,233 @@ async fn test_stream_exposes_current_run_handle_and_replay() {
 }
 
 #[tokio::test]
+async fn test_active_stream_rejects_slash_command_with_session_busy() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("single-flight-slash");
+    let session = agent
+        .build_session(
+            "/tmp/test-single-flight-slash".into(),
+            Arc::new(CancellableStreamingClient::new("partial answer")),
+            &opts,
+        )
+        .unwrap();
+
+    let (mut rx, handle) = session.stream("hello", None).await.unwrap();
+    while let Some(event) = rx.recv().await {
+        if matches!(event, AgentEvent::TextDelta { .. }) {
+            break;
+        }
+    }
+
+    // Slash commands read and may mutate session state, so they use the same
+    // fail-fast admission gate as model-backed conversation operations. Hold
+    // the history lock to prove admission happens before any transcript read.
+    let history = Arc::clone(&session.history);
+    let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+    let history_holder = std::thread::spawn(move || {
+        let _history_guard = history
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locked_tx.send(()).expect("test lock receiver remains open");
+        release_rx
+            .recv()
+            .expect("test lock release sender remains open");
+    });
+    locked_rx
+        .recv()
+        .expect("history holder acquires the lock before admission check");
+    let concurrent = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        session.send("/help", None),
+    )
+    .await
+    .expect("busy admission must not wait for the history lock");
+    release_tx
+        .send(())
+        .expect("history holder remains alive until released");
+    history_holder
+        .join()
+        .expect("history holder must not panic");
+
+    assert!(session.cancel().await);
+    while rx.recv().await.is_some() {}
+    handle.await.unwrap();
+
+    match concurrent {
+        Err(crate::error::CodeError::SessionBusy { session_id }) => {
+            assert_eq!(session_id, "single-flight-slash");
+        }
+        other => panic!("expected SessionBusy, got {other:?}"),
+    }
+
+    let command = session.send("/help", None).await.unwrap();
+    assert!(command.text.contains("/help"));
+}
+
+#[tokio::test]
+async fn test_slash_command_outputs_obey_session_security_provider() {
+    struct SensitiveCommand;
+
+    impl crate::commands::SlashCommand for SensitiveCommand {
+        fn name(&self) -> &str {
+            "sensitive"
+        }
+
+        fn description(&self) -> &str {
+            "Returns sensitive test data"
+        }
+
+        fn execute(
+            &self,
+            _args: &str,
+            _ctx: &crate::commands::CommandContext,
+        ) -> crate::commands::CommandOutput {
+            crate::commands::CommandOutput::text("contact user@example.com")
+        }
+    }
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_security_provider(Arc::new(crate::security::DefaultSecurityProvider::new()));
+    let session = agent
+        .build_session(
+            "/tmp/test-secure-slash-command".into(),
+            Arc::new(StaticStreamingClient::new("unused")),
+            &opts,
+        )
+        .unwrap();
+    session
+        .register_command(Arc::new(SensitiveCommand))
+        .unwrap();
+
+    let result = session.send("/sensitive", None).await.unwrap();
+    assert!(!result.text.contains("user@example.com"));
+    assert!(result.text.contains("REDACTED:EMAIL"));
+
+    let (mut rx, handle) = session.stream("/sensitive", None).await.unwrap();
+    let mut events = Vec::new();
+    while let Some(event) = rx.recv().await {
+        events.push(event);
+    }
+    handle.await.unwrap();
+    assert!(matches!(events.last(), Some(AgentEvent::End { .. })));
+    for event in events {
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !json.contains("user@example.com"),
+            "unsanitized event: {json}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_active_stream_rejects_all_conversation_entrypoints() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("single-flight-all-entrypoints");
+    let session = agent
+        .build_session(
+            "/tmp/test-single-flight-all-entrypoints".into(),
+            Arc::new(CancellableStreamingClient::new("partial answer")),
+            &opts,
+        )
+        .unwrap();
+
+    let (mut rx, handle) = session.stream("first", None).await.unwrap();
+    while let Some(event) = rx.recv().await {
+        if matches!(event, AgentEvent::TextDelta { .. }) {
+            break;
+        }
+    }
+
+    let attachments = vec![crate::llm::Attachment::png(vec![1, 2, 3])];
+    assert_session_busy(
+        session.send("second", None).await,
+        "single-flight-all-entrypoints",
+    );
+    assert_session_busy(
+        session.stream("second", None).await,
+        "single-flight-all-entrypoints",
+    );
+    assert_session_busy(
+        session
+            .send_with_attachments("second", &attachments, None)
+            .await,
+        "single-flight-all-entrypoints",
+    );
+    assert_session_busy(
+        session
+            .stream_with_attachments("second", &attachments, None)
+            .await,
+        "single-flight-all-entrypoints",
+    );
+    assert_session_busy(
+        session.resume_run("not-loaded-while-busy").await,
+        "single-flight-all-entrypoints",
+    );
+    assert_session_busy(session.save().await, "single-flight-all-entrypoints");
+
+    assert!(session.cancel().await);
+    while rx.recv().await.is_some() {}
+    handle.await.unwrap();
+
+    // The public stream handle completes only after its guardian has released
+    // admission, so the next operation can start immediately after awaiting it.
+    assert!(session.send("/help", None).await.is_ok());
+}
+
+#[tokio::test]
+async fn test_active_blocking_send_rejects_send_and_stream_then_releases() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("single-flight-blocking");
+    let session = Arc::new(
+        agent
+            .build_session(
+                "/tmp/test-single-flight-blocking".into(),
+                Arc::new(CancellableStreamingClient::new("partial answer")),
+                &opts,
+            )
+            .unwrap(),
+    );
+
+    let worker_session = Arc::clone(&session);
+    let first = tokio::spawn(async move { worker_session.send("first", None).await });
+
+    let mut active_run = None;
+    for _ in 0..50 {
+        if let Some(run) = session.current_run().await {
+            active_run = Some(run);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        active_run.is_some(),
+        "the first blocking send must become active"
+    );
+
+    assert_session_busy(session.send("second", None).await, "single-flight-blocking");
+    assert_session_busy(
+        session.stream("second", None).await,
+        "single-flight-blocking",
+    );
+
+    assert!(session.cancel().await);
+    let first_result = tokio::time::timeout(std::time::Duration::from_secs(1), first)
+        .await
+        .expect("the cancelled blocking send must finish")
+        .expect("the blocking send task must not panic")
+        .expect("cancellation preserves interrupted history");
+    assert!(first_result
+        .messages
+        .last()
+        .is_some_and(|message| message.text().contains("interrupted")));
+
+    // Awaiting the blocking operation releases the lease for the next call.
+    assert!(session.send("/help", None).await.is_ok());
+}
+
+#[tokio::test]
 async fn test_session_options_with_agent_dir() {
     let opts = SessionOptions::new()
         .with_agent_dir("/tmp/agents")
@@ -2038,7 +3004,8 @@ fn test_session_options_with_queue_config() {
 async fn test_session_uses_single_delegation_tool_surface() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session("/tmp/test-workspace-delegation-tools", None)
+        .session_async("/tmp/test-workspace-delegation-tools", None)
+        .await
         .unwrap();
     let names = session.tool_names();
 
@@ -2057,7 +3024,8 @@ async fn test_session_can_disable_manual_delegation_tools_without_dropping_regis
         ))
         .with_manual_delegation_enabled(false);
     let session = agent
-        .session("/tmp/test-workspace-no-manual-delegation", Some(opts))
+        .session_async("/tmp/test-workspace-no-manual-delegation", Some(opts))
+        .await
         .unwrap();
     let names = session.tool_names();
 
@@ -2072,7 +3040,9 @@ async fn test_session_with_queue_config() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let qc = SessionQueueConfig::default();
     let opts = SessionOptions::new().with_queue_config(qc);
-    let session = agent.session("/tmp/test-workspace-queue", Some(opts));
+    let session = agent
+        .session_async("/tmp/test-workspace-queue", Some(opts))
+        .await;
     assert!(session.is_ok());
     let session = session.unwrap();
     assert!(session.has_queue());
@@ -2081,14 +3051,20 @@ async fn test_session_with_queue_config() {
 #[tokio::test]
 async fn test_session_without_queue_config() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-workspace-noqueue", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-workspace-noqueue", None)
+        .await
+        .unwrap();
     assert!(!session.has_queue());
 }
 
 #[tokio::test]
 async fn test_session_queue_stats_without_queue() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-workspace-stats", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-workspace-stats", None)
+        .await
+        .unwrap();
     let stats = session.queue_stats().await;
     // Without a queue, stats should have zero values
     assert_eq!(stats.total_pending, 0);
@@ -2101,7 +3077,8 @@ async fn test_session_queue_stats_with_queue() {
     let qc = SessionQueueConfig::default();
     let opts = SessionOptions::new().with_queue_config(qc);
     let session = agent
-        .session("/tmp/test-workspace-qstats", Some(opts))
+        .session_async("/tmp/test-workspace-qstats", Some(opts))
+        .await
         .unwrap();
     let stats = session.queue_stats().await;
     // Fresh queue with no commands should have zero stats
@@ -2115,7 +3092,8 @@ async fn test_session_pending_external_tasks_empty() {
     let qc = SessionQueueConfig::default();
     let opts = SessionOptions::new().with_queue_config(qc);
     let session = agent
-        .session("/tmp/test-workspace-ext", Some(opts))
+        .session_async("/tmp/test-workspace-ext", Some(opts))
+        .await
         .unwrap();
     let tasks = session.pending_external_tasks().await;
     assert!(tasks.is_empty());
@@ -2130,7 +3108,10 @@ async fn test_session_confirmation_api_resolves_pending_request() {
         event_tx,
     ));
     let opts = SessionOptions::new().with_confirmation_manager(manager.clone());
-    let session = agent.session("/tmp/test-workspace", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-workspace", Some(opts))
+        .await
+        .unwrap();
 
     let receiver = manager
         .request_confirmation(
@@ -2160,7 +3141,10 @@ async fn test_session_confirmation_api_resolves_pending_request() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_confirmation_api_without_manager_is_noop() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-workspace", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-workspace", None)
+        .await
+        .unwrap();
 
     assert!(session.pending_confirmations().await.is_empty());
     assert!(!session
@@ -2176,7 +3160,8 @@ async fn test_session_dead_letters_empty() {
     let qc = SessionQueueConfig::default().with_dlq(Some(100));
     let opts = SessionOptions::new().with_queue_config(qc);
     let session = agent
-        .session("/tmp/test-workspace-dlq", Some(opts))
+        .session_async("/tmp/test-workspace-dlq", Some(opts))
+        .await
         .unwrap();
     let dead = session.dead_letters().await;
     assert!(dead.is_empty());
@@ -2189,7 +3174,8 @@ async fn test_session_queue_metrics_disabled() {
     let qc = SessionQueueConfig::default();
     let opts = SessionOptions::new().with_queue_config(qc);
     let session = agent
-        .session("/tmp/test-workspace-nomet", Some(opts))
+        .session_async("/tmp/test-workspace-nomet", Some(opts))
+        .await
         .unwrap();
     let metrics = session.queue_metrics().await;
     assert!(metrics.is_none());
@@ -2201,7 +3187,8 @@ async fn test_session_queue_metrics_enabled() {
     let qc = SessionQueueConfig::default().with_metrics();
     let opts = SessionOptions::new().with_queue_config(qc);
     let session = agent
-        .session("/tmp/test-workspace-met", Some(opts))
+        .session_async("/tmp/test-workspace-met", Some(opts))
+        .await
         .unwrap();
     let metrics = session.queue_metrics().await;
     assert!(metrics.is_some());
@@ -2213,7 +3200,8 @@ async fn test_session_set_lane_handler() {
     let qc = SessionQueueConfig::default();
     let opts = SessionOptions::new().with_queue_config(qc);
     let session = agent
-        .session("/tmp/test-workspace-handler", Some(opts))
+        .session_async("/tmp/test-workspace-handler", Some(opts))
+        .await
         .unwrap();
 
     // Set Execute lane to External mode
@@ -2225,7 +3213,8 @@ async fn test_session_set_lane_handler() {
                 timeout_ms: 30_000,
             },
         )
-        .await;
+        .await
+        .unwrap();
 
     // No panic = success. The handler config is stored internally.
     // We can't directly read it back but we verify no errors.
@@ -2238,7 +3227,7 @@ async fn test_session_set_lane_handler() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_has_id() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-ws-id", None).unwrap();
+    let session = agent.session_async("/tmp/test-ws-id", None).await.unwrap();
     // Auto-generated UUID
     assert!(!session.session_id().is_empty());
     assert_eq!(session.session_id().len(), 36); // UUID format
@@ -2248,7 +3237,10 @@ async fn test_session_has_id() {
 async fn test_session_explicit_id() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_session_id("my-session-42");
-    let session = agent.session("/tmp/test-ws-eid", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-eid", Some(opts))
+        .await
+        .unwrap();
     assert_eq!(session.session_id(), "my-session-42");
 }
 
@@ -2261,7 +3253,8 @@ async fn test_session_artifact_store_limits_option() {
             max_bytes: 4096,
         });
     let session = agent
-        .session("/tmp/test-ws-artifact-limits", Some(opts))
+        .session_async("/tmp/test-ws-artifact-limits", Some(opts))
+        .await
         .unwrap();
 
     let limits = session.tool_executor.artifact_store().limits();
@@ -2272,7 +3265,10 @@ async fn test_session_artifact_store_limits_option() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_save_no_store() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-ws-save", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-save", None)
+        .await
+        .unwrap();
     // save() is a no-op when no store is configured
     session.save().await.unwrap();
 }
@@ -2285,7 +3281,10 @@ async fn test_session_save_and_load() {
     let opts = SessionOptions::new()
         .with_session_store(store.clone())
         .with_session_id("persist-test");
-    let session = agent.session("/tmp/test-ws-persist", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-persist", Some(opts))
+        .await
+        .unwrap();
 
     // Save empty session
     session.save().await.unwrap();
@@ -2315,7 +3314,8 @@ async fn test_session_save_persists_runtime_config() {
         .with_permission_policy(permission_policy)
         .with_active_skill_tool_restrictions(true);
     let session = agent
-        .session("/tmp/test-ws-runtime-config", Some(opts))
+        .session_async("/tmp/test-ws-runtime-config", Some(opts))
+        .await
         .unwrap();
     session.save().await.unwrap();
 
@@ -2360,13 +3360,17 @@ async fn test_resume_session_restores_runtime_config() {
         .with_permission_policy(permission_policy)
         .with_active_skill_tool_restrictions(true);
     let session = agent
-        .session("/tmp/test-ws-resume-runtime", Some(opts))
+        .session_async("/tmp/test-ws-resume-runtime", Some(opts))
+        .await
         .unwrap();
     session.save().await.unwrap();
+    session.close().await;
+    drop(session);
 
     let opts2 = SessionOptions::new().with_session_store(store.clone());
     let resumed = agent
-        .resume_session("resume-runtime-config-test", opts2)
+        .resume_session_async("resume-runtime-config-test", opts2)
+        .await
         .unwrap();
 
     assert_eq!(resumed.model_name, "openai/gpt-4o");
@@ -2386,7 +3390,10 @@ async fn test_session_save_with_history() {
     let opts = SessionOptions::new()
         .with_session_store(store.clone())
         .with_session_id("history-test");
-    let session = agent.session("/tmp/test-ws-hist", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-hist", Some(opts))
+        .await
+        .unwrap();
 
     // Manually inject history
     {
@@ -2410,22 +3417,103 @@ async fn test_resume_session() {
     let opts = SessionOptions::new()
         .with_session_store(store.clone())
         .with_session_id("resume-test");
-    let session = agent.session("/tmp/test-ws-resume", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-resume", Some(opts))
+        .await
+        .unwrap();
     {
         let mut h = session.history.write().unwrap();
         h.push(Message::user("What is Rust?"));
         h.push(Message::user("Tell me more"));
     }
     session.save().await.unwrap();
+    session.close().await;
+    drop(session);
 
     // Resume the session
     let opts2 = SessionOptions::new().with_session_store(store.clone());
-    let resumed = agent.resume_session("resume-test", opts2).unwrap();
+    let resumed = agent
+        .resume_session_async("resume-test", opts2)
+        .await
+        .unwrap();
 
     assert_eq!(resumed.session_id(), "resume-test");
     let history = resumed.history();
     assert_eq!(history.len(), 2);
     assert_eq!(history[0].text(), "What is Rust?");
+}
+
+#[tokio::test]
+async fn test_session_snapshots_accumulate_completed_run_usage() {
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_session_store(store.clone())
+        .with_session_id("usage-snapshot-test");
+    let session = agent
+        .build_session(
+            "/tmp/test-usage-snapshot".into(),
+            Arc::new(StaticStreamingClient::new("done")),
+            &opts,
+        )
+        .unwrap();
+
+    session.send("first", None).await.unwrap();
+    session.save().await.unwrap();
+    let session_store: Arc<dyn crate::store::SessionStore> = store.clone();
+    let first = session_store
+        .load_snapshot("usage-snapshot-test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.session.total_usage.total_tokens, 2);
+
+    session.send("second", None).await.unwrap();
+    session.save().await.unwrap();
+    let second = session_store
+        .load_snapshot("usage-snapshot-test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.session.total_usage.prompt_tokens, 2);
+    assert_eq!(second.session.total_usage.completion_tokens, 2);
+    assert_eq!(second.session.total_usage.total_tokens, 4);
+    assert_eq!(second.session.created_at, first.session.created_at);
+}
+
+#[tokio::test]
+async fn test_session_uses_finite_retention_by_default_and_allows_explicit_unbounded() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let default_session = agent
+        .build_session(
+            "/tmp/test-default-retention".into(),
+            Arc::new(StaticStreamingClient::new("unused")),
+            &SessionOptions::new(),
+        )
+        .unwrap();
+    for index in 0..65 {
+        default_session
+            .run_store
+            .create_run(default_session.id(), &format!("run {index}"))
+            .await;
+    }
+    assert_eq!(default_session.runs().await.len(), 64);
+
+    let unbounded_session = agent
+        .build_session(
+            "/tmp/test-unbounded-retention".into(),
+            Arc::new(StaticStreamingClient::new("unused")),
+            &SessionOptions::new()
+                .with_retention_limits(crate::retention::SessionRetentionLimits::unbounded()),
+        )
+        .unwrap();
+    for index in 0..65 {
+        unbounded_session
+            .run_store
+            .create_run(unbounded_session.id(), &format!("run {index}"))
+            .await;
+    }
+    assert_eq!(unbounded_session.runs().await.len(), 65);
 }
 
 /// H4 regression: a run that completes in-process must DELETE its loop
@@ -2625,6 +3713,48 @@ async fn test_resume_run_picks_up_from_persisted_checkpoint() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_resume_run_rejects_checkpoint_owned_by_another_session() {
+    use crate::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
+
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let run_id = "foreign-checkpoint-run";
+    let checkpoint = LoopCheckpoint {
+        schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
+        run_id: run_id.to_string(),
+        session_id: "foreign-session".to_string(),
+        turn: 1,
+        messages: vec![Message::user("private foreign transcript")],
+        total_usage: crate::llm::TokenUsage::default(),
+        tool_calls_count: 0,
+        verification_reports: Vec::new(),
+        checkpoint_ms: 1,
+    };
+    let checkpoint_store: Arc<dyn crate::store::SessionStore> = store.clone();
+    checkpoint_store
+        .save_loop_checkpoint(run_id, &checkpoint)
+        .await
+        .unwrap();
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .build_session(
+            "/tmp/test-resume-run-owner".into(),
+            Arc::new(StaticStreamingClient::new("must not execute")),
+            &SessionOptions::new()
+                .with_session_store(store as Arc<dyn crate::store::SessionStore>)
+                .with_session_id("current-session"),
+        )
+        .unwrap();
+
+    let error = session.resume_run(run_id).await.unwrap_err();
+    assert!(error.to_string().contains("ownership mismatch"));
+    assert!(
+        session.runs().await.is_empty(),
+        "rejected resume must not start a run"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_resume_session_restores_artifacts() {
     let store = Arc::new(crate::store::MemorySessionStore::new());
     let agent = Agent::from_config(test_config()).await.unwrap();
@@ -2632,7 +3762,10 @@ async fn test_resume_session_restores_artifacts() {
     let opts = SessionOptions::new()
         .with_session_store(store.clone())
         .with_session_id("resume-artifacts-test");
-    let session = agent.session("/tmp/test-ws-artifacts", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-artifacts", Some(opts))
+        .await
+        .unwrap();
     session
         .tool_executor
         .artifact_store()
@@ -2646,15 +3779,74 @@ async fn test_resume_session_restores_artifacts() {
         });
 
     session.save().await.unwrap();
+    session.close().await;
+    drop(session);
     let opts2 = SessionOptions::new().with_session_store(store.clone());
     let resumed = agent
-        .resume_session("resume-artifacts-test", opts2)
+        .resume_session_async("resume-artifacts-test", opts2)
+        .await
         .unwrap();
 
     let artifact = resumed
         .get_artifact("a3s://tool-output/test/a")
         .expect("artifact");
     assert_eq!(artifact.content, "artifact content");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_resume_session_preserves_artifacts_beyond_default_store_limits() {
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let defaults = crate::tools::ArtifactStoreLimits::default();
+    let artifact_count = defaults.max_artifacts + 1;
+    let bytes_per_artifact = defaults.max_bytes / artifact_count + 1;
+    let persisted_bytes = artifact_count * bytes_per_artifact;
+    let artifact_content = "x".repeat(bytes_per_artifact);
+    assert!(artifact_count > defaults.max_artifacts);
+    assert!(persisted_bytes > defaults.max_bytes);
+
+    let opts = SessionOptions::new()
+        .with_session_store(store.clone())
+        .with_session_id("resume-large-artifacts-test")
+        .with_artifact_store_limits(crate::tools::ArtifactStoreLimits {
+            max_artifacts: artifact_count,
+            max_bytes: persisted_bytes,
+        });
+    let session = agent
+        .session_async("/tmp/test-ws-large-artifacts", Some(opts))
+        .await
+        .unwrap();
+    for index in 0..artifact_count {
+        session
+            .tool_executor
+            .artifact_store()
+            .put(crate::tools::ToolArtifact {
+                artifact_id: format!("tool-output:test:{index}"),
+                artifact_uri: format!("a3s://tool-output/test/{index}"),
+                tool_name: "test".to_string(),
+                content: artifact_content.clone(),
+                original_bytes: bytes_per_artifact,
+                shown_bytes: 0,
+            });
+    }
+
+    session.save().await.unwrap();
+    drop(session);
+
+    let resumed = agent
+        .resume_session_async(
+            "resume-large-artifacts-test",
+            SessionOptions::new().with_session_store(store),
+        )
+        .await
+        .unwrap();
+    let restored = resumed.tool_executor.artifact_store();
+    assert_eq!(restored.len(), artifact_count);
+    assert_eq!(restored.total_bytes(), persisted_bytes);
+    assert!(restored.get("a3s://tool-output/test/0").is_some());
+    assert!(restored
+        .get(&format!("a3s://tool-output/test/{}", artifact_count - 1))
+        .is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2677,12 +3869,20 @@ async fn test_resume_session_restores_trace_events() {
     let opts = SessionOptions::new()
         .with_session_store(store.clone())
         .with_session_id("resume-trace-test");
-    let session = agent.session("/tmp/test-ws-trace", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-trace", Some(opts))
+        .await
+        .unwrap();
     session.trace_sink.replace_events(vec![event.clone()]);
     session.save().await.unwrap();
+    session.close().await;
+    drop(session);
 
     let opts2 = SessionOptions::new().with_session_store(store.clone());
-    let resumed = agent.resume_session("resume-trace-test", opts2).unwrap();
+    let resumed = agent
+        .resume_session_async("resume-trace-test", opts2)
+        .await
+        .unwrap();
 
     assert_eq!(resumed.trace_events(), vec![event]);
 }
@@ -2695,7 +3895,10 @@ async fn test_resume_session_restores_run_records() {
     let opts = SessionOptions::new()
         .with_session_store(store.clone())
         .with_session_id("resume-runs-test");
-    let session = agent.session("/tmp/test-ws-runs", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-runs", Some(opts))
+        .await
+        .unwrap();
     let run = session
         .run_store
         .create_run(session.session_id(), "persist run")
@@ -2710,9 +3913,14 @@ async fn test_resume_session_restores_run_records() {
         )
         .await;
     session.save().await.unwrap();
+    session.close().await;
+    drop(session);
 
     let opts2 = SessionOptions::new().with_session_store(store.clone());
-    let resumed = agent.resume_session("resume-runs-test", opts2).unwrap();
+    let resumed = agent
+        .resume_session_async("resume-runs-test", opts2)
+        .await
+        .unwrap();
 
     let runs = resumed.runs().await;
     assert_eq!(runs.len(), 1);
@@ -2736,14 +3944,18 @@ async fn test_resume_session_restores_verification_reports() {
         .with_session_store(store.clone())
         .with_session_id("resume-verification-test");
     let session = agent
-        .session("/tmp/test-ws-verification", Some(opts))
+        .session_async("/tmp/test-ws-verification", Some(opts))
+        .await
         .unwrap();
     session.record_verification_reports([report.clone()]);
     session.save().await.unwrap();
+    session.close().await;
+    drop(session);
 
     let opts2 = SessionOptions::new().with_session_store(store.clone());
     let resumed = agent
-        .resume_session("resume-verification-test", opts2)
+        .resume_session_async("resume-verification-test", opts2)
+        .await
         .unwrap();
 
     assert_eq!(resumed.verification_reports(), vec![report]);
@@ -2761,7 +3973,8 @@ async fn test_verify_commands_builds_report_from_bash_results() {
     let temp_dir = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session(temp_dir.path().display().to_string(), None)
+        .session_async(temp_dir.path().display().to_string(), None)
+        .await
         .unwrap();
     let commands = vec![
         crate::verification::VerificationCommand::required(
@@ -2805,6 +4018,47 @@ async fn test_verify_commands_builds_report_from_bash_results() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_verify_commands_use_host_direct_policy_but_keep_budget_governance() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let marker = temp_dir.path().join("verification-must-not-run.txt");
+    let guard = Arc::new(DenyingToolBudgetGuard::default());
+    let options = SessionOptions::new()
+        .with_permission_policy(crate::permissions::PermissionPolicy::new().deny("bash"))
+        .with_budget_guard(guard.clone() as Arc<dyn crate::budget::BudgetGuard>);
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session_async(temp_dir.path().display().to_string(), Some(options))
+        .await
+        .unwrap();
+    let commands = [crate::verification::VerificationCommand::required(
+        "check:governed",
+        "smoke",
+        "Exercise governed verification",
+        "echo should-not-run > verification-must-not-run.txt",
+    )];
+
+    let report = session.verify_commands("turn", &commands).await.unwrap();
+
+    assert_eq!(
+        guard.checks.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "host-direct verification must skip model permission but still consult the budget guard"
+    );
+    assert_eq!(
+        report.checks[0].status,
+        crate::verification::VerificationStatus::Failed
+    );
+    assert!(report.checks[0]
+        .residual_risk
+        .as_deref()
+        .is_some_and(|risk| risk.contains("Budget exhausted")));
+    assert!(
+        !marker.exists(),
+        "budget denial must happen before bash runs"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_session_verification_presets_reflect_workspace() {
     let temp_dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -2814,7 +4068,8 @@ async fn test_session_verification_presets_reflect_workspace() {
     .unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session(temp_dir.path().display().to_string(), None)
+        .session_async(temp_dir.path().display().to_string(), None)
+        .await
         .unwrap();
 
     let presets = session.verification_presets();
@@ -2831,7 +4086,7 @@ async fn test_resume_session_not_found() {
     let agent = Agent::from_config(test_config()).await.unwrap();
 
     let opts = SessionOptions::new().with_session_store(store.clone());
-    let result = agent.resume_session("nonexistent", opts);
+    let result = agent.resume_session_async("nonexistent", opts).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -2840,7 +4095,7 @@ async fn test_resume_session_not_found() {
 async fn test_resume_session_no_store() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new();
-    let result = agent.resume_session("any-id", opts);
+    let result = agent.resume_session_async("any-id", opts).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("session_store"));
 }
@@ -2860,7 +4115,8 @@ async fn test_file_session_store_persistence() {
         .with_session_store(store.clone())
         .with_session_id("file-persist");
     let session = agent
-        .session("/tmp/test-ws-file-persist", Some(opts))
+        .session_async("/tmp/test-ws-file-persist", Some(opts))
+        .await
         .unwrap();
     {
         let mut h = session.history.write().unwrap();
@@ -2909,7 +4165,8 @@ async fn test_active_skill_tool_restriction_option_defaults_and_overrides() {
     let agent = Agent::from_config(test_config()).await.unwrap();
 
     let default_session = agent
-        .session("/tmp/test-ws-skill-restriction-default", None)
+        .session_async("/tmp/test-ws-skill-restriction-default", None)
+        .await
         .unwrap();
     assert!(
         !default_session
@@ -2918,10 +4175,11 @@ async fn test_active_skill_tool_restriction_option_defaults_and_overrides() {
     );
 
     let legacy_session = agent
-        .session(
+        .session_async(
             "/tmp/test-ws-skill-restriction-legacy",
             Some(SessionOptions::new().with_active_skill_tool_restrictions(true)),
         )
+        .await
         .unwrap();
     assert!(legacy_session.config.enforce_active_skill_tool_restrictions);
 }
@@ -2936,7 +4194,8 @@ async fn test_session_options_with_rl_trajectory_records_jsonl() {
         crate::rl_trajectory::RlTrajectoryConfig::new(&trajectory_path).with_max_text_bytes(4),
     );
     let session = agent
-        .session("/tmp/test-ws-rl-trajectory", Some(opts))
+        .session_async("/tmp/test-ws-rl-trajectory", Some(opts))
+        .await
         .unwrap();
 
     assert!(session.config.rl_trajectory_recorder.is_enabled());
@@ -2971,14 +4230,15 @@ async fn test_session_max_parallel_tasks_config_and_override() {
     let agent = Agent::from_config(config).await.unwrap();
 
     let default_session = agent
-        .session("/tmp/test-ws-parallel-default", None)
+        .session_async("/tmp/test-ws-parallel-default", None)
+        .await
         .unwrap();
     assert_eq!(default_session.config.max_parallel_tasks, 6);
     assert!(default_session.config.auto_delegation.enabled);
     assert!(!default_session.config.auto_delegation.auto_parallel);
 
     let override_session = agent
-        .session(
+        .session_async(
             "/tmp/test-ws-parallel-override",
             Some(
                 SessionOptions::new()
@@ -2986,6 +4246,7 @@ async fn test_session_max_parallel_tasks_config_and_override() {
                     .with_auto_parallel_delegation(true),
             ),
         )
+        .await
         .unwrap();
     assert_eq!(override_session.config.max_parallel_tasks, 2);
     assert!(override_session.config.auto_delegation.auto_parallel);
@@ -2999,10 +4260,11 @@ async fn test_session_auto_parallel_override_preserves_base_auto_delegation() {
     let agent = Agent::from_config(config).await.unwrap();
 
     let session = agent
-        .session(
+        .session_async(
             "/tmp/test-ws-auto-parallel-only",
             Some(SessionOptions::new().with_auto_parallel_delegation(false)),
         )
+        .await
         .unwrap();
 
     assert!(session.config.auto_delegation.enabled);
@@ -3019,14 +4281,20 @@ async fn test_session_with_memory_store() {
     let store = Arc::new(InMemoryStore::new());
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_memory(store);
-    let session = agent.session("/tmp/test-ws-memory", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-memory", Some(opts))
+        .await
+        .unwrap();
     assert!(session.memory().is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_without_memory_store() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-ws-no-memory", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-no-memory", None)
+        .await
+        .unwrap();
     assert!(
         session.memory().is_some(),
         "sessions should have a default memory store"
@@ -3040,7 +4308,8 @@ async fn test_session_memory_wired_into_config() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_memory(store);
     let session = agent
-        .session("/tmp/test-ws-mem-config", Some(opts))
+        .session_async("/tmp/test-ws-mem-config", Some(opts))
+        .await
         .unwrap();
     // memory is accessible via the public session API
     assert!(session.memory().is_some());
@@ -3059,7 +4328,8 @@ async fn test_session_memory_uses_code_config_limits() {
     let agent = Agent::from_config(config).await.unwrap();
     let opts = SessionOptions::new().with_memory(store);
     let session = agent
-        .session("/tmp/test-ws-mem-config-limits", Some(opts))
+        .session_async("/tmp/test-ws-mem-config-limits", Some(opts))
+        .await
         .unwrap();
 
     let memory = session.memory().unwrap();
@@ -3075,7 +4345,10 @@ async fn test_session_with_file_memory() {
     let dir = tempfile::TempDir::new().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_file_memory(dir.path());
-    let session = agent.session("/tmp/test-ws-file-mem", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-file-mem", Some(opts))
+        .await
+        .unwrap();
     assert!(session.memory().is_some());
 }
 
@@ -3087,7 +4360,8 @@ async fn test_session_uses_configured_default_memory_dir() {
     let agent = Agent::from_config(config).await.unwrap();
 
     let session = agent
-        .session("/tmp/test-ws-default-file-mem", None)
+        .session_async("/tmp/test-ws-default-file-mem", None)
+        .await
         .unwrap();
     let memory = session.memory().expect("default memory store");
     memory
@@ -3099,7 +4373,7 @@ async fn test_session_uses_configured_default_memory_dir() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_session_memory_falls_back_to_in_memory_when_file_store_fails() {
+async fn test_session_file_memory_initialization_failure_is_typed() {
     let dir = tempfile::TempDir::new().unwrap();
     let blocked_path = dir.path().join("blocked-memory");
     std::fs::write(&blocked_path, "not a directory").unwrap();
@@ -3108,18 +4382,19 @@ async fn test_session_memory_falls_back_to_in_memory_when_file_store_fails() {
     config.memory_dir = Some(blocked_path.clone());
     let agent = Agent::from_config(config).await.unwrap();
 
-    let session = agent.session("/tmp/test-ws-memory-fallback", None).unwrap();
-    let memory = session.memory().expect("fallback memory store");
-    memory
-        .remember(a3s_memory::MemoryItem::new("fallback memory works"))
+    let error = agent
+        .session_async("/tmp/test-ws-memory-fallback", None)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert!(session
-        .init_warning()
-        .is_some_and(|warning| warning.contains("using in-memory fallback")));
+    assert!(matches!(
+        error,
+        crate::error::CodeError::SessionInitialization {
+            resource: crate::error::SessionBuildResource::MemoryStore,
+            ..
+        }
+    ));
     assert!(blocked_path.is_file());
-    assert_eq!(memory.stats().await.unwrap().long_term_count, 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3129,7 +4404,8 @@ async fn test_memory_remember_and_recall() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_memory(store);
     let session = agent
-        .session("/tmp/test-ws-mem-recall", Some(opts))
+        .session_async("/tmp/test-ws-mem-recall", Some(opts))
+        .await
         .unwrap();
 
     let memory = session.memory().unwrap();
@@ -3154,7 +4430,10 @@ async fn test_session_tool_timeout_configured() {
     let opts = SessionOptions::new()
         .with_tool_timeout(5000)
         .with_llm_api_timeout(30_000);
-    let session = agent.session("/tmp/test-ws-timeout", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-timeout", Some(opts))
+        .await
+        .unwrap();
     assert!(!session.id().is_empty());
     assert_eq!(session.config.tool_timeout_ms, Some(5_000));
     assert_eq!(session.config.llm_api_timeout_ms, Some(30_000));
@@ -3165,7 +4444,8 @@ async fn test_session_llm_api_timeout_does_not_configure_tool_timeout() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_llm_api_timeout(30_000);
     let session = agent
-        .session("/tmp/test-ws-api-timeout-only", Some(opts))
+        .session_async("/tmp/test-ws-api-timeout-only", Some(opts))
+        .await
         .unwrap();
 
     assert_eq!(session.config.llm_api_timeout_ms, Some(30_000));
@@ -3180,7 +4460,8 @@ async fn test_session_duplicate_tool_call_threshold_configured() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_duplicate_tool_call_threshold(12);
     let session = agent
-        .session("/tmp/test-ws-duplicate-threshold", Some(opts))
+        .session_async("/tmp/test-ws-duplicate-threshold", Some(opts))
+        .await
         .unwrap();
 
     assert_eq!(session.config.duplicate_tool_call_threshold, 12);
@@ -3198,7 +4479,8 @@ async fn test_session_confirmation_timeout_does_not_configure_tool_timeout() {
         .with_timeout(5_000, crate::hitl::TimeoutAction::Reject);
     let opts = SessionOptions::new().with_confirmation_policy(confirmation);
     let session = agent
-        .session("/tmp/test-ws-confirmation-timeout-only", Some(opts))
+        .session_async("/tmp/test-ws-confirmation-timeout-only", Some(opts))
+        .await
         .unwrap();
 
     assert!(session.config.confirmation_manager.is_some());
@@ -3225,10 +4507,11 @@ async fn test_session_confirmation_and_tool_timeouts_remain_independent() {
         .with_confirmation_policy(confirmation)
         .with_tool_timeout(300);
     let session = agent
-        .session(
+        .session_async(
             "/tmp/test-ws-independent-confirmation-tool-timeouts",
             Some(opts),
         )
+        .await
         .unwrap();
 
     assert_eq!(
@@ -3253,7 +4536,10 @@ async fn test_session_confirmation_and_tool_timeouts_remain_independent() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_without_queue_builds_ok() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-ws-no-queue", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-no-queue", None)
+        .await
+        .unwrap();
     assert!(!session.id().is_empty());
 }
 
@@ -3264,7 +4550,12 @@ async fn test_session_without_queue_builds_ok() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_concurrent_history_reads() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = Arc::new(agent.session("/tmp/test-ws-concurrent", None).unwrap());
+    let session = Arc::new(
+        agent
+            .session_async("/tmp/test-ws-concurrent", None)
+            .await
+            .unwrap(),
+    );
 
     let handles: Vec<_> = (0..10)
         .map(|_| {
@@ -3285,7 +4576,10 @@ async fn test_concurrent_history_reads() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_no_init_warning_without_file_memory() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-ws-no-warn", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-no-warn", None)
+        .await
+        .unwrap();
     assert!(session.init_warning().is_none());
 }
 
@@ -3301,12 +4595,12 @@ async fn test_register_agent_dir_loads_agents_into_live_session() {
     .unwrap();
 
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session(".", None).unwrap();
+    let session = agent.session_async(".", None).await.unwrap();
 
     // The agent must not be known before registration
     assert!(!session.agent_registry.exists("my-dynamic-agent"));
 
-    let count = session.register_agent_dir(temp_dir.path());
+    let count = session.register_agent_dir(temp_dir.path()).unwrap();
     assert_eq!(count, 1);
     assert!(session.agent_registry.exists("my-dynamic-agent"));
 }
@@ -3315,32 +4609,36 @@ async fn test_register_agent_dir_loads_agents_into_live_session() {
 async fn test_register_agent_dir_empty_dir_returns_zero() {
     let temp_dir = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session(".", None).unwrap();
-    let count = session.register_agent_dir(temp_dir.path());
+    let session = agent.session_async(".", None).await.unwrap();
+    let count = session.register_agent_dir(temp_dir.path()).unwrap();
     assert_eq!(count, 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_register_agent_dir_nonexistent_returns_zero() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session(".", None).unwrap();
-    let count = session.register_agent_dir(std::path::Path::new("/nonexistent/path/abc"));
+    let session = agent.session_async(".", None).await.unwrap();
+    let count = session
+        .register_agent_dir(std::path::Path::new("/nonexistent/path/abc"))
+        .unwrap();
     assert_eq!(count, 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_register_worker_agent_loads_worker_into_live_session() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session(".", None).unwrap();
+    let session = agent.session_async(".", None).await.unwrap();
 
     assert!(!session.agent_registry.exists("frontend-cow"));
-    let definition = session.register_worker_agent(
-        crate::subagent::WorkerAgentSpec::implementer(
-            "frontend-cow",
-            "Disposable frontend implementer",
+    let definition = session
+        .register_worker_agent(
+            crate::subagent::WorkerAgentSpec::implementer(
+                "frontend-cow",
+                "Disposable frontend implementer",
+            )
+            .with_max_steps(9),
         )
-        .with_max_steps(9),
-    );
+        .unwrap();
 
     assert_eq!(definition.max_steps, Some(9));
     assert!(session.agent_registry.exists("frontend-cow"));
@@ -3349,12 +4647,14 @@ async fn test_register_worker_agent_loads_worker_into_live_session() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_register_worker_agents_loads_batch_into_live_session() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session(".", None).unwrap();
+    let session = agent.session_async(".", None).await.unwrap();
 
-    let definitions = session.register_worker_agents([
-        crate::subagent::WorkerAgentSpec::planner("planner-cow", "Plan work"),
-        crate::subagent::WorkerAgentSpec::verifier("verify-cow", "Verify work"),
-    ]);
+    let definitions = session
+        .register_worker_agents([
+            crate::subagent::WorkerAgentSpec::planner("planner-cow", "Plan work"),
+            crate::subagent::WorkerAgentSpec::verifier("verify-cow", "Verify work"),
+        ])
+        .unwrap();
 
     assert_eq!(definitions.len(), 2);
     assert!(session.agent_registry.exists("planner-cow"));
@@ -3368,7 +4668,7 @@ async fn test_session_options_worker_agents_register_for_task_delegation() {
         "release-planner",
         "Plan releases",
     ));
-    let session = agent.session(".", Some(opts)).unwrap();
+    let session = agent.session_async(".", Some(opts)).await.unwrap();
 
     assert!(session.agent_registry.exists("release-planner"));
 }
@@ -3392,7 +4692,8 @@ Review the changed code and return prioritized findings.
 
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session(workspace.path().display().to_string(), None)
+        .session_async(workspace.path().display().to_string(), None)
+        .await
         .unwrap();
 
     let loaded = session
@@ -3430,7 +4731,8 @@ Review in compatibility mode.
 
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session(workspace.path().display().to_string(), None)
+        .session_async(workspace.path().display().to_string(), None)
+        .await
         .unwrap();
 
     assert!(session.agent_registry.exists("compat-reviewer"));
@@ -3468,7 +4770,8 @@ A3S prompt.
 
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session(workspace.path().display().to_string(), None)
+        .session_async(workspace.path().display().to_string(), None)
+        .await
         .unwrap();
 
     let loaded = session.agent_registry.get("same-agent").unwrap();
@@ -3479,12 +4782,13 @@ A3S prompt.
 async fn test_session_for_worker_maps_worker_spec_to_session_options() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session_for_worker(
+        .session_for_worker_async(
             ".",
             crate::subagent::WorkerAgentSpec::reviewer("review-cow", "Review changes")
                 .with_max_steps(11),
             None,
         )
+        .await
         .unwrap();
 
     assert_eq!(session.config.max_tool_rounds, 11);
@@ -3498,7 +4802,10 @@ async fn test_session_with_mcp_manager_builds_ok() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_mcp(mcp);
     // No servers connected — should build fine with zero MCP tools registered
-    let session = agent.session("/tmp/test-ws-mcp", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-mcp", Some(opts))
+        .await
+        .unwrap();
     assert!(!session.id().is_empty());
 }
 
@@ -3517,7 +4824,8 @@ async fn subagent_events_populate_session_tracker() {
 
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session("/tmp/test-ws-subagent-tracker", None)
+        .session_async("/tmp/test-ws-subagent-tracker", None)
+        .await
         .unwrap();
 
     // Drive a synthetic subagent lifecycle through the session's runtime sink.
@@ -3581,7 +4889,8 @@ async fn subagent_progress_events_accumulate_in_tracker() {
 
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
-        .session("/tmp/test-ws-subagent-progress", None)
+        .session_async("/tmp/test-ws-subagent-progress", None)
+        .await
         .unwrap();
 
     let run = session
@@ -3632,8 +4941,14 @@ async fn subagent_tasks_scope_to_parent_session() {
     use crate::agent::AgentEvent;
 
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session_a = agent.session("/tmp/test-ws-subagent-a", None).unwrap();
-    let session_b = agent.session("/tmp/test-ws-subagent-b", None).unwrap();
+    let session_a = agent
+        .session_async("/tmp/test-ws-subagent-a", None)
+        .await
+        .unwrap();
+    let session_b = agent
+        .session_async("/tmp/test-ws-subagent-b", None)
+        .await
+        .unwrap();
 
     let run = session_a
         .run_store
@@ -3665,7 +4980,10 @@ async fn cancel_subagent_task_marks_snapshot_cancelled() {
     use tokio_util::sync::CancellationToken;
 
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-ws-subagent-cancel", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-ws-subagent-cancel", None)
+        .await
+        .unwrap();
     let run = session
         .run_store
         .create_run(session.session_id(), "parent")
@@ -3738,7 +5056,15 @@ async fn test_agent_executor_inherits_parent_run_context() {
         .with_confirmation_policy(crate::hitl::ConfirmationPolicy::enabled())
         .with_permission_policy(permission_policy);
 
-    let session = agent.session("/tmp/test-workspace", Some(opts)).unwrap();
+    let session = agent
+        .session_async("/tmp/test-workspace", Some(opts))
+        .await
+        .unwrap();
+    let runtime_budget: Arc<dyn crate::budget::BudgetGuard> =
+        Arc::new(DenyingBudgetGuard::default());
+    session
+        .set_budget_guard(Some(Arc::clone(&runtime_budget)))
+        .unwrap();
     let ctx = session.parent_run_context();
 
     assert!(
@@ -3767,10 +5093,211 @@ async fn test_agent_executor_inherits_parent_run_context() {
     );
     assert_eq!(ctx.llm_api_timeout_ms, Some(45_000));
     assert_eq!(ctx.duplicate_tool_call_threshold, Some(9));
+    let expected_hook: Arc<dyn crate::hooks::HookExecutor> = session.hook_engine.clone();
+    assert!(Arc::ptr_eq(
+        ctx.hook_engine.as_ref().expect("inherited hook executor"),
+        &expected_hook
+    ));
+    assert!(Arc::ptr_eq(
+        ctx.budget_guard.as_ref().expect("inherited runtime budget"),
+        &runtime_budget
+    ));
+}
+
+/// A session-bound executor may outlive the `AgentSession` value that created
+/// it. Closing the session must therefore remain an admission boundary for
+/// orchestrated work, not just for `send()`/`stream()` calls.
+#[tokio::test]
+async fn test_agent_executor_created_before_close_rejects_new_steps() {
+    use crate::orchestration::AgentStepSpec;
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .build_session(
+            "/tmp/test-agent-executor-close-boundary".into(),
+            Arc::new(StaticStreamingClient::new("must not run after close")),
+            &SessionOptions::new(),
+        )
+        .unwrap();
+    let executor = session.agent_executor();
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(8);
+
+    session.close().await;
+
+    let outcome = executor
+        .execute_step(
+            AgentStepSpec::new(
+                "after-close",
+                "general",
+                "close admission regression",
+                "This child must never start.",
+            ),
+            Some(event_tx),
+        )
+        .await;
+
+    assert!(!outcome.success);
     assert!(
-        ctx.hook_engine.is_none(),
-        "hook_engine stays None, matching the model-driven task path"
+        outcome.output.to_ascii_lowercase().contains("cancel"),
+        "closed-session failure should explain the cancellation: {}",
+        outcome.output
     );
+    assert!(
+        matches!(
+            event_rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                | Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+        ),
+        "a rejected child must not emit SubagentStart"
+    );
+}
+
+#[tokio::test]
+async fn runtime_budget_guard_refreshes_the_registered_task_tool() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_worker_agent(crate::subagent::WorkerAgentSpec::planner(
+        "budgeted-child",
+        "Exercise delegated budget inheritance",
+    ));
+    let session = agent
+        .build_session(
+            "/tmp/test-runtime-budget-delegation".into(),
+            Arc::new(StaticStreamingClient::new("must not reach the provider")),
+            &opts,
+        )
+        .unwrap();
+    let runtime_budget = Arc::new(DenyingBudgetGuard::default());
+    session
+        .set_budget_guard(Some(
+            Arc::clone(&runtime_budget) as Arc<dyn crate::budget::BudgetGuard>
+        ))
+        .unwrap();
+
+    let result = session
+        .tool(
+            "task",
+            serde_json::json!({
+                "agent": "budgeted-child",
+                "description": "budget check",
+                "prompt": "Return a short answer."
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(result.exit_code, 0, "delegated run must be denied");
+    assert_eq!(
+        runtime_budget
+            .checks
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the runtime-installed guard must govern the child provider attempt"
+    );
+    assert_eq!(
+        runtime_budget
+            .llm_records
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a denied child call must not record provider usage"
+    );
+}
+
+#[tokio::test]
+async fn runtime_budget_guard_refreshes_the_registered_skill_tool() {
+    use crate::skills::{Skill, SkillKind, SkillRegistry};
+
+    let skills = Arc::new(SkillRegistry::new());
+    skills.register_unchecked(Arc::new(Skill {
+        name: "budgeted-skill".to_string(),
+        description: "Exercise runtime budget inheritance".to_string(),
+        allowed_tools: None,
+        disable_model_invocation: false,
+        kind: SkillKind::Instruction,
+        content: "Return a short answer.".to_string(),
+        tags: Vec::new(),
+        version: None,
+    }));
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .build_session(
+            "/tmp/test-runtime-budget-skill".into(),
+            Arc::new(StaticStreamingClient::new("must not reach the provider")),
+            &SessionOptions::new().with_skill_registry(skills),
+        )
+        .unwrap();
+    let runtime_budget = Arc::new(DenyingBudgetGuard::default());
+    session
+        .set_budget_guard(Some(
+            Arc::clone(&runtime_budget) as Arc<dyn crate::budget::BudgetGuard>
+        ))
+        .unwrap();
+
+    let result = session
+        .tool("Skill", serde_json::json!({"skill_name": "budgeted-skill"}))
+        .await
+        .unwrap();
+
+    assert_ne!(result.exit_code, 0, "skill child run must be denied");
+    assert_eq!(
+        runtime_budget
+            .checks
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the runtime-installed guard must govern the skill provider attempt"
+    );
+    assert_eq!(
+        runtime_budget
+            .llm_records
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
+#[tokio::test]
+async fn delegated_child_run_publishes_events_to_the_parent_hook_executor() {
+    let hook = Arc::new(RecordingRuntimeHook::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_hook_executor(Arc::clone(&hook) as Arc<dyn crate::hooks::HookExecutor>)
+        .with_worker_agent(crate::subagent::WorkerAgentSpec::planner(
+            "hooked-child",
+            "Exercise delegated hook inheritance",
+        ));
+    let session = agent
+        .build_session(
+            "/tmp/test-delegated-hook-inheritance".into(),
+            Arc::new(StaticStreamingClient::new("child answer")),
+            &opts,
+        )
+        .unwrap();
+
+    let result = session
+        .tool(
+            "task",
+            serde_json::json!({
+                "agent": "hooked-child",
+                "description": "hook check",
+                "prompt": "Return a short answer."
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.exit_code, 0,
+        "delegated run failed: {}",
+        result.output
+    );
+
+    let events = hook.hook_events.lock().unwrap();
+    assert!(events.iter().any(|event| {
+        event.session_id().starts_with("task-run-task-")
+            && matches!(event, crate::hooks::HookEvent::GenerateStart(_))
+    }));
+    assert!(events.iter().any(|event| {
+        event.session_id().starts_with("task-run-task-")
+            && matches!(event, crate::hooks::HookEvent::GenerateEnd(_))
+    }));
 }
 
 #[tokio::test]
@@ -3797,7 +5324,8 @@ async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
         .with_worker_agent(worker)
         .with_confirmation_policy(crate::hitl::ConfirmationPolicy::enabled());
     let session = agent
-        .session(dir.path().to_string_lossy().to_string(), Some(opts))
+        .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
+        .await
         .unwrap();
 
     let (_rx, join) = session.tool_with_events(
@@ -3863,9 +5391,10 @@ async fn test_dynamic_workflow_parallel_explore_can_use_readonly_web_tools() {
         .with_max_parallel_tasks(2)
         .with_manual_delegation_enabled(true);
     let session = agent
-        .session(dir.path().to_string_lossy().to_string(), Some(opts))
+        .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
+        .await
         .unwrap();
-    session.register_dynamic_workflow_runtime();
+    session.register_dynamic_workflow_runtime().unwrap();
 
     let source = r#"
 async function run(ctx, inputs) {
@@ -3945,9 +5474,10 @@ async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_permission
         .with_max_parallel_tasks(2)
         .with_manual_delegation_enabled(true);
     let session = agent
-        .session(dir.path().to_string_lossy().to_string(), Some(opts))
+        .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
+        .await
         .unwrap();
-    session.register_dynamic_workflow_runtime();
+    session.register_dynamic_workflow_runtime().unwrap();
 
     let source = r#"
 async function run(ctx, inputs) {
@@ -4036,9 +5566,10 @@ async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_write_perm
         .with_max_parallel_tasks(2)
         .with_manual_delegation_enabled(true);
     let session = agent
-        .session(dir.path().to_string_lossy().to_string(), Some(opts))
+        .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
+        .await
         .unwrap();
-    session.register_dynamic_workflow_runtime();
+    session.register_dynamic_workflow_runtime().unwrap();
 
     let source = r#"
 async function run(ctx, inputs) {
@@ -4110,7 +5641,10 @@ async function run(ctx, inputs) {
 #[tokio::test]
 async fn test_session_workflow_is_prewired_with_budget_and_stable_root_id() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let session = agent.session("/tmp/test-workspace", None).unwrap();
+    let session = agent
+        .session_async("/tmp/test-workspace", None)
+        .await
+        .unwrap();
 
     let wf = session.workflow();
     // An uncapped workflow still owns a ledger (for snapshots / aggregation).
@@ -4168,4 +5702,566 @@ async fn test_session_workflow_runs_a_real_child_agent_step() {
         wf.budget_snapshot().unwrap().consumed_tokens > 0,
         "child LLM usage fed the shared workflow budget"
     );
+}
+
+#[tokio::test]
+async fn test_session_workflow_inherits_runtime_budget_guard() {
+    let runtime_budget = Arc::new(DenyingBudgetGuard::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .build_session(
+            "/tmp/test-workflow-runtime-budget".into(),
+            Arc::new(StaticStreamingClient::new("must not reach the provider")),
+            &SessionOptions::new(),
+        )
+        .unwrap();
+    session
+        .set_budget_guard(Some(
+            Arc::clone(&runtime_budget) as Arc<dyn crate::budget::BudgetGuard>
+        ))
+        .unwrap();
+
+    let outcome = session
+        .workflow()
+        .agent(crate::orchestration::AgentStepSpec::new(
+            "runtime-budget-step",
+            "explore",
+            "budget check",
+            "Return a short answer.",
+        ))
+        .await;
+
+    assert!(!outcome.success, "runtime budget must deny workflow child");
+    assert_eq!(
+        runtime_budget
+            .checks
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        runtime_budget
+            .llm_records
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn async_session_builder_initializes_all_async_resources_on_current_thread_runtime() {
+    use base64::Engine as _;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let memory_dir = root.path().join("memory");
+    let sessions_dir = root.path().join("sessions");
+    let mcp = Arc::new(crate::mcp::manager::McpManager::new());
+    let options = SessionOptions::new()
+        .with_session_id("async-current-thread")
+        .with_queue_config(SessionQueueConfig::default())
+        .with_file_memory(&memory_dir)
+        .with_file_session_store(&sessions_dir)
+        .with_mcp(mcp);
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session_builder(workspace.display().to_string())
+        .options(options)
+        .build()
+        .await
+        .unwrap();
+
+    assert!(session.has_queue());
+    assert!(session.memory().is_some());
+    session.save().await.unwrap();
+    assert!(memory_dir.is_dir());
+    let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("async-current-thread");
+    assert!(sessions_dir
+        .join("v1")
+        .join("sessions")
+        .join(format!("id_{key}.json"))
+        .is_file());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn async_session_builder_returns_typed_memory_initialization_error() {
+    let root = tempfile::tempdir().unwrap();
+    let blocked = root.path().join("not-a-directory");
+    std::fs::write(&blocked, "file blocks directory creation").unwrap();
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let error = agent
+        .session_builder(root.path().display().to_string())
+        .options(SessionOptions::new().with_file_memory(blocked.join("memory")))
+        .build()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::CodeError::SessionInitialization {
+            resource: crate::error::SessionBuildResource::MemoryStore,
+            ..
+        }
+    ));
+    assert!(error.to_string().contains("not-a-directory/memory"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn async_session_builder_returns_typed_trajectory_initialization_error() {
+    let root = tempfile::tempdir().unwrap();
+    let blocked = root.path().join("not-a-directory");
+    std::fs::write(&blocked, "file blocks trajectory parent creation").unwrap();
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let error = agent
+        .session_builder(root.path().display().to_string())
+        .options(SessionOptions::new().with_rl_trajectory(
+            crate::rl_trajectory::RlTrajectoryConfig::new(blocked.join("trajectory.jsonl")),
+        ))
+        .build()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::CodeError::SessionInitialization {
+            resource: crate::error::SessionBuildResource::RlTrajectory,
+            ..
+        }
+    ));
+    assert!(error.to_string().contains("not-a-directory"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sync_session_compatibility_rejects_async_resource_specs_without_panicking() {
+    let root = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(test_config()).await.unwrap();
+
+    let error = agent
+        .session(root.path().display().to_string(), None)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::CodeError::AsyncSessionBuildRequired {
+            resource: crate::error::SessionBuildResource::MemoryStore,
+        }
+    ));
+
+    let memory_dir = root.path().join("memory");
+    let error = agent
+        .session(
+            root.path().display().to_string(),
+            Some(SessionOptions::new().with_file_memory(memory_dir.clone())),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::CodeError::AsyncSessionBuildRequired {
+            resource: crate::error::SessionBuildResource::MemoryStore,
+        }
+    ));
+    assert!(!memory_dir.exists());
+
+    let trajectory_path = root.path().join("trajectory.jsonl");
+    let error = agent
+        .session(
+            root.path().display().to_string(),
+            Some(SessionOptions::new().with_rl_trajectory(
+                crate::rl_trajectory::RlTrajectoryConfig::new(trajectory_path.clone()),
+            )),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::CodeError::AsyncSessionBuildRequired {
+            resource: crate::error::SessionBuildResource::RlTrajectory,
+        }
+    ));
+    assert!(!trajectory_path.exists());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sync_session_compatibility_accepts_preinitialized_resources() {
+    let root = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let memory = Arc::new(a3s_memory::InMemoryStore::new());
+
+    let session = agent
+        .session(
+            root.path().display().to_string(),
+            Some(SessionOptions::new().with_memory(memory)),
+        )
+        .unwrap();
+
+    assert!(session.memory().is_some());
+    assert!(!session.has_queue());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn async_session_keeps_inherited_mcp_sources_separate_from_live_extensions() {
+    use crate::mcp::{McpManager, McpServerConfig, McpTransportConfig};
+
+    fn server(name: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            transport: McpTransportConfig::Stdio {
+                command: "unused".to_string(),
+                args: Vec::new(),
+            },
+            enabled: false,
+            env: HashMap::new(),
+            oauth: None,
+            tool_timeout_secs: 60,
+        }
+    }
+
+    let global = Arc::new(McpManager::new());
+    global.register_server(server("global-source")).await;
+    let configured = Arc::new(McpManager::new());
+    configured
+        .register_server(server("configured-source"))
+        .await;
+
+    let mut agent = Agent::from_config(test_config()).await.unwrap();
+    agent.global_mcp = Some(Arc::clone(&global));
+    let session = agent
+        .session_async(
+            "/tmp/test-mcp-source-isolation",
+            Some(SessionOptions::new().with_mcp(Arc::clone(&configured))),
+        )
+        .await
+        .unwrap();
+
+    assert!(!Arc::ptr_eq(&session.mcp_manager, &global));
+    assert!(!Arc::ptr_eq(&session.mcp_manager, &configured));
+    assert_eq!(session.inherited_mcp_managers.len(), 2);
+    assert!(Arc::ptr_eq(&session.inherited_mcp_managers[0], &global));
+    assert!(Arc::ptr_eq(&session.inherited_mcp_managers[1], &configured));
+    assert_eq!(session.mcp_managers.len(), 3);
+    assert!(Arc::ptr_eq(
+        session.mcp_managers.last().unwrap(),
+        &session.mcp_manager
+    ));
+
+    let status = session.mcp_status().await;
+    assert!(status.contains_key("global-source"));
+    assert!(status.contains_key("configured-source"));
+    assert!(!global.get_status().await.contains_key("configured-source"));
+    assert!(!configured.get_status().await.contains_key("global-source"));
+    assert!(session.mcp_manager.get_status().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn async_sessions_never_share_their_live_mcp_manager() {
+    let inherited = Arc::new(crate::mcp::McpManager::new());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let first = agent
+        .session_async(
+            "/tmp/test-private-mcp-a",
+            Some(SessionOptions::new().with_mcp(Arc::clone(&inherited))),
+        )
+        .await
+        .unwrap();
+    let second = agent
+        .session_async(
+            "/tmp/test-private-mcp-b",
+            Some(SessionOptions::new().with_mcp(Arc::clone(&inherited))),
+        )
+        .await
+        .unwrap();
+
+    assert!(!Arc::ptr_eq(&first.mcp_manager, &second.mcp_manager));
+    assert!(!Arc::ptr_eq(&first.mcp_manager, &inherited));
+    assert!(!Arc::ptr_eq(&second.mcp_manager, &inherited));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sync_session_uses_cached_global_mcp_without_blocking_runtime() {
+    let global = Arc::new(crate::mcp::McpManager::new());
+    let mut agent = Agent::from_config(test_config()).await.unwrap();
+    agent.global_mcp = Some(Arc::clone(&global));
+
+    let session = agent
+        .session(
+            "/tmp/test-sync-global-mcp",
+            Some(SessionOptions::new().with_memory(Arc::new(a3s_memory::InMemoryStore::new()))),
+        )
+        .unwrap();
+
+    assert_eq!(session.inherited_mcp_managers.len(), 1);
+    assert!(Arc::ptr_eq(&session.inherited_mcp_managers[0], &global));
+    assert!(!Arc::ptr_eq(&session.mcp_manager, &global));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn duplicate_global_mcp_source_is_deduplicated() {
+    let global = Arc::new(crate::mcp::McpManager::new());
+    let mut agent = Agent::from_config(test_config()).await.unwrap();
+    agent.global_mcp = Some(Arc::clone(&global));
+
+    let session = agent
+        .session_async(
+            "/tmp/test-deduplicated-global-mcp",
+            Some(SessionOptions::new().with_mcp(Arc::clone(&global))),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(session.inherited_mcp_managers.len(), 1);
+    assert_eq!(session.mcp_managers.len(), 2);
+    assert!(Arc::ptr_eq(&session.inherited_mcp_managers[0], &global));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_mcp_add_remove_is_session_local_and_restores_inherited_precedence() {
+    use crate::mcp::{McpManager, McpServerConfig, McpTransportConfig};
+
+    fn server(name: &str, enabled: bool) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            transport: McpTransportConfig::Stdio {
+                command: "unused".to_string(),
+                args: Vec::new(),
+            },
+            enabled,
+            env: HashMap::new(),
+            oauth: None,
+            tool_timeout_secs: 60,
+        }
+    }
+
+    let global = Arc::new(McpManager::new());
+    global.register_server(server("shared", false)).await;
+    let configured = Arc::new(McpManager::new());
+    configured.register_server(server("shared", true)).await;
+
+    let mut agent = Agent::from_config(test_config()).await.unwrap();
+    agent.global_mcp = Some(Arc::clone(&global));
+    let session = agent
+        .session_async(
+            "/tmp/test-live-mcp-isolation",
+            Some(SessionOptions::new().with_mcp(Arc::clone(&configured))),
+        )
+        .await
+        .unwrap();
+
+    let inherited_status = session.mcp_status().await;
+    assert!(
+        inherited_status["shared"].enabled,
+        "the later configured source must override the global status"
+    );
+
+    let error = session
+        .add_mcp_server(server("shared", false))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("disabled"));
+    let rolled_back_status = session.mcp_status().await;
+    assert!(
+        rolled_back_status["shared"].enabled,
+        "a failed session-local add must reveal the inherited source"
+    );
+    assert!(
+        !session
+            .mcp_manager
+            .get_status()
+            .await
+            .contains_key("shared"),
+        "connect failure must roll back local config and error state"
+    );
+    assert!(
+        !global.get_status().await["shared"].enabled,
+        "live add must not mutate the global manager"
+    );
+    assert!(
+        configured.get_status().await["shared"].enabled,
+        "live add must not mutate the configured inherited manager"
+    );
+
+    session.remove_mcp_server("shared").await.unwrap();
+    let restored_status = session.mcp_status().await;
+    assert!(
+        restored_status["shared"].enabled,
+        "removing the local shadow must reveal the configured source again"
+    );
+    assert!(!session
+        .mcp_manager
+        .get_status()
+        .await
+        .contains_key("shared"));
+    assert!(global.get_status().await.contains_key("shared"));
+    assert!(configured.get_status().await.contains_key("shared"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn close_serializes_with_live_mcp_mutation_and_rejects_late_add_remove() {
+    use crate::mcp::{McpServerConfig, McpTransportConfig};
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = Arc::new(
+        agent
+            .session_async("/tmp/test-live-mcp-close-race", None)
+            .await
+            .unwrap(),
+    );
+    let local_tool_name = "mcp__close-owned__local";
+    let shadowed_tool_name = "mcp__close-owned__shared";
+    let shadowed_tool: Arc<dyn crate::tools::Tool> =
+        Arc::new(NamedSessionTool(shadowed_tool_name.to_string()));
+    session
+        .register_dynamic_tool(Arc::clone(&shadowed_tool))
+        .unwrap();
+    session
+        .close_handle
+        .mcp_tool_ownership
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .install(
+            "close-owned",
+            &session.tool_executor,
+            vec![
+                Arc::new(NamedSessionTool(local_tool_name.to_string())),
+                Arc::new(NamedSessionTool(shadowed_tool_name.to_string())),
+            ],
+        );
+    assert!(session
+        .tool_names()
+        .iter()
+        .any(|name| name == local_tool_name));
+    let mutation = session.close_handle.extension_mutation.lock().await;
+
+    let closing_session = Arc::clone(&session);
+    let close_task = tokio::spawn(async move {
+        closing_session.close().await;
+    });
+    while !session.is_closed() {
+        tokio::task::yield_now().await;
+    }
+
+    let adding_session = Arc::clone(&session);
+    let add_task = tokio::spawn(async move {
+        adding_session
+            .add_mcp_server(McpServerConfig {
+                name: "late".to_string(),
+                transport: McpTransportConfig::Stdio {
+                    command: "unused".to_string(),
+                    args: Vec::new(),
+                },
+                enabled: false,
+                env: HashMap::new(),
+                oauth: None,
+                tool_timeout_secs: 60,
+            })
+            .await
+    });
+
+    drop(mutation);
+    tokio::time::timeout(std::time::Duration::from_secs(2), close_task)
+        .await
+        .expect("close must finish after the admitted mutation releases")
+        .unwrap();
+    let add_error = add_task.await.unwrap().unwrap_err();
+    assert!(matches!(
+        add_error,
+        crate::error::CodeError::SessionClosed { .. }
+    ));
+    assert!(session.mcp_manager.get_status().await.is_empty());
+    assert!(session.mcp_manager.list_connected().await.is_empty());
+    assert!(
+        !session
+            .tool_names()
+            .iter()
+            .any(|name| name == local_tool_name),
+        "close must unwind wrappers owned by session-local MCP servers"
+    );
+    let restored_shadow = session
+        .tool_executor
+        .registry()
+        .get(shadowed_tool_name)
+        .unwrap();
+    assert!(Arc::ptr_eq(&restored_shadow, &shadowed_tool));
+
+    let remove_error = session.remove_mcp_server("late").await.unwrap_err();
+    assert!(matches!(
+        remove_error,
+        crate::error::CodeError::SessionClosed { .. }
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_mcp_remove_cleanup_failure_still_commits_registry_removal() {
+    use crate::mcp::{McpClient, McpServerConfig, McpTransportConfig};
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session_async("/tmp/test-live-mcp-remove-cleanup", None)
+        .await
+        .unwrap();
+    let server_name = "failing-cleanup";
+    let local_tool_name = "mcp__failing-cleanup__local";
+    session
+        .mcp_manager
+        .register_server(McpServerConfig {
+            name: server_name.to_string(),
+            transport: McpTransportConfig::Stdio {
+                command: "unused".to_string(),
+                args: Vec::new(),
+            },
+            enabled: true,
+            env: HashMap::new(),
+            oauth: None,
+            tool_timeout_secs: 60,
+        })
+        .await;
+    session
+        .mcp_manager
+        .insert_client_for_test(
+            server_name,
+            Arc::new(McpClient::new(
+                server_name.to_string(),
+                Arc::new(FailingCloseSessionTransport),
+            )),
+        )
+        .await;
+    session
+        .close_handle
+        .mcp_tool_ownership
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .install(
+            server_name,
+            &session.tool_executor,
+            vec![Arc::new(NamedSessionTool(local_tool_name.to_string()))],
+        );
+
+    let error = session.remove_mcp_server(server_name).await.unwrap_err();
+    assert!(error.to_string().contains("transport cleanup failed"));
+    assert!(!session.mcp_manager.contains_server(server_name).await);
+    assert!(session.mcp_manager.get_client(server_name).await.is_none());
+    assert!(!session
+        .tool_names()
+        .iter()
+        .any(|name| name == local_tool_name));
+    session.remove_mcp_server(server_name).await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blank_session_id_returns_typed_configuration_error() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let error = agent
+        .session_async(
+            "/tmp/test-blank-session-id",
+            Some(SessionOptions::new().with_session_id("  \t")),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::CodeError::SessionConfiguration {
+            field: "session_id",
+            ..
+        }
+    ));
 }

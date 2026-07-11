@@ -2,6 +2,21 @@
 
 Native Python bindings for the A3S Code AI coding agent, built with PyO3.
 
+Asyncio hosts should prefer `Agent.create_async()`, `agent.session_async()`,
+`agent.resume_session_async()`, `session.save_async()`,
+`session.cancel_async()`, `session.close_async()`, and `agent.close_async()` for
+lifecycle operations. These methods return asyncio Futures and keep blocking
+store/runtime waits off the event-loop task.
+
+Model requests and run observability also provide `session.send_async()`,
+`runs_async()`, `run_snapshot_async()`, `run_events_async()`, and
+`run_event_page_async()` with the same result shapes as their synchronous
+counterparts.
+
+Use `session.tool_async(name, args)` for governed direct-tool execution from an
+asyncio host. It preserves the synchronous `ToolResult` shape and fails closed
+after session shutdown.
+
 ## Documentation Boundary
 
 This README and `QUICK_REFERENCE.md` describe the current 2.0 Python SDK
@@ -65,7 +80,6 @@ from a3s_code import (
     DefaultSecurityProvider,
     FileMemoryStore,
     FileSessionStore,
-    HttpTransport,
 )
 
 agent = Agent.create("agent.acl")
@@ -90,10 +104,13 @@ for event in session.stream({"prompt": "Refactor auth"}):
 runs = session.runs()
 if runs:
     print(runs[-1]["id"], runs[-1]["status"])
-    print(session.run_events(runs[-1]["id"]))
+    for event in session.run_events(runs[-1]["id"]):
+        print(event["type"], event["payload"], event["metadata"]["sequence"])
     print(session.active_tools())
     # Cancels only if that run is still active; stale IDs are ignored.
     session.cancel_run(runs[-1]["id"])
+
+# Replay entries use the v1 {version, type, payload, metadata} envelope.
 
 # Direct tools (bypass LLM)
 opts = SessionOptions()
@@ -125,12 +142,6 @@ session.tool("dynamic_workflow", {
     "input": {"message": "hello from Flow"},
 })
 session.unregister_dynamic_tool("dynamic_workflow")
-
-# AHP-supervised background advice
-opts = SessionOptions()
-opts.ahp_transport = HttpTransport("http://localhost:8080/ahp")
-session = agent.session("/my-project", opts)
-# The AHP harness owns background advice, context supplements, and PTC proposals.
 
 # Slash commands
 session.list_commands()

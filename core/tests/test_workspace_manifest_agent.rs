@@ -198,18 +198,22 @@ async fn run_glob_agent_task(
         ),
         text_response("Workspace manifest agent task completed."),
     ]));
-    let session = agent.session(
-        workspace.display().to_string(),
-        Some(
-            SessionOptions::new()
-                .with_llm_client(client.clone())
-                .with_workspace_backend(services)
-                .with_confirmation_manager(Arc::new(a3s_code_core::hitl::AutoApproveConfirmation))
-                .with_planning_mode(PlanningMode::Disabled)
-                .with_continuation(false)
-                .with_max_tool_rounds(4),
-        ),
-    )?;
+    let session = agent
+        .session_async(
+            workspace.display().to_string(),
+            Some(
+                SessionOptions::new()
+                    .with_llm_client(client.clone())
+                    .with_workspace_backend(services)
+                    .with_confirmation_manager(Arc::new(
+                        a3s_code_core::hitl::AutoApproveConfirmation,
+                    ))
+                    .with_planning_mode(PlanningMode::Disabled)
+                    .with_continuation(false)
+                    .with_max_tool_rounds(4),
+            ),
+        )
+        .await?;
 
     let start = Instant::now();
     let result = session

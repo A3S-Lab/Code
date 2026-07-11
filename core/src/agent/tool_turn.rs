@@ -2,7 +2,9 @@ use super::execution_state::ExecutionLoopState;
 use super::tool_completion_runtime::ToolCompletionInput;
 use super::{AgentEvent, AgentLoop};
 use crate::llm::ToolCall;
+use crate::tools::ToolInvocation;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 impl AgentLoop {
     pub(super) async fn execute_tool_turn(
@@ -12,10 +14,17 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         session_id: Option<&str>,
         effective_prompt: &str,
+        cancel_token: &CancellationToken,
     ) -> anyhow::Result<()> {
         if self.can_run_parallel_write_batch(&tool_calls) {
-            self.execute_parallel_write_batch(&tool_calls, state, event_tx)
-                .await;
+            self.execute_parallel_write_batch(
+                &tool_calls,
+                state,
+                event_tx,
+                session_id,
+                cancel_token,
+            )
+            .await;
             return Ok(());
         }
 
@@ -26,6 +35,7 @@ impl AgentLoop {
                 event_tx,
                 session_id,
                 effective_prompt,
+                cancel_token,
             )
             .await?;
         }
@@ -40,6 +50,7 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         session_id: Option<&str>,
         effective_prompt: &str,
+        cancel_token: &CancellationToken,
     ) -> anyhow::Result<()> {
         state.record_tool_call();
         let tool_start = std::time::Instant::now();
@@ -63,10 +74,18 @@ impl AgentLoop {
             return Ok(());
         }
 
-        let gate_decision = self.decide_tool_gate(&tool_call, state, session_id).await;
-
         let normalized = self
-            .resolve_tool_gate_decision(gate_decision, &tool_call, event_tx)
+            .invoke_model_tool(
+                ToolInvocation::agent(
+                    tool_call.id.clone(),
+                    tool_call.name.clone(),
+                    tool_call.args.clone(),
+                    state.recent_tool_signatures(),
+                ),
+                session_id,
+                event_tx,
+                cancel_token,
+            )
             .await;
 
         self.complete_tool_call(

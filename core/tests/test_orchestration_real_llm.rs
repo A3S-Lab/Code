@@ -351,6 +351,7 @@ async fn real_resumable_workflow_resumes_skipping_completed_steps() {
             output: "CACHED-SENTINEL".into(),
             success: true,
             structured: None,
+            source_anchors: Vec::new(),
         },
     );
     store

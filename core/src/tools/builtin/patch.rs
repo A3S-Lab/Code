@@ -274,11 +274,18 @@ impl Tool for PatchTool {
             .write_for_edit(&workspace_path, &final_content, version.as_deref())
             .await
         {
-            Ok(_) => Ok(ToolOutput::success(format!(
-                "Applied {} hunk(s) to {}",
-                hunks.len(),
-                display_path
-            ))),
+            Ok(_) => {
+                let mut metadata = serde_json::Map::new();
+                metadata.insert("file_path".to_string(), serde_json::json!(file_path));
+                metadata.insert("before".to_string(), serde_json::json!(content));
+                metadata.insert("after".to_string(), serde_json::json!(final_content));
+                Ok(ToolOutput::success(format!(
+                    "Applied {} hunk(s) to {}",
+                    hunks.len(),
+                    display_path
+                ))
+                .with_metadata(serde_json::Value::Object(metadata)))
+            }
             Err(e) => {
                 let typed = crate::tools::ToolErrorKind::from_workspace_error(&e);
                 let out = if matches!(e, WorkspaceError::VersionConflict(_)) {
@@ -351,6 +358,10 @@ mod tests {
             .unwrap();
 
         assert!(result.success);
+        let metadata = result.metadata.expect("patch diff metadata");
+        assert_eq!(metadata["file_path"], "test.txt");
+        assert_eq!(metadata["before"], "line1\nold_line\nline3\n");
+        assert_eq!(metadata["after"], "line1\nnew_line\nline3\n");
         let content = std::fs::read_to_string(temp.path().join("test.txt")).unwrap();
         assert!(content.contains("new_line"));
         assert!(!content.contains("old_line"));

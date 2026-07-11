@@ -10,6 +10,8 @@ const requiredExports = [
   'EventStream',
   'LocalWorkspaceBackend',
   'builtinSkills',
+  'agentEventTypesV1',
+  'eventEnvelopeV1Version',
 ]
 
 for (const name of requiredExports) {
@@ -17,7 +19,18 @@ for (const name of requiredExports) {
 }
 
 assert.equal(typeof mod.Agent, 'function', 'Agent export should be a constructor')
+assert.equal(
+  typeof mod.EventStream.prototype[Symbol.asyncIterator],
+  'function',
+  'EventStream must implement the JavaScript async-iterator protocol'
+)
 assert.equal(typeof mod.builtinSkills, 'function', 'builtinSkills should be callable')
+assert.equal(mod.eventEnvelopeV1Version(), 1, 'event envelope version should be stable')
+const eventTypesV1 = mod.agentEventTypesV1()
+assert.equal(new Set(eventTypesV1).size, eventTypesV1.length, 'event types should be unique')
+assert.equal(eventTypesV1.includes('agent_start'), true, 'agent_start should be canonical')
+assert.equal(eventTypesV1.includes('tool_execution_start'), true, 'execution start should be covered')
+assert.equal(eventTypesV1.includes('agent_end'), true, 'agent_end should be canonical')
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-node-test-'))
 const workspace = path.join(tmpRoot, 'workspace')
@@ -36,6 +49,37 @@ providers "anthropic" {
 `.trim()
 
 const agent = await mod.Agent.create(inlineConfig)
+
+// A MemorySessionStore is an identity-bearing object, not merely a backend name.
+// Reusing the same instance must expose the snapshot written by the first session.
+{
+  const memoryStore = new mod.MemorySessionStore()
+  const sessionId = `memory-store-roundtrip-${Date.now()}`
+  const persisted = await agent.sessionAsync(workspace, {
+    sessionId,
+    sessionStore: memoryStore,
+  })
+  await persisted.save()
+  await persisted.closeAsync()
+  await assert.rejects(
+    agent.resumeSessionAsync(sessionId, { sessionStore: new mod.MemorySessionStore() }),
+    /Session not found/,
+    'separately constructed memory stores must remain isolated',
+  )
+  const resumed = await agent.resumeSessionAsync(sessionId, { sessionStore: memoryStore })
+  assert.equal(resumed.sessionId, sessionId, 'memory store identity must survive options conversion')
+  await resumed.closeAsync()
+
+  assert.throws(
+    () =>
+      agent.session(workspace, {
+        sessionStore: { backend: 'memory', instanceId: 'forged-memory-store-handle' },
+      }),
+    /MemorySessionStore identity is invalid or expired/,
+    'unknown memory store handles must fail closed',
+  )
+}
+
 const session = agent.session(workspace, {
   permissionPolicy: { defaultDecision: 'allow' },
   workspaceBackend: new mod.LocalWorkspaceBackend(workspace),
@@ -74,6 +118,18 @@ assert.equal(updatedCommands.some((cmd) => cmd.name === 'status'), true, 'custom
 
 const help = await session.send('/help')
 assert.equal(help.text.includes('/help'), true, '/help should render command help text')
+
+const helpStream = await session.stream('/help')
+const helpEvents = []
+for await (const event of helpStream) {
+  helpEvents.push(event)
+  assert.equal(event.version, 1, 'stream event should use envelope v1')
+  assert.equal(typeof event.type, 'string', 'stream event type should remain an open string')
+  assert.equal(typeof event.payload, 'object', 'stream event payload should be lossless JSON')
+  assert.equal(event.payloadJson, JSON.stringify(event.payload), 'payload JSON should align')
+}
+assert.equal(helpEvents.at(-1)?.type, 'agent_end', 'terminal wire name should be canonical')
+assert.notEqual(helpEvents.some((event) => event.type === 'unknown'), true)
 
 const model = await session.send('/model')
 assert.equal(
@@ -122,6 +178,17 @@ assert.equal(
 )
 assert.match(result.text, /tools=\d+$/, 'custom slash command should receive toolNames in context')
 
+assert.equal(
+  await session.runEventPage('missing-run', undefined, 1),
+  null,
+  'unknown runs should remain distinguishable from empty retained windows',
+)
+await assert.rejects(
+  session.runEventPage('missing-run', 0.5, 1),
+  /afterSequence must be a non-negative integer/,
+  'fractional cursors must be rejected',
+)
+
 // --- Subagent task query API (PR #3): three new Session methods ---
 {
   const list = await session.subagentTasks()
@@ -152,7 +219,52 @@ assert.match(result.text, /tools=\d+$/, 'custom slash command should receive too
   assert.equal(budgeted.budget.limitTokens, 50000, 'limit reflected in the ledger snapshot')
 }
 
-session.close()
+await session.closeAsync()
+await assert.rejects(
+  session.send('/help'),
+  (error) => {
+    assert.equal(error.code, 'SESSION_CLOSED', 'core error code should survive the napi boundary')
+    assert.equal(error.message.includes('A3S_CODE_ERROR'), false, 'private error marker must be removed')
+    return true
+  },
+)
+await assert.rejects(
+  session.readFile('notes.txt'),
+  (error) => {
+    assert.equal(error.code, 'SESSION_CLOSED', 'closed direct tools must fail at the Core gateway')
+    return true
+  },
+)
+assert.throws(
+  () => session.registerDynamicWorkflowRuntime(),
+  (error) => error.code === 'SESSION_CLOSED',
+  'closed sessions must reject dynamic capability registration',
+)
+assert.throws(
+  () => session.unregisterDynamicTool('dynamic_workflow'),
+  (error) => error.code === 'SESSION_CLOSED',
+  'closed sessions must reject dynamic capability removal',
+)
+
+// MCP lifecycle methods also cross the same typed Core error boundary. The
+// invalid executable fails locally and must retain the stable TOOL_ERROR code.
+const mcpSession = await agent.session(process.cwd())
+await assert.rejects(
+  mcpSession.addMcpServerConfig({
+    name: 'missing-local-server',
+    transport: {
+      type: 'stdio',
+      command: '__a3s_code_missing_mcp_executable__',
+      args: [],
+    },
+  }),
+  (error) => {
+    assert.equal(error.code, 'TOOL_ERROR', 'MCP core error code should survive the napi boundary')
+    assert.equal(error.message.includes('A3S_CODE_ERROR'), false, 'private MCP error marker must be removed')
+    return true
+  },
+)
+await mcpSession.closeAsync()
 
 console.log('node sdk integration ok')
 process.exit(0)

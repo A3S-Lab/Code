@@ -153,6 +153,7 @@ impl AgentLoop {
                         session_id,
                         &event_tx,
                         emit_end,
+                        cancel_token,
                     )
                     .await
                 {
@@ -168,6 +169,7 @@ impl AgentLoop {
                     &event_tx,
                     session_id,
                     effective_prompt,
+                    cancel_token,
                 )
                 .await
             {

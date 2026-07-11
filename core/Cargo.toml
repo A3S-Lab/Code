@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "4.3.3"
+version = "5.0.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -30,6 +30,9 @@ tokio-util = { version = "0.7", features = ["codec"] }
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Full JSON Schema validation for structured model output. Remote/file
+# resolvers stay disabled so an untrusted schema cannot trigger ambient I/O.
+jsonschema = { version = "0.47", default-features = false }
 serde_yaml = "0.9"
 toml = "0.8"
 
@@ -114,12 +117,6 @@ aws-credential-types = { version = "1", optional = true }
 aws-smithy-types = { version = "1", optional = true }
 aws-smithy-runtime-api = { version = "1", optional = true }
 
-[target.'cfg(unix)'.dependencies]
-a3s-ahp = { version = "2.4", optional = true, features = ["http", "websocket", "unix-socket"] }
-
-[target.'cfg(not(unix))'.dependencies]
-a3s-ahp = { version = "2.4", optional = true, features = ["http", "websocket"] }
-
 [features]
 default = []
 # Enable OpenTelemetry OTLP export for traces and metrics.
@@ -130,8 +127,6 @@ telemetry = [
     "dep:opentelemetry-otlp",
     "dep:tracing-opentelemetry",
 ]
-# Enable AHP (Agent Harness Protocol) integration for external supervision
-ahp = ["dep:a3s-ahp"]
 # Enable the S3-compatible workspace backend (`S3WorkspaceBackend`).
 # Brings in the AWS Rust SDK and is safe to point at any S3-compatible
 # endpoint (AWS S3, MinIO, RustFS, Cloudflare R2, ...).
@@ -146,8 +141,6 @@ s3 = [
 serve = ["dep:cron"]
 
 [dev-dependencies]
-# AHP for integration tests
-a3s-ahp = "2.4"
 # HTTP mocking for the RemoteGitBackend (and any future HTTP-backed workspace
 # provider). Production code does not depend on wiremock.
 wiremock = "0.6"

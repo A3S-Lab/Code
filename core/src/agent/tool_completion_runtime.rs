@@ -32,23 +32,9 @@ impl AgentLoop {
         crate::telemetry::record_tool_result(normalized.exit_code, tool_duration);
         Self::collect_verification_report(&mut state.verification_reports, &normalized.metadata);
 
-        let output = if let Some(ref sp) = self.config.security_provider {
-            sp.sanitize_output(&normalized.output)
-        } else {
-            normalized.output.clone()
-        };
+        let output = normalized.output.clone();
 
         state.remember_tool_signature(&tool_call.name, &tool_call.args, normalized.is_error);
-
-        self.fire_post_tool_use(
-            session_id.unwrap_or(""),
-            &tool_call.name,
-            &tool_call.args,
-            &output,
-            normalized.exit_code == 0,
-            tool_duration.as_millis() as u64,
-        )
-        .await;
 
         self.config.rl_trajectory_recorder.record_tool_result(
             session_id.unwrap_or(""),
@@ -78,6 +64,7 @@ impl AgentLoop {
             tx.send(AgentEvent::ToolEnd {
                 id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
+                args: Some(tool_call.args.clone()),
                 output: output.clone(),
                 exit_code: normalized.exit_code,
                 metadata: normalized.metadata.clone(),

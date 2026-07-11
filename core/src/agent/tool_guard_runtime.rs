@@ -31,6 +31,7 @@ impl AgentLoop {
                 tx.send(AgentEvent::ToolEnd {
                     id: tool_call.id.clone(),
                     name: tool_call.name.clone(),
+                    args: Some(tool_call.args.clone()),
                     output: error_msg.clone(),
                     exit_code: 1,
                     metadata: Some(serde_json::json!({
@@ -75,6 +76,7 @@ impl AgentLoop {
                 tx.send(AgentEvent::ToolEnd {
                     id: tool_call.id.clone(),
                     name: tool_call.name.clone(),
+                    args: Some(tool_call.args.clone()),
                     output: parse_outcome.output.clone(),
                     exit_code: 1,
                     metadata: None,

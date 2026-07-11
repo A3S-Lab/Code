@@ -82,7 +82,8 @@ impl ToolSpec {
 /// limits; the model supplies only `inputs`. Executed via the existing `program`
 /// tool path — no new sandbox. The model's call to it is permission-gated like any
 /// tool; the script's inner `ctx.tool` calls are bounded by `allowed_tools` + the
-/// sandbox (NOT the session permission policy), so the allow-list is the boundary.
+/// sandbox. Session executions additionally re-apply the governed tool policy to
+/// every inner call, so the allow-list is a second fail-closed boundary.
 #[derive(Debug, Clone)]
 pub struct ScriptToolSpec {
     /// Model-visible tool name (registry key; unique within `tools/`).

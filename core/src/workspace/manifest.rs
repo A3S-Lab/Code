@@ -7,29 +7,33 @@
 //! delegate to [`LocalWorkspaceBackend`].
 
 use super::{
-    validate_relative_pattern, CommandOutput, CommandRequest, LocalWorkspaceBackend,
-    WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceGit,
-    WorkspaceGitBranch, WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest,
+    escape_control_chars_for_display, validate_relative_pattern, CommandOutput, CommandRequest,
+    LocalWorkspaceBackend, WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceFileSystem,
+    WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest,
     WorkspaceGitCommit, WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest,
     WorkspaceGitDiffRequest, WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest,
     WorkspaceGitStash, WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus,
     WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
-    WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult,
-    WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceWriteOutcome,
+    WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest,
+    WorkspaceGrepResult, WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch,
+    WorkspaceWriteOutcome,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use ignore::WalkBuilder;
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 
+mod scanner;
+use scanner::is_relevant_event;
+pub use scanner::scan_workspace_files;
+
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
+const WATCH_STARTUP_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const SNAPSHOT_CHANNEL_CAPACITY: usize = 16;
 const RECENT_FILE_LIMIT: usize = 128;
 const RECENT_DECAY_HALF_LIFE_MS: f32 = 10.0 * 60.0 * 1000.0;
@@ -470,11 +474,18 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
     }
 
     async fn grep(&self, request: WorkspaceGrepRequest) -> Result<WorkspaceGrepResult> {
+        Ok(self.grep_with_sources(request).await?.result)
+    }
+
+    async fn grep_with_sources(
+        &self,
+        request: WorkspaceGrepRequest,
+    ) -> Result<WorkspaceGrepOutcome> {
         if let Some(ref glob) = request.glob {
             validate_relative_pattern(glob, "grep glob filter")?;
         }
         let Some(search_snapshot) = self.manifest_ready() else {
-            return self.fallback_search().grep(request).await;
+            return self.fallback_search().grep_with_sources(request).await;
         };
 
         let regex_pattern = if request.case_insensitive {
@@ -495,6 +506,7 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
         let mut match_count = 0;
         let mut file_count = 0;
         let mut total_size = 0;
+        let mut matched_paths = Vec::new();
 
         let candidates = request
             .glob
@@ -538,16 +550,26 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
             }
 
             file_count += 1;
+            let workspace_path = WorkspacePath::from_normalized(file.path.clone());
+            let display_path = escape_control_chars_for_display(&file.path);
+            let mut path_recorded = false;
             for &match_idx in &file_matches {
                 if total_size > request.max_output_size {
-                    return Ok(WorkspaceGrepResult {
-                        output,
-                        match_count,
-                        file_count,
-                        truncated: true,
+                    return Ok(WorkspaceGrepOutcome {
+                        result: WorkspaceGrepResult {
+                            output,
+                            match_count,
+                            file_count,
+                            truncated: true,
+                        },
+                        matched_paths: Some(matched_paths),
                     });
                 }
 
+                if !path_recorded {
+                    matched_paths.push(workspace_path.clone());
+                    path_recorded = true;
+                }
                 match_count += 1;
                 let start = match_idx.saturating_sub(request.context_lines);
                 let end = (match_idx + request.context_lines + 1).min(lines.len());
@@ -555,7 +577,7 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
                 for (i, line) in lines[start..end].iter().enumerate() {
                     let abs_i = start + i;
                     let prefix = if abs_i == match_idx { ">" } else { " " };
-                    let line = format!("{}{}:{}: {}\n", prefix, file.path, abs_i + 1, line);
+                    let line = format!("{}{}:{}: {}\n", prefix, display_path, abs_i + 1, line);
                     total_size += line.len();
                     output.push_str(&line);
                 }
@@ -567,11 +589,14 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
             }
         }
 
-        Ok(WorkspaceGrepResult {
-            output,
-            match_count,
-            file_count,
-            truncated: false,
+        Ok(WorkspaceGrepOutcome {
+            result: WorkspaceGrepResult {
+                output,
+                match_count,
+                file_count,
+                truncated: false,
+            },
+            matched_paths: Some(matched_paths),
         })
     }
 }
@@ -652,22 +677,40 @@ async fn run_manifest_task(
     snapshots: broadcast::Sender<LocalWorkspaceManifestSnapshot>,
 ) {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let watcher = RecommendedWatcher::new(
-        move |event| {
-            let _ = event_tx.send(event);
-        },
-        Config::default(),
-    )
-    .and_then(|mut watcher| {
-        watcher.watch(&root, RecursiveMode::Recursive)?;
-        Ok(watcher)
-    });
-
+    // Readiness must not depend on the platform watcher service. Watcher
+    // construction is blocking on some platforms and can be slow or fail
+    // under resource pressure, while the initial manifest is still useful.
     publish_scan(&root, &state, &snapshots).await;
 
-    let Ok(_watcher) = watcher else {
+    let watcher_root = root.clone();
+    let mut watcher_task = tokio::task::spawn_blocking(move || {
+        RecommendedWatcher::new(
+            move |event| {
+                let _ = event_tx.send(event);
+            },
+            Config::default(),
+        )
+        .and_then(|mut watcher| {
+            watcher.watch(&watcher_root, RecursiveMode::Recursive)?;
+            Ok(watcher)
+        })
+    });
+    let watcher = loop {
+        tokio::select! {
+            result = &mut watcher_task => break result,
+            _ = tokio::time::sleep(WATCH_STARTUP_SCAN_INTERVAL) => {
+                // Continue providing a fresh manifest while the platform
+                // watcher service is slow to initialize.
+                publish_scan(&root, &state, &snapshots).await;
+            }
+        }
+    };
+    let Ok(Ok(_watcher)) = watcher else {
         return;
     };
+    // Close the scan-to-watch registration window: files changed while the
+    // watcher was being constructed are captured by this second scan.
+    publish_scan(&root, &state, &snapshots).await;
 
     while let Some(event) = event_rx.recv().await {
         let Ok(event) = event else {
@@ -724,177 +767,6 @@ fn update_state(
         scanned_at_ms: now_ms(),
     });
     Some((*state.snapshot).clone())
-}
-
-pub fn scan_workspace_files(root: &Path) -> Vec<LocalWorkspaceFile> {
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let mut files = scan_with_ignore(&root);
-    if let Some(paths) = git_workspace_paths(&root) {
-        apply_git_statuses(&root, &mut files, paths);
-    }
-    sorted_dedup(files)
-}
-
-fn git_workspace_paths(root: &Path) -> Option<Vec<(PathBuf, LocalWorkspaceFileStatus)>> {
-    let mut out = Vec::new();
-    let tracked = git_ls_files(
-        root,
-        &["ls-files", "--cached", "--recurse-submodules", "-z"],
-    )
-    .or_else(|| git_ls_files(root, &["ls-files", "--cached", "-z"]))?;
-    out.extend(
-        tracked
-            .into_iter()
-            .map(|path| (path, LocalWorkspaceFileStatus::Tracked)),
-    );
-    let untracked = git_ls_files(root, &["ls-files", "--others", "--exclude-standard", "-z"])
-        .unwrap_or_default();
-    out.extend(
-        untracked
-            .into_iter()
-            .map(|path| (path, LocalWorkspaceFileStatus::Untracked)),
-    );
-    Some(out)
-}
-
-fn git_ls_files(root: &Path, args: &[&str]) -> Option<Vec<PathBuf>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(
-        output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|raw| !raw.is_empty())
-            .map(|raw| PathBuf::from(String::from_utf8_lossy(raw).into_owned()))
-            .collect(),
-    )
-}
-
-fn apply_git_statuses(
-    root: &Path,
-    files: &mut Vec<LocalWorkspaceFile>,
-    paths: Vec<(PathBuf, LocalWorkspaceFileStatus)>,
-) {
-    let mut statuses = HashMap::<String, LocalWorkspaceFileStatus>::new();
-    for (relative, status) in paths {
-        if path_has_noise_component(&relative) {
-            continue;
-        }
-        let Some(relative) = normalize_relative_path_lossy(&relative) else {
-            continue;
-        };
-        statuses
-            .entry(relative)
-            .and_modify(|existing| *existing = preferred_status(*existing, status))
-            .or_insert(status);
-    }
-
-    for file in files.iter_mut() {
-        if let Some(status) = statuses.remove(&file.path) {
-            file.status = status;
-        }
-    }
-
-    for (relative, status) in statuses {
-        if let Some(file) = workspace_file(root, Path::new(&relative), status) {
-            files.push(file);
-        }
-    }
-}
-
-fn preferred_status(
-    existing: LocalWorkspaceFileStatus,
-    incoming: LocalWorkspaceFileStatus,
-) -> LocalWorkspaceFileStatus {
-    match (existing, incoming) {
-        (LocalWorkspaceFileStatus::Tracked, _) | (_, LocalWorkspaceFileStatus::Tracked) => {
-            LocalWorkspaceFileStatus::Tracked
-        }
-        (LocalWorkspaceFileStatus::Untracked, _) | (_, LocalWorkspaceFileStatus::Untracked) => {
-            LocalWorkspaceFileStatus::Untracked
-        }
-        _ => LocalWorkspaceFileStatus::Unknown,
-    }
-}
-
-fn scan_with_ignore(root: &Path) -> Vec<LocalWorkspaceFile> {
-    let filter_root = root.to_path_buf();
-    WalkBuilder::new(root)
-        .hidden(false)
-        .parents(true)
-        .ignore(true)
-        .git_ignore(true)
-        .git_exclude(true)
-        .git_global(true)
-        .filter_entry(move |entry| {
-            entry
-                .path()
-                .strip_prefix(&filter_root)
-                .map(|relative| !path_has_noise_component(relative))
-                .unwrap_or(true)
-        })
-        .build()
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path == root {
-                return None;
-            }
-            let relative = path.strip_prefix(root).ok()?;
-            workspace_file(root, relative, LocalWorkspaceFileStatus::Unknown)
-        })
-        .collect()
-}
-
-fn workspace_file(
-    root: &Path,
-    relative: &Path,
-    status: LocalWorkspaceFileStatus,
-) -> Option<LocalWorkspaceFile> {
-    let relative = normalize_relative_path_lossy(relative)?;
-    if relative.is_empty() {
-        return None;
-    }
-    let full_path = root.join(&relative);
-    let metadata = std::fs::metadata(&full_path).ok()?;
-    if !metadata.is_file() {
-        return None;
-    }
-    Some(LocalWorkspaceFile {
-        language: language_for_path(Path::new(&relative)).map(str::to_string),
-        binary: is_binary_file(&full_path, metadata.len()),
-        generated: is_generated_path(Path::new(&relative)),
-        modified_ms: metadata.modified().ok().map(system_time_ms),
-        size: metadata.len(),
-        path: relative,
-        status,
-    })
-}
-
-fn sorted_dedup(files: Vec<LocalWorkspaceFile>) -> Vec<LocalWorkspaceFile> {
-    let mut by_path = HashMap::<String, LocalWorkspaceFile>::new();
-    for file in files {
-        by_path
-            .entry(file.path.clone())
-            .and_modify(|existing| {
-                if existing.status == LocalWorkspaceFileStatus::Unknown
-                    && file.status != LocalWorkspaceFileStatus::Unknown
-                {
-                    *existing = file.clone();
-                }
-            })
-            .or_insert(file);
-    }
-    let mut files = by_path.into_values().collect::<Vec<_>>();
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    files
 }
 
 enum CandidateIndices<'a> {
@@ -1082,143 +954,6 @@ fn normalize_relative_path_lossy(path: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-fn path_has_noise_component(path: &Path) -> bool {
-    path.components().any(|component| {
-        let Component::Normal(name) = component else {
-            return false;
-        };
-        matches!(
-            name.to_string_lossy().as_ref(),
-            ".git" | "node_modules" | "target" | ".next" | "dist" | ".DS_Store"
-        )
-    })
-}
-
-fn is_generated_path(path: &Path) -> bool {
-    path.components().any(|component| {
-        let Component::Normal(name) = component else {
-            return false;
-        };
-        matches!(
-            name.to_string_lossy().as_ref(),
-            "target" | "node_modules" | ".next" | "dist" | "build" | "coverage"
-        )
-    })
-}
-
-fn language_for_path(path: &Path) -> Option<&'static str> {
-    match path.extension().and_then(|ext| ext.to_str())? {
-        "rs" => Some("rust"),
-        "toml" => Some("toml"),
-        "hcl" => Some("hcl"),
-        "js" | "mjs" | "cjs" => Some("javascript"),
-        "jsx" => Some("javascript-react"),
-        "ts" | "mts" | "cts" => Some("typescript"),
-        "tsx" => Some("typescript-react"),
-        "json" => Some("json"),
-        "md" | "mdx" => Some("markdown"),
-        "py" => Some("python"),
-        "go" => Some("go"),
-        "java" => Some("java"),
-        "kt" | "kts" => Some("kotlin"),
-        "swift" => Some("swift"),
-        "c" | "h" => Some("c"),
-        "cc" | "cpp" | "cxx" | "hpp" => Some("cpp"),
-        "cs" => Some("csharp"),
-        "rb" => Some("ruby"),
-        "php" => Some("php"),
-        "sh" | "bash" | "zsh" => Some("shell"),
-        "yml" | "yaml" => Some("yaml"),
-        "html" | "htm" => Some("html"),
-        "css" => Some("css"),
-        "scss" | "sass" => Some("scss"),
-        "sql" => Some("sql"),
-        "xml" => Some("xml"),
-        _ => None,
-    }
-}
-
-fn is_binary_file(path: &Path, size: u64) -> bool {
-    if matches!(
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "png"
-            | "jpg"
-            | "jpeg"
-            | "gif"
-            | "webp"
-            | "ico"
-            | "pdf"
-            | "zip"
-            | "gz"
-            | "tgz"
-            | "xz"
-            | "wasm"
-            | "dylib"
-            | "so"
-            | "a"
-            | "o"
-            | "rlib"
-            | "class"
-            | "jar"
-    ) {
-        return true;
-    }
-    if is_known_text_path(path) {
-        return false;
-    }
-    if size == 0 {
-        return false;
-    }
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut buf = [0u8; 2048];
-    use std::io::Read;
-    match file.read(&mut buf) {
-        Ok(n) => buf[..n].contains(&0),
-        Err(_) => false,
-    }
-}
-
-fn is_known_text_path(path: &Path) -> bool {
-    if language_for_path(path).is_some() {
-        return true;
-    }
-    if matches!(
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "txt" | "lock" | "gitignore" | "dockerignore" | "env" | "example" | "sample"
-    ) {
-        return true;
-    }
-    matches!(
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "dockerfile" | "makefile" | "justfile" | "license" | "notice"
-    )
-}
-
-fn is_relevant_event(event: &Event, root: &Path) -> bool {
-    if matches!(event.kind, EventKind::Access(_)) {
-        return false;
-    }
-    event.paths.iter().any(|path| {
-        path.strip_prefix(root)
-            .map(|relative| !path_has_noise_component(relative))
-            .unwrap_or(false)
-    })
-}
-
 fn relative_to_base<'a>(path: &'a str, base: &WorkspacePath) -> Option<&'a str> {
     if base.is_root() {
         return Some(path);
@@ -1253,282 +988,5 @@ fn system_time_ms(time: SystemTime) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn write(path: &Path, body: &[u8]) {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(path, body).unwrap();
-    }
-
-    fn git_available() -> bool {
-        Command::new("git").arg("--version").output().is_ok()
-    }
-
-    fn run_git(root: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .status()
-            .unwrap();
-        assert!(
-            status.success(),
-            "git command failed: git -C {root:?} {args:?}"
-        );
-    }
-
-    fn test_file(path: &str) -> LocalWorkspaceFile {
-        LocalWorkspaceFile {
-            path: path.to_string(),
-            size: 0,
-            modified_ms: None,
-            language: None,
-            status: LocalWorkspaceFileStatus::Unknown,
-            binary: false,
-            generated: false,
-        }
-    }
-
-    #[test]
-    fn manifest_index_reduces_glob_candidates() {
-        let files = vec![
-            test_file("src/main.rs"),
-            test_file("crates/demo/src/lib.rs"),
-            test_file("README.md"),
-            test_file("docs/README.md"),
-        ];
-        let index = ManifestIndex::build(&files);
-
-        let exact = candidate_indices_for_glob(&index, &WorkspacePath::root(), "src/main.rs")
-            .iter()
-            .collect::<Vec<_>>();
-        assert_eq!(exact, vec![0]);
-
-        let basename = candidate_indices_for_glob(&index, &WorkspacePath::root(), "**/README.md")
-            .iter()
-            .collect::<Vec<_>>();
-        assert_eq!(basename, vec![2, 3]);
-
-        let extension = candidate_indices_for_glob(&index, &WorkspacePath::root(), "**/*.rs")
-            .iter()
-            .collect::<Vec<_>>();
-        assert_eq!(extension, vec![0, 1]);
-    }
-
-    #[test]
-    fn recent_files_are_bounded_and_ranked_by_heat() {
-        let mut recent = RecentFiles::default();
-        for index in 0..(RECENT_FILE_LIMIT + 5) {
-            recent.touch(format!("src/file_{index:03}.rs"), index as u64);
-        }
-        recent.touch("src/file_000.rs".to_string(), 10_000);
-        recent.touch("src/file_000.rs".to_string(), 10_001);
-
-        let entries = recent.entries(None, usize::MAX, 10_001);
-
-        assert_eq!(entries.len(), RECENT_FILE_LIMIT);
-        assert_eq!(entries[0].path, "src/file_000.rs");
-        assert_eq!(entries[0].touch_count, 2);
-    }
-
-    #[tokio::test]
-    async fn manifest_search_matches_glob_and_grep() {
-        let temp = tempfile::tempdir().unwrap();
-        write(
-            &temp.path().join("src/main.rs"),
-            b"fn main() {\n    println!(\"hello\");\n}\n",
-        );
-        write(&temp.path().join("README.md"), b"hello from docs\n");
-
-        let backend = ManifestWorkspaceBackend::new(temp.path());
-        let mut rx = backend.manifest().subscribe();
-        tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-
-        let glob = backend
-            .glob(WorkspaceGlobRequest {
-                base: backend.normalize("src").unwrap(),
-                pattern: "*.rs".to_string(),
-            })
-            .await
-            .unwrap();
-        assert_eq!(glob.matches[0].as_str(), "src/main.rs");
-
-        let grep = backend
-            .grep(WorkspaceGrepRequest {
-                base: WorkspacePath::root(),
-                pattern: "hello".to_string(),
-                glob: Some("*.rs".to_string()),
-                context_lines: 0,
-                case_insensitive: false,
-                max_output_size: 1024,
-            })
-            .await
-            .unwrap();
-        assert_eq!(grep.match_count, 1);
-        assert_eq!(grep.file_count, 1);
-        assert!(grep.output.contains("src/main.rs:2"));
-    }
-
-    #[tokio::test]
-    async fn manifest_backend_read_write_touch_recent_files() {
-        let temp = tempfile::tempdir().unwrap();
-        write(&temp.path().join("src/main.rs"), b"fn main() {}\n");
-
-        let backend = ManifestWorkspaceBackend::new(temp.path());
-        let mut rx = backend.manifest().subscribe();
-        tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-
-        let path = backend.normalize("src/main.rs").unwrap();
-        backend.read_text(&path).await.unwrap();
-        assert_eq!(
-            backend.manifest().recent_file_paths(4),
-            vec!["src/main.rs".to_string()]
-        );
-
-        backend
-            .write_text(&path, "fn main() { println!(\"hi\"); }\n")
-            .await
-            .unwrap();
-        let entries = backend.manifest().recent_file_entries(4);
-        assert_eq!(entries[0].path, "src/main.rs");
-        assert_eq!(entries[0].touch_count, 2);
-    }
-
-    #[tokio::test]
-    async fn manifest_glob_prioritizes_recent_matching_files() {
-        let temp = tempfile::tempdir().unwrap();
-        write(&temp.path().join("src/a.rs"), b"pub fn a() {}\n");
-        write(&temp.path().join("src/z.rs"), b"pub fn z() {}\n");
-
-        let backend = ManifestWorkspaceBackend::new(temp.path());
-        let mut rx = backend.manifest().subscribe();
-        tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-
-        backend.manifest().touch_file("src/z.rs");
-        let glob = backend
-            .glob(WorkspaceGlobRequest {
-                base: WorkspacePath::root(),
-                pattern: "**/*.rs".to_string(),
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(glob.matches[0].as_str(), "src/z.rs");
-        assert_eq!(glob.matches[1].as_str(), "src/a.rs");
-    }
-
-    #[tokio::test]
-    async fn manifest_grep_prioritizes_recent_matches_when_truncated() {
-        let temp = tempfile::tempdir().unwrap();
-        write(
-            &temp.path().join("src/a.rs"),
-            b"pub const HIT: &str = \"a\";\n",
-        );
-        write(
-            &temp.path().join("src/z.rs"),
-            b"pub const HIT: &str = \"z\";\n",
-        );
-
-        let backend = ManifestWorkspaceBackend::new(temp.path());
-        let mut rx = backend.manifest().subscribe();
-        tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-
-        backend.manifest().touch_file("src/z.rs");
-        let grep = backend
-            .grep(WorkspaceGrepRequest {
-                base: WorkspacePath::root(),
-                pattern: "HIT".to_string(),
-                glob: Some("**/*.rs".to_string()),
-                context_lines: 0,
-                case_insensitive: false,
-                max_output_size: 1,
-            })
-            .await
-            .unwrap();
-
-        assert!(grep.truncated);
-        assert!(grep.output.starts_with(">src/z.rs:"), "{}", grep.output);
-    }
-
-    #[tokio::test]
-    async fn manifest_refreshes_after_file_event() {
-        let temp = tempfile::tempdir().unwrap();
-        write(&temp.path().join("README.md"), b"# hello\n");
-        let manifest = LocalWorkspaceManifest::start(temp.path());
-        let mut rx = manifest.subscribe();
-        let initial = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(initial.files.iter().any(|file| file.path == "README.md"));
-
-        write(&temp.path().join("src/lib.rs"), b"pub fn lib() {}\n");
-        let updated = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let snapshot = rx.recv().await.unwrap();
-                if snapshot.files.iter().any(|file| file.path == "src/lib.rs") {
-                    break snapshot;
-                }
-            }
-        })
-        .await
-        .unwrap();
-
-        assert!(updated.version > initial.version);
-    }
-
-    #[tokio::test]
-    async fn manifest_search_falls_back_before_initial_scan() {
-        let temp = tempfile::tempdir().unwrap();
-        write(&temp.path().join("src/main.rs"), b"fn main() {}\n");
-        let backend = ManifestWorkspaceBackend::new(temp.path());
-        let glob = backend
-            .glob(WorkspaceGlobRequest {
-                base: backend.normalize("src").unwrap(),
-                pattern: "*.rs".to_string(),
-            })
-            .await
-            .unwrap();
-        assert!(glob
-            .matches
-            .iter()
-            .any(|path| path.as_str() == "src/main.rs"));
-    }
-
-    #[test]
-    fn scan_includes_files_inside_nested_git_workspaces() {
-        if !git_available() {
-            return;
-        }
-
-        let temp = tempfile::tempdir().unwrap();
-        run_git(temp.path(), &["init"]);
-        write(&temp.path().join("README.md"), b"# root\n");
-
-        let nested = temp.path().join("vendor/child");
-        std::fs::create_dir_all(&nested).unwrap();
-        run_git(&nested, &["init"]);
-        write(&nested.join("src/lib.rs"), b"pub fn child() {}\n");
-
-        let files = scan_workspace_files(temp.path());
-        assert!(files.iter().any(|file| file.path == "README.md"));
-        assert!(files
-            .iter()
-            .any(|file| file.path == "vendor/child/src/lib.rs"));
-    }
-}
+#[path = "manifest/tests.rs"]
+mod tests;

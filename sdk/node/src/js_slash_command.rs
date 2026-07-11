@@ -2,11 +2,13 @@
 //!
 //! Wraps JavaScript functions as SlashCommand trait implementations.
 
+use crate::js_callback_bridge::{decode_callback_outcome, JsCallbackOutcome};
 use a3s_code_core::commands::{
     CommandContext as RustCommandContext, CommandOutput as RustCommandOutput,
     SlashCommand as RustSlashCommand,
 };
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::ValueType;
 use std::sync::Arc;
 
 /// JavaScript-backed slash command.
@@ -17,6 +19,7 @@ pub struct JsSlashCommand {
     pub name: String,
     pub description: String,
     pub handler: Arc<ThreadsafeFunction<(String, RustCommandContext), ErrorStrategy::Fatal>>,
+    pub timeout_ms: u64,
 }
 
 impl RustSlashCommand for JsSlashCommand {
@@ -32,27 +35,57 @@ impl RustSlashCommand for JsSlashCommand {
         let handler = self.handler.clone();
         let args = args.to_string();
         let ctx = ctx.clone();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<String, napi::Status>>(1);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<String, String>>(1);
 
-        handler.call_with_return_value(
+        let status = handler.call_with_return_value(
             (args, ctx),
-            ThreadsafeFunctionCallMode::Blocking,
+            ThreadsafeFunctionCallMode::NonBlocking,
             move |ret: napi::JsUnknown| {
-                let value = ret.coerce_to_string()?.into_utf8()?.into_owned()?;
-                let _ = tx.send(Ok(value));
+                // Always return Ok from a TSFN conversion callback. Returning
+                // a napi error here escalates to napi_fatal_error.
+                let result = match decode_callback_outcome(ret) {
+                    JsCallbackOutcome::Returned(value) => {
+                        if matches!(value.get_type(), Ok(ValueType::String)) {
+                            let string = unsafe { value.cast::<napi::JsString>() };
+                            string
+                                .into_utf8()
+                                .and_then(|value| value.into_owned())
+                                .map_err(|error| format!("invalid command return: {error}"))
+                        } else {
+                            Err("command callback must return a string".to_string())
+                        }
+                    }
+                    JsCallbackOutcome::Failed(error) => {
+                        Err(format!("command callback failed: {error}"))
+                    }
+                };
+                let _ = tx.send(result);
                 Ok(())
             },
         );
 
-        match rx.recv() {
-            Ok(Ok(value)) => RustCommandOutput::text(value),
-            Ok(Err(status)) => {
-                RustCommandOutput::text(format!("Command '{}' failed: {:?}", self.name, status))
-            }
-            Err(_) => RustCommandOutput::text(format!(
-                "Command '{}' failed: handler did not return a value",
+        if status != napi::Status::Ok {
+            return RustCommandOutput::text(format!(
+                "Command '{}' failed: handler could not be queued ({status:?})",
                 self.name
+            ));
+        }
+
+        match rx.recv_timeout(std::time::Duration::from_millis(self.timeout_ms)) {
+            Ok(Ok(value)) => RustCommandOutput::text(value),
+            Ok(Err(error)) => {
+                RustCommandOutput::text(format!("Command '{}' failed: {error}", self.name))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => RustCommandOutput::text(format!(
+                "Command '{}' failed: handler timed out after {}ms",
+                self.name, self.timeout_ms
             )),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                RustCommandOutput::text(format!(
+                    "Command '{}' failed: handler did not return a value",
+                    self.name
+                ))
+            }
         }
     }
 }

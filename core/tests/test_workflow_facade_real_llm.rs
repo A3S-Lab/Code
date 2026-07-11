@@ -59,7 +59,8 @@ async fn real_session() -> (AgentSession, tempfile::TempDir) {
         .expect("build agent from real config");
     let workspace = tempfile::tempdir().expect("temp workspace");
     let session = agent
-        .session(workspace.path().to_string_lossy().to_string(), None)
+        .session_async(workspace.path().to_string_lossy().to_string(), None)
+        .await
         .expect("create session");
     (session, workspace)
 }

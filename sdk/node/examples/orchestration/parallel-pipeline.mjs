@@ -38,7 +38,7 @@ async function main() {
   for (const o of outcomes) console.log(`[parallel] ${o.taskId}: success=${o.success}`);
 
   // 2. pipeline — stage 2 builds on stage 1's output. Return null to stop a
-  //    chain. A stage callback MUST NOT throw (return null on error).
+  //    chain. A thrown exception or malformed return stops that chain.
   const results = await session.pipeline(
     ['the Rust programming language'],
     [

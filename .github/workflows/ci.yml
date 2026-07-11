@@ -35,8 +35,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --lib --bins -- -D warnings
 
-      # - name: Tests
-      #   run: cargo test --workspace --lib
+      - name: Default tests
+        run: cargo test --workspace
+
+      - name: Feature-gated library tests
+        run: cargo test --workspace --all-features --lib
 
   sdk-check:
     name: SDK build check
@@ -59,6 +62,11 @@ jobs:
       # otherwise only compiled at release time (napi / maturin). Type-check them
       # here so a core change that breaks an SDK (e.g. a new struct field that an
       # SDK constructs with a literal) fails on the PR instead of the release.
+      - name: Check SDK protocol and API alignment
+        run: |
+          node scripts/generate_event_protocol_artifacts.mjs --check
+          node scripts/sdk_api_alignment_check.mjs
+
       - name: Check Node SDK
         run: cargo check --manifest-path sdk/node/Cargo.toml
 

@@ -73,6 +73,10 @@ impl ToolRegistry {
     /// is rejected to prevent shadowing of core tools.
     pub fn register(&self, tool: Arc<dyn Tool>) {
         let name = tool.name().to_string();
+        // All operations that need both registry locks take `tools` first.
+        // This keeps the builtin check and insertion atomic with
+        // `register_builtin` and avoids lock-order inversion.
+        let mut tools = self.tools.write().unwrap();
         let builtins = self.builtins.read().unwrap();
         if builtins.contains(&name) {
             tracing::warn!(
@@ -81,32 +85,97 @@ impl ToolRegistry {
             );
             return;
         }
-        drop(builtins);
-        let mut tools = self.tools.write().unwrap();
         tracing::debug!("Registering tool: {}", name);
         tools.insert(name, tool);
+    }
+
+    /// Register a dynamic tool and return the tool it shadowed.
+    ///
+    /// The lookup and replacement happen under one write lock so lifecycle
+    /// owners can later restore the exact prior registration without racing a
+    /// concurrent dynamic registration. The boolean is `false` when a builtin
+    /// owns the name and the dynamic registration was rejected.
+    pub(crate) fn register_with_shadow(
+        &self,
+        tool: Arc<dyn Tool>,
+    ) -> (bool, Option<Arc<dyn Tool>>) {
+        let name = tool.name().to_string();
+        let mut tools = self.tools.write().unwrap();
+        let builtins = self.builtins.read().unwrap();
+        if builtins.contains(&name) {
+            tracing::warn!(
+                "Rejected registration of tool '{}': cannot shadow builtin",
+                name
+            );
+            return (false, None);
+        }
+        tracing::debug!("Registering owned dynamic tool: {}", name);
+        (true, tools.insert(name, tool))
+    }
+
+    /// Restore a shadowed registration only while `expected` still owns the
+    /// name.
+    ///
+    /// This compare-and-replace prevents one lifecycle owner from deleting or
+    /// overwriting a tool installed later by another dynamic source.
+    pub(crate) fn restore_if_same(
+        &self,
+        name: &str,
+        expected: &Arc<dyn Tool>,
+        replacement: Option<Arc<dyn Tool>>,
+    ) -> bool {
+        let mut tools = self.tools.write().unwrap();
+        let Some(current) = tools.get(name) else {
+            return false;
+        };
+        if !Arc::ptr_eq(current, expected) {
+            return false;
+        }
+
+        match replacement {
+            Some(tool) => {
+                tools.insert(name.to_string(), tool);
+            }
+            None => {
+                tools.remove(name);
+            }
+        }
+        true
+    }
+
+    /// Register a dynamic tool only when no source currently owns its name.
+    pub(crate) fn register_if_absent(&self, tool: Arc<dyn Tool>) -> bool {
+        let name = tool.name().to_string();
+        let mut tools = self.tools.write().unwrap();
+        if tools.contains_key(&name) {
+            return false;
+        }
+        tracing::debug!("Registering previously absent dynamic tool: {}", name);
+        tools.insert(name, tool);
+        true
     }
 
     /// Unregister a tool by name
     ///
     /// Returns true if the tool was found and removed.
     pub fn unregister(&self, name: &str) -> bool {
-        if self.builtins.read().unwrap().contains(name) {
+        let mut tools = self.tools.write().unwrap();
+        let builtins = self.builtins.read().unwrap();
+        if builtins.contains(name) {
             tracing::warn!(
                 "Rejected unregister of tool '{}': builtin tools cannot be removed through dynamic unregister",
                 name
             );
             return false;
         }
-        let mut tools = self.tools.write().unwrap();
         tracing::debug!("Unregistering tool: {}", name);
         tools.remove(name).is_some()
     }
 
     /// Unregister all tools whose names start with the given prefix.
     pub fn unregister_by_prefix(&self, prefix: &str) {
-        let builtins = self.builtins.read().unwrap().clone();
         let mut tools = self.tools.write().unwrap();
+        let builtins = self.builtins.read().unwrap();
         tools.retain(|name, _| builtins.contains(name) || !name.starts_with(prefix));
         tracing::debug!("Unregistered tools with prefix: {}", prefix);
     }
@@ -202,13 +271,20 @@ impl ToolRegistry {
         *ctx = ctx.clone().with_command_env(env);
     }
 
-    /// Execute a tool by name using the registry's default context
+    /// Execute a tool by name using the registry's default context.
+    ///
+    /// This is the lowest-level standalone registry boundary. It does not run
+    /// agent/session permission, HITL, hook, budget, queue, timeout,
+    /// cancellation, or sanitization policy.
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
         let ctx = self.context();
         self.execute_with_context(name, args, &ctx).await
     }
 
-    /// Execute a tool by name with an external context
+    /// Execute a tool by name with an external caller-owned context.
+    ///
+    /// This remains a low-level ungoverned call; agent/session paths must use
+    /// their scoped invocation gateway instead.
     pub async fn execute_with_context(
         &self,
         name: &str,
@@ -420,6 +496,40 @@ mod tests {
 
         assert!(registry.contains("mcp__builtin"));
         assert!(!registry.contains("mcp__dynamic"));
+    }
+
+    #[test]
+    fn concurrent_owned_registration_cannot_overwrite_builtin() {
+        for iteration in 0..32 {
+            let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+            let name = format!("atomic_builtin_{iteration}");
+            let builtin: Arc<dyn Tool> = Arc::new(MockTool { name: name.clone() });
+            let dynamic: Arc<dyn Tool> = Arc::new(MockTool { name: name.clone() });
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+
+            let builtin_registry = Arc::clone(&registry);
+            let builtin_tool = Arc::clone(&builtin);
+            let builtin_barrier = Arc::clone(&barrier);
+            let builtin_thread = std::thread::spawn(move || {
+                builtin_barrier.wait();
+                builtin_registry.register_builtin(builtin_tool);
+            });
+
+            let dynamic_registry = Arc::clone(&registry);
+            let dynamic_barrier = Arc::clone(&barrier);
+            let dynamic_thread = std::thread::spawn(move || {
+                dynamic_barrier.wait();
+                dynamic_registry.register_with_shadow(dynamic);
+            });
+
+            barrier.wait();
+            builtin_thread.join().unwrap();
+            dynamic_thread.join().unwrap();
+
+            let current = registry.get(&name).unwrap();
+            assert!(Arc::ptr_eq(&current, &builtin));
+            assert!(!registry.unregister(&name));
+        }
     }
 
     #[test]

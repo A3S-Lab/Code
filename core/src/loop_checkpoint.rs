@@ -97,6 +97,36 @@ impl LoopCheckpoint {
         }
         Ok(())
     }
+
+    /// Verify that this value is stored under the run key it claims to own.
+    ///
+    /// Store keys are caller-controlled. Checking the redundant identifier in
+    /// the payload prevents a record written under one key from being replayed
+    /// as a different run.
+    pub fn ensure_addressed_by(&self, run_id: &str) -> anyhow::Result<()> {
+        if self.run_id != run_id {
+            anyhow::bail!(
+                "loop checkpoint key mismatch: requested run {:?}, payload belongs to {:?}",
+                run_id,
+                self.run_id
+            );
+        }
+        Ok(())
+    }
+
+    /// Verify both the addressed run and its owning session before replay.
+    pub fn ensure_owned_by(&self, run_id: &str, session_id: &str) -> anyhow::Result<()> {
+        self.ensure_addressed_by(run_id)?;
+        if self.session_id != session_id {
+            anyhow::bail!(
+                "loop checkpoint ownership mismatch for run {:?}: current session is {:?}, payload belongs to {:?}",
+                run_id,
+                session_id,
+                self.session_id
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Receiver of per-tool-round checkpoints.
@@ -205,5 +235,17 @@ mod tests {
         }"#;
         let cp: LoopCheckpoint = serde_json::from_str(json).unwrap();
         assert_eq!(cp.schema_version, 0);
+    }
+
+    #[test]
+    fn checkpoint_rejects_run_key_and_session_owner_mismatches() {
+        let cp = sample("run-1", 1);
+        assert!(cp.ensure_owned_by("run-1", "session-1").is_ok());
+
+        let run_error = cp.ensure_owned_by("run-2", "session-1").unwrap_err();
+        assert!(run_error.to_string().contains("key mismatch"));
+
+        let session_error = cp.ensure_owned_by("run-1", "session-2").unwrap_err();
+        assert!(session_error.to_string().contains("ownership mismatch"));
     }
 }

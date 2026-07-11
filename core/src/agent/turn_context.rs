@@ -81,15 +81,15 @@ impl AgentLoop {
 
         let workspace = self.tool_context.workspace.display().to_string();
         let session_id_str = session_id.unwrap_or("");
-        let harness_intent = self
+        let hook_intent = self
             .fire_intent_detection(effective_prompt, session_id_str, &workspace)
             .await;
 
-        let perception_event = if let Some(detected) = harness_intent {
+        let perception_event = if let Some(detected) = hook_intent {
             tracing::info!(
                 intent = %detected.detected_intent,
                 confidence = %detected.confidence,
-                "Intent detected from AHP harness"
+                "Intent detected by hook"
             );
             Some(
                 context_perception::build_pre_context_perception_from_intent(
@@ -111,36 +111,13 @@ impl AgentLoop {
         tracing::info!(
             intent = %perception_event.intent,
             target_type = %perception_event.target_type,
-            "Context perception intent detected, firing AHP hook"
+            "Context perception intent detected, firing hook"
         );
 
         match self.fire_pre_context_perception(&perception_event).await {
-            HookResult::Continue(Some(modified_context)) => {
-                #[cfg(feature = "ahp")]
-                {
-                    if let Ok(injected) =
-                        serde_json::from_value::<crate::ahp::InjectedContext>(modified_context)
-                    {
-                        tracing::info!(
-                            facts = injected.facts.len(),
-                            "Using injected context from AHP harness"
-                        );
-                        self.apply_injected_context(injected)
-                    } else {
-                        tracing::warn!(
-                            "Failed to parse injected context, falling back to providers"
-                        );
-                        self.resolve_context(effective_prompt, session_id).await
-                    }
-                }
-                #[cfg(not(feature = "ahp"))]
-                {
-                    let _ = modified_context;
-                    self.resolve_context(effective_prompt, session_id).await
-                }
-            }
+            HookResult::Continue(_) => self.resolve_context(effective_prompt, session_id).await,
             HookResult::Block(_) => {
-                tracing::info!("AHP harness blocked context injection");
+                tracing::info!("Context perception blocked by hook");
                 Vec::new()
             }
             _ => self.resolve_context(effective_prompt, session_id).await,
@@ -267,7 +244,7 @@ impl AgentLoop {
         context_perception::detect_local_context_perception_intent(prompt, session_id, workspace)
     }
 
-    /// Fire PreContextPerception hook and wait for harness decision.
+    /// Fire the PreContextPerception hook and wait for its decision.
     async fn fire_pre_context_perception(&self, event: &PreContextPerceptionEvent) -> HookResult {
         if let Some(he) = &self.config.hook_engine {
             let hook_event = HookEvent::PreContextPerception(event.clone());
@@ -277,10 +254,10 @@ impl AgentLoop {
         }
     }
 
-    /// Fire IntentDetection hook and wait for harness decision.
+    /// Fire the IntentDetection hook and wait for its decision.
     ///
-    /// This is called on every prompt to detect user intent via the AHP harness.
-    /// Returns the detected intent if the harness provides one, or None if blocked/failed.
+    /// This is called on every prompt. Returns the detected intent if a hook
+    /// provides one, or `None` if the hook blocks or does not modify the event.
     async fn fire_intent_detection(
         &self,
         prompt: &str,
@@ -307,18 +284,11 @@ impl AgentLoop {
                 serde_json::from_value::<context_perception::IntentDetectionResult>(modified).ok()
             }
             HookResult::Block(_) => {
-                // Harness blocked intent detection - use fallback
-                tracing::info!("AHP harness blocked intent detection");
+                tracing::info!("Intent detection blocked by hook");
                 None
             }
             _ => None,
         }
-    }
-
-    /// Apply injected context from AHP harness decision.
-    #[cfg(feature = "ahp")]
-    fn apply_injected_context(&self, injected: crate::ahp::InjectedContext) -> Vec<ContextResult> {
-        context_perception::injected_context_to_results(injected)
     }
 
     /// Build augmented system prompt with context

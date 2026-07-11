@@ -6,17 +6,17 @@
 //! bash, grep, glob, git, git_stash, git_worktree).
 
 use super::{
-    default_path_input, has_windows_path_prefix, normalize_relative_path,
-    pathbuf_to_workspace_path, validate_relative_pattern, CommandOutput, CommandRequest,
-    WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceError, WorkspaceFileSystem,
+    default_path_input, escape_control_chars_for_display, has_windows_path_prefix,
+    normalize_relative_path, pathbuf_to_workspace_path, validate_relative_pattern, CommandOutput,
+    CommandRequest, WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceError, WorkspaceFileSystem,
     WorkspaceFileType, WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput,
     WorkspaceGitCheckoutRequest, WorkspaceGitCommit, WorkspaceGitCreateBranchRequest,
     WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest, WorkspaceGitRemote,
     WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash, WorkspaceGitStashProvider,
     WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
     WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
-    WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult, WorkspacePath,
-    WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceWriteOutcome,
+    WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest, WorkspaceGrepResult,
+    WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceWriteOutcome,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -193,6 +193,13 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
     }
 
     async fn grep(&self, request: WorkspaceGrepRequest) -> Result<WorkspaceGrepResult> {
+        Ok(self.grep_with_sources(request).await?.result)
+    }
+
+    async fn grep_with_sources(
+        &self,
+        request: WorkspaceGrepRequest,
+    ) -> Result<WorkspaceGrepOutcome> {
         if let Some(ref glob) = request.glob {
             validate_relative_pattern(glob, "grep glob filter")?;
         }
@@ -222,6 +229,7 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
         let mut match_count = 0;
         let mut file_count = 0;
         let mut total_size = 0;
+        let mut matched_paths = Vec::new();
 
         for entry in builder.build().flatten() {
             if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
@@ -247,22 +255,29 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
             }
 
             file_count += 1;
-            let rel_path = file_path
-                .strip_prefix(&self.root)
-                .unwrap_or(file_path)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let workspace_path =
+                pathbuf_to_workspace_path(file_path.strip_prefix(&self.root).unwrap_or(file_path));
+            let rel_path = workspace_path.as_str();
+            let display_path = escape_control_chars_for_display(rel_path);
+            let mut path_recorded = false;
 
             for &match_idx in &file_matches {
                 if total_size > request.max_output_size {
-                    return Ok(WorkspaceGrepResult {
-                        output,
-                        match_count,
-                        file_count,
-                        truncated: true,
+                    return Ok(WorkspaceGrepOutcome {
+                        result: WorkspaceGrepResult {
+                            output,
+                            match_count,
+                            file_count,
+                            truncated: true,
+                        },
+                        matched_paths: Some(matched_paths),
                     });
                 }
 
+                if !path_recorded {
+                    matched_paths.push(workspace_path.clone());
+                    path_recorded = true;
+                }
                 match_count += 1;
 
                 let start = match_idx.saturating_sub(request.context_lines);
@@ -271,7 +286,7 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
                 for (i, line) in lines[start..end].iter().enumerate() {
                     let abs_i = start + i;
                     let prefix = if abs_i == match_idx { ">" } else { " " };
-                    let line = format!("{}{}:{}: {}\n", prefix, rel_path, abs_i + 1, line);
+                    let line = format!("{}{}:{}: {}\n", prefix, display_path, abs_i + 1, line);
                     total_size += line.len();
                     output.push_str(&line);
                 }
@@ -283,11 +298,14 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
             }
         }
 
-        Ok(WorkspaceGrepResult {
-            output,
-            match_count,
-            file_count,
-            truncated: false,
+        Ok(WorkspaceGrepOutcome {
+            result: WorkspaceGrepResult {
+                output,
+                match_count,
+                file_count,
+                truncated: false,
+            },
+            matched_paths: Some(matched_paths),
         })
     }
 }
@@ -550,10 +568,13 @@ impl LocalWorkspaceBackend {
             .await
             .map_err(|e| anyhow!("Git worker failed: {}", e))??;
 
-        let output = tokio::process::Command::new("git")
+        let mut command = tokio::process::Command::new("git");
+        command
             .arg("-C")
             .arg(self.root.as_os_str())
             .args(&args)
+            .kill_on_drop(true);
+        let output = command
             .output()
             .await
             .map_err(|e| anyhow!("Failed to execute git: {}", e))?;

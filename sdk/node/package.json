@@ -1,6 +1,6 @@
 {
   "name": "@a3s-lab/code",
-  "version": "4.3.3",
+  "version": "5.0.0",
   "description": "A3S Code - Native Node.js bindings for the coding-agent runtime",
   "main": "index.js",
   "types": "index.d.ts",
@@ -25,6 +25,7 @@
     "index.d.ts",
     "generated.d.ts",
     "extra-types.d.ts",
+    "event-protocol-v1.d.ts",
     "*.node"
   ],
   "devDependencies": {
@@ -35,19 +36,19 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "build": "napi build --platform --release --js index.js --dts generated.d.ts",
-    "build:debug": "napi build --platform --js index.js --dts generated.d.ts",
+    "build": "napi build --platform --release --js index.js --dts generated.d.ts && node scripts/patch-loader.mjs",
+    "build:debug": "napi build --platform --js index.js --dts generated.d.ts && node scripts/patch-loader.mjs",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "node test.mjs && node test_serve.mjs",
+    "test": "node test.mjs && node test_callback_safety.mjs && node test_serve.mjs",
     "test:types": "tsc --noEmit --module nodenext --moduleResolution nodenext --target es2022 --strict --skipLibCheck test-types.ts",
     "test:helpers": "node test-helpers.mjs"
   },
   "optionalDependencies": {
-    "@a3s-lab/code-darwin-arm64": "4.3.3",
-    "@a3s-lab/code-linux-x64-gnu": "4.3.3",
-    "@a3s-lab/code-linux-x64-musl": "4.3.3",
-    "@a3s-lab/code-linux-arm64-gnu": "4.3.3",
-    "@a3s-lab/code-linux-arm64-musl": "4.3.3",
-    "@a3s-lab/code-win32-x64-msvc": "4.3.3"
+    "@a3s-lab/code-darwin-arm64": "5.0.0",
+    "@a3s-lab/code-linux-x64-gnu": "5.0.0",
+    "@a3s-lab/code-linux-x64-musl": "5.0.0",
+    "@a3s-lab/code-linux-arm64-gnu": "5.0.0",
+    "@a3s-lab/code-linux-arm64-musl": "5.0.0",
+    "@a3s-lab/code-win32-x64-msvc": "5.0.0"
   }
 }

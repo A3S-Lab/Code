@@ -6,7 +6,7 @@ use tokio::time::sleep;
 async fn main() -> anyhow::Result<()> {
     // Create agent from config
     let agent = Agent::new("~/.a3s/config.acl").await?;
-    let session = agent.session(".")?;
+    let session = agent.session_async(".", None).await?;
 
     println!("Starting long-running operation...");
 

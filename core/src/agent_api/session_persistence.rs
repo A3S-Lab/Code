@@ -1,16 +1,89 @@
 //! Persisted session runtime contract.
 //!
-//! This module owns how an in-memory session becomes `SessionData` and how a
-//! saved `SessionData` rehydrates runtime options and non-message artifacts.
+//! This module owns how an in-memory session becomes one `SessionSnapshotV1`
+//! generation and how that same generation rehydrates runtime state.
 
 use super::{AgentSession, SessionOptions};
 use crate::agent::{AgentConfig, AgentResult};
 use crate::error::{read_or_recover, write_or_recover, CodeError, Result};
 use crate::llm::Message;
-use crate::store::{LlmConfigData, SessionData, SessionStore};
+use crate::store::{LlmConfigData, SessionData, SessionSnapshotV1, SessionStore};
 use crate::tools::ToolExecutor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+
+/// Mutable persisted fields that are not otherwise represented by a live
+/// `AgentSession` field. Keeping them together prevents each save generation
+/// from rebuilding usage, tasks, cost data, and creation metadata from empty
+/// defaults.
+#[derive(Default)]
+pub(super) struct SessionPersistenceState {
+    baseline: Option<SessionData>,
+    total_usage: crate::llm::TokenUsage,
+    tasks: Vec<crate::planning::Task>,
+}
+
+#[derive(Clone)]
+struct SessionPersistenceSeed {
+    baseline: Option<SessionData>,
+    total_usage: crate::llm::TokenUsage,
+    tasks: Vec<crate::planning::Task>,
+}
+
+impl SessionPersistenceState {
+    pub(super) fn record_usage(&mut self, usage: &crate::llm::TokenUsage) {
+        self.total_usage.prompt_tokens = self
+            .total_usage
+            .prompt_tokens
+            .saturating_add(usage.prompt_tokens);
+        self.total_usage.completion_tokens = self
+            .total_usage
+            .completion_tokens
+            .saturating_add(usage.completion_tokens);
+        self.total_usage.total_tokens = self
+            .total_usage
+            .total_tokens
+            .saturating_add(usage.total_tokens);
+        self.total_usage.cache_read_tokens =
+            add_optional_usage(self.total_usage.cache_read_tokens, usage.cache_read_tokens);
+        self.total_usage.cache_write_tokens = add_optional_usage(
+            self.total_usage.cache_write_tokens,
+            usage.cache_write_tokens,
+        );
+    }
+
+    pub(super) fn replace_tasks(&mut self, tasks: Vec<crate::planning::Task>) {
+        self.tasks = tasks;
+    }
+
+    fn restore(&mut self, session: SessionData) {
+        self.total_usage = session.total_usage.clone();
+        self.tasks = session.tasks.clone();
+        self.baseline = Some(session);
+    }
+
+    fn seed(&self) -> SessionPersistenceSeed {
+        SessionPersistenceSeed {
+            baseline: self.baseline.clone(),
+            total_usage: self.total_usage.clone(),
+            tasks: self.tasks.clone(),
+        }
+    }
+
+    fn record_saved(&mut self, session: SessionData) {
+        self.baseline = Some(session);
+    }
+}
+
+fn add_optional_usage(left: Option<usize>, right: Option<usize>) -> Option<usize> {
+    match (left, right) {
+        (None, None) => None,
+        (left, right) => Some(
+            left.unwrap_or_default()
+                .saturating_add(right.unwrap_or_default()),
+        ),
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct SessionPersistenceContext {
@@ -25,6 +98,7 @@ pub(super) struct SessionPersistenceContext {
     history: Arc<RwLock<Vec<Message>>>,
     verification_reports: Arc<RwLock<Vec<crate::verification::VerificationReport>>>,
     subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
+    persistence_state: Arc<RwLock<SessionPersistenceState>>,
     tenant_id: Option<String>,
     principal: Option<String>,
     agent_template_id: Option<String>,
@@ -46,6 +120,7 @@ impl SessionPersistenceContext {
             history: Arc::clone(&session.history),
             verification_reports: Arc::clone(&session.verification_reports),
             subagent_tasks: Arc::clone(&session.subagent_tasks),
+            persistence_state: Arc::clone(&session.persistence_state),
             tenant_id: session.tenant_id.clone(),
             principal: session.principal.clone(),
             agent_template_id: session.agent_template_id.clone(),
@@ -70,6 +145,7 @@ impl SessionPersistenceContext {
 
         let history = read_or_recover(&self.history).clone();
         let verification_reports = read_or_recover(&self.verification_reports).clone();
+        let seed = read_or_recover(&self.persistence_state).seed();
         let data = build_session_data_snapshot(SessionDataSnapshotInput {
             session_id: &self.session_id,
             workspace: &self.workspace,
@@ -80,25 +156,33 @@ impl SessionPersistenceContext {
             principal: self.principal.as_deref(),
             agent_template_id: self.agent_template_id.as_deref(),
             correlation_id: self.correlation_id.as_deref(),
+            seed,
         })
         .await;
 
-        store.save(&data).await?;
-        store
-            .save_artifacts(&self.session_id, &self.tool_executor.artifact_store())
-            .await?;
-        store
-            .save_trace_events(&self.session_id, &self.trace_sink.events())
-            .await?;
-        store
-            .save_run_records(&self.session_id, &self.run_store.records().await)
-            .await?;
-        store
-            .save_verification_reports(&self.session_id, &verification_reports)
-            .await?;
-        store
-            .save_subagent_tasks(&self.session_id, &self.subagent_tasks.list().await)
-            .await?;
+        let snapshot = SessionSnapshotV1::new(
+            data,
+            &self.tool_executor.artifact_store(),
+            self.trace_sink.events(),
+            self.run_store.records().await,
+            verification_reports,
+            self.subagent_tasks.list().await,
+        );
+        snapshot
+            .validate_for_session(&self.session_id)
+            .map_err(|error| {
+                CodeError::Session(format!(
+                    "Refusing to save invalid session snapshot {}: {error:#}",
+                    self.session_id
+                ))
+            })?;
+        store.save_snapshot(&snapshot).await.map_err(|error| {
+            CodeError::Session(format!(
+                "Failed to save session {}: {error:#}",
+                self.session_id
+            ))
+        })?;
+        write_or_recover(&self.persistence_state).record_saved(snapshot.session.clone());
         tracing::debug!("Session {} saved", self.session_id);
         Ok(())
     }
@@ -131,23 +215,22 @@ impl SessionPersistenceContext {
     }
 }
 
-pub(super) fn load_session_data(
+pub(super) async fn load_session_snapshot(
     store: &Arc<dyn SessionStore>,
     session_id: &str,
-) -> Result<SessionData> {
-    let data = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(store.load(session_id)))
-            .map_err(|e| {
-                CodeError::Session(format!("Failed to load session {}: {}", session_id, e))
-            })?,
-        Err(_) => {
-            return Err(CodeError::Session(
-                "No async runtime available for session resume".to_string(),
-            ))
-        }
-    };
+) -> Result<SessionSnapshotV1> {
+    let snapshot = store.load_snapshot(session_id).await.map_err(|error| {
+        CodeError::Session(format!("Failed to load session {session_id}: {error:#}"))
+    })?;
 
-    data.ok_or_else(|| CodeError::Session(format!("Session not found: {}", session_id)))
+    let snapshot =
+        snapshot.ok_or_else(|| CodeError::Session(format!("Session not found: {}", session_id)))?;
+    snapshot.validate_for_session(session_id).map_err(|error| {
+        CodeError::Session(format!(
+            "Refusing invalid snapshot returned for session {session_id}: {error:#}"
+        ))
+    })?;
+    Ok(snapshot)
 }
 
 pub(super) fn apply_persisted_runtime_options(
@@ -200,44 +283,52 @@ pub(super) fn apply_persisted_runtime_options(
     opts
 }
 
-pub(super) fn restore_persisted_session_state(
+pub(super) fn ensure_artifact_restore_capacity(
+    opts: &mut SessionOptions,
+    snapshot: &SessionSnapshotV1,
+) {
+    // ToolExecutor fixes its artifact limits during session construction, so
+    // reserve enough capacity before building the resumed session. Explicit
+    // caller limits remain effective whenever they are already larger.
+    let requested = opts.artifact_store_limits.unwrap_or_default();
+    let persisted = snapshot.artifact_store_requirements();
+    opts.artifact_store_limits = Some(crate::tools::ArtifactStoreLimits {
+        max_artifacts: requested.max_artifacts.max(persisted.max_artifacts),
+        max_bytes: requested.max_bytes.max(persisted.max_bytes),
+    });
+}
+
+pub(super) async fn restore_persisted_session_state(
     session: &AgentSession,
-    store: &Arc<dyn SessionStore>,
-    data: SessionData,
+    snapshot: SessionSnapshotV1,
 ) -> Result<()> {
-    let session_id = data.id.clone();
-    *write_or_recover(&session.history) = data.messages;
+    snapshot
+        .validate_for_session(&session.session_id)
+        .map_err(|error| {
+            CodeError::Session(format!(
+                "Refusing to restore invalid snapshot into session {}: {error:#}",
+                session.session_id
+            ))
+        })?;
+    let restored_store = snapshot.artifact_store();
+    write_or_recover(&session.persistence_state).restore(snapshot.session.clone());
+    *write_or_recover(&session.history) = snapshot.session.messages;
 
-    if let Some(artifacts) = load_artifacts(store, &session_id)? {
-        let target_store = session.tool_executor.artifact_store();
-        for artifact in artifacts.artifacts() {
-            target_store.put(artifact);
-        }
+    let target_store = session.tool_executor.artifact_store();
+    for artifact in restored_store.artifacts() {
+        target_store.put(artifact);
     }
 
-    if let Some(events) = load_trace_events(store, &session_id)? {
-        session.trace_sink.replace_events(events);
-    }
-
-    if let Some(records) = load_run_records(store, &session_id)? {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            tokio::task::block_in_place(|| {
-                handle.block_on(session.run_store.replace_records(records))
-            });
-        }
-    }
-
-    if let Some(reports) = load_verification_reports(store, &session_id)? {
-        *write_or_recover(&session.verification_reports) = reports;
-    }
-
-    if let Some(tasks) = load_subagent_tasks(store, &session_id)? {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            tokio::task::block_in_place(|| {
-                handle.block_on(session.subagent_tasks.replace_snapshots(tasks))
-            });
-        }
-    }
+    session.trace_sink.replace_events(snapshot.trace_events);
+    session
+        .run_store
+        .replace_records(snapshot.run_records)
+        .await;
+    *write_or_recover(&session.verification_reports) = snapshot.verification_reports;
+    session
+        .subagent_tasks
+        .replace_snapshots(snapshot.subagent_tasks)
+        .await;
 
     Ok(())
 }
@@ -252,6 +343,7 @@ struct SessionDataSnapshotInput<'a> {
     principal: Option<&'a str>,
     agent_template_id: Option<&'a str>,
     correlation_id: Option<&'a str>,
+    seed: SessionPersistenceSeed,
 }
 
 async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> SessionData {
@@ -261,51 +353,57 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
     };
     let model_name = persisted_model_name(input.model_name);
     let now = chrono::Utc::now().timestamp();
-
-    SessionData {
+    let mut data = input.seed.baseline.unwrap_or_else(|| SessionData {
         id: input.session_id.to_string(),
-        config: crate::store::SessionConfig {
-            name: String::new(),
-            workspace: input.workspace.display().to_string(),
-            system_prompt: Some(input.config.prompt_slots.build()),
-            max_context_length: input.config.max_context_tokens.min(u32::MAX as usize) as u32,
-            auto_compact: input.config.auto_compact,
-            auto_compact_threshold: input.config.auto_compact_threshold,
-            storage_type: crate::config::StorageBackend::File,
-            queue_config: input.config.queue_config.clone(),
-            confirmation_policy,
-            permission_policy: input.config.permission_policy.clone(),
-            enforce_active_skill_tool_restrictions: input
-                .config
-                .enforce_active_skill_tool_restrictions,
-            max_parallel_tasks: Some(input.config.max_parallel_tasks),
-            auto_delegation: Some(input.config.auto_delegation.clone()),
-            parent_id: None,
-            security_config: None,
-            hook_engine: None,
-            planning_mode: input.config.planning_mode,
-            goal_tracking: input.config.goal_tracking,
-        },
+        config: crate::store::SessionConfig::default(),
         state: crate::store::SessionState::Active,
-        messages: input.history,
+        messages: Vec::new(),
         context_usage: crate::store::ContextUsage::default(),
         total_usage: crate::llm::TokenUsage::default(),
         total_cost: 0.0,
-        model_name,
+        model_name: None,
         cost_records: Vec::new(),
-        tool_names: SessionData::tool_names_from_definitions(&input.config.tools),
+        tool_names: Vec::new(),
         thinking_enabled: false,
         thinking_budget: None,
         created_at: now,
         updated_at: now,
-        llm_config: model_config_data(input.model_name),
+        llm_config: None,
         tasks: Vec::new(),
         parent_id: None,
-        tenant_id: input.tenant_id.map(str::to_string),
-        principal: input.principal.map(str::to_string),
-        agent_template_id: input.agent_template_id.map(str::to_string),
-        correlation_id: input.correlation_id.map(str::to_string),
-    }
+        tenant_id: None,
+        principal: None,
+        agent_template_id: None,
+        correlation_id: None,
+    });
+
+    data.id = input.session_id.to_string();
+    data.config.workspace = input.workspace.display().to_string();
+    data.config.system_prompt = Some(input.config.prompt_slots.build());
+    data.config.max_context_length = input.config.max_context_tokens.min(u32::MAX as usize) as u32;
+    data.config.auto_compact = input.config.auto_compact;
+    data.config.auto_compact_threshold = input.config.auto_compact_threshold;
+    data.config.queue_config = input.config.queue_config.clone();
+    data.config.confirmation_policy = confirmation_policy;
+    data.config.permission_policy = input.config.permission_policy.clone();
+    data.config.enforce_active_skill_tool_restrictions =
+        input.config.enforce_active_skill_tool_restrictions;
+    data.config.max_parallel_tasks = Some(input.config.max_parallel_tasks);
+    data.config.auto_delegation = Some(input.config.auto_delegation.clone());
+    data.config.planning_mode = input.config.planning_mode;
+    data.config.goal_tracking = input.config.goal_tracking;
+    data.messages = input.history;
+    data.total_usage = input.seed.total_usage;
+    data.model_name = model_name;
+    data.tool_names = SessionData::tool_names_from_definitions(&input.config.tools);
+    data.updated_at = now;
+    data.llm_config = model_config_data(input.model_name);
+    data.tasks = input.seed.tasks;
+    data.tenant_id = input.tenant_id.map(str::to_string);
+    data.principal = input.principal.map(str::to_string);
+    data.agent_template_id = input.agent_template_id.map(str::to_string);
+    data.correlation_id = input.correlation_id.map(str::to_string);
+    data
 }
 
 fn persisted_model_ref(data: &SessionData) -> Option<String> {
@@ -336,100 +434,92 @@ fn model_config_data(model_name: &str) -> Option<LlmConfigData> {
     })
 }
 
-fn load_artifacts(
-    store: &Arc<dyn SessionStore>,
-    session_id: &str,
-) -> Result<Option<crate::tools::ArtifactStore>> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            tokio::task::block_in_place(|| handle.block_on(store.load_artifacts(session_id)))
-                .map_err(|e| {
-                    CodeError::Session(format!(
-                        "Failed to load artifacts for session {}: {}",
-                        session_id, e
-                    ))
-                })
-        }
-        Err(_) => Ok(None),
-    }
-}
-
-fn load_trace_events(
-    store: &Arc<dyn SessionStore>,
-    session_id: &str,
-) -> Result<Option<Vec<crate::trace::TraceEvent>>> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            tokio::task::block_in_place(|| handle.block_on(store.load_trace_events(session_id)))
-                .map_err(|e| {
-                    CodeError::Session(format!(
-                        "Failed to load trace events for session {}: {}",
-                        session_id, e
-                    ))
-                })
-        }
-        Err(_) => Ok(None),
-    }
-}
-
-fn load_run_records(
-    store: &Arc<dyn SessionStore>,
-    session_id: &str,
-) -> Result<Option<Vec<crate::run::RunRecord>>> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            tokio::task::block_in_place(|| handle.block_on(store.load_run_records(session_id)))
-                .map_err(|e| {
-                    CodeError::Session(format!(
-                        "Failed to load run records for session {}: {}",
-                        session_id, e
-                    ))
-                })
-        }
-        Err(_) => Ok(None),
-    }
-}
-
-fn load_subagent_tasks(
-    store: &Arc<dyn SessionStore>,
-    session_id: &str,
-) -> Result<Option<Vec<crate::subagent_task_tracker::SubagentTaskSnapshot>>> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            tokio::task::block_in_place(|| handle.block_on(store.load_subagent_tasks(session_id)))
-                .map_err(|e| {
-                    CodeError::Session(format!(
-                        "Failed to load subagent tasks for session {}: {}",
-                        session_id, e
-                    ))
-                })
-        }
-        Err(_) => Ok(None),
-    }
-}
-
-fn load_verification_reports(
-    store: &Arc<dyn SessionStore>,
-    session_id: &str,
-) -> Result<Option<Vec<crate::verification::VerificationReport>>> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| {
-            handle.block_on(store.load_verification_reports(session_id))
-        })
-        .map_err(|e| {
-            CodeError::Session(format!(
-                "Failed to load verification reports for session {}: {}",
-                session_id, e
-            ))
-        }),
-        Err(_) => Ok(None),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentEvent;
+    use crate::run::{RunEventRecord, RunRecord, RunSnapshot, RunStatus};
     use crate::store::{ContextUsage, SessionConfig, SessionState};
+    use crate::subagent_task_tracker::{SubagentStatus, SubagentTaskSnapshot};
+
+    #[derive(Default)]
+    struct SnapshotOnlyStore {
+        aggregate_saves: std::sync::atomic::AtomicUsize,
+        legacy_saves: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionStore for SnapshotOnlyStore {
+        async fn save(&self, _session: &SessionData) -> anyhow::Result<()> {
+            self.legacy_saves
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn load(&self, _id: &str) -> anyhow::Result<Option<SessionData>> {
+            Ok(None)
+        }
+
+        async fn delete(&self, _id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn list(&self) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn exists(&self, _id: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn save_snapshot(&self, snapshot: &SessionSnapshotV1) -> anyhow::Result<()> {
+            snapshot.ensure_loadable()?;
+            self.aggregate_saves
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn backend_name(&self) -> &str {
+            "snapshot-only-test"
+        }
+    }
+
+    struct ReturningSnapshotStore {
+        snapshot: SessionSnapshotV1,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionStore for ReturningSnapshotStore {
+        async fn save(&self, _session: &SessionData) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn load(&self, _id: &str) -> anyhow::Result<Option<SessionData>> {
+            Ok(None)
+        }
+
+        async fn delete(&self, _id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn list(&self) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn exists(&self, _id: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn load_snapshot(&self, _id: &str) -> anyhow::Result<Option<SessionSnapshotV1>> {
+            // Deliberately ignore the requested key. Core must not trust a
+            // custom backend to enforce payload identity or invariants.
+            Ok(Some(self.snapshot.clone()))
+        }
+
+        fn backend_name(&self) -> &str {
+            "returning-snapshot-test"
+        }
+    }
 
     fn persisted_data(model_name: Option<&str>, llm: Option<(&str, &str)>) -> SessionData {
         SessionData {
@@ -462,6 +552,176 @@ mod tests {
         }
     }
 
+    fn snapshot_for(session_id: &str) -> SessionSnapshotV1 {
+        let mut data = persisted_data(None, None);
+        data.id = session_id.to_string();
+        SessionSnapshotV1::session_only(data)
+    }
+
+    fn run_record(
+        session_id: &str,
+        run_id: &str,
+        sequences: &[usize],
+        event_count: usize,
+    ) -> RunRecord {
+        RunRecord {
+            snapshot: RunSnapshot {
+                id: run_id.to_string(),
+                session_id: session_id.to_string(),
+                status: RunStatus::Completed,
+                prompt: "persisted run".to_string(),
+                created_at_ms: 1,
+                updated_at_ms: 2,
+                result_text: Some("done".to_string()),
+                error: None,
+                event_count,
+            },
+            events: sequences
+                .iter()
+                .map(|sequence| RunEventRecord {
+                    sequence: *sequence,
+                    timestamp_ms: *sequence as u64,
+                    event: AgentEvent::TextDelta {
+                        text: format!("event-{sequence}"),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    fn subagent_task(parent_session_id: &str) -> SubagentTaskSnapshot {
+        SubagentTaskSnapshot {
+            task_id: "task-1".to_string(),
+            parent_session_id: parent_session_id.to_string(),
+            child_session_id: "child-1".to_string(),
+            agent: "test".to_string(),
+            description: "persisted task".to_string(),
+            status: SubagentStatus::Completed,
+            started_ms: 1,
+            updated_ms: 2,
+            finished_ms: Some(2),
+            output: Some("done".to_string()),
+            success: Some(true),
+            source_anchors: Vec::new(),
+            progress: Vec::new(),
+        }
+    }
+
+    async fn load_from_returning_store(
+        requested_id: &str,
+        snapshot: SessionSnapshotV1,
+    ) -> Result<SessionSnapshotV1> {
+        let store: Arc<dyn SessionStore> = Arc::new(ReturningSnapshotStore { snapshot });
+        load_session_snapshot(&store, requested_id).await
+    }
+
+    #[tokio::test]
+    async fn load_rejects_custom_store_snapshot_for_another_session() {
+        let error = load_from_returning_store("session-a", snapshot_for("session-b"))
+            .await
+            .expect_err("custom store must not substitute another session payload");
+
+        let message = error.to_string();
+        assert!(message.contains("session-a"), "{message}");
+        assert!(message.contains("session-b"), "{message}");
+        assert!(message.contains("snapshot payload"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn load_rejects_cross_session_run_record() {
+        let mut snapshot = snapshot_for("session-a");
+        snapshot.run_records = vec![run_record("session-b", "run-1", &[0], 1)];
+
+        let error = load_from_returning_store("session-a", snapshot)
+            .await
+            .expect_err("run records must belong to their snapshot session");
+        let message = error.to_string();
+        assert!(message.contains("run-1"), "{message}");
+        assert!(message.contains("session-a"), "{message}");
+        assert!(message.contains("session-b"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn load_rejects_duplicate_run_event_sequence() {
+        let mut snapshot = snapshot_for("session-a");
+        snapshot.run_records = vec![run_record("session-a", "run-1", &[7, 7], 8)];
+
+        let error = load_from_returning_store("session-a", snapshot)
+            .await
+            .expect_err("duplicate replay sequence must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("run-1"), "{message}");
+        assert!(message.contains("not strictly greater"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn load_accepts_trimmed_run_event_sequence_and_preserves_cursor() {
+        let mut snapshot = snapshot_for("session-a");
+        snapshot.run_records = vec![run_record("session-a", "run-1", &[7, 8, 9], 10)];
+
+        let loaded = load_from_returning_store("session-a", snapshot)
+            .await
+            .expect("FIFO-trimmed retained events are valid");
+        let record = &loaded.run_records[0];
+        assert_eq!(record.snapshot.event_count, 10);
+        assert_eq!(
+            record
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![7, 8, 9]
+        );
+    }
+
+    #[tokio::test]
+    async fn load_rejects_duplicate_run_id() {
+        let mut snapshot = snapshot_for("session-a");
+        snapshot.run_records = vec![
+            run_record("session-a", "run-1", &[0], 1),
+            run_record("session-a", "run-1", &[1], 2),
+        ];
+
+        let error = load_from_returning_store("session-a", snapshot)
+            .await
+            .expect_err("run ids must be unique within a snapshot");
+        let message = error.to_string();
+        assert!(message.contains("duplicate run id"), "{message}");
+        assert!(message.contains("run-1"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn load_rejects_event_count_behind_retained_sequence() {
+        let mut snapshot = snapshot_for("session-a");
+        snapshot.run_records = vec![run_record("session-a", "run-1", &[7, 8, 9], 9)];
+
+        let error = load_from_returning_store("session-a", snapshot)
+            .await
+            .expect_err("event_count must cover the highest retained sequence");
+        let message = error.to_string();
+        assert!(message.contains("event_count 9"), "{message}");
+        assert!(message.contains("expected at least 10"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn load_validates_known_subagent_parent_but_accepts_legacy_unknown_parent() {
+        let mut legacy_snapshot = snapshot_for("session-a");
+        legacy_snapshot.subagent_tasks = vec![subagent_task("")];
+        load_from_returning_store("session-a", legacy_snapshot)
+            .await
+            .expect("legacy task snapshots can lack a parent id");
+
+        let mut foreign_snapshot = snapshot_for("session-a");
+        foreign_snapshot.subagent_tasks = vec![subagent_task("session-b")];
+        let error = load_from_returning_store("session-a", foreign_snapshot)
+            .await
+            .expect_err("known subagent parent must match snapshot session");
+        let message = error.to_string();
+        assert!(message.contains("task-1"), "{message}");
+        assert!(message.contains("session-a"), "{message}");
+        assert!(message.contains("session-b"), "{message}");
+    }
+
     #[test]
     fn persisted_runtime_options_prefer_llm_config() {
         let data = persisted_data(Some("anthropic/old"), Some(("openai", "gpt-4o")));
@@ -484,5 +744,133 @@ mod tests {
         assert_eq!(data.model, "gpt-4o");
         assert!(data.api_key.is_none());
         assert!(data.base_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_save_uses_exactly_one_aggregate_store_call() {
+        let concrete_store = Arc::new(SnapshotOnlyStore::default());
+        let session_store: Arc<dyn SessionStore> = concrete_store.clone();
+        let context = SessionPersistenceContext {
+            session_store: Some(session_store),
+            session_id: "aggregate-save-test".to_string(),
+            workspace: PathBuf::from("/tmp/aggregate-save-test"),
+            config: AgentConfig::default(),
+            model_name: "openai/test-model".to_string(),
+            tool_executor: Arc::new(ToolExecutor::new("/tmp/aggregate-save-test".to_string())),
+            trace_sink: crate::trace::InMemoryTraceSink::new(),
+            run_store: Arc::new(crate::run::InMemoryRunStore::new()),
+            history: Arc::new(RwLock::new(vec![Message::user("persist me")])),
+            verification_reports: Arc::new(RwLock::new(Vec::new())),
+            subagent_tasks: Arc::new(
+                crate::subagent_task_tracker::InMemorySubagentTaskTracker::new(),
+            ),
+            persistence_state: Arc::new(RwLock::new(SessionPersistenceState::default())),
+            tenant_id: None,
+            principal: None,
+            agent_template_id: None,
+            correlation_id: None,
+            auto_save: false,
+        };
+
+        context.save().await.unwrap();
+
+        assert_eq!(
+            concrete_store
+                .aggregate_saves
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            concrete_store
+                .legacy_saves
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_saves_preserve_restored_metadata_usage_cost_and_tasks() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let session_store: Arc<dyn SessionStore> = store.clone();
+        let mut baseline = persisted_data(Some("openai/old-model"), None);
+        baseline.id = "lossless-save".to_string();
+        baseline.config.name = "Important session".to_string();
+        baseline.config.storage_type = crate::config::StorageBackend::Custom;
+        baseline.config.parent_id = Some("parent-session".to_string());
+        baseline.context_usage = ContextUsage {
+            used_tokens: 900,
+            max_tokens: 10_000,
+            percent: 0.09,
+            turns: 7,
+        };
+        baseline.total_usage = crate::llm::TokenUsage {
+            prompt_tokens: 600,
+            completion_tokens: 300,
+            total_tokens: 900,
+            cache_read_tokens: Some(25),
+            cache_write_tokens: None,
+        };
+        baseline.total_cost = 1.25;
+        baseline.created_at = 42;
+        baseline.tasks = vec![crate::planning::Task::new("task-1", "preserve me")];
+
+        let persistence_state = Arc::new(RwLock::new(SessionPersistenceState::default()));
+        write_or_recover(&persistence_state).restore(baseline);
+        write_or_recover(&persistence_state).record_usage(&crate::llm::TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            cache_read_tokens: Some(2),
+            cache_write_tokens: Some(3),
+        });
+        let context = SessionPersistenceContext {
+            session_store: Some(session_store.clone()),
+            session_id: "lossless-save".to_string(),
+            workspace: PathBuf::from("/tmp/lossless-save"),
+            config: AgentConfig::default(),
+            model_name: "openai/new-model".to_string(),
+            tool_executor: Arc::new(ToolExecutor::new("/tmp/lossless-save".to_string())),
+            trace_sink: crate::trace::InMemoryTraceSink::new(),
+            run_store: Arc::new(crate::run::InMemoryRunStore::new()),
+            history: Arc::new(RwLock::new(vec![Message::user("new history")])),
+            verification_reports: Arc::new(RwLock::new(Vec::new())),
+            subagent_tasks: Arc::new(
+                crate::subagent_task_tracker::InMemorySubagentTaskTracker::new(),
+            ),
+            persistence_state,
+            tenant_id: None,
+            principal: None,
+            agent_template_id: None,
+            correlation_id: None,
+            auto_save: false,
+        };
+
+        context.save().await.unwrap();
+        context.save().await.unwrap();
+        let saved = session_store
+            .load_snapshot("lossless-save")
+            .await
+            .unwrap()
+            .unwrap()
+            .session;
+
+        assert_eq!(saved.config.name, "Important session");
+        assert_eq!(
+            saved.config.storage_type,
+            crate::config::StorageBackend::Custom
+        );
+        assert_eq!(saved.config.parent_id.as_deref(), Some("parent-session"));
+        assert_eq!(saved.context_usage.used_tokens, 900);
+        assert_eq!(saved.total_usage.prompt_tokens, 610);
+        assert_eq!(saved.total_usage.completion_tokens, 305);
+        assert_eq!(saved.total_usage.total_tokens, 915);
+        assert_eq!(saved.total_usage.cache_read_tokens, Some(27));
+        assert_eq!(saved.total_usage.cache_write_tokens, Some(3));
+        assert_eq!(saved.total_cost, 1.25);
+        assert_eq!(saved.created_at, 42);
+        assert_eq!(saved.tasks.len(), 1);
+        assert_eq!(saved.tasks[0].content, "preserve me");
+        assert_eq!(saved.messages[0].text(), "new history");
+        assert_eq!(saved.model_name.as_deref(), Some("openai/new-model"));
     }
 }

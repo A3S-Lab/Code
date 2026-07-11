@@ -3,7 +3,7 @@
 use crate::program::ProgramCatalog;
 use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use crate::tools::ToolRegistry;
+use crate::tools::{registry_tool_invoker, ToolInvocation, ToolInvoker, ToolRegistry};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use rquickjs::function::{Async, Func};
@@ -24,16 +24,18 @@ const DEFAULT_SCRIPT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_SCRIPT_SOURCE_BYTES: usize = 64 * 1024;
 
 pub struct ProgramTool {
-    registry: Arc<ToolRegistry>,
+    fallback_invoker: Arc<dyn ToolInvoker>,
 }
 
 impl ProgramTool {
     pub fn new(registry: Arc<ToolRegistry>) -> Self {
-        Self { registry }
+        Self {
+            fallback_invoker: registry_tool_invoker(registry),
+        }
     }
 
     pub fn with_catalog(registry: Arc<ToolRegistry>, _catalog: ProgramCatalog) -> Self {
-        Self { registry }
+        Self::new(registry)
     }
 }
 
@@ -108,7 +110,10 @@ impl Tool for ProgramTool {
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
 
-        execute_script_program(args, inputs, Arc::clone(&self.registry), ctx).await
+        let invoker = ctx
+            .tool_invoker()
+            .unwrap_or_else(|| Arc::clone(&self.fallback_invoker));
+        execute_script_program(args, inputs, invoker, ctx).await
     }
 }
 
@@ -132,7 +137,7 @@ struct ScriptCallRecord {
 async fn execute_script_program(
     args: &serde_json::Value,
     inputs: serde_json::Value,
-    registry: Arc<ToolRegistry>,
+    invoker: Arc<dyn ToolInvoker>,
     ctx: &ToolContext,
 ) -> Result<ToolOutput> {
     let language = args
@@ -160,18 +165,9 @@ async fn execute_script_program(
         return Ok(ToolOutput::error(message));
     }
 
-    let allowed_tools = script_allowed_tools(args, &registry);
+    let allowed_tools = script_allowed_tools(args, invoker.available_tools());
     let limits = script_limits(args);
-    match run_quickjs_script(
-        &source,
-        inputs,
-        registry,
-        ctx.clone(),
-        allowed_tools,
-        limits,
-    )
-    .await
-    {
+    match run_quickjs_script(&source, inputs, invoker, ctx.clone(), allowed_tools, limits).await {
         Ok(output) => Ok(output),
         Err(err) => Ok(ToolOutput::error(format!("program script failed: {err}"))),
     }
@@ -202,7 +198,7 @@ async fn load_script_source(
         .map_err(|err| format!("failed to read script path '{}': {err}", path))
 }
 
-fn script_allowed_tools(args: &serde_json::Value, registry: &ToolRegistry) -> HashSet<String> {
+fn script_allowed_tools(args: &serde_json::Value, available_tools: Vec<String>) -> HashSet<String> {
     let mut allowed = args
         .get("allowed_tools")
         .and_then(|value| value.as_array())
@@ -213,7 +209,7 @@ fn script_allowed_tools(args: &serde_json::Value, registry: &ToolRegistry) -> Ha
                 .map(ToString::to_string)
                 .collect::<HashSet<_>>()
         })
-        .unwrap_or_else(|| registry.list().into_iter().collect());
+        .unwrap_or_else(|| available_tools.into_iter().collect());
 
     allowed.remove("program");
     // QuickJS is a single-threaded embedded VM, so PTC scripts must not expose
@@ -265,7 +261,7 @@ fn validate_script_source(source: &str) -> std::result::Result<(), String> {
 async fn run_quickjs_script(
     source: &str,
     inputs: serde_json::Value,
-    registry: Arc<ToolRegistry>,
+    invoker: Arc<dyn ToolInvoker>,
     ctx: ToolContext,
     allowed_tools: HashSet<String>,
     limits: ScriptLimits,
@@ -293,7 +289,7 @@ async fn run_quickjs_script(
     // session runtime instead of being trapped inside the QuickJS VM runtime.
     let outer = tokio::runtime::Handle::current();
     let state = Arc::new(Mutex::new(ScriptVmState {
-        registry,
+        invoker,
         ctx,
         allowed_tools,
         max_tool_calls,
@@ -416,7 +412,7 @@ async fn run_embedded_script(
 }
 
 struct ScriptVmState {
-    registry: Arc<ToolRegistry>,
+    invoker: Arc<dyn ToolInvoker>,
     ctx: ToolContext,
     allowed_tools: HashSet<String>,
     max_tool_calls: usize,
@@ -479,7 +475,7 @@ async fn execute_host_tool_json(
     let args = serde_json::from_str(&args_json).map_err(|err| {
         JsError::new_from_js_message("string", "object", format!("invalid tool args JSON: {err}"))
     })?;
-    let (registry, ctx, max_output_bytes, outer) = {
+    let (invoker, ctx, max_output_bytes, outer) = {
         let mut script = state.lock().await;
         if !script.allowed_tools.contains(&tool) {
             return Err(JsError::new_from_js_message(
@@ -497,7 +493,7 @@ async fn execute_host_tool_json(
             ));
         }
         (
-            Arc::clone(&script.registry),
+            Arc::clone(&script.invoker),
             script.ctx.clone(),
             script.max_output_bytes,
             script.outer.clone(),
@@ -510,13 +506,12 @@ async fn execute_host_tool_json(
     let tool_for_spawn = tool.clone();
     let result = outer
         .spawn(async move {
-            registry
-                .execute_with_context(&tool_for_spawn, &args, &ctx)
+            invoker
+                .invoke(ToolInvocation::nested(tool_for_spawn, args), &ctx)
                 .await
         })
         .await
-        .map_err(|err| JsError::new_from_js_message("tool", "spawn", err.to_string()))?
-        .map_err(|err| JsError::new_from_js_message("tool", "result", err.to_string()))?;
+        .map_err(|err| JsError::new_from_js_message("tool", "spawn", err.to_string()))?;
     let mut output = result.output;
     if output.len() > max_output_bytes {
         output = truncate_utf8(&output, max_output_bytes).to_string();
@@ -737,7 +732,7 @@ mod tests {
             PathBuf::from("/tmp"),
         )))));
 
-        let allowed = script_allowed_tools(&serde_json::json!({}), &registry);
+        let allowed = script_allowed_tools(&serde_json::json!({}), registry.list());
 
         assert!(allowed.contains("echo"));
         assert!(!allowed.contains("program"));
@@ -749,7 +744,7 @@ mod tests {
         let args = serde_json::json!({
             "allowed_tools": ["parallel_task", "task", "program", "echo"]
         });
-        let allowed = script_allowed_tools(&args, &registry);
+        let allowed = script_allowed_tools(&args, registry.list());
         assert!(!allowed.contains("parallel_task"));
         assert!(allowed.contains("task"));
         assert!(allowed.contains("echo"));

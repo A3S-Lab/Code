@@ -36,6 +36,9 @@ mod execution_mode;
 mod execution_state;
 pub(crate) use execution_state::ExecutionSeed;
 mod hook_runtime;
+mod invocation_context;
+pub(crate) use invocation_context::InvocationContext;
+mod llm_invoker;
 mod llm_turn;
 mod loop_builder;
 mod loop_runtime;
@@ -49,8 +52,8 @@ mod queue_forwarder;
 mod telemetry_runtime;
 mod tool_completion_runtime;
 mod tool_execution_runtime;
-mod tool_gate_runtime;
 mod tool_guard_runtime;
+mod tool_invoker;
 mod tool_memory_runtime;
 mod tool_result_runtime;
 mod tool_turn;
@@ -98,7 +101,7 @@ pub(crate) struct AgentConfig {
     /// When true, active skill `allowed-tools` restrict ordinary session tool calls.
     ///
     /// The default is false: active skills may inject instructions, but ordinary
-    /// tool calls continue to the host permission/AHP/HITL approval chain.
+    /// tool calls continue to the host permission/HITL approval chain.
     /// Skill invocations still enable this for their child execution context.
     pub enforce_active_skill_tool_restrictions: bool,
     /// Max consecutive malformed-tool-args errors before aborting (default: 2).
@@ -304,19 +307,33 @@ pub enum AgentEvent {
     #[serde(rename = "reasoning_delta")]
     ReasoningDelta { text: String },
 
-    /// Tool execution started
+    /// The model started preparing a streamed tool call.
     #[serde(rename = "tool_start")]
     ToolStart { id: String, name: String },
 
     /// Tool input delta from streaming (partial JSON arguments)
     #[serde(rename = "tool_input_delta")]
-    ToolInputDelta { delta: String },
+    ToolInputDelta {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        delta: String,
+    },
+
+    /// A fully prepared tool call passed safety/confirmation and began execution.
+    #[serde(rename = "tool_execution_start")]
+    ToolExecutionStart {
+        id: String,
+        name: String,
+        args: serde_json::Value,
+    },
 
     /// Tool execution completed
     #[serde(rename = "tool_end")]
     ToolEnd {
         id: String,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args: Option<serde_json::Value>,
         output: String,
         exit_code: i32,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -727,8 +744,7 @@ pub struct ToolCommand {
     tool_name: String,
     tool_args: Value,
     tool_context: ToolContext,
-    skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
-    enforce_active_skill_tool_restrictions: bool,
+    tool_timeout_ms: Option<u64>,
 }
 
 impl ToolCommand {
@@ -738,16 +754,14 @@ impl ToolCommand {
         tool_name: String,
         tool_args: Value,
         tool_context: ToolContext,
-        skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
-        enforce_active_skill_tool_restrictions: bool,
+        tool_timeout_ms: Option<u64>,
     ) -> Self {
         Self {
             tool_executor,
             tool_name,
             tool_args,
             tool_context,
-            skill_registry,
-            enforce_active_skill_tool_restrictions,
+            tool_timeout_ms,
         }
     }
 }
@@ -755,41 +769,55 @@ impl ToolCommand {
 #[async_trait]
 impl SessionCommand for ToolCommand {
     async fn execute(&self) -> Result<Value> {
-        // Check skill-based tool permissions
-        if self.enforce_active_skill_tool_restrictions {
-            if let Some(registry) = &self.skill_registry {
-                // If there are instruction skills with tool restrictions, check permissions
-                let restricting_skills = registry.global_tool_restricting_skills();
-
-                if !restricting_skills.is_empty() {
-                    let mut allowed = false;
-
-                    for skill in &restricting_skills {
-                        if skill.is_tool_allowed(&self.tool_name) {
-                            allowed = true;
-                            break;
-                        }
-                    }
-
-                    if !allowed {
-                        return Err(anyhow::anyhow!(
-                        "Tool '{}' is not allowed by any active skill. Active skills restrict tools to their allowed-tools lists.",
-                        self.tool_name
-                    ));
-                    }
-                }
-            }
+        if self.tool_context.is_cancelled() {
+            anyhow::bail!("Tool '{}' cancelled before queue execution", self.tool_name);
         }
 
         // Execute the tool
-        let result = self
-            .tool_executor
-            .execute_with_context(&self.tool_name, &self.tool_args, &self.tool_context)
-            .await?;
+        let execute = self.tool_executor.execute_with_context(
+            &self.tool_name,
+            &self.tool_args,
+            &self.tool_context,
+        );
+        let execute = async {
+            if let Some(timeout_ms) = self.tool_timeout_ms {
+                tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), execute)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "Tool '{}' timed out after {}ms",
+                            self.tool_name,
+                            timeout_ms
+                        )
+                    })?
+            } else {
+                execute.await
+            }
+        };
+        let cancellation = self.tool_context.cancellation_token();
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                anyhow::bail!("Tool '{}' cancelled during queue execution", self.tool_name);
+            }
+            result = execute => result?,
+        };
+        let images = result
+            .images
+            .iter()
+            .map(|image| {
+                serde_json::json!({
+                    "data": image.base64_data(),
+                    "media_type": image.media_type,
+                })
+            })
+            .collect::<Vec<_>>();
         Ok(serde_json::json!({
             "output": result.output,
             "exit_code": result.exit_code,
             "metadata": result.metadata,
+            "images": images,
+            "error_kind": result.error_kind,
         }))
     }
 

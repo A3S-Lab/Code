@@ -3,6 +3,7 @@ use crate::llm::Message;
 use crate::planning::{AgentGoal, ExecutionPlan, LlmPlanner, PreAnalysis};
 use anyhow::Result;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 impl AgentLoop {
     pub(super) fn preserve_plan_goal_context(
@@ -38,13 +39,17 @@ impl AgentLoop {
         }
     }
 
-    /// Create an execution plan for a prompt
-    ///
-    /// Delegates to [`LlmPlanner`] for structured JSON plan generation,
-    /// falling back to heuristic planning if the LLM call fails.
-    pub async fn plan(&self, prompt: &str, _context: Option<&str>) -> Result<ExecutionPlan> {
-        match LlmPlanner::create_plan(&self.llm_client, prompt).await {
+    async fn plan_scoped(
+        &self,
+        prompt: &str,
+        session_id: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &CancellationToken,
+    ) -> Result<ExecutionPlan> {
+        let llm_client = self.scoped_llm_client_for_parts(session_id, event_tx, cancel_token);
+        match LlmPlanner::create_plan(&llm_client, prompt).await {
             Ok(plan) => Ok(plan),
+            Err(e) if Self::planning_control_error(&e, cancel_token) => Err(e),
             Err(e) => {
                 tracing::warn!("LLM plan creation failed, using fallback: {}", e);
                 Ok(LlmPlanner::fallback_plan(prompt))
@@ -65,9 +70,16 @@ impl AgentLoop {
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
         pre_analysis: Option<PreAnalysis>,
+        cancel_token: &CancellationToken,
     ) -> Result<AgentResult> {
+        if cancel_token.is_cancelled() {
+            anyhow::bail!("Operation cancelled by user");
+        }
         let session_id_str = session_id.unwrap_or("");
         let planning_prompt = self.fire_pre_planning(session_id_str, prompt).await?;
+        if cancel_token.is_cancelled() {
+            anyhow::bail!("Operation cancelled by user");
+        }
         let pre_analysis = if planning_prompt == prompt {
             pre_analysis
         } else {
@@ -96,11 +108,21 @@ impl AgentLoop {
             } else {
                 // Fall back: extract goal and create plan via separate LLM calls.
                 let g = if self.config.goal_tracking {
-                    Some(self.extract_goal(&planning_prompt).await?)
+                    Some(
+                        self.extract_goal_scoped(
+                            &planning_prompt,
+                            session_id,
+                            &event_tx,
+                            cancel_token,
+                        )
+                        .await?,
+                    )
                 } else {
                     None
                 };
-                let p = self.plan(&planning_prompt, None).await?;
+                let p = self
+                    .plan_scoped(&planning_prompt, session_id, &event_tx, cancel_token)
+                    .await?;
                 Ok((g, p))
             }
         }
@@ -145,7 +167,7 @@ impl AgentLoop {
 
         // Execute the plan step by step
         let result = self
-            .execute_plan(history, &plan, session_id, event_tx.clone())
+            .execute_plan(history, &plan, session_id, event_tx.clone(), cancel_token)
             .await?;
 
         // Emit the final End event (execute_loop_inner does not emit End in planning mode)
@@ -163,7 +185,15 @@ impl AgentLoop {
         // Check goal achievement when goal_tracking is enabled
         if self.config.goal_tracking {
             if let Some(ref g) = goal {
-                let achieved = self.check_goal_achievement(g, &result.text).await?;
+                let achieved = self
+                    .check_goal_achievement_scoped(
+                        g,
+                        &result.text,
+                        session_id,
+                        &event_tx,
+                        cancel_token,
+                    )
+                    .await?;
                 if achieved {
                     if let Some(tx) = &event_tx {
                         tx.send(AgentEvent::GoalAchieved {
@@ -185,9 +215,27 @@ impl AgentLoop {
     ///
     /// Delegates to [`LlmPlanner`] for structured JSON goal extraction,
     /// falling back to heuristic logic if the LLM call fails.
-    pub async fn extract_goal(&self, prompt: &str) -> Result<AgentGoal> {
-        match LlmPlanner::extract_goal(&self.llm_client, prompt).await {
+    #[cfg(test)]
+    pub async fn extract_goal(
+        &self,
+        prompt: &str,
+        cancel_token: &CancellationToken,
+    ) -> Result<AgentGoal> {
+        self.extract_goal_scoped(prompt, None, &None, cancel_token)
+            .await
+    }
+
+    async fn extract_goal_scoped(
+        &self,
+        prompt: &str,
+        session_id: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &CancellationToken,
+    ) -> Result<AgentGoal> {
+        let llm_client = self.scoped_llm_client_for_parts(session_id, event_tx, cancel_token);
+        match LlmPlanner::extract_goal(&llm_client, prompt).await {
             Ok(goal) => Ok(goal),
+            Err(e) if Self::planning_control_error(&e, cancel_token) => Err(e),
             Err(e) => {
                 tracing::warn!("LLM goal extraction failed, using fallback: {}", e);
                 Ok(LlmPlanner::fallback_goal(prompt))
@@ -199,18 +247,47 @@ impl AgentLoop {
     ///
     /// Delegates to [`LlmPlanner`] for structured JSON achievement check,
     /// falling back to heuristic logic if the LLM call fails.
+    #[cfg(test)]
     pub async fn check_goal_achievement(
         &self,
         goal: &AgentGoal,
         current_state: &str,
+        cancel_token: &CancellationToken,
     ) -> Result<bool> {
-        match LlmPlanner::check_achievement(&self.llm_client, goal, current_state).await {
+        self.check_goal_achievement_scoped(goal, current_state, None, &None, cancel_token)
+            .await
+    }
+
+    async fn check_goal_achievement_scoped(
+        &self,
+        goal: &AgentGoal,
+        current_state: &str,
+        session_id: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &CancellationToken,
+    ) -> Result<bool> {
+        let llm_client = self.scoped_llm_client_for_parts(session_id, event_tx, cancel_token);
+        match LlmPlanner::check_achievement(&llm_client, goal, current_state).await {
             Ok(result) => Ok(result.achieved),
+            Err(e) if Self::planning_control_error(&e, cancel_token) => Err(e),
             Err(e) => {
                 tracing::warn!("LLM achievement check failed, using fallback: {}", e);
                 let result = LlmPlanner::fallback_check_achievement(goal, current_state);
                 Ok(result.achieved)
             }
         }
+    }
+
+    pub(super) fn planning_control_error(
+        error: &anyhow::Error,
+        cancel_token: &CancellationToken,
+    ) -> bool {
+        cancel_token.is_cancelled()
+            || crate::llm::non_retryable_llm_error_message(error).is_some()
+            || error
+                .downcast_ref::<crate::error::CodeError>()
+                .is_some_and(|error| {
+                    matches!(error, crate::error::CodeError::BudgetExhausted { .. })
+                })
     }
 }

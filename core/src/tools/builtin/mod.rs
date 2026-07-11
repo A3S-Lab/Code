@@ -20,6 +20,20 @@ mod write;
 use super::registry::ToolRegistry;
 use std::sync::Arc;
 
+/// Normalize a source URL before it can enter durable tool/task metadata.
+/// Credentials, query strings, and fragments are intentionally excluded.
+pub(crate) fn safe_http_source_url(value: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(value.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str()?.is_empty() {
+        return None;
+    }
+    url.set_username("").ok()?;
+    url.set_password(None).ok()?;
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.to_string())
+}
+
 /// Register all baseline built-in tools with the registry, gated by
 /// workspace capabilities.
 ///
@@ -120,11 +134,33 @@ pub fn register_task_with_mcp(
     parent_context: Option<crate::child_run::ChildRunContext>,
     subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
 ) {
+    register_task_with_mcp_managers(
+        registry,
+        llm_client,
+        agent_registry,
+        workspace,
+        mcp_manager.into_iter().collect(),
+        parent_context,
+        subagent_tracker,
+    );
+}
+
+/// Register task delegation tools with ordered MCP capability sources.
+///
+/// Each manager keeps ownership of its own connections. Later sources shadow
+/// earlier sources on identical fully-qualified tool names inside child runs.
+pub fn register_task_with_mcp_managers(
+    registry: &Arc<ToolRegistry>,
+    llm_client: Arc<dyn crate::llm::LlmClient>,
+    agent_registry: Arc<crate::subagent::AgentRegistry>,
+    workspace: String,
+    mcp_managers: Vec<Arc<crate::mcp::manager::McpManager>>,
+    parent_context: Option<crate::child_run::ChildRunContext>,
+    subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
+) {
     use crate::tools::task::{ParallelTaskTool, TaskExecutor, TaskTool};
-    let mut executor = match mcp_manager {
-        Some(mcp) => TaskExecutor::with_mcp(agent_registry, llm_client, workspace, mcp),
-        None => TaskExecutor::new(agent_registry, llm_client, workspace),
-    };
+    let mut executor =
+        TaskExecutor::with_mcp_managers(agent_registry, llm_client, workspace, mcp_managers);
     if let Some(ctx) = parent_context {
         executor = executor.with_parent_context(ctx);
     }
@@ -165,4 +201,21 @@ pub fn register_generate_object(
     registry.register_builtin(Arc::new(generate_object::GenerateObjectTool::new(
         llm_client,
     )));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_http_source_url;
+
+    #[test]
+    fn safe_source_url_removes_credentials_query_and_fragment() {
+        assert_eq!(
+            safe_http_source_url(
+                "HTTPS://user:password@Example.COM/report?access_token=secret#section"
+            )
+            .as_deref(),
+            Some("https://example.com/report")
+        );
+        assert!(safe_http_source_url("file:///tmp/source").is_none());
+    }
 }

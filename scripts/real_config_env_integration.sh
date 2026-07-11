@@ -13,6 +13,7 @@ for candidate in "$WORKSPACE/../.." "$WORKSPACE" "$WORKSPACE/../../.."; do
 done
 CONFIG_FILE="${A3S_CONFIG_FILE:-$CONFIG_ROOT/.a3s/config.acl}"
 MODE="${1:-real}"
+TEST_FILTER="${REAL_PROVIDER_TEST_FILTER:-}"
 
 if [ "$MODE" != "real" ] && [ "$MODE" != "--dry-run" ]; then
   echo "usage: $0 [--dry-run]" >&2
@@ -132,24 +133,19 @@ cd "$WORKSPACE"
 
 run_acl_env_tests() {
   local extra_flag="$1"
+  local command=(cargo test -p a3s-code-core --test test_real_config_env_integration)
   if [ -n "${TARGET_DIR:-}" ]; then
-    cargo test \
-      -p a3s-code-core \
-      --test test_real_config_env_integration \
-      --target-dir "$TARGET_DIR" \
-      -- \
-      $extra_flag \
-      --nocapture \
-      --test-threads=1
-  else
-    cargo test \
-      -p a3s-code-core \
-      --test test_real_config_env_integration \
-      -- \
-      $extra_flag \
-      --nocapture \
-      --test-threads=1
+    command+=(--target-dir "$TARGET_DIR")
   fi
+  if [ -n "$TEST_FILTER" ]; then
+    command+=("$TEST_FILTER")
+  fi
+  command+=(--)
+  if [ -n "$extra_flag" ]; then
+    command+=("$extra_flag")
+  fi
+  command+=(--nocapture --test-threads=1)
+  "${command[@]}"
 }
 
 export A3S_CONFIG_FILE="${ENV_CONFIG_FILE:-$CONFIG_FILE}"

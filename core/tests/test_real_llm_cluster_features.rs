@@ -96,7 +96,8 @@ async fn real_budget_guard_deny_blocks_llm_call() {
         .with_session_id("real-budget-deny")
         .with_budget_guard(guard.clone() as Arc<dyn BudgetGuard>);
     let session = agent
-        .session("/tmp/real-budget-deny", Some(opts))
+        .session_async("/tmp/real-budget-deny", Some(opts))
+        .await
         .expect("session");
 
     let err = session
@@ -135,7 +136,8 @@ async fn real_budget_guard_allow_records_actual_usage() {
         .with_session_id("real-budget-allow")
         .with_budget_guard(guard.clone() as Arc<dyn BudgetGuard>);
     let session = agent
-        .session("/tmp/real-budget-allow", Some(opts))
+        .session_async("/tmp/real-budget-allow", Some(opts))
+        .await
         .expect("session");
 
     let result = session
@@ -171,7 +173,8 @@ async fn real_run_with_store_leaves_no_dangling_checkpoint() {
         .with_session_id("real-ckpt-clear")
         .with_session_store(Arc::clone(&store));
     let session = agent
-        .session("/tmp/real-ckpt-clear", Some(opts))
+        .session_async("/tmp/real-ckpt-clear", Some(opts))
+        .await
         .expect("session");
 
     let result = session
@@ -210,7 +213,8 @@ async fn real_identity_labels_survive_live_run() {
         .with_agent_template_id("planner-v3")
         .with_correlation_id("trace-real-1");
     let session = agent
-        .session("/tmp/real-labels", Some(opts))
+        .session_async("/tmp/real-labels", Some(opts))
+        .await
         .expect("session");
 
     let result = session
@@ -280,7 +284,8 @@ async fn real_resume_run_carries_checkpoint_metrics_forward() {
         .with_session_id("real-resume")
         .with_session_store(Arc::clone(&store));
     let session = agent
-        .session("/tmp/real-resume", Some(opts))
+        .session_async("/tmp/real-resume", Some(opts))
+        .await
         .expect("session");
 
     let result = session

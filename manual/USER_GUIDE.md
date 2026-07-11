@@ -358,7 +358,6 @@ opts.hitl_enabled = True
 | **Explicit Permissions** | Deny by default, explicit allow required |
 | **Human Confirmation** | Prompt before tool execution |
 | **Skill Restrictions** | `allowed-tools` limits callable tools |
-| **AHP Integration** | Runtime interception and sanitization |
 | **Auto-compact** | Auto compress context before token limits |
 | **Circuit Breaker** | Stop after 3 consecutive failures |
 
@@ -431,7 +430,7 @@ A3S Code
     ├── Context assembly
     ├── Tool selection and execution
     ├── Skills and delegated task execution
-    ├── Permission / HITL / AHP hooks
+    ├── Permission / HITL / hooks
     └── Trace, artifacts, and verification evidence
 ```
 
@@ -503,38 +502,35 @@ just --list
 
 ## 14. Core Modules
 
-### 14.1 Agent Module (`agent.rs`)
+### 14.1 Agent Module (`agent_api.rs`)
 
 ```rust
-pub struct Agent {
-    config: Config,
-    provider_registry: ProviderRegistry,
-}
+let agent = Agent::create("agent.acl").await?;
+let session = agent
+    .session_builder("/repo")
+    .options(options)
+    .build()
+    .await?;
 
-impl Agent {
-    pub async fn create(config_path: &str) -> Result<Self>;
-    pub fn session(&self, workspace: &str, options: Option<SessionOptions>) -> Result<AgentSession>;
-    pub fn resume_session(&self, session_id: &str, options: SessionOptions) -> Result<AgentSession>;
-}
+let resumed = agent
+    .resume_session_async("session-id", resume_options)
+    .await?;
 ```
+
+Rust construction is async-first. `session_async`, the async agent/worker
+factories, and `resume_session_async` share the same resolved construction
+kernel. The synchronous `session` factory is compatibility-only: it requires an
+explicitly pre-initialized memory store, never blocks an async runtime, and
+returns `AsyncSessionBuildRequired` for resources that still need async setup.
+A host MCP manager in `SessionOptions` always requires the async path for tool
+discovery; the sync path can only inherit already-cached agent-global tools.
 
 ### 14.2 AgentSession Module (`agent_api.rs`)
 
-```rust
-pub struct AgentSession {
-    id: String,
-    workspace: PathBuf,
-    tool_executor: ToolExecutor,
-    llm_client: LlmClient,
-    skill_registry: SkillRegistry,
-}
-
-impl AgentSession {
-    pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult>;
-    pub async fn stream(&self, prompt: &str, history: Option<&[Message]>) -> Result<EventStream>;
-    pub async fn tool(&self, name: &str, args: Value) -> Result<ToolCallResult>;
-}
-```
+`AgentSession` exposes async `send`, `stream`, and direct tool calls. Conversation
+operations are fail-fast single-flight and return `SessionBusy` on overlap.
+Every run shares one invocation context for identity, cancellation, events, and
+governance. SDK events project the stable, lossless `EventEnvelopeV1` wire shape.
 
 ### 14.3 Tool Module (`tools/`)
 

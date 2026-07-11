@@ -1,6 +1,6 @@
 # A3S Code SDK 配置 - Kimi (OpenAI 兼容端点)
 # 凭证通过环境变量在运行时注入。
-# 参见 test_ahp_agent_monitors_agent.py 了解如何设置 KIMI_API_KEY / KIMI_BASE_URL。
+# 通过 KIMI_API_KEY / KIMI_BASE_URL 环境变量设置连接凭证。
 
 default_model = "openai/kimi-k2.5"
 

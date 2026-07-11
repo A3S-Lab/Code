@@ -310,9 +310,8 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { formatVerificationSummary, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, ServeHandle, Session, builtinSkills, BrowserBackend } = nativeBinding
+const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, BrowserBackend, ServeHandle, Session, Agent, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, builtinSkills } = nativeBinding
 
-module.exports.formatVerificationSummary = formatVerificationSummary
 module.exports.EventStream = EventStream
 module.exports.FileMemoryStore = FileMemoryStore
 module.exports.FileSessionStore = FileSessionStore
@@ -320,12 +319,80 @@ module.exports.MemorySessionStore = MemorySessionStore
 module.exports.DefaultSecurityProvider = DefaultSecurityProvider
 module.exports.LocalWorkspaceBackend = LocalWorkspaceBackend
 module.exports.S3WorkspaceBackend = S3WorkspaceBackend
-module.exports.StdioTransport = StdioTransport
-module.exports.HttpTransport = HttpTransport
-module.exports.WebSocketTransport = WebSocketTransport
-module.exports.UnixSocketTransport = UnixSocketTransport
-module.exports.Agent = Agent
+module.exports.BrowserBackend = BrowserBackend
 module.exports.ServeHandle = ServeHandle
 module.exports.Session = Session
+module.exports.Agent = Agent
+
+// a3s-code: EventStream async iterator bridge
+// napi-rs exposes the async `next()` method but does not install the symbol
+// required by JavaScript's `for await ... of` protocol.
+if (EventStream && typeof EventStream.prototype[Symbol.asyncIterator] !== 'function') {
+  Object.defineProperty(EventStream.prototype, Symbol.asyncIterator, {
+    configurable: true,
+    value: function asyncIterator() {
+      return this
+    },
+  })
+}
+
+
+// a3s-code: typed core error bridge
+// Core errors carry a private marker across napi's generic Error conversion.
+// Strip it at the JS boundary and expose the stable machine-readable code.
+function normalizeA3sCodeError(error) {
+  if (!(error instanceof Error)) return error
+  const match = /^\[A3S_CODE_ERROR:([A-Z_]+)\]\s*/.exec(error.message)
+  if (!match) return error
+  Object.defineProperty(error, 'code', {
+    configurable: true,
+    enumerable: true,
+    value: match[1],
+  })
+  error.message = error.message.slice(match[0].length)
+  return error
+}
+
+function wrapA3sCodeErrors(target, methods) {
+  if (!target) return
+  for (const method of methods) {
+    const original = target[method]
+    if (typeof original !== 'function' || original.__a3sTypedErrorBridge) continue
+    const wrapped = function typedErrorBridge(...args) {
+      try {
+        const result = original.apply(this, args)
+        if (result && typeof result.then === 'function') {
+          return result.catch((error) => { throw normalizeA3sCodeError(error) })
+        }
+        return result
+      } catch (error) {
+        throw normalizeA3sCodeError(error)
+      }
+    }
+    Object.defineProperty(wrapped, '__a3sTypedErrorBridge', { value: true })
+    target[method] = wrapped
+  }
+}
+
+wrapA3sCodeErrors(Agent, ['create'])
+wrapA3sCodeErrors(Agent && Agent.prototype, [
+  'session', 'sessionAsync', 'resumeSession', 'resumeSessionAsync',
+  'sessionForAgent', 'sessionForAgentAsync', 'sessionForWorker',
+  'sessionForWorkerAsync', 'refreshMcpTools',
+])
+wrapA3sCodeErrors(Session && Session.prototype, [
+  'send', 'run', 'resumeRun', 'sendRequest', 'stream', 'streamRequest',
+  'sendWithAttachments', 'streamWithAttachments', 'save',
+  'addMcpServer', 'addMcpServerConfig', 'addMcp', 'removeMcpServer', 'removeMcp',
+  'tool', 'task', 'delegateTask', 'tasks', 'parallelTask', 'program',
+  'readFile', 'writeFile', 'ls', 'editFile', 'patchFile', 'bash', 'glob', 'grep',
+  'webSearch', 'git', 'gitCommand', 'confirmToolUse', 'verifyCommands',
+  'registerAgentDir', 'registerWorkerAgent', 'registerWorkerAgents',
+  'registerDynamicWorkflowRuntime', 'unregisterDynamicTool',
+  'registerHook', 'unregisterHook', 'registerCommand',
+])
+
+module.exports.formatVerificationSummary = formatVerificationSummary
+module.exports.agentEventTypesV1 = agentEventTypesV1
+module.exports.eventEnvelopeV1Version = eventEnvelopeV1Version
 module.exports.builtinSkills = builtinSkills
-module.exports.BrowserBackend = BrowserBackend

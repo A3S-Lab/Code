@@ -55,7 +55,7 @@ use tokio::sync::broadcast;
 
 /// Default capacity of the [`WorkflowEvent`] broadcast channel. Slow
 /// subscribers lag (and drop) rather than block the workflow — milestones are
-/// best-effort; durable audit belongs on the trace/AHP path.
+/// best-effort; durable audit belongs on the trace path.
 const DEFAULT_WORKFLOW_EVENT_CAPACITY: usize = 256;
 
 /// Workflow-level milestone stream, distinct from the per-step
@@ -134,7 +134,7 @@ impl WorkflowBuilder {
     }
 
     /// Thread the per-step [`AgentEvent`] sender into every combinator call so
-    /// existing subagent/AHP/trace listeners observe child-run lifecycle events.
+    /// existing subagent and trace listeners observe child-run lifecycle events.
     pub fn with_step_events(mut self, step_events: broadcast::Sender<AgentEvent>) -> Self {
         self.step_events = Some(step_events);
         self
@@ -352,6 +352,7 @@ mod tests {
                 output: spec.prompt.clone(),
                 success: spec.agent != "fail",
                 structured: None,
+                source_anchors: Vec::new(),
             }
         }
         fn concurrency_hint(&self) -> usize {
@@ -468,6 +469,7 @@ mod tests {
                 output: "cached-a".into(),
                 success: true,
                 structured: None,
+                source_anchors: Vec::new(),
             },
         );
         store

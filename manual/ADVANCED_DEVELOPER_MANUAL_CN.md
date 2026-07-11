@@ -539,47 +539,9 @@ impl HookHandler for PerformanceMonitorHook {
 
 # 第六章：安全加固
 
-## 6.1 AHP 集成深度配置
+## 6.1 沙盒机制
 
-### 6.1.1 AHP 配置
-
-```rust
-pub struct AHPConfig {
-    enabled: bool,
-    harness_endpoint: String,
-    timeout: Duration,
-    retry_policy: RetryPolicy,
-    cache_ttl: Duration,
-}
-
-pub struct RetryPolicy {
-    max_retries: u32,
-    backoff_strategy: BackoffStrategy,
-    retryable_errors: Vec<ErrorCode>,
-}
-```
-
-### 6.1.2 AHP 工作流
-
-```
-工具调用请求
-    |
-    v
-AHP 前置检查 <- 缓存检查
-    |
-    v
-风险评估
-    |
-    +---> 通过 -> 执行工具
-    |
-    +---> 拒绝 -> 返回错误
-    |
-    +---> 需确认 -> 人机交互
-```
-
-## 6.2 沙盒机制
-
-### 6.2.1 沙盒接入
+### 6.1.1 沙盒接入
 
 ```rust
 // 2.0 通过具体 BashSandbox 句柄接入沙盒。

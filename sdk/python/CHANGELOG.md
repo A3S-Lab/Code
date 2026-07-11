@@ -33,7 +33,6 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 - Added Python parity for `WorkerAgentSpec`, `AgentDefinition`,
   `ConfirmationPolicy`, `session_for_worker(...)`, live worker registration,
   HITL confirmation control, and `Session.close()`.
-- Aligned AHP-backed session hooks with AHP 2.4.
 
 ### Changed
 - New documentation prefers short object-shaped APIs while keeping older

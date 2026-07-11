@@ -5,10 +5,14 @@ use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use a3s_search::engines::{Baidu, BingChina, Brave, DuckDuckGo, Google, So360, Sogou, Wikipedia};
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
 use a3s_search::WaitStrategy;
-use a3s_search::{BrowserFetcher, BrowserPool, BrowserPoolConfig, Search, SearchQuery};
+use a3s_search::{
+    BrowserFetcher, BrowserPool, BrowserPoolConfig, Search, SearchQuery, SearchResult,
+};
 use anyhow::Result;
 use async_trait::async_trait;
+use regex::Regex;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 pub struct WebSearchTool {
     browser_pool: std::sync::OnceLock<Arc<BrowserPool>>,
@@ -62,6 +66,94 @@ impl Default for WebSearchTool {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn search_result_json(result: &SearchResult) -> serde_json::Value {
+    let engines = sorted_search_engines(result);
+    let safe_url = safe_search_result_url(result);
+    let safe_title = sanitize_http_urls(&result.title);
+    let safe_content = sanitize_http_urls(&result.content);
+    serde_json::json!({
+        "title": safe_title,
+        "url": safe_url,
+        "content": safe_content,
+        "engines": engines,
+        "score": result.score,
+        "published_date": result.published_date,
+    })
+}
+
+fn safe_search_result_url(result: &SearchResult) -> String {
+    super::safe_http_source_url(&result.url).unwrap_or_default()
+}
+
+fn sorted_search_engines(result: &SearchResult) -> Vec<&str> {
+    let mut engines = result
+        .engines
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    engines.sort_unstable();
+    engines
+}
+
+fn text_search_result(index: usize, result: &SearchResult) -> String {
+    let safe_url = safe_search_result_url(result);
+    let safe_title = sanitize_http_urls(&result.title);
+    let safe_content = sanitize_http_urls(&result.content);
+    let published = result
+        .published_date
+        .as_deref()
+        .filter(|date| !date.trim().is_empty())
+        .map(|date| format!("   Published: {}\n", date.trim()))
+        .unwrap_or_default();
+    format!(
+        "{}. {}\n   URL: {}\n{}   {}\n   (via {})\n\n",
+        index + 1,
+        safe_title,
+        safe_url,
+        published,
+        safe_content,
+        sorted_search_engines(result).join(", "),
+    )
+}
+
+fn should_fallback_from_unavailable_headless(
+    engine_count: usize,
+    has_headless_config: bool,
+    engines: &[&str],
+) -> bool {
+    engine_count == 0
+        && !has_headless_config
+        && !engines.is_empty()
+        && engines
+            .iter()
+            .all(|engine| matches!(engine.trim(), "g" | "google" | "baidu" | "bing_cn"))
+}
+
+fn sanitize_http_urls(text: &str) -> String {
+    static URL_RE: OnceLock<Regex> = OnceLock::new();
+    let url_re = URL_RE.get_or_init(|| {
+        Regex::new(r#"(?i)https?://[^\s<>"'`]+"#).expect("static search URL regex")
+    });
+    url_re
+        .replace_all(text, |captures: &regex::Captures<'_>| {
+            let mut candidate = captures[0].to_string();
+            let mut suffix = String::new();
+            while candidate
+                .chars()
+                .last()
+                .is_some_and(|ch| matches!(ch, ')' | ',' | '.' | ';' | ':' | '!' | '?' | ']' | '}'))
+            {
+                if let Some(ch) = candidate.pop() {
+                    suffix.insert(0, ch);
+                }
+            }
+            super::safe_http_source_url(&candidate)
+                .map(|safe| format!("{safe}{suffix}"))
+                .unwrap_or_default()
+        })
+        .into_owned()
 }
 
 /// Add an HTTP engine by shortcut
@@ -202,13 +294,19 @@ impl Tool for WebSearchTool {
             }
         }
 
-        let query_str = match args.get("query").and_then(|v| v.as_str()) {
+        let raw_query = match args.get("query").and_then(|v| v.as_str()) {
             Some(q) => q,
             None => return Ok(ToolOutput::error("query parameter is required")),
         };
 
-        if query_str.trim().is_empty() {
+        if raw_query.trim().is_empty() {
             return Ok(ToolOutput::error("query must not be empty"));
+        }
+        let query_str = sanitize_http_urls(raw_query);
+        if query_str.trim().is_empty() {
+            return Ok(ToolOutput::error(
+                "query must not be empty after URL sanitization",
+            ));
         }
 
         // Get configuration from context or use defaults
@@ -308,6 +406,16 @@ impl Tool for WebSearchTool {
             }
         }
 
+        let fell_back_from_headless = should_fallback_from_unavailable_headless(
+            search.engine_count(),
+            headless_config.is_some(),
+            &engines,
+        );
+        if fell_back_from_headless {
+            let _ = add_http_engine(&mut search, "ddg");
+            let _ = add_http_engine(&mut search, "wiki");
+        }
+
         if search.engine_count() == 0 {
             return Ok(ToolOutput::error(format!(
                 "No valid engines found in: {:?}",
@@ -325,7 +433,7 @@ impl Tool for WebSearchTool {
             }
         }
 
-        let query = SearchQuery::new(query_str);
+        let query = SearchQuery::new(&query_str);
 
         let search_results = match search.search(query).await {
             Ok(r) => r,
@@ -335,7 +443,11 @@ impl Tool for WebSearchTool {
         };
 
         let items = search_results.items();
-        let results: Vec<_> = items.iter().take(limit).collect();
+        let results: Vec<_> = items
+            .iter()
+            .filter(|result| super::safe_http_source_url(&result.url).is_some())
+            .take(limit)
+            .collect();
 
         // Report engine errors if any
         let errors = search_results.errors();
@@ -356,18 +468,15 @@ impl Tool for WebSearchTool {
             )));
         }
 
+        let source_anchors = results
+            .iter()
+            .filter_map(|result| super::safe_http_source_url(&result.url))
+            .collect::<Vec<_>>();
+
         let output = if output_format == "json" {
             let json_results: Vec<serde_json::Value> = results
                 .iter()
-                .map(|r| {
-                    serde_json::json!({
-                        "title": r.title,
-                        "url": r.url,
-                        "content": r.content,
-                        "engines": r.engines.iter().collect::<Vec<_>>(),
-                        "score": r.score,
-                    })
-                })
+                .map(|result| search_result_json(result))
                 .collect();
             serde_json::to_string_pretty(&json_results).unwrap_or_default()
         } else {
@@ -378,19 +487,7 @@ impl Tool for WebSearchTool {
                 search_results.duration_ms,
             );
             for (i, result) in results.iter().enumerate() {
-                let engines: Vec<&String> = result.engines.iter().collect();
-                text.push_str(&format!(
-                    "{}. {}\n   URL: {}\n   {}\n   (via {})\n\n",
-                    i + 1,
-                    result.title,
-                    result.url,
-                    result.content,
-                    engines
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                ));
+                text.push_str(&text_search_result(i, result));
             }
             if !error_note.is_empty() {
                 text.push_str(&error_note);
@@ -398,7 +495,12 @@ impl Tool for WebSearchTool {
             text
         };
 
-        Ok(ToolOutput::success(output))
+        Ok(
+            ToolOutput::success(output).with_metadata(serde_json::json!({
+                "source_anchors": source_anchors,
+                "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
+            })),
+        )
     }
 }
 
@@ -482,6 +584,35 @@ mod tests {
             .unwrap();
         assert!(!result.success);
         assert!(result.content.contains("No valid engines"));
+    }
+
+    #[test]
+    fn unavailable_headless_engines_fall_back_only_when_safe() {
+        assert!(should_fallback_from_unavailable_headless(
+            0,
+            false,
+            &["baidu", "bing_cn"],
+        ));
+        assert!(should_fallback_from_unavailable_headless(
+            0,
+            false,
+            &["google"],
+        ));
+        assert!(!should_fallback_from_unavailable_headless(
+            0,
+            true,
+            &["baidu", "bing_cn"],
+        ));
+        assert!(!should_fallback_from_unavailable_headless(
+            1,
+            false,
+            &["baidu"],
+        ));
+        assert!(!should_fallback_from_unavailable_headless(
+            0,
+            false,
+            &["baidu", "nonexistent"],
+        ));
     }
 
     #[tokio::test]
@@ -706,5 +837,117 @@ mod tests {
 
         // Verify additionalProperties is false (no extra fields allowed)
         assert_eq!(params["additionalProperties"], false);
+    }
+
+    #[test]
+    fn json_search_result_preserves_published_date() {
+        let result = SearchResult::new(
+            "https://result-user:result-password@example.com/release?tracking=secret#fragment",
+            "Release notes https://title-user:title-password@example.com/title?title_token=secret#title-fragment",
+            "Current release evidence at https://content-user:content-password@example.com/evidence?content_token=secret#content-fragment.",
+        )
+        .with_engine("ddg", 2)
+        .with_engine("brave", 1)
+        .with_published_date("2026-07-11");
+
+        let json = search_result_json(&result);
+
+        assert_eq!(json["published_date"], "2026-07-11");
+        assert_eq!(json["url"], "https://example.com/release");
+        assert_eq!(json["title"], "Release notes https://example.com/title");
+        assert_eq!(
+            json["content"],
+            "Current release evidence at https://example.com/evidence."
+        );
+        assert_eq!(json["engines"], serde_json::json!(["brave", "ddg"]));
+        let serialized = json.to_string();
+        for secret in [
+            "result-user",
+            "result-password",
+            "tracking",
+            "fragment",
+            "title-user",
+            "title-password",
+            "title_token",
+            "content-user",
+            "content-password",
+            "content_token",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "leaked {secret}: {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_search_result_preserves_optional_date_and_stable_engines() {
+        let dated = SearchResult::new(
+            "https://result-user:result-password@example.com/release?tracking=secret#fragment",
+            "Release notes https://title-user:title-password@example.com/title?title_token=secret#title-fragment",
+            "Current release evidence at https://content-user:content-password@example.com/evidence?content_token=secret#content-fragment.",
+        )
+        .with_engine("ddg", 2)
+        .with_engine("brave", 1)
+        .with_published_date(" 2026-07-11 ");
+        let text = text_search_result(0, &dated);
+        assert!(text.contains("Published: 2026-07-11\n"), "{text}");
+        assert!(text.contains("(via brave, ddg)"), "{text}");
+        assert!(
+            text.contains("URL: https://example.com/release\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Release notes https://example.com/title"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Current release evidence at https://example.com/evidence."),
+            "{text}"
+        );
+        for secret in [
+            "result-user",
+            "result-password",
+            "tracking",
+            "fragment",
+            "title-user",
+            "title-password",
+            "title_token",
+            "content-user",
+            "content-password",
+            "content_token",
+        ] {
+            assert!(!text.contains(secret), "leaked {secret}: {text}");
+        }
+
+        let undated = SearchResult::new(
+            "https://example.com/reference",
+            "Reference",
+            "Undated evidence",
+        );
+        let text = text_search_result(1, &undated);
+        assert!(text.starts_with("2. Reference\n"), "{text}");
+        assert!(!text.contains("Published:"), "{text}");
+
+        let unsafe_result = SearchResult::new("javascript:alert(1)", "Unsafe", "Unsafe");
+        assert!(safe_search_result_url(&unsafe_result).is_empty());
+    }
+
+    #[test]
+    fn search_query_urls_drop_credentials_query_and_fragment() {
+        let query = sanitize_http_urls(
+            "compare https://query-user:query-password@example.com/release?api_key=secret#private, now",
+        );
+
+        assert_eq!(query, "compare https://example.com/release, now");
+        for secret in [
+            "query-user",
+            "query-password",
+            "api_key",
+            "secret",
+            "private",
+        ] {
+            assert!(!query.contains(secret), "leaked {secret}: {query}");
+        }
     }
 }

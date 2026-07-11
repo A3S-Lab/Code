@@ -10,7 +10,7 @@ use crate::agent::AgentConfig;
 use crate::config::CodeConfig;
 use crate::context::{ContextItem, ContextProvider, ContextType, StaticContextProvider};
 use crate::llm::{LlmClient, ToolDefinition};
-use crate::mcp::{manager::McpManager, McpTool};
+use crate::mcp::McpTool;
 use crate::skills::SkillRegistry;
 use crate::subagent::AgentRegistry;
 use crate::tools::ToolExecutor;
@@ -24,8 +24,7 @@ pub(super) struct SessionCapabilityInput<'a> {
     pub(super) workspace: &'a Path,
     pub(super) llm_client: Arc<dyn LlmClient>,
     pub(super) opts: &'a SessionOptions,
-    pub(super) global_mcp: Option<&'a Arc<McpManager>>,
-    pub(super) cached_global_mcp_tools: Vec<(String, McpTool)>,
+    pub(super) mcp_sources: Vec<super::session_config::ResolvedMcpSource>,
 }
 
 pub(super) struct SessionCapabilities {
@@ -40,6 +39,7 @@ pub(super) struct SessionCapabilities {
 
 pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> SessionCapabilities {
     let artifact_limits = input.opts.artifact_store_limits.unwrap_or_default();
+    let retention_limits = input.opts.retention_limits.unwrap_or_default();
     let workspace_services = input
         .opts
         .workspace_services
@@ -52,7 +52,7 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
             artifact_limits,
         ),
     );
-    let trace_sink = match input.opts.retention_limits.and_then(|l| l.max_trace_events) {
+    let trace_sink = match retention_limits.max_trace_events {
         Some(cap) => crate::trace::InMemoryTraceSink::with_max_events(cap),
         None => crate::trace::InMemoryTraceSink::new(),
     };
@@ -64,20 +64,17 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
             .set_search_config(search_config.clone());
     }
 
-    let subagent_tasks = Arc::new(
-        match input
-            .opts
-            .retention_limits
-            .and_then(|l| l.max_terminal_subagent_tasks)
-        {
-            Some(cap) => {
-                crate::subagent_task_tracker::InMemorySubagentTaskTracker::with_max_terminal_tasks(
-                    cap,
-                )
-            }
-            None => crate::subagent_task_tracker::InMemorySubagentTaskTracker::new(),
-        },
-    );
+    let subagent_tasks = Arc::new(match retention_limits.max_terminal_subagent_tasks {
+        Some(cap) => {
+            crate::subagent_task_tracker::InMemorySubagentTaskTracker::with_max_terminal_tasks(cap)
+        }
+        None => crate::subagent_task_tracker::InMemorySubagentTaskTracker::new(),
+    });
+    let mcp_managers = input
+        .mcp_sources
+        .iter()
+        .map(|source| Arc::clone(&source.manager))
+        .collect();
     let agent_registry = register_task_capability(
         input.code_config,
         input.opts,
@@ -85,17 +82,13 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
         Arc::clone(&input.llm_client),
         &tool_executor,
         Arc::clone(&subagent_tasks),
+        mcp_managers,
     );
 
     // Register generate_object tool (structured JSON output)
     crate::tools::register_generate_object(tool_executor.registry(), Arc::clone(&input.llm_client));
 
-    register_mcp_capabilities(
-        &tool_executor,
-        input.opts,
-        input.global_mcp,
-        input.cached_global_mcp_tools,
-    );
+    register_mcp_capabilities(&tool_executor, input.mcp_sources);
 
     let skill_registry =
         build_effective_skill_registry(input.base_config.skill_registry.as_deref(), input.opts);
@@ -157,10 +150,11 @@ fn register_task_capability(
     llm_client: Arc<dyn LlmClient>,
     tool_executor: &Arc<ToolExecutor>,
     subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
+    mcp_managers: Vec<Arc<crate::mcp::manager::McpManager>>,
 ) -> Arc<AgentRegistry> {
     use crate::child_run::ChildRunContext;
     use crate::subagent::load_agents_from_dir;
-    use crate::tools::register_task_with_mcp;
+    use crate::tools::register_task_with_mcp_managers;
 
     let registry = AgentRegistry::new();
     let auto_delegation = super::session_config::resolve_auto_delegation_config(code_config, opts);
@@ -204,12 +198,12 @@ fn register_task_capability(
     };
 
     let registry = Arc::new(registry);
-    register_task_with_mcp(
+    register_task_with_mcp_managers(
         tool_executor.registry(),
         llm_client,
         Arc::clone(&registry),
         workspace.display().to_string(),
-        opts.mcp_manager.clone(),
+        mcp_managers,
         Some(parent_context),
         Some(subagent_tasks),
     );
@@ -230,42 +224,19 @@ fn built_in_agent_dirs(workspace: &Path) -> Vec<PathBuf> {
 
 fn register_mcp_capabilities(
     tool_executor: &Arc<ToolExecutor>,
-    opts: &SessionOptions,
-    global_mcp: Option<&Arc<McpManager>>,
-    cached_global_mcp_tools: Vec<(String, McpTool)>,
+    sources: Vec<super::session_config::ResolvedMcpSource>,
 ) {
-    let Some(ref mcp) = opts.mcp_manager else {
-        return;
-    };
-
-    let all_tools = if is_global_mcp(mcp, global_mcp) {
-        cached_global_mcp_tools
-    } else {
-        fetch_session_mcp_tools(mcp)
-    };
-
-    for (server_name, tools) in group_mcp_tools_by_server(all_tools) {
-        for tool in crate::mcp::tools::create_mcp_tools(&server_name, tools, Arc::clone(mcp)) {
-            tool_executor.register_dynamic_tool(tool);
-        }
-    }
-}
-
-fn is_global_mcp(mcp: &Arc<McpManager>, global_mcp: Option<&Arc<McpManager>>) -> bool {
-    std::ptr::eq(
-        Arc::as_ptr(mcp),
-        global_mcp.map(Arc::as_ptr).unwrap_or(std::ptr::null()),
-    )
-}
-
-fn fetch_session_mcp_tools(mcp: &Arc<McpManager>) -> Vec<(String, McpTool)> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(mcp.get_all_tools())),
-        Err(_) => {
-            tracing::warn!(
-                "No async runtime available for session-level MCP tools - MCP tools will not be registered"
-            );
-            vec![]
+    // Global sources are registered first. A session source with the same
+    // fully-qualified tool name intentionally shadows it only in this session.
+    for source in sources {
+        for (server_name, tools) in group_mcp_tools_by_server(source.tools) {
+            for tool in crate::mcp::tools::create_mcp_tools(
+                &server_name,
+                tools,
+                Arc::clone(&source.manager),
+            ) {
+                tool_executor.register_dynamic_tool(tool);
+            }
         }
     }
 }

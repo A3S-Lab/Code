@@ -1,14 +1,24 @@
 use super::*;
 use crate::hitl::ConfirmationPolicy;
 use crate::llm::{Message, TokenUsage};
+use crate::orchestration::ToolSourceAnchor;
 use crate::permissions::PermissionPolicy;
 use crate::prompts::PlanningMode;
 use crate::queue::SessionQueueConfig;
 use crate::run::RunRecord;
+use crate::subagent_task_tracker::{SubagentStatus, SubagentTaskSnapshot};
 use crate::tools::ArtifactStore;
 use crate::trace::TraceEvent;
 use crate::verification::VerificationReport;
+use base64::Engine as _;
 use tempfile::tempdir;
+
+fn encoded_file_path(root: &std::path::Path, category: &str, id: &str) -> std::path::PathBuf {
+    let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id.as_bytes());
+    root.join("v1")
+        .join(category)
+        .join(format!("id_{key}.json"))
+}
 
 fn create_test_session_data() -> SessionData {
     SessionData {
@@ -98,6 +108,53 @@ async fn create_test_run_records() -> Vec<RunRecord> {
     runs.records().await
 }
 
+async fn create_test_snapshot() -> SessionSnapshotV1 {
+    let artifacts = ArtifactStore::new();
+    artifacts.put(crate::tools::ToolArtifact {
+        artifact_id: "tool-output:test:snapshot".to_string(),
+        artifact_uri: "a3s://tool-output/test/snapshot".to_string(),
+        tool_name: "test".to_string(),
+        content: "snapshot artifact".to_string(),
+        original_bytes: 17,
+        shown_bytes: 17,
+    });
+    let trace_events = vec![TraceEvent::tool_execution(
+        "read",
+        true,
+        0,
+        std::time::Duration::from_millis(4),
+        17,
+        None,
+    )];
+    let subagent_tasks = vec![SubagentTaskSnapshot {
+        task_id: "task-snapshot".to_string(),
+        parent_session_id: "test-session-1".to_string(),
+        child_session_id: "child-snapshot".to_string(),
+        agent: "general".to_string(),
+        description: "persist snapshot".to_string(),
+        status: SubagentStatus::Completed,
+        started_ms: 1,
+        updated_ms: 2,
+        finished_ms: Some(2),
+        output: Some("done".to_string()),
+        success: Some(true),
+        source_anchors: vec![ToolSourceAnchor {
+            tool: "read".to_string(),
+            url_or_path: "docs/source.md".to_string(),
+        }],
+        progress: Vec::new(),
+    }];
+
+    SessionSnapshotV1::new(
+        create_test_session_data(),
+        &artifacts,
+        trace_events,
+        create_test_run_records().await,
+        vec![create_test_verification_report()],
+        subagent_tasks,
+    )
+}
+
 // ========================================================================
 // FileSessionStore Tests
 // ========================================================================
@@ -121,6 +178,159 @@ async fn test_file_store_save_and_load() {
     assert_eq!(loaded.config.name, session.config.name);
     assert_eq!(loaded.messages.len(), 2);
     assert_eq!(loaded.state, SessionState::Active);
+}
+
+#[tokio::test]
+async fn file_store_commits_and_loads_one_complete_snapshot_generation() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    let snapshot = create_test_snapshot().await;
+
+    store.save_snapshot(&snapshot).await.unwrap();
+
+    assert!(store.capabilities().atomic_session_snapshots);
+    let persisted_path = encoded_file_path(dir.path(), "sessions", "test-session-1");
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&tokio::fs::read(&persisted_path).await.unwrap()).unwrap();
+    assert_eq!(persisted["schema_version"], SESSION_SNAPSHOT_SCHEMA_VERSION);
+    assert_eq!(persisted["session"]["id"], "test-session-1");
+    assert!(!dir.path().join("artifacts").exists());
+    assert!(!dir.path().join("traces").exists());
+    assert!(!dir.path().join("runs").exists());
+    assert!(!dir.path().join("verification").exists());
+    assert!(!dir.path().join("subagent_tasks").exists());
+    assert_eq!(
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .count(),
+        1,
+        "successful atomic commit must not leave a temporary file"
+    );
+
+    let loaded = store
+        .load_snapshot("test-session-1")
+        .await
+        .unwrap()
+        .expect("snapshot");
+    assert_eq!(loaded.session.config.name, "Test Session");
+    assert_eq!(loaded.artifacts.len(), 1);
+    assert_eq!(loaded.trace_events.len(), 1);
+    assert_eq!(loaded.run_records.len(), 1);
+    assert_eq!(loaded.verification_reports.len(), 1);
+    assert_eq!(loaded.subagent_tasks.len(), 1);
+    assert_eq!(
+        loaded.subagent_tasks[0].source_anchors[0].url_or_path,
+        "docs/source.md"
+    );
+
+    // The historical SessionStore::load API remains source-compatible and
+    // projects the SessionData portion from an aggregate file.
+    assert_eq!(
+        store
+            .load("test-session-1")
+            .await
+            .unwrap()
+            .expect("session")
+            .config
+            .name,
+        "Test Session"
+    );
+}
+
+#[tokio::test]
+async fn file_store_load_snapshot_falls_back_to_legacy_fragments() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    let snapshot = create_test_snapshot().await;
+    let id = snapshot.session.id.clone();
+
+    // Reproduce the pre-SnapshotV1 on-disk layout.
+    tokio::fs::write(
+        dir.path().join(format!("{id}.json")),
+        serde_json::to_vec_pretty(&snapshot.session).unwrap(),
+    )
+    .await
+    .unwrap();
+    snapshot
+        .artifact_store()
+        .save_to_dir(dir.path().join("artifacts").join(&id))
+        .unwrap();
+    for (category, value) in [
+        (
+            "traces",
+            serde_json::to_vec_pretty(&snapshot.trace_events).unwrap(),
+        ),
+        (
+            "runs",
+            serde_json::to_vec_pretty(&snapshot.run_records).unwrap(),
+        ),
+        (
+            "verification",
+            serde_json::to_vec_pretty(&snapshot.verification_reports).unwrap(),
+        ),
+        (
+            "subagent_tasks",
+            serde_json::to_vec_pretty(&snapshot.subagent_tasks).unwrap(),
+        ),
+    ] {
+        let category_dir = dir.path().join(category);
+        tokio::fs::create_dir_all(&category_dir).await.unwrap();
+        tokio::fs::write(category_dir.join(format!("{id}.json")), value)
+            .await
+            .unwrap();
+    }
+
+    let loaded = store
+        .load_snapshot(&id)
+        .await
+        .unwrap()
+        .expect("legacy snapshot");
+    assert_eq!(loaded.artifacts.len(), 1);
+    assert_eq!(loaded.trace_events.len(), 1);
+    assert_eq!(loaded.run_records.len(), 1);
+    assert_eq!(loaded.verification_reports.len(), 1);
+    assert_eq!(loaded.subagent_tasks.len(), 1);
+    assert_eq!(
+        loaded.subagent_tasks[0].source_anchors[0].url_or_path,
+        "docs/source.md"
+    );
+
+    // A new aggregate generation is authoritative even when old fragment
+    // files remain on disk. Empty fields must clear, not inherit, old state.
+    let replacement = SessionSnapshotV1::session_only(snapshot.session);
+    store.save_snapshot(&replacement).await.unwrap();
+    let loaded = store
+        .load_snapshot(&id)
+        .await
+        .unwrap()
+        .expect("replacement snapshot");
+    assert!(loaded.artifacts.is_empty());
+    assert!(loaded.trace_events.is_empty());
+    assert!(loaded.run_records.is_empty());
+    assert!(loaded.verification_reports.is_empty());
+    assert!(loaded.subagent_tasks.is_empty());
+}
+
+#[tokio::test]
+async fn file_store_rejects_future_snapshot_versions() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    let mut snapshot = create_test_snapshot().await;
+    snapshot.schema_version = SESSION_SNAPSHOT_SCHEMA_VERSION + 1;
+
+    assert!(store.save_snapshot(&snapshot).await.is_err());
+
+    // Simulate a snapshot written by a newer implementation to cover reads.
+    let path = encoded_file_path(dir.path(), "sessions", "test-session-1");
+    tokio::fs::create_dir_all(path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&path, serde_json::to_vec(&snapshot).unwrap())
+        .await
+        .unwrap();
+    let error = store.load_snapshot("test-session-1").await.unwrap_err();
+    assert!(error.to_string().contains("not loadable"));
 }
 
 #[tokio::test]
@@ -275,6 +485,121 @@ async fn test_memory_store_save_load_and_delete_artifacts() {
 
     store.delete(&session.id).await.unwrap();
     assert!(store.load_artifacts(&session.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn memory_store_replaces_complete_snapshot_generation_atomically() {
+    let store = MemorySessionStore::new();
+    let mut snapshot = create_test_snapshot().await;
+    store.save_snapshot(&snapshot).await.unwrap();
+
+    assert!(store.capabilities().atomic_session_snapshots);
+    snapshot.artifacts[0].content = "mutated after save".to_string();
+    let loaded = store
+        .load_snapshot("test-session-1")
+        .await
+        .unwrap()
+        .expect("snapshot");
+    assert_eq!(loaded.artifacts[0].content, "snapshot artifact");
+    assert_eq!(loaded.trace_events.len(), 1);
+    assert_eq!(loaded.run_records.len(), 1);
+    assert_eq!(loaded.verification_reports.len(), 1);
+    assert_eq!(loaded.subagent_tasks.len(), 1);
+
+    let mut session = loaded.session;
+    session.config.name = "replacement".to_string();
+    store
+        .save_snapshot(&SessionSnapshotV1::session_only(session))
+        .await
+        .unwrap();
+    let replacement = store
+        .load_snapshot("test-session-1")
+        .await
+        .unwrap()
+        .expect("replacement");
+    assert_eq!(replacement.session.config.name, "replacement");
+    assert!(replacement.artifacts.is_empty());
+    assert!(replacement.trace_events.is_empty());
+    assert!(replacement.run_records.is_empty());
+    assert!(replacement.verification_reports.is_empty());
+    assert!(replacement.subagent_tasks.is_empty());
+}
+
+#[test]
+fn snapshot_rehydration_does_not_apply_smaller_default_artifact_limits() {
+    let artifacts = ArtifactStore::with_limits(crate::tools::ArtifactStoreLimits {
+        max_artifacts: 300,
+        max_bytes: 1024 * 1024,
+    });
+    for index in 0..257 {
+        artifacts.put(crate::tools::ToolArtifact {
+            artifact_id: format!("artifact-{index}"),
+            artifact_uri: format!("a3s://artifact/{index}"),
+            tool_name: "test".to_string(),
+            content: "x".to_string(),
+            original_bytes: 1,
+            shown_bytes: 1,
+        });
+    }
+
+    let snapshot = SessionSnapshotV1::new(
+        create_test_session_data(),
+        &artifacts,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(snapshot.artifact_store().len(), 257);
+}
+
+#[derive(Default)]
+struct LegacyOnlyStore {
+    save_calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl SessionStore for LegacyOnlyStore {
+    async fn save(&self, _session: &SessionData) -> anyhow::Result<()> {
+        self.save_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn load(&self, _id: &str) -> anyhow::Result<Option<SessionData>> {
+        Ok(None)
+    }
+
+    async fn delete(&self, _id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn list(&self) -> anyhow::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn exists(&self, _id: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    fn backend_name(&self) -> &str {
+        "legacy-only"
+    }
+}
+
+#[tokio::test]
+async fn aggregate_save_default_fails_without_fragmented_side_effects() {
+    let store = LegacyOnlyStore::default();
+    let snapshot = SessionSnapshotV1::session_only(create_test_session_data());
+
+    let error = store.save_snapshot(&snapshot).await.unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("does not support aggregate session snapshots"));
+    assert_eq!(
+        store.save_calls.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 }
 
 #[tokio::test]
@@ -558,8 +883,8 @@ async fn test_file_store_backslash_sanitization() {
     let loaded = loaded.unwrap();
     assert_eq!(loaded.id, session.id);
 
-    // Verify the file on disk uses sanitized name
-    let expected_path = dir.path().join("foo_bar_baz.json");
+    // The collision-free layout never embeds path separators in a filename.
+    let expected_path = encoded_file_path(dir.path(), "sessions", &session.id);
     assert!(expected_path.exists());
 }
 
@@ -578,9 +903,73 @@ async fn test_file_store_mixed_separator_sanitization() {
     let loaded = loaded.unwrap();
     assert_eq!(loaded.id, session.id);
 
-    // / -> _, \ -> _, .. -> _
-    let expected_path = dir.path().join("foo_bar_baz_qux.json");
+    let expected_path = encoded_file_path(dir.path(), "sessions", &session.id);
     assert!(expected_path.exists());
+}
+
+#[tokio::test]
+async fn file_store_ids_that_collided_in_the_legacy_layout_remain_distinct() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+
+    let mut slash = create_test_session_data();
+    slash.id = "tenant/session".to_string();
+    slash.config.name = "slash".to_string();
+    let mut underscore = create_test_session_data();
+    underscore.id = "tenant_session".to_string();
+    underscore.config.name = "underscore".to_string();
+
+    store.save(&slash).await.unwrap();
+    store.save(&underscore).await.unwrap();
+
+    assert_eq!(
+        store.load(&slash.id).await.unwrap().unwrap().config.name,
+        "slash"
+    );
+    assert_eq!(
+        store
+            .load(&underscore.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .config
+            .name,
+        "underscore"
+    );
+    assert_ne!(
+        encoded_file_path(dir.path(), "sessions", &slash.id),
+        encoded_file_path(dir.path(), "sessions", &underscore.id)
+    );
+    assert_eq!(
+        store.list().await.unwrap(),
+        vec![slash.id.clone(), underscore.id.clone()]
+    );
+
+    store.delete(&slash.id).await.unwrap();
+    assert!(store.load(&slash.id).await.unwrap().is_none());
+    assert!(store.load(&underscore.id).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn legacy_session_collision_never_returns_another_sessions_payload() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    let mut stored = create_test_session_data();
+    stored.id = "tenant_session".to_string();
+    tokio::fs::write(
+        dir.path().join("tenant_session.json"),
+        serde_json::to_vec(&stored).unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let error = store.load("tenant/session").await.unwrap_err();
+    assert!(error.to_string().contains("key collision"));
+    assert!(!store.exists("tenant/session").await.unwrap());
+    assert_eq!(
+        store.load("tenant_session").await.unwrap().unwrap().id,
+        "tenant_session"
+    );
 }
 
 // ========================================================================
@@ -601,6 +990,30 @@ async fn test_file_store_corrupted_json_recovery() {
     // Loading should return an error, not panic
     let result = store.load("test-id").await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn file_store_rejects_oversized_json_before_allocation() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    let session_id = "oversized-session";
+    let path = encoded_file_path(dir.path(), "sessions", session_id);
+    tokio::fs::create_dir_all(path.parent().unwrap())
+        .await
+        .unwrap();
+    let file = tokio::fs::File::create(&path).await.unwrap();
+    file.set_len(super::file_store::MAX_FILE_STORE_JSON_BYTES + 1)
+        .await
+        .unwrap();
+    drop(file);
+
+    let error = store.load(session_id).await.unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("exceeds"), "unexpected error: {message}");
+    assert!(
+        message.contains("byte limit"),
+        "unexpected error: {message}"
+    );
 }
 
 // ========================================================================
@@ -796,7 +1209,7 @@ async fn test_file_store_checkpoint_write_is_atomic_no_temp_leftovers() {
         .await
         .unwrap();
 
-    let ckpt_dir = dir.path().join("loop_checkpoints");
+    let ckpt_dir = dir.path().join("v1").join("loop_checkpoints");
     let mut entries = tokio::fs::read_dir(&ckpt_dir).await.unwrap();
     let mut names = Vec::new();
     while let Some(e) = entries.next_entry().await.unwrap() {
@@ -807,7 +1220,12 @@ async fn test_file_store_checkpoint_write_is_atomic_no_temp_leftovers() {
         "no temp files should remain after atomic write, got: {names:?}"
     );
     assert!(
-        names.iter().any(|n| n == "run-z.json"),
+        names.iter().any(|n| n
+            == encoded_file_path(dir.path(), "loop_checkpoints", "run-z")
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()),
         "the final checkpoint file must exist, got: {names:?}"
     );
 }
@@ -823,6 +1241,7 @@ fn sample_workflow_checkpoint(wf_id: &str) -> crate::orchestration::WorkflowChec
         output: format!("out-{id}"),
         success: true,
         structured,
+        source_anchors: Vec::new(),
     };
     WorkflowCheckpoint {
         schema_version: WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
@@ -915,7 +1334,7 @@ async fn test_file_store_workflow_checkpoint_atomic_no_temp_leftovers() {
         .await
         .unwrap();
 
-    let ckpt_dir = dir.path().join("workflow_checkpoints");
+    let ckpt_dir = dir.path().join("v1").join("workflow_checkpoints");
     let mut entries = tokio::fs::read_dir(&ckpt_dir).await.unwrap();
     let mut names = Vec::new();
     while let Some(e) = entries.next_entry().await.unwrap() {
@@ -926,7 +1345,12 @@ async fn test_file_store_workflow_checkpoint_atomic_no_temp_leftovers() {
         "no temp leftovers after atomic write, got: {names:?}"
     );
     assert!(
-        names.iter().any(|n| n == "wf-z.json"),
+        names.iter().any(|n| n
+            == encoded_file_path(dir.path(), "workflow_checkpoints", "wf-z")
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()),
         "the final workflow checkpoint file must exist, got: {names:?}"
     );
 }

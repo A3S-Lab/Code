@@ -158,55 +158,6 @@ fn test_memory_items_become_context_result() {
     assert!(result.items[0].token_count > 0);
 }
 
-#[cfg(feature = "ahp")]
-#[test]
-fn test_injected_context_to_results_includes_all_context_shapes() {
-    let injected = a3s_ahp::InjectedContext {
-        facts: vec![a3s_ahp::Fact {
-            content: "Fact from harness".to_string(),
-            source: "ahp://fact/source".to_string(),
-            confidence: 0.92,
-        }],
-        file_contents: Some(vec![a3s_ahp::FileContentSnippet {
-            path: "src/lib.rs".to_string(),
-            snippet: "pub fn important() {}".to_string(),
-            relevance_score: 0.88,
-        }]),
-        project_summary: Some(a3s_ahp::ProjectSummary {
-            project_name: "demo".to_string(),
-            language: Some("Rust".to_string()),
-            key_files: Some(vec!["Cargo.toml".to_string(), "src/lib.rs".to_string()]),
-            structure_description: "Small Rust crate".to_string(),
-        }),
-        knowledge: Some(vec!["Use context budgets".to_string()]),
-        suggestions: Some(vec!["Prefer focused verification".to_string()]),
-    };
-
-    let results = context_perception::injected_context_to_results(injected);
-    let items = results
-        .iter()
-        .flat_map(|result| result.items.iter())
-        .collect::<Vec<_>>();
-
-    assert_eq!(results.len(), 5);
-    assert!(items.iter().any(|item| item.content == "Fact from harness"
-        && item.source.as_deref() == Some("ahp://fact/source")));
-    assert!(items
-        .iter()
-        .any(|item| item.content == "pub fn important() {}"
-            && item.source.as_deref() == Some("src/lib.rs")));
-    assert!(items
-        .iter()
-        .any(|item| item.content.contains("Key files: Cargo.toml, src/lib.rs")));
-    assert!(items
-        .iter()
-        .any(|item| item.source.as_deref() == Some("ahp://suggestions")
-            && item.content.contains("Prefer focused verification")));
-    assert!(results
-        .iter()
-        .all(|result| result.provider == "ahp_harness"));
-}
-
 #[test]
 fn test_agent_config_default() {
     let config = AgentConfig::default();
@@ -2023,6 +1974,7 @@ async fn test_streaming_llm_memory_extraction_does_not_block_final_result() {
 #[tokio::test]
 async fn test_auto_compact_timeout_does_not_block_end_event() {
     let mock_client = Arc::new(HangingCompactionLlmClient::new());
+    let budget = Arc::new(CountingBudgetGuard::new(0));
     let history = (0..30)
         .map(|i| {
             if i % 2 == 0 {
@@ -2046,6 +1998,7 @@ async fn test_auto_compact_timeout_does_not_block_end_event() {
         max_context_tokens: 1_000,
         llm_api_timeout_ms: Some(20),
         continuation_enabled: false,
+        budget_guard: Some(budget.clone()),
         ..Default::default()
     };
 
@@ -2073,6 +2026,8 @@ async fn test_auto_compact_timeout_does_not_block_end_event() {
 
     assert_eq!(result.text, "Final answer complete.");
     assert_eq!(mock_client.complete_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(budget.check_count.load(Ordering::SeqCst), 2);
+    assert_eq!(budget.record_count.load(Ordering::SeqCst), 1);
 
     let events = collect_events(event_rx).await;
     let turn_end_index = events
@@ -2246,9 +2201,11 @@ async fn test_agent_llm_memory_extraction_uses_budget_guard() {
         .unwrap();
 
     assert_eq!(result.text, "Use focused memory tests after store changes.");
-    assert_eq!(budget.check_count.load(Ordering::SeqCst), 2);
-    assert_eq!(budget.record_count.load(Ordering::SeqCst), 2);
-    assert_eq!(budget.recorded_tokens.load(Ordering::SeqCst), 30);
+    // Auto pre-analysis, the normal turn, and memory extraction are three
+    // distinct provider calls and each must cross the same budget boundary.
+    assert_eq!(budget.check_count.load(Ordering::SeqCst), 3);
+    assert_eq!(budget.record_count.load(Ordering::SeqCst), 3);
+    assert_eq!(budget.recorded_tokens.load(Ordering::SeqCst), 45);
 }
 
 #[tokio::test]
@@ -2425,7 +2382,8 @@ async fn test_agent_llm_memory_extraction_skips_when_budget_denies() {
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Use focused memory tests after store changes.",
     )]));
-    let budget = Arc::new(CountingBudgetGuard::new(2));
+    // Deny the memory extraction call after pre-analysis + the main turn.
+    let budget = Arc::new(CountingBudgetGuard::new(3));
 
     let memory = crate::memory::AgentMemory::new(Arc::new(a3s_memory::InMemoryStore::new()));
     let temp_dir = tempfile::tempdir().unwrap();
@@ -2455,8 +2413,8 @@ async fn test_agent_llm_memory_extraction_skips_when_budget_denies() {
 
     assert_eq!(result.text, "Use focused memory tests after store changes.");
     assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 1);
-    assert_eq!(budget.check_count.load(Ordering::SeqCst), 2);
-    assert_eq!(budget.record_count.load(Ordering::SeqCst), 1);
+    assert_eq!(budget.check_count.load(Ordering::SeqCst), 3);
+    assert_eq!(budget.record_count.load(Ordering::SeqCst), 2);
     assert_eq!(
         agent
             .config
@@ -3169,7 +3127,7 @@ async fn test_agent_end_event_contains_final_text() {
 /// the fix it ignored the permission checker and skill restrictions entirely,
 /// letting denied / ask / skill-restricted writes land ungated.
 #[test]
-fn parallel_write_batch_only_fast_paths_when_gate_would_execute() {
+fn parallel_write_batch_fast_path_is_only_a_data_race_check() {
     use crate::llm::ToolCall;
     use crate::permissions::{PermissionChecker, PermissionDecision};
     use crate::skills::{Skill, SkillKind, SkillRegistry};
@@ -3212,39 +3170,21 @@ fn parallel_write_batch_only_fast_paths_when_gate_would_execute() {
     let calls = vec![write_call("a", "a.txt"), write_call("b", "b.txt")];
     let allow = || Some(Arc::new(Static(PermissionDecision::Allow)) as Arc<dyn PermissionChecker>);
 
-    // Explicit Allow + no restricting skills → fast path is taken.
+    assert!(loop_with(allow(), None, false).can_run_parallel_write_batch(&calls));
+    assert!(loop_with(None, None, false).can_run_parallel_write_batch(&calls));
+    assert!(loop_with(
+        Some(Arc::new(Static(PermissionDecision::Deny))),
+        None,
+        false
+    )
+    .can_run_parallel_write_batch(&calls));
     assert!(
-        loop_with(allow(), None, false).can_run_parallel_write_batch(&calls),
-        "explicit Allow with no restrictions → parallel write batch is allowed"
-    );
-
-    // No permission checker → gate resolves to Ask (a Deny without a confirmation
-    // manager), so the fast path must be refused.
-    assert!(
-        !loop_with(None, None, false).can_run_parallel_write_batch(&calls),
-        "missing checker resolves to Ask/Deny → fast path refused"
-    );
-
-    // Explicit Deny → refused.
-    assert!(
-        !loop_with(
-            Some(Arc::new(Static(PermissionDecision::Deny))),
-            None,
-            false
-        )
-        .can_run_parallel_write_batch(&calls),
-        "permission Deny → fast path refused"
-    );
-
-    // Ask → refused (sequential path would need a human round-trip).
-    assert!(
-        !loop_with(Some(Arc::new(Static(PermissionDecision::Ask))), None, false)
-            .can_run_parallel_write_batch(&calls),
-        "permission Ask → fast path refused"
+        loop_with(Some(Arc::new(Static(PermissionDecision::Ask))), None, false)
+            .can_run_parallel_write_batch(&calls)
     );
 
     // By default, active skill restrictions do not block ordinary session
-    // tools before the permission/AHP/HITL chain.
+    // tools before the permission/HITL chain.
     let restricted = SkillRegistry::new();
     restricted.register_unchecked(Arc::new(Skill {
         name: "read-only".to_string(),
@@ -3257,17 +3197,9 @@ fn parallel_write_batch_only_fast_paths_when_gate_would_execute() {
         version: None,
     }));
     let restricted = Arc::new(restricted);
-    assert!(
-        loop_with(allow(), Some(Arc::clone(&restricted)), false)
-            .can_run_parallel_write_batch(&calls),
-        "default active skill restriction mode → fast path follows permission allow"
-    );
-
-    // Compatibility mode preserves the legacy refusal.
-    assert!(
-        !loop_with(allow(), Some(restricted), true).can_run_parallel_write_batch(&calls),
-        "legacy active skill restriction mode → fast path refused"
-    );
+    assert!(loop_with(allow(), Some(Arc::clone(&restricted)), false)
+        .can_run_parallel_write_batch(&calls));
+    assert!(loop_with(allow(), Some(restricted), true).can_run_parallel_write_batch(&calls));
 
     // Empty compatibility builtins do not restrict → still fast-paths with Allow.
     assert!(
@@ -3277,6 +3209,530 @@ fn parallel_write_batch_only_fast_paths_when_gate_would_execute() {
             false
         )
         .can_run_parallel_write_batch(&calls),
-        "non-restricting builtins → fast path still allowed"
+        "governance configuration does not determine data-race safety"
     );
+}
+
+mod nested_tool_governance_tests {
+    use super::*;
+    use crate::budget::{BudgetDecision, BudgetGuard};
+    use crate::hooks::{HookEvent, HookExecutor, HookResult};
+    use crate::permissions::{PermissionChecker, PermissionDecision};
+    use crate::tools::{Tool, ToolContext, ToolOutput};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+    use tokio::sync::Notify;
+
+    struct SideEffectTool {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Tool for SideEffectTool {
+        fn name(&self) -> &str {
+            "side_effect"
+        }
+
+        fn description(&self) -> &str {
+            "Records a test-only side effect"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "additionalProperties": false})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> anyhow::Result<ToolOutput> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput::success("side-effect-ok"))
+        }
+    }
+
+    struct DelegatedSideEffectTool {
+        calls: Arc<AtomicUsize>,
+    }
+
+    struct ParallelSideEffectTool {
+        calls: Arc<AtomicUsize>,
+    }
+
+    struct BlockingSideEffectTool {
+        calls: Arc<AtomicUsize>,
+        started: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl Tool for DelegatedSideEffectTool {
+        fn name(&self) -> &str {
+            "task"
+        }
+
+        fn description(&self) -> &str {
+            "Records a delegated test-only side effect"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> anyhow::Result<ToolOutput> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput::success("delegated-side-effect-ok"))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for ParallelSideEffectTool {
+        fn name(&self) -> &str {
+            "parallel_task"
+        }
+
+        fn description(&self) -> &str {
+            "Records a test-only parallel side effect"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> anyhow::Result<ToolOutput> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput::success("parallel-side-effect-ok"))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for BlockingSideEffectTool {
+        fn name(&self) -> &str {
+            "blocking_side_effect"
+        }
+
+        fn description(&self) -> &str {
+            "Waits before performing a test-only side effect"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> anyhow::Result<ToolOutput> {
+            self.started.notify_one();
+            std::future::pending::<()>().await;
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput::success("unexpected-side-effect"))
+        }
+    }
+
+    struct TargetPermission {
+        target: &'static str,
+        decision: PermissionDecision,
+    }
+
+    impl PermissionChecker for TargetPermission {
+        fn check(&self, tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+            if tool_name == self.target {
+                self.decision
+            } else {
+                PermissionDecision::Allow
+            }
+        }
+    }
+
+    struct TargetToolBudget {
+        target: &'static str,
+    }
+
+    #[async_trait]
+    impl BudgetGuard for TargetToolBudget {
+        async fn check_before_tool(&self, _session_id: &str, tool_name: &str) -> BudgetDecision {
+            if tool_name == self.target {
+                BudgetDecision::Deny {
+                    resource: "tool_calls".to_string(),
+                    reason: "denied nested tool in test".to_string(),
+                }
+            } else {
+                BudgetDecision::Allow
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingToolHooks {
+        events: Mutex<Vec<HookEvent>>,
+    }
+
+    #[async_trait]
+    impl HookExecutor for RecordingToolHooks {
+        async fn fire(&self, event: &HookEvent) -> HookResult {
+            self.events.lock().unwrap().push(event.clone());
+            HookResult::Continue(None)
+        }
+    }
+
+    fn governed_agent(
+        responses: Vec<crate::llm::LlmResponse>,
+        calls: Arc<AtomicUsize>,
+        config: AgentConfig,
+    ) -> (AgentLoop, Arc<MockLlmClient>) {
+        let client = Arc::new(MockLlmClient::new(responses));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        executor.register_dynamic_tool(Arc::new(SideEffectTool { calls }));
+        (
+            AgentLoop::new(client.clone(), executor, test_tool_context(), config),
+            client,
+        )
+    }
+
+    #[tokio::test]
+    async fn batch_nested_tool_obeys_permission_deny_without_side_effects() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let responses = vec![
+            MockLlmClient::tool_call_response(
+                "batch-1",
+                "batch",
+                serde_json::json!({
+                    "invocations": [{"tool": "side_effect", "args": {}}]
+                }),
+            ),
+            MockLlmClient::text_response("done"),
+        ];
+        let config = AgentConfig {
+            permission_checker: Some(Arc::new(TargetPermission {
+                target: "side_effect",
+                decision: PermissionDecision::Deny,
+            })),
+            ..Default::default()
+        };
+        let (agent, _) = governed_agent(responses, Arc::clone(&calls), config);
+
+        agent
+            .execute_with_session(&[], "run batch", Some("nested-permission"), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn program_nested_tool_obeys_budget_deny_without_side_effects() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let responses = vec![
+            MockLlmClient::tool_call_response(
+                "program-1",
+                "program",
+                serde_json::json!({
+                    "type": "script",
+                    "source": "async function run(ctx) { return await ctx.tool('side_effect', {}); }",
+                    "allowed_tools": ["side_effect"]
+                }),
+            ),
+            MockLlmClient::text_response("done"),
+        ];
+        let config = AgentConfig {
+            permission_checker: Some(Arc::new(TargetPermission {
+                target: "side_effect",
+                decision: PermissionDecision::Allow,
+            })),
+            budget_guard: Some(Arc::new(TargetToolBudget {
+                target: "side_effect",
+            })),
+            ..Default::default()
+        };
+        let (agent, _) = governed_agent(responses, Arc::clone(&calls), config);
+
+        agent
+            .execute_with_session(&[], "run program", Some("nested-budget"), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn delegated_tool_obeys_permission_deny_without_side_effects() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        executor.register_dynamic_tool(Arc::new(DelegatedSideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        let config = AgentConfig {
+            permission_checker: Some(Arc::new(TargetPermission {
+                target: "task",
+                decision: PermissionDecision::Deny,
+            })),
+            ..Default::default()
+        };
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            executor,
+            test_tool_context(),
+            config,
+        );
+
+        let (output, exit_code, is_error, _) = agent
+            .execute_delegated_plan_tool(
+                "task",
+                &serde_json::json!({"prompt": "probe"}),
+                Some("delegated-permission"),
+                &None,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(exit_code, 1);
+        assert!(is_error);
+        assert!(output.contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn batch_nested_tool_fires_pre_and_post_hooks_and_preserves_result() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hooks = Arc::new(RecordingToolHooks::default());
+        let responses = vec![
+            MockLlmClient::tool_call_response(
+                "batch-allowed",
+                "batch",
+                serde_json::json!({
+                    "invocations": [{"tool": "side_effect", "args": {}}]
+                }),
+            ),
+            MockLlmClient::text_response("done"),
+        ];
+        let config = AgentConfig {
+            permission_checker: Some(Arc::new(TargetPermission {
+                target: "side_effect",
+                decision: PermissionDecision::Allow,
+            })),
+            hook_engine: Some(hooks.clone()),
+            ..Default::default()
+        };
+        let (agent, _) = governed_agent(responses, Arc::clone(&calls), config);
+
+        agent
+            .execute_with_session(&[], "run batch", Some("nested-hooks"), None, None)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let events = hooks.events.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            HookEvent::PreToolUse(pre) if pre.tool == "side_effect"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            HookEvent::PostToolUse(post)
+                if post.tool == "side_effect" && post.result.output == "side-effect-ok"
+        )));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dynamic_workflow_parallel_step_obeys_permission_without_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let responses = vec![
+            MockLlmClient::tool_call_response(
+                "dynamic-permission",
+                "dynamic_workflow",
+                serde_json::json!({
+                    "source": r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const completed = inputs.step_outputs.fanout;
+    if (completed) return { type: "complete", output: completed };
+    return {
+      type: "schedule_step",
+      step_id: "fanout",
+      step_name: "parallel_task",
+      input: { tasks: [{ prompt: "must not run" }] },
+      retry: { max_attempts: 1, delay_ms: 0 },
+    };
+  }
+  return { type: "fail", error: "unexpected script step" };
+}
+"#,
+                    "run_id": format!("permission-{}", uuid::Uuid::new_v4()),
+                    "allowed_tools": []
+                }),
+            ),
+            MockLlmClient::text_response("done"),
+        ];
+        let client = Arc::new(MockLlmClient::new(responses));
+        let executor = Arc::new(ToolExecutor::new(dir.path().to_string_lossy().to_string()));
+        executor.register_dynamic_tool(Arc::new(ParallelSideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        crate::dynamic_workflow::register_dynamic_workflow(executor.registry());
+        let agent = AgentLoop::new(
+            client,
+            executor,
+            ToolContext::new(dir.path().to_path_buf()),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "parallel_task",
+                    decision: PermissionDecision::Deny,
+                })),
+                ..Default::default()
+            },
+        );
+
+        agent
+            .execute_with_session(&[], "run workflow", Some("dynamic-permission"), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dynamic_workflow_script_step_obeys_budget_without_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let responses = vec![
+            MockLlmClient::tool_call_response(
+                "dynamic-budget",
+                "dynamic_workflow",
+                serde_json::json!({
+                    "source": r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const completed = inputs.step_outputs.governed_step;
+    if (completed) return { type: "complete", output: completed };
+    return {
+      type: "schedule_step",
+      step_id: "governed_step",
+      step_name: "governed_step",
+      input: {},
+      retry: { max_attempts: 1, delay_ms: 0 },
+    };
+  }
+  const result = await ctx.tool("side_effect", {});
+  return { result };
+}
+"#,
+                    "run_id": format!("budget-{}", uuid::Uuid::new_v4()),
+                    "allowed_tools": ["side_effect"]
+                }),
+            ),
+            MockLlmClient::text_response("done"),
+        ];
+        let client = Arc::new(MockLlmClient::new(responses));
+        let executor = Arc::new(ToolExecutor::new(dir.path().to_string_lossy().to_string()));
+        executor.register_dynamic_tool(Arc::new(SideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        crate::dynamic_workflow::register_dynamic_workflow(executor.registry());
+        let agent = AgentLoop::new(
+            client,
+            executor,
+            ToolContext::new(dir.path().to_path_buf()),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "side_effect",
+                    decision: PermissionDecision::Allow,
+                })),
+                budget_guard: Some(Arc::new(TargetToolBudget {
+                    target: "side_effect",
+                })),
+                ..Default::default()
+            },
+        );
+
+        agent
+            .execute_with_session(&[], "run workflow", Some("dynamic-budget"), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dynamic_workflow_nested_cancellation_prevents_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let responses = vec![MockLlmClient::tool_call_response(
+            "dynamic-cancel",
+            "dynamic_workflow",
+            serde_json::json!({
+                "source": r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const result = await ctx.tool("blocking_side_effect", {});
+    return { type: "complete", output: result };
+  }
+  return { type: "fail", error: "unexpected script step" };
+}
+"#,
+                "run_id": format!("cancel-{}", uuid::Uuid::new_v4()),
+                "allowed_tools": ["blocking_side_effect"]
+            }),
+        )];
+        let client = Arc::new(MockLlmClient::new(responses));
+        let executor = Arc::new(ToolExecutor::new(dir.path().to_string_lossy().to_string()));
+        executor.register_dynamic_tool(Arc::new(BlockingSideEffectTool {
+            calls: Arc::clone(&calls),
+            started: Arc::clone(&started),
+        }));
+        crate::dynamic_workflow::register_dynamic_workflow(executor.registry());
+        let agent = AgentLoop::new(
+            client,
+            executor,
+            ToolContext::new(dir.path().to_path_buf()),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "blocking_side_effect",
+                    decision: PermissionDecision::Allow,
+                })),
+                ..Default::default()
+            },
+        );
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let run_cancellation = cancellation.clone();
+        let run = tokio::spawn(async move {
+            agent
+                .execute_with_session(
+                    &[],
+                    "run workflow",
+                    Some("dynamic-cancel"),
+                    None,
+                    Some(&run_cancellation),
+                )
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .expect("nested tool must start before cancellation");
+        cancellation.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+            .await
+            .expect("cancellation must stop the dynamic workflow")
+            .unwrap()
+            .expect("the agent loop should preserve an interrupted result");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(result.text.is_empty());
+        assert!(result
+            .messages
+            .last()
+            .is_some_and(|message| message.text().contains("interrupted")));
+    }
 }
