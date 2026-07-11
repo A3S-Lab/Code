@@ -611,6 +611,7 @@ async fn cluster_ops_consolidated_session_lifecycle() {
         },
         tool_calls_count: 1,
         verification_reports: Vec::new(),
+        convergence: Default::default(),
         checkpoint_ms: 1_700_000_000_000,
     };
     store
@@ -774,6 +775,7 @@ async fn loop_checkpoint_round_trips_through_session_store() {
         },
         tool_calls_count: 3,
         verification_reports: Vec::new(),
+        convergence: Default::default(),
         checkpoint_ms: 1_700_000_000_000,
     };
 

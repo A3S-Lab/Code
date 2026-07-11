@@ -18,7 +18,7 @@ pub(super) struct ExecutionLoopState {
     recent_tool_signatures: Vec<String>,
     guarded_duplicate_signature: Option<String>,
     guarded_duplicate_count: u32,
-    last_incomplete_response: Option<String>,
+    last_incomplete_response_hash: Option<String>,
     incomplete_response_stalled: bool,
     execution_start: Instant,
 }
@@ -36,9 +36,11 @@ pub(super) struct ParseErrorOutcome {
 /// calls in the resulting `AgentResult`).
 #[derive(Default)]
 pub(crate) struct ExecutionSeed {
+    pub(crate) turn: usize,
     pub(crate) total_usage: TokenUsage,
     pub(crate) tool_calls_count: usize,
     pub(crate) verification_reports: Vec<VerificationReport>,
+    pub(crate) convergence: crate::loop_checkpoint::LoopConvergenceState,
 }
 
 impl ExecutionLoopState {
@@ -55,20 +57,21 @@ impl ExecutionLoopState {
     /// from a checkpoint (see [`ExecutionSeed`]).
     pub(super) fn new_seeded(history: &[Message], seed: Option<ExecutionSeed>) -> Self {
         let seed = seed.unwrap_or_default();
+        let convergence = seed.convergence;
         Self {
             messages: history.to_vec(),
             total_usage: seed.total_usage,
             tool_calls_count: seed.tool_calls_count,
             verification_reports: seed.verification_reports,
-            turn: 0,
-            parse_error_count: 0,
-            continuation_count: 0,
-            reasoning_only_repair_count: 0,
-            recent_tool_signatures: Vec::new(),
-            guarded_duplicate_signature: None,
-            guarded_duplicate_count: 0,
-            last_incomplete_response: None,
-            incomplete_response_stalled: false,
+            turn: seed.turn,
+            parse_error_count: convergence.parse_error_count,
+            continuation_count: convergence.continuation_count,
+            reasoning_only_repair_count: convergence.reasoning_only_repair_count,
+            recent_tool_signatures: convergence.recent_tool_signatures,
+            guarded_duplicate_signature: convergence.guarded_duplicate_signature,
+            guarded_duplicate_count: convergence.guarded_duplicate_count,
+            last_incomplete_response_hash: convergence.last_incomplete_response_hash,
+            incomplete_response_stalled: convergence.incomplete_response_stalled,
             execution_start: Instant::now(),
         }
     }
@@ -103,6 +106,19 @@ impl ExecutionLoopState {
 
     pub(super) fn elapsed_ms(&self) -> u64 {
         self.execution_start.elapsed().as_millis() as u64
+    }
+
+    pub(super) fn convergence_checkpoint(&self) -> crate::loop_checkpoint::LoopConvergenceState {
+        crate::loop_checkpoint::LoopConvergenceState {
+            parse_error_count: self.parse_error_count,
+            continuation_count: self.continuation_count,
+            reasoning_only_repair_count: self.reasoning_only_repair_count,
+            recent_tool_signatures: self.recent_tool_signatures.clone(),
+            guarded_duplicate_signature: self.guarded_duplicate_signature.clone(),
+            guarded_duplicate_count: self.guarded_duplicate_count,
+            last_incomplete_response_hash: self.last_incomplete_response_hash.clone(),
+            incomplete_response_stalled: self.incomplete_response_stalled,
+        }
     }
 
     pub(super) fn turn_limit_error(&self, max_tool_rounds: usize) -> Option<String> {
@@ -170,8 +186,9 @@ impl ExecutionLoopState {
             .collect::<Vec<_>>()
             .join(" ")
             .to_lowercase();
-        let repeated = self.last_incomplete_response.as_deref() == Some(&normalized);
-        self.last_incomplete_response = Some(normalized);
+        let fingerprint = sha256::digest(normalized.as_bytes());
+        let repeated = self.last_incomplete_response_hash.as_deref() == Some(&fingerprint);
+        self.last_incomplete_response_hash = Some(fingerprint);
         self.incomplete_response_stalled = repeated;
         repeated
     }
@@ -217,9 +234,8 @@ impl ExecutionLoopState {
         is_error: bool,
     ) {
         self.recent_tool_signatures.push(format!(
-            "{}:{} => {}",
-            tool_name,
-            serde_json::to_string(args).unwrap_or_default(),
+            "{} => {}",
+            Self::tool_signature(tool_name, args),
             if is_error { "error" } else { "ok" }
         ));
 
@@ -300,11 +316,8 @@ impl ExecutionLoopState {
     }
 
     fn tool_signature(tool_name: &str, args: &Value) -> String {
-        format!(
-            "{}:{}",
-            tool_name,
-            serde_json::to_string(args).unwrap_or_default()
-        )
+        let encoded = serde_json::to_vec(args).unwrap_or_default();
+        format!("{}:{}", tool_name, sha256::digest(encoded))
     }
 }
 
@@ -400,5 +413,42 @@ mod tests {
         assert_eq!(state.record_duplicate_guard("read", &args), 2);
         state.reset_duplicate_guards();
         assert_eq!(state.record_duplicate_guard("read", &args), 1);
+    }
+
+    #[test]
+    fn checkpoint_seed_restores_turn_budgets_and_redacted_convergence_fingerprints() {
+        let args = json!({"token": "must-not-persist", "path": "README.md"});
+        let mut original = ExecutionLoopState::new(&[]);
+        original.next_turn();
+        original.next_turn();
+        original.remember_tool_signature("read", &args, false);
+        original.remember_tool_signature("read", &args, true);
+        assert_eq!(original.record_duplicate_guard("read", &args), 1);
+        assert!(original.should_inject_continuation(true, true, 1, 10));
+        assert!(original
+            .record_parse_error("bad json", 1)
+            .fatal_message
+            .is_none());
+        assert!(!original.repeated_incomplete_response("secret response must-not-persist"));
+        let convergence = original.convergence_checkpoint();
+        let encoded = serde_json::to_string(&convergence).unwrap();
+        assert!(!encoded.contains("must-not-persist"));
+
+        let mut resumed = ExecutionLoopState::new_seeded(
+            &[],
+            Some(ExecutionSeed {
+                turn: original.current_turn(),
+                convergence,
+                ..ExecutionSeed::default()
+            }),
+        );
+        assert_eq!(resumed.next_turn(), 3);
+        assert!(resumed.duplicate_tool_call("read", &args, 2).is_some());
+        assert_eq!(resumed.record_duplicate_guard("read", &args), 2);
+        assert!(!resumed.should_inject_continuation(true, true, 1, 10));
+        assert!(resumed
+            .record_parse_error("bad json", 1)
+            .fatal_message
+            .is_some());
     }
 }

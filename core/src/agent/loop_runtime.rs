@@ -212,6 +212,7 @@ impl AgentLoop {
             total_usage: state.total_usage.clone(),
             tool_calls_count: state.tool_calls_count,
             verification_reports: state.verification_reports.clone(),
+            convergence: state.convergence_checkpoint(),
             checkpoint_ms: self.config.host_env.now_ms(),
         };
         sink.save_checkpoint(&checkpoint).await;

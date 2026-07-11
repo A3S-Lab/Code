@@ -273,6 +273,7 @@ async fn real_resume_run_carries_checkpoint_metrics_forward() {
                 },
                 tool_calls_count: 2,
                 verification_reports: Vec::new(),
+                convergence: Default::default(),
                 checkpoint_ms: 1_700_000_000_000,
             },
         )

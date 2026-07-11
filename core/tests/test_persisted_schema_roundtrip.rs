@@ -483,6 +483,7 @@ fn gen_loop_checkpoint(rng: &mut Rng) -> LoopCheckpoint {
         verification_reports: (0..report_n)
             .map(|_| gen_verification_report(rng))
             .collect(),
+        convergence: Default::default(),
         checkpoint_ms: rng.u64_small(),
     }
 }
@@ -873,6 +874,7 @@ fn sample_checkpoint(run_id: &str, version: u32) -> LoopCheckpoint {
         total_usage: TokenUsage::default(),
         tool_calls_count: 0,
         verification_reports: Vec::new(),
+        convergence: Default::default(),
         checkpoint_ms: 1,
     }
 }

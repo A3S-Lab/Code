@@ -13,9 +13,8 @@
 //! re-executing a non-idempotent tool (write, bash) on the wrong side
 //! of the boundary is worse than re-asking the LLM.
 //!
-//! Resume API (cut 2 follow-up): not part of this cut. This module
-//! lands the data contract + persistence wiring; an
-//! `AgentSession::resume_run(run_id)` entry point will live on top.
+//! [`crate::AgentSession::resume_run`] restores the checkpoint on a fresh run
+//! while preserving cumulative usage, turn budgets, and convergence guards.
 
 use crate::llm::{Message, TokenUsage};
 use crate::verification::VerificationReport;
@@ -25,6 +24,28 @@ use serde::{Deserialize, Serialize};
 /// Schema version. Bumped on incompatible format changes; impls of
 /// [`LoopCheckpointSink`] should reject loads from a future version.
 pub const LOOP_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
+
+/// Loop state that must survive crash recovery to preserve convergence limits.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoopConvergenceState {
+    #[serde(default)]
+    pub parse_error_count: u32,
+    #[serde(default)]
+    pub continuation_count: u32,
+    #[serde(default)]
+    pub reasoning_only_repair_count: u32,
+    /// Tool name, SHA-256 argument fingerprint, and outcome; never raw args.
+    #[serde(default)]
+    pub recent_tool_signatures: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guarded_duplicate_signature: Option<String>,
+    #[serde(default)]
+    pub guarded_duplicate_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_incomplete_response_hash: Option<String>,
+    #[serde(default)]
+    pub incomplete_response_stalled: bool,
+}
 
 /// Snapshot of the agent loop at the boundary between tool rounds.
 ///
@@ -62,6 +83,11 @@ pub struct LoopCheckpoint {
     /// Verification reports collected so far in this run.
     #[serde(default)]
     pub verification_reports: Vec<VerificationReport>,
+
+    /// Counters and fingerprints that prevent convergence budgets from
+    /// resetting when a run resumes on another process.
+    #[serde(default)]
+    pub convergence: LoopConvergenceState,
 
     /// Wall-clock timestamp when the checkpoint was written
     /// (Unix epoch ms — sourced from the session's
@@ -206,18 +232,22 @@ mod tests {
             total_usage: TokenUsage::default(),
             tool_calls_count: 0,
             verification_reports: Vec::new(),
+            convergence: LoopConvergenceState::default(),
             checkpoint_ms: 1_700_000_000_000,
         }
     }
 
     #[test]
     fn checkpoint_round_trips_through_json() {
-        let cp = sample("run-1", 3);
+        let mut cp = sample("run-1", 3);
+        cp.convergence.continuation_count = 2;
+        cp.convergence.recent_tool_signatures = vec!["read:deadbeef => ok".to_string()];
         let json = serde_json::to_string(&cp).unwrap();
         let back: LoopCheckpoint = serde_json::from_str(&json).unwrap();
         assert_eq!(back.run_id, "run-1");
         assert_eq!(back.turn, 3);
         assert_eq!(back.schema_version, LOOP_CHECKPOINT_SCHEMA_VERSION);
+        assert_eq!(back.convergence, cp.convergence);
     }
 
     #[test]
@@ -235,6 +265,7 @@ mod tests {
         }"#;
         let cp: LoopCheckpoint = serde_json::from_str(json).unwrap();
         assert_eq!(cp.schema_version, 0);
+        assert_eq!(cp.convergence, LoopConvergenceState::default());
     }
 
     #[test]

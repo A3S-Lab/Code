@@ -219,6 +219,12 @@ at most one continuation when the model repeats the same text without taking
 action. A changed tool call resets the duplicate guard, preserving recovery
 while terminating unproductive loops early.
 
+Loop checkpoints persist the cumulative turn number and convergence state, so
+crash recovery cannot reset tool-round, continuation, malformed-argument, or
+duplicate-call limits. Tool arguments are represented only by SHA-256
+fingerprints, and repeated incomplete replies are also stored as hashes; raw
+arguments and response text are not added to checkpoint convergence state.
+
 ## Effort Profiles
 
 `/effort` rebuilds the active session with a different depth profile. The design

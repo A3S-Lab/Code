@@ -3564,6 +3564,7 @@ async fn test_completed_run_clears_its_loop_checkpoint() {
                 total_usage: crate::llm::TokenUsage::default(),
                 tool_calls_count: 0,
                 verification_reports: Vec::new(),
+                convergence: Default::default(),
                 checkpoint_ms: 1,
             },
         )
@@ -3641,6 +3642,7 @@ async fn test_resume_run_picks_up_from_persisted_checkpoint() {
         },
         tool_calls_count: 3,
         verification_reports: Vec::new(),
+        convergence: Default::default(),
         checkpoint_ms: 1_700_000_000_000,
     };
     {
@@ -3713,6 +3715,47 @@ async fn test_resume_run_picks_up_from_persisted_checkpoint() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_resume_run_cannot_reset_the_tool_round_budget() {
+    use crate::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
+
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let checkpoint_run_id = "budget-exhausted-checkpoint";
+    let checkpoint = LoopCheckpoint {
+        schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
+        run_id: checkpoint_run_id.to_string(),
+        session_id: "resume-budget-target".to_string(),
+        turn: 2,
+        messages: vec![Message::user("continue")],
+        total_usage: Default::default(),
+        tool_calls_count: 2,
+        verification_reports: Vec::new(),
+        convergence: Default::default(),
+        checkpoint_ms: 1,
+    };
+    let checkpoint_store: Arc<dyn crate::store::SessionStore> = store.clone();
+    checkpoint_store
+        .save_loop_checkpoint(checkpoint_run_id, &checkpoint)
+        .await
+        .unwrap();
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let options = SessionOptions::new()
+        .with_session_store(store as Arc<dyn crate::store::SessionStore>)
+        .with_session_id("resume-budget-target")
+        .with_max_tool_rounds(2);
+    let session = agent
+        .build_session(
+            "/tmp/test-resume-budget-target".into(),
+            Arc::new(StaticStreamingClient::new("must not run")),
+            &options,
+        )
+        .unwrap();
+
+    let error = session.resume_run(checkpoint_run_id).await.unwrap_err();
+    assert!(error.to_string().contains("Max tool rounds (2) exceeded"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_resume_run_rejects_checkpoint_owned_by_another_session() {
     use crate::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
 
@@ -3727,6 +3770,7 @@ async fn test_resume_run_rejects_checkpoint_owned_by_another_session() {
         total_usage: crate::llm::TokenUsage::default(),
         tool_calls_count: 0,
         verification_reports: Vec::new(),
+        convergence: Default::default(),
         checkpoint_ms: 1,
     };
     let checkpoint_store: Arc<dyn crate::store::SessionStore> = store.clone();

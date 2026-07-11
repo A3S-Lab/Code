@@ -1158,6 +1158,7 @@ fn sample_checkpoint(run_id: &str) -> crate::loop_checkpoint::LoopCheckpoint {
         total_usage: TokenUsage::default(),
         tool_calls_count: 1,
         verification_reports: Vec::new(),
+        convergence: Default::default(),
         checkpoint_ms: 1_700_000_000_000,
     }
 }
