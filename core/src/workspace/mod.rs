@@ -323,6 +323,26 @@ pub struct WorkspaceGitWorktreeMutation {
 #[async_trait]
 pub trait CommandOutputObserver: Send + Sync {
     async fn on_output_delta(&self, delta: &str);
+
+    /// Receive the final bounded-capture accounting for the command.
+    ///
+    /// The default keeps existing remote workspace runners source-compatible.
+    /// Runners that bound output should report the original byte count so
+    /// callers can distinguish a complete result from a partial observation.
+    async fn on_output_complete(&self, _summary: &CommandOutputSummary) {}
+}
+
+/// Final accounting for a bounded command-output capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandOutputSummary {
+    /// Total stdout and stderr bytes observed before completion or timeout.
+    pub total_bytes: usize,
+    /// Original process bytes retained in the rendered output.
+    pub captured_bytes: usize,
+    /// Whether bytes were omitted from the middle of the rendered output.
+    pub truncated: bool,
+    /// Whether command execution reached its own deadline.
+    pub timed_out: bool,
 }
 
 /// Command execution request.
@@ -376,6 +396,28 @@ pub trait WorkspaceFileSystem: Send + Sync {
         content: &str,
     ) -> WorkspaceResult<WorkspaceWriteOutcome>;
     async fn list_dir(&self, path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>>;
+}
+
+/// A bounded text range returned by an optional streaming workspace reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceTextRange {
+    pub lines: Vec<String>,
+    pub next_offset: Option<usize>,
+    pub eof: bool,
+    /// Exact line count when EOF was observed while satisfying the request.
+    pub total_lines: Option<usize>,
+}
+
+/// Optional streaming text capability for backends that can avoid loading a
+/// complete file when a caller needs only a line range.
+#[async_trait]
+pub trait WorkspaceTextReader: Send + Sync {
+    async fn read_text_range(
+        &self,
+        path: &WorkspacePath,
+        offset: usize,
+        limit: usize,
+    ) -> WorkspaceResult<WorkspaceTextRange>;
 }
 
 /// Error returned by [`WorkspaceFileSystemExt::write_text_if_version`] when
@@ -513,6 +555,7 @@ pub struct WorkspaceServices {
     path_resolver: Arc<dyn WorkspacePathResolver>,
     file_system: Arc<dyn WorkspaceFileSystem>,
     file_system_ext: Option<Arc<dyn WorkspaceFileSystemExt>>,
+    text_reader: Option<Arc<dyn WorkspaceTextReader>>,
     command_runner: Option<Arc<dyn WorkspaceCommandRunner>>,
     search: Option<Arc<dyn WorkspaceSearch>>,
     git: Option<Arc<dyn WorkspaceGit>>,
@@ -531,6 +574,7 @@ impl std::fmt::Debug for WorkspaceServices {
             .field("workspace_ref", &self.workspace_ref)
             .field("capabilities", &self.capabilities)
             .field("file_system_ext", &self.file_system_ext.is_some())
+            .field("text_reader", &self.text_reader.is_some())
             .field("command_runner", &self.command_runner.is_some())
             .field("search", &self.search.is_some())
             .field("git", &self.git.is_some())
@@ -566,6 +610,7 @@ impl WorkspaceServices {
             path_resolver,
             file_system,
             file_system_ext: None,
+            text_reader: None,
             command_runner,
             search,
             git,
@@ -591,6 +636,7 @@ impl WorkspaceServices {
         );
         let path_resolver: Arc<dyn WorkspacePathResolver> = backend.clone();
         let file_system: Arc<dyn WorkspaceFileSystem> = backend.clone();
+        let text_reader: Arc<dyn WorkspaceTextReader> = backend.clone();
         let command_runner: Arc<dyn WorkspaceCommandRunner> = backend.clone();
         let search: Arc<dyn WorkspaceSearch> = backend.clone();
         let git: Arc<dyn WorkspaceGit> = backend.clone();
@@ -602,6 +648,7 @@ impl WorkspaceServices {
             path_resolver,
             file_system,
             file_system_ext: None,
+            text_reader: Some(text_reader),
             command_runner: Some(command_runner),
             search: Some(search),
             git: Some(git),
@@ -630,6 +677,7 @@ impl WorkspaceServices {
         );
         let path_resolver: Arc<dyn WorkspacePathResolver> = backend.clone();
         let file_system: Arc<dyn WorkspaceFileSystem> = backend.clone();
+        let text_reader: Arc<dyn WorkspaceTextReader> = backend.clone();
         let command_runner: Arc<dyn WorkspaceCommandRunner> = backend.clone();
         let search: Arc<dyn WorkspaceSearch> = backend.clone();
         let git: Arc<dyn WorkspaceGit> = backend.clone();
@@ -641,6 +689,7 @@ impl WorkspaceServices {
             path_resolver,
             file_system,
             file_system_ext: None,
+            text_reader: Some(text_reader),
             command_runner: Some(command_runner),
             search: Some(search),
             git: Some(git),
@@ -675,6 +724,10 @@ impl WorkspaceServices {
     /// rather than touching this directly.
     pub fn fs_ext(&self) -> Option<Arc<dyn WorkspaceFileSystemExt>> {
         self.file_system_ext.clone()
+    }
+
+    pub fn text_reader(&self) -> Option<Arc<dyn WorkspaceTextReader>> {
+        self.text_reader.clone()
     }
 
     pub fn command_runner(&self) -> Option<Arc<dyn WorkspaceCommandRunner>> {
@@ -726,6 +779,7 @@ impl WorkspaceServices {
             path_resolver: Arc::clone(&self.path_resolver),
             file_system: Arc::clone(&self.file_system),
             file_system_ext: self.file_system_ext.clone(),
+            text_reader: self.text_reader.clone(),
             command_runner: self.command_runner.clone(),
             search: self.search.clone(),
             git: Some(git),
@@ -864,6 +918,7 @@ pub struct WorkspaceServicesBuilder {
     path_resolver: Arc<dyn WorkspacePathResolver>,
     file_system: Arc<dyn WorkspaceFileSystem>,
     file_system_ext: Option<Arc<dyn WorkspaceFileSystemExt>>,
+    text_reader: Option<Arc<dyn WorkspaceTextReader>>,
     command_runner: Option<Arc<dyn WorkspaceCommandRunner>>,
     search: Option<Arc<dyn WorkspaceSearch>>,
     git: Option<Arc<dyn WorkspaceGit>>,
@@ -880,6 +935,7 @@ impl WorkspaceServicesBuilder {
             path_resolver: Arc::new(VirtualPathResolver),
             file_system,
             file_system_ext: None,
+            text_reader: None,
             command_runner: None,
             search: None,
             git: None,
@@ -931,6 +987,11 @@ impl WorkspaceServicesBuilder {
         self
     }
 
+    pub fn text_reader(mut self, reader: Arc<dyn WorkspaceTextReader>) -> Self {
+        self.text_reader = Some(reader);
+        self
+    }
+
     /// Apply a default timeout to non-bash workspace operations (file system,
     /// search, git). Backends that may stall — remote, browser, DFS — should
     /// set this so tools surface a timeout error rather than hanging.
@@ -950,6 +1011,7 @@ impl WorkspaceServicesBuilder {
             self.git,
         );
         services.file_system_ext = self.file_system_ext;
+        services.text_reader = self.text_reader;
         services.git_stash = self.git_stash;
         services.git_worktree = self.git_worktree;
         services.operation_timeout = self.operation_timeout;

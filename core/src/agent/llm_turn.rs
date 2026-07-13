@@ -17,6 +17,15 @@ pub(super) struct LlmTurnOutput {
     pub(super) tool_calls: Vec<ToolCall>,
 }
 
+pub(super) struct LlmTurnRequest<'a> {
+    pub(super) augmented_system: &'a Option<String>,
+    pub(super) effective_prompt: &'a str,
+    pub(super) session_id: Option<&'a str>,
+    pub(super) event_tx: &'a Option<mpsc::Sender<AgentEvent>>,
+    pub(super) cancel_token: &'a tokio_util::sync::CancellationToken,
+    pub(super) force_no_tools: bool,
+}
+
 struct LlmCallRequest<'a> {
     turn: usize,
     messages: &'a [Message],
@@ -37,14 +46,19 @@ impl AgentLoop {
     pub(super) async fn execute_llm_turn(
         &self,
         state: &mut ExecutionLoopState,
-        augmented_system: &Option<String>,
-        effective_prompt: &str,
-        session_id: Option<&str>,
-        event_tx: &Option<mpsc::Sender<AgentEvent>>,
-        cancel_token: &tokio_util::sync::CancellationToken,
+        request: LlmTurnRequest<'_>,
     ) -> anyhow::Result<LlmTurnOutput> {
+        let LlmTurnRequest {
+            augmented_system,
+            effective_prompt,
+            session_id,
+            event_tx,
+            cancel_token,
+            force_no_tools,
+        } = request;
         let turn = state.next_turn();
-        self.ensure_turn_can_start(turn, state, event_tx).await?;
+        self.ensure_turn_can_start(turn, state, event_tx, force_no_tools)
+            .await?;
         self.emit_turn_start(turn, event_tx).await;
 
         tracing::info!(
@@ -52,8 +66,14 @@ impl AgentLoop {
             "LLM completion started"
         );
 
-        let selected_tools =
-            crate::tools::select_tools_for_messages(&self.config.tools, &state.messages);
+        let mut selected_tools = if force_no_tools {
+            Vec::new()
+        } else {
+            crate::tools::select_tools_for_messages(&self.config.tools, &state.messages)
+        };
+        if let Some(permission_checker) = &self.config.permission_checker {
+            selected_tools.retain(|tool| permission_checker.expose_to_model(&tool.name));
+        }
         self.config.rl_trajectory_recorder.record_llm_request(
             session_id.unwrap_or(""),
             turn,
@@ -108,6 +128,7 @@ impl AgentLoop {
         turn: usize,
         state: &ExecutionLoopState,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        force_no_tools: bool,
     ) -> anyhow::Result<()> {
         if let Some(error) = state.check_execution_timeout(self.config.max_execution_time_ms) {
             tracing::warn!(
@@ -120,9 +141,13 @@ impl AgentLoop {
             anyhow::bail!(error);
         }
 
-        if let Some(error) = state.turn_limit_error(self.config.max_tool_rounds) {
-            self.emit_error(event_tx, error.clone()).await;
-            anyhow::bail!(error);
+        let is_reserved_finalization_turn =
+            force_no_tools && turn == self.config.max_tool_rounds.saturating_add(1);
+        if !is_reserved_finalization_turn {
+            if let Some(error) = state.turn_limit_error(self.config.max_tool_rounds) {
+                self.emit_error(event_tx, error.clone()).await;
+                anyhow::bail!(error);
+            }
         }
 
         Ok(())
@@ -385,7 +410,11 @@ impl AgentLoop {
         }
     }
 
-    async fn emit_error(&self, event_tx: &Option<mpsc::Sender<AgentEvent>>, message: String) {
+    pub(super) async fn emit_error(
+        &self,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        message: String,
+    ) {
         if let Some(tx) = event_tx {
             tx.send(AgentEvent::Error { message }).await.ok();
         }

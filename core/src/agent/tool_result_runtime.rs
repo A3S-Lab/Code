@@ -40,6 +40,20 @@ impl NormalizedToolResult {
         }
     }
 
+    pub(super) fn invalid_arguments(tool_name: &str, message: String) -> Self {
+        Self {
+            output: format!(
+                "Invalid arguments for tool '{}': {} [permanent - change the arguments before retrying]",
+                tool_name, message
+            ),
+            exit_code: 1,
+            is_error: true,
+            metadata: None,
+            images: Vec::new(),
+            error_kind: Some(ToolErrorKind::InvalidArgument { message }),
+        }
+    }
+
     pub(super) fn from_tool_result(result: ToolResult) -> Self {
         Self {
             output: result.output,

@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-07-13
+
+### Added
+
+- Added resumable segmented output to the built-in `write` tool through
+  `mode = "append"` and a required UTF-8 byte `expected_offset`. Matching
+  retries are idempotent, unsafe offsets are rejected, version-aware workspace
+  backends retain compare-and-swap protection, and append metadata stays
+  bounded instead of carrying the complete before/after file payload.
+- Added a shared `ToolCapabilities` contract covering read-only behavior,
+  idempotency, resumability, cancellation safety, pagination, parallelism, and
+  output kind. Orchestrators use the per-invocation contract instead of
+  hard-coded tool-name lists.
+- Added bounded continuation protocols to `read`, `ls`, `glob`, Git lists and
+  diffs, and `web_fetch`. Git diff continuation and fetched-content continuation
+  preserve UTF-8 boundaries and expose exact range metadata.
+
+### Fixed
+
+- Tool execution deadlines now cancel an invocation-scoped token and wait for
+  bounded settlement before publishing the timeout result, both directly and
+  through the session queue. `program` propagates the same token into its VM
+  and nested calls, preventing timed-out scripts from leaving child operations
+  running after their terminal event.
+- Replaced permissive `patch` matching with strict, ordered unified-diff
+  application. Hunk counts, source and destination positions, exact context,
+  whitespace, no-newline markers, and LF/CRLF style are validated before any
+  write, so a stale or malformed patch fails without modifying the file.
+- Preserved functional, non-sensitive query parameters on the actual
+  `web_fetch` HTTP request while keeping durable source anchors and diagnostics
+  query-free. Credential, token, session, and signature parameters are removed
+  before the request is sent.
+- Paired nested batch/program `ToolExecutionStart` events with authoritative
+  `ToolEnd` events, including output metadata, so UIs no longer mark completed
+  inner calls as interrupted and delegated evidence can retain nested web
+  source anchors.
+- Allowed permission checkers to hide selected tool definitions from model
+  requests independently of execution-time permission decisions. DeepResearch
+  report turns can now expose only authoring tools while retaining a separate
+  execution gate.
+- Governed agent, nested, and session tool calls now validate arguments against
+  each tool's cached JSON Schema before approval or side effects. Validation,
+  cancellation, deadline, partial-failure, and rate-limit failures have typed
+  error discriminants.
+- Shell capture now reads bounded byte chunks instead of unbounded lines,
+  retains useful head and tail output with exact byte accounting, and kills the
+  complete Unix process group on timeout or cancellation.
+- `batch` is bounded to 32 calls and 16 concurrent operations. Only tools that
+  declare read-only, idempotent, cancellation-safe parallel capability fan out;
+  mutations are serialized, and partial failure identifies only the failed
+  indices for retry. `parallel_task` has the same 32-item bound and settles
+  cancelled children before returning.
+- Large edit metadata no longer duplicates complete files in event streams.
+  It carries bounded previews and unified diff text plus sizes, hashes, and
+  retained artifacts.
+- `web_search` distinguishes complete, partial, and failed engine outcomes, so
+  empty results accompanied by engine failures are no longer reported as a
+  successful search. `generate_object` now bounds schema depth and size,
+  prompt size, partial-event frequency, and its independent deadline.
+- Local Git's default diff now returns the actual unified working-tree diff
+  instead of only `--stat`; the tool bounds and paginates that diff safely.
+
 ## [5.1.0] - 2026-07-12
 
 ### Added

@@ -77,7 +77,8 @@ async fn test_web_search_with_baidu_headless_engine() {
 
     let args = serde_json::json!({
         "query": "test query",
-        "engines": "baidu"
+        "engines": "baidu",
+        "timeout": 3
     });
 
     // This will attempt to use baidu with headless browser

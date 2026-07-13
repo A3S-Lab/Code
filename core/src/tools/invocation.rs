@@ -1,7 +1,7 @@
 //! Internal tool invocation gateway shared by agent runs, orchestrators, and
 //! explicit session host calls.
 
-use super::{ToolContext, ToolRegistry, ToolResult};
+use super::{ToolCapabilities, ToolContext, ToolRegistry, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
@@ -83,6 +83,10 @@ pub(crate) trait ToolInvoker: Send + Sync {
     async fn invoke(&self, invocation: ToolInvocation, ctx: &ToolContext) -> ToolResult;
 
     fn available_tools(&self) -> Vec<String>;
+
+    fn capabilities(&self, _name: &str, _args: &Value) -> Option<ToolCapabilities> {
+        None
+    }
 }
 
 /// Ungoverned adapter retained only for standalone low-level registry usage.
@@ -116,6 +120,10 @@ impl ToolInvoker for RegistryToolInvoker {
 
     fn available_tools(&self) -> Vec<String> {
         self.registry.list()
+    }
+
+    fn capabilities(&self, name: &str, args: &Value) -> Option<ToolCapabilities> {
+        self.registry.capabilities(name, args)
     }
 }
 

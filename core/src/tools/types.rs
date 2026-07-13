@@ -58,6 +58,79 @@ pub enum ToolStreamEvent {
     OutputDelta(String),
 }
 
+/// Primary representation produced by a tool invocation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOutputKind {
+    Text,
+    Structured,
+    Diff,
+    Mixed,
+}
+
+/// Execution properties used by orchestrators to make safe scheduling choices.
+///
+/// Defaults are deliberately conservative. A tool must explicitly opt into
+/// parallel-safe or resumable behavior.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCapabilities {
+    pub read_only: bool,
+    pub idempotent: bool,
+    pub resumable: bool,
+    pub cancellation_safe: bool,
+    pub supports_pagination: bool,
+    pub max_parallelism: usize,
+    pub output_kind: ToolOutputKind,
+}
+
+impl ToolCapabilities {
+    pub const fn conservative() -> Self {
+        Self {
+            read_only: false,
+            idempotent: false,
+            resumable: false,
+            cancellation_safe: false,
+            supports_pagination: false,
+            max_parallelism: 1,
+            output_kind: ToolOutputKind::Text,
+        }
+    }
+
+    pub const fn read_only_paginated(max_parallelism: usize) -> Self {
+        Self {
+            read_only: true,
+            idempotent: true,
+            resumable: true,
+            cancellation_safe: true,
+            supports_pagination: true,
+            max_parallelism,
+            output_kind: ToolOutputKind::Text,
+        }
+    }
+
+    pub const fn parallel_safe_read(max_parallelism: usize) -> Self {
+        Self {
+            read_only: true,
+            idempotent: true,
+            resumable: false,
+            cancellation_safe: true,
+            supports_pagination: false,
+            max_parallelism,
+            output_kind: ToolOutputKind::Text,
+        }
+    }
+
+    pub fn allows_parallel_batch(self) -> bool {
+        self.read_only && self.idempotent && self.cancellation_safe && self.max_parallelism > 1
+    }
+}
+
+impl Default for ToolCapabilities {
+    fn default() -> Self {
+        Self::conservative()
+    }
+}
+
 /// Governed capabilities available to a tool during an agent/session
 /// invocation.
 ///
@@ -447,6 +520,12 @@ pub enum ToolErrorKind {
     Unsupported { message: String },
     /// The operation's outer timeout fired before the backend responded.
     Timeout { op: String, duration_ms: u64 },
+    /// The caller or owning session cancelled the operation.
+    Cancelled { op: String },
+    /// A collection operation completed but one or more children failed.
+    PartialFailure { failed: usize, total: usize },
+    /// A provider rejected the operation due to rate limiting.
+    RateLimited { retry_after_ms: Option<u64> },
 }
 
 impl ToolErrorKind {
@@ -565,6 +644,11 @@ pub trait Tool: Send + Sync {
 
     /// JSON Schema for tool parameters
     fn parameters(&self) -> serde_json::Value;
+
+    /// Scheduling and result capabilities for this specific invocation.
+    fn capabilities(&self, _args: &serde_json::Value) -> ToolCapabilities {
+        ToolCapabilities::conservative()
+    }
 
     /// Execute the tool with given arguments
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput>;

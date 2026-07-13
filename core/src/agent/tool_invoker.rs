@@ -11,7 +11,8 @@ use crate::tool_confirmation::{
     ToolConfirmationRequest, ToolConfirmationResolution, ToolConfirmationRuntime,
 };
 use crate::tools::{
-    HostDirectPolicy, InvocationOrigin, ToolContext, ToolInvocation, ToolInvoker, ToolResult,
+    HostDirectPolicy, InvocationOrigin, ToolCapabilities, ToolContext, ToolInvocation, ToolInvoker,
+    ToolResult,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -123,15 +124,26 @@ impl ScopedToolInvoker {
                 let confirmation = if let Some(manager) =
                     self.agent.config.confirmation_manager.as_ref()
                 {
-                    ToolConfirmationRuntime::new(manager.as_ref(), self.event_tx.as_ref())
-                        .resolve(ToolConfirmationRequest {
-                            tool_id: &invocation.id,
-                            tool_name: &invocation.name,
-                            args: &invocation.args,
-                            timeout_ms,
-                            timeout_action,
-                        })
-                        .await
+                    let runtime =
+                        ToolConfirmationRuntime::new(manager.as_ref(), self.event_tx.as_ref());
+                    let resolve = runtime.resolve(ToolConfirmationRequest {
+                        tool_id: &invocation.id,
+                        tool_name: &invocation.name,
+                        args: &invocation.args,
+                        timeout_ms,
+                        timeout_action,
+                    });
+                    let cancellation = ctx.cancellation_token();
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => {
+                            manager.cancel_all().await;
+                            ToolConfirmationResolution::Rejected {
+                                output: format!("Tool '{}' cancelled by caller", invocation.name),
+                            }
+                        }
+                        resolution = resolve => resolution,
+                    }
                 } else {
                     ToolConfirmationResolution::Rejected {
                         output: format!(
@@ -252,6 +264,25 @@ impl ScopedToolInvoker {
         }
     }
 
+    async fn emit_nested_tool_end(&self, invocation: &ToolInvocation, result: &ToolResult) {
+        if invocation.origin != InvocationOrigin::Nested {
+            return;
+        }
+        if let Some(tx) = &self.event_tx {
+            tx.send(AgentEvent::ToolEnd {
+                id: invocation.id.clone(),
+                name: invocation.name.clone(),
+                args: Some(invocation.args.clone()),
+                output: result.output.clone(),
+                exit_code: result.exit_code,
+                metadata: result.metadata.clone(),
+                error_kind: result.error_kind.clone(),
+            })
+            .await
+            .ok();
+        }
+    }
+
     async fn finish(
         &self,
         invocation: &ToolInvocation,
@@ -292,7 +323,7 @@ impl ToolInvoker for ScopedToolInvoker {
         let invocation_ctx = match ctx.enter_tool_invocation(&invocation.name) {
             Ok(ctx) => ctx,
             Err(message) => {
-                return self
+                let result = self
                     .finish(
                         &invocation,
                         started,
@@ -300,24 +331,51 @@ impl ToolInvoker for ScopedToolInvoker {
                         &cancellation,
                     )
                     .await;
+                self.emit_nested_tool_end(&invocation, &result).await;
+                return result;
             }
         };
         let cancellation = invocation_ctx.cancellation_token();
-        let normalized = tokio::select! {
+        if let Err(message) = self
+            .agent
+            .tool_executor
+            .registry()
+            .validate_arguments(&invocation.name, &invocation.args)
+        {
+            let result = self
+                .finish(
+                    &invocation,
+                    started,
+                    NormalizedToolResult::invalid_arguments(&invocation.name, message),
+                    &cancellation,
+                )
+                .await;
+            self.emit_nested_tool_end(&invocation, &result).await;
+            return result;
+        }
+        let decision = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
                 if let Some(manager) = self.agent.config.confirmation_manager.as_ref() {
                     manager.cancel_all().await;
                 }
-                NormalizedToolResult::denied(format!(
-                    "Tool '{}' cancelled by caller",
-                    invocation.name
-                ))
+                None
             }
-            normalized = async {
-                let decision = self.decide_gate(&invocation, &invocation_ctx).await;
-                self.resolve_gate(&invocation, &invocation_ctx, decision).await
-            } => normalized,
+            decision = self.decide_gate(&invocation, &invocation_ctx) => Some(decision),
+        };
+        let normalized = match decision {
+            Some(decision) => {
+                // Once execution starts, its deadline wrapper owns
+                // cancellation and settlement. Do not drop that future from an
+                // outer select: blocking VMs and process-backed tools need a
+                // chance to observe their invocation token and terminate.
+                self.resolve_gate(&invocation, &invocation_ctx, decision)
+                    .await
+            }
+            None => NormalizedToolResult::denied(format!(
+                "Tool '{}' cancelled by caller",
+                invocation.name
+            )),
         };
         let result = self
             .finish(&invocation, started, normalized, &cancellation)
@@ -327,11 +385,21 @@ impl ToolInvoker for ScopedToolInvoker {
         // runtime mpsc channel after this method returns. Acknowledging the
         // broadcast drain here preserves that causal order across channels.
         invocation_ctx.flush_agent_events().await;
+        // Model and host-direct invocations have an outer runtime owner that
+        // emits their ToolEnd after this method returns. Nested orchestrator
+        // calls do not, so close only those lifecycles here. Besides keeping
+        // start/end IDs paired, this exposes successful nested source-tool
+        // metadata to delegated-task evidence collection.
+        self.emit_nested_tool_end(&invocation, &result).await;
         result
     }
 
     fn available_tools(&self) -> Vec<String> {
         self.agent.tool_executor.registry().list()
+    }
+
+    fn capabilities(&self, name: &str, args: &serde_json::Value) -> Option<ToolCapabilities> {
+        self.agent.tool_executor.registry().capabilities(name, args)
     }
 }
 

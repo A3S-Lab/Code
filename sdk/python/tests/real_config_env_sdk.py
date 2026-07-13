@@ -122,7 +122,7 @@ if RUN_FULL_AGENT_SMOKE:
     assert runs
     assert runs[0]["status"] == "completed"
     events = step("run_events", lambda: session.run_events(runs[0]["id"]))
-    event_types = {event["event"]["type"] for event in events}
+    event_types = {event["type"] for event in events}
     assert "agent_start" in event_types
     assert "agent_end" in event_types
 

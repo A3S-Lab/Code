@@ -26,6 +26,16 @@ pub use rule::PermissionRule;
 /// The built-in `PermissionPolicy` implements this trait using
 /// declarative allow/deny/ask rules with pattern matching.
 pub trait PermissionChecker: Send + Sync {
+    /// Whether a tool definition should be exposed to the model.
+    ///
+    /// This controls model-visible capabilities only. [`Self::check`] remains
+    /// the authoritative execution-time decision for any tool invocation.
+    /// Existing checkers expose every tool unless they explicitly override
+    /// this method.
+    fn expose_to_model(&self, _tool_name: &str) -> bool {
+        true
+    }
+
     /// Check whether a tool invocation is allowed, denied, or requires confirmation.
     fn check(&self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision;
 }

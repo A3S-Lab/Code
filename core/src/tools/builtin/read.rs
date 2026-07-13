@@ -3,6 +3,7 @@
 use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::tools::{MAX_LINE_LENGTH, MAX_READ_LINES};
+use crate::workspace::WorkspaceTextRange;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -29,11 +30,14 @@ impl Tool for ReadTool {
                 },
                 "offset": {
                     "type": "integer",
+                    "minimum": 0,
                     "description": "Optional. Line number to start reading from. 0-indexed. Default: 0."
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Optional. Maximum number of lines to read. Default: 2000."
+                    "minimum": 1,
+                    "maximum": MAX_READ_LINES,
+                    "description": "Optional. Maximum number of lines to read. Default and maximum: 2000."
                 }
             },
             "required": ["file_path"],
@@ -50,39 +54,39 @@ impl Tool for ReadTool {
         })
     }
 
+    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        crate::tools::ToolCapabilities::read_only_paginated(16)
+    }
+
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return Ok(ToolOutput::error("file_path parameter is required")),
         };
 
-        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let offset = match args.get("offset") {
+            Some(value) => match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
+                Some(value) => value,
+                None => return Ok(ToolOutput::error("offset must be a non-negative integer")),
+            },
+            None => 0,
+        };
 
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .unwrap_or(MAX_READ_LINES);
+        let requested_limit = match args.get("limit") {
+            Some(value) => match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
+                Some(0) | None => return Ok(ToolOutput::error("limit must be a positive integer")),
+                Some(value) => value,
+            },
+            None => MAX_READ_LINES,
+        };
+        let limit = requested_limit.min(MAX_READ_LINES);
 
         let workspace_path = match ctx.resolve_workspace_path(file_path) {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::error(format!("Failed to resolve path: {}", e))),
         };
-        let source_metadata = serde_json::json!({
-            "source_anchors": [workspace_path.as_str()],
-        });
-
-        let fs = ctx.workspace_services.fs();
-        let path_for_read = workspace_path.clone();
-        let content = match ctx
-            .workspace_services
-            .run_with_timeout(
-                "read_text",
-                async move { fs.read_text(&path_for_read).await },
-            )
-            .await
-        {
-            Ok(c) => c,
+        let range = match read_range(ctx, &workspace_path, offset, limit).await {
+            Ok(range) => range,
             Err(e) => {
                 return Ok(ToolOutput::error(format!(
                     "Failed to read file {}: {}",
@@ -91,49 +95,151 @@ impl Tool for ReadTool {
                 )))
             }
         };
-
-        let lines: Vec<&str> = content.lines().collect();
-        let total_lines = lines.len();
-
-        if offset > total_lines || (offset > 0 && total_lines == 0) {
+        if range.lines.is_empty()
+            && range.eof
+            && range.total_lines.is_some_and(|total| offset > total)
+        {
+            let total_lines = range.total_lines.unwrap_or_default();
             return Ok(ToolOutput::error(format!(
                 "Offset {} exceeds file length ({} lines)",
                 offset, total_lines
             )));
         }
-        if offset == total_lines {
+        let mut metadata = serde_json::json!({
+            "source_anchors": [workspace_path.as_str()],
+            "range": {
+                "offset": offset,
+                "requested_limit": requested_limit,
+                "applied_limit": limit,
+                "returned_lines": range.lines.len(),
+                "next_offset": range.next_offset,
+                "eof": range.eof,
+                "total_lines": range.total_lines,
+                "limit_clamped": requested_limit != limit,
+            }
+        });
+        if range.lines.is_empty() && range.eof {
             return Ok(ToolOutput::success(format!(
                 "(end of file: offset {} equals file length)\n",
                 offset
             ))
-            .with_metadata(source_metadata));
+            .with_metadata(metadata));
         }
 
-        let end = (offset + limit).min(total_lines);
-        let selected = &lines[offset..end];
-
         let mut output = String::new();
-        for (i, line) in selected.iter().enumerate() {
+        for (i, line) in range.lines.iter().enumerate() {
             let line_num = offset + i + 1; // 1-indexed
             let truncated = truncate_utf8(line, MAX_LINE_LENGTH);
             output.push_str(&format!("{:>6}\t{}\n", line_num, truncated));
         }
 
-        if end < total_lines {
+        if let Some(next_offset) = range.next_offset {
             output.push_str(&format!(
-                "\n... ({} more lines not shown, use offset/limit to read more)\n",
-                total_lines - end
+                "\n... (more lines available; continue with offset={next_offset})\n"
             ));
         }
-
-        Ok(ToolOutput::success(output).with_metadata(source_metadata))
+        metadata["range"]["output_bytes"] = serde_json::json!(output.len());
+        Ok(ToolOutput::success(output).with_metadata(metadata))
     }
+}
+
+async fn read_range(
+    ctx: &ToolContext,
+    path: &crate::workspace::WorkspacePath,
+    offset: usize,
+    limit: usize,
+) -> crate::workspace::WorkspaceResult<WorkspaceTextRange> {
+    if let Some(reader) = ctx.workspace_services.text_reader() {
+        let path = path.clone();
+        return ctx
+            .workspace_services
+            .run_with_timeout("read_text_range", async move {
+                reader.read_text_range(&path, offset, limit).await
+            })
+            .await;
+    }
+
+    let fs = ctx.workspace_services.fs();
+    let path = path.clone();
+    let content = ctx
+        .workspace_services
+        .run_with_timeout("read_text", async move { fs.read_text(&path).await })
+        .await?;
+    let lines = content.lines().collect::<Vec<_>>();
+    if offset >= lines.len() {
+        return Ok(WorkspaceTextRange {
+            lines: Vec::new(),
+            next_offset: None,
+            eof: true,
+            total_lines: Some(lines.len()),
+        });
+    }
+    let end = offset.saturating_add(limit).min(lines.len());
+    Ok(WorkspaceTextRange {
+        lines: lines[offset..end]
+            .iter()
+            .map(|line| (*line).to_string())
+            .collect(),
+        next_offset: (end < lines.len()).then_some(end),
+        eof: end == lines.len(),
+        total_lines: Some(lines.len()),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::{
+        WorkspaceDirEntry, WorkspaceError, WorkspaceFileSystem, WorkspacePath, WorkspaceRef,
+        WorkspaceResult, WorkspaceServices, WorkspaceTextReader, WorkspaceWriteOutcome,
+    };
+    use async_trait::async_trait;
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    struct RangeOnlyBackend;
+
+    #[async_trait]
+    impl WorkspaceFileSystem for RangeOnlyBackend {
+        async fn read_text(&self, _path: &WorkspacePath) -> WorkspaceResult<String> {
+            panic!("range-capable read must not fall back to whole-file read_text")
+        }
+
+        async fn write_text(
+            &self,
+            _path: &WorkspacePath,
+            _content: &str,
+        ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+            Err(WorkspaceError::InvalidArgument {
+                message: "write_text is unsupported".to_string(),
+            })
+        }
+
+        async fn list_dir(&self, _path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
+            Err(WorkspaceError::InvalidArgument {
+                message: "list_dir is unsupported".to_string(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl WorkspaceTextReader for RangeOnlyBackend {
+        async fn read_text_range(
+            &self,
+            _path: &WorkspacePath,
+            offset: usize,
+            limit: usize,
+        ) -> WorkspaceResult<WorkspaceTextRange> {
+            assert_eq!(offset, 7);
+            assert_eq!(limit, 2);
+            Ok(WorkspaceTextRange {
+                lines: vec!["eight".to_string(), "nine".to_string()],
+                next_offset: Some(9),
+                eof: false,
+                total_lines: None,
+            })
+        }
+    }
 
     #[tokio::test]
     async fn test_read_file() {
@@ -178,6 +284,52 @@ mod tests {
         assert!(result.content.contains("b"));
         assert!(result.content.contains("c"));
         assert!(!result.content.contains("\ta\n"));
+    }
+
+    #[tokio::test]
+    async fn test_read_uses_streaming_range_capability_without_whole_file_read() {
+        let backend = Arc::new(RangeOnlyBackend);
+        let fs: Arc<dyn WorkspaceFileSystem> = backend.clone();
+        let reader: Arc<dyn WorkspaceTextReader> = backend;
+        let services = WorkspaceServices::builder(WorkspaceRef::new("range", "range://ws"), fs)
+            .text_reader(reader)
+            .build();
+        let ctx = ToolContext::new(std::env::temp_dir()).with_workspace_services(services);
+
+        let result = ReadTool
+            .execute(
+                &serde_json::json!({"file_path": "large.txt", "offset": 7, "limit": 2}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert!(result.content.contains("eight"));
+        assert!(result.content.contains("offset=9"));
+    }
+
+    #[tokio::test]
+    async fn test_read_clamps_oversized_limit_and_reports_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("test.txt"), "one\ntwo\n").unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = ReadTool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "test.txt",
+                    "limit": MAX_READ_LINES + 1,
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        let range = &result.metadata.unwrap()["range"];
+        assert_eq!(range["applied_limit"], MAX_READ_LINES);
+        assert_eq!(range["limit_clamped"], true);
     }
 
     #[tokio::test]

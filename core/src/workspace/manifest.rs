@@ -16,7 +16,7 @@ use super::{
     WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
     WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest,
     WorkspaceGrepResult, WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch,
-    WorkspaceWriteOutcome,
+    WorkspaceTextRange, WorkspaceTextReader, WorkspaceWriteOutcome,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -431,6 +431,20 @@ impl WorkspaceFileSystem for ManifestWorkspaceBackend {
 
     async fn list_dir(&self, path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
         self.local.list_dir(path).await
+    }
+}
+
+#[async_trait]
+impl WorkspaceTextReader for ManifestWorkspaceBackend {
+    async fn read_text_range(
+        &self,
+        path: &WorkspacePath,
+        offset: usize,
+        limit: usize,
+    ) -> WorkspaceResult<WorkspaceTextRange> {
+        let range = self.local.read_text_range(path, offset, limit).await?;
+        self.manifest.touch_file(path.as_str());
+        Ok(range)
     }
 }
 

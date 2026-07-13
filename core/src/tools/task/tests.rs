@@ -836,6 +836,10 @@ fn test_parallel_task_params_schema() {
     assert_eq!(schema["additionalProperties"], false);
     assert!(schema["properties"]["tasks"].is_object());
     assert_eq!(schema["properties"]["tasks"]["type"], "array");
+    assert_eq!(
+        schema["properties"]["tasks"]["maxItems"],
+        MAX_PARALLEL_TASKS_PER_CALL
+    );
     assert_eq!(schema["properties"]["tasks"]["minItems"], 1);
     assert_eq!(
         schema["properties"]["allow_partial_failure"]["type"],
@@ -906,8 +910,7 @@ fn test_parallel_task_params_debug() {
 
 #[test]
 fn test_parallel_task_params_large_count() {
-    // Validate that ParallelTaskParams can hold 150 tasks without truncation
-    let tasks: Vec<TaskParams> = (0..150)
+    let tasks: Vec<TaskParams> = (0..MAX_PARALLEL_TASKS_PER_CALL)
         .map(|i| TaskParams {
             agent: "explore".to_string(),
             description: format!("Task {}", i),
@@ -926,9 +929,12 @@ fn test_parallel_task_params_large_count() {
     };
     let json = serde_json::to_string(&params).unwrap();
     let deserialized: ParallelTaskParams = serde_json::from_str(&json).unwrap();
-    assert_eq!(deserialized.tasks.len(), 150);
+    assert_eq!(deserialized.tasks.len(), MAX_PARALLEL_TASKS_PER_CALL);
     assert_eq!(deserialized.tasks[0].description, "Task 0");
-    assert_eq!(deserialized.tasks[149].description, "Task 149");
+    assert_eq!(
+        deserialized.tasks[MAX_PARALLEL_TASKS_PER_CALL - 1].description,
+        "Task 31"
+    );
 }
 
 #[test]
@@ -1112,6 +1118,78 @@ impl LlmClient for SchemaCoercionClient {
     }
 }
 
+struct SchemaFastPathClient {
+    output: &'static str,
+    coercion_calls: Arc<AtomicUsize>,
+}
+
+struct DelegatedNoPreAnalysisClient {
+    pre_analysis_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for DelegatedNoPreAnalysisClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        if is_pre_analysis_system(system) {
+            self.pre_analysis_calls.fetch_add(1, Ordering::SeqCst);
+            return Ok(pre_analysis_response(messages));
+        }
+        Ok(text_response(r#"{"verdict":"planned-by-parent"}"#))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming unused")
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for SchemaFastPathClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        if is_pre_analysis_system(system) {
+            return Ok(pre_analysis_response(messages));
+        }
+        if tools.iter().any(|tool| tool.name == "emit_step_output") {
+            self.coercion_calls.fetch_add(1, Ordering::SeqCst);
+            return Ok(MockLlmClient::tool_call_response(
+                "coerce-fast-path-fallback",
+                "emit_step_output",
+                serde_json::json!({ "verdict": "repaired" }),
+            ));
+        }
+        Ok(text_response(self.output))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming unused")
+    }
+
+    fn native_structured_support(&self) -> crate::llm::structured::NativeStructuredSupport {
+        crate::llm::structured::NativeStructuredSupport::ForcedTool
+    }
+}
+
 struct CountingSchemaCoercionClient {
     attempts: Arc<AtomicUsize>,
     successful_calls: Arc<AtomicUsize>,
@@ -1219,6 +1297,164 @@ async fn execute_step_with_schema_coerces_structured_output() {
         Some(serde_json::json!({ "verdict": "ok" })),
         "a schema'd step returns the validated object in `structured`"
     );
+}
+
+#[tokio::test]
+async fn schema_valid_child_json_skips_llm_coercion() {
+    let workspace = tempfile::tempdir().unwrap();
+    let coercion_calls = Arc::new(AtomicUsize::new(0));
+    let executor = TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        Arc::new(SchemaFastPathClient {
+            output: r#"{"verdict":"local"}"#,
+            coercion_calls: Arc::clone(&coercion_calls),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    let spec = AgentStepSpec::new("local-json", "general", "assess", "Assess the thing.")
+        .with_output_schema(verdict_schema());
+
+    let outcome = executor.execute_step(spec, None).await;
+
+    assert!(outcome.success, "step should succeed: {}", outcome.output);
+    assert_eq!(
+        outcome.structured,
+        Some(serde_json::json!({ "verdict": "local" }))
+    );
+    assert_eq!(coercion_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn schema_valid_json_embedded_in_dirty_output_skips_llm_coercion() {
+    let workspace = tempfile::tempdir().unwrap();
+    let coercion_calls = Arc::new(AtomicUsize::new(0));
+    let executor = TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        Arc::new(SchemaFastPathClient {
+            output: "Completed.\n```json\n{\"verdict\":\"local-fenced\"}\n```\n",
+            coercion_calls: Arc::clone(&coercion_calls),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    let spec = AgentStepSpec::new("dirty-json", "general", "assess", "Assess the thing.")
+        .with_output_schema(verdict_schema());
+
+    let outcome = executor.execute_step(spec, None).await;
+
+    assert!(outcome.success, "step should succeed: {}", outcome.output);
+    assert_eq!(
+        outcome.structured,
+        Some(serde_json::json!({ "verdict": "local-fenced" }))
+    );
+    assert_eq!(coercion_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn schema_invalid_child_output_still_uses_llm_coercion_fallback() {
+    let workspace = tempfile::tempdir().unwrap();
+    let coercion_calls = Arc::new(AtomicUsize::new(0));
+    let executor = TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        Arc::new(SchemaFastPathClient {
+            output: "The result needs repair.",
+            coercion_calls: Arc::clone(&coercion_calls),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    let spec = AgentStepSpec::new("repair-json", "general", "assess", "Assess the thing.")
+        .with_output_schema(verdict_schema());
+
+    let outcome = executor.execute_step(spec, None).await;
+
+    assert!(
+        outcome.success,
+        "fallback should succeed: {}",
+        outcome.output
+    );
+    assert_eq!(
+        outcome.structured,
+        Some(serde_json::json!({ "verdict": "repaired" }))
+    );
+    assert_eq!(coercion_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn empty_child_output_is_a_failure_and_never_triggers_schema_coercion() {
+    let workspace = tempfile::tempdir().unwrap();
+    let coercion_calls = Arc::new(AtomicUsize::new(0));
+    let executor = TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        Arc::new(SchemaFastPathClient {
+            output: "",
+            coercion_calls: Arc::clone(&coercion_calls),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    let spec = AgentStepSpec::new("empty-json", "general", "assess", "Assess the thing.")
+        .with_output_schema(verdict_schema());
+
+    let outcome = executor.execute_step(spec, None).await;
+
+    assert!(!outcome.success, "unexpected outcome: {outcome:#?}");
+    assert_eq!(outcome.structured, None);
+    assert!(outcome.output.contains("no progress was being made"));
+    assert_eq!(coercion_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn delegated_child_skips_redundant_pre_analysis_model_call() {
+    let workspace = tempfile::tempdir().unwrap();
+    let pre_analysis_calls = Arc::new(AtomicUsize::new(0));
+    let executor = TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        Arc::new(DelegatedNoPreAnalysisClient {
+            pre_analysis_calls: Arc::clone(&pre_analysis_calls),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    let spec = AgentStepSpec::new("preplanned", "general", "assess", "Assess the thing.")
+        .with_output_schema(verdict_schema());
+
+    let outcome = executor.execute_step(spec, None).await;
+
+    assert!(outcome.success, "unexpected outcome: {outcome:#?}");
+    assert_eq!(
+        outcome.structured,
+        Some(serde_json::json!({ "verdict": "planned-by-parent" }))
+    );
+    assert_eq!(pre_analysis_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn tool_free_schema_step_uses_one_structured_model_call() {
+    let workspace = tempfile::tempdir().unwrap();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let successful_calls = Arc::new(AtomicUsize::new(0));
+    let executor = TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        Arc::new(CountingSchemaCoercionClient {
+            attempts: Arc::clone(&attempts),
+            successful_calls: Arc::clone(&successful_calls),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    let spec = AgentStepSpec::new(
+        "loop-plan",
+        "loop-planner",
+        "plan",
+        "Plan the bounded loop.",
+    )
+    .with_output_schema(verdict_schema());
+
+    let outcome = executor.execute_step(spec, None).await;
+
+    assert!(outcome.success, "step should succeed: {}", outcome.output);
+    assert_eq!(
+        outcome.structured,
+        Some(serde_json::json!({ "verdict": "ok" }))
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(successful_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -2514,22 +2750,27 @@ async fn parallel_task_tool_timeout_returns_completed_partial_results() {
     let metadata = output.metadata.expect("metadata");
     assert_eq!(metadata["timed_out"], true);
     assert_eq!(metadata["returned_early"], false);
+    assert!(
+        metadata["duration_ms"]
+            .as_u64()
+            .is_some_and(|duration_ms| duration_ms >= 500),
+        "{metadata}"
+    );
     assert_eq!(metadata["success_count"], 1);
     assert_eq!(metadata["failed_count"], 1);
     assert_eq!(metadata["results"][0]["success"], false);
     assert!(
-        metadata["results"][0]["output"]
+        metadata["results"][0]["error_message"]
             .as_str()
             .is_some_and(|text| text.contains("timed out")),
         "{metadata}"
     );
     assert_eq!(metadata["results"][1]["success"], true);
-    assert!(
-        metadata["results"][1]["output"]
-            .as_str()
-            .is_some_and(|text| text.contains("fast branch")),
-        "{metadata}"
+    assert_eq!(
+        metadata["results"][1]["error_message"],
+        serde_json::Value::Null
     );
+    assert!(output.content.contains("fast branch"));
 }
 
 #[tokio::test]
@@ -2660,6 +2901,203 @@ async fn parallel_task_tool_returns_structured_child_output_when_schema_requeste
     let metadata = output.metadata.expect("metadata");
     assert_eq!(metadata["results"][0]["success"], true);
     assert_eq!(metadata["results"][0]["structured"]["verdict"], "ok");
+}
+
+struct BatchSourceTool {
+    name: &'static str,
+    source_anchor: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Tool for BatchSourceTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &str {
+        "Returns a deterministic source anchor for nested batch event tests"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn execute(
+        &self,
+        _args: &serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> anyhow::Result<ToolOutput> {
+        Ok(ToolOutput::success(format!("{} complete", self.name))
+            .with_metadata(serde_json::json!({"source_anchors": [self.source_anchor]})))
+    }
+}
+
+struct BatchFailureTool;
+
+#[async_trait::async_trait]
+impl Tool for BatchFailureTool {
+    fn name(&self) -> &str {
+        "nested_failure"
+    }
+
+    fn description(&self) -> &str {
+        "Returns a deterministic nested failure"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn execute(
+        &self,
+        _args: &serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> anyhow::Result<ToolOutput> {
+        Ok(ToolOutput::error("nested failure"))
+    }
+}
+
+#[tokio::test]
+async fn batch_nested_tool_events_are_paired_and_preserve_web_source_anchors() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = Arc::new(crate::tools::ToolExecutor::new(
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    // Replace network-backed builtins with deterministic fixtures while
+    // retaining their production names and metadata contract.
+    executor
+        .registry()
+        .register_builtin(Arc::new(BatchSourceTool {
+            name: "web_search",
+            source_anchor: "https://search.example.test/result",
+        }));
+    executor
+        .registry()
+        .register_builtin(Arc::new(BatchSourceTool {
+            name: "web_fetch",
+            source_anchor: "https://fetch.example.test/article",
+        }));
+    executor.register_dynamic_tool(Arc::new(BatchFailureTool));
+
+    let llm = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response(
+            "batch-source-call",
+            "batch",
+            serde_json::json!({
+                "invocations": [
+                    {"tool": "web_search", "args": {"query": "fixture"}},
+                    {"tool": "web_fetch", "args": {"url": "https://fetch.example.test/article"}},
+                    {"tool": "nested_failure", "args": {}}
+                ]
+            }),
+        ),
+        MockLlmClient::text_response("Batch observed."),
+    ]));
+    let permissions = PermissionPolicy::new()
+        .allow("batch(*)")
+        .allow("web_search(*)")
+        .allow("web_fetch(*)")
+        .allow("nested_failure(*)");
+    let agent = AgentLoop::new(
+        llm,
+        Arc::clone(&executor),
+        ToolContext::new(workspace.path().to_path_buf()),
+        AgentConfig {
+            tools: executor.definitions(),
+            permission_checker: Some(Arc::new(permissions)),
+            planning_mode: crate::prompts::PlanningMode::Disabled,
+            continuation_enabled: false,
+            ..Default::default()
+        },
+    );
+    let (event_tx, mut event_rx) = mpsc::channel(64);
+
+    let result = agent
+        .execute_with_session(
+            &[],
+            "Run the source batch.",
+            Some("batch-source-session"),
+            Some(event_tx),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.text, "Batch observed.");
+
+    let mut events = Vec::new();
+    while let Some(event) = event_rx.recv().await {
+        events.push(event);
+    }
+
+    let mut nested_starts = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolExecutionStart { id, name, .. } if id.starts_with("nested-") => {
+                Some((id.clone(), name.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut nested_ends = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolEnd { id, name, .. } if id.starts_with("nested-") => {
+                Some((id.clone(), name.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    nested_starts.sort();
+    nested_ends.sort();
+    assert_eq!(nested_starts.len(), 3, "{events:?}");
+    assert_eq!(nested_ends, nested_starts, "{events:?}");
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolEnd {
+            name,
+            exit_code: 1,
+            output,
+            ..
+        } if name == "nested_failure" && output.contains("nested failure")
+    )));
+    assert_eq!(
+        events
+            .iter()
+            .filter(
+                |event| matches!(event, AgentEvent::ToolEnd { id, .. } if id == "batch-source-call")
+            )
+            .count(),
+        1,
+        "the outer model tool call must keep its existing single ToolEnd owner"
+    );
+
+    let source_ctx = ToolContext::new(workspace.path().to_path_buf());
+    let mut source_anchors = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut scanned = 0;
+    for event in &events {
+        collect_tool_source_anchors(
+            event,
+            &source_ctx,
+            &mut source_anchors,
+            &mut seen,
+            &mut scanned,
+        );
+    }
+    source_anchors.sort_by(|left, right| left.tool.cmp(&right.tool));
+    assert_eq!(
+        source_anchors,
+        vec![
+            ToolSourceAnchor {
+                tool: "web_fetch".to_string(),
+                url_or_path: "https://fetch.example.test/article".to_string(),
+            },
+            ToolSourceAnchor {
+                tool: "web_search".to_string(),
+                url_or_path: "https://search.example.test/result".to_string(),
+            },
+        ]
+    );
 }
 
 #[tokio::test]
@@ -2878,6 +3316,52 @@ async fn task_tool_returns_structured_child_output_when_schema_requested() {
     assert!(output.success, "task should succeed: {}", output.content);
     let metadata = output.metadata.expect("metadata");
     assert_eq!(metadata["structured"]["verdict"], "ok");
+}
+
+#[tokio::test]
+async fn bounded_child_tool_call_can_finalize_structured_output_without_a_live_child() {
+    use crate::subagent_task_tracker::InMemorySubagentTaskTracker;
+
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("evidence.md"), "traceable evidence").unwrap();
+    let llm = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response(
+            "read-evidence",
+            "read",
+            serde_json::json!({"file_path": "evidence.md"}),
+        ),
+        MockLlmClient::text_response(r#"{"verdict":"supported"}"#),
+    ]));
+    let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+    let executor = TaskExecutor::new(
+        test_registry_with_writer(),
+        llm,
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_subagent_tracker(Arc::clone(&tracker));
+
+    let result = executor
+        .execute(
+            TaskParams {
+                agent: "writer".to_string(),
+                description: "Collect bounded evidence".to_string(),
+                prompt: "Read evidence.md once, then return the structured verdict.".to_string(),
+                background: false,
+                max_steps: Some(2),
+                output_schema: Some(verdict_schema()),
+            },
+            None,
+            Some("parent-session"),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "unexpected child result: {result:#?}");
+    assert_eq!(
+        result.structured,
+        Some(serde_json::json!({"verdict": "supported"}))
+    );
+    assert!(tracker.list_pending().await.is_empty());
 }
 
 #[tokio::test]

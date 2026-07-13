@@ -4,17 +4,39 @@
 //! Provides thread-safe registration, lookup, and execution.
 
 use super::artifacts::{ArtifactStore, ArtifactStoreLimits, ToolArtifact};
-use super::types::{Tool, ToolContext, ToolOutput};
+use super::types::{Tool, ToolCapabilities, ToolContext, ToolOutput};
 use super::ToolResult;
 use super::{
-    merge_tool_output_artifact_metadata, truncate_tool_output_with_artifact, ToolOutputArtifact,
+    merge_tool_output_artifact_metadata, tool_output_artifact, truncate_tool_output_with_artifact,
+    ToolOutputArtifact,
 };
 use crate::llm::ToolDefinition;
 use crate::trace::{InMemoryTraceSink, TraceEvent, TraceSink};
 use anyhow::Result;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+
+const MAX_TOOL_SCHEMA_BYTES: usize = 256 * 1024;
+const MAX_ARGUMENT_VALIDATION_ERRORS: usize = 8;
+const MAX_ARGUMENT_VALIDATION_MESSAGE_BYTES: usize = 4 * 1024;
+const MAX_INLINE_CHANGE_BYTES: usize = 64 * 1024;
+const CHANGE_SIDE_PREVIEW_BYTES: usize = 8 * 1024;
+const CHANGE_DIFF_PREVIEW_BYTES: usize = 32 * 1024;
+const MAX_DIFF_COMPUTE_BYTES: usize = 1024 * 1024;
+
+#[derive(Clone)]
+enum CachedArgumentValidator {
+    Valid(Arc<jsonschema::Validator>),
+    Invalid(String),
+}
+
+#[derive(Clone)]
+struct ArgumentValidatorCacheEntry {
+    schema_fingerprint: u64,
+    validator: CachedArgumentValidator,
+}
 
 /// Tool registry for managing all available tools
 pub struct ToolRegistry {
@@ -24,6 +46,7 @@ pub struct ToolRegistry {
     context: RwLock<ToolContext>,
     artifact_store: ArtifactStore,
     trace_sink: RwLock<Arc<dyn TraceSink>>,
+    argument_validators: RwLock<HashMap<String, ArgumentValidatorCacheEntry>>,
 }
 
 impl ToolRegistry {
@@ -54,6 +77,7 @@ impl ToolRegistry {
             context: RwLock::new(context),
             artifact_store: ArtifactStore::with_limits(artifact_limits),
             trace_sink: RwLock::new(Arc::new(InMemoryTraceSink::default())),
+            argument_validators: RwLock::new(HashMap::new()),
         }
     }
 
@@ -186,6 +210,14 @@ impl ToolRegistry {
         tools.get(name).cloned()
     }
 
+    pub(crate) fn capabilities(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Option<ToolCapabilities> {
+        self.get(name).map(|tool| tool.capabilities(args))
+    }
+
     /// Check if a tool exists
     pub fn contains(&self, name: &str) -> bool {
         let tools = self.tools.read().unwrap();
@@ -213,6 +245,87 @@ impl ToolRegistry {
         let mut names = tools.keys().cloned().collect::<Vec<_>>();
         names.sort();
         names
+    }
+
+    /// Validate model- or orchestrator-supplied arguments against the tool's
+    /// declared JSON Schema before permissions or execution side effects.
+    ///
+    /// Low-level standalone registry calls remain compatibility-oriented and
+    /// do not invoke this automatically. The governed agent/session gateway is
+    /// the enforcement boundary.
+    pub(crate) fn validate_arguments(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> std::result::Result<(), String> {
+        let Some(tool) = self.get(name) else {
+            return Ok(());
+        };
+        let schema = tool.parameters();
+        let schema_bytes = serde_json::to_vec(&schema)
+            .map_err(|error| format!("tool parameter schema is not serializable: {error}"))?;
+        if schema_bytes.len() > MAX_TOOL_SCHEMA_BYTES {
+            return Err(format!(
+                "tool parameter schema exceeds the {} byte safety limit",
+                MAX_TOOL_SCHEMA_BYTES
+            ));
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        schema_bytes.hash(&mut hasher);
+        let schema_fingerprint = hasher.finish();
+        let cached = self
+            .argument_validators
+            .read()
+            .unwrap()
+            .get(name)
+            .filter(|entry| entry.schema_fingerprint == schema_fingerprint)
+            .cloned();
+        let validator = match cached.map(|entry| entry.validator) {
+            Some(CachedArgumentValidator::Valid(validator)) => validator,
+            Some(CachedArgumentValidator::Invalid(error)) => return Err(error),
+            None => {
+                let compiled = match jsonschema::draft202012::options().build(&schema) {
+                    Ok(validator) => CachedArgumentValidator::Valid(Arc::new(validator)),
+                    Err(error) => CachedArgumentValidator::Invalid(format!(
+                        "tool has an invalid parameter schema: {error}"
+                    )),
+                };
+                self.argument_validators.write().unwrap().insert(
+                    name.to_string(),
+                    ArgumentValidatorCacheEntry {
+                        schema_fingerprint,
+                        validator: compiled.clone(),
+                    },
+                );
+                match compiled {
+                    CachedArgumentValidator::Valid(validator) => validator,
+                    CachedArgumentValidator::Invalid(error) => return Err(error),
+                }
+            }
+        };
+        let mut errors = validator
+            .iter_errors(args)
+            .take(MAX_ARGUMENT_VALIDATION_ERRORS + 1)
+            .map(|error| {
+                let path = error.instance_path().to_string();
+                if path.is_empty() {
+                    format!("$: {error}")
+                } else {
+                    format!("{path}: {error}")
+                }
+            })
+            .collect::<Vec<_>>();
+        if errors.is_empty() {
+            return Ok(());
+        }
+
+        let omitted = errors.len() > MAX_ARGUMENT_VALIDATION_ERRORS;
+        errors.truncate(MAX_ARGUMENT_VALIDATION_ERRORS);
+        let mut message = errors.join("; ");
+        if omitted {
+            message.push_str("; additional validation errors omitted");
+        }
+        Err(crate::text::truncate_utf8(&message, MAX_ARGUMENT_VALIDATION_MESSAGE_BYTES).to_string())
     }
 
     /// Get the number of registered tools
@@ -298,6 +411,7 @@ impl ToolRegistry {
         let result = match tool {
             Some(tool) => {
                 let mut output = tool.execute(args, ctx).await?;
+                self.compact_change_metadata(name, &mut output.metadata);
                 let original_content = output.content.clone();
                 let truncated = truncate_tool_output_with_artifact(name, &output.content);
                 output.content = truncated.content;
@@ -350,6 +464,7 @@ impl ToolRegistry {
         match tool {
             Some(tool) => {
                 let mut output = tool.execute(args, ctx).await?;
+                self.compact_change_metadata(name, &mut output.metadata);
                 let original_content = output.content.clone();
                 let truncated = truncate_tool_output_with_artifact(name, &output.content);
                 output.content = truncated.content;
@@ -377,6 +492,106 @@ impl ToolRegistry {
         });
     }
 
+    fn compact_change_metadata(&self, tool_name: &str, metadata: &mut Option<serde_json::Value>) {
+        let Some(serde_json::Value::Object(object)) = metadata.as_mut() else {
+            return;
+        };
+        let before = object
+            .get("before")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        let after = object
+            .get("after")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        if before.is_none() && after.is_none() {
+            return;
+        }
+
+        let before_bytes = before.as_ref().map_or(0, String::len);
+        let after_bytes = after.as_ref().map_or(0, String::len);
+        let total_bytes = before_bytes.saturating_add(after_bytes);
+        let compacted = total_bytes > MAX_INLINE_CHANGE_BYTES;
+        let before_artifact = before.as_deref().and_then(|content| {
+            self.store_change_artifact(tool_name, "before", content, compacted)
+        });
+        let after_artifact = after
+            .as_deref()
+            .and_then(|content| self.store_change_artifact(tool_name, "after", content, compacted));
+
+        let unified_diff = if compacted && total_bytes <= MAX_DIFF_COMPUTE_BYTES {
+            let diff = similar::TextDiff::from_lines(
+                before.as_deref().unwrap_or_default(),
+                after.as_deref().unwrap_or_default(),
+            )
+            .unified_diff()
+            .context_radius(3)
+            .header("before", "after")
+            .to_string();
+            Some(bounded_head_tail(&diff, CHANGE_DIFF_PREVIEW_BYTES))
+        } else {
+            None
+        };
+
+        if compacted {
+            if let Some(content) = before.as_deref() {
+                object.insert(
+                    "before".to_string(),
+                    serde_json::Value::String(bounded_head_tail(
+                        content,
+                        CHANGE_SIDE_PREVIEW_BYTES,
+                    )),
+                );
+            }
+            if let Some(content) = after.as_deref() {
+                object.insert(
+                    "after".to_string(),
+                    serde_json::Value::String(bounded_head_tail(
+                        content,
+                        CHANGE_SIDE_PREVIEW_BYTES,
+                    )),
+                );
+            }
+        }
+
+        object.insert(
+            "change".to_string(),
+            serde_json::json!({
+                "compacted": compacted,
+                "before": before.as_deref().map(|content| serde_json::json!({
+                    "bytes": content.len(),
+                    "sha256": sha256::digest(content.as_bytes()),
+                    "artifact": before_artifact,
+                })),
+                "after": after.as_deref().map(|content| serde_json::json!({
+                    "bytes": content.len(),
+                    "sha256": sha256::digest(content.as_bytes()),
+                    "artifact": after_artifact,
+                })),
+                "unified_diff": unified_diff,
+                "diff_omitted": compacted && total_bytes > MAX_DIFF_COMPUTE_BYTES,
+            }),
+        );
+    }
+
+    fn store_change_artifact(
+        &self,
+        tool_name: &str,
+        side: &str,
+        content: &str,
+        store: bool,
+    ) -> Option<serde_json::Value> {
+        if !store || content.len() > self.artifact_store.limits().max_bytes {
+            return None;
+        }
+        let artifact = tool_output_artifact(&format!("{tool_name}-{side}"), content, 0);
+        self.store_tool_artifact(tool_name, content, &artifact);
+        Some(serde_json::json!({
+            "artifact_id": artifact.artifact_id,
+            "artifact_uri": artifact.artifact_uri,
+        }))
+    }
+
     fn record_trace_event(&self, name: &str, result: &ToolResult, duration: std::time::Duration) {
         let sink = self.trace_sink();
         sink.record(TraceEvent::tool_execution(
@@ -401,439 +616,28 @@ impl ToolRegistry {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::trace::{InMemoryTraceSink, TraceEventKind};
-    use async_trait::async_trait;
-
-    struct MockTool {
-        name: String,
+fn bounded_head_tail(content: &str, max_bytes: usize) -> String {
+    if content.len() <= max_bytes {
+        return content.to_string();
     }
-
-    #[async_trait]
-    impl Tool for MockTool {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn description(&self) -> &str {
-            "A mock tool for testing"
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {},
-                "required": []
-            })
-        }
-
-        async fn execute(
-            &self,
-            _args: &serde_json::Value,
-            _ctx: &ToolContext,
-        ) -> Result<ToolOutput> {
-            Ok(ToolOutput::success("mock output"))
-        }
+    let head_limit = max_bytes / 2;
+    let tail_limit = max_bytes.saturating_sub(head_limit);
+    let head = crate::text::truncate_utf8(content, head_limit);
+    let mut tail_start = content.len().saturating_sub(tail_limit);
+    while tail_start < content.len() && !content.is_char_boundary(tail_start) {
+        tail_start += 1;
     }
-
-    #[test]
-    fn test_registry_register_and_get() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-
-        let tool = Arc::new(MockTool {
-            name: "test".to_string(),
-        });
-        registry.register(tool);
-
-        assert!(registry.contains("test"));
-        assert!(!registry.contains("nonexistent"));
-
-        let retrieved = registry.get("test");
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().name(), "test");
-    }
-
-    #[test]
-    fn test_registry_unregister() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-
-        let tool = Arc::new(MockTool {
-            name: "test".to_string(),
-        });
-        registry.register(tool);
-
-        assert!(registry.contains("test"));
-        assert!(registry.unregister("test"));
-        assert!(!registry.contains("test"));
-        assert!(!registry.unregister("test")); // Already removed
-    }
-
-    #[test]
-    fn test_registry_unregister_preserves_builtins() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        registry.register_builtin(Arc::new(MockTool {
-            name: "read".to_string(),
-        }));
-
-        assert!(!registry.unregister("read"));
-        assert!(registry.contains("read"));
-    }
-
-    #[test]
-    fn test_registry_unregister_by_prefix_preserves_builtins() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        registry.register_builtin(Arc::new(MockTool {
-            name: "mcp__builtin".to_string(),
-        }));
-        registry.register(Arc::new(MockTool {
-            name: "mcp__dynamic".to_string(),
-        }));
-
-        registry.unregister_by_prefix("mcp__");
-
-        assert!(registry.contains("mcp__builtin"));
-        assert!(!registry.contains("mcp__dynamic"));
-    }
-
-    #[test]
-    fn concurrent_owned_registration_cannot_overwrite_builtin() {
-        for iteration in 0..32 {
-            let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-            let name = format!("atomic_builtin_{iteration}");
-            let builtin: Arc<dyn Tool> = Arc::new(MockTool { name: name.clone() });
-            let dynamic: Arc<dyn Tool> = Arc::new(MockTool { name: name.clone() });
-            let barrier = Arc::new(std::sync::Barrier::new(3));
-
-            let builtin_registry = Arc::clone(&registry);
-            let builtin_tool = Arc::clone(&builtin);
-            let builtin_barrier = Arc::clone(&barrier);
-            let builtin_thread = std::thread::spawn(move || {
-                builtin_barrier.wait();
-                builtin_registry.register_builtin(builtin_tool);
-            });
-
-            let dynamic_registry = Arc::clone(&registry);
-            let dynamic_barrier = Arc::clone(&barrier);
-            let dynamic_thread = std::thread::spawn(move || {
-                dynamic_barrier.wait();
-                dynamic_registry.register_with_shadow(dynamic);
-            });
-
-            barrier.wait();
-            builtin_thread.join().unwrap();
-            dynamic_thread.join().unwrap();
-
-            let current = registry.get(&name).unwrap();
-            assert!(Arc::ptr_eq(&current, &builtin));
-            assert!(!registry.unregister(&name));
-        }
-    }
-
-    #[test]
-    fn test_registry_definitions() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-
-        registry.register(Arc::new(MockTool {
-            name: "tool2".to_string(),
-        }));
-        registry.register(Arc::new(MockTool {
-            name: "tool1".to_string(),
-        }));
-
-        let definitions = registry.definitions();
-        assert_eq!(definitions.len(), 2);
-        let names: Vec<&str> = definitions
-            .iter()
-            .map(|definition| definition.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["tool1", "tool2"]);
-    }
-
-    #[tokio::test]
-    async fn test_registry_execute() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-
-        registry.register(Arc::new(MockTool {
-            name: "test".to_string(),
-        }));
-
-        let result = registry
-            .execute("test", &serde_json::json!({}))
-            .await
-            .unwrap();
-        assert_eq!(result.exit_code, 0);
-        assert_eq!(result.output, "mock output");
-    }
-
-    #[tokio::test]
-    async fn test_registry_execute_unknown() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-
-        let result = registry
-            .execute("unknown", &serde_json::json!({}))
-            .await
-            .unwrap();
-        assert_eq!(result.exit_code, 1);
-        assert!(result.output.contains("Unknown tool"));
-    }
-
-    #[tokio::test]
-    async fn test_registry_execute_with_context_success() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
-        let trace_sink = InMemoryTraceSink::default();
-        registry.set_trace_sink(Arc::new(trace_sink.clone()));
-
-        registry.register(Arc::new(MockTool {
-            name: "my_tool".to_string(),
-        }));
-
-        let result = registry
-            .execute_with_context("my_tool", &serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(result.name, "my_tool");
-        assert_eq!(result.exit_code, 0);
-        assert_eq!(result.output, "mock output");
-
-        let events = trace_sink.events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, TraceEventKind::ToolExecution);
-        assert_eq!(events[0].name, "my_tool");
-        assert!(events[0].success);
-        assert_eq!(events[0].output_bytes, "mock output".len());
-    }
-
-    #[tokio::test]
-    async fn test_registry_execute_with_context_unknown_tool() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
-
-        let result = registry
-            .execute_with_context("nonexistent", &serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(result.exit_code, 1);
-        assert!(result.output.contains("Unknown tool: nonexistent"));
-    }
-
-    struct FailingTool;
-
-    #[async_trait]
-    impl Tool for FailingTool {
-        fn name(&self) -> &str {
-            "failing"
-        }
-
-        fn description(&self) -> &str {
-            "A tool that returns failure"
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {},
-                "required": []
-            })
-        }
-
-        async fn execute(
-            &self,
-            _args: &serde_json::Value,
-            _ctx: &ToolContext,
-        ) -> Result<ToolOutput> {
-            Ok(ToolOutput::error("something went wrong"))
-        }
-    }
-
-    #[tokio::test]
-    async fn test_registry_execute_failing_tool() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        registry.register(Arc::new(FailingTool));
-
-        let result = registry
-            .execute("failing", &serde_json::json!({}))
-            .await
-            .unwrap();
-        assert_eq!(result.exit_code, 1);
-        assert_eq!(result.output, "something went wrong");
-    }
-
-    struct LargeOutputTool;
-
-    #[async_trait]
-    impl Tool for LargeOutputTool {
-        fn name(&self) -> &str {
-            "large_output"
-        }
-
-        fn description(&self) -> &str {
-            "A tool that returns more than the maximum output size"
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {},
-                "required": []
-            })
-        }
-
-        async fn execute(
-            &self,
-            _args: &serde_json::Value,
-            _ctx: &ToolContext,
-        ) -> Result<ToolOutput> {
-            Ok(ToolOutput::success(
-                "x".repeat(super::super::MAX_OUTPUT_SIZE + 1),
-            ))
-        }
-    }
-
-    #[tokio::test]
-    async fn test_registry_truncates_large_tool_output() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        let trace_sink = InMemoryTraceSink::default();
-        registry.set_trace_sink(Arc::new(trace_sink.clone()));
-        registry.register(Arc::new(LargeOutputTool));
-
-        let result = registry
-            .execute("large_output", &serde_json::json!({}))
-            .await
-            .unwrap();
-
-        assert_eq!(result.exit_code, 0);
-        assert!(result.output.contains("[tool output truncated:"));
-        assert!(result
-            .output
-            .contains("Full output artifact: a3s://tool-output/large_output/"));
-        assert!(result.output.len() < super::super::MAX_OUTPUT_SIZE + 512);
-        let metadata = result.metadata.expect("artifact metadata");
-        assert_eq!(
-            metadata["artifact"]["original_bytes"],
-            serde_json::json!(super::super::MAX_OUTPUT_SIZE + 1)
-        );
-        assert_eq!(
-            metadata["artifact"]["shown_bytes"],
-            serde_json::json!(super::super::MAX_OUTPUT_SIZE)
-        );
-        assert!(metadata["artifact"]["artifact_id"]
-            .as_str()
-            .unwrap()
-            .starts_with("tool-output:large_output:"));
-        assert!(metadata["artifact"]["artifact_uri"]
-            .as_str()
-            .unwrap()
-            .starts_with("a3s://tool-output/large_output/"));
-
-        let artifact_uri = metadata["artifact"]["artifact_uri"].as_str().unwrap();
-        let artifact = registry
-            .get_artifact(artifact_uri)
-            .expect("full output artifact");
-        assert_eq!(artifact.tool_name, "large_output");
-        assert_eq!(artifact.original_bytes, super::super::MAX_OUTPUT_SIZE + 1);
-        assert_eq!(artifact.shown_bytes, super::super::MAX_OUTPUT_SIZE);
-        assert_eq!(
-            artifact.content,
-            "x".repeat(super::super::MAX_OUTPUT_SIZE + 1)
-        );
-
-        let events = trace_sink.events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].artifact_uris, vec![artifact_uri]);
-    }
-
-    #[tokio::test]
-    async fn test_registry_execute_raw_success() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        registry.register(Arc::new(MockTool {
-            name: "raw_test".to_string(),
-        }));
-
-        let output = registry
-            .execute_raw("raw_test", &serde_json::json!({}))
-            .await
-            .unwrap();
-        assert!(output.is_some());
-        let output = output.unwrap();
-        assert!(output.success);
-        assert_eq!(output.content, "mock output");
-    }
-
-    #[tokio::test]
-    async fn test_registry_execute_raw_stores_truncated_artifact() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        registry.register(Arc::new(LargeOutputTool));
-
-        let output = registry
-            .execute_raw("large_output", &serde_json::json!({}))
-            .await
-            .unwrap()
-            .expect("raw output");
-
-        assert!(output.content.contains("[tool output truncated:"));
-        let metadata = output.metadata.expect("artifact metadata");
-        let artifact_uri = metadata["artifact"]["artifact_uri"].as_str().unwrap();
-        let artifact = registry
-            .get_artifact(artifact_uri)
-            .expect("full output artifact");
-        assert_eq!(artifact.tool_name, "large_output");
-        assert_eq!(artifact.content.len(), super::super::MAX_OUTPUT_SIZE + 1);
-    }
-
-    #[tokio::test]
-    async fn test_registry_execute_raw_unknown() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-
-        let output = registry
-            .execute_raw("missing", &serde_json::json!({}))
-            .await
-            .unwrap();
-        assert!(output.is_none());
-    }
-
-    #[test]
-    fn test_registry_list() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        registry.register(Arc::new(MockTool {
-            name: "beta".to_string(),
-        }));
-        registry.register(Arc::new(MockTool {
-            name: "alpha".to_string(),
-        }));
-
-        let names = registry.list();
-        assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
-    }
-
-    #[test]
-    fn test_registry_len_and_is_empty() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        assert!(registry.is_empty());
-        assert_eq!(registry.len(), 0);
-
-        registry.register(Arc::new(MockTool {
-            name: "t".to_string(),
-        }));
-        assert!(!registry.is_empty());
-        assert_eq!(registry.len(), 1);
-    }
-
-    #[test]
-    fn test_registry_replace_tool() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        registry.register(Arc::new(MockTool {
-            name: "dup".to_string(),
-        }));
-        registry.register(Arc::new(MockTool {
-            name: "dup".to_string(),
-        }));
-        // Should still have only 1 tool (replaced)
-        assert_eq!(registry.len(), 1);
-    }
+    format!(
+        "{}\n\n... [{} bytes omitted from middle] ...\n\n{}",
+        head,
+        content
+            .len()
+            .saturating_sub(head.len())
+            .saturating_sub(content.len().saturating_sub(tail_start)),
+        &content[tail_start..]
+    )
 }
+
+#[cfg(test)]
+#[path = "registry/tests.rs"]
+mod tests;

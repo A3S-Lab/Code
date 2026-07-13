@@ -16,11 +16,13 @@ use super::{
     WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
     WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
     WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest, WorkspaceGrepResult,
-    WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceWriteOutcome,
+    WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceTextRange,
+    WorkspaceTextReader, WorkspaceWriteOutcome,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use std::path::{Component, Path, PathBuf};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Local filesystem-backed workspace implementation.
 #[derive(Debug)]
@@ -162,6 +164,92 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
         }
 
         Ok(entries)
+    }
+}
+
+#[async_trait]
+impl WorkspaceTextReader for LocalWorkspaceBackend {
+    async fn read_text_range(
+        &self,
+        path: &WorkspacePath,
+        offset: usize,
+        limit: usize,
+    ) -> WorkspaceResult<WorkspaceTextRange> {
+        let resolved = self.local_path_for_read(path)?;
+        let file = tokio::fs::File::open(&resolved).await.map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                WorkspaceError::NotFound {
+                    path: resolved.display().to_string(),
+                }
+            } else {
+                WorkspaceError::Backend(anyhow!(
+                    "Failed to open file {}: {}",
+                    resolved.display(),
+                    error
+                ))
+            }
+        })?;
+        let mut lines = BufReader::new(file).lines();
+        let mut line_index = 0usize;
+        while line_index < offset {
+            match lines.next_line().await.map_err(|error| {
+                WorkspaceError::Backend(anyhow!(
+                    "Failed to read file {}: {}",
+                    resolved.display(),
+                    error
+                ))
+            })? {
+                Some(_) => line_index += 1,
+                None => {
+                    return Ok(WorkspaceTextRange {
+                        lines: Vec::new(),
+                        next_offset: None,
+                        eof: true,
+                        total_lines: Some(line_index),
+                    })
+                }
+            }
+        }
+
+        let mut selected = Vec::with_capacity(limit);
+        while selected.len() < limit {
+            match lines.next_line().await.map_err(|error| {
+                WorkspaceError::Backend(anyhow!(
+                    "Failed to read file {}: {}",
+                    resolved.display(),
+                    error
+                ))
+            })? {
+                Some(line) => selected.push(line),
+                None => {
+                    let total_lines = offset.saturating_add(selected.len());
+                    return Ok(WorkspaceTextRange {
+                        lines: selected,
+                        next_offset: None,
+                        eof: true,
+                        total_lines: Some(total_lines),
+                    });
+                }
+            }
+        }
+
+        let has_more = lines
+            .next_line()
+            .await
+            .map_err(|error| {
+                WorkspaceError::Backend(anyhow!(
+                    "Failed to read file {}: {}",
+                    resolved.display(),
+                    error
+                ))
+            })?
+            .is_some();
+        Ok(WorkspaceTextRange {
+            lines: selected,
+            next_offset: has_more.then_some(offset.saturating_add(limit)),
+            eof: !has_more,
+            total_lines: (!has_more).then_some(offset.saturating_add(limit)),
+        })
     }
 }
 
@@ -519,7 +607,6 @@ impl WorkspaceCommandRunner for LocalWorkspaceBackend {
             });
         }
 
-        let timeout_secs = request.timeout_ms / 1000;
         let mut child = crate::tools::builtin::bash::spawn_shell(
             &request.command,
             &self.root,
@@ -529,7 +616,7 @@ impl WorkspaceCommandRunner for LocalWorkspaceBackend {
 
         let (output, timed_out) = crate::tools::process::read_process_output(
             &mut child,
-            timeout_secs,
+            request.timeout_ms,
             request.output_observer.as_deref(),
         )
         .await;

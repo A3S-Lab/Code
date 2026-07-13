@@ -56,6 +56,12 @@ impl Tool for EditTool {
         })
     }
 
+    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        let mut capabilities = crate::tools::ToolCapabilities::conservative();
+        capabilities.output_kind = crate::tools::ToolOutputKind::Diff;
+        capabilities
+    }
+
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
             Some(p) => p,

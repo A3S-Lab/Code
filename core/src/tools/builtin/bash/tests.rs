@@ -138,7 +138,7 @@ async fn test_dropping_bash_execution_kills_shell_before_later_side_effects() {
     let execution = tokio::spawn(async move {
         tool.execute(
             &serde_json::json!({
-                "command": "printf started > started; sleep 1; printf leaked > leaked"
+                "command": "printf started > started; (sleep 1; printf leaked > leaked) & wait"
             }),
             &ctx,
         )
@@ -161,6 +161,33 @@ async fn test_dropping_bash_execution_kills_shell_before_later_side_effects() {
         !leaked.exists(),
         "a cancelled bash execution must not continue later shell side effects"
     );
+}
+
+#[tokio::test]
+#[cfg(not(windows))]
+async fn test_bash_bounds_long_single_line_and_reports_exact_capture_metadata() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf());
+
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": "printf '%*s' 120000 '' | tr ' ' x"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "{}", result.content);
+    assert!(result.content.contains("command output truncated"));
+    assert!(result.content.len() < 110_000);
+    let output = &result.metadata.unwrap()["output"];
+    assert_eq!(output["total_bytes"], 120_000);
+    assert_eq!(output["captured_bytes"], crate::tools::MAX_OUTPUT_SIZE);
+    assert_eq!(output["truncated"], true);
+    assert_eq!(output["timed_out"], false);
 }
 
 #[tokio::test]

@@ -620,7 +620,7 @@ pub fn get_diff(repo_path: &Path, target: Option<&str>) -> Result<String> {
     let args: Vec<&str> = if let Some(t) = target {
         vec!["diff", t]
     } else {
-        vec!["diff", "--stat"]
+        vec!["diff"]
     };
 
     let (_, stdout, _) = run_git(repo_path, &args)?;

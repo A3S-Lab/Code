@@ -1,6 +1,6 @@
 //! Web fetch tool - Fetch content from URLs
 
-use crate::tools::types::{Tool, ToolContext, ToolOutput};
+use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -12,6 +12,10 @@ use std::time::Duration;
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024;
 /// Maximum number of redirects followed by a single fetch.
 const MAX_REDIRECTS: usize = 10;
+const DEFAULT_MAX_CHARS: usize = 50_000;
+const MAX_CONTENT_CHARS: usize = 100_000;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+const SYSTEM_PROXY_LOOKUP_TIMEOUT: Duration = Duration::from_millis(750);
 
 pub struct WebFetchTool;
 
@@ -42,6 +46,21 @@ impl Tool for WebFetchTool {
                 "timeout": {
                     "type": "integer",
                     "description": "Optional. Timeout in seconds. Default: 30. Maximum: 120."
+                },
+                "body_only": {
+                    "type": "boolean",
+                    "description": "Optional. For HTML responses, extract the body element before conversion. Default: true."
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Optional. Character offset into the converted content. Default: 0."
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_CONTENT_CHARS,
+                    "description": "Optional. Maximum converted characters to return. Default: 50000; maximum: 100000."
                 }
             },
             "required": ["url"],
@@ -58,7 +77,11 @@ impl Tool for WebFetchTool {
         })
     }
 
-    async fn execute(&self, args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        crate::tools::ToolCapabilities::read_only_paginated(8)
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let url = match args.get("url").and_then(|v| v.as_str()) {
             Some(u) => u,
             None => return Ok(ToolOutput::error("url parameter is required")),
@@ -73,6 +96,33 @@ impl Tool for WebFetchTool {
             .get("format")
             .and_then(|v| v.as_str())
             .unwrap_or("markdown");
+        let body_only = args
+            .get("body_only")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+        let offset = match args.get("offset") {
+            Some(value) => match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
+                Some(value) => value,
+                None => {
+                    return Ok(invalid_fetch_argument(
+                        "offset must be a non-negative integer",
+                    ))
+                }
+            },
+            None => 0,
+        };
+        let requested_max_chars = match args.get("max_chars") {
+            Some(value) => match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
+                Some(value) if value > 0 => value,
+                _ => {
+                    return Ok(invalid_fetch_argument(
+                        "max_chars must be a positive integer",
+                    ))
+                }
+            },
+            None => DEFAULT_MAX_CHARS,
+        };
+        let max_chars = requested_max_chars.min(MAX_CONTENT_CHARS);
 
         let timeout_secs = args
             .get("timeout")
@@ -81,15 +131,47 @@ impl Tool for WebFetchTool {
             .min(120);
 
         let timeout = Duration::from_secs(timeout_secs);
-        let page = match tokio::time::timeout(timeout, fetch_url(url, format)).await {
+        let mut configured_proxy = ctx
+            .search_config
+            .as_ref()
+            .and_then(|config| config.headless.as_ref())
+            .and_then(|config| config.proxy_url.clone())
+            .or_else(explicit_web_proxy_from_env);
+        if configured_proxy.is_none() {
+            configured_proxy = system_web_proxy().await;
+        }
+        let page = match tokio::time::timeout(
+            timeout,
+            fetch_url(url, format, body_only, configured_proxy.as_deref()),
+        )
+        .await
+        {
             Ok(Ok(page)) => page,
-            Ok(Err(error)) => return Ok(ToolOutput::error(error)),
+            Ok(Err(error)) => {
+                let output = ToolOutput::error(&error);
+                return Ok(if looks_rate_limited(&error) {
+                    output.with_error_kind(ToolErrorKind::RateLimited {
+                        retry_after_ms: None,
+                    })
+                } else {
+                    output
+                });
+            }
             Err(_) => {
                 return Ok(ToolOutput::error(format!(
                     "Web fetch timed out after {} seconds",
                     timeout_secs
-                )))
+                ))
+                .with_error_kind(ToolErrorKind::Timeout {
+                    op: "web_fetch".to_string(),
+                    duration_ms: timeout_secs.saturating_mul(1_000),
+                }))
             }
+        };
+
+        let range = match content_range(&page.content, offset, max_chars) {
+            Ok(range) => range,
+            Err(error) => return Ok(invalid_fetch_argument(&error)),
         };
 
         let mut source_anchors = vec![request_url];
@@ -102,11 +184,82 @@ impl Tool for WebFetchTool {
             source_anchors.push(final_url);
         }
         Ok(
-            ToolOutput::success(page.content).with_metadata(serde_json::json!({
+            ToolOutput::success(range.content).with_metadata(serde_json::json!({
                 "source_anchors": source_anchors,
+                "range": {
+                    "offset": offset,
+                    "requested_max_chars": requested_max_chars,
+                    "applied_max_chars": max_chars,
+                    "returned_chars": range.returned_chars,
+                    "total_chars": range.total_chars,
+                    "next_offset": range.next_offset,
+                    "eof": range.next_offset.is_none(),
+                    "limit_clamped": requested_max_chars != max_chars,
+                },
             })),
         )
     }
+}
+
+pub(super) fn explicit_web_proxy_from_env() -> Option<String> {
+    ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter()
+        .find_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+#[cfg(target_os = "macos")]
+pub(super) async fn system_web_proxy() -> Option<String> {
+    let mut command = tokio::process::Command::new("scutil");
+    command.arg("--proxy");
+    let output = command_output_with_timeout(command, SYSTEM_PROXY_LOOKUP_TIMEOUT).await?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        .and_then(|text| parse_macos_proxy(&text))
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+async fn command_output_with_timeout(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    command.kill_on_drop(true);
+    tokio::time::timeout(timeout, command.output())
+        .await
+        .ok()?
+        .ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) async fn system_web_proxy() -> Option<String> {
+    None
+}
+
+fn parse_macos_proxy(text: &str) -> Option<String> {
+    let value = |key: &str| {
+        text.lines().find_map(|line| {
+            let (name, value) = line.trim().split_once(':')?;
+            (name.trim() == key).then(|| value.trim().to_string())
+        })
+    };
+    for (enabled, host, port) in [
+        ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
+        ("HTTPEnable", "HTTPProxy", "HTTPPort"),
+    ] {
+        if value(enabled).as_deref() != Some("1") {
+            continue;
+        }
+        let host = value(host)?;
+        let port = value(port)?.parse::<u16>().ok()?;
+        return Some(format!("http://{host}:{port}"));
+    }
+    None
 }
 
 struct FetchedPage {
@@ -115,10 +268,21 @@ struct FetchedPage {
 }
 
 /// Fetch a URL while validating and pinning DNS results for every redirect hop.
-async fn fetch_url(mut url: Url, format: &str) -> std::result::Result<FetchedPage, String> {
+async fn fetch_url(
+    mut url: Url,
+    format: &str,
+    body_only: bool,
+    proxy_url: Option<&str>,
+) -> std::result::Result<FetchedPage, String> {
     for redirect_count in 0..=MAX_REDIRECTS {
-        let target = resolve_public_target(&url).await?;
-        let client = build_client(&target)?;
+        validate_url_target(&url)?;
+        let client = match proxy_url {
+            Some(proxy_url) => build_proxy_client(proxy_url)?,
+            None => {
+                let target = resolve_public_target(&url).await?;
+                build_direct_client(&target)?
+            }
+        };
         let response = client.get(url.clone()).send().await.map_err(|error| {
             format!(
                 "Failed to fetch URL {}: {}",
@@ -184,6 +348,23 @@ async fn fetch_url(mut url: Url, format: &str) -> std::result::Result<FetchedPag
         }
 
         let body = String::from_utf8_lossy(&bytes).to_string();
+        if content_type.contains("text/html") {
+            if let Some(location) = html_refresh_location(&body) {
+                if redirect_count == MAX_REDIRECTS {
+                    return Err(format!(
+                        "Too many redirects while fetching URL (max: {})",
+                        MAX_REDIRECTS
+                    ));
+                }
+                url = redirect_target(&url, &location)?;
+                continue;
+            }
+        }
+        let body = if body_only && content_type.contains("text/html") {
+            extract_html_body(&body).unwrap_or(body)
+        } else {
+            body
+        };
         let content = match format {
             "html" => body,
             "text" if content_type.contains("text/html") => html_to_text(&body),
@@ -198,6 +379,117 @@ async fn fetch_url(mut url: Url, format: &str) -> std::result::Result<FetchedPag
     }
 
     unreachable!("redirect loop always returns or continues within its fixed bound")
+}
+
+struct ContentRange {
+    content: String,
+    returned_chars: usize,
+    total_chars: usize,
+    next_offset: Option<usize>,
+}
+
+fn content_range(
+    content: &str,
+    offset: usize,
+    max_chars: usize,
+) -> std::result::Result<ContentRange, String> {
+    let total_chars = content.chars().count();
+    if offset > total_chars {
+        return Err(format!(
+            "offset {offset} exceeds converted content length {total_chars}"
+        ));
+    }
+    let content = content
+        .chars()
+        .skip(offset)
+        .take(max_chars)
+        .collect::<String>();
+    let returned_chars = content.chars().count();
+    let end = offset.saturating_add(returned_chars);
+    let next_offset = (end < total_chars).then_some(end);
+    let mut content = content;
+    if let Some(next_offset) = next_offset {
+        content.push_str(&format!(
+            "\n\n... (more fetched content available; continue with offset={next_offset})\n"
+        ));
+    }
+    Ok(ContentRange {
+        content,
+        returned_chars,
+        total_chars,
+        next_offset,
+    })
+}
+
+fn extract_html_body(html: &str) -> Option<String> {
+    static BODY_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let body_re = BODY_RE.get_or_init(|| {
+        regex::Regex::new(r"(?is)<body\b[^>]*>(.*?)</body\s*>").expect("static HTML body regex")
+    });
+    body_re
+        .captures(html)
+        .and_then(|captures| captures.get(1))
+        .map(|body| body.as_str().to_string())
+}
+
+/// Return the target of an HTML meta-refresh redirect.
+///
+/// Static documentation hosts commonly return an HTTP 200 page whose only
+/// purpose is redirecting a version alias such as `/stable/` to `/current/`.
+/// Treat it as a redirect hop so callers receive the actual page instead of a
+/// misleading "Redirecting…" document. The resulting URL still passes the
+/// same per-hop SSRF validation as an HTTP Location header.
+fn html_refresh_location(html: &str) -> Option<String> {
+    static META_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static ATTR_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let meta_re = META_RE
+        .get_or_init(|| regex::Regex::new(r"(?is)<meta\b[^>]*>").expect("static meta tag regex"));
+    let attr_re = ATTR_RE.get_or_init(|| {
+        regex::Regex::new(r#"(?is)\b([a-z][a-z0-9:_-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')"#)
+            .expect("static HTML attribute regex")
+    });
+
+    for tag in meta_re.find_iter(html).map(|matched| matched.as_str()) {
+        let mut http_equiv = None;
+        let mut content = None;
+        for captures in attr_re.captures_iter(tag) {
+            let name = captures.get(1)?.as_str().to_ascii_lowercase();
+            let value = captures.get(2).or_else(|| captures.get(3))?.as_str().trim();
+            match name.as_str() {
+                "http-equiv" => http_equiv = Some(value.to_ascii_lowercase()),
+                "content" => content = Some(value.to_string()),
+                _ => {}
+            }
+        }
+        if http_equiv.as_deref() != Some("refresh") {
+            continue;
+        }
+        let value = content?;
+        let (_, target) = value.split_once(';')?;
+        let target = target.trim();
+        let (directive, target) = target.split_once('=')?;
+        if !directive.trim().eq_ignore_ascii_case("url") {
+            continue;
+        }
+        let target = target.trim().trim_matches(['\'', '"']);
+        if !target.is_empty() {
+            return Some(target.to_string());
+        }
+    }
+    None
+}
+
+fn invalid_fetch_argument(message: &str) -> ToolOutput {
+    ToolOutput::error(message).with_error_kind(ToolErrorKind::InvalidArgument {
+        message: message.to_string(),
+    })
+}
+
+fn looks_rate_limited(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("429")
+        || message.contains("rate limit")
+        || message.contains("too many requests")
 }
 
 #[derive(Debug)]
@@ -240,7 +532,7 @@ async fn resolve_public_target(url: &Url) -> std::result::Result<ResolvedTarget,
 
 /// Create a client for one hop only. Redirects are handled manually so the next
 /// host is resolved and validated before a connection is attempted.
-fn build_client(target: &ResolvedTarget) -> std::result::Result<reqwest::Client, String> {
+fn build_direct_client(target: &ResolvedTarget) -> std::result::Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .redirect(Policy::none())
         .no_proxy()
@@ -257,6 +549,21 @@ fn build_client(target: &ResolvedTarget) -> std::result::Result<reqwest::Client,
         .map_err(|error| format!("Failed to initialize HTTP client: {}", error))
 }
 
+/// Build a client only for an explicitly configured proxy. In this mode the
+/// proxy resolves hostname targets, avoiding local Fake-IP DNS answers while
+/// URL-level SSRF checks still run before every redirect hop.
+fn build_proxy_client(proxy_url: &str) -> std::result::Result<reqwest::Client, String> {
+    let proxy = reqwest::Proxy::all(proxy_url)
+        .map_err(|error| format!("Invalid configured web proxy URL: {}", error))?;
+    reqwest::Client::builder()
+        .redirect(Policy::none())
+        .no_proxy()
+        .proxy(proxy)
+        .user_agent("a3s-code/0.7")
+        .build()
+        .map_err(|error| format!("Failed to initialize HTTP proxy client: {}", error))
+}
+
 fn parse_http_url(input: &str) -> std::result::Result<Url, String> {
     let url = Url::parse(input)
         .map_err(|_| "URL must start with http:// or https:// and be valid".to_string())?;
@@ -265,11 +572,56 @@ fn parse_http_url(input: &str) -> std::result::Result<Url, String> {
 }
 
 fn parse_safe_request_url(input: &str) -> std::result::Result<(Url, String), String> {
-    let parsed = parse_http_url(input)?;
-    let safe = super::safe_http_source_url(parsed.as_str())
+    let request = sanitize_request_url(parse_http_url(input)?);
+    let safe = super::safe_http_source_url(request.as_str())
         .ok_or_else(|| "URL could not be normalized into a safe source anchor".to_string())?;
-    let request = parse_http_url(&safe)?;
     Ok((request, safe))
+}
+
+fn sanitize_request_url(mut url: Url) -> Url {
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_fragment(None);
+
+    let retained = url
+        .query_pairs()
+        .filter(|(key, _)| !sensitive_query_key(key))
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    if !retained.is_empty() {
+        url.query_pairs_mut().extend_pairs(retained);
+    }
+    url
+}
+
+fn sensitive_query_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().replace('-', "_").as_str(),
+        "access_token"
+            | "api_key"
+            | "apikey"
+            | "auth"
+            | "authorization"
+            | "cookie"
+            | "credential"
+            | "id_token"
+            | "key"
+            | "password"
+            | "passwd"
+            | "refresh_token"
+            | "secret"
+            | "session"
+            | "sessionid"
+            | "sig"
+            | "signature"
+            | "token"
+            | "x_amz_credential"
+            | "x_amz_security_token"
+            | "x_amz_signature"
+            | "x_goog_credential"
+            | "x_goog_signature"
+    )
 }
 
 fn safe_url_for_diagnostic(url: &Url) -> String {
@@ -277,9 +629,10 @@ fn safe_url_for_diagnostic(url: &Url) -> String {
 }
 
 fn redirect_target(base: &Url, location: &str) -> std::result::Result<Url, String> {
-    let target = base
-        .join(location)
-        .map_err(|error| format!("Invalid redirect URL: {}", error))?;
+    let target = sanitize_request_url(
+        base.join(location)
+            .map_err(|error| format!("Invalid redirect URL: {}", error))?,
+    );
     validate_url_target(&target)?;
     Ok(target)
 }
@@ -434,6 +787,19 @@ mod tests {
         assert!(text.contains("résumé"));
     }
 
+    #[test]
+    fn test_html_refresh_location_handles_static_doc_redirect() {
+        let html = r#"<!doctype html><html>
+          <meta http-equiv="refresh" content="0; url=/docs/current/overview.html">
+          <h1>Redirecting&hellip;</h1>
+        </html>"#;
+
+        assert_eq!(
+            html_refresh_location(html).as_deref(),
+            Some("/docs/current/overview.html")
+        );
+    }
+
     #[tokio::test]
     async fn test_web_fetch_invalid_url() {
         let tool = WebFetchTool;
@@ -455,6 +821,26 @@ mod tests {
 
         let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
         assert!(!result.success);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires external network"]
+    async fn real_system_proxy_fetches_official_https_source() {
+        let tool = WebFetchTool;
+        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp"));
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "url": "https://tokio.rs/tokio/tutorial",
+                    "format": "markdown",
+                    "timeout": 20
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.content);
+        assert!(result.content.to_ascii_lowercase().contains("tokio"));
     }
 
     #[test]
@@ -488,6 +874,23 @@ mod tests {
             assert!(!request.as_str().contains(secret));
             assert!(!anchor.contains(secret));
         }
+    }
+
+    #[test]
+    fn test_web_fetch_request_preserves_functional_query_but_redacts_anchor() {
+        let (request, anchor) = parse_safe_request_url(
+            "https://api.example.com/scores?from=2026-07-09&to=2026-07-19&limit=20&api_key=secret#private",
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.as_str(),
+            "https://api.example.com/scores?from=2026-07-09&to=2026-07-19&limit=20"
+        );
+        assert_eq!(anchor, "https://api.example.com/scores");
+        assert!(!request.as_str().contains("api_key"));
+        assert!(!request.as_str().contains("secret"));
+        assert!(!request.as_str().contains("private"));
     }
 
     #[test]
@@ -538,6 +941,54 @@ mod tests {
     }
 
     #[test]
+    fn test_web_fetch_proxy_mode_is_explicit_and_keeps_literal_ssrf_checks() {
+        assert!(build_proxy_client("http://127.0.0.1:7897").is_ok());
+        assert!(build_proxy_client("not a proxy URL").is_err());
+        assert!(parse_http_url("http://127.0.0.1/admin").is_err());
+        assert!(parse_http_url("http://169.254.169.254/latest/meta-data").is_err());
+        assert!(parse_http_url("https://www.jma.go.jp/").is_ok());
+    }
+
+    #[test]
+    fn test_macos_system_proxy_parser_prefers_https() {
+        let text = r#"
+            HTTPEnable : 1
+            HTTPPort : 8080
+            HTTPProxy : 127.0.0.1
+            HTTPSEnable : 1
+            HTTPSPort : 7897
+            HTTPSProxy : proxy.local
+        "#;
+        assert_eq!(
+            parse_macos_proxy(text).as_deref(),
+            Some("http://proxy.local:7897")
+        );
+        assert_eq!(parse_macos_proxy("HTTPSEnable : 0"), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_system_proxy_command_timeout_bounds_hanging_process() {
+        assert_eq!(
+            SYSTEM_PROXY_LOOKUP_TIMEOUT,
+            Duration::from_millis(750),
+            "macOS proxy detection must retain its bounded production budget"
+        );
+        let mut command = tokio::process::Command::new("/bin/sleep");
+        command.arg("30");
+        let started = std::time::Instant::now();
+
+        let output = command_output_with_timeout(command, Duration::from_millis(20)).await;
+
+        assert!(output.is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "proxy command timeout did not converge promptly: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
     fn test_html_to_markdown() {
         let html = "<h1>Title</h1><p>Content here</p>";
         let md = html_to_markdown(html);
@@ -546,4 +997,24 @@ mod tests {
         // htmd produces proper markdown headers
         assert!(md.contains("# Title"));
     }
+}
+#[test]
+fn content_range_is_unicode_safe_and_resumable() {
+    let first = content_range("甲乙丙丁戊", 1, 2).unwrap();
+    assert!(first.content.starts_with("乙丙"));
+    assert_eq!(first.returned_chars, 2);
+    assert_eq!(first.total_chars, 5);
+    assert_eq!(first.next_offset, Some(3));
+
+    let second = content_range("甲乙丙丁戊", 3, 2).unwrap();
+    assert_eq!(second.content, "丁戊");
+    assert_eq!(second.next_offset, None);
+}
+
+#[test]
+fn html_body_extraction_excludes_head_content() {
+    let html = "<html><head><title>Hidden</title></head><body><main>Visible</main></body></html>";
+    let body = extract_html_body(html).unwrap();
+    assert!(body.contains("Visible"));
+    assert!(!body.contains("Hidden"));
 }

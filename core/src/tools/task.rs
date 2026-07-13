@@ -15,7 +15,9 @@
 //! ```
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
-use crate::llm::structured::{generate_blocking, StructuredMode, StructuredRequest};
+use crate::llm::structured::{
+    generate_blocking, parse_validated_output, StructuredMode, StructuredRequest,
+};
 use crate::llm::LlmClient;
 use crate::mcp::manager::McpManager;
 use crate::orchestration::{AgentExecutor, AgentStepSpec, StepOutcome, ToolSourceAnchor};
@@ -88,6 +90,8 @@ mod result_projection;
 use result_projection::*;
 
 mod parallel_execution;
+
+const MAX_PARALLEL_TASKS_PER_CALL: usize = 32;
 
 /// Task executor for delegated child runs.
 pub struct TaskExecutor {
@@ -277,6 +281,8 @@ impl TaskExecutor {
             .registry
             .get(&params.agent)
             .context(format!("Unknown agent type: '{}'", params.agent))?;
+        let tool_free = agent.tool_free;
+        let tool_free_system = agent.prompt.clone();
         let inherited_security_provider = self
             .parent_context
             .as_ref()
@@ -359,6 +365,11 @@ impl TaskExecutor {
         if let Some(ref parent_ctx) = self.parent_context {
             parent_ctx.apply_to(&mut child_config);
         }
+        // A delegated task is already the output of a parent planning
+        // decision. Running the generic pre-analysis/planning classifier again
+        // adds an unrelated LLM round to every child and can consume the whole
+        // fan-out deadline before any task tool runs.
+        child_config.planning_mode = crate::prompts::PlanningMode::Disabled;
         if let Some(max_steps) = params.max_steps {
             child_config.max_tool_rounds = max_steps;
         }
@@ -432,36 +443,85 @@ impl TaskExecutor {
                 .await;
         }
 
-        let (mut output, mut success) = match agent_loop
-            .execute_with_session(
-                &[],
-                &params.prompt,
-                Some(&session_id),
-                child_event_tx,
-                Some(&cancel_token),
-            )
-            .await
-        {
-            Ok(result) => (result.text, true),
-            Err(e) if cancel_token.is_cancelled() => {
-                (format!("Task cancelled by caller: {}", e), false)
-            }
-            Err(e) => (format!("Task failed: {}", e), false),
-        };
+        let structured_prompt = output_schema
+            .as_ref()
+            .filter(|_| !tool_free)
+            .map(|schema| structured_task_prompt(&params.prompt, schema));
+        let execution_prompt = structured_prompt.as_deref().unwrap_or(&params.prompt);
 
         let mut structured = None;
-        if success {
-            if let Some(schema) = output_schema {
-                let llm_client = agent_loop.scoped_llm_client_for_parts(
+        let (mut output, mut success) = if tool_free && output_schema.is_some() {
+            let llm_client = agent_loop.scoped_llm_client_for_parts(
+                Some(&session_id),
+                &child_llm_event_tx,
+                &cancel_token,
+            );
+            match Self::generate_structured_task(
+                &*llm_client,
+                &params.prompt,
+                tool_free_system.as_deref(),
+                output_schema.clone().expect("schema checked above"),
+                &cancel_token,
+            )
+            .await
+            {
+                Ok(object) => {
+                    let output = serde_json::to_string_pretty(&object)
+                        .unwrap_or_else(|_| object.to_string());
+                    structured = Some(object);
+                    (output, true)
+                }
+                Err(error) if cancel_token.is_cancelled() => {
+                    (format!("Task cancelled by caller: {error}"), false)
+                }
+                Err(error) => (format!("Task failed: {error}"), false),
+            }
+        } else {
+            match agent_loop
+                .execute_with_session(
+                    &[],
+                    execution_prompt,
                     Some(&session_id),
-                    &child_llm_event_tx,
-                    &cancel_token,
-                );
-                match Self::coerce_to_schema(&*llm_client, &output, schema, &cancel_token).await {
-                    Ok(object) => structured = Some(object),
-                    Err(error) => {
-                        success = false;
-                        output = format!("{output}\n\n[structured output failed: {error}]");
+                    child_event_tx.clone(),
+                    Some(&cancel_token),
+                )
+                .await
+            {
+                Ok(_) if cancel_token.is_cancelled() => {
+                    ("Task cancelled by caller".to_string(), false)
+                }
+                Ok(result) if result.text.trim().is_empty() => (
+                    "Task failed: child agent returned no final output".to_string(),
+                    false,
+                ),
+                Ok(result) if AgentLoop::is_synthetic_failure_output(&result.text) => {
+                    (format!("Task failed: {}", result.text), false)
+                }
+                Ok(result) => (result.text, true),
+                Err(e) if cancel_token.is_cancelled() => {
+                    (format!("Task cancelled by caller: {}", e), false)
+                }
+                Err(e) => (format!("Task failed: {}", e), false),
+            }
+        };
+
+        if success && !tool_free {
+            if let Some(schema) = output_schema {
+                if let Some(object) = parse_validated_output(&output, &schema) {
+                    structured = Some(object);
+                } else {
+                    let llm_client = agent_loop.scoped_llm_client_for_parts(
+                        Some(&session_id),
+                        &child_llm_event_tx,
+                        &cancel_token,
+                    );
+                    match Self::coerce_to_schema(&*llm_client, &output, schema, &cancel_token).await
+                    {
+                        Ok(object) => structured = Some(object),
+                        Err(error) => {
+                            success = false;
+                            output = format!("{output}\n\n[structured output failed: {error}]");
+                        }
                     }
                 }
             }
@@ -477,6 +537,7 @@ impl TaskExecutor {
         // producers. Close their sender and drain the bridge before emitting
         // SubagentEnd so callers never observe a terminal event followed by
         // stale child deltas or progress events.
+        drop(child_event_tx);
         drop(child_llm_event_tx);
         let source_anchors = match child_event_forwarder.await {
             Ok(source_anchors) => source_anchors,
@@ -619,6 +680,19 @@ impl TaskExecutor {
     }
 }
 
+fn structured_task_prompt(prompt: &str, schema: &serde_json::Value) -> String {
+    let schema = serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
+    format!(
+        "{prompt}\n\n\
+         FINAL OUTPUT CONTRACT\n\
+         Complete the requested investigation before answering. Your final response must contain \
+         exactly one JSON value matching the JSON Schema below, with no Markdown fence or prose \
+         outside the JSON. This contract applies to the final response only; use the available \
+         tools as needed before finalizing.\n\n\
+         {schema}"
+    )
+}
+
 /// Get the JSON schema for TaskParams
 pub fn task_params_schema() -> serde_json::Value {
     serde_json::json!({
@@ -744,112 +818,8 @@ impl Tool for TaskTool {
     }
 }
 
-/// Parameters for parallel task execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ParallelTaskParams {
-    /// List of tasks to execute concurrently
-    pub tasks: Vec<TaskParams>,
-    /// When true, return a successful tool result if at least one child task
-    /// succeeds. Failed child results are still included in content and metadata.
-    #[serde(default)]
-    pub allow_partial_failure: bool,
-    /// Optional total wall-clock timeout for collecting child results.
-    ///
-    /// When the timeout expires, completed child results are returned and any
-    /// unfinished child is marked as failed in the metadata.
-    #[serde(default, alias = "timeoutMs", skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
-    /// Optional successful child count that is sufficient for the caller.
-    ///
-    /// This only enables early return when `allow_partial_failure` is true; the
-    /// default remains the barrier behavior of waiting for every child.
-    #[serde(
-        default,
-        alias = "minSuccessCount",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub min_success_count: Option<usize>,
-}
-
-/// Get the JSON schema for ParallelTaskParams
-pub fn parallel_task_params_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "tasks": {
-                "type": "array",
-                "description": "List of tasks to execute in parallel. Each task runs as an independent delegated child run concurrently.",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "Required. Canonical agent type for this task."
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "Required. Short task label for display and tracking."
-                        },
-                        "prompt": {
-                            "type": "string",
-                            "description": "Required. Detailed instruction for the delegated child run."
-                        },
-                        "background": {
-                            "type": "boolean",
-                            "description": "Optional. Run this delegated child task in the background. Default: false.",
-                            "default": false
-                        },
-                        "max_steps": {
-                            "type": "integer",
-                            "description": "Optional. Maximum number of tool/model steps for this delegated child task."
-                        },
-                        "output_schema": {
-                            "type": "object",
-                            "description": "Optional. JSON Schema object the delegated child result must satisfy. When provided, the validated object is returned in each result's metadata."
-                        }
-                    },
-                    "required": ["agent", "description", "prompt"]
-                },
-                "minItems": 1
-            },
-            "allow_partial_failure": {
-                "type": "boolean",
-                "description": "Optional. Defaults to false. When true, the parallel_task tool succeeds if at least one child task succeeds, while preserving failed child results in the output and metadata.",
-                "default": false
-            },
-            "timeout_ms": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Optional total timeout in milliseconds. On timeout, completed child results are returned and unfinished children are marked failed."
-            },
-            "min_success_count": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Optional successful child count that is enough to return early. Early return is only used when allow_partial_failure is true."
-            }
-        },
-        "required": ["tasks"],
-        "examples": [
-            {
-                "tasks": [
-                    {
-                        "agent": "explore",
-                        "description": "Find Rust files",
-                        "prompt": "List Rust files under src/."
-                    },
-                    {
-                        "agent": "explore",
-                        "description": "Find tests",
-                        "prompt": "List test files and summarize their purpose."
-                    }
-                ]
-            }
-        ]
-    })
-}
+mod parallel_params;
+pub use parallel_params::{parallel_task_params_schema, ParallelTaskParams};
 
 /// ParallelTaskTool allows the LLM to fan out multiple delegated tasks concurrently.
 ///
@@ -880,12 +850,18 @@ impl Tool for ParallelTaskTool {
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let started_at = std::time::Instant::now();
         let params: ParallelTaskParams =
             serde_json::from_value(args.clone()).context("Invalid parallel task parameters")?;
         let parent_cancellation = ctx.cancellation_token();
 
         if params.tasks.is_empty() {
             return Ok(ToolOutput::error("No tasks provided".to_string()));
+        }
+        if params.tasks.len() > MAX_PARALLEL_TASKS_PER_CALL {
+            return Ok(ToolOutput::error(format!(
+                "parallel_task accepts at most {MAX_PARALLEL_TASKS_PER_CALL} tasks"
+            )));
         }
 
         let task_count = params.tasks.len();
@@ -919,7 +895,9 @@ impl Tool for ParallelTaskTool {
                 "session_id": result.session_id,
                 "agent": result.agent,
                 "success": result.success,
-                "output": formatted.clone(),
+                "error_message": (!result.success).then(|| {
+                    crate::text::truncate_utf8(&result.output, 1024).to_string()
+                }),
                 "structured": result.structured,
                 "source_anchors": source_anchors,
                 "output_bytes": result.output.len(),
@@ -958,11 +936,17 @@ impl Tool for ParallelTaskTool {
         }
 
         let tool_success = all_success || (params.allow_partial_failure && success_count > 0);
-        let output = if tool_success {
+        let mut output = if tool_success {
             ToolOutput::success(output)
         } else {
             ToolOutput::error(output)
         };
+        if !tool_success && failed_count > 0 {
+            output.error_kind = Some(crate::tools::ToolErrorKind::PartialFailure {
+                failed: failed_count,
+                total: results.len(),
+            });
+        }
 
         Ok(output.with_metadata(serde_json::json!({
             "task_count": task_count,
@@ -976,6 +960,7 @@ impl Tool for ParallelTaskTool {
             "timed_out": run.timed_out,
             "min_success_count": params.min_success_count,
             "returned_early": run.returned_early,
+            "duration_ms": started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             "results": metadata_results,
         })))
     }

@@ -13,6 +13,7 @@ mod agent_dir_script_tool;
 mod artifacts;
 pub(crate) mod builtin;
 mod invocation;
+mod pagination;
 pub(crate) mod process;
 mod program_tool;
 mod registry;
@@ -41,8 +42,8 @@ pub use task::{
 };
 pub(crate) use types::{AgentEventBarrier, AgentEventBarrierReceiver};
 pub use types::{
-    InvocationRuntime, Tool, ToolContext, ToolErrorKind, ToolEventSender, ToolOutput,
-    ToolStreamEvent,
+    InvocationRuntime, Tool, ToolCapabilities, ToolContext, ToolErrorKind, ToolEventSender,
+    ToolOutput, ToolOutputKind, ToolStreamEvent,
 };
 
 use crate::llm::ToolDefinition;
@@ -204,6 +205,12 @@ impl ToolResult {
             images: Vec::new(),
             error_kind: None,
         }
+    }
+
+    pub fn error_with_kind(name: &str, message: String, kind: types::ToolErrorKind) -> Self {
+        let mut result = Self::error(name, message);
+        result.error_kind = Some(kind);
+        result
     }
 }
 

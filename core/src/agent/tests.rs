@@ -185,6 +185,8 @@ pub(crate) struct MockLlmClient {
     responses: std::sync::Mutex<Vec<LlmResponse>>,
     /// User prompt texts sent to the client, in call order.
     pub(crate) request_texts: std::sync::Mutex<Vec<String>>,
+    /// Tool definition names sent to the client, in call order.
+    pub(crate) request_tools: std::sync::Mutex<Vec<Vec<String>>>,
     /// Number of calls made
     pub(crate) call_count: AtomicUsize,
 }
@@ -345,6 +347,7 @@ impl MockLlmClient {
         Self {
             responses: std::sync::Mutex::new(responses),
             request_texts: std::sync::Mutex::new(Vec::new()),
+            request_tools: std::sync::Mutex::new(Vec::new()),
             call_count: AtomicUsize::new(0),
         }
     }
@@ -428,7 +431,7 @@ impl LlmClient for MockLlmClient {
         &self,
         messages: &[Message],
         system: Option<&str>,
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
         let prompt_text = messages
             .iter()
@@ -468,6 +471,12 @@ impl LlmClient for MockLlmClient {
             return Ok(MockLlmClient::text_response(&response.to_string()));
         }
         self.request_texts.lock().unwrap().push(prompt_text);
+        self.request_tools.lock().unwrap().push(
+            tools
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect::<Vec<_>>(),
+        );
         self.call_count.fetch_add(1, Ordering::SeqCst);
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
@@ -480,13 +489,19 @@ impl LlmClient for MockLlmClient {
         &self,
         _messages: &[Message],
         _system: Option<&str>,
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
         self.request_texts
             .lock()
             .unwrap()
             .push("<streaming>".to_string());
+        self.request_tools.lock().unwrap().push(
+            tools
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect::<Vec<_>>(),
+        );
         self.call_count.fetch_add(1, Ordering::SeqCst);
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
@@ -576,6 +591,123 @@ async fn test_agent_simple_response() {
     assert_eq!(result.text, "Hello, I'm an AI assistant.");
     assert_eq!(result.tool_calls_count, 0);
     assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 1);
+}
+
+fn model_tool_definition(name: &str) -> ToolDefinition {
+    ToolDefinition {
+        name: name.to_string(),
+        description: format!("{name} test tool"),
+        parameters: serde_json::json!({"type": "object"}),
+    }
+}
+
+#[tokio::test]
+async fn permission_checker_hides_tools_from_llm_request() {
+    use crate::permissions::{PermissionChecker, PermissionDecision};
+
+    struct ReadOnlyModelExposure;
+
+    impl PermissionChecker for ReadOnlyModelExposure {
+        fn expose_to_model(&self, tool_name: &str) -> bool {
+            tool_name == "read"
+        }
+
+        fn check(&self, _tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+    }
+
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+        "Tool exposure test complete.",
+    )]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let config = AgentConfig {
+        tools: vec![
+            model_tool_definition("read"),
+            model_tool_definition("bash"),
+            model_tool_definition("web_search"),
+        ],
+        permission_checker: Some(Arc::new(ReadOnlyModelExposure)),
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        continuation_enabled: false,
+        ..Default::default()
+    };
+
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        test_tool_context(),
+        config,
+    );
+    agent
+        .execute(&[], "Search the web and inspect files with bash.", None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *mock_client.request_tools.lock().unwrap(),
+        vec![vec!["read".to_string()]]
+    );
+}
+
+#[tokio::test]
+async fn permission_checker_default_exposes_selected_tools_to_llm() {
+    use crate::permissions::{PermissionChecker, PermissionDecision};
+
+    struct ExecutionOnlyChecker;
+
+    impl PermissionChecker for ExecutionOnlyChecker {
+        fn check(&self, _tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+            PermissionDecision::Deny
+        }
+    }
+
+    let checker = ExecutionOnlyChecker;
+    assert!(checker.expose_to_model("bash"));
+
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+        "Default exposure test complete.",
+    )]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let config = AgentConfig {
+        tools: vec![
+            model_tool_definition("read"),
+            model_tool_definition("bash"),
+            model_tool_definition("web_search"),
+        ],
+        permission_checker: Some(Arc::new(checker)),
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        continuation_enabled: false,
+        ..Default::default()
+    };
+
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        test_tool_context(),
+        config,
+    );
+    agent
+        .execute(&[], "Search the web and inspect files with bash.", None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *mock_client.request_tools.lock().unwrap(),
+        vec![vec![
+            "read".to_string(),
+            "bash".to_string(),
+            "web_search".to_string(),
+        ]]
+    );
 }
 
 #[tokio::test]
@@ -801,6 +933,43 @@ async fn test_agent_max_tool_rounds() {
     // Should fail due to max tool rounds exceeded
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("Max tool rounds"));
+}
+
+#[tokio::test]
+async fn test_agent_max_tool_rounds_reserves_tool_free_finalization() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response(
+            "tool-1",
+            "bash",
+            serde_json::json!({"command": "echo first"}),
+        ),
+        MockLlmClient::tool_call_response(
+            "tool-2",
+            "bash",
+            serde_json::json!({"command": "echo second"}),
+        ),
+        MockLlmClient::text_response("Best bounded answer from collected evidence."),
+    ]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let config = AgentConfig {
+        max_tool_rounds: 2,
+        ..Default::default()
+    };
+
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        test_tool_context(),
+        config,
+    );
+    let result = agent
+        .execute(&[], "Collect bounded evidence", None)
+        .await
+        .unwrap();
+
+    assert_eq!(result.text, "Best bounded answer from collected evidence.");
+    assert_eq!(result.tool_calls_count, 2);
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]

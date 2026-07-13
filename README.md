@@ -124,8 +124,8 @@ views, and engineered automation loops.
 
 | Area | What the TUI provides |
 | --- | --- |
-| Coding loop | Chat with the coding agent, stream reasoning/text/tool events, approve or deny gated tools, switch `/auto`, run direct shell turns with `!`, set a persistent `/goal`, ask background side questions with `/btw`, clear context, and fork sessions. |
-| Workspace UI | `/ide` opens a file tree and editor, `/config` edits the active config, `/output` shows tool calls with arguments/results, and file edits render bounded diffs through shared TUI components. |
+| Coding loop | Chat with the coding agent, stream reasoning/text/tool events, approve or deny gated tools, switch `/auto`, run direct shell turns with `!`, set a persistent `/goal`, clear context, and fork sessions. |
+| Workspace UI | `/ide` opens a file tree and editor, `/config` edits the active config, and both use terminal-safe type-aware file/folder sigils with semantic colors and an aligned line-number gutter. `Ctrl+T` opens the complete semantic transcript, and file edits render bounded diffs through shared TUI components. |
 | Models | `/model` switches configured ACL providers and signed-in account-backed model tabs when available. |
 | Effort | `/effort` changes reasoning budget, tool-round budget, continuation count, and rigor guidance from `low` through `max` and `ultracode`. |
 | Tools and safety | File, search, shell, git, web, structured-output, MCP, PTC `program`, `task`, and `parallel_task` tools all pass through workspace boundaries, permission policy, HITL approval, timeouts, hooks, and traces. |
@@ -138,7 +138,7 @@ views, and engineered automation loops.
 | Workflow assets | `/flow` selects or drafts workflow DAG files for local review and optional host publication. |
 | Knowledge | `/kb` manages a local personal knowledge vault. `/okf` manages shareable OKF knowledge-package assets. |
 | Engineered loops | `/loop init`, `/loop run`, `/loop audit`, and `/loop logs` manage durable maker/checker loops under `.a3s/loops` with reports, budgets, state files, and optional runtime/view evidence. |
-| Operations | `/help` opens the command guide, `/theme` changes syntax themes, `/plugin` and `/reload` refresh skills/plugins, `/top` observes local agent process activity, inline `Open view` actions reopen trusted runtime views, and `/update` upgrades and restarts the CLI. |
+| Operations | `/help` opens the command guide, `/theme` changes syntax themes, `/plugin` and `/reload` refresh skills/plugins, inline `Open view` actions reopen trusted runtime views, and `/update` upgrades and restarts the CLI. The standalone `a3s top` command observes local process activity. |
 
 ## TUI Command Catalog
 
@@ -147,9 +147,9 @@ forms live under the asset or context family that owns them.
 
 | Surface | Commands | Capability |
 | --- | --- | --- |
-| Conversation | `/clear`, `/compact`, `/fork`, `/goal`, `/btw`, `/auto`, `/exit` | Reset or branch the conversation, compact older context, pin a persistent goal, run a background side question, switch approval mode, or leave the TUI. |
+| Conversation | `/clear`, `/compact`, `/fork`, `/goal`, `/auto`, `/exit` | Reset or branch the conversation, compact older context, pin a persistent goal, switch approval mode, or leave the TUI. |
 | Models and depth | `/model`, `/effort` | Select local ACL models, signed-in account tabs, and one of the depth profiles from `low` to `ultracode`. |
-| Workspace | `/ide`, `/config`, `/output`, `/theme`, `/top`, `! <command>` | Browse and edit files, edit the active config, inspect completed tool calls, change syntax highlighting, view local agent process activity, or run a direct shell turn. |
+| Workspace | `/ide`, `/config`, `/theme`, `! <command>` | Browse and edit files, edit the active config, change syntax highlighting, or run a direct shell turn. Use `Ctrl+T` for the complete semantic transcript. |
 | Context | `/ctx <query>`, `/ctx <n>`, `/ctx save <n>`, `/sleep` | Search indexed past sessions, attach a transcript window to the next prompt, promote a hit to memory, or consolidate the day's work into durable memory. |
 | Memory and knowledge | `/memory`, `/kb`, `/kb add`, `/kb import`, `/kb search`, `/kb vault` | Browse the memory event/entity graph and manage the local personal knowledge vault. |
 | Account integration | `/login`, `/logout`, inline `Open view` actions | Sign in to A3S OS, sign out, and open trusted runtime views returned by signed-in operations. |
@@ -198,18 +198,66 @@ read-only discovery tools but still asks before writes. Tool execution timeouts
 and confirmation timeouts are tracked separately, so waiting for a human does
 not consume the command runtime budget.
 
+Every executing tool receives an invocation-scoped cancellation token. A tool
+deadline cancels that token, allows a bounded settlement grace, and only then
+publishes the terminal timeout result. Queue execution uses the same lifecycle.
+Embedded `program` VMs propagate the token into nested tool calls, interrupt
+JavaScript execution, and wait for nested settlement so a timed-out program
+cannot leave child work running behind its terminal event.
+
 All local filesystem work stays under the active workspace services and A3S Code
 permission policy. Local chat, file edits, subagents, MCP, memory, asset
 drafting, and `DynamicWorkflowRuntime` work without `/login`. Account-backed
 runtime tools, hosted asset publishing, trusted view links, and hosted activity
 panels are available only when a host explicitly configures and registers them.
 
+The built-in `write` tool overwrites by default and also supports resumable
+segmented output. A caller writes the first chunk with `mode = "overwrite"`,
+then appends later chunks with `mode = "append"` and the expected UTF-8 byte
+offset. Identical retries are idempotent, offset mismatches are rejected, and
+append results expose bounded size metadata instead of duplicating the complete
+file in diff metadata. This is a core tool capability shared by CLI, TUI, SDK,
+and embedded hosts rather than a report-specific filesystem path.
+
+The built-in `patch` tool applies unified hunks strictly. Header counts,
+old/new positions, context, removals, whitespace, and line endings are
+validated before the compare-and-swap write. A mismatch leaves the file
+unchanged instead of searching forward for a similar line or applying a fuzzy
+replacement.
+
+Observation tools are bounded at their own contracts rather than relying on a
+last-resort context truncation. `read`, `ls`, `glob`, Git log/list/diff, and
+`web_fetch` return explicit continuation offsets or cursors with exact range
+metadata. Local file reads stream only the requested line range. Shell output
+is captured in bounded byte chunks, keeps both the beginning and end with exact
+byte counts, and terminates the full Unix process group when cancelled or timed
+out, including background descendants.
+
+Every tool exposes per-invocation capabilities for scheduling: read-only,
+idempotent, resumable, cancellation-safe, paginated, maximum parallelism, and
+output kind. Governed model, nested, and session calls validate arguments
+against the cached tool JSON Schema before permission prompts or side effects.
+`batch` accepts at most 32 calls and runs concurrently only when every child
+declares safe read-only parallel behavior; mutating or unknown tools are
+serialized. Partial batches remain completed orchestration results and identify
+only failed indices for retry, preventing successful side effects from being
+blindly repeated. `parallel_task` applies the same total bound and gives
+cancelled children a settlement window before publishing terminal state.
+
+Large file-change events keep the existing inline diff experience for normal
+files. When before/after content exceeds the inline budget, metadata contains
+bounded previews and unified diff text, exact sizes, SHA-256 hashes, and
+artifact references instead of copying complete files through every event.
+Web search metadata distinguishes complete, partial, and failed engine
+outcomes; a result-free search with engine errors is a failure. Structured
+generation independently bounds schema depth/size, prompt size, partial-event
+frequency, and deadline.
+
 The UI keeps long-running work observable. The transcript shows streamed model
 text, tool input/output, progress deltas, approvals, runtime view buttons,
 dynamic-workflow artifacts, subagent activity, queue entries, and context-fill
-warnings. `/output` opens a normalized tool-call log for the current session,
-while `/top` shows host-side process activity using the same collector as
-`a3s top`.
+warnings. `Ctrl+T` opens the complete live semantic transcript. Host-side
+process activity remains available through the standalone `a3s top` command.
 
 Agent turns have bounded convergence guards in addition to time, turn, token,
 and tool budgets. A duplicate tool call is first returned as corrective
@@ -244,9 +292,12 @@ scales work on three axes:
 | `ultracode` | 65,536 | 3,200 | 32 | 32 | Message-gated dynamic workflow mode. Trivial turns stay direct; complex turns may use `dynamic_workflow`, A3S Flow replay, native `parallel_task`, and signed-in `runtime`. |
 
 All effort levels keep local `task` and `parallel_task` available, with the TUI
-session limiting sibling fan-out through `max_parallel_tasks`. `ultracode` adds
-automatic planning, goal tracking, and dynamic-workflow guidance, but the
-pre-analysis gate still decides whether a turn actually needs a plan or fan-out.
+session limiting explicit sibling fan-out through `max_parallel_tasks`.
+Runtime-driven automatic delegation is disabled for `low` through `max`, so
+native Codex reasoning effort remains independent of orchestration. `ultracode`
+adds automatic delegation, planning, goal tracking, and dynamic-workflow
+guidance, but the pre-analysis gate still decides whether a turn actually needs
+a plan or fan-out.
 
 ## Planning Hooks
 

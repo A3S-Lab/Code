@@ -1,5 +1,6 @@
 //! Glob tool - Find files matching a glob pattern
 
+use crate::tools::pagination::{PageRequest, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::workspace::WorkspaceGlobRequest;
 use anyhow::Result;
@@ -29,6 +30,16 @@ impl Tool for GlobTool {
                 "path": {
                     "type": "string",
                     "description": "Optional. Base directory for the search. Default: workspace root."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_PAGE_LIMIT,
+                    "description": "Optional. Maximum paths to return. Default: 200; maximum: 1000."
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Optional. Omit on the first call. On a continuation, copy the exact opaque cursor returned by the previous glob call; never invent a placeholder."
                 }
             },
             "required": ["pattern"],
@@ -44,10 +55,18 @@ impl Tool for GlobTool {
         })
     }
 
+    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        crate::tools::ToolCapabilities::read_only_paginated(16)
+    }
+
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let pattern = match args.get("pattern").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return Ok(ToolOutput::error("pattern parameter is required")),
+        };
+        let page_request = match PageRequest::parse(args, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT) {
+            Ok(request) => request,
+            Err(error) => return Ok(ToolOutput::error(error)),
         };
 
         let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
@@ -84,17 +103,30 @@ impl Tool for GlobTool {
             .into_iter()
             .map(|path| path.as_str().to_string())
             .collect();
+        let page = match page_request.page(matches) {
+            Ok(page) => page,
+            Err(error) => return Ok(ToolOutput::error(error)),
+        };
 
-        if matches.is_empty() {
-            Ok(ToolOutput::success(format!(
-                "No files found matching pattern: {}",
-                pattern
-            )))
+        if page.items.is_empty() && page.total_items == 0 {
+            Ok(
+                ToolOutput::success(format!("No files found matching pattern: {}", pattern))
+                    .with_metadata(serde_json::json!({ "page": page.metadata() })),
+            )
         } else {
-            let count = matches.len();
-            let mut output = matches.join("\n");
-            output.push_str(&format!("\n\n{} file(s) found", count));
-            Ok(ToolOutput::success(output))
+            let mut output = page.items.join("\n");
+            output.push_str(&format!(
+                "\n\n{} of {} file(s) shown",
+                page.items.len(),
+                page.total_items
+            ));
+            if let Some(cursor) = page.next_cursor.as_deref() {
+                output.push_str(&format!(
+                    "\nMore files available; continue with cursor={cursor}"
+                ));
+            }
+            Ok(ToolOutput::success(output)
+                .with_metadata(serde_json::json!({ "page": page.metadata() })))
         }
     }
 }
@@ -160,6 +192,37 @@ mod tests {
         assert!(result.success);
         assert!(result.content.contains("root.rs"));
         assert!(result.content.contains("nested.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_glob_paginates_with_resume_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            std::fs::write(temp.path().join(name), "").unwrap();
+        }
+        let tool = GlobTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let first = tool
+            .execute(&serde_json::json!({"pattern": "*.rs", "limit": 2}), &ctx)
+            .await
+            .unwrap();
+        assert!(first.success);
+        assert!(first.content.contains("a.rs"));
+        assert!(first.content.contains("b.rs"));
+        assert!(!first.content.contains("c.rs"));
+        assert_eq!(first.metadata.as_ref().unwrap()["page"]["next_cursor"], "2");
+
+        let second = tool
+            .execute(
+                &serde_json::json!({"pattern": "*.rs", "limit": 2, "cursor": "2"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(second.success);
+        assert!(second.content.contains("c.rs"));
+        assert_eq!(second.metadata.unwrap()["page"]["truncated"], false);
     }
 
     #[tokio::test]

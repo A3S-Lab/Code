@@ -1,5 +1,6 @@
 use super::*;
 use crate::tools::{ToolExecutor, ToolOutput};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct FakeParallelTaskTool;
 
@@ -73,6 +74,34 @@ impl Tool for FailingRuntimeTool {
 
     async fn execute(&self, _args: &Value, _ctx: &ToolContext) -> Result<ToolOutput> {
         Ok(ToolOutput::error("runtime unavailable"))
+    }
+}
+
+struct RetryOnceRuntimeTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for RetryOnceRuntimeTool {
+    fn name(&self) -> &str {
+        "runtime"
+    }
+
+    fn description(&self) -> &str {
+        "Fails once so DynamicWorkflowRuntime can exercise a persisted retry."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({ "type": "object" })
+    }
+
+    async fn execute(&self, _args: &Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(if call == 0 {
+            ToolOutput::error("transient runtime failure")
+        } else {
+            ToolOutput::success("runtime recovered")
+        })
     }
 }
 
@@ -571,6 +600,68 @@ return result;
     assert!(step["error"]
         .as_str()
         .is_some_and(|error| error.contains("runtime unavailable")));
+}
+
+#[tokio::test]
+async fn dynamic_workflow_drives_short_event_sourced_retries_to_completion() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let calls = Arc::new(AtomicUsize::new(0));
+    executor.register_dynamic_tool(Arc::new(RetryOnceRuntimeTool {
+        calls: Arc::clone(&calls),
+    }));
+    register_dynamic_workflow(executor.registry());
+
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const result = inputs.step_outputs.retry_once;
+    if (result) {
+      return { type: "complete", output: { recovered: result.output } };
+    }
+    return {
+      type: "schedule_step",
+      step_id: "retry_once",
+      step_name: "retry_once",
+      input: {},
+      retry: { max_attempts: 2, delay_ms: 10 },
+    };
+  }
+  if (inputs.kind === "step" && inputs.step_name === "retry_once") {
+    const result = await ctx.tool("runtime", {});
+    if (result.exitCode !== 0) {
+      throw new Error(result.output || "runtime failed");
+    }
+    return result;
+  }
+  return { error: "unknown invocation" };
+}
+"#;
+
+    let result = executor
+        .execute(
+            DYNAMIC_WORKFLOW_TOOL,
+            &json!({
+                "source": source,
+                "run_id": "test-dynamic-workflow-inline-retry",
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.exit_code, 0, "{}", result.output);
+    assert!(
+        result.output.contains("runtime recovered"),
+        "{}",
+        result.output
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["dynamic_workflow"]["status"], "Completed");
+    assert_eq!(
+        metadata["dynamic_workflow"]["snapshot"]["steps"]["retry_once"]["attempt"],
+        2
+    );
 }
 
 #[tokio::test]

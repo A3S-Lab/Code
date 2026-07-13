@@ -64,6 +64,10 @@ impl Tool for GrepTool {
         })
     }
 
+    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        crate::tools::ToolCapabilities::parallel_safe_read(16)
+    }
+
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let pattern_str = match args.get("pattern").and_then(|v| v.as_str()) {
             Some(p) => p,

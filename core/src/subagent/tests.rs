@@ -26,7 +26,9 @@ fn test_agent_registry_new() {
     assert!(registry.exists("review"));
     assert!(registry.exists("general-purpose"));
     assert!(registry.exists("deepresearch"));
-    assert_eq!(registry.len(), 6);
+    assert!(registry.exists("loop-planner"));
+    assert!(registry.exists("loop-checker"));
+    assert_eq!(registry.len(), 8);
 }
 
 #[test]
@@ -74,6 +76,8 @@ fn test_agent_registry_list_visible() {
     assert!(visible.len() < all.len());
     assert!(visible.iter().all(|a| !a.hidden));
     assert!(!visible.iter().any(|a| a.name == "deep-research"));
+    assert!(!visible.iter().any(|a| a.name == "loop-planner"));
+    assert!(!visible.iter().any(|a| a.name == "loop-checker"));
 }
 
 #[test]
@@ -85,6 +89,8 @@ fn test_builtin_agents() {
     assert!(names.contains(&"explore"));
     assert!(names.contains(&"general"));
     assert!(names.contains(&"deep-research"));
+    assert!(names.contains(&"loop-planner"));
+    assert!(names.contains(&"loop-checker"));
     assert!(names.contains(&"plan"));
     assert!(names.contains(&"verification"));
     assert!(names.contains(&"review"));
@@ -100,6 +106,10 @@ fn test_builtin_agents() {
         deep_research.confirmation_inheritance,
         Some(ConfirmationInheritance::InheritParent)
     );
+    assert!(agents
+        .iter()
+        .filter(|agent| matches!(agent.name.as_str(), "loop-planner" | "loop-checker"))
+        .all(|agent| agent.hidden && agent.tool_free));
 }
 
 // ========================================================================
@@ -557,7 +567,7 @@ description: Custom agent from config
     // Should have built-in agents plus custom agent
     assert!(registry.exists("explore"));
     assert!(registry.exists("custom-agent"));
-    assert_eq!(registry.len(), 7); // 6 built-in + 1 custom
+    assert_eq!(registry.len(), 9); // 8 built-in + 1 custom
 }
 
 #[test]
@@ -676,7 +686,7 @@ fn registry_register_workers_batches_cattle_specs() {
 fn test_agent_registry_default() {
     let registry = AgentRegistry::default();
     assert!(!registry.is_empty());
-    assert_eq!(registry.len(), 6);
+    assert_eq!(registry.len(), 8);
 }
 
 #[test]
@@ -735,6 +745,26 @@ fn test_apply_to_sets_max_steps() {
     def.apply_to(&mut config);
 
     assert_eq!(config.max_tool_rounds, 7);
+}
+
+#[test]
+fn test_apply_to_tool_free_role_removes_model_tools_and_parent_permissions() {
+    use crate::agent::AgentConfig;
+    use crate::llm::ToolDefinition;
+
+    let def = AgentDefinition::new("decision", "Pure decision role").tool_free();
+    let mut config = AgentConfig::default();
+    config.tools.push(ToolDefinition {
+        name: "web_search".to_string(),
+        description: "Search the web".to_string(),
+        parameters: serde_json::json!({ "type": "object" }),
+    });
+
+    def.apply_to(&mut config);
+
+    assert!(config.tools.is_empty());
+    assert!(config.permission_checker.is_some());
+    assert!(config.permission_policy.is_some());
 }
 
 #[test]

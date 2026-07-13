@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+const SYNTHESIS_CONTINUATION_MARKER: &str = "[synthesis]";
+
 #[derive(Debug, Clone)]
 struct AutoDelegationTask {
     agent: String,
@@ -32,6 +34,9 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &CancellationToken,
     ) -> Result<Option<AutoDelegationOutcome>> {
+        if !prompt_allows_auto_delegation(prompt) {
+            return Ok(None);
+        }
         let Some(plan) = self.build_auto_delegation_plan(prompt) else {
             return Ok(None);
         };
@@ -133,6 +138,12 @@ impl AgentLoop {
             tasks: candidates,
         })
     }
+}
+
+fn prompt_allows_auto_delegation(prompt: &str) -> bool {
+    !prompt
+        .trim_start()
+        .starts_with(SYNTHESIS_CONTINUATION_MARKER)
 }
 
 fn task_to_args(task: &AutoDelegationTask) -> Value {
@@ -303,23 +314,7 @@ fn builtin_confidence(name: &str, prompt: &str) -> f32 {
         {
             0.82
         }
-        "verification"
-            if contains_any(
-                prompt,
-                &[
-                    "test",
-                    "verify",
-                    "validate",
-                    "regression",
-                    "smoke",
-                    "测试",
-                    "验证",
-                    "回归",
-                ],
-            ) =>
-        {
-            0.88
-        }
+        "verification" if contains_verification_intent(prompt) => 0.88,
         "review"
             if contains_any(
                 prompt,
@@ -373,7 +368,7 @@ fn explicit_agent_confidence(agent_name: &str, prompt: &str, explicit_target: Op
 fn description_confidence(description: &str, prompt: &str) -> f32 {
     let shared_terms = significant_terms(description)
         .into_iter()
-        .filter(|term| prompt.contains(term))
+        .filter(|term| contains_intent_keyword(prompt, term))
         .count();
     let base: f32 = match shared_terms {
         0 => 0.0,
@@ -383,28 +378,27 @@ fn description_confidence(description: &str, prompt: &str) -> f32 {
     };
 
     let proactive_match = description.contains("proactive")
-        && contains_any(
-            prompt,
-            &[
-                "change",
-                "changed",
-                "changes",
-                "documentation",
-                "docs",
-                "fix",
-                "implement",
-                "test",
-                "review",
-                "verify",
-                "修改",
-                "变更",
-                "修复",
-                "实现",
-                "测试",
-                "审查",
-                "验证",
-            ],
-        );
+        && [
+            "change",
+            "changed",
+            "changes",
+            "documentation",
+            "docs",
+            "fix",
+            "implement",
+            "test",
+            "review",
+            "verify",
+            "修改",
+            "变更",
+            "修复",
+            "实现",
+            "测试",
+            "审查",
+            "验证",
+        ]
+        .iter()
+        .any(|term| contains_intent_keyword(prompt, term));
 
     if proactive_match {
         (base.max(0.74) + 0.16_f32).min(0.9)
@@ -442,6 +436,59 @@ fn contains_any(text: &str, terms: &[&str]) -> bool {
     terms.iter().any(|term| text.contains(term))
 }
 
+fn contains_verification_intent(prompt: &str) -> bool {
+    [
+        "测试",
+        "验证",
+        "回归",
+        "test",
+        "tests",
+        "tested",
+        "testing",
+        "verify",
+        "verifies",
+        "verified",
+        "verifying",
+        "validate",
+        "validates",
+        "validated",
+        "validating",
+        "regression",
+        "regressions",
+        "smoke",
+    ]
+    .iter()
+    .any(|term| contains_intent_keyword(prompt, term))
+}
+
+fn contains_intent_keyword(text: &str, keyword: &str) -> bool {
+    if keyword.is_ascii() {
+        contains_non_path_keyword(text, keyword)
+    } else {
+        text.contains(keyword)
+    }
+}
+
+/// Match an intent keyword as a word while ignoring the same token when it is
+/// visibly part of a path such as `test.md` or `tests/parser.rs`.
+fn contains_non_path_keyword(text: &str, keyword: &str) -> bool {
+    text.match_indices(keyword).any(|(start, _)| {
+        let end = start + keyword.len();
+        let before = text[..start].chars().next_back();
+        let after = text[end..].chars().next();
+        if !is_reference_boundary(before) || !is_reference_boundary(after) {
+            return false;
+        }
+
+        let after_dot = (after == Some('.'))
+            .then(|| text[end + 1..].chars().next())
+            .flatten();
+        !matches!(before, Some('/' | '\\' | '.'))
+            && !matches!(after, Some('/' | '\\'))
+            && !after_dot.is_some_and(|ch| ch.is_ascii_alphanumeric())
+    })
+}
+
 fn auto_description(agent: &AgentDefinition, prompt: &str) -> String {
     format!(
         "Auto-delegated to {} for: {}",
@@ -473,6 +520,25 @@ mod tests {
 
         assert!(review_score.confidence >= 0.86);
         assert!(verify_score.confidence >= 0.88);
+    }
+
+    #[test]
+    fn test_filename_does_not_trigger_verification_delegation() {
+        let verify = AgentDefinition::new("verification", "Run tests");
+
+        assert!(score_agent_for_prompt(&verify, "删除 test.md", None).is_none());
+        assert!(score_agent_for_prompt(&verify, "Delete ./tests/test.md", None).is_none());
+        assert!(score_agent_for_prompt(&verify, "Run tests for test.md", None).is_some());
+    }
+
+    #[test]
+    fn synthesis_continuation_never_auto_delegates() {
+        assert!(!prompt_allows_auto_delegation(
+            "[synthesis]\nWrite the final answer without more subagents."
+        ));
+        assert!(prompt_allows_auto_delegation(
+            "Review and verify the implementation."
+        ));
     }
 
     #[test]

@@ -186,10 +186,10 @@ pub use subagent::{
 pub use subagent_task_tracker::{
     InMemorySubagentTaskTracker, SubagentProgressEntry, SubagentStatus, SubagentTaskSnapshot,
 };
-pub use tools::ToolErrorKind;
+pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind};
 pub use workspace::{
-    CommandOutput, CommandOutputObserver, CommandRequest, LocalWorkspaceBackend,
-    LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifest,
+    CommandOutput, CommandOutputObserver, CommandOutputSummary, CommandRequest,
+    LocalWorkspaceBackend, LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifest,
     LocalWorkspaceManifestSnapshot, ManifestWorkspaceBackend, RecentWorkspaceFile,
     RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict, VirtualPathResolver,
     WorkspaceCapabilities, WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceError,
@@ -201,8 +201,8 @@ pub use workspace::{
     WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
     WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest,
     WorkspaceGrepResult, WorkspacePath, WorkspacePathResolver, WorkspaceRef, WorkspaceResult,
-    WorkspaceSearch, WorkspaceServices, WorkspaceServicesBuilder, WorkspaceVersionConflict,
-    WorkspaceWriteOutcome,
+    WorkspaceSearch, WorkspaceServices, WorkspaceServicesBuilder, WorkspaceTextRange,
+    WorkspaceTextReader, WorkspaceVersionConflict, WorkspaceWriteOutcome,
 };
 #[cfg(feature = "s3")]
 pub use workspace::{S3BackendConfig, S3WorkspaceBackend};

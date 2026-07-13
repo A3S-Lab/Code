@@ -8,31 +8,46 @@ use async_trait::async_trait;
 pub struct PatchTool;
 
 /// A parsed hunk from a unified diff
+#[derive(Debug)]
 struct Hunk {
-    /// 1-indexed start line in the original file
     old_start: usize,
-    /// Lines to remove (without leading '-')
-    removals: Vec<String>,
-    /// Lines to add (without leading '+')
-    additions: Vec<String>,
-    /// Context lines with their offsets from old_start
-    context: Vec<(usize, String)>,
+    old_count: usize,
+    new_start: usize,
+    new_count: usize,
+    operations: Vec<HunkOperation>,
+    old_no_newline: bool,
+    new_no_newline: bool,
+}
+
+#[derive(Debug)]
+enum HunkOperation {
+    Context(String),
+    Remove(String),
+    Add(String),
 }
 
 /// Parse a unified diff into hunks
 fn parse_hunks(diff: &str) -> Result<Vec<Hunk>, String> {
     let mut hunks = Vec::new();
-    let lines: Vec<&str> = diff.lines().collect();
+    let lines = diff
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect::<Vec<_>>();
     let mut i = 0;
 
     while i < lines.len() {
         let line = lines[i];
-
-        // Look for @@ header
         if line.starts_with("@@") {
             let hunk = parse_single_hunk(&lines, &mut i)?;
             hunks.push(hunk);
         } else {
+            if !hunks.is_empty() && !line.is_empty() {
+                return Err(format!(
+                    "Unexpected line outside a hunk at diff line {}: {:?}",
+                    i + 1,
+                    line
+                ));
+            }
             i += 1;
         }
     }
@@ -46,149 +61,252 @@ fn parse_hunks(diff: &str) -> Result<Vec<Hunk>, String> {
 
 fn parse_single_hunk(lines: &[&str], i: &mut usize) -> Result<Hunk, String> {
     let header = lines[*i];
-    let old_start = parse_hunk_header(header)?;
+    let (old_start, old_count, new_start, new_count) = parse_hunk_header(header)?;
 
     *i += 1;
-
-    let mut removals = Vec::new();
-    let mut additions = Vec::new();
-    let mut context = Vec::new();
-    let mut old_offset = 0;
+    let mut operations = Vec::new();
+    let mut old_no_newline = false;
+    let mut new_no_newline = false;
+    let mut previous_kind = None;
 
     while *i < lines.len() {
         let line = lines[*i];
-
         if line.starts_with("@@") {
             break;
         }
-
-        if let Some(content) = line.strip_prefix('-') {
-            removals.push(content.to_string());
-            old_offset += 1;
-        } else if let Some(content) = line.strip_prefix('+') {
-            additions.push(content.to_string());
-        } else if let Some(content) = line.strip_prefix(' ') {
-            context.push((old_offset, content.to_string()));
-            old_offset += 1;
-        } else if line.is_empty() {
-            // Treat empty line as context
-            context.push((old_offset, String::new()));
-            old_offset += 1;
-        } else {
-            // Unknown prefix, treat as context
-            context.push((old_offset, line.to_string()));
-            old_offset += 1;
+        if line == "\\ No newline at end of file" {
+            match previous_kind {
+                Some('-') => old_no_newline = true,
+                Some('+') => new_no_newline = true,
+                Some(' ') => {
+                    old_no_newline = true;
+                    new_no_newline = true;
+                }
+                _ => {
+                    return Err(format!(
+                        "No-newline marker has no preceding hunk line at diff line {}",
+                        *i + 1
+                    ))
+                }
+            }
+            *i += 1;
+            continue;
         }
 
+        if let Some(content) = line.strip_prefix(' ') {
+            operations.push(HunkOperation::Context(content.to_string()));
+            previous_kind = Some(' ');
+        } else if let Some(content) = line.strip_prefix('-') {
+            operations.push(HunkOperation::Remove(content.to_string()));
+            previous_kind = Some('-');
+        } else if let Some(content) = line.strip_prefix('+') {
+            operations.push(HunkOperation::Add(content.to_string()));
+            previous_kind = Some('+');
+        } else {
+            if line.is_empty() && *i + 1 == lines.len() {
+                break;
+            }
+            return Err(format!(
+                "Invalid hunk line prefix at diff line {}: {:?}",
+                *i + 1,
+                line
+            ));
+        }
         *i += 1;
+    }
+
+    let actual_old_count = operations
+        .iter()
+        .filter(|operation| !matches!(operation, HunkOperation::Add(_)))
+        .count();
+    let actual_new_count = operations
+        .iter()
+        .filter(|operation| !matches!(operation, HunkOperation::Remove(_)))
+        .count();
+    if actual_old_count != old_count || actual_new_count != new_count {
+        return Err(format!(
+            "Hunk count mismatch in {header:?}: header declares old={old_count}, new={new_count}, but body contains old={actual_old_count}, new={actual_new_count}"
+        ));
     }
 
     Ok(Hunk {
         old_start,
-        removals,
-        additions,
-        context,
+        old_count,
+        new_start,
+        new_count,
+        operations,
+        old_no_newline,
+        new_no_newline,
     })
 }
 
 /// Parse @@ -old_start,old_count +new_start,new_count @@ line
-fn parse_hunk_header(header: &str) -> Result<usize, String> {
-    // Example: @@ -1,3 +1,3 @@
+fn parse_hunk_header(header: &str) -> Result<(usize, usize, usize, usize), String> {
     let stripped = header
         .strip_prefix("@@")
         .and_then(|s| s.find("@@").map(|end| &s[..end]))
         .ok_or_else(|| format!("Invalid hunk header: {}", header))?
         .trim();
 
-    // Parse -old_start part
     let parts: Vec<&str> = stripped.split_whitespace().collect();
-    if parts.is_empty() {
+    if parts.len() < 2 {
         return Err(format!("Invalid hunk header: {}", header));
     }
-
-    let old_part = parts[0]
-        .strip_prefix('-')
-        .ok_or_else(|| format!("Invalid old range in hunk header: {}", header))?;
-
-    let old_start: usize = old_part
-        .split(',')
-        .next()
-        .unwrap_or("1")
-        .parse()
-        .map_err(|_| format!("Invalid old start line in hunk header: {}", header))?;
-
-    Ok(old_start)
+    let (old_start, old_count) = parse_hunk_range(parts[0], '-', header)?;
+    let (new_start, new_count) = parse_hunk_range(parts[1], '+', header)?;
+    Ok((old_start, old_count, new_start, new_count))
 }
 
-/// Apply hunks to file content. Hunks are applied bottom-to-top to preserve line numbers.
+fn parse_hunk_range(value: &str, prefix: char, header: &str) -> Result<(usize, usize), String> {
+    let value = value
+        .strip_prefix(prefix)
+        .ok_or_else(|| format!("Invalid range in hunk header: {header}"))?;
+    let (start, count) = value
+        .split_once(',')
+        .map(|(start, count)| (start, Some(count)))
+        .unwrap_or((value, None));
+    let start = start
+        .parse::<usize>()
+        .map_err(|_| format!("Invalid range start in hunk header: {header}"))?;
+    let count = count
+        .unwrap_or("1")
+        .parse::<usize>()
+        .map_err(|_| format!("Invalid range count in hunk header: {header}"))?;
+    Ok((start, count))
+}
+
+struct TextDocument {
+    lines: Vec<String>,
+    line_ending: &'static str,
+    trailing_newline: bool,
+}
+
+fn parse_document(content: &str) -> Result<TextDocument, String> {
+    let has_crlf = content.contains("\r\n");
+    let has_bare_lf = content.as_bytes().iter().enumerate().any(|(index, byte)| {
+        *byte == b'\n' && (index == 0 || content.as_bytes()[index - 1] != b'\r')
+    });
+    if has_crlf && has_bare_lf {
+        return Err("Cannot safely patch a file with mixed LF and CRLF line endings".to_string());
+    }
+    if content.contains('\r') && !has_crlf {
+        return Err("Cannot safely patch a file with unsupported CR-only line endings".to_string());
+    }
+
+    let trailing_newline = content.ends_with('\n');
+    let mut lines = if content.is_empty() {
+        Vec::new()
+    } else {
+        content
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
+            .collect::<Vec<_>>()
+    };
+    if trailing_newline {
+        lines.pop();
+    }
+    Ok(TextDocument {
+        lines,
+        line_ending: if has_crlf { "\r\n" } else { "\n" },
+        trailing_newline,
+    })
+}
+
+/// Apply hunks strictly from top to bottom against exact source lines.
 fn apply_hunks(content: &str, hunks: &[Hunk]) -> Result<String, String> {
-    let mut file_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let document = parse_document(content)?;
+    let mut output = Vec::new();
+    let mut old_cursor = 0usize;
+    let mut trailing_newline = document.trailing_newline;
 
-    // Sort hunks by old_start descending (apply bottom-to-top)
-    let mut sorted_hunks: Vec<&Hunk> = hunks.iter().collect();
-    sorted_hunks.sort_by_key(|h| std::cmp::Reverse(h.old_start));
+    for hunk in hunks {
+        let old_target = if hunk.old_count == 0 {
+            hunk.old_start
+        } else {
+            hunk.old_start.saturating_sub(1)
+        };
+        let new_target = if hunk.new_count == 0 {
+            hunk.new_start
+        } else {
+            hunk.new_start.saturating_sub(1)
+        };
+        if old_target < old_cursor || old_target > document.lines.len() {
+            return Err(format!(
+                "Hunk old range starts outside the remaining source at line {}",
+                hunk.old_start
+            ));
+        }
+        output.extend_from_slice(&document.lines[old_cursor..old_target]);
+        if output.len() != new_target {
+            return Err(format!(
+                "Hunk new range starts at line {}, but prior hunks produce line {}",
+                hunk.new_start,
+                output.len() + 1
+            ));
+        }
 
-    for hunk in sorted_hunks {
-        let start_idx = hunk.old_start.saturating_sub(1); // Convert 1-indexed to 0-indexed
-
-        // Verify context lines match (basic verification)
-        for (offset, ctx_line) in &hunk.context {
-            let line_idx = start_idx + offset;
-            if line_idx < file_lines.len() && file_lines[line_idx].trim() != ctx_line.trim() {
-                tracing::warn!(
-                    "Context mismatch at line {}: expected {:?}, found {:?}",
-                    line_idx + 1,
-                    ctx_line,
-                    file_lines[line_idx]
-                );
+        let mut source_index = old_target;
+        for operation in &hunk.operations {
+            match operation {
+                HunkOperation::Context(expected) => {
+                    require_exact_line(&document.lines, source_index, expected, "context")?;
+                    output.push(expected.clone());
+                    source_index += 1;
+                }
+                HunkOperation::Remove(expected) => {
+                    require_exact_line(&document.lines, source_index, expected, "removal")?;
+                    source_index += 1;
+                }
+                HunkOperation::Add(line) => output.push(line.clone()),
             }
         }
+        old_cursor = source_index;
 
-        // Find and remove the old lines, then insert new lines
-        let mut lines_to_remove: Vec<usize> = Vec::new();
-        let mut search_idx = start_idx;
-
-        for removal in &hunk.removals {
-            // Find the line to remove starting from search_idx
-            let found_idx = file_lines[search_idx..]
-                .iter()
-                .position(|line| line.trim() == removal.trim())
-                .map(|pos| search_idx + pos);
-            match found_idx {
-                Some(idx) => {
-                    lines_to_remove.push(idx);
-                    search_idx = idx + 1;
-                }
-                None => {
-                    return Err(format!(
-                        "Could not find line to remove: {:?} near line {}",
-                        removal,
-                        start_idx + 1
-                    ));
-                }
+        let touches_old_eof = old_cursor == document.lines.len();
+        if touches_old_eof {
+            if hunk.new_no_newline {
+                trailing_newline = false;
+            } else if hunk.old_no_newline {
+                trailing_newline = true;
             }
         }
-
-        // Remove lines bottom-to-top
-        lines_to_remove.sort_unstable();
-        lines_to_remove.reverse();
-        for idx in &lines_to_remove {
-            file_lines.remove(*idx);
-        }
-
-        // Insert additions at the position of the first removal (or at start_idx)
-        let insert_at = lines_to_remove
-            .last()
-            .copied()
-            .unwrap_or(start_idx)
-            .min(file_lines.len());
-
-        for (j, addition) in hunk.additions.iter().enumerate() {
-            file_lines.insert(insert_at + j, addition.clone());
+        if hunk.old_no_newline && document.trailing_newline && touches_old_eof {
+            return Err(
+                "Patch claims the source has no final newline, but the file does".to_string(),
+            );
         }
     }
 
-    Ok(file_lines.join("\n"))
+    output.extend_from_slice(&document.lines[old_cursor..]);
+    let mut rendered = output.join(document.line_ending);
+    if trailing_newline {
+        rendered.push_str(document.line_ending);
+    }
+    Ok(rendered)
+}
+
+fn require_exact_line(
+    lines: &[String],
+    index: usize,
+    expected: &str,
+    kind: &str,
+) -> Result<(), String> {
+    let Some(actual) = lines.get(index) else {
+        return Err(format!(
+            "Hunk {kind} expected line {} to be {:?}, but the file ended",
+            index + 1,
+            expected
+        ));
+    };
+    if actual != expected {
+        return Err(format!(
+            "Hunk {kind} mismatch at line {}: expected {:?}, found {:?}",
+            index + 1,
+            expected,
+            actual
+        ));
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -223,6 +341,12 @@ impl Tool for PatchTool {
                 }
             ]
         })
+    }
+
+    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        let mut capabilities = crate::tools::ToolCapabilities::conservative();
+        capabilities.output_kind = crate::tools::ToolOutputKind::Diff;
+        capabilities
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
@@ -262,12 +386,7 @@ impl Tool for PatchTool {
             Err(e) => return Ok(ToolOutput::error(format!("Failed to apply patch: {}", e))),
         };
 
-        // Preserve trailing newline if original had one
-        let final_content = if content.ends_with('\n') && !new_content.ends_with('\n') {
-            format!("{}\n", new_content)
-        } else {
-            new_content
-        };
+        let final_content = new_content;
 
         match ctx
             .workspace_services
@@ -314,9 +433,15 @@ mod tests {
 
     #[test]
     fn test_parse_hunk_header() {
-        assert_eq!(parse_hunk_header("@@ -1,3 +1,3 @@").unwrap(), 1);
-        assert_eq!(parse_hunk_header("@@ -10,5 +12,7 @@").unwrap(), 10);
-        assert_eq!(parse_hunk_header("@@ -1 +1 @@ function name").unwrap(), 1);
+        assert_eq!(parse_hunk_header("@@ -1,3 +1,3 @@").unwrap(), (1, 3, 1, 3));
+        assert_eq!(
+            parse_hunk_header("@@ -10,5 +12,7 @@").unwrap(),
+            (10, 5, 12, 7)
+        );
+        assert_eq!(
+            parse_hunk_header("@@ -1 +1 @@ function name").unwrap(),
+            (1, 1, 1, 1)
+        );
     }
 
     #[test]
@@ -325,8 +450,8 @@ mod tests {
         let hunks = parse_hunks(diff).unwrap();
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].old_start, 1);
-        assert_eq!(hunks[0].removals, vec!["old_line"]);
-        assert_eq!(hunks[0].additions, vec!["new_line"]);
+        assert_eq!(hunks[0].old_count, 3);
+        assert_eq!(hunks[0].new_count, 3);
     }
 
     #[test]
@@ -336,6 +461,49 @@ mod tests {
         let hunks = parse_hunks(diff).unwrap();
         let result = apply_hunks(content, &hunks).unwrap();
         assert_eq!(result, "line1\nnew_line\nline3");
+    }
+
+    #[test]
+    fn strict_patch_preserves_interleaved_operation_order() {
+        let content = "a\nold-one\nmiddle\nold-two\nz\n";
+        let diff = "@@ -1,5 +1,5 @@\n a\n-old-one\n+new-one\n middle\n-old-two\n+new-two\n z";
+        let hunks = parse_hunks(diff).unwrap();
+
+        let result = apply_hunks(content, &hunks).unwrap();
+
+        assert_eq!(result, "a\nnew-one\nmiddle\nnew-two\nz\n");
+    }
+
+    #[test]
+    fn strict_patch_rejects_context_and_whitespace_mismatches() {
+        let context = parse_hunks("@@ -1,2 +1,2 @@\n wrong\n-old\n+new").unwrap();
+        let context_error = apply_hunks("actual\nold\n", &context).unwrap_err();
+        assert!(
+            context_error.contains("context mismatch"),
+            "{context_error}"
+        );
+
+        let whitespace = parse_hunks("@@ -1 +1 @@\n-value\n+new").unwrap();
+        let whitespace_error = apply_hunks(" value\n", &whitespace).unwrap_err();
+        assert!(
+            whitespace_error.contains("removal mismatch"),
+            "{whitespace_error}"
+        );
+    }
+
+    #[test]
+    fn strict_patch_preserves_crlf_line_endings() {
+        let hunks = parse_hunks("@@ -1,2 +1,2 @@\n first\n-second\n+changed").unwrap();
+
+        let result = apply_hunks("first\r\nsecond\r\n", &hunks).unwrap();
+
+        assert_eq!(result, "first\r\nchanged\r\n");
+    }
+
+    #[test]
+    fn strict_patch_rejects_incorrect_hunk_counts() {
+        let error = parse_hunks("@@ -1,2 +1,2 @@\n-old\n+new").unwrap_err();
+        assert!(error.contains("Hunk count mismatch"), "{error}");
     }
 
     #[tokio::test]

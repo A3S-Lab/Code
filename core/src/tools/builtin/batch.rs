@@ -7,8 +7,12 @@ use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::tools::{registry_tool_invoker, ToolInvocation, ToolInvoker, ToolRegistry, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use std::sync::Arc;
+
+const MAX_BATCH_INVOCATIONS: usize = 32;
+const DEFAULT_BATCH_CONCURRENCY: usize = 8;
+const MAX_BATCH_CONCURRENCY: usize = 16;
 
 /// Executes multiple tool calls concurrently in a single LLM turn.
 ///
@@ -50,6 +54,10 @@ impl Tool for BatchTool {
                         "type": "object",
                         "additionalProperties": false,
                         "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "Optional caller-defined result correlation ID."
+                            },
                             "tool": {
                                 "type": "string",
                                 "description": "Required. Name of the tool to call."
@@ -61,7 +69,14 @@ impl Tool for BatchTool {
                         },
                         "required": ["tool", "args"]
                     },
-                    "minItems": 1
+                    "minItems": 1,
+                    "maxItems": MAX_BATCH_INVOCATIONS
+                },
+                "max_concurrency": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_BATCH_CONCURRENCY,
+                    "description": "Maximum concurrent calls. Default 8; maximum 16. Mutating or non-idempotent tools are automatically serialized."
                 }
             },
             "required": ["invocations"],
@@ -82,6 +97,23 @@ impl Tool for BatchTool {
             Some(_) => return Ok(ToolOutput::error("invocations array must not be empty")),
             None => return Ok(ToolOutput::error("invocations parameter is required")),
         };
+        if invocations.len() > MAX_BATCH_INVOCATIONS {
+            return Ok(ToolOutput::error(format!(
+                "batch accepts at most {MAX_BATCH_INVOCATIONS} invocations"
+            )));
+        }
+        let requested_concurrency = match args.get("max_concurrency") {
+            Some(value) => match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
+                Some(value) if value > 0 => value,
+                _ => {
+                    return Ok(ToolOutput::error(
+                        "max_concurrency must be a positive integer",
+                    ))
+                }
+            },
+            None => DEFAULT_BATCH_CONCURRENCY,
+        };
+        let requested_concurrency = requested_concurrency.min(MAX_BATCH_CONCURRENCY);
 
         // Prevent recursive batch calls
         for inv in &invocations {
@@ -90,60 +122,157 @@ impl Tool for BatchTool {
             }
         }
 
-        // Dispatch all calls in parallel
         let invoker = ctx
             .tool_invoker()
             .unwrap_or_else(|| Arc::clone(&self.fallback_invoker));
-        let ctx = ctx.clone();
-        let calls = invocations.into_iter().map(|inv| {
-            let invoker = Arc::clone(&invoker);
-            let ctx = ctx.clone();
-            async move {
-                let tool_name = inv
+        let prepared = invocations
+            .into_iter()
+            .enumerate()
+            .map(|(index, invocation)| {
+                let tool_name = invocation
                     .get("tool")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
                     .to_string();
-                let tool_args = inv
+                let tool_args = invocation
                     .get("args")
                     .cloned()
-                    .unwrap_or(serde_json::Value::Object(Default::default()));
-
-                if tool_name.is_empty() {
-                    return (
-                        tool_name,
-                        ToolResult::error("", "tool name is required".to_string()),
-                    );
-                }
-
-                let result = invoker
-                    .invoke(ToolInvocation::nested(tool_name.clone(), tool_args), &ctx)
-                    .await;
-                (tool_name, result)
-            }
+                    .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+                let correlation_id = invocation
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string);
+                (index, correlation_id, tool_name, tool_args)
+            })
+            .collect::<Vec<_>>();
+        let parallel_cap = prepared
+            .iter()
+            .filter_map(|(_, _, name, args)| invoker.capabilities(name, args))
+            .filter(|capabilities| capabilities.allows_parallel_batch())
+            .map(|capabilities| capabilities.max_parallelism)
+            .min();
+        let all_parallel_safe = prepared.iter().all(|(_, _, name, args)| {
+            invoker
+                .capabilities(name, args)
+                .is_some_and(|capabilities| capabilities.allows_parallel_batch())
         });
+        let concurrency = if all_parallel_safe {
+            requested_concurrency.min(parallel_cap.unwrap_or(1)).max(1)
+        } else {
+            1
+        };
 
-        // Collect results in order
+        let ctx = ctx.clone();
+        let calls = prepared
+            .into_iter()
+            .map(|(index, correlation_id, tool_name, tool_args)| {
+                let invoker = Arc::clone(&invoker);
+                let ctx = ctx.clone();
+                async move {
+                    if tool_name.is_empty() {
+                        return (
+                            index,
+                            correlation_id,
+                            tool_name,
+                            ToolResult::error("", "tool name is required".to_string()),
+                        );
+                    }
+
+                    let result = invoker
+                        .invoke(ToolInvocation::nested(tool_name.clone(), tool_args), &ctx)
+                        .await;
+                    (index, correlation_id, tool_name, result)
+                }
+            });
+        let results = stream::iter(calls)
+            .buffered(concurrency)
+            .collect::<Vec<_>>()
+            .await;
+
         let mut output = String::new();
-        let mut all_success = true;
+        let mut success_count = 0usize;
+        let mut result_metadata = Vec::with_capacity(results.len());
+        let mut failed_indices = Vec::new();
 
-        for (i, (tool_name, result)) in join_all(calls).await.into_iter().enumerate() {
-            output.push_str(&format!("--- [{}: {}] ---\n", i + 1, tool_name));
+        for (index, correlation_id, tool_name, result) in results {
+            let label = correlation_id
+                .as_deref()
+                .map(|id| format!("{tool_name} · {id}"))
+                .unwrap_or_else(|| tool_name.clone());
+            output.push_str(&format!("--- [{}: {}] ---\n", index + 1, label));
             if result.exit_code != 0 {
-                all_success = false;
+                failed_indices.push(index);
                 output.push_str(&format!("ERROR: {}\n", result.output));
             } else {
+                success_count += 1;
                 output.push_str(&result.output);
             }
             output.push('\n');
+            result_metadata.push(serde_json::json!({
+                "index": index,
+                "id": correlation_id,
+                "tool": tool_name,
+                "success": result.exit_code == 0,
+                "exit_code": result.exit_code,
+                "output_bytes": result.output.len(),
+                "error_kind": result.error_kind,
+                "metadata": compact_child_metadata(result.metadata),
+            }));
         }
 
-        if all_success {
-            Ok(ToolOutput::success(output))
+        let total_count = result_metadata.len();
+        let failure_count = total_count.saturating_sub(success_count);
+        let partial_failure = success_count > 0 && failure_count > 0;
+        if partial_failure {
+            output.push_str(&format!(
+                "\nBatch completed with {success_count} successful and {failure_count} failed item(s). Retry only failed indices {:?}; do not repeat successful items.\n",
+                failed_indices
+            ));
+        }
+        let metadata = serde_json::json!({
+            "status": if failure_count == 0 {
+                "complete"
+            } else if partial_failure {
+                "partial_failure"
+            } else {
+                "failed"
+            },
+            "execution_mode": if concurrency > 1 { "parallel" } else { "serial" },
+            "requested_concurrency": requested_concurrency,
+            "applied_concurrency": concurrency,
+            "total_count": total_count,
+            "success_count": success_count,
+            "failure_count": failure_count,
+            "failed_indices": failed_indices,
+            "results": result_metadata,
+        });
+
+        if failure_count == 0 || partial_failure {
+            Ok(ToolOutput::success(output).with_metadata(metadata))
         } else {
-            Ok(ToolOutput::error(output))
+            Ok(ToolOutput::error(output)
+                .with_error_kind(crate::tools::ToolErrorKind::PartialFailure {
+                    failed: failure_count,
+                    total: total_count,
+                })
+                .with_metadata(metadata))
         }
     }
+}
+
+fn compact_child_metadata(metadata: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    const MAX_CHILD_METADATA_BYTES: usize = 4 * 1024;
+    let metadata = metadata?;
+    let encoded = serde_json::to_vec(&metadata).ok()?;
+    if encoded.len() <= MAX_CHILD_METADATA_BYTES {
+        return Some(metadata);
+    }
+
+    Some(serde_json::json!({
+        "truncated": true,
+        "original_bytes": encoded.len(),
+        "artifact": metadata.get("artifact"),
+    }))
 }
 
 // ============================================================================
@@ -180,6 +309,9 @@ mod tests {
                 "required": ["msg"]
             })
         }
+        fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+            crate::tools::ToolCapabilities::parallel_safe_read(8)
+        }
         async fn execute(
             &self,
             args: &serde_json::Value,
@@ -207,6 +339,9 @@ mod tests {
                 "properties": {},
                 "required": []
             })
+        }
+        fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+            crate::tools::ToolCapabilities::parallel_safe_read(8)
         }
         async fn execute(
             &self,
@@ -369,10 +504,12 @@ mod tests {
             )
             .await
             .unwrap();
-        // One failure makes the whole batch fail
-        assert!(!result.success);
+        // The orchestration completed; item-level failure is structured so a
+        // caller retries only that item instead of repeating the success.
+        assert!(result.success);
         assert!(result.content.contains("ok"));
         assert!(result.content.contains("intentional failure"));
+        assert_eq!(result.metadata.unwrap()["status"], "partial_failure");
     }
 
     #[tokio::test]
@@ -457,7 +594,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_large_batch_all_success() {
         let tool = BatchTool::new(make_registry());
-        let invocations: Vec<serde_json::Value> = (0..100)
+        let invocations: Vec<serde_json::Value> = (0..MAX_BATCH_INVOCATIONS)
             .map(|i| serde_json::json!({"tool": "echo", "args": {"msg": format!("item-{}", i)}}))
             .collect();
         let result = tool
@@ -470,18 +607,18 @@ mod tests {
         assert!(result.success);
         // All items should appear in the output
         assert!(result.content.contains("item-0"));
-        assert!(result.content.contains("item-99"));
+        assert!(result.content.contains("item-31"));
         // Items should appear in order
         let pos_0 = result.content.find("item-0").unwrap();
-        let pos_99 = result.content.find("item-99").unwrap();
-        assert!(pos_0 < pos_99);
+        let pos_31 = result.content.find("item-31").unwrap();
+        assert!(pos_0 < pos_31);
+        assert_eq!(result.metadata.unwrap()["execution_mode"], "parallel");
     }
 
     #[tokio::test]
     async fn test_execute_large_batch_mixed_results() {
         let tool = BatchTool::new(make_registry());
-        // 50 successes + 50 failures
-        let invocations: Vec<serde_json::Value> = (0..100)
+        let invocations: Vec<serde_json::Value> = (0..MAX_BATCH_INVOCATIONS)
             .map(|i| {
                 if i % 2 == 0 {
                     serde_json::json!({"tool": "echo", "args": {"msg": format!("ok-{}", i)}})
@@ -497,9 +634,28 @@ mod tests {
             )
             .await
             .unwrap();
-        // Any failure makes the batch report failure
-        assert!(!result.success);
+        assert!(result.success);
         // Successful items should still appear in output
         assert!(result.content.contains("ok-0"));
+        assert_eq!(result.metadata.unwrap()["status"], "partial_failure");
+    }
+
+    #[tokio::test]
+    async fn test_execute_rejects_unbounded_batch() {
+        let tool = BatchTool::new(make_registry());
+        let invocations = (0..=MAX_BATCH_INVOCATIONS)
+            .map(|index| serde_json::json!({"tool": "echo", "args": {"msg": index.to_string()}}))
+            .collect::<Vec<_>>();
+
+        let result = tool
+            .execute(
+                &serde_json::json!({"invocations": invocations}),
+                &make_ctx(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result.content.contains("at most 32"));
     }
 }

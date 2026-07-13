@@ -21,7 +21,11 @@ const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 30_000;
 const DELEGATION_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const DEFAULT_SCRIPT_MAX_TOOL_CALLS: usize = 20;
 const DEFAULT_SCRIPT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
-const MAX_SCRIPT_SOURCE_BYTES: usize = 64 * 1024;
+const PROGRAM_CANCELLATION_SETTLE_GRACE: Duration = Duration::from_millis(500);
+// Engineered workflows include planner, maker, checker, recovery, and event
+// projection logic in one auditable script. Keep a firm bound, but allow the
+// complete workflow contract without requiring opaque minification.
+const MAX_SCRIPT_SOURCE_BYTES: usize = 128 * 1024;
 
 pub struct ProgramTool {
     fallback_invoker: Arc<dyn ToolInvoker>,
@@ -284,13 +288,15 @@ async fn run_quickjs_script(
         .max_output_bytes
         .unwrap_or(DEFAULT_SCRIPT_MAX_OUTPUT_BYTES);
     let executable_source = script_source_with_host_entrypoint(source)?;
+    let parent_cancellation = ctx.cancellation_token();
+    let program_cancellation = parent_cancellation.child_token();
     // Captured on the outer multi-threaded runtime (we're async here, before the
     // VM's nested single-thread runtime is built) so host tools run on the
     // session runtime instead of being trapped inside the QuickJS VM runtime.
     let outer = tokio::runtime::Handle::current();
     let state = Arc::new(Mutex::new(ScriptVmState {
         invoker,
-        ctx,
+        ctx: ctx.with_cancellation(program_cancellation.clone()),
         allowed_tools,
         max_tool_calls,
         max_output_bytes,
@@ -300,25 +306,62 @@ async fn run_quickjs_script(
     }));
 
     let vm_state = Arc::clone(&state);
-    let result = timeout(
-        Duration::from_millis(timeout_ms),
-        tokio::task::spawn_blocking(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| anyhow!("failed to create program VM runtime: {err}"))?;
-            runtime.block_on(run_embedded_script(
-                executable_source,
-                inputs,
-                vm_state,
-                timeout_ms,
-            ))
-        }),
-    )
-    .await;
+    let mut vm = tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| anyhow!("failed to create program VM runtime: {err}"))?;
+        runtime.block_on(run_embedded_script(
+            executable_source,
+            inputs,
+            vm_state,
+            timeout_ms,
+            program_cancellation,
+        ))
+    });
+
+    enum Stop {
+        Cancelled,
+        TimedOut,
+    }
+    let result = tokio::select! {
+        biased;
+        _ = parent_cancellation.cancelled() => None,
+        result = &mut vm => Some(result),
+        _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => None,
+    };
+    let stop = if result.is_none() {
+        if parent_cancellation.is_cancelled() {
+            Some(Stop::Cancelled)
+        } else {
+            Some(Stop::TimedOut)
+        }
+    } else {
+        None
+    };
+
+    if let Some(stop) = stop {
+        // The child token is already cancelled when the parent stopped. On an
+        // internal deadline, cancel it explicitly so every nested invocation
+        // receives the same terminal signal as the VM.
+        state.lock().await.ctx.cancellation_token().cancel();
+        if timeout(PROGRAM_CANCELLATION_SETTLE_GRACE, &mut vm)
+            .await
+            .is_err()
+        {
+            vm.abort();
+            let _ = vm.await;
+        }
+        return Ok(ToolOutput::error(match stop {
+            Stop::Cancelled => "program script cancelled by caller".to_string(),
+            Stop::TimedOut => format!("program script timed out after {timeout_ms} ms"),
+        }));
+    }
+
+    let result = result.expect("completed VM result is present");
 
     match result {
-        Ok(Ok(Ok(result))) => {
+        Ok(Ok(result)) => {
             let records = state.lock().await.records.clone();
             let output = render_script_output(&result, &records, "");
             Ok(ToolOutput::success(output).with_metadata(serde_json::json!({
@@ -332,15 +375,12 @@ async fn run_quickjs_script(
                 "script_result": result,
             })))
         }
-        Ok(Ok(Err(err))) if is_quickjs_timeout(&err) => Ok(ToolOutput::error(format!(
+        Ok(Err(err)) if is_quickjs_timeout(&err) => Ok(ToolOutput::error(format!(
             "program script timed out after {timeout_ms} ms"
         ))),
-        Ok(Ok(Err(err))) => Ok(ToolOutput::error(format!("program script error:\n{err}"))),
-        Ok(Err(err)) => Ok(ToolOutput::error(format!(
+        Ok(Err(err)) => Ok(ToolOutput::error(format!("program script error:\n{err}"))),
+        Err(err) => Ok(ToolOutput::error(format!(
             "program VM thread failed: {err}"
-        ))),
-        Err(_) => Ok(ToolOutput::error(format!(
-            "program script timed out after {timeout_ms} ms"
         ))),
     }
 }
@@ -371,12 +411,13 @@ async fn run_embedded_script(
     inputs: serde_json::Value,
     state: Arc<Mutex<ScriptVmState>>,
     timeout_ms: u64,
+    cancellation: tokio_util::sync::CancellationToken,
 ) -> Result<serde_json::Value> {
     let runtime = AsyncRuntime::new()?;
     let started = Instant::now();
     runtime
         .set_interrupt_handler(Some(Box::new(move || {
-            started.elapsed() >= Duration::from_millis(timeout_ms)
+            cancellation.is_cancelled() || started.elapsed() >= Duration::from_millis(timeout_ms)
         })))
         .await;
     runtime.set_memory_limit(64 * 1024 * 1024).await;
@@ -591,402 +632,5 @@ fn render_script_output(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use async_trait::async_trait;
-    use std::path::PathBuf;
-
-    struct EchoTool;
-
-    #[async_trait]
-    impl Tool for EchoTool {
-        fn name(&self) -> &str {
-            "echo"
-        }
-
-        fn description(&self) -> &str {
-            "Echo test tool"
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "message": { "type": "string" }
-                }
-            })
-        }
-
-        async fn execute(
-            &self,
-            args: &serde_json::Value,
-            _ctx: &ToolContext,
-        ) -> Result<ToolOutput> {
-            let message = args
-                .get("message")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            Ok(ToolOutput::success(format!("echo:{message}")))
-        }
-    }
-
-    struct ParallelTaskProbeTool;
-
-    #[async_trait]
-    impl Tool for ParallelTaskProbeTool {
-        fn name(&self) -> &str {
-            "parallel_task"
-        }
-
-        fn description(&self) -> &str {
-            "Probe tool used to verify PTC sandbox filtering."
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({ "type": "object" })
-        }
-
-        async fn execute(
-            &self,
-            _args: &serde_json::Value,
-            _ctx: &ToolContext,
-        ) -> Result<ToolOutput> {
-            Ok(ToolOutput::success("should-not-run"))
-        }
-    }
-
-    #[tokio::test]
-    async fn program_tool_rejects_non_script_type() {
-        let tool = ProgramTool::new(Arc::new(ToolRegistry::new(PathBuf::from("/tmp"))));
-        let output = tool
-            .execute(
-                &serde_json::json!({ "type": "program_code_search" }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(!output.success);
-        assert!(output.content.contains("Only \"script\" is supported"));
-    }
-
-    #[tokio::test]
-    async fn program_tool_rejects_missing_script_source_and_path() {
-        let tool = ProgramTool::new(Arc::new(ToolRegistry::new(PathBuf::from("/tmp"))));
-        let output = tool
-            .execute(
-                &serde_json::json!({ "type": "script" }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(!output.success);
-        assert!(output.content.contains("requires either source or path"));
-    }
-
-    #[tokio::test]
-    async fn program_tool_rejects_unsupported_language() {
-        let tool = ProgramTool::new(Arc::new(ToolRegistry::new(PathBuf::from("/tmp"))));
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "type": "script",
-                    "language": "typescript",
-                    "source": "async function run() { return {}; }"
-                }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(!output.success);
-        assert!(output.content.contains("Unsupported script language"));
-    }
-
-    #[tokio::test]
-    async fn program_tool_rejects_unsupported_script_path() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("script.txt"), "async function run() {}").unwrap();
-        let tool = ProgramTool::new(Arc::new(ToolRegistry::new(dir.path().to_path_buf())));
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "type": "script",
-                    "path": "script.txt"
-                }),
-                &ToolContext::new(dir.path().to_path_buf()),
-            )
-            .await
-            .unwrap();
-
-        assert!(!output.success);
-        assert!(output.content.contains(".js or .mjs file"));
-    }
-
-    #[test]
-    fn program_tool_default_allowed_tools_include_registry_tools_except_program() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        registry.register(Arc::new(EchoTool));
-        registry.register_builtin(Arc::new(ProgramTool::new(Arc::new(ToolRegistry::new(
-            PathBuf::from("/tmp"),
-        )))));
-
-        let allowed = script_allowed_tools(&serde_json::json!({}), registry.list());
-
-        assert!(allowed.contains("echo"));
-        assert!(!allowed.contains("program"));
-    }
-
-    #[test]
-    fn program_tool_forbids_parallel_task_in_scripts() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        let args = serde_json::json!({
-            "allowed_tools": ["parallel_task", "task", "program", "echo"]
-        });
-        let allowed = script_allowed_tools(&args, registry.list());
-        assert!(!allowed.contains("parallel_task"));
-        assert!(allowed.contains("task"));
-        assert!(allowed.contains("echo"));
-        assert!(!allowed.contains("program"));
-    }
-
-    #[tokio::test]
-    async fn program_tool_rejects_parallel_task_even_when_explicitly_allowed() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        registry.register(Arc::new(ParallelTaskProbeTool));
-        let tool = ProgramTool::new(Arc::clone(&registry));
-
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "type": "script",
-                    "source": r#"
-                        async function run(ctx) {
-                            return await ctx.tool("parallel_task", { tasks: [] });
-                        }
-                    "#,
-                    "allowed_tools": ["parallel_task"]
-                }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(!output.success);
-        assert!(output
-            .content
-            .contains("tool 'parallel_task' is not allowed"));
-        assert!(!output.content.contains("should-not-run"));
-    }
-
-    #[tokio::test]
-    async fn program_tool_source_uses_default_all_registered_tools() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        registry.register(Arc::new(EchoTool));
-        let tool = ProgramTool::new(Arc::clone(&registry));
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "type": "script",
-                    "source": r#"
-                        async function run(ctx, inputs) {
-                            const result = await ctx.tool("echo", { message: inputs.message });
-                            return { summary: result.output, result };
-                        }
-                    "#,
-                    "inputs": { "message": "hello" }
-                }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.success, "{}", output.content);
-        assert!(output.content.contains("echo:hello"));
-        let metadata = output.metadata.unwrap();
-        assert_eq!(metadata["program"]["runtime"], "embedded-quickjs");
-        assert_eq!(metadata["script_result"]["summary"], "echo:hello");
-    }
-
-    #[tokio::test]
-    async fn program_tool_ctx_read_file_passes_offset_and_limit() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("notes.txt"), "one\ntwo\nthree\n").unwrap();
-        let executor = crate::tools::ToolExecutor::new(dir.path().to_string_lossy().to_string());
-        let tool = ProgramTool::new(Arc::clone(executor.registry()));
-
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "type": "script",
-                    "source": r#"
-                        async function run(ctx) {
-                            const text = await ctx.readFile("notes.txt", { offset: 1, limit: 1 });
-                            const result = await ctx.read("notes.txt", { offset: 2, limit: 1 });
-                            return { text, raw: result.output };
-                        }
-                    "#,
-                    "allowed_tools": ["read"]
-                }),
-                &ToolContext::new(dir.path().to_path_buf()),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.success, "{}", output.content);
-        let metadata = output.metadata.unwrap();
-        let text = metadata["script_result"]["text"].as_str().unwrap();
-        assert!(text.contains("two"));
-        assert!(!text.contains("one"));
-        let raw = metadata["script_result"]["raw"].as_str().unwrap();
-        assert!(raw.contains("three"));
-        assert!(!raw.contains("two"));
-    }
-
-    #[tokio::test]
-    async fn program_tool_exposes_ctx_tools_proxy_for_named_tools() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        registry.register(Arc::new(EchoTool));
-        let tool = ProgramTool::new(Arc::clone(&registry));
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "type": "script",
-                    "source": r#"
-                        async function run(ctx, inputs) {
-                            const result = await ctx.tools.echo({ message: inputs.message });
-                            return { summary: result.output, result };
-                        }
-                    "#,
-                    "inputs": { "message": "proxy" }
-                }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.success, "{}", output.content);
-        let metadata = output.metadata.unwrap();
-        assert_eq!(metadata["script_result"]["summary"], "echo:proxy");
-        assert_eq!(metadata["program"]["tool_calls"][0]["tool_name"], "echo");
-    }
-
-    #[tokio::test]
-    async fn program_tool_ctx_tools_proxy_respects_allowed_tools() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        registry.register(Arc::new(EchoTool));
-        let tool = ProgramTool::new(Arc::clone(&registry));
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "type": "script",
-                    "source": r#"
-                        async function run(ctx) {
-                            await ctx.tools.echo({ message: "blocked" });
-                            return {};
-                        }
-                    "#,
-                    "allowed_tools": ["read"]
-                }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(!output.success);
-        assert!(output.content.contains("tool 'echo' is not allowed"));
-    }
-
-    #[tokio::test]
-    async fn program_tool_explicit_allowed_tools_restrict_default_tools() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        registry.register(Arc::new(EchoTool));
-        let tool = ProgramTool::new(Arc::clone(&registry));
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "type": "script",
-                    "source": r#"
-                        async function run(ctx) {
-                            await ctx.tool("echo", { message: "blocked" });
-                            return {};
-                        }
-                    "#,
-                    "allowed_tools": ["read"]
-                }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(!output.success);
-        assert!(output.content.contains("tool 'echo' is not allowed"));
-    }
-
-    #[tokio::test]
-    async fn program_tool_enforces_max_tool_calls() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        registry.register(Arc::new(EchoTool));
-        let tool = ProgramTool::new(Arc::clone(&registry));
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "type": "script",
-                    "source": r#"
-                        async function run(ctx) {
-                            await ctx.tool("echo", { message: "one" });
-                            await ctx.tool("echo", { message: "two" });
-                            return {};
-                        }
-                    "#,
-                    "limits": { "maxToolCalls": 1 }
-                }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(!output.success);
-        assert!(output.content.contains("exceeded maxToolCalls=1"));
-    }
-
-    #[test]
-    fn program_tool_rejects_fetch_source_access() {
-        let err =
-            validate_script_source("export default async function run() { return fetch('/'); }")
-                .unwrap_err();
-        assert!(err.contains("fetch is not allowed"));
-    }
-
-    #[test]
-    fn program_tool_accepts_plain_function_run_entrypoint() {
-        let source = script_source_with_host_entrypoint(
-            "async function run(ctx, inputs) { return { summary: inputs.message }; }",
-        )
-        .unwrap();
-
-        assert!(source.contains("globalThis.__a3sResultJson"));
-        assert!(source.contains("async function run"));
-    }
-
-    #[test]
-    fn program_tool_renders_result_summary_and_tool_records() {
-        let output = render_script_output(
-            &serde_json::json!({ "summary": "done", "items": [1] }),
-            &[ScriptCallRecord {
-                tool_name: "echo".to_string(),
-                success: true,
-                exit_code: 0,
-                output_bytes: 8,
-                metadata: Some(serde_json::json!({ "kind": "test" })),
-            }],
-            "",
-        );
-
-        assert!(output.contains("Program script completed."));
-        assert!(output.contains("done"));
-        assert!(output.contains("echo (ok"));
-        assert!(output.contains("\"items\""));
-    }
-}
+#[path = "program_tool/tests.rs"]
+mod tests;

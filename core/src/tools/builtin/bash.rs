@@ -1,12 +1,14 @@
 //! Bash tool - Execute shell commands
 
-use crate::tools::types::{Tool, ToolContext, ToolEventSender, ToolOutput, ToolStreamEvent};
-use crate::workspace::{CommandOutputObserver, CommandRequest};
+use crate::tools::types::{
+    Tool, ToolContext, ToolErrorKind, ToolEventSender, ToolOutput, ToolStreamEvent,
+};
+use crate::workspace::{CommandOutputObserver, CommandOutputSummary, CommandRequest};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::process::Command;
 
 #[cfg(windows)]
@@ -30,16 +32,22 @@ const MIN_TIMEOUT_MS: u64 = 1_000;
 /// the bash tool when a session has installed an event channel; backend
 /// implementations only see `&dyn CommandOutputObserver`.
 struct ToolEventObserver {
-    tx: ToolEventSender,
+    tx: Option<ToolEventSender>,
+    summary: Mutex<Option<CommandOutputSummary>>,
 }
 
 #[async_trait]
 impl CommandOutputObserver for ToolEventObserver {
     async fn on_output_delta(&self, delta: &str) {
-        self.tx
-            .send(ToolStreamEvent::OutputDelta(delta.to_string()))
-            .await
-            .ok();
+        if let Some(tx) = &self.tx {
+            tx.send(ToolStreamEvent::OutputDelta(delta.to_string()))
+                .await
+                .ok();
+        }
+    }
+
+    async fn on_output_complete(&self, summary: &CommandOutputSummary) {
+        *self.summary.lock().unwrap() = Some(*summary);
     }
 }
 
@@ -112,6 +120,11 @@ pub(crate) fn spawn_shell(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.as_std_mut().process_group(0);
+        }
         if let Some(env) = command_env {
             cmd.envs(env);
         }
@@ -195,10 +208,11 @@ impl Tool for BashTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_MS);
         let timeout_ms = requested_timeout_ms.max(MIN_TIMEOUT_MS);
-        let output_observer = ctx
-            .event_tx
-            .clone()
-            .map(|tx| Arc::new(ToolEventObserver { tx }) as Arc<dyn CommandOutputObserver>);
+        let event_observer = Arc::new(ToolEventObserver {
+            tx: ctx.event_tx.clone(),
+            summary: Mutex::new(None),
+        });
+        let output_observer = Some(Arc::clone(&event_observer) as Arc<dyn CommandOutputObserver>);
         let result = runner
             .exec(CommandRequest {
                 command: command.to_string(),
@@ -209,17 +223,40 @@ impl Tool for BashTool {
             .await
             .map_err(|e| anyhow::anyhow!("Workspace bash execution failed: {}", e))?;
 
+        let capture_summary = *event_observer.summary.lock().unwrap();
+        let capture_metadata = capture_summary.map(|summary| {
+            serde_json::json!({
+                "total_bytes": summary.total_bytes,
+                "captured_bytes": summary.captured_bytes,
+                "truncated": summary.truncated,
+                "timed_out": summary.timed_out,
+            })
+        });
+
         if result.timed_out {
-            return Ok(ToolOutput::error(format!(
+            let mut output = ToolOutput::error(format!(
                 "{}\n\n[Command timed out after {}ms]",
                 result.output, timeout_ms
-            )));
+            ));
+            output.metadata = Some(serde_json::json!({
+                "exit_code": result.exit_code,
+                "timeout_ms": timeout_ms,
+                "output": capture_metadata,
+            }));
+            output.error_kind = Some(ToolErrorKind::Timeout {
+                op: "bash".to_string(),
+                duration_ms: timeout_ms,
+            });
+            return Ok(output);
         }
 
         Ok(ToolOutput {
             content: result.output,
             success: result.exit_code == 0,
-            metadata: Some(serde_json::json!({ "exit_code": result.exit_code })),
+            metadata: Some(serde_json::json!({
+                "exit_code": result.exit_code,
+                "output": capture_metadata,
+            })),
             images: vec![],
             error_kind: None,
         })

@@ -27,6 +27,16 @@ pub(super) enum CompletionFlow {
 }
 
 impl AgentLoop {
+    /// Whether `text` is a synthetic terminal diagnostic emitted when the
+    /// model never produced a usable final answer.
+    ///
+    /// Interactive callers may display these diagnostics, but delegated task
+    /// executors must not treat them as successful task output or feed them to
+    /// a schema-coercion model that could fabricate a result from no evidence.
+    pub(crate) fn is_synthetic_failure_output(text: &str) -> bool {
+        matches!(text.trim(), REASONING_ONLY_FALLBACK | NO_PROGRESS_FALLBACK)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn complete_no_tool_response(
         &self,
@@ -38,10 +48,11 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         emit_end: bool,
         cancel_token: &CancellationToken,
+        force_terminal: bool,
     ) -> CompletionFlow {
         let candidate_text = response.text();
 
-        if self.inject_reasoning_only_repair_if_needed(state, turn, response) {
+        if !force_terminal && self.inject_reasoning_only_repair_if_needed(state, turn, response) {
             return CompletionFlow::Continue;
         }
 
@@ -53,7 +64,7 @@ impl AgentLoop {
             candidate_text
         };
 
-        if self.inject_continuation_if_needed(state, turn, &candidate_text) {
+        if !force_terminal && self.inject_continuation_if_needed(state, turn, &candidate_text) {
             return CompletionFlow::Continue;
         }
 

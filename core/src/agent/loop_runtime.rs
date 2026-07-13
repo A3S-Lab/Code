@@ -1,11 +1,14 @@
 use super::completion_runtime::CompletionFlow;
 use super::execution_state::ExecutionLoopState;
+use super::llm_turn::LlmTurnRequest;
 use super::queue_forwarder::QueueEventForwarder;
 use super::{AgentEvent, AgentLoop, AgentResult};
 use crate::llm::Message;
 use crate::prompts::AgentStyle;
 use anyhow::Result;
 use tokio::sync::mpsc;
+
+const TOOL_BUDGET_FINALIZATION: &str = "Tool-use budget reached. Stop gathering evidence and return the best complete final answer now using only the tool results already present. Do not call any tool.";
 
 impl AgentLoop {
     /// Core execution loop (without planning routing).
@@ -117,14 +120,25 @@ impl AgentLoop {
         }
 
         loop {
+            // `max_tool_rounds` bounds evidence gathering, not the agent's
+            // ability to return the evidence it already collected. Reserve one
+            // provider turn with an empty tool set so bounded child runs
+            // converge instead of discarding all work at the limit.
+            let force_finalization = state.current_turn() >= self.config.max_tool_rounds;
+            if force_finalization {
+                state.messages.push(Message::user(TOOL_BUDGET_FINALIZATION));
+            }
             let llm_turn = match self
                 .execute_llm_turn(
                     &mut state,
-                    &augmented_system,
-                    effective_prompt,
-                    session_id,
-                    &event_tx,
-                    cancel_token,
+                    LlmTurnRequest {
+                        augmented_system: &augmented_system,
+                        effective_prompt,
+                        session_id,
+                        event_tx: &event_tx,
+                        cancel_token,
+                        force_no_tools: force_finalization,
+                    },
                 )
                 .await
             {
@@ -143,6 +157,15 @@ impl AgentLoop {
             let response = llm_turn.response;
             let tool_calls = llm_turn.tool_calls;
 
+            if force_finalization && !tool_calls.is_empty() {
+                let error = format!(
+                    "Max tool rounds ({}) exceeded; the reserved finalization turn attempted another tool call",
+                    self.config.max_tool_rounds
+                );
+                self.emit_error(&event_tx, error.clone()).await;
+                anyhow::bail!(error);
+            }
+
             if tool_calls.is_empty() {
                 match self
                     .complete_no_tool_response(
@@ -154,6 +177,7 @@ impl AgentLoop {
                         &event_tx,
                         emit_end,
                         cancel_token,
+                        force_finalization,
                     )
                     .await
                 {

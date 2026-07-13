@@ -33,6 +33,16 @@ use tokio_util::sync::CancellationToken;
 /// LLM client trait
 #[async_trait]
 pub trait LlmClient: Send + Sync {
+    /// Derive a provider client bound to one logical agent session.
+    ///
+    /// Stateless providers can keep the default and share the existing client.
+    /// Account-backed providers whose transport uses a live session identity
+    /// should return an independent client so parallel child agents do not
+    /// contend for the parent's active operation.
+    fn fork_for_session(&self, _session_id: &str) -> Option<std::sync::Arc<dyn LlmClient>> {
+        None
+    }
+
     /// Complete a conversation (non-streaming)
     async fn complete(
         &self,

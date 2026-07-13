@@ -1799,12 +1799,16 @@ async fn test_queued_tool_command_is_cancelled_before_side_effect_completion() {
     let task = tokio::spawn(async move { cmd.execute().await });
     tokio::task::yield_now().await;
     cancellation.cancel();
-    let error = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
         .await
         .expect("queued execution must observe cancellation")
         .unwrap()
-        .unwrap_err();
-    assert!(error.to_string().contains("cancelled"));
+        .unwrap();
+    assert_eq!(result["exit_code"], 1);
+    assert_eq!(result["error_kind"]["type"], "cancelled");
+    assert!(result["output"]
+        .as_str()
+        .is_some_and(|output| output.contains("cancelled")));
 }
 
 #[tokio::test]
@@ -1845,8 +1849,71 @@ async fn test_queued_tool_command_applies_execution_timeout() {
         tool_context: test_tool_context(),
     };
 
-    let error = cmd.execute().await.unwrap_err();
-    assert!(error.to_string().contains("timed out after 10ms"));
+    let result = cmd.execute().await.unwrap();
+    assert_eq!(result["exit_code"], 1);
+    assert!(result["output"]
+        .as_str()
+        .is_some_and(|output| output.contains("timed out after 10ms")));
+    assert_eq!(result["error_kind"]["type"], "timeout");
+    assert_eq!(result["error_kind"]["duration_ms"], 10);
+}
+
+#[tokio::test]
+async fn queued_tool_timeout_cancels_and_settles_the_invocation() {
+    struct CancellationAwareTool {
+        cancellations: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for CancellationAwareTool {
+        fn name(&self) -> &str {
+            "queued_cancellation_aware"
+        }
+
+        fn description(&self) -> &str {
+            "waits for invocation cancellation"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> anyhow::Result<crate::tools::ToolOutput> {
+            ctx.cancellation_token().cancelled().await;
+            self.cancellations.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::tools::ToolOutput::success("settled"))
+        }
+    }
+
+    let cancellations = Arc::new(AtomicUsize::new(0));
+    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    executor.register_dynamic_tool(Arc::new(CancellationAwareTool {
+        cancellations: Arc::clone(&cancellations),
+    }));
+    let cmd = ToolCommand {
+        tool_executor: executor,
+        tool_name: "queued_cancellation_aware".to_string(),
+        tool_args: serde_json::json!({}),
+        tool_timeout_ms: Some(10),
+        tool_context: test_tool_context(),
+    };
+
+    let result = cmd.execute().await.unwrap();
+    assert_eq!(result["exit_code"], 1);
+    assert!(result["output"]
+        .as_str()
+        .is_some_and(|output| output.contains("timed out after 10ms")));
+    assert_eq!(result["error_kind"]["type"], "timeout");
+    assert_eq!(result["error_kind"]["duration_ms"], 10);
+    assert_eq!(
+        cancellations.load(Ordering::SeqCst),
+        1,
+        "the invocation must observe cancellation before timeout returns"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2951,6 +3018,62 @@ async fn test_tool_timeout_produces_error_result() {
     assert_eq!(result.unwrap().text, "The command timed out.");
     // LLM called twice: initial request + response after timeout error
     assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn direct_tool_timeout_cancels_and_settles_the_invocation() {
+    struct CancellationAwareTool {
+        cancellations: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for CancellationAwareTool {
+        fn name(&self) -> &str {
+            "direct_cancellation_aware"
+        }
+
+        fn description(&self) -> &str {
+            "waits for invocation cancellation"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> anyhow::Result<crate::tools::ToolOutput> {
+            ctx.cancellation_token().cancelled().await;
+            self.cancellations.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::tools::ToolOutput::success("settled"))
+        }
+    }
+
+    let cancellations = Arc::new(AtomicUsize::new(0));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    tool_executor.register_dynamic_tool(Arc::new(CancellationAwareTool {
+        cancellations: Arc::clone(&cancellations),
+    }));
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response("t1", "direct_cancellation_aware", serde_json::json!({})),
+        MockLlmClient::text_response("The tool timed out."),
+    ]));
+    let config = allow_delegated_tools(AgentConfig {
+        tool_timeout_ms: Some(10),
+        ..AgentConfig::default()
+    });
+    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+
+    let result = agent.execute(&[], "Run the tool", None).await.unwrap();
+
+    assert_eq!(result.text, "The tool timed out.");
+    assert_eq!(
+        cancellations.load(Ordering::SeqCst),
+        1,
+        "the invocation must observe cancellation before the model continues"
+    );
 }
 
 /// 4.2 — Tool timeout: tool that finishes before the deadline succeeds normally

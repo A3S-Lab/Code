@@ -82,6 +82,16 @@ impl CodexLoginClient {
 
 #[async_trait]
 impl LlmClient for CodexLoginClient {
+    fn fork_for_session(&self, session_id: &str) -> Option<Arc<dyn LlmClient>> {
+        Some(Arc::new(Self {
+            access_token: self.access_token.clone(),
+            account_id: self.account_id.clone(),
+            model: self.model.clone(),
+            session_id: session_id.to_string(),
+            http: Arc::clone(&self.http),
+        }))
+    }
+
     async fn complete(
         &self,
         messages: &[Message],

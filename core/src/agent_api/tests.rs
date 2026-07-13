@@ -3715,7 +3715,7 @@ async fn test_resume_run_picks_up_from_persisted_checkpoint() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_resume_run_cannot_reset_the_tool_round_budget() {
+async fn test_resume_run_preserves_exhausted_tool_budget_for_finalization() {
     use crate::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
 
     let store = Arc::new(crate::store::MemorySessionStore::new());
@@ -3746,13 +3746,27 @@ async fn test_resume_run_cannot_reset_the_tool_round_budget() {
     let session = agent
         .build_session(
             "/tmp/test-resume-budget-target".into(),
-            Arc::new(StaticStreamingClient::new("must not run")),
+            Arc::new(StaticStreamingClient::new(
+                "Best bounded answer from the checkpoint evidence.",
+            )),
             &options,
         )
         .unwrap();
 
-    let error = session.resume_run(checkpoint_run_id).await.unwrap_err();
-    assert!(error.to_string().contains("Max tool rounds (2) exceeded"));
+    let result = session.resume_run(checkpoint_run_id).await.unwrap();
+    assert_eq!(
+        result.text,
+        "Best bounded answer from the checkpoint evidence."
+    );
+    assert_eq!(
+        result.tool_calls_count, 2,
+        "the reserved tool-free finalization turn must not reset or consume the restored tool budget"
+    );
+    assert!(result.messages.iter().any(|message| {
+        message
+            .text()
+            .contains("Tool-use budget reached. Stop gathering evidence")
+    }));
 }
 
 #[tokio::test(flavor = "multi_thread")]

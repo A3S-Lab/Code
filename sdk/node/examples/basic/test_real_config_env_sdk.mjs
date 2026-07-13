@@ -117,8 +117,8 @@ if (runFullAgentSmoke) {
   assert.ok(run, 'send() should record a run snapshot');
   assert.equal(run.status, 'completed');
   const events = await step('runEvents', () => session.runEvents(run.id));
-  assert.ok(events.some((event) => event.event.type === 'agent_start'));
-  assert.ok(events.some((event) => event.event.type === 'agent_end'));
+  assert.ok(events.some((event) => event.type === 'agent_start'));
+  assert.ok(events.some((event) => event.type === 'agent_end'));
 
   const delegated = await step('task', () => session.task({
     agent: 'explore',

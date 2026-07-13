@@ -425,6 +425,9 @@ pub struct AgentDefinition {
     /// Maximum execution steps (tool rounds)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<usize>,
+    /// Whether this role is a pure model decision with no visible or executable tools.
+    #[serde(default)]
+    pub tool_free: bool,
     /// How child runs resolve Ask decisions. Default: AutoApprove when
     /// the agent has explicit allow rules, DenyOnAsk otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -443,6 +446,7 @@ impl AgentDefinition {
             model: None,
             prompt: None,
             max_steps: None,
+            tool_free: false,
             confirmation_inheritance: None,
         }
     }
@@ -488,6 +492,13 @@ impl AgentDefinition {
         self
     }
 
+    /// Make this role a pure LLM step. Tool definitions are removed before the
+    /// child turn, and parent tool permissions are not inherited into it.
+    pub fn tool_free(mut self) -> Self {
+        self.tool_free = true;
+        self
+    }
+
     /// Whether this definition has non-empty permission rules.
     pub fn has_defined_permissions(&self) -> bool {
         !self.permissions.allow.is_empty() || !self.permissions.deny.is_empty()
@@ -501,7 +512,15 @@ impl AgentDefinition {
     pub(crate) fn apply_to(&self, config: &mut crate::agent::AgentConfig) {
         use std::sync::Arc;
 
-        if config.permission_checker.is_none() && self.has_defined_permissions() {
+        if self.tool_free {
+            config.tools.clear();
+            let policy = PermissionPolicy::strict();
+            config.permission_checker = Some(Arc::new(policy.clone()));
+            config.permission_policy = Some(policy);
+        }
+
+        if !self.tool_free && config.permission_checker.is_none() && self.has_defined_permissions()
+        {
             config.permission_checker =
                 Some(Arc::new(self.permissions.clone()) as Arc<dyn PermissionChecker>);
             config.permission_policy = Some(self.permissions.clone());
@@ -719,6 +738,26 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         .hidden()
         .with_confirmation(ConfirmationInheritance::InheritParent)
         .with_max_steps(50),
+        // Loop Engineering decision roles are intentionally tool-free. Makers
+        // gather evidence; planners and checkers only make structured decisions.
+        AgentDefinition::new(
+            "loop-planner",
+            "Tool-free semantic planner for engineered loops.",
+        )
+        .native()
+        .hidden()
+        .tool_free()
+        .with_max_steps(4)
+        .with_prompt(LOOP_PLANNER_PROMPT),
+        AgentDefinition::new(
+            "loop-checker",
+            "Tool-free independent checker for engineered loops.",
+        )
+        .native()
+        .hidden()
+        .tool_free()
+        .with_max_steps(4)
+        .with_prompt(LOOP_CHECKER_PROMPT),
         // Plan agent: Read-only planning mode
         AgentDefinition::new(
             "plan",
@@ -850,6 +889,10 @@ const PLAN_PROMPT: &str = crate::prompts::AGENT_PLAN;
 const VERIFICATION_PROMPT: &str = crate::prompts::AGENT_VERIFICATION;
 
 const REVIEW_PROMPT: &str = crate::prompts::AGENT_CODE_REVIEW;
+
+const LOOP_PLANNER_PROMPT: &str = "You are the planner in an engineered loop. Make the requested structured planning decision directly from the supplied goal and constraints. You have no tools and must not request tool calls. Do not collect evidence or execute the plan.";
+
+const LOOP_CHECKER_PROMPT: &str = "You are the independent checker in an engineered loop. Evaluate only the supplied plan and maker evidence, then return the requested structured decision. You have no tools and must not request tool calls or gather new evidence.";
 
 // ============================================================================
 // Tests

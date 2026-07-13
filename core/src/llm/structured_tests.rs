@@ -1241,6 +1241,46 @@ async fn test_generate_streaming_schema_validation_failure() {
     assert!(err.to_string().contains("schema validation"));
 }
 
+#[tokio::test]
+async fn test_generate_streaming_repairs_schema_violation_when_requested() {
+    let client = MockStructuredClient::new(vec![
+        MockStructuredClient::tool_call_response(
+            "emit_result",
+            serde_json::json!({"name": "too long"}),
+        ),
+        MockStructuredClient::tool_call_response("emit_result", serde_json::json!({"name": "ok"})),
+    ]);
+
+    let req = StructuredRequest {
+        prompt: "test".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"type": "string", "maxLength": 2}}
+        }),
+        schema_name: "result".to_string(),
+        schema_description: None,
+        mode: StructuredMode::Tool,
+        max_repair_attempts: 1,
+    };
+
+    let partials = Arc::new(Mutex::new(Vec::new()));
+    let partials_clone = Arc::clone(&partials);
+    let result = generate_streaming(
+        &client,
+        &req,
+        Box::new(move |value| partials_clone.lock().unwrap().push(value.clone())),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.object["name"], "ok");
+    assert_eq!(result.repair_rounds, 1);
+    assert_eq!(result.usage.total_tokens, 30);
+    assert_eq!(partials.lock().unwrap().last(), Some(&result.object));
+}
+
 // ========================================================================
 // Edge case: find_balanced with tricky strings
 // ========================================================================

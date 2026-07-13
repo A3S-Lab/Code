@@ -96,6 +96,16 @@ pub fn sanitize_agent_event(
                 op: text(provider, op),
                 duration_ms: *duration_ms,
             },
+            ToolErrorKind::Cancelled { op } => ToolErrorKind::Cancelled {
+                op: text(provider, op),
+            },
+            ToolErrorKind::PartialFailure { failed, total } => ToolErrorKind::PartialFailure {
+                failed: *failed,
+                total: *total,
+            },
+            ToolErrorKind::RateLimited { retry_after_ms } => ToolErrorKind::RateLimited {
+                retry_after_ms: *retry_after_ms,
+            },
         })
     }
 

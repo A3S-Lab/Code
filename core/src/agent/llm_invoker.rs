@@ -233,10 +233,11 @@ impl LlmClient for LlmInvoker {
 
 impl AgentLoop {
     pub(super) fn scoped_llm_client(&self, invocation: &InvocationContext) -> Arc<dyn LlmClient> {
-        Arc::new(LlmInvoker::new(
-            Arc::clone(&self.llm_client),
-            invocation.clone(),
-        ))
+        let provider_client = self
+            .llm_client
+            .fork_for_session(invocation.session_id())
+            .unwrap_or_else(|| Arc::clone(&self.llm_client));
+        Arc::new(LlmInvoker::new(provider_client, invocation.clone()))
     }
 
     /// Compatibility helper for internal paths not yet carrying the aggregate
@@ -341,9 +342,55 @@ pub(super) fn estimate_prompt_tokens(messages: &[Message], system: Option<&str>)
 mod tests {
     use super::*;
     use crate::agent::invocation_context::InvocationGovernance;
+    use std::sync::Mutex;
 
     struct PendingStreamingClient {
         provider_cancelled: Arc<tokio::sync::Notify>,
+    }
+
+    #[derive(Clone)]
+    struct SessionBindingClient {
+        bound_session: Option<String>,
+        observed_sessions: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl LlmClient for SessionBindingClient {
+        fn fork_for_session(&self, session_id: &str) -> Option<Arc<dyn LlmClient>> {
+            Some(Arc::new(Self {
+                bound_session: Some(session_id.to_string()),
+                observed_sessions: Arc::clone(&self.observed_sessions),
+            }))
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<LlmResponse> {
+            self.observed_sessions
+                .lock()
+                .unwrap()
+                .push(self.bound_session.clone().unwrap_or_default());
+            Ok(LlmResponse {
+                message: Message::assistant("ok"),
+                usage: TokenUsage::default(),
+                stop_reason: Some("stop".to_string()),
+                token_logprobs: Vec::new(),
+                meta: None,
+            })
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming is not used by this test")
+        }
     }
 
     #[async_trait]
@@ -407,5 +454,35 @@ mod tests {
         )
         .await
         .expect("dropping the consumer must cancel the provider stream");
+    }
+
+    #[tokio::test]
+    async fn scoped_client_forks_provider_for_logical_session() {
+        let observed_sessions = Arc::new(Mutex::new(Vec::new()));
+        let client: Arc<dyn LlmClient> = Arc::new(SessionBindingClient {
+            bound_session: None,
+            observed_sessions: Arc::clone(&observed_sessions),
+        });
+        let agent = AgentLoop::new(
+            client,
+            Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string())),
+            crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp")),
+            crate::agent::AgentConfig::default(),
+        );
+        let scoped = agent.scoped_llm_client_for_parts(
+            Some("child-session"),
+            &None,
+            &CancellationToken::new(),
+        );
+
+        scoped
+            .complete(&[Message::user("hello")], None, &[])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *observed_sessions.lock().unwrap(),
+            vec!["child-session".to_string()]
+        );
     }
 }

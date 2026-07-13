@@ -228,7 +228,7 @@ impl TaskExecutor {
 
         if timed_out || returned_early || active_count > 0 {
             parallel_cancellation.cancel();
-            join_set.abort_all();
+            settle_cancelled_parallel_tasks(&mut join_set).await;
         }
 
         let unfinished_message = if timed_out {
@@ -269,6 +269,26 @@ impl TaskExecutor {
             min_success_count,
         }
     }
+}
+
+async fn settle_cancelled_parallel_tasks(
+    join_set: &mut JoinSet<(usize, std::result::Result<StepOutcome, String>)>,
+) {
+    const SETTLEMENT_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+    let deadline = tokio::time::Instant::now() + SETTLEMENT_GRACE;
+    while !join_set.is_empty() {
+        match tokio::time::timeout_at(deadline, join_set.join_next()).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return,
+            Err(_) => break,
+        }
+    }
+
+    if join_set.is_empty() {
+        return;
+    }
+    join_set.abort_all();
+    while join_set.join_next().await.is_some() {}
 }
 
 fn spawn_parallel_task_step(
@@ -412,6 +432,33 @@ impl TaskExecutor {
             schema_description: None,
             // Request tool mode when available; unknown providers safely
             // downgrade to prompt+schema parsing.
+            mode: StructuredMode::Tool,
+            max_repair_attempts: 2,
+        };
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => anyhow::bail!("Operation cancelled by user"),
+            result = generate_blocking(llm_client, &req) => result?,
+        };
+        Ok(result.object)
+    }
+
+    pub(super) async fn generate_structured_task(
+        llm_client: &dyn LlmClient,
+        prompt: &str,
+        system: Option<&str>,
+        schema: serde_json::Value,
+        cancellation: &CancellationToken,
+    ) -> Result<serde_json::Value> {
+        let req = StructuredRequest {
+            prompt: prompt.to_string(),
+            system: Some(format!(
+                "{}\n\nReturn exactly one JSON object matching the provided schema.",
+                system.unwrap_or("Make the requested structured decision without tools.")
+            )),
+            schema,
+            schema_name: "step_output".to_string(),
+            schema_description: None,
             mode: StructuredMode::Tool,
             max_repair_attempts: 2,
         };

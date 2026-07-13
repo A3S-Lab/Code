@@ -773,35 +773,14 @@ impl SessionCommand for ToolCommand {
             anyhow::bail!("Tool '{}' cancelled before queue execution", self.tool_name);
         }
 
-        // Execute the tool
-        let execute = self.tool_executor.execute_with_context(
+        let result = tool_execution_runtime::execute_tool_with_deadline(
+            self.tool_executor.as_ref(),
             &self.tool_name,
             &self.tool_args,
             &self.tool_context,
-        );
-        let execute = async {
-            if let Some(timeout_ms) = self.tool_timeout_ms {
-                tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), execute)
-                    .await
-                    .map_err(|_| {
-                        anyhow::anyhow!(
-                            "Tool '{}' timed out after {}ms",
-                            self.tool_name,
-                            timeout_ms
-                        )
-                    })?
-            } else {
-                execute.await
-            }
-        };
-        let cancellation = self.tool_context.cancellation_token();
-        let result = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                anyhow::bail!("Tool '{}' cancelled during queue execution", self.tool_name);
-            }
-            result = execute => result?,
-        };
+            self.tool_timeout_ms,
+        )
+        .await?;
         let images = result
             .images
             .iter()

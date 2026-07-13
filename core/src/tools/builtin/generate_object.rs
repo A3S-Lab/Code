@@ -6,11 +6,20 @@
 
 use crate::llm::structured::{self, PartialObjectCallback, StructuredMode, StructuredRequest};
 use crate::llm::LlmClient;
-use crate::tools::types::{Tool, ToolContext, ToolOutput, ToolStreamEvent};
+use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput, ToolStreamEvent};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
+
+const MAX_SCHEMA_BYTES: usize = 64 * 1024;
+const MAX_SCHEMA_DEPTH: usize = 32;
+const MAX_PROMPT_BYTES: usize = 128 * 1024;
+const MAX_SYSTEM_BYTES: usize = 32 * 1024;
+const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const MAX_TIMEOUT_MS: u64 = 600_000;
+const PARTIAL_EVENT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+const MAX_PARTIAL_EVENT_BYTES: usize = 64 * 1024;
 
 pub struct GenerateObjectTool {
     llm_client: Arc<dyn LlmClient>,
@@ -79,6 +88,12 @@ impl Tool for GenerateObjectTool {
                     "type": "boolean",
                     "description": "Include the raw model text/tool arguments used to extract the final value. Defaults to false to avoid exposing reasoning-channel text.",
                     "default": false
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": MAX_TIMEOUT_MS,
+                    "description": "Independent generation deadline in milliseconds. Default 120000; maximum 600000."
                 }
             }
         })
@@ -96,6 +111,22 @@ impl Tool for GenerateObjectTool {
                 return Ok(ToolOutput::error("'schema' parameter is required"));
             }
         };
+        let schema_bytes = serde_json::to_vec(&schema)?.len();
+        if schema_bytes > MAX_SCHEMA_BYTES {
+            return Ok(invalid_argument(format!(
+                "'schema' exceeds the {MAX_SCHEMA_BYTES} byte limit"
+            )));
+        }
+        if json_depth(&schema) > MAX_SCHEMA_DEPTH {
+            return Ok(invalid_argument(format!(
+                "'schema' exceeds the maximum nesting depth of {MAX_SCHEMA_DEPTH}"
+            )));
+        }
+        if let Err(error) = jsonschema::draft202012::options().build(&schema) {
+            return Ok(invalid_argument(format!(
+                "'schema' is not a valid JSON Schema: {error}"
+            )));
+        }
 
         let prompt = match args.get("prompt").and_then(|v| v.as_str()) {
             Some(p) if !p.is_empty() => p.to_string(),
@@ -105,6 +136,11 @@ impl Tool for GenerateObjectTool {
                 ));
             }
         };
+        if prompt.len() > MAX_PROMPT_BYTES {
+            return Ok(invalid_argument(format!(
+                "'prompt' exceeds the {MAX_PROMPT_BYTES} byte limit"
+            )));
+        }
 
         // Validate schema has at minimum a "type" or "properties" or "anyOf" field
         if schema.get("type").is_none()
@@ -141,6 +177,14 @@ impl Tool for GenerateObjectTool {
             .get("system")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        if system
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_SYSTEM_BYTES)
+        {
+            return Ok(invalid_argument(format!(
+                "'system' exceeds the {MAX_SYSTEM_BYTES} byte limit"
+            )));
+        }
 
         let requested_mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("auto");
         let mode = match requested_mode {
@@ -169,6 +213,11 @@ impl Tool for GenerateObjectTool {
             .get("include_raw_text")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let timeout_ms = args
+            .get("timeout_ms")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .clamp(1_000, MAX_TIMEOUT_MS);
 
         let req = StructuredRequest {
             prompt,
@@ -187,11 +236,29 @@ impl Tool for GenerateObjectTool {
         let generation = async {
             if let Some(ref tx) = ctx.event_tx {
                 let tx_clone = tx.clone();
+                let last_event = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
                 let callback: PartialObjectCallback = Box::new(move |partial: &Value| {
-                    let delta = serde_json::json!({
-                        "object_partial": partial,
-                        "final": false,
-                    });
+                    let now = std::time::Instant::now();
+                    let mut last_event = last_event.lock().unwrap();
+                    if last_event
+                        .is_some_and(|last| now.duration_since(last) < PARTIAL_EVENT_INTERVAL)
+                    {
+                        return;
+                    }
+                    *last_event = Some(now);
+                    let encoded = serde_json::to_vec(partial).unwrap_or_default();
+                    let delta = if encoded.len() <= MAX_PARTIAL_EVENT_BYTES {
+                        serde_json::json!({
+                            "object_partial": partial,
+                            "final": false,
+                        })
+                    } else {
+                        serde_json::json!({
+                            "object_partial_omitted": true,
+                            "partial_bytes": encoded.len(),
+                            "final": false,
+                        })
+                    };
                     let delta_str = serde_json::to_string(&delta).unwrap_or_default();
                     let _ = tx_clone.try_send(ToolStreamEvent::OutputDelta(delta_str));
                 });
@@ -202,19 +269,31 @@ impl Tool for GenerateObjectTool {
         };
         let result = tokio::select! {
             biased;
-            _ = cancellation.cancelled() => Err(anyhow::anyhow!("Operation cancelled by user")),
-            result = generation => result,
+            _ = cancellation.cancelled() => Err(GenerationStop::Cancelled),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => Err(GenerationStop::TimedOut),
+            result = generation => result.map_err(GenerationStop::Failed),
         };
 
         match result {
             Ok(sr) => {
                 if let Some(ref tx) = ctx.event_tx {
-                    let final_delta = serde_json::json!({
-                        "object_partial": sr.object,
-                        "final": true,
-                        "mode_used": sr.mode_used,
-                        "repair_rounds": sr.repair_rounds,
-                    });
+                    let object_bytes = serde_json::to_vec(&sr.object).unwrap_or_default().len();
+                    let final_delta = if object_bytes <= MAX_PARTIAL_EVENT_BYTES {
+                        serde_json::json!({
+                            "object_partial": sr.object,
+                            "final": true,
+                            "mode_used": sr.mode_used,
+                            "repair_rounds": sr.repair_rounds,
+                        })
+                    } else {
+                        serde_json::json!({
+                            "object_partial_omitted": true,
+                            "partial_bytes": object_bytes,
+                            "final": true,
+                            "mode_used": sr.mode_used,
+                            "repair_rounds": sr.repair_rounds,
+                        })
+                    };
                     let _ = tx.try_send(ToolStreamEvent::OutputDelta(
                         serde_json::to_string(&final_delta).unwrap_or_default(),
                     ));
@@ -245,13 +324,62 @@ impl Tool for GenerateObjectTool {
                 });
                 Ok(ToolOutput::success(serde_json::to_string(&output)?).with_metadata(metadata))
             }
-            Err(e) => Ok(ToolOutput::error(format!("generate_object failed: {}", e))
-                .with_metadata(serde_json::json!({
+            Err(stop) => {
+                let (message, kind) = match stop {
+                    GenerationStop::Cancelled => (
+                        "generate_object cancelled by caller".to_string(),
+                        Some(ToolErrorKind::Cancelled {
+                            op: "generate_object".to_string(),
+                        }),
+                    ),
+                    GenerationStop::TimedOut => (
+                        format!("generate_object timed out after {timeout_ms}ms"),
+                        Some(ToolErrorKind::Timeout {
+                            op: "generate_object".to_string(),
+                            duration_ms: timeout_ms,
+                        }),
+                    ),
+                    GenerationStop::Failed(error) => {
+                        let message = error.to_string();
+                        let lower = message.to_ascii_lowercase();
+                        let kind = (lower.contains("rate limit")
+                            || lower.contains("too many requests"))
+                        .then_some(ToolErrorKind::RateLimited {
+                            retry_after_ms: None,
+                        });
+                        (format!("generate_object failed: {message}"), kind)
+                    }
+                };
+                let output = ToolOutput::error(message).with_metadata(serde_json::json!({
                     "schema_name": schema_name,
                     "requested_mode": requested_mode,
                     "mode_requested": mode,
-                }))),
+                    "timeout_ms": timeout_ms,
+                }));
+                Ok(match kind {
+                    Some(kind) => output.with_error_kind(kind),
+                    None => output,
+                })
+            }
         }
+    }
+}
+
+enum GenerationStop {
+    Cancelled,
+    TimedOut,
+    Failed(anyhow::Error),
+}
+
+fn invalid_argument(message: String) -> ToolOutput {
+    ToolOutput::error(&message).with_error_kind(ToolErrorKind::InvalidArgument { message })
+}
+
+fn json_depth(value: &Value) -> usize {
+    match value {
+        Value::Array(values) => 1 + values.iter().map(json_depth).max().unwrap_or(0),
+        Value::Object(values) => 1 + values.values().map(json_depth).max().unwrap_or(0),
+        _ => 1,
     }
 }
 

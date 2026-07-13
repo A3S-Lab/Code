@@ -1,12 +1,88 @@
 use super::{AgentEvent, AgentLoop, ToolCommand};
 use crate::llm::ToolCall;
-use crate::tools::{ToolContext, ToolInvocation, ToolStreamEvent};
+use crate::tools::{
+    ToolContext, ToolErrorKind, ToolExecutor, ToolInvocation, ToolResult, ToolStreamEvent,
+};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+const TOOL_CANCELLATION_SETTLE_GRACE: Duration = Duration::from_millis(500);
+
+pub(super) async fn execute_tool_with_deadline(
+    tool_executor: &ToolExecutor,
+    name: &str,
+    args: &serde_json::Value,
+    ctx: &ToolContext,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<ToolResult> {
+    let parent_cancellation = ctx.cancellation_token();
+    if parent_cancellation.is_cancelled() {
+        return Ok(ToolResult::error_with_kind(
+            name,
+            format!("Tool '{}' cancelled by caller", name),
+            ToolErrorKind::Cancelled {
+                op: name.to_string(),
+            },
+        ));
+    }
+
+    let invocation_cancellation = parent_cancellation.child_token();
+    let invocation_ctx = ctx
+        .clone()
+        .with_cancellation(invocation_cancellation.clone());
+    let execution = tool_executor.execute_with_context(name, args, &invocation_ctx);
+    tokio::pin!(execution);
+
+    enum Stop {
+        Cancelled,
+        TimedOut(u64),
+    }
+
+    let stop = match timeout_ms {
+        Some(timeout_ms) => {
+            tokio::select! {
+                biased;
+                result = &mut execution => return result,
+                _ = parent_cancellation.cancelled() => Stop::Cancelled,
+                _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
+                    Stop::TimedOut(timeout_ms)
+                }
+            }
+        }
+        None => {
+            tokio::select! {
+                biased;
+                result = &mut execution => return result,
+                _ = parent_cancellation.cancelled() => Stop::Cancelled,
+            }
+        }
+    };
+
+    invocation_cancellation.cancel();
+    let _ = tokio::time::timeout(TOOL_CANCELLATION_SETTLE_GRACE, &mut execution).await;
+
+    match stop {
+        Stop::Cancelled => Ok(ToolResult::error_with_kind(
+            name,
+            format!("Tool '{}' cancelled by caller", name),
+            ToolErrorKind::Cancelled {
+                op: name.to_string(),
+            },
+        )),
+        Stop::TimedOut(timeout_ms) => Ok(ToolResult::error_with_kind(
+            name,
+            format!("Tool '{}' timed out after {}ms", name, timeout_ms),
+            ToolErrorKind::Timeout {
+                op: name.to_string(),
+                duration_ms: timeout_ms,
+            },
+        )),
+    }
+}
 
 impl AgentLoop {
     pub(super) async fn execute_delegated_plan_tool(
@@ -90,30 +166,14 @@ impl AgentLoop {
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<crate::tools::ToolResult> {
-        let fut = self.tool_executor.execute_with_context(name, args, ctx);
-        let execute = async {
-            if let Some(timeout_ms) = self.config.tool_timeout_ms {
-                match tokio::time::timeout(Duration::from_millis(timeout_ms), fut).await {
-                    Ok(result) => result,
-                    Err(_) => Err(anyhow::anyhow!(
-                        "Tool '{}' timed out after {}ms",
-                        name,
-                        timeout_ms
-                    )),
-                }
-            } else {
-                fut.await
-            }
-        };
-
-        let cancellation = ctx.cancellation_token();
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                Err(anyhow::anyhow!("Tool '{}' cancelled by caller", name))
-            }
-            result = execute => result,
-        }
+        execute_tool_with_deadline(
+            self.tool_executor.as_ref(),
+            name,
+            args,
+            ctx,
+            self.config.tool_timeout_ms,
+        )
+        .await
     }
 
     /// Execute a tool through the lane queue (if configured) or directly.

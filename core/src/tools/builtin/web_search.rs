@@ -1,13 +1,15 @@
 //! Web search tool - Search the web via a3s-search
 
 use crate::config::{BrowserBackend, HeadlessConfig};
-use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use a3s_search::engines::{Baidu, BingChina, Brave, DuckDuckGo, Google, So360, Sogou, Wikipedia};
+use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
+use a3s_search::engines::{
+    Baidu, BingChina, BraveParser, DuckDuckGoParser, Google, So360Parser, SogouParser, Wikipedia,
+};
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
 use a3s_search::WaitStrategy;
 use a3s_search::{
-    BrowserFetcher, BrowserPool, BrowserPoolConfig, Metrics, MetricsSnapshot, Search, SearchQuery,
-    SearchResult,
+    BrowserFetcher, BrowserPool, BrowserPoolConfig, HtmlEngine, HttpFetcher, Metrics,
+    MetricsSnapshot, Search, SearchQuery, SearchResult,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -15,22 +17,20 @@ use regex::Regex;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-pub struct WebSearchTool {
-    browser_pool: std::sync::OnceLock<Arc<BrowserPool>>,
-}
+pub struct WebSearchTool;
 
 impl WebSearchTool {
     pub fn new() -> Self {
-        Self {
-            browser_pool: std::sync::OnceLock::new(),
-        }
+        Self
     }
 
-    /// Get or create the BrowserPool for headless browser engines
-    fn get_or_init_pool(
-        &self,
-        headless_config: Option<&HeadlessConfig>,
-    ) -> Option<Arc<BrowserPool>> {
+    /// Create an execution-scoped browser pool for headless engines.
+    ///
+    /// A persistent pool survives a cancelled tool future and can retain the
+    /// Chrome process for the rest of the TUI session. Keeping the pool scoped
+    /// to one invocation lets the cleanup guard deterministically close it on
+    /// success, error, timeout, or caller cancellation.
+    fn create_pool(headless_config: Option<&HeadlessConfig>) -> Option<Arc<BrowserPool>> {
         let config = headless_config?;
 
         let pool_config = BrowserPoolConfig {
@@ -54,12 +54,7 @@ impl WebSearchTool {
             },
         };
 
-        let pool = BrowserPool::new(pool_config);
-        let pool = Arc::new(pool);
-
-        // Try to set, but if already set, use the existing one
-        self.browser_pool.get_or_init(|| pool.clone());
-        self.browser_pool.get().cloned()
+        Some(Arc::new(BrowserPool::new(pool_config)))
     }
 }
 
@@ -67,6 +62,62 @@ impl Default for WebSearchTool {
     fn default() -> Self {
         Self::new()
     }
+}
+
+struct BrowserPoolCleanup {
+    pool: Option<Arc<BrowserPool>>,
+}
+
+impl BrowserPoolCleanup {
+    fn new(pool: Option<Arc<BrowserPool>>) -> Self {
+        Self { pool }
+    }
+
+    async fn shutdown(&mut self) {
+        if let Some(pool) = self.pool.as_ref() {
+            if tokio::time::timeout(std::time::Duration::from_secs(2), pool.shutdown())
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    "Headless browser cleanup exceeded the 2s foreground grace; continuing in background"
+                );
+                return;
+            }
+        }
+        self.pool = None;
+    }
+}
+
+impl Drop for BrowserPoolCleanup {
+    fn drop(&mut self) {
+        let Some(pool) = self.pool.take() else {
+            return;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    pool.shutdown().await;
+                });
+            }
+            Err(error) => tracing::warn!(
+                "Could not schedule headless browser cleanup outside a Tokio runtime: {}",
+                error
+            ),
+        }
+    }
+}
+
+fn managed_headless_config() -> Option<HeadlessConfig> {
+    let status = a3s_search::browser_management::browser_status(
+        a3s_search::browser_management::ManagedBrowser::Chrome,
+    );
+    let path = status.available.then_some(status.path).flatten()?;
+    Some(HeadlessConfig {
+        backend: BrowserBackend::Chrome,
+        browser_path: Some(path.to_string_lossy().into_owned()),
+        ..HeadlessConfig::default()
+    })
 }
 
 fn search_result_json(result: &SearchResult) -> serde_json::Value {
@@ -85,7 +136,23 @@ fn search_result_json(result: &SearchResult) -> serde_json::Value {
 }
 
 fn safe_search_result_url(result: &SearchResult) -> String {
-    super::safe_http_source_url(&result.url).unwrap_or_default()
+    let Some(url) = super::safe_http_source_url(&result.url) else {
+        return String::new();
+    };
+    let Ok(parsed) = reqwest::Url::parse(&url) else {
+        return String::new();
+    };
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    let search_navigation = matches!(
+        host.as_str(),
+        "search.brave.com" | "duckduckgo.com" | "www.sogou.com" | "www.so.com"
+    ) || ((host == "google.com" || host.ends_with(".google.com"))
+        && parsed.path().starts_with("/search"));
+    if search_navigation {
+        String::new()
+    } else {
+        url
+    }
 }
 
 fn sorted_search_engines(result: &SearchResult) -> Vec<&str> {
@@ -129,7 +196,13 @@ fn should_fallback_from_unavailable_headless(
         && !engines.is_empty()
         && engines
             .iter()
-            .all(|engine| matches!(engine.trim(), "g" | "google" | "baidu" | "bing_cn"))
+            .all(|engine| matches!(engine.trim(), "g" | "google" | "baidu"))
+}
+
+fn requires_headless_browser(engines: &[&str]) -> bool {
+    engines
+        .iter()
+        .any(|engine| matches!(engine.trim(), "g" | "google" | "baidu"))
 }
 
 fn sanitize_http_urls(text: &str) -> String {
@@ -179,33 +252,45 @@ fn search_metrics_json(snapshot: &MetricsSnapshot) -> serde_json::Value {
 }
 
 /// Add an HTTP engine by shortcut
-fn add_http_engine(search: &mut Search, shortcut: &str) -> bool {
+fn add_http_engine(search: &mut Search, shortcut: &str, proxy_url: Option<&str>) -> bool {
+    let fetcher = || {
+        proxy_url
+            .and_then(|proxy| HttpFetcher::with_proxy(proxy).ok())
+            .unwrap_or_default()
+    };
     match shortcut.trim() {
         "ddg" => {
-            search.add_engine(DuckDuckGo::new());
+            search.add_engine(HtmlEngine::with_fetcher(
+                DuckDuckGoParser,
+                Arc::new(fetcher()),
+            ));
             true
         }
         "brave" => {
-            search.add_engine(Brave::new());
+            search.add_engine(HtmlEngine::with_fetcher(BraveParser, Arc::new(fetcher())));
             true
         }
         "wiki" => {
-            search.add_engine(Wikipedia::new());
+            search.add_engine(Wikipedia::with_http_fetcher(fetcher()));
             true
         }
         "sogou" => {
-            search.add_engine(Sogou::new());
+            search.add_engine(HtmlEngine::with_fetcher(SogouParser, Arc::new(fetcher())));
             true
         }
         "360" | "so360" => {
-            search.add_engine(So360::new());
+            search.add_engine(HtmlEngine::with_fetcher(So360Parser, Arc::new(fetcher())));
+            true
+        }
+        "bing_cn" => {
+            search.add_engine(BingChina::new(Arc::new(fetcher())));
             true
         }
         _ => false,
     }
 }
 
-/// Add a headless engine (google, baidu, bing_cn) using BrowserPool
+/// Add a headless engine using BrowserPool.
 fn add_headless_engine(search: &mut Search, shortcut: &str, pool: &Arc<BrowserPool>) -> bool {
     match shortcut.trim() {
         "g" | "google" => {
@@ -224,12 +309,6 @@ fn add_headless_engine(search: &mut Search, shortcut: &str, pool: &Arc<BrowserPo
             search.add_engine(Baidu::new(Arc::new(fetcher)));
             true
         }
-        "bing_cn" => {
-            let fetcher =
-                BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Delay { ms: 2000 });
-            search.add_engine(BingChina::new(Arc::new(fetcher)));
-            true
-        }
         _ => false,
     }
 }
@@ -244,7 +323,7 @@ impl Tool for WebSearchTool {
         "Search the web using multiple search engines. Aggregates results from multiple engines \
          (DuckDuckGo, Wikipedia, Brave, Sogou, 360, Google, Baidu, Bing China, etc.). \
          Supports proxy configuration for anti-crawler protection. Returns deduplicated and ranked results. \
-         Headless engines (google, baidu, bing_cn) use a browser to render JavaScript."
+         Google and Baidu use a headless browser; Bing China uses its HTTP RSS endpoint."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -261,7 +340,7 @@ impl Tool for WebSearchTool {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), g / google (Google, headless), baidu (Baidu, headless), bing_cn (Bing China, headless)."
+                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
                 },
                 "limit": {
                     "type": "integer",
@@ -301,6 +380,10 @@ impl Tool for WebSearchTool {
         })
     }
 
+    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        crate::tools::ToolCapabilities::parallel_safe_read(8)
+    }
+
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         // Validate: return error on unknown fields to catch misconfiguration like `engine` vs `engines`
         if let Some(obj) = args.as_object() {
@@ -333,8 +416,6 @@ impl Tool for WebSearchTool {
 
         // Get configuration from context or use defaults
         let config = ctx.search_config.as_ref();
-        let headless_config = config.and_then(|c| c.headless.as_ref());
-
         let default_timeout = config.map(|c| c.timeout).unwrap_or(10);
         let default_engines: Vec<&str> = if let Some(cfg) = config {
             // Build default engines list from enabled engines in config
@@ -364,6 +445,18 @@ impl Tool for WebSearchTool {
             })
             .unwrap_or_else(|| default_engines.clone());
 
+        // HTTP-only searches must not probe for or initialize a managed browser.
+        let needs_headless = requires_headless_browser(&engines);
+        let configured_headless = config.and_then(|config| config.headless.as_ref());
+        let implicit_headless_config = if needs_headless {
+            configured_headless
+                .cloned()
+                .or_else(managed_headless_config)
+        } else {
+            None
+        };
+        let headless_config = implicit_headless_config.as_ref();
+
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -381,19 +474,23 @@ impl Tool for WebSearchTool {
             .and_then(|v| v.as_str())
             .unwrap_or("text");
 
-        let proxy_url = args.get("proxy").and_then(|v| v.as_str());
-
-        // Check if any headless engines are requested
-        let needs_headless = engines
-            .iter()
-            .any(|e| matches!(e.trim(), "g" | "google" | "baidu" | "bing_cn"));
+        let mut proxy_url = args
+            .get("proxy")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| configured_headless.and_then(|config| config.proxy_url.clone()))
+            .or_else(super::web_fetch::explicit_web_proxy_from_env);
+        if proxy_url.is_none() {
+            proxy_url = super::web_fetch::system_web_proxy().await;
+        }
 
         // Get or initialize BrowserPool if needed
         let browser_pool = if needs_headless {
-            self.get_or_init_pool(headless_config)
+            Self::create_pool(headless_config)
         } else {
             None
         };
+        let mut browser_cleanup = BrowserPoolCleanup::new(browser_pool.clone());
 
         // Build Search instance with requested engines
         let search_metrics = Arc::new(Metrics::new());
@@ -415,7 +512,7 @@ impl Tool for WebSearchTool {
             }
 
             // Try HTTP engine first, then headless
-            if !add_http_engine(&mut search, shortcut_str) {
+            if !add_http_engine(&mut search, shortcut_str, proxy_url.as_deref()) {
                 if let Some(ref pool) = browser_pool {
                     if !add_headless_engine(&mut search, shortcut_str, pool) {
                         tracing::warn!("Unknown or unavailable search engine: {}", shortcut_str);
@@ -435,19 +532,18 @@ impl Tool for WebSearchTool {
             &engines,
         );
         if fell_back_from_headless {
-            let _ = add_http_engine(&mut search, "ddg");
-            let _ = add_http_engine(&mut search, "wiki");
+            let _ = add_http_engine(&mut search, "ddg", proxy_url.as_deref());
+            let _ = add_http_engine(&mut search, "wiki", proxy_url.as_deref());
         }
 
         if search.engine_count() == 0 {
-            return Ok(ToolOutput::error(format!(
-                "No valid engines found in: {:?}",
-                engines
-            )));
+            let message = format!("No valid engines found in: {:?}", engines);
+            return Ok(ToolOutput::error(&message)
+                .with_error_kind(ToolErrorKind::InvalidArgument { message }));
         }
 
         // Configure proxy if provided
-        if let Some(url) = proxy_url {
+        if let Some(url) = proxy_url.as_deref() {
             // Parse proxy URL into ProxyConfig
             if let Some(config) = parse_proxy_url(url) {
                 let _pool = ProxyPool::with_proxies(vec![config]);
@@ -458,15 +554,44 @@ impl Tool for WebSearchTool {
 
         let query = SearchQuery::new(&query_str);
 
-        let search_results = match search.search(query).await {
-            Ok(r) => r,
-            Err(e) => {
+        let search_result = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs.max(1)),
+            search.search(query),
+        )
+        .await;
+        browser_cleanup.shutdown().await;
+        let search_results = match search_result {
+            Ok(Ok(results)) => results,
+            Ok(Err(e)) => {
                 let metrics = search_metrics.snapshot().await;
-                return Ok(
-                    ToolOutput::error(format!("Search failed: {}", e)).with_metadata(
-                        serde_json::json!({"search_metrics": search_metrics_json(&metrics)}),
-                    ),
+                let message = e.to_string();
+                let output = ToolOutput::error(format!("Search failed: {message}")).with_metadata(
+                    serde_json::json!({
+                        "status": "failed",
+                        "search_metrics": search_metrics_json(&metrics),
+                    }),
                 );
+                return Ok(if looks_rate_limited(&message) {
+                    output.with_error_kind(ToolErrorKind::RateLimited {
+                        retry_after_ms: None,
+                    })
+                } else {
+                    output
+                });
+            }
+            Err(_) => {
+                let metrics = search_metrics.snapshot().await;
+                return Ok(ToolOutput::error(format!(
+                    "Search timed out after {timeout_secs} seconds"
+                ))
+                .with_error_kind(ToolErrorKind::Timeout {
+                    op: "web_search".to_string(),
+                    duration_ms: timeout_secs.saturating_mul(1_000),
+                })
+                .with_metadata(serde_json::json!({
+                    "status": "failed",
+                    "search_metrics": search_metrics_json(&metrics),
+                })));
             }
         };
         let metrics = search_metrics.snapshot().await;
@@ -475,12 +600,24 @@ impl Tool for WebSearchTool {
         let items = search_results.items();
         let results: Vec<_> = items
             .iter()
-            .filter(|result| super::safe_http_source_url(&result.url).is_some())
+            .filter(|result| !safe_search_result_url(result).is_empty())
             .take(limit)
             .collect();
 
         // Report engine errors if any
         let errors = search_results.errors();
+        let engine_errors = errors
+            .iter()
+            .map(|(engine, error)| {
+                serde_json::json!({
+                    "engine": engine,
+                    "message": crate::text::truncate_utf8(
+                        &sanitize_http_urls(&error.to_string()),
+                        512,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
         let error_note = if errors.is_empty() {
             String::new()
         } else {
@@ -492,19 +629,35 @@ impl Tool for WebSearchTool {
         };
 
         if results.is_empty() {
-            return Ok(ToolOutput::success(format!(
-                "No results found for query: \"{}\"{}",
-                query_str, error_note
-            ))
-            .with_metadata(serde_json::json!({
+            let metadata = serde_json::json!({
+                "status": if errors.is_empty() { "complete" } else { "failed" },
                 "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
                 "search_metrics": metrics_json,
-            })));
+                "engine_errors": engine_errors,
+            });
+            let message = format!(
+                "No results found for query: \"{}\"{}",
+                query_str, error_note
+            );
+            if errors.is_empty() {
+                return Ok(ToolOutput::success(message).with_metadata(metadata));
+            }
+            let output = ToolOutput::error(message).with_metadata(metadata);
+            return Ok(
+                if errors.iter().all(|(_, error)| looks_rate_limited(error)) {
+                    output.with_error_kind(ToolErrorKind::RateLimited {
+                        retry_after_ms: None,
+                    })
+                } else {
+                    output
+                },
+            );
         }
 
         let source_anchors = results
             .iter()
-            .filter_map(|result| super::safe_http_source_url(&result.url))
+            .map(|result| safe_search_result_url(result))
+            .filter(|url| !url.is_empty())
             .collect::<Vec<_>>();
 
         let output = if output_format == "json" {
@@ -531,12 +684,22 @@ impl Tool for WebSearchTool {
 
         Ok(
             ToolOutput::success(output).with_metadata(serde_json::json!({
+                "status": if errors.is_empty() { "complete" } else { "partial" },
                 "source_anchors": source_anchors,
                 "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
                 "search_metrics": metrics_json,
+                "engine_errors": engine_errors,
             })),
         )
     }
+}
+
+fn looks_rate_limited(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("rate limit")
+        || message.contains("too many requests")
+        || message.contains("http 429")
+        || message.contains("status 429")
 }
 
 /// Parse a proxy URL string like "http://host:port" into a ProxyConfig
@@ -579,430 +742,5 @@ fn parse_proxy_url(url: &str) -> Option<ProxyConfig> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-
-    #[test]
-    fn latest_search_metrics_are_exposed_as_stable_metadata() {
-        let snapshot = MetricsSnapshot {
-            successes: 3,
-            failures: 1,
-            transient_failures: 1,
-            permanent_failures: 0,
-            error_counts: HashMap::from([("timeout".to_string(), 1)]),
-            latency_p50_ms: 10,
-            latency_p95_ms: 20,
-            latency_p99_ms: 30,
-        };
-        let metadata = search_metrics_json(&snapshot);
-        assert_eq!(metadata["total_requests"], 4);
-        assert_eq!(metadata["success_rate"], 75.0);
-        assert_eq!(metadata["transient_failure_rate"], 100.0);
-        assert_eq!(metadata["error_counts"]["timeout"], 1);
-        assert_eq!(metadata["latency_p99_ms"], 30);
-    }
-
-    #[tokio::test]
-    async fn test_web_search_missing_query() {
-        let tool = WebSearchTool::new();
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
-
-        let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
-        assert!(!result.success);
-    }
-
-    #[tokio::test]
-    async fn test_web_search_empty_query() {
-        let tool = WebSearchTool::new();
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
-
-        let result = tool
-            .execute(&serde_json::json!({"query": ""}), &ctx)
-            .await
-            .unwrap();
-        assert!(!result.success);
-    }
-
-    #[tokio::test]
-    async fn test_web_search_no_valid_engines() {
-        let tool = WebSearchTool::new();
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
-
-        let result = tool
-            .execute(
-                &serde_json::json!({"query": "test", "engines": ["nonexistent"]}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert!(!result.success);
-        assert!(result.content.contains("No valid engines"));
-    }
-
-    #[test]
-    fn unavailable_headless_engines_fall_back_only_when_safe() {
-        assert!(should_fallback_from_unavailable_headless(
-            0,
-            false,
-            &["baidu", "bing_cn"],
-        ));
-        assert!(should_fallback_from_unavailable_headless(
-            0,
-            false,
-            &["google"],
-        ));
-        assert!(!should_fallback_from_unavailable_headless(
-            0,
-            true,
-            &["baidu", "bing_cn"],
-        ));
-        assert!(!should_fallback_from_unavailable_headless(
-            1,
-            false,
-            &["baidu"],
-        ));
-        assert!(!should_fallback_from_unavailable_headless(
-            0,
-            false,
-            &["baidu", "nonexistent"],
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_web_search_unknown_parameter_engine_returns_error() {
-        let tool = WebSearchTool::new();
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
-
-        // Using `engine` (singular) instead of `engines` (plural) should return an error
-        let result = tool
-            .execute(
-                &serde_json::json!({"query": "test", "engine": "google"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            !result.success,
-            "Expected error when using 'engine' instead of 'engines'"
-        );
-        assert!(
-            result.content.contains("unknown parameter 'engine'"),
-            "Error message should mention the unknown parameter"
-        );
-        assert!(
-            result.content.contains("'engines' (plural)"),
-            "Error message should clarify to use 'engines' (plural)"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_web_search_multiple_unknown_parameters() {
-        let tool = WebSearchTool::new();
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
-
-        let result = tool
-            .execute(
-                &serde_json::json!({
-                    "query": "test",
-                    "engine": "ddg",
-                    "source": "web"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(!result.success);
-        assert!(
-            result.content.contains("unknown parameter"),
-            "Error should mention unknown parameters"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_web_search_engines_param_works() {
-        let tool = WebSearchTool::new();
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
-
-        let result = tool
-            .execute(
-                &serde_json::json!({"query": "test", "engines": ["ddg"]}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        // May succeed or fail depending on network, but should NOT have unknown param error
-        if !result.success {
-            assert!(
-                !result.content.contains("unknown parameter"),
-                "Should not complain about 'engines' being unknown"
-            );
-        }
-    }
-
-    #[test]
-    fn test_web_search_schema_is_canonical() {
-        let tool = WebSearchTool::new();
-        let params = tool.parameters();
-        assert_eq!(params["additionalProperties"], false);
-        assert_eq!(params["required"], serde_json::json!(["query"]));
-        // engines should be an array type
-        assert_eq!(params["properties"]["engines"]["type"], "array");
-        let examples = params["examples"].as_array().unwrap();
-        assert_eq!(examples[0]["query"], "Rust async trait");
-        assert!(examples[0].get("q").is_none());
-        // Example with engines should use array format
-        assert!(examples[1]["engines"].is_array());
-        assert_eq!(examples[1]["engines"].as_array().unwrap(), &["ddg", "wiki"]);
-    }
-
-    #[test]
-    fn test_parse_proxy_url_http() {
-        let config = parse_proxy_url("http://127.0.0.1:8080").unwrap();
-        assert_eq!(config.host, "127.0.0.1");
-        assert_eq!(config.port, 8080);
-    }
-
-    #[test]
-    fn test_parse_proxy_url_socks5() {
-        let config = parse_proxy_url("socks5://proxy.example.com:1080").unwrap();
-        assert_eq!(config.host, "proxy.example.com");
-        assert_eq!(config.port, 1080);
-    }
-
-    #[test]
-    fn test_parse_proxy_url_no_port() {
-        assert!(parse_proxy_url("http://127.0.0.1").is_none());
-    }
-
-    #[test]
-    fn test_parse_proxy_url_empty() {
-        assert!(parse_proxy_url("").is_none());
-    }
-
-    #[test]
-    fn test_add_http_engine_valid() {
-        let mut search = Search::new();
-        assert!(add_http_engine(&mut search, "ddg"));
-        assert_eq!(search.engine_count(), 1);
-
-        assert!(add_http_engine(&mut search, "wiki"));
-        assert_eq!(search.engine_count(), 2);
-
-        assert!(add_http_engine(&mut search, "brave"));
-        assert_eq!(search.engine_count(), 3);
-    }
-
-    #[test]
-    fn test_add_http_engine_unknown() {
-        let mut search = Search::new();
-        assert!(!add_http_engine(&mut search, "nonexistent"));
-        assert_eq!(search.engine_count(), 0);
-    }
-
-    #[test]
-    fn test_add_headless_engine_valid() {
-        let mut search = Search::new();
-        let pool_config = BrowserPoolConfig::default();
-        let pool = Arc::new(BrowserPool::new(pool_config));
-
-        assert!(add_headless_engine(&mut search, "google", &pool));
-        assert_eq!(search.engine_count(), 1);
-
-        assert!(add_headless_engine(&mut search, "baidu", &pool));
-        assert_eq!(search.engine_count(), 2);
-
-        assert!(add_headless_engine(&mut search, "bing_cn", &pool));
-        assert_eq!(search.engine_count(), 3);
-    }
-
-    #[test]
-    fn test_add_headless_engine_aliases() {
-        let mut search = Search::new();
-        let pool_config = BrowserPoolConfig::default();
-        let pool = Arc::new(BrowserPool::new(pool_config));
-
-        assert!(add_headless_engine(&mut search, "g", &pool));
-        assert_eq!(search.engine_count(), 1);
-    }
-
-    #[test]
-    fn test_add_headless_engine_unknown() {
-        let mut search = Search::new();
-        let pool_config = BrowserPoolConfig::default();
-        let pool = Arc::new(BrowserPool::new(pool_config));
-
-        assert!(!add_headless_engine(&mut search, "ddg", &pool));
-        assert!(!add_headless_engine(&mut search, "nonexistent", &pool));
-    }
-
-    #[tokio::test]
-    async fn test_web_search_all_valid_parameters_accepted() {
-        let tool = WebSearchTool::new();
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
-
-        // All valid parameters should be accepted without unknown param error
-        let result = tool
-            .execute(
-                &serde_json::json!({
-                    "query": "test",
-                    "engines": ["ddg", "wiki"],
-                    "limit": 5,
-                    "timeout": 30,
-                    "proxy": "http://127.0.0.1:8080",
-                    "format": "json"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        // Should not have unknown parameter error
-        // May fail for other reasons (e.g., network), but not param validation
-        if !result.success {
-            assert!(
-                !result.content.contains("unknown parameter"),
-                "All listed parameters should be valid: {}",
-                result.content
-            );
-        }
-    }
-
-    #[test]
-    fn test_web_search_schema_has_all_valid_fields() {
-        let tool = WebSearchTool::new();
-        let params = tool.parameters();
-
-        // Verify all valid fields are documented
-        let valid_fields = ["query", "engines", "limit", "timeout", "proxy", "format"];
-        for field in valid_fields {
-            assert!(
-                params["properties"]
-                    .as_object()
-                    .unwrap()
-                    .contains_key(field),
-                "Schema should document '{}' as a valid field",
-                field
-            );
-        }
-
-        // Verify additionalProperties is false (no extra fields allowed)
-        assert_eq!(params["additionalProperties"], false);
-    }
-
-    #[test]
-    fn json_search_result_preserves_published_date() {
-        let result = SearchResult::new(
-            "https://result-user:result-password@example.com/release?tracking=secret#fragment",
-            "Release notes https://title-user:title-password@example.com/title?title_token=secret#title-fragment",
-            "Current release evidence at https://content-user:content-password@example.com/evidence?content_token=secret#content-fragment.",
-        )
-        .with_engine("ddg", 2)
-        .with_engine("brave", 1)
-        .with_published_date("2026-07-11");
-
-        let json = search_result_json(&result);
-
-        assert_eq!(json["published_date"], "2026-07-11");
-        assert_eq!(json["url"], "https://example.com/release");
-        assert_eq!(json["title"], "Release notes https://example.com/title");
-        assert_eq!(
-            json["content"],
-            "Current release evidence at https://example.com/evidence."
-        );
-        assert_eq!(json["engines"], serde_json::json!(["brave", "ddg"]));
-        let serialized = json.to_string();
-        for secret in [
-            "result-user",
-            "result-password",
-            "tracking",
-            "fragment",
-            "title-user",
-            "title-password",
-            "title_token",
-            "content-user",
-            "content-password",
-            "content_token",
-        ] {
-            assert!(
-                !serialized.contains(secret),
-                "leaked {secret}: {serialized}"
-            );
-        }
-    }
-
-    #[test]
-    fn text_search_result_preserves_optional_date_and_stable_engines() {
-        let dated = SearchResult::new(
-            "https://result-user:result-password@example.com/release?tracking=secret#fragment",
-            "Release notes https://title-user:title-password@example.com/title?title_token=secret#title-fragment",
-            "Current release evidence at https://content-user:content-password@example.com/evidence?content_token=secret#content-fragment.",
-        )
-        .with_engine("ddg", 2)
-        .with_engine("brave", 1)
-        .with_published_date(" 2026-07-11 ");
-        let text = text_search_result(0, &dated);
-        assert!(text.contains("Published: 2026-07-11\n"), "{text}");
-        assert!(text.contains("(via brave, ddg)"), "{text}");
-        assert!(
-            text.contains("URL: https://example.com/release\n"),
-            "{text}"
-        );
-        assert!(
-            text.contains("Release notes https://example.com/title"),
-            "{text}"
-        );
-        assert!(
-            text.contains("Current release evidence at https://example.com/evidence."),
-            "{text}"
-        );
-        for secret in [
-            "result-user",
-            "result-password",
-            "tracking",
-            "fragment",
-            "title-user",
-            "title-password",
-            "title_token",
-            "content-user",
-            "content-password",
-            "content_token",
-        ] {
-            assert!(!text.contains(secret), "leaked {secret}: {text}");
-        }
-
-        let undated = SearchResult::new(
-            "https://example.com/reference",
-            "Reference",
-            "Undated evidence",
-        );
-        let text = text_search_result(1, &undated);
-        assert!(text.starts_with("2. Reference\n"), "{text}");
-        assert!(!text.contains("Published:"), "{text}");
-
-        let unsafe_result = SearchResult::new("javascript:alert(1)", "Unsafe", "Unsafe");
-        assert!(safe_search_result_url(&unsafe_result).is_empty());
-    }
-
-    #[test]
-    fn search_query_urls_drop_credentials_query_and_fragment() {
-        let query = sanitize_http_urls(
-            "compare https://query-user:query-password@example.com/release?api_key=secret#private, now",
-        );
-
-        assert_eq!(query, "compare https://example.com/release, now");
-        for secret in [
-            "query-user",
-            "query-password",
-            "api_key",
-            "secret",
-            "private",
-        ] {
-            assert!(!query.contains(secret), "leaked {secret}: {query}");
-        }
-    }
-}
+#[path = "web_search/tests.rs"]
+mod tests;

@@ -286,8 +286,9 @@ pub async fn generate_blocking(
 /// Calls `on_partial` with progressively more complete partial objects as tokens
 /// arrive. Returns the final validated object.
 ///
-/// In streaming mode, `max_repair_attempts` defaults to 0 because a repair
-/// would reset the partial object stream (confusing for consumers).
+/// A streamed first attempt may be followed by bounded non-streaming repair
+/// calls when `max_repair_attempts` is non-zero. Repair calls publish only the
+/// final corrected object, avoiding a second misleading partial stream.
 pub async fn generate_streaming(
     client: &dyn LlmClient,
     req: &StructuredRequest,
@@ -295,7 +296,7 @@ pub async fn generate_streaming(
 ) -> Result<StructuredResult> {
     let mode = resolve_mode(req.mode, client.native_structured_support());
     let envelope = SchemaEnvelope::for_schema(&req.schema);
-    let messages = build_initial_messages(req, mode);
+    let mut messages = build_initial_messages(req, mode);
     let system = build_system_prompt(req, mode);
     let tools = build_tools(req, mode);
     let directive = build_directive(req, mode);
@@ -363,24 +364,61 @@ pub async fn generate_streaming(
         }
     }
 
-    let resp = final_response.context("Stream ended without Done event")?;
+    let mut resp = final_response.context("Stream ended without Done event")?;
+    let mut total_usage = TokenUsage::default();
+    accumulate_usage(&mut total_usage, &resp.usage);
+    let mut repair_rounds = 0u8;
     // Same multi-source resolution as the blocking path: the final message may carry
     // the object in the tool call, the text content, or the reasoning channel.
-    let candidates = extract_raw_candidates(&resp.message, mode);
-    let resolution = resolve_structured(&candidates, &req.schema, envelope);
-    let (value, raw_text) = match resolution.valid {
-        Some(vr) => vr,
-        None => {
+    let mut resolution = resolve_structured(
+        &extract_raw_candidates(&resp.message, mode),
+        &req.schema,
+        envelope,
+    );
+    let (value, raw_text) = loop {
+        if let Some(valid) = resolution.valid.take() {
+            break valid;
+        }
+
+        if repair_rounds >= req.max_repair_attempts {
             return Err(match resolution.invalid {
                 Some((_, errors)) => anyhow::anyhow!(
-                    "Streamed structured output failed schema validation: {}",
+                    "Streamed structured output failed schema validation after {} repair attempts: {}",
+                    repair_rounds,
                     errors.join("; ")
                 ),
                 None => anyhow::anyhow!(
-                    "Streamed output produced no parseable JSON object (checked tool call, text content, and reasoning channel)"
+                    "Streamed output produced no parseable JSON object after {} repair attempts (checked tool call, text content, and reasoning channel)",
+                    repair_rounds
                 ),
             });
         }
+
+        repair_rounds += 1;
+        let (repair_message, raw_for_context) = match resolution.invalid.take() {
+            Some((raw, errors)) => (build_repair_message(&raw, &errors), raw),
+            None => {
+                let raw = resolution.raw_seen.take().unwrap_or_default();
+                (build_parse_failure_repair(&raw), raw)
+            }
+        };
+        append_repair_context(
+            &mut messages,
+            &resp.message,
+            &repair_message,
+            mode,
+            &raw_for_context,
+        );
+        resp = client
+            .complete_structured(&messages, Some(&system), &tools, &directive)
+            .await
+            .context("LLM call failed while repairing streamed structured output")?;
+        accumulate_usage(&mut total_usage, &resp.usage);
+        resolution = resolve_structured(
+            &extract_raw_candidates(&resp.message, mode),
+            &req.schema,
+            envelope,
+        );
     };
 
     // Emit final complete object
@@ -389,8 +427,8 @@ pub async fn generate_streaming(
     Ok(StructuredResult {
         object: value,
         raw_text: Some(raw_text),
-        usage: resp.usage,
-        repair_rounds: 0,
+        usage: total_usage,
+        repair_rounds,
         mode_used: mode,
     })
 }
@@ -898,6 +936,24 @@ fn resolve_structured(
         invalid,
         raw_seen,
     }
+}
+
+/// Extract the first JSON value from possibly dirty model text that validates
+/// against `schema`.
+///
+/// This is the local fast path for callers that already asked an agent to
+/// produce structured output. It accepts direct JSON, fenced JSON, and a
+/// balanced JSON value embedded in prose, while preserving the same schema
+/// and envelope semantics used by [`generate_blocking`]. Callers can fall back
+/// to an LLM repair pass only when this returns `None`.
+pub(crate) fn parse_validated_output(text: &str, schema: &Value) -> Option<Value> {
+    resolve_structured(
+        &[text.to_string()],
+        schema,
+        SchemaEnvelope::for_schema(schema),
+    )
+    .valid
+    .map(|(value, _)| value)
 }
 
 /// UTF-8-safe truncation to at most `max` bytes (never splits a multibyte char —

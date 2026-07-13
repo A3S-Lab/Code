@@ -16,20 +16,25 @@ use crate::{
 use a3s_flow::{
     FanoutFlowEventObserver, FlowEngine, FlowEvent, FlowEventEnvelope, FlowEventObserver,
     FlowEventStore, FlowRuntime, InMemoryEventStore, LocalFileEventStore, RuntimeCommand,
-    StepInvocation, WorkflowInvocation, WorkflowRunStatus, WorkflowSpec,
+    StepInvocation, StepStatus, WorkflowInvocation, WorkflowRunSnapshot, WorkflowRunStatus,
+    WorkflowSpec,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
 
 const DYNAMIC_WORKFLOW_TOOL: &str = "dynamic_workflow";
 const PROGRAM_TOOL: &str = "program";
 const PARALLEL_TASK_TOOL: &str = "parallel_task";
+const MAX_INLINE_RETRY_RESUMES: usize = 8;
+const MAX_INLINE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 /// Project-relative directory used for durable dynamic workflow history.
 pub const DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH: &str = ".a3s/workflow";
@@ -501,7 +506,7 @@ impl Tool for DynamicWorkflowTool {
             },
         };
 
-        let snapshot = match engine.snapshot(&run_id).await {
+        let snapshot = match drive_inline_retries(&engine, &run_id, ctx).await {
             Ok(snapshot) => snapshot,
             Err(err) => return Ok(ToolOutput::error(err.to_string())),
         };
@@ -541,6 +546,54 @@ impl Tool for DynamicWorkflowTool {
 
         Ok(output.with_metadata(metadata))
     }
+}
+
+/// Drive short, persisted step retries inside the originating tool call.
+///
+/// A3S Flow deliberately suspends at a delayed retry boundary. Interactive
+/// waits and hooks must remain suspended for an external host, but a bounded
+/// retry delay is ordinary fault recovery: returning it as a terminal tool
+/// error forces every caller to reimplement the scheduler and previously made
+/// DeepResearch abandon its event-sourced run. Retry attempts and their delay
+/// remain authoritative in the Flow journal; this helper only waits for the
+/// due time and asks the engine to replay the same run.
+async fn drive_inline_retries(
+    engine: &FlowEngine,
+    run_id: &str,
+    ctx: &ToolContext,
+) -> Result<WorkflowRunSnapshot> {
+    for _ in 0..MAX_INLINE_RETRY_RESUMES {
+        let snapshot = engine.snapshot(run_id).await?;
+        if snapshot.status.is_terminal() {
+            return Ok(snapshot);
+        }
+        let Some(retry_after) = snapshot
+            .steps
+            .values()
+            .filter(|step| step.status == StepStatus::Pending)
+            .filter_map(|step| step.retry_after)
+            .min()
+        else {
+            return Ok(snapshot);
+        };
+        let delay = retry_after
+            .signed_duration_since(Utc::now())
+            .to_std()
+            .unwrap_or_default();
+        if delay > MAX_INLINE_RETRY_DELAY {
+            return Ok(snapshot);
+        }
+        let cancellation = ctx.cancellation_token();
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                anyhow::bail!("dynamic_workflow cancelled while waiting for a scheduled retry");
+            }
+            _ = tokio::time::sleep(delay) => {}
+        }
+        engine.drive(run_id).await?;
+    }
+    engine.snapshot(run_id).await.map_err(Into::into)
 }
 
 pub fn register_dynamic_workflow(registry: &Arc<ToolRegistry>) {

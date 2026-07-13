@@ -1,5 +1,6 @@
 //! Ls tool - List directory contents
 
+use crate::tools::pagination::{PageRequest, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -24,6 +25,16 @@ impl Tool for LsTool {
                 "path": {
                     "type": "string",
                     "description": "Optional. Directory path to list. Default: workspace root."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_PAGE_LIMIT,
+                    "description": "Optional. Maximum entries to return. Default: 200; maximum: 1000."
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Optional. Omit on the first call. On a continuation, copy the exact opaque cursor returned by the previous ls call; never invent a placeholder."
                 }
             },
             "required": [],
@@ -36,8 +47,16 @@ impl Tool for LsTool {
         })
     }
 
+    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        crate::tools::ToolCapabilities::read_only_paginated(16)
+    }
+
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let page_request = match PageRequest::parse(args, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT) {
+            Ok(request) => request,
+            Err(error) => return Ok(ToolOutput::error(error)),
+        };
 
         let workspace_path = match ctx.resolve_workspace_path(path_str) {
             Ok(p) => p,
@@ -66,16 +85,20 @@ impl Tool for LsTool {
             let dir_order = (a.kind.as_tool_kind() != "dir").cmp(&(b.kind.as_tool_kind() != "dir"));
             dir_order.then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
+        let page = match page_request.page(entries) {
+            Ok(page) => page,
+            Err(error) => return Ok(ToolOutput::error(error)),
+        };
 
         let mut output = format!(
             "Directory: {}\n\n",
             ctx.workspace_services.display_path(&workspace_path)
         );
 
-        if entries.is_empty() {
+        if page.items.is_empty() && page.total_items == 0 {
             output.push_str("(empty directory)\n");
         } else {
-            for entry in &entries {
+            for entry in &page.items {
                 let kind = entry.kind.as_tool_kind();
                 let size_str = format_size(entry.size);
                 let suffix = if kind == "dir" { "/" } else { "" };
@@ -84,10 +107,23 @@ impl Tool for LsTool {
                     kind, size_str, entry.name, suffix
                 ));
             }
-            output.push_str(&format!("\n{} entries\n", entries.len()));
+            output.push_str(&format!(
+                "\n{} of {} entries\n",
+                page.items.len(),
+                page.total_items
+            ));
+            if let Some(cursor) = page.next_cursor.as_deref() {
+                output.push_str(&format!(
+                    "More entries available; continue with cursor={cursor}\n"
+                ));
+            }
         }
 
-        Ok(ToolOutput::success(output))
+        Ok(
+            ToolOutput::success(output).with_metadata(serde_json::json!({
+                "page": page.metadata(),
+            })),
+        )
     }
 }
 
@@ -148,6 +184,34 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn test_ls_paginates_with_resume_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(temp.path().join(name), name).unwrap();
+        }
+        let tool = LsTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let first = tool
+            .execute(&serde_json::json!({"limit": 2}), &ctx)
+            .await
+            .unwrap();
+        assert!(first.success);
+        assert!(first.content.contains("a.txt"));
+        assert!(first.content.contains("b.txt"));
+        assert!(!first.content.contains("c.txt"));
+        assert_eq!(first.metadata.as_ref().unwrap()["page"]["next_cursor"], "2");
+
+        let second = tool
+            .execute(&serde_json::json!({"limit": 2, "cursor": "2"}), &ctx)
+            .await
+            .unwrap();
+        assert!(second.success);
+        assert!(second.content.contains("c.txt"));
+        assert_eq!(second.metadata.unwrap()["page"]["truncated"], false);
     }
 
     #[test]
