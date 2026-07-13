@@ -42,6 +42,7 @@ pub(super) struct ResolvedSessionLimits {
     pub(super) max_tool_rounds: usize,
     pub(super) max_parallel_tasks: usize,
     pub(super) max_execution_time_ms: Option<u64>,
+    pub(super) max_context_tokens: usize,
     pub(super) retention: Option<crate::retention::SessionRetentionLimits>,
 }
 
@@ -67,7 +68,7 @@ impl ResolvedSessionConfig {
             resolve_session_mcp(agent, &options).await?;
         options.queue_config = queue_config.clone();
         options.mcp_manager = Some(Arc::clone(&mcp_manager));
-        let limits = resolve_limits(agent, &options);
+        let limits = resolve_limits(agent, &options, &model_name);
 
         Ok(Self {
             options,
@@ -153,7 +154,7 @@ impl ResolvedSessionConfig {
         });
         options.queue_config = None;
         options.mcp_manager = Some(Arc::clone(&mcp_manager));
-        let limits = resolve_limits(agent, &options);
+        let limits = resolve_limits(agent, &options, &model_name);
 
         Ok(Self {
             session_store: options.session_store.clone(),
@@ -242,6 +243,12 @@ fn validate_session_options(options: &SessionOptions) -> Result<String> {
             "must be finite and between 0.0 and 1.0 inclusive",
         ));
     }
+    if options.max_context_tokens == Some(0) {
+        return Err(invalid_numeric_option(
+            "max_context_tokens",
+            "must be greater than zero",
+        ));
+    }
     if options
         .temperature
         .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
@@ -317,7 +324,11 @@ fn resolved_model_name(code_config: &CodeConfig, options: &SessionOptions) -> St
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn resolve_limits(agent: &Agent, options: &SessionOptions) -> ResolvedSessionLimits {
+fn resolve_limits(
+    agent: &Agent,
+    options: &SessionOptions,
+    model_name: &str,
+) -> ResolvedSessionLimits {
     let base = &agent.config;
     ResolvedSessionLimits {
         max_parse_retries: options.max_parse_retries.unwrap_or(base.max_parse_retries),
@@ -338,8 +349,22 @@ fn resolve_limits(agent: &Agent, options: &SessionOptions) -> ResolvedSessionLim
             .unwrap_or(base.max_parallel_tasks)
             .max(1),
         max_execution_time_ms: options.max_execution_time_ms.or(base.max_execution_time_ms),
+        max_context_tokens: options
+            .max_context_tokens
+            .or_else(|| configured_model_context_tokens(&agent.code_config, model_name))
+            .unwrap_or(base.max_context_tokens),
         retention: Some(options.retention_limits.unwrap_or_default()),
     }
+}
+
+fn configured_model_context_tokens(code_config: &CodeConfig, model_name: &str) -> Option<usize> {
+    let (provider_name, model_id) = model_name.split_once('/')?;
+    let context = code_config
+        .find_provider(provider_name)?
+        .find_model(model_id)?
+        .limit
+        .context;
+    (context > 0).then_some(context as usize)
 }
 
 pub(super) fn resolve_auto_delegation_config(
@@ -686,6 +711,9 @@ mod tests {
             ("auto_compact_threshold", |opts| {
                 opts.auto_compact_threshold = Some(1.01)
             }),
+            ("max_context_tokens", |opts| {
+                opts.max_context_tokens = Some(0)
+            }),
             ("temperature", |opts| opts.temperature = Some(f32::INFINITY)),
             ("temperature", |opts| opts.temperature = Some(-0.01)),
             ("temperature", |opts| opts.temperature = Some(1.01)),
@@ -778,6 +806,7 @@ mod tests {
             for temperature in [0.0, 1.0] {
                 let mut options = SessionOptions::new().with_session_id("valid-boundaries");
                 options.auto_compact_threshold = Some(threshold);
+                options.max_context_tokens = Some(1);
                 options.temperature = Some(temperature);
                 options.tool_timeout_ms = Some(1);
                 options.llm_api_timeout_ms = Some(1);
@@ -791,5 +820,31 @@ mod tests {
                 assert!(validate_session_options(&options).is_ok());
             }
         }
+    }
+
+    #[test]
+    fn configured_model_context_window_drives_compaction_accounting() {
+        let provider = serde_json::from_value(serde_json::json!({
+            "name": "openai",
+            "models": [{
+                "id": "gpt-test",
+                "limit": { "context": 128000 }
+            }]
+        }))
+        .unwrap();
+        let config = CodeConfig {
+            default_model: Some("openai/gpt-test".to_string()),
+            providers: vec![provider],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_model_context_tokens(&config, "openai/gpt-test"),
+            Some(128_000)
+        );
+        assert_eq!(
+            configured_model_context_tokens(&config, "openai/missing"),
+            None
+        );
     }
 }

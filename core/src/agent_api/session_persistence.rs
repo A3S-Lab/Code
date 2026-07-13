@@ -237,6 +237,7 @@ pub(super) fn apply_persisted_runtime_options(
     mut opts: SessionOptions,
     data: &SessionData,
 ) -> SessionOptions {
+    let model_was_explicit = opts.model.is_some();
     opts.session_id = Some(data.id.clone());
 
     if opts.model.is_none() {
@@ -262,6 +263,12 @@ pub(super) fn apply_persisted_runtime_options(
     }
     if opts.auto_delegation.is_none() {
         opts.auto_delegation = data.config.auto_delegation.clone();
+    }
+    if opts.max_context_tokens.is_none()
+        && !model_was_explicit
+        && data.config.max_context_length > 0
+    {
+        opts.max_context_tokens = Some(data.config.max_context_length as usize);
     }
 
     // Identity labels: caller-supplied values take precedence (the resume
@@ -735,6 +742,27 @@ mod tests {
         let data = persisted_data(Some("openai/gpt-4o"), None);
         let opts = apply_persisted_runtime_options(SessionOptions::new(), &data);
         assert_eq!(opts.model.as_deref(), Some("openai/gpt-4o"));
+    }
+
+    #[test]
+    fn persisted_context_window_does_not_override_an_explicit_model_change() {
+        let mut data = persisted_data(Some("openai/gpt-4o"), None);
+        data.config.max_context_length = 128_000;
+
+        let restored = apply_persisted_runtime_options(SessionOptions::new(), &data);
+        assert_eq!(restored.max_context_tokens, Some(128_000));
+
+        let switched = apply_persisted_runtime_options(
+            SessionOptions::new().with_model("anthropic/claude"),
+            &data,
+        );
+        assert_eq!(switched.max_context_tokens, None);
+
+        let overridden = apply_persisted_runtime_options(
+            SessionOptions::new().with_max_context_tokens(64_000),
+            &data,
+        );
+        assert_eq!(overridden.max_context_tokens, Some(64_000));
     }
 
     #[test]

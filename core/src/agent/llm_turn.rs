@@ -61,11 +61,6 @@ impl AgentLoop {
             .await?;
         self.emit_turn_start(turn, event_tx).await;
 
-        tracing::info!(
-            a3s.llm.streaming = event_tx.is_some(),
-            "LLM completion started"
-        );
-
         let mut selected_tools = if force_no_tools {
             Vec::new()
         } else {
@@ -74,13 +69,48 @@ impl AgentLoop {
         if let Some(permission_checker) = &self.config.permission_checker {
             selected_tools.retain(|tool| permission_checker.expose_to_model(&tool.name));
         }
+        let estimated_prompt_tokens = estimate_prompt_tokens(
+            &state.messages,
+            augmented_system.as_deref(),
+            &selected_tools,
+        );
+        let compacted_before_call = self
+            .maybe_auto_compact(
+                state,
+                estimated_prompt_tokens,
+                session_id,
+                event_tx,
+                cancel_token,
+            )
+            .await;
+
+        // Compaction can change the history-sensitive tool selection. Rebuild
+        // the request definitions from the context that will actually be sent.
+        selected_tools = if force_no_tools {
+            Vec::new()
+        } else {
+            crate::tools::select_tools_for_messages(&self.config.tools, &state.messages)
+        };
+        if let Some(permission_checker) = &self.config.permission_checker {
+            selected_tools.retain(|tool| permission_checker.expose_to_model(&tool.name));
+        }
+
+        tracing::info!(
+            a3s.llm.streaming = event_tx.is_some(),
+            "LLM completion started"
+        );
+
         self.config.rl_trajectory_recorder.record_llm_request(
             session_id.unwrap_or(""),
             turn,
             &state.messages,
             augmented_system.as_deref(),
             &selected_tools,
-            estimate_prompt_tokens(&state.messages, augmented_system.as_deref()),
+            estimate_prompt_tokens(
+                &state.messages,
+                augmented_system.as_deref(),
+                &selected_tools,
+            ),
         );
 
         self.fire_generate_start(session_id.unwrap_or(""), effective_prompt, augmented_system)
@@ -113,8 +143,16 @@ impl AgentLoop {
         state.messages.push(response.message.clone());
         let tool_calls = response.tool_calls();
         self.emit_turn_end(turn, &response, event_tx).await;
-        self.maybe_auto_compact(state, &response, session_id, event_tx, cancel_token)
+        if !compacted_before_call {
+            self.maybe_auto_compact(
+                state,
+                response.usage.prompt_tokens,
+                session_id,
+                event_tx,
+                cancel_token,
+            )
             .await;
+        }
 
         Ok(LlmTurnOutput {
             turn,
@@ -317,21 +355,20 @@ impl AgentLoop {
     async fn maybe_auto_compact(
         &self,
         state: &mut ExecutionLoopState,
-        response: &LlmResponse,
+        used: usize,
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
-    ) {
+    ) -> bool {
         if !self.config.auto_compact {
-            return;
+            return false;
         }
 
-        let used = response.usage.prompt_tokens;
         let max = self.config.max_context_tokens;
         let threshold = self.config.auto_compact_threshold;
 
         if !crate::compaction::should_auto_compact(used, max, threshold) {
-            return;
+            return false;
         }
 
         let before_len = state.messages.len();
@@ -345,8 +382,10 @@ impl AgentLoop {
             "Auto-compact triggered"
         );
 
-        if let Some(pruned) = crate::compaction::prune_tool_outputs(&state.messages) {
+        let mut changed = false;
+        if let Some(pruned) = crate::compaction::prune_tool_outputs(&state.messages, max) {
             state.messages = pruned;
+            changed = true;
             tracing::info!("Tool output pruning applied");
         }
 
@@ -368,6 +407,7 @@ impl AgentLoop {
                     session_id.unwrap_or(""),
                     &state.messages,
                     &compaction_client,
+                    max,
                 ),
             ) => {
                 match result {
@@ -387,8 +427,15 @@ impl AgentLoop {
             }
         };
 
+        let mut compact_summary = None;
         if let Some(compacted) = compact_result {
-            state.messages = compacted;
+            state.messages = compacted.messages;
+            compact_summary = Some(compacted.summary);
+            changed = true;
+        }
+
+        if !changed {
+            return true;
         }
 
         self.config.rl_trajectory_recorder.record_context_compacted(
@@ -404,10 +451,12 @@ impl AgentLoop {
                 before_messages: before_len,
                 after_messages: state.messages.len(),
                 percent_before,
+                summary: compact_summary,
             })
             .await
             .ok();
         }
+        true
     }
 
     pub(super) async fn emit_error(

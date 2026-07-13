@@ -209,6 +209,9 @@ opts.llm_api_timeout_ms = 120_000
 opts.circuit_breaker_threshold = 4
 opts.duplicate_tool_call_threshold = 5
 opts.manual_delegation_enabled = True
+opts.auto_compact = True
+opts.auto_compact_threshold = 0.8
+opts.max_context_tokens = 128_000
 session = agent.session("/my-project", opts)
 session.write_file("notes.txt", "one\ntwo\n")
 session.read_file("src/main.py")
@@ -222,6 +225,10 @@ session.grep("TODO")
 session.tool_names()
 session.tool_definitions()
 artifact = session.get_artifact("a3s://tool-output/read/abc123")
+
+# Set max_context_tokens when the active model is not declared in the agent
+# configuration. Rolling auto-compaction can then repeat before later requests
+# overflow that model window.
 
 # Direct helpers are trusted host-control-plane operations. They skip
 # model-facing permission/HITL, while hooks, budget, queue/timeout,

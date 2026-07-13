@@ -146,7 +146,7 @@ fn finish_agent_session(
         auto_compact_threshold: opts
             .auto_compact_threshold
             .unwrap_or(crate::store::DEFAULT_AUTO_COMPACT_THRESHOLD),
-        max_context_tokens: base.max_context_tokens,
+        max_context_tokens: resolved.limits.max_context_tokens,
         memory: memory.clone(),
         continuation_enabled: opts
             .continuation_enabled

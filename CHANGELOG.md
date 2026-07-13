@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.3] - 2026-07-13
+
+### Added
+
+- Added model-window overrides for automatic context compaction through Rust
+  `SessionOptions::with_max_context_tokens(...)`, Node.js
+  `maxContextTokens`, and Python `max_context_tokens`.
+
+### Changed
+
+- Reworked automatic context compaction into a repeatable rolling lifecycle.
+  The agent now checks model-specific context usage before each request,
+  includes exposed tool schemas in prompt accounting, preserves tool calls and
+  results in summaries, bounds oversized tool output, and continues the active
+  task after every successful compaction. `context_compacted` events include
+  the cumulative summary so hosts with external timelines can persist the same
+  compact generation without making a second summarization request.
+
 ## [5.2.2] - 2026-07-13
 
 ### Fixed

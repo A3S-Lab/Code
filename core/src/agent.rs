@@ -626,6 +626,10 @@ pub enum AgentEvent {
         before_messages: usize,
         after_messages: usize,
         percent_before: f32,
+        /// Cumulative continuation summary when message history was reduced.
+        /// Prune-only compactions omit this field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
     },
 
     // ========================================================================

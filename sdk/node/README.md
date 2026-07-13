@@ -187,8 +187,15 @@ agent.session('/my-project', {
   circuitBreakerThreshold: 4,
   duplicateToolCallThreshold: 5,
   manualDelegationEnabled: true,
+  autoCompact: true,
+  autoCompactThreshold: 0.8,
+  maxContextTokens: 128000,
 })
 ```
+
+Set `maxContextTokens` to the active model's context window when the model is
+not declared in the agent configuration. Rolling auto-compaction can then
+compact repeatedly before later requests overflow that window.
 
 The legacy boolean shortcut still works: `{ planning: true }` forces planning
 and `{ planning: false }` disables it.

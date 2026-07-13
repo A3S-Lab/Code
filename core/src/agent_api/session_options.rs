@@ -61,6 +61,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("workspace_services", &self.workspace_services.is_some())
             .field("auto_compact", &self.auto_compact)
             .field("auto_compact_threshold", &self.auto_compact_threshold)
+            .field("max_context_tokens", &self.max_context_tokens)
             .field("continuation_enabled", &self.continuation_enabled)
             .field("max_continuation_turns", &self.max_continuation_turns)
             .field("mcp_manager", &self.mcp_manager.is_some())
@@ -501,6 +502,12 @@ impl SessionOptions {
     /// Set the auto-compact threshold (0.0 - 1.0). Default: 0.80 (80%).
     pub fn with_auto_compact_threshold(mut self, threshold: f32) -> Self {
         self.auto_compact_threshold = Some(threshold.clamp(0.0, 1.0));
+        self
+    }
+
+    /// Set the active model's context window for compaction accounting.
+    pub fn with_max_context_tokens(mut self, tokens: usize) -> Self {
+        self.max_context_tokens = Some(tokens);
         self
     }
 

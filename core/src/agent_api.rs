@@ -292,6 +292,11 @@ pub struct SessionOptions {
     /// Context usage percentage threshold for auto-compaction (0.0 - 1.0).
     /// Default: 0.80 (80%).
     pub auto_compact_threshold: Option<f32>,
+    /// Model context window used for automatic compaction accounting.
+    ///
+    /// When omitted, the configured model's declared context limit is used,
+    /// falling back to the agent default when the model has no declaration.
+    pub max_context_tokens: Option<usize>,
     /// Inject a continuation message when the LLM stops without completing the task.
     /// `None` uses the `AgentConfig` default (true).
     pub continuation_enabled: Option<bool>,

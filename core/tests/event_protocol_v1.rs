@@ -432,6 +432,7 @@ fn representative_events() -> Vec<EventCase> {
                 before_messages: 20,
                 after_messages: 8,
                 percent_before: 0.9,
+                summary: Some("continue from the verified state".into()),
             },
             "after_messages",
             json!(8),

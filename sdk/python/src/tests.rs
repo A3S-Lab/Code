@@ -212,6 +212,29 @@ fn session_options_map_active_skill_tool_restriction_control() {
 }
 
 #[test]
+fn session_options_map_model_context_window() {
+    let mut session_options = PySessionOptions::new();
+    session_options.auto_compact = true;
+    session_options.auto_compact_threshold = Some(0.75);
+    session_options.max_context_tokens = Some(128_000);
+
+    let opts = build_rust_session_options(session_options).unwrap();
+    assert!(opts.auto_compact);
+    assert_eq!(opts.auto_compact_threshold, Some(0.75));
+    assert_eq!(opts.max_context_tokens, Some(128_000));
+}
+
+#[test]
+fn session_options_reject_zero_model_context_window() {
+    pyo3::prepare_freethreaded_python();
+    let mut session_options = PySessionOptions::new();
+    let error = session_options
+        .set_max_context_tokens(Some(0))
+        .expect_err("zero context window must fail");
+    assert!(error.to_string().contains("positive integer"));
+}
+
+#[test]
 fn session_options_map_rl_trajectory_controls() {
     let mut session_options = PySessionOptions::new();
     session_options.trajectory_path = Some("/tmp/a3s-trajectory.jsonl".to_string());

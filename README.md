@@ -122,7 +122,7 @@ views, and engineered automation loops.
 | Models | `/model` switches configured ACL providers and signed-in account-backed model tabs when available. |
 | Effort | `/effort` changes reasoning budget, tool-round budget, continuation count, and rigor guidance from `low` through `max` and `ultracode`. |
 | Tools and safety | File, search, shell, git, web, structured-output, MCP, PTC `program`, `task`, and `parallel_task` tools all pass through workspace boundaries, permission policy, HITL approval, timeouts, hooks, and traces. |
-| Context and memory | The footer tracks context fill and auto-compaction. `/ctx` searches past sessions, `/ctx <n>` attaches a transcript window, `/ctx save <n>` promotes it to memory, `/sleep` consolidates the day, and `/memory` browses durable memories as an event/entity graph. |
+| Context and memory | The footer tracks context fill. Model-aware auto-compaction runs before an overflowing request, preserves tool evidence in the summary, and re-arms after every successful cycle so long sessions can continue through repeated compactions. `/ctx` searches past sessions, `/ctx <n>` attaches a transcript window, `/ctx save <n>` promotes it to memory, `/sleep` consolidates the day, and `/memory` browses durable memories as an event/entity graph. |
 | Dynamic workflows | `ultracode` and `?` DeepResearch can use `DynamicWorkflowRuntime`, a local A3S Flow-backed runtime that records workflow and step history while sandboxed PTC scripts perform tool work. |
 | Parallel work | Local fan-out uses the native host-side `parallel_task` tool. Dynamic workflows schedule a Flow step named `parallel_task` when they need local parallel subagents; QuickJS/PTC scripts do not call `parallel_task` directly. |
 | Optional runtime tools | A3S OS can register runtime tools after `/login`; local tools and `parallel_task` remain available without an account. |
@@ -568,7 +568,10 @@ async fn main() -> anyhow::Result<()> {
             SessionOptions::new()
                 .with_planning(true)
                 .with_max_parallel_tasks(4)
-                .with_tool_timeout(120_000),
+                .with_tool_timeout(120_000)
+                .with_auto_compact(true)
+                .with_max_context_tokens(128_000)
+                .with_auto_compact_threshold(0.8),
         )
         .build()
         .await?;
@@ -595,6 +598,11 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+`max_context_tokens` should match the active model window. When omitted, Core
+uses the selected model's configured context limit. Automatic compaction checks
+before each model request, bounds oversized tool output, and can run repeatedly
+as a long session grows.
 
 Session construction is async-first. `SessionBuilder::build()` resolves the
 merged configuration once, initializes file-backed memory/session stores,

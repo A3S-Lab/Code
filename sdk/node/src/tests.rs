@@ -171,6 +171,32 @@ fn artifact_store_limits_maps_to_rust_session_options() {
 }
 
 #[test]
+fn session_options_maps_model_context_window() {
+    let opts = js_session_options_to_rust(Some(SessionOptions {
+        auto_compact: Some(true),
+        auto_compact_threshold: Some(0.75),
+        max_context_tokens: Some(128_000.0),
+        ..Default::default()
+    }))
+    .unwrap();
+
+    assert!(opts.auto_compact);
+    assert_eq!(opts.auto_compact_threshold, Some(0.75));
+    assert_eq!(opts.max_context_tokens, Some(128_000));
+}
+
+#[test]
+fn session_options_rejects_invalid_model_context_window() {
+    for value in [0.0, -1.0, 128_000.5, f64::NAN] {
+        let result = js_session_options_to_rust(Some(SessionOptions {
+            max_context_tokens: Some(value),
+            ..Default::default()
+        }));
+        assert!(result.is_err(), "maxContextTokens={value:?} must fail");
+    }
+}
+
+#[test]
 fn artifact_store_limits_rejects_fractional_values() {
     let result = js_session_options_to_rust(Some(SessionOptions {
         artifact_store_limits: Some(ArtifactStoreLimits {

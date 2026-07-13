@@ -165,6 +165,8 @@ pub struct SessionOptions {
     pub auto_compact: Option<bool>,
     /// Context usage threshold (0.0–1.0) to trigger auto-compaction (default: 0.8).
     pub auto_compact_threshold: Option<f64>,
+    /// Active model context window used for auto-compaction accounting.
+    pub max_context_tokens: Option<f64>,
     /// Retention limits for large tool/program artifacts.
     pub artifact_store_limits: Option<ArtifactStoreLimits>,
     /// Long-term memory store backend override.
@@ -580,6 +582,15 @@ pub(super) fn js_session_options_to_rust(
     }
     if let Some(t) = o.auto_compact_threshold {
         opts = opts.with_auto_compact_threshold(t as f32);
+    }
+    if let Some(tokens) = o.max_context_tokens {
+        let tokens = js_optional_usize(Some(tokens), "maxContextTokens", 0)?;
+        if tokens == 0 {
+            return Err(napi::Error::from_reason(
+                "maxContextTokens must be a positive integer".to_string(),
+            ));
+        }
+        opts = opts.with_max_context_tokens(tokens);
     }
     if let Some(limits) = o.artifact_store_limits {
         opts = opts.with_artifact_store_limits(js_artifact_store_limits_to_rust(limits)?);

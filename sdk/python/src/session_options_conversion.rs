@@ -69,6 +69,9 @@ pub(super) fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustS
     if let Some(t) = so.auto_compact_threshold {
         o = o.with_auto_compact_threshold(t);
     }
+    if let Some(tokens) = so.max_context_tokens {
+        o = o.with_max_context_tokens(tokens);
+    }
     if let Some(limits) = so.artifact_store_limits {
         o = o.with_artifact_store_limits(limits.into());
     }

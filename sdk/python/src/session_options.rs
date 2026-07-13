@@ -16,6 +16,7 @@ pub(super) struct PySessionOptions {
     pub(super) confirmation_policy: Option<PyConfirmationPolicy>,
     pub(super) auto_compact: bool,
     pub(super) auto_compact_threshold: Option<f32>,
+    pub(super) max_context_tokens: Option<usize>,
     /// Retention limits for large tool/program artifacts.
     pub(super) artifact_store_limits: Option<PyArtifactStoreLimits>,
     /// Long-term memory store backend override. Sessions resolve a default store
@@ -169,6 +170,7 @@ impl Clone for PySessionOptions {
             confirmation_policy: self.confirmation_policy.clone(),
             auto_compact: self.auto_compact,
             auto_compact_threshold: self.auto_compact_threshold,
+            max_context_tokens: self.max_context_tokens,
             artifact_store_limits: self.artifact_store_limits.clone(),
             memory_store: pyo3::Python::with_gil(|py| {
                 self.memory_store.as_ref().map(|o| o.clone_ref(py))
@@ -244,6 +246,7 @@ impl PySessionOptions {
             confirmation_policy: None,
             auto_compact: false,
             auto_compact_threshold: None,
+            max_context_tokens: None,
             artifact_store_limits: None,
             memory_store: None,
             session_store: None,
@@ -424,6 +427,23 @@ impl PySessionOptions {
     #[setter]
     fn set_auto_compact_threshold(&mut self, value: Option<f32>) {
         self.auto_compact_threshold = value;
+    }
+
+    /// Active model context window used for auto-compaction accounting.
+    #[getter]
+    fn get_max_context_tokens(&self) -> Option<usize> {
+        self.max_context_tokens
+    }
+
+    #[setter]
+    pub(super) fn set_max_context_tokens(&mut self, value: Option<usize>) -> PyResult<()> {
+        if value == Some(0) {
+            return Err(PyValueError::new_err(
+                "max_context_tokens must be a positive integer",
+            ));
+        }
+        self.max_context_tokens = value;
+        Ok(())
     }
 
     /// Retention limits for large tool/program artifacts.
@@ -970,11 +990,12 @@ impl PySessionOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, artifact_store_limits={}, memory_store={}, session_store={}, security_provider={}, workspace_backend={}, inline_skills={}, max_parallel_tasks={:?}, auto_parallel={:?})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, max_context_tokens={:?}, artifact_store_limits={}, memory_store={}, session_store={}, security_provider={}, workspace_backend={}, inline_skills={}, max_parallel_tasks={:?}, auto_parallel={:?})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
             self.auto_compact,
+            self.max_context_tokens,
             if self.artifact_store_limits.is_some() { "Some(...)" } else { "None" },
             if self.memory_store.is_some() { "Some(...)" } else { "None" },
             if self.session_store.is_some() { "Some(...)" } else { "None" },

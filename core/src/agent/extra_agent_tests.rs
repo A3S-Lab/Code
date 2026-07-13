@@ -1117,9 +1117,11 @@ fn test_agent_event_serialize_context_compacted() {
         before_messages: 100,
         after_messages: 20,
         percent_before: 0.85,
+        summary: Some("durable continuation state".to_string()),
     };
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains("context_compacted"));
+    assert!(json.contains("durable continuation state"));
 }
 
 #[test]

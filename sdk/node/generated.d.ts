@@ -380,6 +380,8 @@ export interface SessionOptions {
   autoCompact?: boolean
   /** Context usage threshold (0.0–1.0) to trigger auto-compaction (default: 0.8). */
   autoCompactThreshold?: number
+  /** Active model context window used for auto-compaction accounting. */
+  maxContextTokens?: number
   /** Retention limits for large tool/program artifacts. */
   artifactStoreLimits?: ArtifactStoreLimits
   /**

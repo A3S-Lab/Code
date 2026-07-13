@@ -8,7 +8,10 @@
 use super::{AgentEvent, AgentLoop, InvocationContext};
 use crate::budget::{BudgetDecision, BudgetGuard};
 use crate::llm::structured::{NativeStructuredSupport, StructuredDirective};
-use crate::llm::{LlmClient, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition};
+use crate::llm::{
+    ContentBlock, LlmClient, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition,
+    ToolResultContent, ToolResultContentField,
+};
 use async_trait::async_trait;
 use std::future::Future;
 use std::sync::Arc;
@@ -31,6 +34,7 @@ impl LlmInvoker {
         &self,
         messages: &[Message],
         system: Option<&str>,
+        tools: &[ToolDefinition],
         invocation: F,
     ) -> anyhow::Result<LlmResponse>
     where
@@ -39,7 +43,7 @@ impl LlmInvoker {
         check_before_llm(
             self.invocation.governance().budget_guard(),
             self.invocation.session_id(),
-            estimate_prompt_tokens(messages, system),
+            estimate_prompt_tokens(messages, system, tools),
             self.invocation.event_tx(),
             self.invocation.cancellation(),
         )
@@ -65,6 +69,7 @@ impl LlmInvoker {
         &self,
         messages: &[Message],
         system: Option<&str>,
+        tools: &[ToolDefinition],
         caller_cancellation: CancellationToken,
         setup: F,
     ) -> anyhow::Result<mpsc::Receiver<StreamEvent>>
@@ -75,7 +80,7 @@ impl LlmInvoker {
         check_before_llm(
             self.invocation.governance().budget_guard(),
             self.invocation.session_id(),
-            estimate_prompt_tokens(messages, system),
+            estimate_prompt_tokens(messages, system, tools),
             self.invocation.event_tx(),
             self.invocation.cancellation(),
         )
@@ -171,6 +176,7 @@ impl LlmClient for LlmInvoker {
         self.invoke_response(
             messages,
             system,
+            tools,
             self.inner.complete(messages, system, tools),
         )
         .await
@@ -183,7 +189,7 @@ impl LlmClient for LlmInvoker {
         tools: &[ToolDefinition],
         cancel_token: CancellationToken,
     ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
-        self.invoke_stream(messages, system, cancel_token, |provider_token| {
+        self.invoke_stream(messages, system, tools, cancel_token, |provider_token| {
             self.inner
                 .complete_streaming(messages, system, tools, provider_token)
         })
@@ -204,6 +210,7 @@ impl LlmClient for LlmInvoker {
         self.invoke_response(
             messages,
             system,
+            tools,
             self.inner
                 .complete_structured(messages, system, tools, directive),
         )
@@ -218,7 +225,7 @@ impl LlmClient for LlmInvoker {
         directive: &StructuredDirective,
         cancel_token: CancellationToken,
     ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
-        self.invoke_stream(messages, system, cancel_token, |provider_token| {
+        self.invoke_stream(messages, system, tools, cancel_token, |provider_token| {
             self.inner.complete_streaming_structured(
                 messages,
                 system,
@@ -330,12 +337,54 @@ async fn record_after_llm(
 }
 
 /// Cheap internal prompt-token estimator shared by all governed LLM paths.
-pub(super) fn estimate_prompt_tokens(messages: &[Message], system: Option<&str>) -> usize {
+pub(super) fn estimate_prompt_tokens(
+    messages: &[Message],
+    system: Option<&str>,
+    tools: &[ToolDefinition],
+) -> usize {
     let mut chars = system.map(str::len).unwrap_or(0);
     for message in messages {
-        chars += message.text().len();
+        chars = chars.saturating_add(message.role.len() + 4);
+        chars = chars.saturating_add(message.reasoning_content.as_ref().map_or(0, String::len));
+        for block in &message.content {
+            let block_chars = match block {
+                ContentBlock::Text { text } => text.len(),
+                ContentBlock::Image { source } => source.data.len(),
+                ContentBlock::ToolUse { id, name, input } => id
+                    .len()
+                    .saturating_add(name.len())
+                    .saturating_add(input.to_string().len()),
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => tool_use_id
+                    .len()
+                    .saturating_add(tool_result_content_chars(content)),
+            };
+            chars = chars.saturating_add(block_chars);
+        }
     }
-    chars / 4
+    for tool in tools {
+        chars = chars
+            .saturating_add(tool.name.len())
+            .saturating_add(tool.description.len())
+            .saturating_add(tool.parameters.to_string().len())
+            .saturating_add(16);
+    }
+    chars.saturating_add(3) / 4
+}
+
+fn tool_result_content_chars(content: &ToolResultContentField) -> usize {
+    match content {
+        ToolResultContentField::Text(text) => text.len(),
+        ToolResultContentField::Blocks(blocks) => blocks.iter().fold(0usize, |total, block| {
+            total.saturating_add(match block {
+                ToolResultContent::Text { text } => text.len(),
+                ToolResultContent::Image { source } => source.data.len(),
+            })
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -346,6 +395,29 @@ mod tests {
 
     struct PendingStreamingClient {
         provider_cancelled: Arc<tokio::sync::Notify>,
+    }
+
+    #[test]
+    fn prompt_estimator_counts_tool_results() {
+        let messages = vec![Message::tool_result("tool-1", &"x".repeat(4_000), false)];
+
+        assert!(estimate_prompt_tokens(&messages, None, &[]) >= 1_000);
+    }
+
+    #[test]
+    fn prompt_estimator_counts_tool_definitions() {
+        let tools = vec![ToolDefinition {
+            name: "large_tool".to_string(),
+            description: "x".repeat(2_000),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "payload": { "type": "string", "description": "y".repeat(2_000) }
+                }
+            }),
+        }];
+
+        assert!(estimate_prompt_tokens(&[], None, &tools) >= 1_000);
     }
 
     #[derive(Clone)]

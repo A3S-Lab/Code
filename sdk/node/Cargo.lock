@@ -15,7 +15,7 @@ checksum = "35b83be97f61abdd33096446eae063f9d65d98e84c446560b59d3c744194287e"
 
 [[package]]
 name = "a3s-code-core"
-version = "5.2.2"
+version = "5.2.3"
 dependencies = [
  "a3s-acl 0.2.0",
  "a3s-common",
@@ -44,6 +44,7 @@ dependencies = [
  "html2text",
  "ignore",
  "jsonschema",
+ "libc",
  "lopdf",
  "notify",
  "pdf-extract",
@@ -73,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-node"
-version = "5.2.2"
+version = "5.2.3"
 dependencies = [
  "a3s-code-core",
  "anyhow",
@@ -164,6 +165,7 @@ dependencies = [
  "clap",
  "dom_smoothie",
  "futures",
+ "quick-xml",
  "reqwest 0.12.28",
  "scraper",
  "serde",
@@ -3445,6 +3447,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.38.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
+dependencies = [
+ "memchr",
+ "serde",
 ]
 
 [[package]]

@@ -2203,17 +2203,160 @@ async fn test_auto_compact_timeout_does_not_block_end_event() {
         .iter()
         .position(|event| matches!(event, AgentEvent::TurnEnd { .. }))
         .expect("turn end should be emitted before auto-compact");
-    let compact_index = events
-        .iter()
-        .position(|event| matches!(event, AgentEvent::ContextCompacted { .. }))
-        .expect("auto-compact should emit progress even when summary times out");
     let end_index = events
         .iter()
         .position(|event| matches!(event, AgentEvent::End { .. }))
         .expect("agent end should still be emitted after compact timeout");
 
-    assert!(turn_end_index < compact_index);
-    assert!(compact_index < end_index);
+    assert!(turn_end_index < end_index);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ContextCompacted { .. })),
+        "a timed-out summary must not be reported as a successful compaction"
+    );
+}
+
+#[tokio::test]
+async fn test_auto_compact_rearms_and_continues_across_cycles() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("summary cycle one"),
+        MockLlmClient::text_response("first task complete"),
+        MockLlmClient::text_response("summary cycle two"),
+        MockLlmClient::text_response("second task complete"),
+    ]));
+    let history = (0..40)
+        .map(|i| {
+            let text = format!(
+                "historical message {i} carries enough context to cross the compact threshold"
+            );
+            if i % 2 == 0 {
+                Message::user(&text)
+            } else {
+                Message::assistant(&text)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tool_executor = Arc::new(ToolExecutor::new(temp_dir.path().display().to_string()));
+    let config = AgentConfig {
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        auto_compact: true,
+        auto_compact_threshold: 0.50,
+        max_context_tokens: 100,
+        continuation_enabled: false,
+        ..Default::default()
+    };
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        config,
+    );
+
+    let first = agent
+        .execute_with_session(
+            &history,
+            "finish the first task",
+            Some("repeatable-compaction"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.text, "first task complete");
+
+    let second = agent
+        .execute_with_session(
+            &first.messages,
+            "finish the second task",
+            Some("repeatable-compaction"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.text, "second task complete");
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 4);
+
+    let requests = mock_client.request_texts.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[1].contains("summary cycle one"));
+    assert!(requests[1].contains("finish the first task"));
+    assert!(requests[2].contains("summary cycle one"));
+    assert!(requests[3].contains("summary cycle two"));
+    assert!(requests[3].contains("finish the second task"));
+}
+
+#[tokio::test]
+async fn test_auto_compact_can_repeat_inside_one_tool_driven_task() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("summary before tool work"),
+        MockLlmClient::tool_call_response(
+            "rolling-tool",
+            "bash",
+            serde_json::json!({"command": "echo rolling-context"}),
+        ),
+        MockLlmClient::text_response("summary after tool work"),
+        MockLlmClient::text_response("task continued after both compactions"),
+    ]));
+    let history = (0..40)
+        .map(|i| {
+            let text = format!("long-running task context message {i} must remain recoverable");
+            if i % 2 == 0 {
+                Message::user(&text)
+            } else {
+                Message::assistant(&text)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tool_executor = Arc::new(ToolExecutor::new(temp_dir.path().display().to_string()));
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        AgentConfig {
+            planning_mode: PlanningMode::Disabled,
+            prompt_slots: SystemPromptSlots {
+                style: Some(AgentStyle::GeneralPurpose),
+                ..Default::default()
+            },
+            permission_checker: Some(Arc::new(PermissionPolicy::new().allow("bash(echo:*)"))),
+            auto_compact: true,
+            auto_compact_threshold: 0.50,
+            max_context_tokens: 100,
+            continuation_enabled: false,
+            ..Default::default()
+        },
+    );
+
+    let result = agent
+        .execute_with_session(
+            &history,
+            "complete the tool-driven task",
+            Some("same-task-compaction"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.text, "task continued after both compactions");
+    assert_eq!(result.tool_calls_count, 1);
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 4);
+
+    let requests = mock_client.request_texts.lock().unwrap();
+    assert!(requests[1].contains("summary before tool work"));
+    assert!(requests[2].contains("echo rolling-context"));
+    assert!(requests[2].contains("rolling-context"));
+    assert!(requests[3].contains("summary after tool work"));
 }
 
 #[tokio::test]
