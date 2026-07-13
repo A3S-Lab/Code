@@ -587,7 +587,7 @@ impl SessionStore for BlockingLoadSessionStore {
     }
 }
 
-fn test_config() -> CodeConfig {
+pub(super) fn test_config() -> CodeConfig {
     CodeConfig {
         default_model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
         providers: vec![

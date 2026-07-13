@@ -14,9 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added model-window overrides for automatic context compaction through Rust
   `SessionOptions::with_max_context_tokens(...)`, Node.js
   `maxContextTokens`, and Python `max_context_tokens`.
+- Added `Agent::replace_session_async(...)` for atomic live-session
+  reconfiguration. A failed replacement leaves the current session registered
+  and usable; a successful replacement keeps the same persisted session ID and
+  closes the old runtime only after the registry swap.
 
 ### Changed
 
+- Goal-tracked planning now evaluates and emits `goal_achieved` before the
+  terminal `end` event. Hosts can therefore treat `end` as a reliable decision
+  boundary and continue an unverified durable goal without racing a late
+  achievement signal. Achievement evaluation now fails closed when its
+  structured evaluator is unavailable; completion words alone can no longer
+  terminate a host-owned goal loop.
 - Reworked automatic context compaction into a repeatable rolling lifecycle.
   The agent now checks model-specific context usage before each request,
   includes exposed tool schemas in prompt accounting, preserves tool calls and

@@ -107,6 +107,8 @@ model, and use `/help` for the complete command and shortcut guide.
   append-only log, apply optimistic patches, replay strictly, fork, and diff
 - **Portable runtime surfaces**: Embed the same contracts from Rust, Node.js,
   Python, the `a3s code` TUI, or another controlled host
+- **Atomic live reconfiguration**: Rebuild an idle persisted session with new
+  model or runtime options while retaining the current session on failure
 
 ### TUI feature matrix
 
@@ -358,6 +360,10 @@ Planning is a governed runtime phase, not just prompt text. Hosts that attach a
 The normal event stream still emits `PlanningStart`, `PlanningEnd`,
 `TaskUpdated`, `StepStart`, and `StepEnd` for UI rendering and replay. Hooks are
 for host policy, supervision, and observability around that same lifecycle.
+With goal tracking enabled, `GoalExtracted` and `GoalProgress` precede the
+optional `GoalAchieved` signal, and `End` remains the terminal event. A host can
+therefore decide at `End` whether to close a verified goal or start another
+iteration without waiting for a late event.
 
 ## Dynamic Workflows Vs `/flow`
 

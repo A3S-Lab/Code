@@ -465,4 +465,6 @@ pub struct AgentSession {
 // ============================================================================
 
 #[cfg(test)]
+mod replacement_tests;
+#[cfg(test)]
 mod tests;

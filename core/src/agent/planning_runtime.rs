@@ -170,25 +170,25 @@ impl AgentLoop {
             .execute_plan(history, &plan, session_id, event_tx.clone(), cancel_token)
             .await?;
 
-        // Emit the final End event (execute_loop_inner does not emit End in planning mode)
-        if let Some(tx) = &event_tx {
-            tx.send(AgentEvent::End {
-                text: result.text.clone(),
-                usage: result.usage.clone(),
-                verification_summary: Box::new(result.verification_summary()),
-                meta: None,
-            })
-            .await
-            .ok();
-        }
-
-        // Check goal achievement when goal_tracking is enabled
+        // Evaluate and emit goal achievement before the terminal End event.
+        // Consumers use End as the boundary at which they decide whether an
+        // engineered goal must continue, so emitting GoalAchieved afterwards
+        // made a verified goal indistinguishable from an unfinished one.
         if self.config.goal_tracking {
             if let Some(ref g) = goal {
+                let evaluation_state = if result.verification_reports.is_empty() {
+                    result.text.clone()
+                } else {
+                    format!(
+                        "Assistant result:\n{}\n\nStructured verification evidence:\n{}",
+                        result.text,
+                        result.verification_summary_text(),
+                    )
+                };
                 let achieved = self
                     .check_goal_achievement_scoped(
                         g,
-                        &result.text,
+                        &evaluation_state,
                         session_id,
                         &event_tx,
                         cancel_token,
@@ -206,6 +206,19 @@ impl AgentLoop {
                     }
                 }
             }
+        }
+
+        // Emit the final End event (execute_loop_inner does not emit End in planning mode).
+        // It must remain the terminal lifecycle event after all goal signals.
+        if let Some(tx) = &event_tx {
+            tx.send(AgentEvent::End {
+                text: result.text.clone(),
+                usage: result.usage.clone(),
+                verification_summary: Box::new(result.verification_summary()),
+                meta: None,
+            })
+            .await
+            .ok();
         }
 
         Ok(result)

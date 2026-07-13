@@ -46,4 +46,8 @@ Rules:
 - `optimized_input` must preserve every concrete constraint, path, name, branch,
   environment variable, metric, and negative instruction from the original user
   message. Do not replace the task with a short summary.
+- Goal success criteria must describe observable user outcomes. Host lifecycle
+  instructions such as waiting for or emitting `GoalAchieved`, continuing a
+  loop, ending a turn, or avoiding words such as DONE are control-plane rules,
+  never success criteria or remaining user work.
 - Respond with valid JSON only. No markdown fences, comments, or explanation.

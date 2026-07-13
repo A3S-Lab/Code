@@ -721,6 +721,147 @@ async fn test_execute_with_planning_fires_pre_and_post_planning_hooks() {
 }
 
 #[tokio::test]
+async fn goal_achievement_is_emitted_before_terminal_end() {
+    use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PreAnalysis, Task};
+    use crate::prompts::{AgentStyle, PlanningMode};
+
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response(
+            "Created goal_probe.txt and verified its exact 25-byte contents with cmp; exit code 0.",
+        ),
+        MockLlmClient::text_response(r#"{"achieved":true,"progress":1.0,"remaining_criteria":[]}"#),
+    ]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        test_tool_context(),
+        AgentConfig {
+            planning_mode: PlanningMode::Enabled,
+            goal_tracking: true,
+            ..AgentConfig::default()
+        },
+    );
+
+    let goal = AgentGoal::new("Ship the verified goal").with_criteria(vec![
+        "Implementation and verification are complete".to_string(),
+    ]);
+    let mut plan = ExecutionPlan::new(goal.description.clone(), Complexity::Simple);
+    plan.add_step(
+        Task::new(
+            "implement-and-verify",
+            "Implement and verify the requested goal",
+        )
+        .with_success_criteria("Implementation and verification are complete"),
+    );
+    let pre_analysis = PreAnalysis {
+        intent: AgentStyle::GeneralPurpose,
+        requires_planning: true,
+        goal,
+        execution_plan: plan,
+        optimized_input: "Ship the verified goal".to_string(),
+    };
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let result = agent
+        .execute_with_planning(
+            &[],
+            "Ship the verified goal",
+            Some("goal-event-order"),
+            Some(tx),
+            Some(pre_analysis),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.text,
+        "Created goal_probe.txt and verified its exact 25-byte contents with cmp; exit code 0."
+    );
+
+    let mut events = Vec::new();
+    rx.close();
+    while let Some(event) = rx.recv().await {
+        events.push(event);
+    }
+    let achieved = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::GoalAchieved { .. }))
+        .expect("GoalAchieved should be emitted for a verified goal");
+    let end = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::End { .. }))
+        .expect("End should be emitted after goal evaluation");
+
+    assert!(
+        achieved < end,
+        "GoalAchieved must precede terminal End: {events:?}"
+    );
+    assert!(matches!(events.last(), Some(AgentEvent::End { .. })));
+}
+
+#[tokio::test]
+async fn unachieved_goal_emits_terminal_end_without_false_achievement() {
+    use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PreAnalysis, Task};
+    use crate::prompts::{AgentStyle, PlanningMode};
+
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("Done. Everything passes."),
+        MockLlmClient::text_response(
+            r#"{"achieved":false,"progress":0.6,"remaining_criteria":["verification"]}"#,
+        ),
+    ]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        test_tool_context(),
+        AgentConfig {
+            planning_mode: PlanningMode::Enabled,
+            goal_tracking: true,
+            ..AgentConfig::default()
+        },
+    );
+    let goal = AgentGoal::new("Ship only after verification")
+        .with_criteria(vec!["Fresh verification passes".to_string()]);
+    let mut plan = ExecutionPlan::new(goal.description.clone(), Complexity::Simple);
+    plan.add_step(
+        Task::new("implement", "Implement the requested behavior")
+            .with_success_criteria("Implementation exists"),
+    );
+    let pre_analysis = PreAnalysis {
+        intent: AgentStyle::GeneralPurpose,
+        requires_planning: true,
+        goal,
+        execution_plan: plan,
+        optimized_input: "Ship only after verification".to_string(),
+    };
+
+    let (tx, mut rx) = mpsc::channel(100);
+    agent
+        .execute_with_planning(
+            &[],
+            "Ship only after verification",
+            Some("goal-not-achieved"),
+            Some(tx),
+            Some(pre_analysis),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut events = Vec::new();
+    rx.close();
+    while let Some(event) = rx.recv().await {
+        events.push(event);
+    }
+    assert!(events
+        .iter()
+        .all(|event| !matches!(event, AgentEvent::GoalAchieved { .. })));
+    assert!(matches!(events.last(), Some(AgentEvent::End { .. })));
+}
+
+#[tokio::test]
 async fn test_pre_planning_hook_can_block_planning_before_start_event() {
     let mock_client = Arc::new(MockLlmClient::new(vec![]));
     let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));

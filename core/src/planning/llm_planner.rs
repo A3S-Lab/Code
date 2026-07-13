@@ -127,23 +127,29 @@ impl LlmPlanner {
         goal: &AgentGoal,
         current_state: &str,
     ) -> Result<AchievementResult> {
-        let system = crate::prompts::LLM_GOAL_CHECK_SYSTEM;
-
-        let user_message = format!(
+        let prompt = format!(
             "Goal: {}\nSuccess Criteria: {}\nCurrent State: {}",
             goal.description,
             goal.success_criteria.join("; "),
             current_state,
         );
+        let req = StructuredRequest {
+            prompt,
+            system: Some(crate::prompts::LLM_GOAL_CHECK_SYSTEM.to_string()),
+            schema: Self::achievement_schema(),
+            schema_name: "goal_achievement".to_string(),
+            schema_description: Some(
+                "Strict, evidence-backed evaluation of whether every goal criterion is met"
+                    .to_string(),
+            ),
+            mode: StructuredMode::Auto,
+            max_repair_attempts: 2,
+        };
 
-        let messages = vec![Message::user(&user_message)];
-        let response = llm
-            .complete(&messages, Some(system), &[])
+        let result = generate_blocking(&**llm, &req)
             .await
-            .context("LLM call failed during achievement check")?;
-
-        let text = response.text();
-        Self::parse_achievement_response(&text)
+            .context("LLM achievement structured generation failed")?;
+        Self::achievement_from_value(result.object)
     }
 
     /// Create a fallback plan using heuristic logic (no LLM required)
@@ -189,25 +195,21 @@ impl LlmPlanner {
         ])
     }
 
-    /// Create a fallback achievement result using heuristic logic (no LLM required)
+    /// Create a fail-closed fallback achievement result (no LLM required).
+    ///
+    /// Goal completion is a control-plane decision: a host may stop an
+    /// unbounded engineering loop as soon as `GoalAchieved` is emitted. Plain
+    /// answer text such as "done" (or even "not complete") is not sufficient
+    /// evidence for that decision. If the structured evaluator is unavailable,
+    /// keep every success criterion open and let the host retry in a later
+    /// iteration.
     pub fn fallback_check_achievement(goal: &AgentGoal, current_state: &str) -> AchievementResult {
-        let state_lower = current_state.to_lowercase();
-        let achieved = state_lower.contains("complete")
-            || state_lower.contains("done")
-            || state_lower.contains("finished");
-
-        let progress = if achieved { 1.0 } else { goal.progress };
-
-        let remaining_criteria = if achieved {
-            Vec::new()
-        } else {
-            goal.success_criteria.clone()
-        };
+        let _ = current_state;
 
         AchievementResult {
-            achieved,
-            progress,
-            remaining_criteria,
+            achieved: false,
+            progress: goal.progress,
+            remaining_criteria: goal.success_criteria.clone(),
         }
     }
 
@@ -352,6 +354,36 @@ impl LlmPlanner {
         })
     }
 
+    fn achievement_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["achieved", "progress", "remaining_criteria"],
+            "properties": {
+                "achieved": { "type": "boolean" },
+                "progress": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "remaining_criteria": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            }
+        })
+    }
+
+    fn achievement_from_value(value: serde_json::Value) -> Result<AchievementResult> {
+        let parsed: AchievementResponse = serde_json::from_value(value)
+            .context("achievement object did not match the expected response shape")?;
+        Ok(AchievementResult {
+            achieved: parsed.achieved,
+            progress: parsed.progress.clamp(0.0, 1.0),
+            remaining_criteria: parsed.remaining_criteria,
+        })
+    }
+
     // ========================================================================
     // JSON parsing helpers
     // ========================================================================
@@ -398,6 +430,7 @@ impl LlmPlanner {
         Ok(AgentGoal::new(parsed.description).with_criteria(parsed.success_criteria))
     }
 
+    #[cfg(test)]
     fn parse_achievement_response(text: &str) -> Result<AchievementResult> {
         let parsed: AchievementResponse = Self::parse_json_lenient(text)
             .context("Failed to parse achievement JSON from LLM response")?;
@@ -564,13 +597,28 @@ mod tests {
     }
 
     #[test]
-    fn test_fallback_check_achievement_done() {
+    fn test_fallback_check_achievement_fails_closed_on_done_text() {
         let goal = AgentGoal::new("Test task").with_criteria(vec!["Criterion 1".to_string()]);
 
         let result = LlmPlanner::fallback_check_achievement(&goal, "The task is done.");
-        assert!(result.achieved);
-        assert!((result.progress - 1.0).abs() < f32::EPSILON);
-        assert!(result.remaining_criteria.is_empty());
+        assert!(!result.achieved);
+        assert!(result.progress.abs() < f32::EPSILON);
+        assert_eq!(result.remaining_criteria, vec!["Criterion 1"]);
+    }
+
+    #[test]
+    fn test_fallback_check_achievement_rejects_negated_completion_text() {
+        let goal = AgentGoal::new("Test task").with_criteria(vec!["Criterion 1".to_string()]);
+
+        for state in [
+            "The task is not complete.",
+            "Verification is not done.",
+            "The implementation is unfinished.",
+        ] {
+            let result = LlmPlanner::fallback_check_achievement(&goal, state);
+            assert!(!result.achieved, "must fail closed for {state:?}");
+            assert_eq!(result.remaining_criteria, vec!["Criterion 1"]);
+        }
     }
 
     #[test]

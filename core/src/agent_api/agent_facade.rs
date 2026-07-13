@@ -231,6 +231,25 @@ impl Agent {
         agent_sessions::resume_session_async(self, session_id, options).await
     }
 
+    /// Rebuild a live persisted session with new options without exposing a
+    /// closed-session gap to the caller.
+    ///
+    /// The current session is saved first and remains live while the
+    /// replacement is constructed and restored. If construction fails, the
+    /// current session stays registered and usable. On success, the registry
+    /// is switched to the replacement before the old session is closed.
+    ///
+    /// Callers must serialize this operation with conversation work on
+    /// `current` (for example, only reconfigure an idle interactive session).
+    /// The replacement keeps the same session ID and persisted history.
+    pub async fn replace_session_async(
+        &self,
+        current: &AgentSession,
+        options: SessionOptions,
+    ) -> Result<AgentSession> {
+        agent_sessions::replace_session_async(self, current, options).await
+    }
+
     /// Return the IDs of every live session created from this agent.
     ///
     /// "Live" means the caller still holds an [`AgentSession`] — sessions
