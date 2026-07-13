@@ -241,6 +241,7 @@ pub(super) async fn system_web_proxy() -> Option<String> {
     None
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_macos_proxy(text: &str) -> Option<String> {
     let value = |key: &str| {
         text.lines().find_map(|line| {

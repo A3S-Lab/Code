@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.1] - 2026-07-13
+
+### Fixed
+
+- Scoped the macOS system-proxy parser to macOS production builds and test
+  builds, keeping Linux release Clippy free of platform-specific dead code.
+
 ## [5.2.0] - 2026-07-13
 
 ### Added
