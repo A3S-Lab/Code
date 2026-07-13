@@ -94,6 +94,10 @@ impl Drop for BrowserPoolCleanup {
         let Some(pool) = self.pool.take() else {
             return;
         };
+        // Establish the cancellation boundary synchronously. The runtime may
+        // be saturated and delay polling the spawned shutdown future, but no
+        // new tab acquisition should be admitted after this guard is dropped.
+        pool.tab_semaphore().close();
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
                 runtime.spawn(async move {

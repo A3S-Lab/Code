@@ -17,19 +17,16 @@ async fn headless_browser_pool_is_scoped_to_one_tool_execution() {
 }
 
 #[tokio::test]
-async fn dropped_cleanup_guard_shuts_pool_in_background() {
+async fn dropped_cleanup_guard_closes_pool_before_background_shutdown() {
     let config = HeadlessConfig::default();
     let pool = WebSearchTool::create_pool(Some(&config)).expect("pool");
     drop(BrowserPoolCleanup::new(Some(Arc::clone(&pool))));
 
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
-    while !pool.tab_semaphore().is_closed() && tokio::time::Instant::now() < deadline {
-        tokio::task::yield_now().await;
-    }
     assert!(
         pool.tab_semaphore().is_closed(),
-        "dropping a cancelled tool future must schedule pool shutdown"
+        "dropping a cancelled tool future must synchronously reject new tab work"
     );
+    tokio::task::yield_now().await;
 }
 
 #[test]

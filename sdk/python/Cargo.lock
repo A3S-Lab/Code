@@ -15,7 +15,7 @@ checksum = "35b83be97f61abdd33096446eae063f9d65d98e84c446560b59d3c744194287e"
 
 [[package]]
 name = "a3s-code-core"
-version = "5.2.1"
+version = "5.2.2"
 dependencies = [
  "a3s-acl 0.2.0",
  "a3s-common",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-py"
-version = "5.2.1"
+version = "5.2.2"
 dependencies = [
  "a3s-code-core",
  "anyhow",

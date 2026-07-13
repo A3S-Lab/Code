@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.2] - 2026-07-13
+
+### Fixed
+
+- Made cancelled headless-search cleanup synchronously close its tab
+  semaphore before scheduling asynchronous process reaping, so saturated
+  runtimes cannot admit new browser work or make shutdown tests timing-based.
+
 ## [5.2.1] - 2026-07-13
 
 ### Fixed
