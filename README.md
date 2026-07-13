@@ -1,9 +1,35 @@
 # A3S Code
 
-**A Rust agent runtime and the execution core behind the `a3s code` terminal
-coding workspace.**
+<p align="center">
+  <strong>Governed Rust Agent Runtime for A3S</strong>
+</p>
 
-A3S Code gives a coding agent the parts it should not improvise: context
+<p align="center">
+  <em>Build auditable coding agents with bounded tools, resumable execution, and event-sourced coordination</em>
+</p>
+
+<p align="center">
+  <a href="#overview">Overview</a> •
+  <a href="#features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#application-model">Application Model</a> •
+  <a href="#dynamic-workflows-vs-flow">Workflows</a> •
+  <a href="#event-sourced-state-graph">State Graph</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#development">Development</a>
+</p>
+
+<p align="center">
+  <a href="https://crates.io/crates/a3s-code-core"><img alt="crates.io" src="https://img.shields.io/crates/v/a3s-code-core"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+</p>
+
+---
+
+## Overview
+
+**A3S Code** is the Rust agent runtime behind the `a3s code` terminal coding
+workspace. It gives a coding agent the parts it should not improvise: context
 assembly, tool visibility, permission checks, human approval, memory,
 delegation, dynamic workflow execution, persistence, verification evidence, and
 event replay. For long-running, auditable coordination it also provides an
@@ -11,11 +37,6 @@ event-sourced reactive state graph with typed relations, optimistic patches,
 behavior subscriptions, event-point forks, strict replay, and structural
 branch diffs. The interactive product surface is the `a3s code` TUI, shipped
 by the `a3s` CLI and rendered with the `a3s-tui` terminal framework.
-
-[![crates.io](https://img.shields.io/crates/v/a3s-code-core)](https://crates.io/crates/a3s-code-core)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-
-## What It Is
 
 A3S Code is a local runtime, not a hosted agent service. It owns the agent loop
 and exposes it through a Rust crate. The TUI is one application built on that
@@ -57,28 +78,66 @@ Use `a3s code` when you want the full terminal product. Use
 `a3s-code-core` when you are building another Rust host, runner, IDE bridge, or
 controlled agent service around the same runtime.
 
-## Release Operations
+### Basic usage
 
-`A3S-Lab/Code` publishes its own Rust, Node.js, and Python artifacts through the
-`Release` workflow. It also provides a manual `Publish a3s-box` workflow for
-orchestrating an `A3S-Lab/Box` release from Code Actions after Box fixes are
-ready.
+Install the CLI and launch the TUI from the workspace the agent should inspect:
 
-To publish a new Box tag from Code, configure a `BOX_RELEASE_TOKEN` repository
-secret in `A3S-Lab/Code`. Use a fine-grained token with `contents:write` and
-`actions:read` access to `A3S-Lab/Box`; the default `GITHUB_TOKEN` is scoped to
-`A3S-Lab/Code` and cannot create tags in the Box repository. Existing public Box
-tags and releases can still be verified without that secret. Dispatch the
-workflow with a semver version and a Box branch, tag, or commit SHA. The workflow
-verifies the Box source version, creates or reuses the matching `v*` tag in
-`A3S-Lab/Box`, waits for the Box Release workflow, and checks the Linux, macOS,
-and Windows release assets.
+```bash
+cargo install a3s
+cd /path/to/workspace
+a3s code
+```
+
+Prefix a prompt with `?` to run DeepResearch, use `/model` to change the active
+model, and use `/help` for the complete command and shortcut guide.
 
 ![A3S Code TUI screenshot](image/README/1782885080392.png)
 
-## Install And Run
+## Features
 
-Install the `a3s` CLI to use the TUI:
+- **Governed agent loop**: Assemble context, plan, call tools, verify work, and
+  persist sessions through one run-scoped execution boundary
+- **Bounded and resumable tools**: Apply independent deadlines, cancellation,
+  pagination, safe parallelism, structured repair, and segmented file writes
+- **Human-in-the-loop safety**: Enforce workspace permissions, confirmation,
+  redaction, hooks, and explicit host-direct trust policy
+- **Durable orchestration**: Run delegated tasks, deterministic pipelines,
+  A3S Flow-backed dynamic workflows, checkpoints, and convergence guards
+- **Event-sourced coordination**: Project typed objects and relations from an
+  append-only log, apply optimistic patches, replay strictly, fork, and diff
+- **Portable runtime surfaces**: Embed the same contracts from Rust, Node.js,
+  Python, the `a3s code` TUI, or another controlled host
+
+### TUI feature matrix
+
+`a3s code` is a complete agentic workspace in the terminal. It combines the
+coding chat loop, file and config editing, durable context, local asset
+development, optional host integrations, runtime fan-out, trusted runtime
+views, and engineered automation loops.
+
+| Area | What the TUI provides |
+| --- | --- |
+| Coding loop | Chat with the coding agent, stream reasoning/text/tool events, approve or deny gated tools, switch `/auto`, run direct shell turns with `!`, set a persistent `/goal`, clear context, and fork sessions. |
+| Workspace UI | `/ide` opens a file tree and editor, `/config` edits the active config, and both use terminal-safe type-aware file/folder sigils with semantic colors and an aligned line-number gutter. `Ctrl+T` opens the complete semantic transcript, and file edits render bounded diffs through shared TUI components. |
+| Models | `/model` switches configured ACL providers and signed-in account-backed model tabs when available. |
+| Effort | `/effort` changes reasoning budget, tool-round budget, continuation count, and rigor guidance from `low` through `max` and `ultracode`. |
+| Tools and safety | File, search, shell, git, web, structured-output, MCP, PTC `program`, `task`, and `parallel_task` tools all pass through workspace boundaries, permission policy, HITL approval, timeouts, hooks, and traces. |
+| Context and memory | The footer tracks context fill and auto-compaction. `/ctx` searches past sessions, `/ctx <n>` attaches a transcript window, `/ctx save <n>` promotes it to memory, `/sleep` consolidates the day, and `/memory` browses durable memories as an event/entity graph. |
+| Dynamic workflows | `ultracode` and `?` DeepResearch can use `DynamicWorkflowRuntime`, a local A3S Flow-backed runtime that records workflow and step history while sandboxed PTC scripts perform tool work. |
+| Parallel work | Local fan-out uses the native host-side `parallel_task` tool. Dynamic workflows schedule a Flow step named `parallel_task` when they need local parallel subagents; QuickJS/PTC scripts do not call `parallel_task` directly. |
+| Optional runtime tools | A3S OS can register runtime tools after `/login`; local tools and `parallel_task` remain available without an account. |
+| Deep research | Prefix a prompt with `?` to start DeepResearch. The TUI gathers a bounded web seed, then either takes a direct fast path or runs local `parallel_task` tracks and bounded follow-up rounds before synthesizing cited report artifacts. A3S OS Runtime tool-call fan-out is currently disabled for DeepResearch until Function-as-a-Service support is available. |
+| Asset development | `/agent`, `/mcp`, `/skill`, and `/okf` enter local development modes with an active asset, review commands, clone/draft flows, and publish/deploy/status surfaces. |
+| Workflow assets | `/flow` selects or drafts workflow DAG files for local review and optional host publication. |
+| Knowledge | `/kb` manages a local personal knowledge vault. `/okf` manages shareable OKF knowledge-package assets. |
+| Engineered loops | `/loop init`, `/loop run`, `/loop audit`, and `/loop logs` manage durable maker/checker loops under `.a3s/loops` with reports, budgets, state files, and optional runtime/view evidence. |
+| Operations | `/help` opens the command guide, `/theme` changes syntax themes, `/plugin` and `/reload` refresh skills/plugins, inline `Open view` actions reopen trusted runtime views, and `/update` upgrades and restarts the CLI. The standalone `a3s top` command observes local process activity. |
+
+## Quick Start
+
+### Install the TUI
+
+Install the `a3s` CLI:
 
 ```bash
 brew install A3S-Lab/tap/a3s
@@ -109,36 +168,13 @@ Common first-run flow:
 /help          # open the full command and shortcut guide
 ```
 
-Install the Rust runtime crate when embedding A3S Code:
+### Install the Rust runtime
+
+Install the core crate when embedding A3S Code:
 
 ```bash
 cargo add a3s-code-core
 ```
-
-## TUI Capability Overview
-
-`a3s code` is a complete agentic workspace in the terminal. It combines the
-coding chat loop, file and config editing, durable context, local asset
-development, optional host integrations, runtime fan-out, trusted runtime
-views, and engineered automation loops.
-
-| Area | What the TUI provides |
-| --- | --- |
-| Coding loop | Chat with the coding agent, stream reasoning/text/tool events, approve or deny gated tools, switch `/auto`, run direct shell turns with `!`, set a persistent `/goal`, clear context, and fork sessions. |
-| Workspace UI | `/ide` opens a file tree and editor, `/config` edits the active config, and both use terminal-safe type-aware file/folder sigils with semantic colors and an aligned line-number gutter. `Ctrl+T` opens the complete semantic transcript, and file edits render bounded diffs through shared TUI components. |
-| Models | `/model` switches configured ACL providers and signed-in account-backed model tabs when available. |
-| Effort | `/effort` changes reasoning budget, tool-round budget, continuation count, and rigor guidance from `low` through `max` and `ultracode`. |
-| Tools and safety | File, search, shell, git, web, structured-output, MCP, PTC `program`, `task`, and `parallel_task` tools all pass through workspace boundaries, permission policy, HITL approval, timeouts, hooks, and traces. |
-| Context and memory | The footer tracks context fill and auto-compaction. `/ctx` searches past sessions, `/ctx <n>` attaches a transcript window, `/ctx save <n>` promotes it to memory, `/sleep` consolidates the day, and `/memory` browses durable memories as an event/entity graph. |
-| Dynamic workflows | `ultracode` and `?` DeepResearch can use `DynamicWorkflowRuntime`, a local A3S Flow-backed runtime that records workflow and step history while sandboxed PTC scripts perform tool work. |
-| Parallel work | Local fan-out uses the native host-side `parallel_task` tool. Dynamic workflows schedule a Flow step named `parallel_task` when they need local parallel subagents; QuickJS/PTC scripts do not call `parallel_task` directly. |
-| Optional runtime tools | A3S OS can register runtime tools after `/login`; local tools and `parallel_task` remain available without an account. |
-| Deep research | Prefix a prompt with `?` to start DeepResearch. The TUI gathers a bounded web seed, then either takes a direct fast path or runs local `parallel_task` tracks and bounded follow-up rounds before synthesizing cited report artifacts. A3S OS Runtime tool-call fan-out is currently disabled for DeepResearch until Function-as-a-Service support is available. |
-| Asset development | `/agent`, `/mcp`, `/skill`, and `/okf` enter local development modes with an active asset, review commands, clone/draft flows, and publish/deploy/status surfaces. |
-| Workflow assets | `/flow` selects or drafts workflow DAG files for local review and optional host publication. |
-| Knowledge | `/kb` manages a local personal knowledge vault. `/okf` manages shareable OKF knowledge-package assets. |
-| Engineered loops | `/loop init`, `/loop run`, `/loop audit`, and `/loop logs` manage durable maker/checker loops under `.a3s/loops` with reports, budgets, state files, and optional runtime/view evidence. |
-| Operations | `/help` opens the command guide, `/theme` changes syntax themes, `/plugin` and `/reload` refresh skills/plugins, inline `Open view` actions reopen trusted runtime views, and `/update` upgrades and restarts the CLI. The standalone `a3s top` command observes local process activity. |
 
 ## TUI Command Catalog
 
@@ -173,7 +209,9 @@ forms live under the asset or context family that owns them.
 | Asset development | Enter `/agent`, `/mcp`, `/skill`, or `/okf` | Subsequent prompts are scoped to the selected local asset until the matching `off` command. |
 | `ultracode` | Select in `/effort` | Complex turns may use dynamic workflows, local `parallel_task`, signed-in `runtime`, planning, and goal tracking. Trivial turns can remain direct. |
 
-## Startup, Sessions, And Safety
+## Application Model
+
+### Startup, sessions, and safety
 
 Config discovery checks:
 
@@ -644,7 +682,9 @@ model-facing permission and confirmation prompts are skipped, while lifecycle
 hooks, budget checks, queue/timeout handling, cancellation, recursive-call
 protection, and output sanitization remain active.
 
-## Runtime Architecture Invariants
+## Architecture
+
+### Runtime invariants
 
 - **One resolved session configuration.** Public options are a patch; after
   validation and async resource initialization, one internal resolved value is
@@ -707,7 +747,7 @@ protection, and output sanitization remain active.
   manager, so `add_mcp_server`/`remove_mcp_server` never mutate global or sibling
   session state. Delegated children inherit the ordered capability sources.
 
-## Runtime Surfaces
+### Runtime surfaces
 
 | Surface | Rust API or TUI path | What it gives you |
 | --- | --- | --- |
@@ -1004,6 +1044,18 @@ cargo fmt --all
 cargo test -p a3s-code-core
 cargo clippy -p a3s-code-core -- -D warnings
 ```
+
+### Release operations
+
+`A3S-Lab/Code` publishes its Rust, Node.js, and Python artifacts through the
+`Release` workflow. The repository also provides a manual `Publish a3s-box`
+workflow for orchestrating an `A3S-Lab/Box` release after Box fixes are ready.
+
+Cross-repository Box publishing requires a `BOX_RELEASE_TOKEN` with
+`contents:write` and `actions:read` access to `A3S-Lab/Box`; the repository
+`GITHUB_TOKEN` cannot create tags outside `A3S-Lab/Code`. The workflow verifies
+the requested Box source version, creates or reuses its `v*` tag, waits for the
+Box release, and validates the Linux, macOS, and Windows assets.
 
 ## License
 
