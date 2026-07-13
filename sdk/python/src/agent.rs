@@ -377,6 +377,34 @@ impl PyAgent {
         run_in_asyncio_executor(py, callable.into_any())
     }
 
+    /// Return an asyncio Future that atomically rebuilds a live, idle session
+    /// with new options.
+    ///
+    /// The current session remains registered and usable if replacement fails.
+    /// On success, the returned session keeps the same session ID and the
+    /// previous ``Session`` object is closed. Call this only while no
+    /// conversation operation is running on ``current``.
+    #[pyo3(signature = (current, options))]
+    fn replace_session_async<'py>(
+        &self,
+        py: Python<'py>,
+        current: PyRef<'_, PySession>,
+        options: PySessionOptions,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let options = build_rust_session_options(options)?;
+        let callable = Bound::new(
+            py,
+            AsyncSessionCall {
+                operation: Some(AsyncSessionOperation::Replace {
+                    agent: Arc::clone(&self.inner),
+                    current: Arc::clone(&current.inner),
+                    options,
+                }),
+            },
+        )?;
+        run_in_asyncio_executor(py, callable.into_any())
+    }
+
     /// Create a session pre-configured from a named agent definition.
     ///
     /// Loads the agent by name from built-in agents and optionally from

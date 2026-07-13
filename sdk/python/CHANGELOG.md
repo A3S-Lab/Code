@@ -8,6 +8,8 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 - Added `SessionOptions.max_context_tokens` parity with Rust Core and the Node
   SDK for model-aware automatic context compaction.
+- Added `Agent.replace_session_async(...)` parity for atomic live-session
+  reconfiguration without a closed-session gap on failure.
 
 ## [5.0.0] - 2026-07-11
 

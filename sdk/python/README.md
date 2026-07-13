@@ -50,6 +50,7 @@ event-loop task:
 agent = await Agent.create_async("agent.acl")
 session = await agent.session_async("/my-project", options)
 resumed = await agent.resume_session_async(session_id, resume_options)
+replacement = await agent.replace_session_async(session, replacement_options)
 
 result = await session.send_async("Inspect the authentication flow")
 tool_result = await session.tool_async(
@@ -64,6 +65,10 @@ await session.cancel_async()
 await session.close_async()
 await agent.close_async()
 ```
+
+`replace_session_async()` atomically reconfigures an idle persisted session. A
+failed replacement leaves the current object live; a successful replacement
+returns the same session ID and closes the previous object.
 
 `session_async()` intentionally accepts a typed `SessionOptions` object instead
 of the legacy collection of primitive keyword overrides. The synchronous

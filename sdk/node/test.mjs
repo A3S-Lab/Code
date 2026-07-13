@@ -90,7 +90,22 @@ const agent = await mod.Agent.create(inlineConfig)
   )
   const resumed = await agent.resumeSessionAsync(sessionId, { sessionStore: memoryStore })
   assert.equal(resumed.sessionId, sessionId, 'memory store identity must survive options conversion')
-  await resumed.closeAsync()
+  const replacement = await agent.replaceSessionAsync(resumed, {
+    sessionStore: memoryStore,
+    maxContextTokens: 128_000,
+  })
+  assert.equal(replacement.sessionId, sessionId, 'replacement must preserve the session id')
+  await assert.rejects(
+    resumed.send('/help'),
+    /is closed/,
+    'successful replacement must close the previous session object',
+  )
+  assert.equal(
+    (await replacement.send('/help')).text.includes('/help'),
+    true,
+    'replacement session must remain usable',
+  )
+  await replacement.closeAsync()
 
   assert.throws(
     () =>

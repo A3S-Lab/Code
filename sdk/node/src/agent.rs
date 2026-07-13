@@ -136,6 +136,34 @@ impl Agent {
         })
     }
 
+    /// Atomically rebuild a live, idle session with new options.
+    ///
+    /// The current session remains registered and usable if replacement fails.
+    /// On success, the returned session keeps the same session ID and the
+    /// previous `Session` object is closed. Call this only while no conversation
+    /// operation is running on `current`.
+    ///
+    /// @param current - The live session to replace
+    /// @param options - Replacement options; must resolve the same session store
+    #[napi(js_name = "replaceSessionAsync")]
+    pub async fn replace_session_async(
+        &self,
+        current: &Session,
+        options: SessionOptions,
+    ) -> napi::Result<Session> {
+        let opts = js_session_options_to_rust(Some(options))?;
+        let agent = Arc::clone(&self.inner);
+        let current = Arc::clone(&current.inner);
+        let session = get_runtime()
+            .spawn(async move { agent.replace_session_async(current.as_ref(), opts).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(node_code_error)?;
+        Ok(Session {
+            inner: Arc::new(session),
+        })
+    }
+
     /// Create a session pre-configured from a named agent definition.
     ///
     /// Loads the agent by name from built-in agents and optionally from

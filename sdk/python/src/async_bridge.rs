@@ -13,6 +13,11 @@ pub(super) enum AsyncSessionOperation {
         session_id: String,
         options: RustSessionOptions,
     },
+    Replace {
+        agent: Arc<RustAgent>,
+        current: Arc<RustAgentSession>,
+        options: RustSessionOptions,
+    },
 }
 
 /// One-shot callable executed by asyncio's default executor.
@@ -84,6 +89,11 @@ impl AsyncSessionCall {
                     session_id,
                     options,
                 } => get_runtime().block_on(agent.resume_session_async(&session_id, options)),
+                AsyncSessionOperation::Replace {
+                    agent,
+                    current,
+                    options,
+                } => get_runtime().block_on(agent.replace_session_async(&current, options)),
             })
             .map_err(py_code_error)?;
         Ok(Py::new(

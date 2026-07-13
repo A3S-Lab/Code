@@ -106,6 +106,8 @@ async function _consumeAsyncLifecycle(): Promise<void> {
   await session.closeAsync()
   const resumed = await _agent.resumeSessionAsync('session-1', {})
   await resumed.closeAsync()
+  const replacement = await _agent.replaceSessionAsync(session, {})
+  await replacement.closeAsync()
 }
 
 void _consumeAsyncLifecycle

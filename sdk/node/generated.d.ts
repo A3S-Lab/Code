@@ -1713,6 +1713,18 @@ export declare class Agent {
    */
   resumeSessionAsync(sessionId: string, options: SessionOptions): Promise<Session>
   /**
+   * Atomically rebuild a live, idle session with new options.
+   *
+   * The current session remains registered and usable if replacement fails.
+   * On success, the returned session keeps the same session ID and the
+   * previous `Session` object is closed. Call this only while no conversation
+   * operation is running on `current`.
+   *
+   * @param current - The live session to replace
+   * @param options - Replacement options; must resolve the same session store
+   */
+  replaceSessionAsync(current: Session, options: SessionOptions): Promise<Session>
+  /**
    * Create a session pre-configured from a named agent definition.
    *
    * Loads the agent by name from built-in agents and optionally from

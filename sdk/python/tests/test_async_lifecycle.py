@@ -60,6 +60,17 @@ def test_async_session_lifecycle_and_event_loop_progress() -> None:
             assert Path(workspace, "async-tool.txt").read_text() == "async tool output\n"
             assert await session.cancel_async() is False
             await session.save_async()
+
+            replacement_options = SessionOptions()
+            replacement_options.session_store = store
+            replacement = await agent.replace_session_async(
+                session, replacement_options
+            )
+            assert replacement.session_id == "python-async-lifecycle"
+            with pytest.raises(RuntimeError, match="is closed"):
+                await session.send_async("/help")
+            session = replacement
+
             await session.close_async()
             with pytest.raises(RuntimeError, match="is closed"):
                 await session.send_async("/help")

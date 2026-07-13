@@ -35,12 +35,17 @@ so those waits never block the JavaScript event loop:
 ```js
 const session = await agent.sessionAsync('/my-project', options)
 const resumed = await agent.resumeSessionAsync(sessionId, resumeOptions)
+const replacement = await agent.replaceSessionAsync(session, replacementOptions)
 const specialist = await agent.sessionForAgentAsync('/my-project', 'explore')
 const worker = await agent.sessionForWorkerAsync('/my-project', workerSpec)
 
 await session.cancelAsync()
 await session.closeAsync()
 ```
+
+`replaceSessionAsync()` atomically reconfigures an idle persisted session. A
+failed replacement leaves the current object live; a successful replacement
+returns the same session ID and closes the previous object.
 
 The synchronous `session()`, `resumeSession()`, `sessionForAgent()`,
 `sessionForWorker()`, `cancel()`, and `close()` methods remain available for
