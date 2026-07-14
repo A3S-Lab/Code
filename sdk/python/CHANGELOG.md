@@ -4,6 +4,15 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [5.2.4] - 2026-07-14
+
+### Fixed
+
+- Updated the bundled Core to use token-budgeted rolling context compaction,
+  including bounded summaries and verified prompt reduction.
+
+## [5.2.3] - 2026-07-13
+
 ### Added
 
 - Added `SessionOptions.max_context_tokens` parity with Rust Core and the Node

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.4] - 2026-07-14
+
+### Fixed
+
+- Made rolling context compaction choose its retained suffix by estimated
+  message tokens instead of a fixed message count. Compacted history now aims
+  for half of its previous token footprint, bounds oversized summaries,
+  preserves the latest safe tool-call boundary, and refuses replacements that
+  would not reduce the estimated prompt.
+
 ## [5.2.3] - 2026-07-13
 
 ### Added

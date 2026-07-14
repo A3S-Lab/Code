@@ -200,7 +200,9 @@ agent.session('/my-project', {
 
 Set `maxContextTokens` to the active model's context window when the model is
 not declared in the agent configuration. Rolling auto-compaction can then
-compact repeatedly before later requests overflow that window.
+compact repeatedly before later requests overflow that window. The bundled
+Core selects the retained suffix by token budget and rejects a replacement
+that would not reduce estimated history usage.
 
 The legacy boolean shortcut still works: `{ planning: true }` forces planning
 and `{ planning: false }` disables it.

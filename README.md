@@ -607,8 +607,8 @@ async fn main() -> anyhow::Result<()> {
 
 `max_context_tokens` should match the active model window. When omitted, Core
 uses the selected model's configured context limit. Automatic compaction checks
-before each model request, bounds oversized tool output, and can run repeatedly
-as a long session grows.
+before each model request, bounds oversized tool output, budgets the retained
+history by estimated tokens, and can run repeatedly as a long session grows.
 
 Session construction is async-first. `SessionBuilder::build()` resolves the
 merged configuration once, initializes file-backed memory/session stores,

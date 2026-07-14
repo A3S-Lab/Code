@@ -1,10 +1,10 @@
 use super::execution_state::ExecutionLoopState;
-use super::llm_invoker::estimate_prompt_tokens;
 use super::{AgentEvent, AgentLoop};
 use crate::hooks::{
     ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, TokenUsageInfo, ToolCallInfo,
 };
 use crate::llm::{non_retryable_llm_error_message, LlmResponse, Message, ToolCall, ToolDefinition};
+use crate::token_estimate::estimate_prompt_tokens;
 use anyhow::Context;
 use std::time::Duration;
 use tokio::sync::mpsc;

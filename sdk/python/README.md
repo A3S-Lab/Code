@@ -233,7 +233,8 @@ artifact = session.get_artifact("a3s://tool-output/read/abc123")
 
 # Set max_context_tokens when the active model is not declared in the agent
 # configuration. Rolling auto-compaction can then repeat before later requests
-# overflow that model window.
+# overflow that model window. The bundled Core retains recent history by token
+# budget and rejects a replacement that would not reduce estimated usage.
 
 # Direct helpers are trusted host-control-plane operations. They skip
 # model-facing permission/HITL, while hooks, budget, queue/timeout,
