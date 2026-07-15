@@ -120,11 +120,7 @@ pub(crate) fn spawn_shell(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.as_std_mut().process_group(0);
-        }
+        crate::tools::process::configure_process_group(&mut cmd);
         if let Some(env) = command_env {
             cmd.envs(env);
         }

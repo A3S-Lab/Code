@@ -5517,6 +5517,19 @@ async function run(ctx, inputs) {
 async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_permissions() {
     let dir = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
+    let workspace_fs: Arc<dyn crate::workspace::WorkspaceFileSystem> =
+        Arc::new(TestWorkspaceFs::default());
+    let runner = Arc::new(TestWorkspaceRunner::default());
+    let runner_backend: Arc<dyn crate::workspace::WorkspaceCommandRunner> = runner.clone();
+    let services = crate::workspace::WorkspaceServices::builder(
+        crate::workspace::WorkspaceRef::new(
+            "deep-research-permission-inheritance",
+            dir.path().to_string_lossy(),
+        ),
+        workspace_fs,
+    )
+    .command_runner(runner_backend)
+    .build();
     let client = Arc::new(ScriptedStreamingClient::new(vec![
         scripted_tool_call_response(
             "bash-1",
@@ -5529,6 +5542,7 @@ async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_permission
     let opts = SessionOptions::new()
         .with_llm_client(client)
         .with_permission_policy(policy)
+        .with_workspace_backend(services)
         .with_max_parallel_tasks(2)
         .with_manual_delegation_enabled(true);
     let session = agent
@@ -5598,6 +5612,11 @@ async function run(ctx, inputs) {
         !result.output.contains("requires confirmation but no HITL"),
         "deep-research must inherit the parent confirmation context: {}",
         result.output
+    );
+    assert_eq!(
+        runner.commands.read().unwrap().as_slice(),
+        ["echo inherited-dynamic-workflow-deep-research"],
+        "the child must execute through the parent workspace runner"
     );
 }
 

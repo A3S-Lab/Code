@@ -3,35 +3,72 @@
 use super::{
     normalize_relative_path_lossy, system_time_ms, LocalWorkspaceFile, LocalWorkspaceFileStatus,
 };
+use crate::language::LanguageCatalog;
 use ignore::WalkBuilder;
 use notify::{Event, EventKind};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 
 pub fn scan_workspace_files(root: &Path) -> Vec<LocalWorkspaceFile> {
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let mut files = scan_with_ignore(&root);
-    if let Some(paths) = git_workspace_paths(&root) {
-        apply_git_statuses(&root, &mut files, paths);
-    }
-    sorted_dedup(files)
+    let cancelled = AtomicBool::new(false);
+    scan_workspace_files_cancellable(root, &cancelled).unwrap_or_default()
 }
 
-fn git_workspace_paths(root: &Path) -> Option<Vec<(PathBuf, LocalWorkspaceFileStatus)>> {
+pub(super) fn scan_workspace_files_cancellable(
+    root: &Path,
+    cancelled: &AtomicBool,
+) -> Option<Vec<LocalWorkspaceFile>> {
+    scan_workspace_files_with(root, || cancelled.load(Ordering::Acquire))
+}
+
+fn scan_workspace_files_with(
+    root: &Path,
+    is_cancelled: impl Fn() -> bool,
+) -> Option<Vec<LocalWorkspaceFile>> {
+    if is_cancelled() {
+        return None;
+    }
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut files = scan_with_ignore(&root, &is_cancelled)?;
+    if is_cancelled() {
+        return None;
+    }
+    if let Some(paths) = git_workspace_paths(&root, &is_cancelled) {
+        if is_cancelled() {
+            return None;
+        }
+        apply_git_statuses(&root, &mut files, paths);
+    }
+    (!is_cancelled()).then(|| sorted_dedup(files))
+}
+
+fn git_workspace_paths(
+    root: &Path,
+    is_cancelled: &impl Fn() -> bool,
+) -> Option<Vec<(PathBuf, LocalWorkspaceFileStatus)>> {
     let mut out = Vec::new();
     let tracked = git_ls_files(
         root,
         &["ls-files", "--cached", "--recurse-submodules", "-z"],
+        is_cancelled,
     )
-    .or_else(|| git_ls_files(root, &["ls-files", "--cached", "-z"]))?;
+    .or_else(|| git_ls_files(root, &["ls-files", "--cached", "-z"], is_cancelled))?;
     out.extend(
         tracked
             .into_iter()
             .map(|path| (path, LocalWorkspaceFileStatus::Tracked)),
     );
-    let untracked = git_ls_files(root, &["ls-files", "--others", "--exclude-standard", "-z"])
-        .unwrap_or_default();
+    let untracked = git_ls_files(
+        root,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+        is_cancelled,
+    )
+    .unwrap_or_default();
     out.extend(
         untracked
             .into_iter()
@@ -40,24 +77,67 @@ fn git_workspace_paths(root: &Path) -> Option<Vec<(PathBuf, LocalWorkspaceFileSt
     Some(out)
 }
 
-fn git_ls_files(root: &Path, args: &[&str]) -> Option<Vec<PathBuf>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
+fn git_ls_files(
+    root: &Path,
+    args: &[&str],
+    is_cancelled: &impl Fn() -> bool,
+) -> Option<Vec<PathBuf>> {
+    if is_cancelled() {
+        return None;
+    }
+    let mut command = Command::new("git");
+    command.arg("-C").arg(root).args(args);
+    let (status, stdout) = command_stdout_cancellable(command, is_cancelled)?;
+    if !status.success() {
         return None;
     }
     Some(
-        output
-            .stdout
+        stdout
             .split(|byte| *byte == 0)
             .filter(|raw| !raw.is_empty())
             .map(|raw| PathBuf::from(String::from_utf8_lossy(raw).into_owned()))
             .collect(),
     )
+}
+
+fn command_stdout_cancellable(
+    mut command: Command,
+    is_cancelled: &impl Fn() -> bool,
+) -> Option<(ExitStatus, Vec<u8>)> {
+    command.stdout(Stdio::piped()).stderr(Stdio::null());
+    crate::tools::process::configure_std_process_group(&mut command);
+    let mut child = command.spawn().ok()?;
+    let mut process_group =
+        crate::tools::process::ProcessGroupGuard::for_process_id(Some(child.id()));
+    let mut stdout = child.stdout.take()?;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+
+    let status = loop {
+        if is_cancelled() {
+            process_group.kill();
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(_) => {
+                process_group.kill();
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return None;
+            }
+        }
+    };
+    process_group.disarm();
+    let stdout = reader.join().ok()?.ok()?;
+    Some((status, stdout))
 }
 
 fn apply_git_statuses(
@@ -107,9 +187,12 @@ fn preferred_status(
     }
 }
 
-fn scan_with_ignore(root: &Path) -> Vec<LocalWorkspaceFile> {
+fn scan_with_ignore(
+    root: &Path,
+    is_cancelled: &impl Fn() -> bool,
+) -> Option<Vec<LocalWorkspaceFile>> {
     let filter_root = root.to_path_buf();
-    WalkBuilder::new(root)
+    let walker = WalkBuilder::new(root)
         .hidden(false)
         .parents(true)
         .ignore(true)
@@ -123,17 +206,27 @@ fn scan_with_ignore(root: &Path) -> Vec<LocalWorkspaceFile> {
                 .map(|relative| !path_has_noise_component(relative))
                 .unwrap_or(true)
         })
-        .build()
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path == root {
-                return None;
-            }
-            let relative = path.strip_prefix(root).ok()?;
-            workspace_file(root, relative, LocalWorkspaceFileStatus::Unknown)
-        })
-        .collect()
+        .build();
+    let mut files = Vec::new();
+    for entry in walker {
+        if is_cancelled() {
+            return None;
+        }
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        if path == root {
+            continue;
+        }
+        let Some(relative) = path.strip_prefix(root).ok() else {
+            continue;
+        };
+        if let Some(file) = workspace_file(root, relative, LocalWorkspaceFileStatus::Unknown) {
+            files.push(file);
+        }
+    }
+    Some(files)
 }
 
 fn workspace_file(
@@ -151,7 +244,7 @@ fn workspace_file(
         return None;
     }
     Some(LocalWorkspaceFile {
-        language: language_for_path(Path::new(&relative)).map(str::to_string),
+        language: LanguageCatalog::id_for_path(Path::new(&relative)).map(str::to_string),
         binary: is_binary_file(&full_path, metadata.len()),
         generated: is_generated_path(Path::new(&relative)),
         modified_ms: metadata.modified().ok().map(system_time_ms),
@@ -179,7 +272,7 @@ fn sorted_dedup(files: Vec<LocalWorkspaceFile>) -> Vec<LocalWorkspaceFile> {
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files
 }
-fn path_has_noise_component(path: &Path) -> bool {
+pub(super) fn path_has_noise_component(path: &Path) -> bool {
     path.components().any(|component| {
         let Component::Normal(name) = component else {
             return false;
@@ -201,38 +294,6 @@ fn is_generated_path(path: &Path) -> bool {
             "target" | "node_modules" | ".next" | "dist" | "build" | "coverage"
         )
     })
-}
-
-fn language_for_path(path: &Path) -> Option<&'static str> {
-    match path.extension().and_then(|ext| ext.to_str())? {
-        "rs" => Some("rust"),
-        "toml" => Some("toml"),
-        "hcl" => Some("hcl"),
-        "js" | "mjs" | "cjs" => Some("javascript"),
-        "jsx" => Some("javascript-react"),
-        "ts" | "mts" | "cts" => Some("typescript"),
-        "tsx" => Some("typescript-react"),
-        "json" => Some("json"),
-        "md" | "mdx" => Some("markdown"),
-        "py" => Some("python"),
-        "go" => Some("go"),
-        "java" => Some("java"),
-        "kt" | "kts" => Some("kotlin"),
-        "swift" => Some("swift"),
-        "c" | "h" => Some("c"),
-        "cc" | "cpp" | "cxx" | "hpp" => Some("cpp"),
-        "cs" => Some("csharp"),
-        "rb" => Some("ruby"),
-        "php" => Some("php"),
-        "sh" | "bash" | "zsh" => Some("shell"),
-        "yml" | "yaml" => Some("yaml"),
-        "html" | "htm" => Some("html"),
-        "css" => Some("css"),
-        "scss" | "sass" => Some("scss"),
-        "sql" => Some("sql"),
-        "xml" => Some("xml"),
-        _ => None,
-    }
 }
 
 fn is_binary_file(path: &Path, size: u64) -> bool {
@@ -282,7 +343,7 @@ fn is_binary_file(path: &Path, size: u64) -> bool {
 }
 
 fn is_known_text_path(path: &Path) -> bool {
-    if language_for_path(path).is_some() {
+    if LanguageCatalog::id_for_path(path).is_some() {
         return true;
     }
     if matches!(
@@ -314,4 +375,63 @@ pub(super) fn is_relevant_event(event: &Event, root: &Path) -> bool {
             .map(|relative| !path_has_noise_component(relative))
             .unwrap_or(false)
     })
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::sync::Arc;
+
+    #[test]
+    fn cancellable_scan_skips_a_pre_cancelled_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("lib.rs"), "fn main() {}\n").unwrap();
+        let cancelled = AtomicBool::new(true);
+
+        assert!(scan_workspace_files_cancellable(workspace.path(), &cancelled).is_none());
+    }
+
+    #[test]
+    fn cancellable_scan_stops_during_traversal() {
+        let workspace = tempfile::tempdir().unwrap();
+        for index in 0..32 {
+            std::fs::write(
+                workspace.path().join(format!("file-{index}.rs")),
+                "fn item() {}\n",
+            )
+            .unwrap();
+        }
+        let checks = Cell::new(0_usize);
+
+        let result = scan_workspace_files_with(workspace.path(), || {
+            checks.set(checks.get() + 1);
+            checks.get() >= 5
+        });
+
+        assert!(result.is_none());
+        assert_eq!(checks.get(), 5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellable_command_kills_a_blocked_process_group() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let trigger = Arc::clone(&cancelled);
+        let cancel_task = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            trigger.store(true, Ordering::Release);
+        });
+        let mut command = Command::new("sh");
+        // Keep a shell leader and a separate descendant alive so the test
+        // fails if cancellation kills only the direct child.
+        command.args(["-c", "sleep 30 & wait"]);
+        let started = std::time::Instant::now();
+
+        let output = command_stdout_cancellable(command, &|| cancelled.load(Ordering::Acquire));
+
+        cancel_task.join().unwrap();
+        assert!(output.is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 }

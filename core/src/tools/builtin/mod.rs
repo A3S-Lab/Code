@@ -5,6 +5,7 @@
 
 pub(crate) mod bash;
 pub mod batch;
+mod code_intelligence;
 mod edit;
 mod generate_object;
 pub(crate) mod git;
@@ -45,8 +46,9 @@ pub(crate) fn safe_http_source_url(value: &str) -> Option<String> {
 /// and must be registered after the registry is wrapped in an Arc.
 pub fn register_builtins(
     registry: &ToolRegistry,
-    capabilities: &crate::workspace::WorkspaceCapabilities,
+    workspace_services: &crate::workspace::WorkspaceServices,
 ) {
+    let capabilities = workspace_services.capabilities();
     if capabilities.read {
         registry.register_builtin(Arc::new(read::ReadTool));
         registry.register_builtin(Arc::new(ls::LsTool));
@@ -64,6 +66,9 @@ pub fn register_builtins(
     if capabilities.search {
         registry.register_builtin(Arc::new(grep::GrepTool));
         registry.register_builtin(Arc::new(glob_tool::GlobTool));
+    }
+    if workspace_services.code_intelligence().is_some() {
+        code_intelligence::register(registry);
     }
     if capabilities.git {
         registry.register_builtin(Arc::new(git::GitTool));

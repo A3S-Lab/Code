@@ -20,21 +20,26 @@ use super::{
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, mpsc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, RwLock,
+};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::broadcast;
 
 mod scanner;
+mod watcher;
 use scanner::is_relevant_event;
 pub use scanner::scan_workspace_files;
+use watcher::run_manifest_task;
 
-const WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
-const WATCH_STARTUP_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const SNAPSHOT_CHANNEL_CAPACITY: usize = 16;
+const FILE_CHANGE_CHANNEL_CAPACITY: usize = 256;
 const RECENT_FILE_LIMIT: usize = 128;
 const RECENT_DECAY_HALF_LIFE_MS: f32 = 10.0 * 60.0 * 1000.0;
 const RECENT_FREQUENCY_NORMALIZER: f32 = 16.0;
@@ -81,6 +86,21 @@ pub struct LocalWorkspaceManifestSnapshot {
     pub scanned_at_ms: u64,
 }
 
+/// The normalized kind of a workspace file change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum WorkspaceFileChangeKind {
+    Created,
+    Changed,
+    Deleted,
+}
+
+/// A filesystem change for one normalized workspace-relative file path.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct WorkspaceFileChange {
+    pub path: WorkspacePath,
+    pub kind: WorkspaceFileChangeKind,
+}
+
 impl LocalWorkspaceManifestSnapshot {
     pub fn empty(root: PathBuf) -> Self {
         Self {
@@ -101,6 +121,8 @@ pub struct LocalWorkspaceManifest {
     state: Arc<RwLock<ManifestState>>,
     recent: Arc<RwLock<RecentFiles>>,
     snapshots: broadcast::Sender<LocalWorkspaceManifestSnapshot>,
+    changes: broadcast::Sender<WorkspaceFileChange>,
+    scan_cancelled: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -117,15 +139,28 @@ impl LocalWorkspaceManifest {
         }));
         let recent = Arc::new(RwLock::new(RecentFiles::default()));
         let (snapshots, _) = broadcast::channel(SNAPSHOT_CHANNEL_CAPACITY);
+        let (changes, _) = broadcast::channel(FILE_CHANGE_CHANNEL_CAPACITY);
+        let scan_cancelled = Arc::new(AtomicBool::new(false));
         let task_state = Arc::clone(&state);
         let task_snapshots = snapshots.clone();
+        let task_changes = changes.clone();
+        let task_scan_cancelled = Arc::clone(&scan_cancelled);
         let task = tokio::spawn(async move {
-            run_manifest_task(root, task_state, task_snapshots).await;
+            run_manifest_task(
+                root,
+                task_state,
+                task_snapshots,
+                task_changes,
+                task_scan_cancelled,
+            )
+            .await;
         });
         Arc::new(Self {
             state,
             recent,
             snapshots,
+            changes,
+            scan_cancelled,
             task,
         })
     }
@@ -139,6 +174,21 @@ impl LocalWorkspaceManifest {
 
     pub fn subscribe(&self) -> broadcast::Receiver<LocalWorkspaceManifestSnapshot> {
         self.snapshots.subscribe()
+    }
+
+    /// Subscribe to debounced, workspace-relative filesystem changes.
+    pub fn subscribe_changes(&self) -> broadcast::Receiver<WorkspaceFileChange> {
+        self.changes.subscribe()
+    }
+
+    /// Stop background discovery without waiting for an in-flight synchronous scan.
+    ///
+    /// Hosts with an explicit lifecycle should call this before shutting down
+    /// their Tokio runtime. [`Drop`] is only a fallback because other background
+    /// services may retain an `Arc` to the manifest until runtime teardown.
+    pub fn shutdown(&self) {
+        self.scan_cancelled.store(true, Ordering::Release);
+        self.task.abort();
     }
 
     /// Record that a workspace-relative file was opened, read, or written.
@@ -183,7 +233,10 @@ impl LocalWorkspaceManifest {
 
 impl Drop for LocalWorkspaceManifest {
     fn drop(&mut self) {
-        self.task.abort();
+        // Aborting the async owner does not stop synchronous discovery that has
+        // already begun. Signal the scanner first so a detached traversal stops
+        // consuming filesystem resources after its host has gone away.
+        self.shutdown();
     }
 }
 
@@ -683,81 +736,6 @@ impl WorkspaceGitWorktreeProvider for ManifestWorkspaceBackend {
     ) -> Result<WorkspaceGitWorktreeMutation> {
         self.local.remove_worktree(request).await
     }
-}
-
-async fn run_manifest_task(
-    root: PathBuf,
-    state: Arc<RwLock<ManifestState>>,
-    snapshots: broadcast::Sender<LocalWorkspaceManifestSnapshot>,
-) {
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    // Readiness must not depend on the platform watcher service. Watcher
-    // construction is blocking on some platforms and can be slow or fail
-    // under resource pressure, while the initial manifest is still useful.
-    publish_scan(&root, &state, &snapshots).await;
-
-    let watcher_root = root.clone();
-    let mut watcher_task = tokio::task::spawn_blocking(move || {
-        RecommendedWatcher::new(
-            move |event| {
-                let _ = event_tx.send(event);
-            },
-            Config::default(),
-        )
-        .and_then(|mut watcher| {
-            watcher.watch(&watcher_root, RecursiveMode::Recursive)?;
-            Ok(watcher)
-        })
-    });
-    let watcher = loop {
-        tokio::select! {
-            result = &mut watcher_task => break result,
-            _ = tokio::time::sleep(WATCH_STARTUP_SCAN_INTERVAL) => {
-                // Continue providing a fresh manifest while the platform
-                // watcher service is slow to initialize.
-                publish_scan(&root, &state, &snapshots).await;
-            }
-        }
-    };
-    let Ok(Ok(_watcher)) = watcher else {
-        return;
-    };
-    // Close the scan-to-watch registration window: files changed while the
-    // watcher was being constructed are captured by this second scan.
-    publish_scan(&root, &state, &snapshots).await;
-
-    while let Some(event) = event_rx.recv().await {
-        let Ok(event) = event else {
-            continue;
-        };
-        if !is_relevant_event(&event, &root) {
-            continue;
-        }
-        tokio::time::sleep(WATCH_DEBOUNCE).await;
-        while let Ok(event) = event_rx.try_recv() {
-            if let Ok(event) = event {
-                if !is_relevant_event(&event, &root) {
-                    continue;
-                }
-            }
-        }
-        publish_scan(&root, &state, &snapshots).await;
-    }
-}
-
-async fn publish_scan(
-    root: &Path,
-    state: &Arc<RwLock<ManifestState>>,
-    snapshots: &broadcast::Sender<LocalWorkspaceManifestSnapshot>,
-) {
-    let root = root.to_path_buf();
-    let Ok(files) = tokio::task::spawn_blocking(move || scan_workspace_files(&root)).await else {
-        return;
-    };
-    let Some(snapshot) = update_state(state, files) else {
-        return;
-    };
-    let _ = snapshots.send(snapshot);
 }
 
 fn update_state(

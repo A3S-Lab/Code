@@ -319,7 +319,8 @@ pub struct SessionOptions {
     /// Per-session tool round limit override.
     ///
     /// When set, overrides the agent-level `max_tool_rounds` for this session only.
-    /// Maps directly from [`AgentDefinition::max_steps`] when creating sessions
+    /// Maps directly from [`AgentDefinition::max_steps`](crate::subagent::AgentDefinition::max_steps)
+    /// when creating sessions
     /// via [`Agent::session_for_agent`].
     pub max_tool_rounds: Option<usize>,
     /// Per-session parallel fan-out limit override.

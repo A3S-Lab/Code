@@ -889,6 +889,21 @@ impl PySession {
         run_in_asyncio_executor(py, callable.into_any())
     }
 
+    /// Cancel the active operation and wait until the session is safe to reuse.
+    ///
+    /// A streaming worker that does not settle during ``grace_ms`` is aborted
+    /// and receives ``abort_grace_ms`` for cleanup.
+    #[pyo3(signature = (grace_ms=2000, abort_grace_ms=1000))]
+    fn cancel_and_settle(&self, py: Python<'_>, grace_ms: u64, abort_grace_ms: u64) -> bool {
+        let session = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(session.cancel_and_settle(
+                std::time::Duration::from_millis(grace_ms),
+                std::time::Duration::from_millis(abort_grace_ms),
+            ))
+        })
+    }
+
     /// Close the session and cancel any active operation.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let session = self.inner.clone();

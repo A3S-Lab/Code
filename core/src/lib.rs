@@ -78,6 +78,7 @@ pub(crate) mod agent;
 pub(crate) mod agent_api;
 pub mod budget;
 pub(crate) mod child_run;
+pub mod code_intelligence;
 pub mod commands;
 pub(crate) mod compaction;
 pub mod config;
@@ -90,6 +91,7 @@ pub(crate) mod git;
 pub mod hitl;
 pub mod hooks;
 pub mod host_env;
+pub(crate) mod language;
 pub mod llm;
 pub mod loop_checkpoint;
 pub mod mcp;
@@ -133,6 +135,13 @@ pub mod workspace;
 pub use agent::{AgentEvent, AgentResult};
 pub use agent_api::{
     Agent, AgentSession, ReadFileOptions, SessionBuilder, SessionOptions, ToolCallResult,
+};
+pub use code_intelligence::{
+    CodeDiagnostic, CodeDiagnosticSeverity, CodeIntelligenceCapabilities, CodeIntelligenceError,
+    CodeIntelligenceLanguageStatus, CodeIntelligenceResult, CodeIntelligenceState,
+    CodeIntelligenceStatus, CodeLocation, CodePosition, CodeQueryResult, CodeRange, CodeSymbolKind,
+    DocumentRevision, DocumentSnapshot, DocumentSymbol, LanguageId, LocalCodeIntelligence,
+    NavigationKind, SymbolInformation, WorkspaceCodeIntelligence,
 };
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
@@ -194,16 +203,17 @@ pub use workspace::{
     LocalWorkspaceManifestSnapshot, ManifestWorkspaceBackend, RecentWorkspaceFile,
     RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict, VirtualPathResolver,
     WorkspaceCapabilities, WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceError,
-    WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspaceFileType, WorkspaceGit,
-    WorkspaceGitBranch, WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest,
-    WorkspaceGitCommit, WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest,
-    WorkspaceGitDiffRequest, WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest,
-    WorkspaceGitStash, WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus,
-    WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
-    WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest,
-    WorkspaceGrepResult, WorkspacePath, WorkspacePathResolver, WorkspaceRef, WorkspaceResult,
-    WorkspaceSearch, WorkspaceServices, WorkspaceServicesBuilder, WorkspaceTextRange,
-    WorkspaceTextReader, WorkspaceVersionConflict, WorkspaceWriteOutcome,
+    WorkspaceFileChange, WorkspaceFileChangeKind, WorkspaceFileSystem, WorkspaceFileSystemExt,
+    WorkspaceFileType, WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput,
+    WorkspaceGitCheckoutRequest, WorkspaceGitCommit, WorkspaceGitCreateBranchRequest,
+    WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest, WorkspaceGitRemote,
+    WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash, WorkspaceGitStashProvider,
+    WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
+    WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
+    WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest, WorkspaceGrepResult,
+    WorkspacePath, WorkspacePathResolver, WorkspaceRef, WorkspaceResult, WorkspaceSearch,
+    WorkspaceServices, WorkspaceServicesBuilder, WorkspaceTextRange, WorkspaceTextReader,
+    WorkspaceVersionConflict, WorkspaceWriteOutcome,
 };
 #[cfg(feature = "s3")]
 pub use workspace::{S3BackendConfig, S3WorkspaceBackend};

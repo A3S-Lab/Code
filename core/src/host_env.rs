@@ -13,7 +13,7 @@
 //!
 //! Hosts plug a custom impl via
 //! [`SessionOptions::with_host_env`](crate::agent_api::SessionOptions::with_host_env);
-//! the framework uses [`SystemHostEnv`] (the wall-clock + random-UUID
+//! the framework uses [`HostEnv::system`] (the wall-clock + random-UUID
 //! default) when none is supplied — observably identical to pre-P2
 //! behaviour.
 
@@ -43,7 +43,7 @@ pub trait Clock: Send + Sync + std::fmt::Debug {
 }
 
 /// Bundle of host-environment capabilities. Used as the single
-/// `Option<Arc<HostEnv>>` slot on [`AgentConfig`](crate::agent::AgentConfig)
+/// `Option<Arc<HostEnv>>` slot on `AgentConfig`
 /// and [`SessionOptions`](crate::agent_api::SessionOptions) — avoids
 /// growing two parallel `Arc<dyn …>` fields.
 #[derive(Debug, Clone)]

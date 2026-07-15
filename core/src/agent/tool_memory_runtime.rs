@@ -86,7 +86,15 @@ fn should_skip_success_memory(tool_name: &str, output: &str) -> bool {
     let name = tool_name.to_ascii_lowercase();
     matches!(
         name.as_str(),
-        "read" | "grep" | "glob" | "ls" | "web_fetch" | "web_search"
+        "read"
+            | "grep"
+            | "glob"
+            | "ls"
+            | "web_fetch"
+            | "web_search"
+            | "code_symbols"
+            | "code_navigation"
+            | "code_diagnostics"
     )
 }
 
@@ -110,6 +118,9 @@ mod tests {
     #[test]
     fn read_only_success_memory_is_skipped() {
         assert!(should_skip_success_memory("grep", "match"));
+        assert!(should_skip_success_memory("code_symbols", "symbol"));
+        assert!(should_skip_success_memory("code_navigation", "location"));
+        assert!(should_skip_success_memory("code_diagnostics", "diagnostic"));
         assert!(!should_skip_success_memory("bash", "built"));
     }
 }

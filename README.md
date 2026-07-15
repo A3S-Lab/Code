@@ -73,6 +73,9 @@ the session for its next transcript operation.
   approval, apply budgets and hooks, sanitize events, and propagate cancellation
 - **Bounded Workspace Tools**: Read, search, edit, patch, execute, fetch, batch,
   and paginate without placing unbounded observations into model context
+- **Native Code Intelligence**: Query saved-file symbols, definitions,
+  declarations, references, implementations, and diagnostics through one
+  workspace-scoped semantic runtime
 - **Managed Context and Memory**: Assemble ranked context, compact repeatedly,
   preserve tool evidence, recall durable memory, and extract significant facts
 - **Model and MCP Adapters**: Use OpenAI-compatible, Anthropic, Zhipu, custom
@@ -101,6 +104,7 @@ explicit even when the supporting types are available.
 | Providers | Baseline | OpenAI-compatible, Anthropic, Zhipu, and custom `LlmClient` implementations |
 | Structured output | Baseline | Native or prompted JSON generation, JSON Schema validation, partial parsing, and repair |
 | Workspace tools | Baseline | Capability-gated file, search, shell, Git, web, batch, program, skill, and delegation tools |
+| Code Intelligence | Host-selected local workspace | Saved-file symbols, semantic navigation, diagnostics, typed status, and bounded result evidence |
 | Context | Baseline and host-selected | Ranked filesystem, recent-file, ripgrep, memory, prompt-slot, skill, project, and custom sources |
 | Memory | Baseline and configurable | Three-tier memory, a default workspace file store, typed overrides, recall, extraction, relations, and pruning |
 | Persistence | Configured store | Atomic `SessionSnapshotV1`, file or memory stores, run replay, traces, tasks, and checkpoints |
@@ -215,6 +219,7 @@ context providers, policies, stores, and active child work. The runtime can:
 - resume complete snapshots from a `SessionStore`;
 - atomically replace an idle persisted session with new runtime options;
 - list and close live sessions owned by an `Agent`;
+- cancel and settle an active operation before safely reusing its session;
 - save, cancel, or close without abandoning active child work; and
 - inspect runs, paginated run events, active tools, tasks, and verification.
 
@@ -251,6 +256,7 @@ object-only backend that cannot execute it.
 | --- | --- | --- |
 | Files and directories | `read`, `write`, `edit`, `patch`, `ls` | Ranged reads, resumable writes, compare-and-swap edits, strict unified patches, and bounded listings |
 | Workspace search | `glob`, `grep` | Bounded matching with explicit result metadata and continuation |
+| Code Intelligence | `code_symbols`, `code_navigation`, `code_diagnostics` | Saved-file semantic metadata and locations with bounded results; source retrieval and mutation stay in the existing file tools |
 | Commands and source control | `bash`, `git` | Bounded output, cancellation, process-group termination on Unix, and typed Git operations |
 | Web evidence | `web_search`, `web_fetch` | Ranked multi-engine search, normalized sources, SSRF protections, extraction, and bounded pages |
 | Structured output | `generate_object` | Schema-constrained model generation with validation and repair |
@@ -264,6 +270,36 @@ The built-in skill registry starts empty; skills come from configured
 directories, `AgentDir`, inline host input, or live registration. The
 model-visible `program` tool executes JavaScript in QuickJS, not arbitrary
 Python or a shell-script catalog.
+
+### Code Intelligence
+
+Local hosts can attach native Code Intelligence with
+`WorkspaceServices::local_with_code_intelligence` or the shared-backend
+variant. The provider reuses the existing workspace manifest, filesystem,
+path resolver, cancellation, and tool policy. It does not create a competing
+file index, search implementation, editing path, memory store, or MCP server.
+
+The initial profiles require `rust-analyzer` for Rust and
+`typescript-language-server --stdio` for TypeScript and JavaScript. Install the
+executables before launching the host:
+
+```sh
+rustup component add rust-analyzer
+npm install --global typescript typescript-language-server
+```
+
+Queries use saved files only. Public lines and characters are zero-based, and
+characters count UTF-16 code units. Document results include the saved-content
+revision and hash plus a stale flag when the file changes while a query is in
+flight. The first navigation request for a saved revision includes a bounded,
+cancellable stabilization pass so a protocol-ready but still-indexing server
+does not leak a cold partial result. The semantic tools return metadata and
+workspace-relative locations; agents continue to use `read`, `grep`, `edit`,
+and `patch` for source text and mutations.
+
+See the [Code Intelligence design](manual/CODE_INTELLIGENCE_DESIGN.md) for the
+capability boundary, shared runtime architecture, lifecycle, and verification
+plan.
 
 ### Tool governance
 
@@ -476,7 +512,7 @@ Core and the shared [A3S TUI](https://github.com/A3S-Lab/TUI) framework.
 | Area | TUI capability |
 | --- | --- |
 | Coding workspace | Streaming text, reasoning, tool cards, approvals, task progress, image/file input, session resume/fork, and bounded Markdown/diff rendering |
-| Workspace UI | Full-screen `/ide` file browser/editor and `/config` ACL editor with shared workspace and permission boundaries |
+| Workspace UI | Full-screen `/ide` file browser/editor with saved-file symbols, semantic navigation, and diagnostics, plus a `/config` ACL editor with shared workspace and permission boundaries |
 | Models and effort | ACL providers, signed-in Claude Code, Codex, and WorkBuddy accounts, host-provided models, and effort profiles from `low` through `ultracode` |
 | Long sessions | A single footer context meter, repeated model-aware compaction, past-session search, durable memory, daily consolidation, and local knowledge |
 | Orchestration | Planning, goals, tracked child tasks, parallel work, Ultracode workflows, bounded DeepResearch, and persistent maker/checker loops |

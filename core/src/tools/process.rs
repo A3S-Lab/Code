@@ -4,7 +4,7 @@ use super::MAX_OUTPUT_SIZE;
 use crate::workspace::{CommandOutputObserver, CommandOutputSummary};
 use std::collections::VecDeque;
 use tokio::io::AsyncReadExt;
-use tokio::process::Child;
+use tokio::process::{Child, Command};
 
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 const OUTPUT_HEAD_BYTES: usize = 64 * 1024;
@@ -64,35 +64,70 @@ impl BoundedCapture {
     }
 }
 
-#[cfg(unix)]
-struct ProcessGroupGuard {
+/// Configure a child as the leader of its own process group when supported.
+pub(crate) fn configure_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.as_std_mut().process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
+/// Configure a blocking child as the leader of its own process group when
+/// supported. Blocking workspace discovery commands use the same cancellation
+/// semantics as Tokio-managed tools and language servers.
+pub(crate) fn configure_std_process_group(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
+pub(crate) struct ProcessGroupGuard {
+    #[cfg(unix)]
     process_group: Option<i32>,
 }
 
-#[cfg(unix)]
 impl ProcessGroupGuard {
-    fn for_child(child: &Child) -> Self {
+    pub(crate) fn for_child(child: &Child) -> Self {
+        Self::for_process_id(child.id())
+    }
+
+    pub(crate) fn for_process_id(process_id: Option<u32>) -> Self {
+        #[cfg(not(unix))]
+        let _ = process_id;
         Self {
-            process_group: child.id().and_then(|id| i32::try_from(id).ok()),
+            #[cfg(unix)]
+            process_group: process_id.and_then(|id| i32::try_from(id).ok()),
         }
     }
 
-    fn kill(&mut self) {
-        if let Some(process_group) = self.process_group.take() {
-            // The shell is spawned as the leader of a dedicated process group.
-            // A negative PID addresses the whole group, including grandchildren.
-            unsafe {
-                libc::kill(-process_group, libc::SIGKILL);
+    pub(crate) fn kill(&mut self) {
+        #[cfg(unix)]
+        {
+            if let Some(process_group) = self.process_group.take() {
+                // A negative PID addresses the whole group, including
+                // grandchildren spawned by the language server or shell.
+                unsafe {
+                    libc::kill(-process_group, libc::SIGKILL);
+                }
             }
         }
     }
 
-    fn disarm(&mut self) {
-        self.process_group = None;
+    pub(crate) fn disarm(&mut self) {
+        #[cfg(unix)]
+        {
+            self.process_group = None;
+        }
     }
 }
 
-#[cfg(unix)]
 impl Drop for ProcessGroupGuard {
     fn drop(&mut self) {
         self.kill();
@@ -117,7 +152,6 @@ pub(crate) async fn read_process_output(
         }
     };
 
-    #[cfg(unix)]
     let mut process_group = ProcessGroupGuard::for_child(child);
     let mut capture = BoundedCapture::new();
     let mut stdout_done = false;
@@ -169,7 +203,6 @@ pub(crate) async fn read_process_output(
     .is_err();
 
     if timed_out {
-        #[cfg(unix)]
         process_group.kill();
         child.start_kill().ok();
         let _ = tokio::time::timeout(
@@ -178,7 +211,6 @@ pub(crate) async fn read_process_output(
         )
         .await;
     } else {
-        #[cfg(unix)]
         process_group.disarm();
     }
 

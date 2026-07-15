@@ -7,7 +7,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```text
 //! // Agent calls: Skill("data-processor")
 //! // The skill's allowed-tools are temporarily granted
 //! // After execution, permissions are restored

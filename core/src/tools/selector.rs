@@ -12,6 +12,9 @@ const CORE_TOOLS: &[&str] = &[
     "grep",
     "glob",
     "ls",
+    "code_symbols",
+    "code_navigation",
+    "code_diagnostics",
     "task",
     "parallel_task",
     "Skill",
@@ -183,6 +186,9 @@ mod tests {
             &defs(&[
                 "read",
                 "write",
+                "code_symbols",
+                "code_navigation",
+                "code_diagnostics",
                 "web_search",
                 "web_fetch",
                 "git",
@@ -199,6 +205,9 @@ mod tests {
         let names: Vec<_> = selected.iter().map(|t| t.name.as_str()).collect();
 
         assert!(names.contains(&"read"));
+        assert!(names.contains(&"code_symbols"));
+        assert!(names.contains(&"code_navigation"));
+        assert!(names.contains(&"code_diagnostics"));
         assert!(names.contains(&"task"));
         assert!(names.contains(&"Skill"));
         assert!(names.contains(&"search_skills"));

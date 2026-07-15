@@ -1327,6 +1327,14 @@ export declare class Session {
    */
   cancelAsync(): Promise<boolean>
   /**
+   * Cancel the active operation and wait until the session is safe to reuse.
+   *
+   * A streaming worker that does not settle during `graceMs` is aborted and
+   * receives a second `abortGraceMs` window for cleanup. Defaults are 2000
+   * and 1000 milliseconds respectively.
+   */
+  cancelAndSettle(graceMs?: number | undefined | null, abortGraceMs?: number | undefined | null): Promise<boolean>
+  /**
    * Close the session and cancel any active operation.
    *
    * Call this when the session will no longer be used so Node.js can exit

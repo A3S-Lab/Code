@@ -321,7 +321,8 @@ impl McpManager {
     /// Get all MCP tools, grouped by server name.
     ///
     /// Returns `(server_name, tool)` pairs — the caller is responsible for
-    /// constructing the `mcp__<server>__<tool>` prefix (e.g. via [`create_mcp_tools`]).
+    /// constructing the `mcp__<server>__<tool>` prefix (e.g. via
+    /// [`create_mcp_tools`](crate::mcp::create_mcp_tools)).
     pub async fn get_all_tools(&self) -> Vec<(String, McpTool)> {
         let clients = self.clients.read().await;
         let mut all_tools = Vec::new();

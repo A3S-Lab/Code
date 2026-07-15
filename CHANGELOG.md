@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-07-15
+
+### Added
+
+- Added workspace-scoped Code Intelligence for saved-file symbols,
+  definitions, declarations, references, implementations, and diagnostics,
+  with native Rust and TypeScript/JavaScript language-server profiles.
+- Added `AgentSession::cancel_and_settle(...)` and matching Node.js and Python
+  SDK methods so hosts can cooperatively cancel a run, bound streaming-worker
+  cleanup, and know when a session is safe to reuse.
+
+### Fixed
+
+- Made workspace manifest discovery cancellation-aware and kept watcher setup,
+  ownership, and teardown outside Tokio's blocking pool so host shutdown does
+  not wait indefinitely on filesystem work.
+- Stabilized the first navigation query for each saved document revision after
+  language-server initialization, preventing cold empty or partial reference
+  results without treating a legitimate empty result as an error.
+- Bounded language-service shutdown and force-reaped its dedicated process
+  group when a server closed protocol streams without exiting.
+
 ## [5.2.4] - 2026-07-14
 
 ### Fixed

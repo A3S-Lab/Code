@@ -893,7 +893,15 @@ fn tool_signature_is_error(signature: &str) -> bool {
 fn is_read_only_memory_tool(tool_name: &str) -> bool {
     matches!(
         tool_name.to_ascii_lowercase().as_str(),
-        "read" | "grep" | "glob" | "ls" | "web_fetch" | "web_search"
+        "read"
+            | "grep"
+            | "glob"
+            | "ls"
+            | "web_fetch"
+            | "web_search"
+            | "code_symbols"
+            | "code_navigation"
+            | "code_diagnostics"
     )
 }
 

@@ -15,7 +15,7 @@ checksum = "35b83be97f61abdd33096446eae063f9d65d98e84c446560b59d3c744194287e"
 
 [[package]]
 name = "a3s-code-core"
-version = "5.2.4"
+version = "5.3.0"
 dependencies = [
  "a3s-acl 0.2.0",
  "a3s-common",
@@ -46,6 +46,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "lopdf",
+ "lsp-types",
  "notify",
  "opentelemetry 0.27.1",
  "opentelemetry-otlp",
@@ -73,6 +74,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "uuid",
  "wiremock",
  "zip 0.6.6",
@@ -155,7 +157,6 @@ dependencies = [
  "clap",
  "dom_smoothie",
  "futures",
- "quick-xml",
  "reqwest 0.12.28",
  "scraper",
  "serde",
@@ -1817,6 +1818,15 @@ dependencies = [
 
 [[package]]
 name = "fluent-uri"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17c704e9dbe1ddd863da1e6ff3567795087b1eb201ce80d8fa81162e1516500d"
+dependencies = [
+ "bitflags 1.3.2",
+]
+
+[[package]]
+name = "fluent-uri"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc74ac4d8359ae70623506d512209619e5cf8f347124910440dbc221714b328e"
@@ -2874,6 +2884,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
+name = "lsp-types"
+version = "0.97.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53353550a17c04ac46c585feb189c2db82154fc84b79c7a66c96c2c644f66071"
+dependencies = [
+ "bitflags 1.3.2",
+ "fluent-uri 0.1.4",
+ "serde",
+ "serde_json",
+ "serde_repr",
+]
+
+[[package]]
 name = "mac"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3624,16 +3647,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quick-xml"
-version = "0.38.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
-dependencies = [
- "memchr",
- "serde",
-]
-
-[[package]]
 name = "quinn"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3854,7 +3867,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "348e860aeb0b7bd035778fd11dd9cd5290d32e4aed3b8f2274a00287a9fd362b"
 dependencies = [
  "ahash",
- "fluent-uri",
+ "fluent-uri 0.4.1",
  "getrandom 0.3.4",
  "hashbrown 0.17.1",
  "itoa",
@@ -4330,6 +4343,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_repr"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175ee3e80ae9982737ca543e96133087cbd9a485eecc3bc4de9c1a37b47ea59c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

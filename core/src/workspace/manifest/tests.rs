@@ -1,4 +1,10 @@
+use super::watcher::normalize_file_changes;
 use super::*;
+use notify::{
+    event::{ModifyKind, RenameMode},
+    Event, EventKind,
+};
+use std::collections::HashSet;
 use std::process::Command;
 
 fn write(path: &Path, body: &[u8]) {
@@ -235,6 +241,148 @@ async fn manifest_refreshes_after_file_event() {
     .unwrap();
 
     assert!(updated.version > initial.version);
+}
+
+#[test]
+fn file_change_batch_normalizes_and_merges_duplicate_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let created = root.join("src/new.rs");
+    let changed = root.join("src/lib.rs");
+    let ephemeral = root.join("src/ephemeral.rs");
+    let events = vec![
+        Event::new(EventKind::Create(notify::event::CreateKind::File)).add_path(created.clone()),
+        Event::new(EventKind::Modify(ModifyKind::Any)).add_path(created.clone()),
+        Event::new(EventKind::Modify(ModifyKind::Any)).add_path(changed.clone()),
+        Event::new(EventKind::Modify(ModifyKind::Any)).add_path(changed),
+        Event::new(EventKind::Create(notify::event::CreateKind::File)).add_path(ephemeral.clone()),
+        Event::new(EventKind::Remove(notify::event::RemoveKind::File)).add_path(ephemeral),
+    ];
+
+    let changes = normalize_file_changes(&root, &events, &HashSet::new());
+
+    assert_eq!(
+        changes,
+        vec![
+            WorkspaceFileChange {
+                path: WorkspacePath::from_normalized("src/new.rs"),
+                kind: WorkspaceFileChangeKind::Created,
+            },
+            WorkspaceFileChange {
+                path: WorkspacePath::from_normalized("src/lib.rs"),
+                kind: WorkspaceFileChangeKind::Changed,
+            },
+        ]
+    );
+}
+
+#[test]
+fn file_change_batch_treats_create_for_known_file_as_change() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let existing = root.join("src/lib.rs");
+    let events =
+        vec![Event::new(EventKind::Create(notify::event::CreateKind::File)).add_path(existing)];
+    let known_paths = HashSet::from(["src/lib.rs".to_string()]);
+
+    assert_eq!(
+        normalize_file_changes(&root, &events, &known_paths),
+        vec![WorkspaceFileChange {
+            path: WorkspacePath::from_normalized("src/lib.rs"),
+            kind: WorkspaceFileChangeKind::Changed,
+        }]
+    );
+}
+
+#[test]
+fn file_change_batch_reports_create_delete_and_rename_in_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let created = root.join("src/created.rs");
+    let deleted = root.join("src/deleted.rs");
+    let rename_from = root.join("src/old.rs");
+    let rename_to = root.join("src/new.rs");
+    let events = vec![
+        Event::new(EventKind::Create(notify::event::CreateKind::File)).add_path(created),
+        Event::new(EventKind::Remove(notify::event::RemoveKind::File)).add_path(deleted),
+        Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path(rename_from)
+            .add_path(rename_to),
+    ];
+
+    let known_paths = HashSet::from(["src/new.rs".to_string()]);
+    let changes = normalize_file_changes(&root, &events, &known_paths);
+
+    assert_eq!(
+        changes,
+        vec![
+            WorkspaceFileChange {
+                path: WorkspacePath::from_normalized("src/created.rs"),
+                kind: WorkspaceFileChangeKind::Created,
+            },
+            WorkspaceFileChange {
+                path: WorkspacePath::from_normalized("src/deleted.rs"),
+                kind: WorkspaceFileChangeKind::Deleted,
+            },
+            WorkspaceFileChange {
+                path: WorkspacePath::from_normalized("src/old.rs"),
+                kind: WorkspaceFileChangeKind::Deleted,
+            },
+            WorkspaceFileChange {
+                path: WorkspacePath::from_normalized("src/new.rs"),
+                kind: WorkspaceFileChangeKind::Created,
+            },
+        ]
+    );
+}
+
+#[test]
+fn file_change_batch_ignores_external_and_invalid_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let outside = root.parent().unwrap().join("outside.rs");
+    let invalid = root.join("../escape.rs");
+    let ignored = root.join("node_modules/package/index.js");
+    let events = vec![
+        Event::new(EventKind::Modify(ModifyKind::Any)).add_path(outside),
+        Event::new(EventKind::Modify(ModifyKind::Any)).add_path(invalid),
+        Event::new(EventKind::Modify(ModifyKind::Any)).add_path(ignored),
+        Event::new(EventKind::Modify(ModifyKind::Any)).add_path(root.clone()),
+    ];
+
+    assert!(normalize_file_changes(&root, &events, &HashSet::new()).is_empty());
+}
+
+#[tokio::test]
+async fn manifest_change_subscription_reports_same_size_content_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("src/lib.rs");
+    write(&path, b"aaaa\n");
+    let manifest = LocalWorkspaceManifest::start(temp.path());
+    let mut snapshots = manifest.subscribe();
+    let mut changes = manifest.subscribe_changes();
+    tokio::time::timeout(Duration::from_secs(5), snapshots.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let received = tokio::time::timeout(Duration::from_secs(10), async {
+        let contents = [b"bbbb\n".as_slice(), b"cccc\n".as_slice()];
+        let mut attempt = 0;
+        loop {
+            assert!(attempt < 20, "no content change was observed");
+            write(&path, contents[attempt % contents.len()]);
+            attempt += 1;
+            match tokio::time::timeout(Duration::from_millis(400), changes.recv()).await {
+                Ok(Ok(change)) if change.path.as_str() == "src/lib.rs" => break change,
+                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(received.kind, WorkspaceFileChangeKind::Changed);
 }
 
 #[tokio::test]
