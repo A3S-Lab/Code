@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "5.2.6"
+version = "5.2.7"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.7] - 2026-07-15
+
+### Fixed
+
+- Normalized Rust Analyzer `linkedProjects` paths to protocol-safe forward
+  slashes on Windows.
+- Stabilized the Windows release gate for nested workflow cancellation and
+  delegated permission inheritance under heavily loaded runners without
+  weakening their side-effect or permission assertions.
+
 ## [5.2.6] - 2026-07-15
 
 ### Fixed
