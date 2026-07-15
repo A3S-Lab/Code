@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.1] - 2026-07-16
+
 ### Added
 
 - Delegation tools now publish a deterministic live catalog of visible worker

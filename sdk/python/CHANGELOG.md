@@ -4,6 +4,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [5.3.1] - 2026-07-16
+
+### Fixed
+
+- Updated the bundled Core so live worker registration is reflected in the
+  model-facing delegation catalog and delegated sessions inherit live MCP
+  additions and removals.
+
 ## [5.3.0] - 2026-07-15
 
 ### Added
