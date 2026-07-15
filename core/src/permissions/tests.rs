@@ -44,6 +44,120 @@ fn interactive_guardrail_default_mode_balances_safe_and_sensitive_calls() {
 }
 
 #[test]
+fn interactive_guardrail_exposes_four_risk_levels_without_weakening_hitl() {
+    let cases = [
+        (
+            "read",
+            json!({"file_path": "src/lib.rs"}),
+            ToolRiskLevel::Routine,
+            ToolRiskAction::Allow,
+            PermissionDecision::Allow,
+        ),
+        (
+            "write",
+            json!({"file_path": "src/lib.rs"}),
+            ToolRiskLevel::Bounded,
+            ToolRiskAction::RequireConfirmation,
+            PermissionDecision::Ask,
+        ),
+        (
+            "bash",
+            json!({"command": "cargo test"}),
+            ToolRiskLevel::High,
+            ToolRiskAction::ReviewByLlm,
+            PermissionDecision::Ask,
+        ),
+        (
+            "bash",
+            json!({"command": "rm -rf /"}),
+            ToolRiskLevel::Critical,
+            ToolRiskAction::RuleDeny,
+            PermissionDecision::Deny,
+        ),
+    ];
+
+    let default = InteractiveToolGuardrail::default();
+    let auto = InteractiveToolGuardrail::for_mode("auto");
+    for (tool, args, level, default_action, legacy_decision) in cases {
+        let assessment = default.assess(tool, &args);
+        assert_eq!(assessment.level, level, "unexpected risk for {tool}");
+        assert!(
+            !assessment.reasons.is_empty(),
+            "risk assessments must remain explainable for {tool}"
+        );
+        assert_eq!(default.risk_action(tool, &args), default_action);
+        assert_eq!(default.check(tool, &args), legacy_decision);
+    }
+
+    assert_eq!(
+        auto.risk_action("write", &json!({"file_path": "src/lib.rs"})),
+        ToolRiskAction::Allow,
+        "auto may streamline a bounded workspace mutation"
+    );
+    assert_eq!(
+        auto.check("bash", &json!({"command": "cargo test"})),
+        PermissionDecision::Ask,
+        "a high-risk review candidate must retain HITL until a reviewer resolves it"
+    );
+    assert_eq!(
+        auto.check("bash", &json!({"command": "rm -rf /"})),
+        PermissionDecision::Deny,
+        "auto must never override a critical rule denial"
+    );
+}
+
+#[test]
+fn interactive_guardrail_aggregates_the_highest_batch_risk() {
+    let guardrail = InteractiveToolGuardrail::for_mode("auto");
+    for (args, expected_level, expected_action, expected_permission) in [
+        (
+            json!({"invocations": [
+                {"tool": "read", "args": {"file_path": "README.md"}},
+                {"tool": "git", "args": {"command": "status"}}
+            ]}),
+            ToolRiskLevel::Routine,
+            ToolRiskAction::Allow,
+            PermissionDecision::Allow,
+        ),
+        (
+            json!({"invocations": [
+                {"tool": "read", "args": {"file_path": "README.md"}},
+                {"tool": "write", "args": {"file_path": "README.md"}}
+            ]}),
+            ToolRiskLevel::Bounded,
+            ToolRiskAction::Allow,
+            PermissionDecision::Allow,
+        ),
+        (
+            json!({"invocations": [
+                {"tool": "write", "args": {"file_path": "README.md"}},
+                {"tool": "bash", "args": {"command": "cargo test"}}
+            ]}),
+            ToolRiskLevel::High,
+            ToolRiskAction::ReviewByLlm,
+            PermissionDecision::Ask,
+        ),
+        (
+            json!({"invocations": [
+                {"tool": "write", "args": {"file_path": "README.md"}},
+                {"tool": "bash", "args": {"command": "rm -rf /"}}
+            ]}),
+            ToolRiskLevel::Critical,
+            ToolRiskAction::RuleDeny,
+            PermissionDecision::Deny,
+        ),
+    ] {
+        let assessment = guardrail.assess("batch", &args);
+        assert_eq!(assessment.level, expected_level);
+        assert!(assessment
+            .reasons
+            .contains(&ToolRiskReason::CompositeInvocation));
+        assert_eq!(guardrail.risk_action("batch", &args), expected_action);
+        assert_eq!(guardrail.check("batch", &args), expected_permission);
+    }
+}
+
+#[test]
 fn interactive_guardrail_rejects_silent_shell_escape_regressions() {
     let guardrail = InteractiveToolGuardrail::default();
 

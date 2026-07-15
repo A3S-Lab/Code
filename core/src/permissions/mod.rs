@@ -10,6 +10,7 @@
 mod interactive;
 mod manager;
 mod policy;
+mod risk;
 mod rule;
 
 #[cfg(test)]
@@ -20,6 +21,10 @@ use serde::{Deserialize, Serialize};
 pub use interactive::{InteractiveApprovalMode, InteractiveToolGuardrail};
 pub use manager::{MatchingRules, PermissionManager};
 pub use policy::PermissionPolicy;
+pub use risk::{
+    EnvironmentSensitivity, ImpactScope, OperationTarget, Reversibility, ToolRiskAction,
+    ToolRiskAssessment, ToolRiskDimensions, ToolRiskLevel, ToolRiskReason, ToolRiskType,
+};
 pub use rule::PermissionRule;
 
 /// Trait for checking tool execution permissions.
