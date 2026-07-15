@@ -13,23 +13,31 @@
 //! 3. Summarize older messages while retaining a safe recent boundary
 //! 4. Re-arm the same policy so a long session can compact repeatedly
 
-use crate::llm::{ContentBlock, LlmClient, Message, ToolResultContent, ToolResultContentField};
-use crate::token_estimate::estimate_message_tokens;
+use crate::llm::{
+    estimate_message_tokens, ContentBlock, LlmClient, Message, ToolResultContent,
+    ToolResultContentField,
+};
 use anyhow::{Context, Result};
 use std::sync::Arc;
 
-/// Maximum number of recent messages to keep intact during compaction.
+/// Number of recent messages to keep intact during compaction
 pub(crate) const KEEP_RECENT_MESSAGES: usize = 20;
-
-/// Aim to leave at most half of the previous message-history tokens. Fixed
-/// system prompts and tool definitions are outside this budget.
-const COMPACTED_HISTORY_DIVISOR: usize = 2;
 
 /// At least one older message and one recent message are required.
 pub(crate) const MIN_MESSAGES_FOR_COMPACTION: usize = 2;
 
 /// Maximum number of recent tool-output tokens protected from pruning.
 const TOOL_OUTPUT_PROTECT_TOKENS: usize = 40_000;
+
+/// A compacted prompt targets 60% of the trigger watermark. At the default
+/// 85% trigger this lands at 51% of the model window, leaving enough room for
+/// another multi-tool turn instead of immediately climbing back into warning.
+const POST_COMPACTION_TRIGGER_FRACTION: f32 = 0.60;
+
+/// The generated summary is a durable state handoff, not another transcript.
+/// Keep a deterministic ceiling even if a provider ignores the prompt's word
+/// limit so one bad summary cannot consume the reclaimed context again.
+const MAX_COMPACT_SUMMARY_TOKENS: usize = 8_000;
 
 /// Replacement text for pruned tool outputs
 const PRUNED_MARKER: &str = "[output pruned — re-read file or re-run command if needed]";
@@ -43,6 +51,47 @@ pub(crate) struct CompactedMessages {
     pub(crate) summary: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CompactionBudget {
+    pub(crate) max_context_tokens: usize,
+    pub(crate) target_context_tokens: usize,
+    pub(crate) message_token_limit: usize,
+}
+
+impl CompactionBudget {
+    pub(crate) fn for_auto_compaction(
+        max_context_tokens: usize,
+        trigger_threshold: f32,
+        fixed_prompt_tokens: usize,
+    ) -> Self {
+        let trigger_threshold = if trigger_threshold.is_finite() {
+            trigger_threshold.clamp(0.05, 1.0)
+        } else {
+            0.85
+        };
+        let target_context_tokens = ((max_context_tokens as f64)
+            * f64::from(trigger_threshold)
+            * f64::from(POST_COMPACTION_TRIGGER_FRACTION))
+        .floor() as usize;
+        let target_context_tokens = target_context_tokens.clamp(1, max_context_tokens.max(1));
+
+        // Prefix instructions and tool schemas cannot be compacted. When they
+        // already exceed the target, still reserve a small summary allowance;
+        // the caller can reclaim all optional recent messages, while the next
+        // provider usage report exposes the irreducible prefix cost.
+        let minimum_summary_allowance = target_context_tokens.min(512);
+        let message_token_limit = target_context_tokens
+            .saturating_sub(fixed_prompt_tokens)
+            .max(minimum_summary_allowance);
+
+        Self {
+            max_context_tokens,
+            target_context_tokens,
+            message_token_limit,
+        }
+    }
+}
+
 /// Compact messages by summarizing old conversation turns.
 ///
 /// Returns `Some(new_messages)` if compaction was performed, or `None` when
@@ -51,7 +100,7 @@ pub(crate) async fn compact_messages(
     session_id: &str,
     messages: &[Message],
     llm_client: &Arc<dyn LlmClient>,
-    max_context_tokens: usize,
+    budget: CompactionBudget,
 ) -> Result<Option<CompactedMessages>> {
     if messages.len() < MIN_MESSAGES_FOR_COMPACTION {
         tracing::debug!(
@@ -69,7 +118,24 @@ pub(crate) async fn compact_messages(
         messages.len()
     );
 
-    let original_tokens = estimate_message_tokens(messages);
+    let total = messages.len();
+    // Keep at most half of a short history, and at most twenty messages from a
+    // long one. This lets a previously compacted history compact again instead
+    // of waiting to grow past a one-shot message-count gate.
+    let recent_count = KEEP_RECENT_MESSAGES.min((total / 2).max(1));
+    let summarize_end = safe_recent_start(messages, total.saturating_sub(recent_count));
+    if summarize_end == 0 {
+        tracing::debug!("No safe history boundary available for compaction");
+        return Ok(None);
+    }
+
+    let recent_messages = messages[summarize_end..].to_vec();
+
+    tracing::debug!(
+        "Compaction split: {} to summarize, {} recent",
+        summarize_end,
+        recent_messages.len()
+    );
 
     // The durable summary covers the complete visible conversation, including
     // the recent messages that remain verbatim in the active in-memory context.
@@ -85,7 +151,10 @@ pub(crate) async fn compact_messages(
     // Reserve roughly a quarter of the model window for the compaction
     // instructions and response. The middle is elided so both the original
     // goal and the latest pre-boundary state remain visible.
-    let max_summary_chars = max_context_tokens.saturating_mul(3).clamp(512, 600_000);
+    let max_summary_chars = budget
+        .max_context_tokens
+        .saturating_mul(3)
+        .clamp(512, 600_000);
     let conversation_text = truncate_middle(&conversation_text, max_summary_chars);
 
     let summarization_prompt = crate::prompts::render(
@@ -94,63 +163,40 @@ pub(crate) async fn compact_messages(
     );
 
     // Call LLM to generate summary
-    let summary_request_message = Message::user(&summarization_prompt);
+    let summary_message = Message::user(&summarization_prompt);
     let response = llm_client
-        .complete(
-            &[summary_request_message],
-            Some(COMPACTION_SYSTEM_PROMPT),
-            &[],
-        )
+        .complete(&[summary_message], Some(COMPACTION_SYSTEM_PROMPT), &[])
         .await
         .context("Failed to generate conversation summary")?;
 
-    let raw_summary = response.text();
-    if raw_summary.trim().is_empty() {
+    let summary_text = response.text();
+    if summary_text.trim().is_empty() {
         anyhow::bail!("Compaction model returned an empty summary");
     }
-    tracing::debug!("Generated summary: {} chars", raw_summary.len());
+    let summary_overhead =
+        estimate_message_tokens(&[Message::user(crate::prompts::CONTEXT_SUMMARY_PREFIX)]);
+    let summary_token_limit = budget
+        .message_token_limit
+        .saturating_sub(summary_overhead)
+        .clamp(1, MAX_COMPACT_SUMMARY_TOKENS);
+    let summary_text = truncate_summary_to_token_limit(summary_text.trim(), summary_token_limit);
+    tracing::debug!("Generated summary: {} chars", summary_text.len());
 
-    let target_tokens = compacted_history_target_tokens(original_tokens, max_context_tokens);
-    let minimum_recent_start = safe_recent_start(messages, messages.len().saturating_sub(1));
-    let minimum_recent_tokens = estimate_message_tokens(&messages[minimum_recent_start..]);
-    // Keep a complete summary whenever it still produces any net reduction.
-    // The half-history target governs how much verbatim recent context can be
-    // retained; it must not needlessly cut a small cumulative summary during
-    // later rolling cycles.
-    let summary_budget = original_tokens
-        .saturating_sub(minimum_recent_tokens)
-        .saturating_sub(1);
-    let summary_text = fit_summary_to_token_budget(raw_summary.trim(), summary_budget);
-    if summary_text.is_empty() {
-        tracing::debug!(
-            target_tokens,
-            minimum_recent_tokens,
-            "No safe token budget remains for a useful compaction summary"
-        );
-        return Ok(None);
-    }
+    let summary_message = Message::user(&format!(
+        "{}{}",
+        crate::prompts::CONTEXT_SUMMARY_PREFIX,
+        summary_text
+    ));
 
-    let summary_message = summary_message(&summary_text);
-    let summary_tokens = estimate_message_tokens(std::slice::from_ref(&summary_message));
-    let recent_budget = target_tokens.saturating_sub(summary_tokens);
-    let recent_start = recent_start_for_budget(messages, recent_budget);
-    let recent_messages = messages[recent_start..].to_vec();
-
+    let recent_messages = retain_recent_within_budget(
+        &summary_message,
+        recent_messages,
+        budget.message_token_limit,
+    );
     let mut new_messages = vec![summary_message];
     new_messages.extend(recent_messages);
-    let compacted_tokens = estimate_message_tokens(&new_messages);
-    if compacted_tokens >= original_tokens {
-        tracing::warn!(
-            original_tokens,
-            compacted_tokens,
-            "Compaction would not reduce estimated history tokens; keeping current context"
-        );
-        return Ok(None);
-    }
 
     tracing::info!(
-        original_tokens,
-        compacted_tokens,
         "Compaction complete: {} messages -> {} messages",
         messages.len(),
         new_messages.len()
@@ -162,50 +208,101 @@ pub(crate) async fn compact_messages(
     }))
 }
 
-fn compacted_history_target_tokens(original_tokens: usize, max_context_tokens: usize) -> usize {
-    let half_history =
-        original_tokens.saturating_add(COMPACTED_HISTORY_DIVISOR - 1) / COMPACTED_HISTORY_DIVISOR;
-    if max_context_tokens == 0 {
-        return half_history.max(1);
+fn retain_recent_within_budget(
+    summary: &Message,
+    mut recent: Vec<Message>,
+    message_token_limit: usize,
+) -> Vec<Message> {
+    while estimate_summary_and_recent_tokens(summary, &recent) > message_token_limit
+        && !recent.is_empty()
+    {
+        let protected_start = [
+            latest_user_instruction(&recent),
+            earliest_unresolved_tool_call(&recent),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(recent.len());
+        let removable = (1..=protected_start).find_map(|desired_start| {
+            let safe_start = safe_recent_start(&recent, desired_start);
+            (safe_start > 0 && safe_start <= protected_start).then_some(safe_start)
+        });
+        let Some(removable) = removable else {
+            break;
+        };
+        recent.drain(..removable);
     }
-    half_history
-        .min(max_context_tokens / COMPACTED_HISTORY_DIVISOR)
-        .max(1)
+    recent
 }
 
-fn recent_start_for_budget(messages: &[Message], budget_tokens: usize) -> usize {
-    let total = messages.len();
-    let lower_bound = total.saturating_sub(KEEP_RECENT_MESSAGES);
-    let mut best = safe_recent_start(messages, total.saturating_sub(1));
+fn latest_user_instruction(messages: &[Message]) -> Option<usize> {
+    messages.iter().rposition(|message| {
+        message.role == "user"
+            && message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text { .. }))
+    })
+}
 
-    for desired_start in (lower_bound..total).rev() {
-        let candidate = safe_recent_start(messages, desired_start);
-        if estimate_message_tokens(&messages[candidate..]) <= budget_tokens {
-            best = best.min(candidate);
-        }
+fn estimate_summary_and_recent_tokens(summary: &Message, recent: &[Message]) -> usize {
+    let mut messages = Vec::with_capacity(recent.len().saturating_add(1));
+    messages.push(summary.clone());
+    messages.extend_from_slice(recent);
+    estimate_message_tokens(&messages)
+}
+
+fn earliest_unresolved_tool_call(messages: &[Message]) -> Option<usize> {
+    messages.iter().enumerate().find_map(|(message_index, message)| {
+        message.content.iter().find_map(|block| {
+            let ContentBlock::ToolUse { id, .. } = block else {
+                return None;
+            };
+            let resolved = messages[message_index.saturating_add(1)..]
+                .iter()
+                .flat_map(|candidate| candidate.content.iter())
+                .any(|candidate| {
+                    matches!(candidate, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == id)
+                });
+            (!resolved).then_some(message_index)
+        })
+    })
+}
+
+fn truncate_summary_to_token_limit(summary: &str, token_limit: usize) -> String {
+    const MARKER: &str = "\n\n[... compact summary shortened ...]\n\n";
+
+    let max_bytes = token_limit.saturating_mul(4);
+    if summary.len() <= max_bytes {
+        return summary.to_string();
     }
-    best
-}
-
-fn summary_message(summary: &str) -> Message {
-    Message::user(&format!(
-        "{}{}",
-        crate::prompts::CONTEXT_SUMMARY_PREFIX,
-        summary
-    ))
-}
-
-fn fit_summary_to_token_budget(summary: &str, budget_tokens: usize) -> String {
-    let prefix_tokens = estimate_message_tokens(std::slice::from_ref(&summary_message("")));
-    if budget_tokens <= prefix_tokens {
+    if max_bytes == 0 {
         return String::new();
     }
-    let summary_budget_bytes = budget_tokens
-        .saturating_sub(prefix_tokens)
-        .saturating_mul(4);
-    truncate_middle(summary, summary_budget_bytes)
-        .trim()
-        .to_string()
+    if max_bytes <= MARKER.len() {
+        let mut end = max_bytes.min(summary.len());
+        while end > 0 && !summary.is_char_boundary(end) {
+            end -= 1;
+        }
+        return summary[..end].to_string();
+    }
+
+    let available = max_bytes - MARKER.len();
+    let mut head_end = available * 2 / 5;
+    while head_end > 0 && !summary.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = summary.len().saturating_sub(available - head_end);
+    while tail_start < summary.len() && !summary.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    format!(
+        "{}{}{}",
+        &summary[..head_end],
+        MARKER,
+        &summary[tail_start..]
+    )
 }
 
 fn safe_recent_start(messages: &[Message], desired_start: usize) -> usize {
@@ -302,15 +399,8 @@ fn render_tool_result_content(content: &ToolResultContentField) -> String {
 
 fn truncate_middle(text: &str, max_bytes: usize) -> String {
     const MARKER: &str = "\n\n[... older context elided for compaction ...]\n\n";
-    if text.len() <= max_bytes {
+    if text.len() <= max_bytes || max_bytes <= MARKER.len() {
         return text.to_string();
-    }
-    if max_bytes <= MARKER.len() {
-        let mut end = max_bytes.min(text.len());
-        while end > 0 && !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        return text[..end].to_string();
     }
     let available = max_bytes - MARKER.len();
     let mut head_end = available / 3;
@@ -435,7 +525,11 @@ fn estimate_tokens(text: &str) -> usize {
 }
 
 fn estimate_tool_result_tokens(content: &ToolResultContentField) -> usize {
-    let bytes = match content {
+    tool_result_content_bytes(content).saturating_add(3) / 4
+}
+
+fn tool_result_content_bytes(content: &ToolResultContentField) -> usize {
+    match content {
         ToolResultContentField::Text(text) => text.len(),
         ToolResultContentField::Blocks(blocks) => blocks.iter().fold(0usize, |total, block| {
             total.saturating_add(match block {
@@ -443,8 +537,7 @@ fn estimate_tool_result_tokens(content: &ToolResultContentField) -> usize {
                 ToolResultContent::Image { source } => source.data.len(),
             })
         }),
-    };
-    bytes.saturating_add(3) / 4
+    }
 }
 
 fn truncate_tool_result(content: &ToolResultContentField, max_bytes: usize) -> String {
@@ -486,7 +579,6 @@ mod tests {
     struct RecordingSummaryClient {
         prompts: Mutex<Vec<String>>,
         systems: Mutex<Vec<Option<String>>>,
-        summary: String,
     }
 
     #[async_trait::async_trait]
@@ -509,7 +601,7 @@ mod tests {
                 .unwrap()
                 .push(system.map(str::to_string));
             Ok(LlmResponse {
-                message: Message::assistant(&self.summary),
+                message: Message::assistant("durable compact summary"),
                 usage: TokenUsage::default(),
                 stop_reason: Some("stop".to_string()),
                 token_logprobs: Vec::new(),
@@ -580,17 +672,6 @@ mod tests {
         let code = "fn main() {\n    println!(\"Hello, world!\");\n}";
         let tokens = estimate_tokens(code);
         assert!(tokens > 5 && tokens < 20);
-    }
-
-    #[test]
-    fn summary_fitting_honors_small_utf8_safe_budget() {
-        let prefix_tokens = estimate_message_tokens(std::slice::from_ref(&summary_message("")));
-        let budget = prefix_tokens + 2;
-        let fitted = fit_summary_to_token_budget(&"摘要".repeat(100), budget);
-        let fitted_message = summary_message(&fitted);
-
-        assert!(!fitted.is_empty());
-        assert!(estimate_message_tokens(&[fitted_message]) <= budget);
     }
 
     // -- prune_tool_outputs tests --
@@ -787,14 +868,18 @@ mod tests {
         let client = Arc::new(RecordingSummaryClient {
             prompts: Mutex::new(Vec::new()),
             systems: Mutex::new(Vec::new()),
-            summary: "durable compact summary".to_string(),
         });
         let llm_client: Arc<dyn LlmClient> = client.clone();
 
-        let compacted = compact_messages("tool-history", &messages, &llm_client, 128_000)
-            .await
-            .unwrap()
-            .expect("history should compact");
+        let compacted = compact_messages(
+            "tool-history",
+            &messages,
+            &llm_client,
+            CompactionBudget::for_auto_compaction(128_000, 0.85, 0),
+        )
+        .await
+        .unwrap()
+        .expect("history should compact");
 
         assert_eq!(compacted.summary, "durable compact summary");
         assert_eq!(compacted.messages[0].role, "user");
@@ -808,45 +893,80 @@ mod tests {
             .is_some_and(|system| system.contains("untrusted data")));
     }
 
+    #[test]
+    fn auto_compaction_budget_targets_a_safe_post_compaction_watermark() {
+        let budget = CompactionBudget::for_auto_compaction(200_000, 0.85, 10_000);
+
+        assert_eq!(budget.target_context_tokens, 102_000);
+        assert_eq!(budget.message_token_limit, 92_000);
+        assert!(budget.target_context_tokens < 170_000);
+    }
+
     #[tokio::test]
-    async fn compact_messages_reduces_estimated_tokens_for_short_realistic_history() {
-        let messages = (0..40)
+    async fn compacted_history_is_trimmed_to_the_token_budget() {
+        let messages = (0..48)
             .map(|i| {
                 make_text_msg(
                     if i % 2 == 0 { "user" } else { "assistant" },
-                    &format!(
-                        "Seeded compaction fixture message {i}. {}",
-                        format!(
-                            "Ledger row {i} reconciles to invoice batch {i} and archived note {i}. "
-                        )
-                        .repeat(6)
-                    ),
+                    &format!("history-{i}-{}", "x".repeat(15_000)),
                 )
             })
             .collect::<Vec<_>>();
-        let latest = messages.last().unwrap().text();
-        let client: Arc<dyn LlmClient> = Arc::new(RecordingSummaryClient {
+        let client = Arc::new(RecordingSummaryClient {
             prompts: Mutex::new(Vec::new()),
             systems: Mutex::new(Vec::new()),
-            summary: "S".repeat(3_200),
         });
+        let llm_client: Arc<dyn LlmClient> = client;
+        let budget = CompactionBudget::for_auto_compaction(100_000, 0.85, 5_000);
 
-        let compacted = compact_messages("token-budget", &messages, &client, 200_000)
+        let compacted = compact_messages("bounded", &messages, &llm_client, budget)
             .await
             .unwrap()
             .expect("history should compact");
-        let before_tokens = estimate_message_tokens(&messages);
-        let after_tokens = estimate_message_tokens(&compacted.messages);
 
-        assert!(
-            after_tokens < before_tokens,
-            "estimated history must shrink: {before_tokens} -> {after_tokens}"
-        );
-        assert!(
-            compacted.messages.len() < 21,
-            "a fixed 20-message suffix is too large for this fixture"
-        );
-        assert_eq!(compacted.messages.last().unwrap().text(), latest);
+        assert!(estimate_message_tokens(&compacted.messages) <= budget.message_token_limit);
+        assert!(compacted.messages.len() < KEEP_RECENT_MESSAGES);
+        assert!(compacted.messages[0]
+            .text()
+            .contains("durable compact summary"));
+    }
+
+    #[tokio::test]
+    async fn compacted_history_keeps_an_unresolved_tool_call() {
+        let mut messages = (0..20)
+            .map(|i| {
+                make_text_msg(
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    &"x".repeat(8_000),
+                )
+            })
+            .collect::<Vec<_>>();
+        messages.push(Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "pending-tool".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({"command": "cargo test -p a3s-code-core"}),
+            }],
+            reasoning_content: None,
+        });
+        let client = Arc::new(RecordingSummaryClient {
+            prompts: Mutex::new(Vec::new()),
+            systems: Mutex::new(Vec::new()),
+        });
+        let llm_client: Arc<dyn LlmClient> = client;
+        let budget = CompactionBudget::for_auto_compaction(20_000, 0.85, 4_000);
+
+        let compacted = compact_messages("pending-tool", &messages, &llm_client, budget)
+            .await
+            .unwrap()
+            .expect("history should compact");
+
+        assert!(compacted.messages.iter().any(|message| {
+            message.content.iter().any(
+                |block| matches!(block, ContentBlock::ToolUse { id, .. } if id == "pending-tool"),
+            )
+        }));
     }
 
     // -- compact_messages tests (existing behavior preserved) --

@@ -12,6 +12,10 @@ Requirements:
 - Note any **errors or failures** encountered and how they were resolved (or that
   they are still open).
 - Note the **current state**: what has been completed and what still needs to be done.
+- Preserve the latest active user request, corrections, constraints, and immediate
+  next action precisely.
+- If the transcript already starts with a context summary, merge it into one
+  updated cumulative summary. Do not nest or repeat old summaries.
 - Do NOT include raw file contents or full command output — only summaries.
 
 Output format:

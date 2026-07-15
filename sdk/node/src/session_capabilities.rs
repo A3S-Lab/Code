@@ -6,6 +6,33 @@ use super::*;
 #[napi]
 impl Session {
     // ========================================================================
+    // Skill API
+    // ========================================================================
+
+    /// Add or replace a Skill in this live session.
+    ///
+    /// The Skill tools and model-visible catalog observe the new definition
+    /// immediately. Removing it restores the exact session Skill it shadowed.
+    #[napi]
+    pub fn add_skill(&self, skill: InlineSkill) -> napi::Result<()> {
+        self.inner
+            .add_skill(inline_skill_to_rust(skill)?)
+            .map_err(node_code_error)
+    }
+
+    /// Remove a Skill installed through `addSkill`.
+    #[napi]
+    pub fn remove_skill(&self, name: String) -> napi::Result<()> {
+        self.inner.remove_skill(&name).map_err(node_code_error)
+    }
+
+    /// Return the names in the session's current live Skill registry.
+    #[napi]
+    pub fn skill_names(&self) -> Vec<String> {
+        self.inner.skill_names()
+    }
+
+    // ========================================================================
     // MCP API
     // ========================================================================
 

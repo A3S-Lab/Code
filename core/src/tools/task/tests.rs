@@ -1006,6 +1006,7 @@ use crate::budget::{BudgetDecision, BudgetGuard};
 use crate::llm::{ContentBlock, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition};
 use crate::permissions::PermissionPolicy;
 use crate::subagent::AgentRegistry;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -1710,6 +1711,35 @@ impl ConcurrentLlmClient {
 struct LimitedConcurrencyLlmClient {
     active: AtomicUsize,
     max_active: AtomicUsize,
+    calls: AtomicUsize,
+}
+
+struct TransientThenSuccessLlmClient {
+    calls: AtomicUsize,
+    failures_before_success: usize,
+}
+
+struct SelectiveTransientLlmClient {
+    attempts: Mutex<HashMap<&'static str, usize>>,
+}
+
+struct BlockingCapacityLlmClient {
+    started: Notify,
+    release: Notify,
+    calls: AtomicUsize,
+}
+
+impl TransientThenSuccessLlmClient {
+    fn new(failures_before_success: usize) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            failures_before_success,
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
 }
 
 impl LimitedConcurrencyLlmClient {
@@ -1717,6 +1747,7 @@ impl LimitedConcurrencyLlmClient {
         Self {
             active: AtomicUsize::new(0),
             max_active: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
         }
     }
 
@@ -1724,9 +1755,44 @@ impl LimitedConcurrencyLlmClient {
         self.max_active.load(Ordering::SeqCst)
     }
 
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+
     fn record_active(&self) {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
+    }
+}
+
+impl SelectiveTransientLlmClient {
+    fn new() -> Self {
+        Self {
+            attempts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn attempts_for(&self, branch: &'static str) -> usize {
+        self.attempts
+            .lock()
+            .unwrap()
+            .get(branch)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+impl BlockingCapacityLlmClient {
+    fn new() -> Self {
+        Self {
+            started: Notify::new(),
+            release: Notify::new(),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
 }
 
@@ -1743,6 +1809,7 @@ impl LlmClient for LimitedConcurrencyLlmClient {
         }
 
         let prompt = last_text(messages);
+        self.calls.fetch_add(1, Ordering::SeqCst);
         self.record_active();
         tokio::time::sleep(Duration::from_millis(40)).await;
         self.active.fetch_sub(1, Ordering::SeqCst);
@@ -1757,6 +1824,106 @@ impl LlmClient for LimitedConcurrencyLlmClient {
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
         anyhow::bail!("streaming is not used by task executor tests")
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for SelectiveTransientLlmClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        if is_pre_analysis_system(system) {
+            return Ok(pre_analysis_response(messages));
+        }
+
+        let prompt = last_text(messages);
+        let branch = if prompt.contains("flaky branch") {
+            "flaky"
+        } else {
+            "stable"
+        };
+        let attempt = {
+            let mut attempts = self.attempts.lock().unwrap();
+            let attempt = attempts.entry(branch).or_default();
+            *attempt += 1;
+            *attempt
+        };
+        if branch == "flaky" && attempt <= 2 {
+            anyhow::bail!("provider overloaded: status 529; retry later");
+        }
+        Ok(text_response(format!("completed: {prompt}")))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("provider overloaded: status 529; retry later")
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for BlockingCapacityLlmClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        if is_pre_analysis_system(system) {
+            return Ok(pre_analysis_response(messages));
+        }
+
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(text_response(format!("completed: {}", last_text(messages))))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming is not used by capacity cancellation tests")
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for TransientThenSuccessLlmClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        if is_pre_analysis_system(system) {
+            return Ok(pre_analysis_response(messages));
+        }
+
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call < self.failures_before_success {
+            anyhow::bail!("provider overloaded: status 529; retry later");
+        }
+        Ok(text_response(format!("recovered: {}", last_text(messages))))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("provider overloaded: status 529; retry later")
     }
 }
 
@@ -2484,6 +2651,328 @@ async fn parallel_task_executor_respects_configured_concurrency_limit() {
     assert_eq!(results.len(), 5);
     assert!(results.iter().all(|result| result.success));
     assert_eq!(client.max_active(), 2);
+}
+
+#[tokio::test]
+async fn concurrent_parallel_calls_share_one_provider_capacity_window() {
+    let workspace = tempfile::tempdir().unwrap();
+    let client = Arc::new(LimitedConcurrencyLlmClient::new());
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            client.clone(),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_max_parallel_tasks(2),
+    );
+    let tasks = |prefix: &str| {
+        (0..3)
+            .map(|idx| TaskParams {
+                agent: "worker".to_string(),
+                description: format!("{prefix} task {idx}"),
+                prompt: format!("{prefix} branch {idx}"),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let (first, second) = tokio::join!(
+        executor.execute_parallel(tasks("first"), None, None),
+        executor.execute_parallel(tasks("second"), None, None),
+    );
+
+    assert!(first.iter().all(|result| result.success));
+    assert!(second.iter().all(|result| result.success));
+    assert_eq!(
+        client.max_active(),
+        2,
+        "per-call limits must not multiply across concurrent workflow steps"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_parallel_batches_share_eight_slots_and_execute_each_branch_once() {
+    const BATCH_COUNT: usize = 4;
+    const TASKS_PER_BATCH: usize = 7;
+    const PROVIDER_CAPACITY: usize = 8;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let client = Arc::new(LimitedConcurrencyLlmClient::new());
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            client.clone(),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_max_parallel_tasks(PROVIDER_CAPACITY),
+    );
+    let batches = (0..BATCH_COUNT).map(|batch| {
+        let executor = Arc::clone(&executor);
+        async move {
+            let tasks = (0..TASKS_PER_BATCH)
+                .map(|index| TaskParams {
+                    agent: "worker".to_string(),
+                    description: format!("Batch {batch} task {index}"),
+                    prompt: format!("batch {batch} branch {index}"),
+                    background: false,
+                    max_steps: Some(1),
+                    output_schema: None,
+                })
+                .collect::<Vec<_>>();
+            executor.execute_parallel(tasks, None, None).await
+        }
+    });
+
+    let results = tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(batches))
+        .await
+        .expect("bounded concurrent batches should finish");
+
+    assert_eq!(results.len(), BATCH_COUNT);
+    for (batch, batch_results) in results.iter().enumerate() {
+        assert_eq!(batch_results.len(), TASKS_PER_BATCH);
+        for (index, result) in batch_results.iter().enumerate() {
+            assert!(result.success, "unexpected failure: {result:#?}");
+            assert!(
+                result
+                    .output
+                    .contains(&format!("batch {batch} branch {index}")),
+                "input order or branch identity changed: {result:#?}"
+            );
+        }
+    }
+    assert_eq!(
+        client.max_active(),
+        PROVIDER_CAPACITY,
+        "all batches must share one provider window without underutilizing it"
+    );
+    assert_eq!(
+        client.calls(),
+        BATCH_COUNT * TASKS_PER_BATCH,
+        "successful branches must execute exactly once"
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_batch_waiting_for_provider_capacity_returns_promptly() {
+    let workspace = tempfile::tempdir().unwrap();
+    let client = Arc::new(BlockingCapacityLlmClient::new());
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            client.clone(),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_max_parallel_tasks(1),
+    );
+    let tool = Arc::new(ParallelTaskTool::new(executor));
+
+    let first_tool = Arc::clone(&tool);
+    let first_context = ToolContext::new(workspace.path().to_path_buf());
+    let first = tokio::spawn(async move {
+        first_tool
+            .execute(
+                &serde_json::json!({
+                    "tasks": [{
+                        "agent": "worker",
+                        "description": "Hold provider capacity",
+                        "prompt": "blocking branch"
+                    }]
+                }),
+                &first_context,
+            )
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(Duration::from_secs(1), client.started.notified())
+        .await
+        .expect("the first branch should acquire provider capacity");
+
+    let cancellation = CancellationToken::new();
+    let second_context =
+        ToolContext::new(workspace.path().to_path_buf()).with_cancellation(cancellation.clone());
+    let second_tool = Arc::clone(&tool);
+    let second = tokio::spawn(async move {
+        second_tool
+            .execute(
+                &serde_json::json!({
+                    "tasks": [{
+                        "agent": "worker",
+                        "description": "Wait for provider capacity",
+                        "prompt": "waiting branch"
+                    }]
+                }),
+                &second_context,
+            )
+            .await
+            .unwrap()
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    cancellation.cancel();
+
+    let second_output = tokio::time::timeout(Duration::from_millis(500), second)
+        .await
+        .expect("a cancelled capacity waiter must not hang")
+        .expect("capacity waiter task should join");
+    assert!(!second_output.success);
+    assert!(
+        second_output
+            .content
+            .contains("cancelled while waiting for parallel provider capacity"),
+        "{second_output:#?}"
+    );
+    assert_eq!(
+        client.calls(),
+        1,
+        "the cancelled waiter must never reach the provider"
+    );
+
+    client.release.notify_one();
+    let first_output = tokio::time::timeout(Duration::from_secs(1), first)
+        .await
+        .expect("the capacity holder should finish after release")
+        .expect("capacity holder task should join");
+    assert!(first_output.success, "{first_output:#?}");
+}
+
+#[tokio::test]
+async fn parallel_task_retries_only_the_failed_read_only_branch() {
+    let workspace = tempfile::tempdir().unwrap();
+    let client = Arc::new(TransientThenSuccessLlmClient::new(2));
+    let executor = Arc::new(TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        client.clone(),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let tool = ParallelTaskTool::new(executor);
+    let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "tasks": [{
+                    "agent": "explore",
+                    "description": "Inspect retry behavior",
+                    "prompt": "Read the relevant files and report evidence."
+                }]
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        output.success,
+        "retry should recover the branch: {output:?}"
+    );
+    assert!(output.content.contains("recovered:"), "{output:?}");
+    let metadata = output.metadata.expect("parallel metadata");
+    assert_eq!(metadata["retry_attempt_count"], 1);
+    assert_eq!(metadata["retried_task_count"], 1);
+    assert_eq!(metadata["recovered_task_count"], 1);
+    assert_eq!(metadata["results"][0]["retry_attempts"], 1);
+    assert_eq!(client.calls(), 3, "two child attempts plus one retry");
+}
+
+#[tokio::test]
+async fn parallel_retry_preserves_successful_siblings_without_replaying_them() {
+    let workspace = tempfile::tempdir().unwrap();
+    let client = Arc::new(SelectiveTransientLlmClient::new());
+    let executor = Arc::new(TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        client.clone(),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let tool = ParallelTaskTool::new(executor);
+    let context = ToolContext::new(workspace.path().to_path_buf());
+
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "tasks": [
+                    {
+                        "agent": "explore",
+                        "description": "Collect stable evidence",
+                        "prompt": "Inspect the stable branch."
+                    },
+                    {
+                        "agent": "explore",
+                        "description": "Collect flaky evidence",
+                        "prompt": "Inspect the flaky branch."
+                    }
+                ]
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        output.success,
+        "the isolated retry should recover: {output:#?}"
+    );
+    let metadata = output.metadata.expect("parallel metadata");
+    assert_eq!(metadata["retry_attempt_count"], 1);
+    assert_eq!(metadata["retried_task_count"], 1);
+    assert_eq!(metadata["recovered_task_count"], 1);
+    assert_eq!(metadata["results"][0]["retry_attempts"], 0);
+    assert_eq!(metadata["results"][1]["retry_attempts"], 1);
+    assert!(metadata["results"][0]["output_excerpt"]
+        .as_str()
+        .is_some_and(|output| output.contains("stable branch")));
+    assert!(metadata["results"][1]["output_excerpt"]
+        .as_str()
+        .is_some_and(|output| output.contains("flaky branch")));
+    assert_eq!(
+        client.attempts_for("stable"),
+        1,
+        "a successful sibling must never be replayed"
+    );
+    assert_eq!(
+        client.attempts_for("flaky"),
+        3,
+        "the child circuit breaker may try twice before one bounded branch retry"
+    );
+}
+
+#[tokio::test]
+async fn parallel_task_does_not_retry_a_mutating_branch() {
+    let workspace = tempfile::tempdir().unwrap();
+    let client = Arc::new(TransientThenSuccessLlmClient::new(2));
+    let executor = Arc::new(TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        client.clone(),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let tool = ParallelTaskTool::new(executor);
+    let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "tasks": [{
+                    "agent": "general",
+                    "description": "Potentially mutate the workspace",
+                    "prompt": "Implement the requested change."
+                }]
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(!output.success, "a mutating branch must not be replayed");
+    let metadata = output.metadata.expect("parallel metadata");
+    assert_eq!(metadata["retry_attempt_count"], 0);
+    assert_eq!(metadata["retried_task_count"], 0);
+    assert_eq!(metadata["recovered_task_count"], 0);
+    assert_eq!(metadata["results"][0]["retry_attempts"], 0);
+    assert_eq!(
+        client.calls(),
+        2,
+        "only the child circuit breaker may retry"
+    );
 }
 
 #[tokio::test]

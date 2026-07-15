@@ -41,9 +41,9 @@ extern crate napi_derive;
 mod js_callback_bridge;
 mod js_slash_command;
 mod state_graph;
-pub use state_graph::JsStateGraphRuntime;
 use js_callback_bridge::{decode_callback_outcome, wrap_sync_callback, JsCallbackOutcome};
 use js_slash_command::{js_command_context_to_object, JsSlashCommand};
+pub use state_graph::JsStateGraphRuntime;
 
 use a3s_code_core::commands::CommandContext as RustCommandContext;
 use a3s_code_core::config::AgentDir as RustAgentDir;
@@ -71,7 +71,9 @@ use a3s_code_core::queue::{
     SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
 };
 use a3s_code_core::serve::serve_agent_dir as rust_serve_agent_dir;
-use a3s_code_core::skills::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
+use a3s_code_core::skills::{
+    builtin_skills as rust_builtin_skills, Skill as RustSkill, SkillKind as RustSkillKind,
+};
 use a3s_code_core::subagent::{
     AgentDefinition as RustAgentDefinition, ModelConfig as RustAgentModelConfig,
     WorkerAgentKind as RustWorkerAgentKind, WorkerAgentSpec as RustWorkerAgentSpec,
@@ -634,6 +636,35 @@ pub struct InlineSkill {
     pub kind: String,
     /// Markdown content for the skill.
     pub content: String,
+}
+
+fn inline_skill_to_rust(skill: InlineSkill) -> napi::Result<Arc<RustSkill>> {
+    let name = skill.name.trim().to_string();
+    if name.is_empty() {
+        return Err(napi::Error::from_reason("skill name must not be empty"));
+    }
+
+    let kind = match skill.kind.trim() {
+        "" | "instruction" => RustSkillKind::Instruction,
+        "persona" => RustSkillKind::Persona,
+        "tool" => RustSkillKind::Tool,
+        other => {
+            return Err(napi::Error::from_reason(format!(
+                "unknown skill kind '{other}'; use 'instruction', 'persona', or 'tool'"
+            )))
+        }
+    };
+
+    Ok(Arc::new(RustSkill {
+        name,
+        description: String::new(),
+        allowed_tools: None,
+        disable_model_invocation: false,
+        kind,
+        content: skill.content,
+        tags: Vec::new(),
+        version: None,
+    }))
 }
 
 mod typed_providers;

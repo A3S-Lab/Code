@@ -51,7 +51,9 @@ use a3s_code_core::queue::{
     MetricsSnapshot as RustMetricsSnapshot, SessionLane as RustSessionLane,
     SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
 };
-use a3s_code_core::skills::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
+use a3s_code_core::skills::{
+    builtin_skills as rust_builtin_skills, Skill as RustSkill, SkillKind as RustSkillKind,
+};
 use a3s_code_core::verification::{
     format_verification_summary as rust_format_verification_summary,
     VerificationCommand as RustVerificationCommand, VerificationReport as RustVerificationReport,
@@ -87,6 +89,35 @@ fn py_code_error(error: a3s_code_core::CodeError) -> PyErr {
         let _ = py_error.value(py).setattr("code", code);
     });
     py_error
+}
+
+fn inline_skill_to_rust(name: String, content: String, kind: &str) -> PyResult<Arc<RustSkill>> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err(PyValueError::new_err("skill name must not be empty"));
+    }
+
+    let kind = match kind.trim() {
+        "" | "instruction" => RustSkillKind::Instruction,
+        "persona" => RustSkillKind::Persona,
+        "tool" => RustSkillKind::Tool,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown skill kind '{other}'; use 'instruction', 'persona', or 'tool'"
+            )))
+        }
+    };
+
+    Ok(Arc::new(RustSkill {
+        name,
+        description: String::new(),
+        allowed_tools: None,
+        disable_model_invocation: false,
+        kind,
+        content,
+        tags: Vec::new(),
+        version: None,
+    }))
 }
 
 use a3s_code_core::config::AgentDir as RustAgentDir;

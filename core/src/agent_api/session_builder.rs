@@ -218,6 +218,10 @@ fn finish_agent_session(
         mcp_tool_ownership: std::sync::Mutex::new(
             super::session_extensions::SessionMcpToolOwnership::default(),
         ),
+        skill_registry: Arc::clone(&effective_registry),
+        skill_ownership: std::sync::Mutex::new(
+            super::session_extensions::SessionSkillOwnership::default(),
+        ),
     });
 
     let session = AgentSession {

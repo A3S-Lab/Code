@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 pub enum SessionLane {
     /// Control operations (P0) - pause, resume, cancel
     Control,
-    /// Query operations (P1) - read, glob, ls, grep
+    /// Query operations (P1) - workspace reads and Code Intelligence queries
     Query,
     /// Execute operations (P2) - bash, write, edit
     Execute,
@@ -56,7 +56,9 @@ impl SessionLane {
     pub fn from_tool_name(tool_name: &str) -> Self {
         match tool_name {
             "read" | "glob" | "ls" | "grep" | "list_files" | "search" | "web_fetch"
-            | "web_search" => SessionLane::Query,
+            | "web_search" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
+                SessionLane::Query
+            }
             "bash" | "write" | "edit" | "delete" | "move" | "copy" | "execute" => {
                 SessionLane::Execute
             }

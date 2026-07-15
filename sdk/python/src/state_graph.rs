@@ -93,6 +93,19 @@ impl PyStateGraphRuntime {
     }
 }
 
+impl PyStateGraphRuntime {
+    fn lock(&self) -> PyResult<std::sync::MutexGuard<'_, GraphRuntime>> {
+        self.inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("state graph runtime lock poisoned"))
+    }
+}
+
+fn encode(value: &(impl serde::Serialize + ?Sized), label: &str) -> PyResult<String> {
+    serde_json::to_string(value)
+        .map_err(|error| PyRuntimeError::new_err(format!("failed to encode {label}: {error}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,20 +120,8 @@ mod tests {
         let restored = PyStateGraphRuntime::restore(&runtime.events_json().unwrap()).unwrap();
         assert_eq!(restored.version().unwrap(), 1);
         let fork = restored.fork_at(3).unwrap();
-        let diff: serde_json::Value = serde_json::from_str(&fork.diff_json(&restored).unwrap()).unwrap();
+        let diff: serde_json::Value =
+            serde_json::from_str(&fork.diff_json(&restored).unwrap()).unwrap();
         assert!(diff.is_object());
     }
-}
-
-impl PyStateGraphRuntime {
-    fn lock(&self) -> PyResult<std::sync::MutexGuard<'_, GraphRuntime>> {
-        self.inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("state graph runtime lock poisoned"))
-    }
-}
-
-fn encode(value: &(impl serde::Serialize + ?Sized), label: &str) -> PyResult<String> {
-    serde_json::to_string(value)
-        .map_err(|error| PyRuntimeError::new_err(format!("failed to encode {label}: {error}")))
 }

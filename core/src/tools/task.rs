@@ -110,6 +110,10 @@ pub struct TaskExecutor {
     /// handles from starting new child runs after their session is closed.
     parent_cancellation: Option<CancellationToken>,
     max_parallel_tasks: usize,
+    /// Shared across every fan-out started by this executor. Per-call wave
+    /// limits alone are insufficient when a dynamic workflow launches several
+    /// `parallel_task` host steps concurrently.
+    parallel_permits: Arc<tokio::sync::Semaphore>,
     /// Optional shared tracker — when present each task registers a
     /// `CancellationToken` so callers can cancel by `task_id`.
     subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
@@ -130,6 +134,9 @@ impl TaskExecutor {
             parent_context: None,
             parent_cancellation: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
+            parallel_permits: Arc::new(tokio::sync::Semaphore::new(
+                crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
+            )),
             subagent_tracker: None,
         }
     }
@@ -159,6 +166,9 @@ impl TaskExecutor {
             parent_context: None,
             parent_cancellation: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
+            parallel_permits: Arc::new(tokio::sync::Semaphore::new(
+                crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
+            )),
             subagent_tracker: None,
         }
     }
@@ -166,7 +176,9 @@ impl TaskExecutor {
     /// Set parent session capabilities to inherit into child runs.
     pub fn with_parent_context(mut self, ctx: crate::child_run::ChildRunContext) -> Self {
         if let Some(max_parallel_tasks) = ctx.max_parallel_tasks {
-            self.max_parallel_tasks = max_parallel_tasks.max(1);
+            let max_parallel_tasks = max_parallel_tasks.max(1);
+            self.max_parallel_tasks = max_parallel_tasks;
+            self.parallel_permits = Arc::new(tokio::sync::Semaphore::new(max_parallel_tasks));
         }
         self.parent_context = Some(ctx);
         self
@@ -184,7 +196,9 @@ impl TaskExecutor {
     }
 
     pub fn with_max_parallel_tasks(mut self, max_parallel_tasks: usize) -> Self {
-        self.max_parallel_tasks = max_parallel_tasks.max(1);
+        let max_parallel_tasks = max_parallel_tasks.max(1);
+        self.max_parallel_tasks = max_parallel_tasks;
+        self.parallel_permits = Arc::new(tokio::sync::Semaphore::new(max_parallel_tasks));
         self
     }
 
@@ -842,7 +856,7 @@ impl Tool for ParallelTaskTool {
     }
 
     fn description(&self) -> &str {
-        "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. By default any failed child makes the tool fail; evidence-gathering callers may set allow_partial_failure=true to continue when at least one child succeeds. Use this only when the work genuinely splits into branches that can be investigated or implemented separately (e.g. inspect several unrelated modules at once, or run review and verification in parallel). Do NOT use it for trivial, conversational, or single-step requests, or for steps that depend on one another — handle those directly. Built-in agents: explore (read-only codebase and web evidence search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
+        "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. By default any failed child makes the tool fail; evidence-gathering callers may set allow_partial_failure=true to continue when at least one child succeeds. Transient provider failures may be retried once only for explicitly read-only branches; successful and potentially mutating branches are never replayed. Use this only when the work genuinely splits into branches that can be investigated or implemented separately (e.g. inspect several unrelated modules at once, or run review and verification in parallel). Do NOT use it for trivial, conversational, or single-step requests, or for steps that depend on one another — handle those directly. Built-in agents: explore (read-only codebase and web evidence search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -865,11 +879,12 @@ impl Tool for ParallelTaskTool {
         }
 
         let task_count = params.tasks.len();
+        let tasks = params.tasks.clone();
 
-        let run = self
+        let mut run = self
             .executor
             .execute_parallel_for_tool(
-                params.tasks,
+                tasks.clone(),
                 ctx.agent_event_tx.clone(),
                 parallel_execution::ParallelToolOptions {
                     parent_session_id: ctx.session_id.as_deref(),
@@ -878,6 +893,20 @@ impl Tool for ParallelTaskTool {
                     allow_partial_failure: params.allow_partial_failure,
                     parent_cancellation: Some(&parent_cancellation),
                 },
+            )
+            .await;
+        let retry_summary = self
+            .executor
+            .retry_transient_parallel_failures(
+                &tasks,
+                parallel_execution::ParallelRetryOptions {
+                    event_tx: ctx.agent_event_tx.clone(),
+                    parent_session_id: ctx.session_id.as_deref(),
+                    parent_cancellation: &parent_cancellation,
+                    total_timeout_ms: params.timeout_ms,
+                    started_at,
+                },
+                &mut run,
             )
             .await;
         let results = run.results;
@@ -889,6 +918,7 @@ impl Tool for ParallelTaskTool {
         for (i, result) in results.iter().enumerate() {
             let status = if result.success { "[OK]" } else { "[ERR]" };
             let (formatted, truncated) = format_task_result_for_context(result);
+            let (output_excerpt, _) = compact_task_output(&result.output);
             let source_anchors = &result.source_anchors[..source_anchor_counts[i]];
             metadata_results.push(serde_json::json!({
                 "task_id": result.task_id,
@@ -898,12 +928,14 @@ impl Tool for ParallelTaskTool {
                 "error_message": (!result.success).then(|| {
                     crate::text::truncate_utf8(&result.output, 1024).to_string()
                 }),
+                "output_excerpt": output_excerpt,
                 "structured": result.structured,
                 "source_anchors": source_anchors,
                 "output_bytes": result.output.len(),
                 "truncated_for_context": truncated,
                 "artifact_id": task_artifact_id(result),
                 "artifact_uri": task_artifact_uri(result),
+                "retry_attempts": retry_summary.attempts_by_index.get(i).copied().unwrap_or_default(),
             }));
             output.push_str(&format!(
                 "--- Task {} ({}) {} ---\n{}\n\n",
@@ -918,6 +950,12 @@ impl Tool for ParallelTaskTool {
         let failed_count = results.len().saturating_sub(success_count);
         let all_success = failed_count == 0;
         let partial_failure = failed_count > 0 && success_count > 0;
+        if retry_summary.recovered_task_count > 0 {
+            output.push_str(&format!(
+                "Recovered {} transient read-only child failure(s) by retrying only failed branches.\n",
+                retry_summary.recovered_task_count
+            ));
+        }
         if params.allow_partial_failure && partial_failure {
             output.push_str(&format!(
                 "Partial failure tolerated: {success_count} succeeded, {failed_count} failed.\n"
@@ -960,6 +998,9 @@ impl Tool for ParallelTaskTool {
             "timed_out": run.timed_out,
             "min_success_count": params.min_success_count,
             "returned_early": run.returned_early,
+            "retry_attempt_count": retry_summary.retry_attempt_count,
+            "retried_task_count": retry_summary.retried_task_count,
+            "recovered_task_count": retry_summary.recovered_task_count,
             "duration_ms": started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             "results": metadata_results,
         })))

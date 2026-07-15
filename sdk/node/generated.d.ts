@@ -1327,6 +1327,14 @@ export declare class Session {
    */
   cancelAsync(): Promise<boolean>
   /**
+   * Cancel the active operation and wait until the session is safe to reuse.
+   *
+   * A streaming worker that does not settle during `graceMs` is aborted and
+   * receives a second `abortGraceMs` window for cleanup. Defaults are 2000
+   * and 1000 milliseconds respectively.
+   */
+  cancelAndSettle(graceMs?: number | undefined | null, abortGraceMs?: number | undefined | null): Promise<boolean>
+  /**
    * Close the session and cancel any active operation.
    *
    * Call this when the session will no longer be used so Node.js can exit
@@ -1555,6 +1563,17 @@ export declare class Session {
    * @returns Object with `counters`, `gauges`, and `histograms` maps, or null
    */
   queueMetrics(): Promise<any>
+  /**
+   * Add or replace a Skill in this live session.
+   *
+   * The Skill tools and model-visible catalog observe the new definition
+   * immediately. Removing it restores the exact session Skill it shadowed.
+   */
+  addSkill(skill: InlineSkill): void
+  /** Remove a Skill installed through `addSkill`. */
+  removeSkill(name: string): void
+  /** Return the names in the session's current live Skill registry. */
+  skillNames(): Array<string>
   /**
    * Add an MCP server to this live session.
    *

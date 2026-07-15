@@ -331,6 +331,21 @@ fn extraction_gate_skips_short_successful_read_only_tool_turns() {
 }
 
 #[test]
+fn extraction_gate_skips_short_successful_code_intelligence_turns() {
+    for tool in ["code_symbols", "code_navigation", "code_diagnostics"] {
+        let mut state = ExecutionLoopState::new(&[]);
+        state.tool_calls_count = 1;
+        state.remember_tool_signature(tool, &serde_json::json!({}), false);
+
+        assert!(!should_attempt_llm_memory_extraction(
+            &snapshot(&state),
+            "inspect code",
+            "Structured result"
+        ));
+    }
+}
+
+#[test]
 fn extraction_gate_accepts_read_only_tool_turns_with_memory_language() {
     let mut state = ExecutionLoopState::new(&[]);
     state.tool_calls_count = 1;

@@ -8,8 +8,10 @@
 use super::{AgentEvent, AgentLoop, InvocationContext};
 use crate::budget::{BudgetDecision, BudgetGuard};
 use crate::llm::structured::{NativeStructuredSupport, StructuredDirective};
-use crate::llm::{LlmClient, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition};
-use crate::token_estimate::estimate_prompt_tokens;
+use crate::llm::{
+    estimate_prompt_tokens, LlmClient, LlmResponse, Message, StreamEvent, TokenUsage,
+    ToolDefinition,
+};
 use async_trait::async_trait;
 use std::future::Future;
 use std::sync::Arc;

@@ -2698,8 +2698,17 @@ async fn test_execute_plan_delegated_parallel_wave_maps_child_failure() {
     let steps = envelope["steps"].as_array().expect("steps");
     assert_eq!(steps[0]["step_id"], "s1");
     assert_eq!(steps[0]["status"], "completed");
+    assert!(steps[0]["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("delegated docs complete")));
+    assert!(!steps[0]["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("Unknown agent")));
     assert_eq!(steps[1]["step_id"], "s2");
     assert_eq!(steps[1]["status"], "failed");
+    assert!(steps[1]["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("Unknown agent")));
 }
 
 #[tokio::test]

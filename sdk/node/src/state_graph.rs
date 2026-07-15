@@ -101,6 +101,19 @@ impl JsStateGraphRuntime {
     }
 }
 
+impl JsStateGraphRuntime {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, GraphRuntime>> {
+        self.inner
+            .lock()
+            .map_err(|_| Error::from_reason("state graph runtime lock poisoned"))
+    }
+}
+
+fn encode(value: &(impl serde::Serialize + ?Sized), label: &str) -> Result<String> {
+    serde_json::to_string(value)
+        .map_err(|error| Error::from_reason(format!("failed to encode {label}: {error}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,22 +129,11 @@ mod tests {
         let restored = JsStateGraphRuntime::restore(events).unwrap();
         assert_eq!(restored.version().unwrap(), 1);
         let fork = restored.fork_at(3).unwrap();
-        assert!(serde_json::from_str::<serde_json::Value>(&fork.diff_json(&restored).unwrap())
-            .unwrap()
-            .as_object()
-            .is_some());
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&fork.diff_json(&restored).unwrap())
+                .unwrap()
+                .as_object()
+                .is_some()
+        );
     }
-}
-
-impl JsStateGraphRuntime {
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, GraphRuntime>> {
-        self.inner
-            .lock()
-            .map_err(|_| Error::from_reason("state graph runtime lock poisoned"))
-    }
-}
-
-fn encode(value: &(impl serde::Serialize + ?Sized), label: &str) -> Result<String> {
-    serde_json::to_string(value)
-        .map_err(|error| Error::from_reason(format!("failed to encode {label}: {error}")))
 }

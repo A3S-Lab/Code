@@ -254,3 +254,126 @@ async fn write_for_edit_falls_back_to_plain_write_when_version_is_none() {
     let current = fs.read_text(&path).await.unwrap();
     assert_eq!(current, "beta");
 }
+
+struct TestCodeIntelligence {
+    status: tokio::sync::watch::Sender<crate::code_intelligence::CodeIntelligenceStatus>,
+}
+
+impl TestCodeIntelligence {
+    fn ready() -> Self {
+        use crate::code_intelligence::{
+            CodeIntelligenceCapabilities, CodeIntelligenceState, CodeIntelligenceStatus,
+        };
+
+        let (status, _) = tokio::sync::watch::channel(CodeIntelligenceStatus {
+            state: CodeIntelligenceState::Ready,
+            capabilities: CodeIntelligenceCapabilities {
+                document_symbols: true,
+                ..CodeIntelligenceCapabilities::default()
+            },
+            languages: Vec::new(),
+            message: None,
+        });
+        Self { status }
+    }
+
+    fn unavailable<T>() -> crate::code_intelligence::CodeIntelligenceResult<T> {
+        Err(
+            crate::code_intelligence::CodeIntelligenceError::Unavailable {
+                message: "test provider has no runtime".to_string(),
+            },
+        )
+    }
+}
+
+#[async_trait]
+impl crate::code_intelligence::WorkspaceCodeIntelligence for TestCodeIntelligence {
+    fn subscribe_status(
+        &self,
+    ) -> tokio::sync::watch::Receiver<crate::code_intelligence::CodeIntelligenceStatus> {
+        self.status.subscribe()
+    }
+
+    async fn document_symbols(
+        &self,
+        _path: &WorkspacePath,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> crate::code_intelligence::CodeIntelligenceResult<
+        crate::code_intelligence::CodeQueryResult<crate::code_intelligence::DocumentSymbol>,
+    > {
+        Self::unavailable()
+    }
+
+    async fn search_symbols(
+        &self,
+        _query: &str,
+        _limit: usize,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> crate::code_intelligence::CodeIntelligenceResult<
+        crate::code_intelligence::CodeQueryResult<crate::code_intelligence::SymbolInformation>,
+    > {
+        Self::unavailable()
+    }
+
+    async fn navigate(
+        &self,
+        _kind: crate::code_intelligence::NavigationKind,
+        _path: &WorkspacePath,
+        _position: crate::code_intelligence::CodePosition,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> crate::code_intelligence::CodeIntelligenceResult<
+        crate::code_intelligence::CodeQueryResult<crate::code_intelligence::CodeLocation>,
+    > {
+        Self::unavailable()
+    }
+
+    async fn diagnostics(
+        &self,
+        _path: Option<&WorkspacePath>,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> crate::code_intelligence::CodeIntelligenceResult<
+        crate::code_intelligence::CodeQueryResult<crate::code_intelligence::CodeDiagnostic>,
+    > {
+        Self::unavailable()
+    }
+}
+
+#[test]
+fn workspace_services_builder_attaches_code_intelligence() {
+    use crate::code_intelligence::{CodeIntelligenceState, WorkspaceCodeIntelligence};
+
+    let fs = Arc::new(InMemoryFileSystem::new());
+    let fs_backend: Arc<dyn WorkspaceFileSystem> = fs;
+    let provider: Arc<dyn WorkspaceCodeIntelligence> = Arc::new(TestCodeIntelligence::ready());
+    let services =
+        WorkspaceServices::builder(WorkspaceRef::new("semantic", "mem://semantic"), fs_backend)
+            .code_intelligence(provider)
+            .build();
+
+    assert!(services.capabilities().code_intelligence);
+    assert_eq!(
+        services.code_intelligence().unwrap().status().state,
+        CodeIntelligenceState::Ready
+    );
+}
+
+#[test]
+fn code_intelligence_decorator_preserves_existing_services() {
+    use crate::code_intelligence::WorkspaceCodeIntelligence;
+
+    let fs = Arc::new(InMemoryFileSystem::new());
+    let fs_backend: Arc<dyn WorkspaceFileSystem> = fs;
+    let services = WorkspaceServices::builder(
+        WorkspaceRef::new("decorated", "mem://decorated"),
+        fs_backend,
+    )
+    .build();
+    let provider: Arc<dyn WorkspaceCodeIntelligence> = Arc::new(TestCodeIntelligence::ready());
+    let decorated = services.with_code_intelligence(provider);
+
+    assert!(decorated.capabilities().read);
+    assert!(decorated.capabilities().write);
+    assert!(decorated.capabilities().code_intelligence);
+    assert!(decorated.code_intelligence().is_some());
+    assert_eq!(decorated.workspace_ref(), services.workspace_ref());
+}

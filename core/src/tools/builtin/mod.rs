@@ -5,6 +5,7 @@
 
 pub(crate) mod bash;
 pub mod batch;
+mod code_intelligence;
 mod edit;
 mod generate_object;
 pub(crate) mod git;
@@ -64,6 +65,9 @@ pub fn register_builtins(
     if capabilities.search {
         registry.register_builtin(Arc::new(grep::GrepTool));
         registry.register_builtin(Arc::new(glob_tool::GlobTool));
+    }
+    if capabilities.code_intelligence {
+        code_intelligence::register(registry);
     }
     if capabilities.git {
         registry.register_builtin(Arc::new(git::GitTool));

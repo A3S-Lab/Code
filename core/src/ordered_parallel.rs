@@ -1,5 +1,6 @@
 use futures::FutureExt;
 use std::any::Any;
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -55,6 +56,7 @@ where
     T: Send + 'static,
 {
     let mut join_set = JoinSet::new();
+    let mut active_indexes = HashMap::new();
     let mut pending = items.into_iter().enumerate();
     let max_concurrency = max_concurrency.max(1);
     let mut active = 0usize;
@@ -64,7 +66,7 @@ where
             break;
         };
         let run = run.clone();
-        join_set.spawn(async move {
+        let handle = join_set.spawn(async move {
             let output = AssertUnwindSafe(run(index, item))
                 .catch_unwind()
                 .await
@@ -73,19 +75,38 @@ where
                 });
             OrderedParallelResult { index, output }
         });
+        active_indexes.insert(handle.id(), index);
         active += 1;
     }
 
     let mut results = Vec::new();
     while active > 0 {
-        if let Some(result) = join_set.join_next().await {
+        if let Some(result) = join_set.join_next_with_id().await {
             active -= 1;
             match result {
-                Ok(result) => results.push(result),
-                Err(error) => results.push(OrderedParallelResult {
-                    index: usize::MAX,
-                    output: Err(OrderedParallelError::JoinFailed(error.to_string())),
-                }),
+                Ok((task_id, mut result)) => {
+                    let tracked_index =
+                        take_ordered_index(&mut active_indexes, task_id).unwrap_or(result.index);
+                    if tracked_index != result.index {
+                        tracing::error!(
+                            tracked_index,
+                            reported_index = result.index,
+                            "ordered parallel branch returned a mismatched task index"
+                        );
+                        result.index = tracked_index;
+                    }
+                    results.push(result);
+                }
+                Err(error) => {
+                    let index = take_ordered_index(&mut active_indexes, error.id()).unwrap_or_else(|| {
+                        tracing::error!(%error, "ordered parallel join failed without a tracked index");
+                        usize::MAX
+                    });
+                    results.push(OrderedParallelResult {
+                        index,
+                        output: Err(OrderedParallelError::JoinFailed(error.to_string())),
+                    });
+                }
             }
         }
 
@@ -94,7 +115,7 @@ where
                 break;
             };
             let run = run.clone();
-            join_set.spawn(async move {
+            let handle = join_set.spawn(async move {
                 let output = AssertUnwindSafe(run(index, item))
                     .catch_unwind()
                     .await
@@ -103,12 +124,20 @@ where
                     });
                 OrderedParallelResult { index, output }
             });
+            active_indexes.insert(handle.id(), index);
             active += 1;
         }
     }
 
     results.sort_by_key(|result| result.index);
     results
+}
+
+fn take_ordered_index(
+    active_indexes: &mut HashMap<tokio::task::Id, usize>,
+    task_id: tokio::task::Id,
+) -> Option<usize> {
+    active_indexes.remove(&task_id)
 }
 
 fn panic_payload_to_string(payload: Box<dyn Any + Send>) -> String {
@@ -197,5 +226,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
         );
+    }
+
+    #[tokio::test]
+    async fn aborted_join_retains_its_input_index() {
+        let mut join_set = JoinSet::new();
+        let handle = join_set.spawn(async { std::future::pending::<u8>().await });
+        let mut active_indexes = HashMap::from([(handle.id(), 3)]);
+        handle.abort();
+
+        let error = join_set
+            .join_next_with_id()
+            .await
+            .expect("aborted task should settle")
+            .expect_err("aborted task should return JoinError");
+
+        assert_eq!(take_ordered_index(&mut active_indexes, error.id()), Some(3));
+        assert!(active_indexes.is_empty());
     }
 }

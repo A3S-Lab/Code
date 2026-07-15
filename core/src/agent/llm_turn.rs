@@ -3,8 +3,10 @@ use super::{AgentEvent, AgentLoop};
 use crate::hooks::{
     ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, TokenUsageInfo, ToolCallInfo,
 };
-use crate::llm::{non_retryable_llm_error_message, LlmResponse, Message, ToolCall, ToolDefinition};
-use crate::token_estimate::estimate_prompt_tokens;
+use crate::llm::{
+    estimate_prompt_tokens, non_retryable_llm_error_message, LlmResponse, Message, ToolCall,
+    ToolDefinition,
+};
 use anyhow::Context;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -74,10 +76,13 @@ impl AgentLoop {
             augmented_system.as_deref(),
             &selected_tools,
         );
+        let pre_compaction_fixed_prompt_tokens =
+            estimate_prompt_tokens(&[], augmented_system.as_deref(), &selected_tools);
         let compacted_before_call = self
             .maybe_auto_compact(
                 state,
                 estimated_prompt_tokens,
+                pre_compaction_fixed_prompt_tokens,
                 session_id,
                 event_tx,
                 cancel_token,
@@ -94,6 +99,8 @@ impl AgentLoop {
         if let Some(permission_checker) = &self.config.permission_checker {
             selected_tools.retain(|tool| permission_checker.expose_to_model(&tool.name));
         }
+        let request_fixed_prompt_tokens =
+            estimate_prompt_tokens(&[], augmented_system.as_deref(), &selected_tools);
 
         tracing::info!(
             a3s.llm.streaming = event_tx.is_some(),
@@ -147,6 +154,7 @@ impl AgentLoop {
             self.maybe_auto_compact(
                 state,
                 response.usage.prompt_tokens,
+                request_fixed_prompt_tokens,
                 session_id,
                 event_tx,
                 cancel_token,
@@ -356,6 +364,7 @@ impl AgentLoop {
         &self,
         state: &mut ExecutionLoopState,
         used: usize,
+        fixed_prompt_tokens: usize,
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
@@ -373,17 +382,28 @@ impl AgentLoop {
 
         let before_len = state.messages.len();
         let percent_before = used as f32 / max as f32;
+        let compaction_budget = crate::compaction::CompactionBudget::for_auto_compaction(
+            max,
+            threshold,
+            fixed_prompt_tokens,
+        );
 
         tracing::info!(
             used_tokens = used,
             max_tokens = max,
             percent = percent_before,
             threshold = threshold,
+            target_tokens = compaction_budget.target_context_tokens,
+            fixed_prompt_tokens,
+            message_token_limit = compaction_budget.message_token_limit,
             "Auto-compact triggered"
         );
 
         let mut changed = false;
-        if let Some(pruned) = crate::compaction::prune_tool_outputs(&state.messages, max) {
+        if let Some(pruned) = crate::compaction::prune_tool_outputs(
+            &state.messages,
+            compaction_budget.target_context_tokens,
+        ) {
             state.messages = pruned;
             changed = true;
             tracing::info!("Tool output pruning applied");
@@ -407,7 +427,7 @@ impl AgentLoop {
                     session_id.unwrap_or(""),
                     &state.messages,
                     &compaction_client,
-                    max,
+                    compaction_budget,
                 ),
             ) => {
                 match result {
@@ -432,6 +452,14 @@ impl AgentLoop {
             state.messages = compacted.messages;
             compact_summary = Some(compacted.summary);
             changed = true;
+            let estimated_tokens_after = fixed_prompt_tokens
+                .saturating_add(crate::llm::estimate_message_tokens(&state.messages));
+            tracing::info!(
+                estimated_tokens_after,
+                target_tokens = compaction_budget.target_context_tokens,
+                retained_messages = state.messages.len(),
+                "Auto-compact summary applied"
+            );
         }
 
         if !changed {

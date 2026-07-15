@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! ToolRegistry
-//!   └── builtin tools (bash, read, write, edit, grep, glob, ls, patch, web_fetch, web_search)
+//!   └── builtin tools (file, search, execution, web, and Code Intelligence queries)
 //! ```
 
 mod agent_dir_script_tool;
@@ -347,7 +347,9 @@ impl ToolExecutor {
     ) -> Result<()> {
         let path_field = match name {
             "read" | "write" | "edit" | "patch" => Some("file_path"),
-            "ls" | "grep" | "glob" => Some("path"),
+            "ls" | "grep" | "glob" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
+                Some("path")
+            }
             _ => None,
         };
 

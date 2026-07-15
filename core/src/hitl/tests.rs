@@ -8,6 +8,10 @@ use super::*;
 fn test_session_lane() {
     assert_eq!(SessionLane::from_tool_name("read"), SessionLane::Query);
     assert_eq!(SessionLane::from_tool_name("grep"), SessionLane::Query);
+    assert_eq!(
+        SessionLane::from_tool_name("code_navigation"),
+        SessionLane::Query
+    );
     assert_eq!(SessionLane::from_tool_name("bash"), SessionLane::Execute);
     assert_eq!(SessionLane::from_tool_name("write"), SessionLane::Execute);
 }
@@ -27,7 +31,17 @@ fn test_session_lane_priority() {
 
 #[test]
 fn test_session_lane_all_query() {
-    let query_tools = ["read", "glob", "ls", "grep", "list_files", "search"];
+    let query_tools = [
+        "read",
+        "glob",
+        "ls",
+        "grep",
+        "list_files",
+        "search",
+        "code_symbols",
+        "code_navigation",
+        "code_diagnostics",
+    ];
     for tool in query_tools {
         assert_eq!(
             SessionLane::from_tool_name(tool),

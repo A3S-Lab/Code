@@ -808,6 +808,27 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }
 
+    /// Cancel the active operation and wait until the session is safe to reuse.
+    ///
+    /// A streaming worker that does not settle during `graceMs` is aborted and
+    /// receives a second `abortGraceMs` window for cleanup. Defaults are 2000
+    /// and 1000 milliseconds respectively.
+    #[napi]
+    pub async fn cancel_and_settle(
+        &self,
+        grace_ms: Option<u32>,
+        abort_grace_ms: Option<u32>,
+    ) -> napi::Result<bool> {
+        let session = self.inner.clone();
+        let grace = std::time::Duration::from_millis(u64::from(grace_ms.unwrap_or(2_000)));
+        let abort_grace =
+            std::time::Duration::from_millis(u64::from(abort_grace_ms.unwrap_or(1_000)));
+        get_runtime()
+            .spawn(async move { session.cancel_and_settle(grace, abort_grace).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
+    }
+
     /// Close the session and cancel any active operation.
     ///
     /// Call this when the session will no longer be used so Node.js can exit

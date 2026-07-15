@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.5] - 2026-07-15
+
+### Added
+
+- Added workspace-scoped Code Intelligence for saved-file symbols,
+  definitions, declarations, references, implementations, and diagnostics,
+  with native Rust and TypeScript/JavaScript language-server profiles.
+- Added an argument-aware interactive tool guardrail for Code hosts. It keeps
+  a non-bypassable safety floor while distinguishing narrow read-only actions
+  from ordinary side effects that require approval.
+- Added live `AgentSession` Skill lifecycle APIs and a dynamic Skill catalog
+  context provider. Session-owned upgrades preserve the original shadowed
+  Skill, removal is pointer-identity safe, built-ins remain protected, and
+  session close releases all live registrations.
+- Exposed live Skill lifecycle and cancellation-settlement APIs through the
+  Node.js and Python SDKs, with aligned package versions and generated types.
+
+### Fixed
+
+- Retried only transient failed branches in read-only parallel tasks while
+  preserving successful branch results and never replaying mutating work.
+- Made context compaction account for fixed system-prompt and tool-schema
+  tokens, preserve the latest user instruction and unresolved tool calls, and
+  target a bounded post-compaction watermark.
+- Made workspace manifest discovery cancellation-aware and kept watcher setup,
+  ownership, and teardown outside Tokio's blocking pool. Hosts can now stop a
+  manifest explicitly without runtime teardown waiting on platform watcher or
+  filesystem operations.
+- Bounded language-service shutdown and force-reaped the dedicated process
+  group when a server closes its protocol streams without exiting.
+
 ## [5.2.4] - 2026-07-14
 
 ### Fixed

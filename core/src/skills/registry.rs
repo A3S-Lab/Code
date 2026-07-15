@@ -84,9 +84,66 @@ impl SkillRegistry {
     /// If a future embedded skill set contains the same name, this replacement
     /// is treated as external for global tool-restriction purposes.
     pub fn register_unchecked(&self, skill: Arc<Skill>) {
-        self.builtin_names.write().unwrap().remove(&skill.name);
         let mut skills = self.skills.write().unwrap();
+        self.builtin_names.write().unwrap().remove(&skill.name);
         skills.insert(skill.name.clone(), skill);
+    }
+
+    /// Register a validated, lifecycle-owned skill and return the registration
+    /// it shadowed.
+    ///
+    /// The lookup and replacement happen under one write lock so a live
+    /// session can later restore the exact prior skill by pointer identity.
+    /// Built-in skills remain protected from live replacement.
+    pub(crate) fn register_with_shadow(
+        &self,
+        skill: Arc<Skill>,
+    ) -> Result<(bool, Option<Arc<Skill>>), super::validator::SkillValidationError> {
+        if let Some(ref validator) = *self.validator.read().unwrap() {
+            validator.validate(&skill)?;
+        }
+
+        let name = skill.name.clone();
+        let mut skills = self.skills.write().unwrap();
+        let builtin_names = self.builtin_names.read().unwrap();
+        if builtin_names.contains(&name) {
+            tracing::warn!(
+                skill = %name,
+                "Rejected live skill registration because a built-in owns the name"
+            );
+            return Ok((false, None));
+        }
+
+        Ok((true, skills.insert(name, skill)))
+    }
+
+    /// Restore a shadowed skill only while `expected` still owns the name.
+    ///
+    /// This compare-and-replace prevents one lifecycle source from deleting or
+    /// overwriting a skill installed later by another source.
+    pub(crate) fn restore_if_same(
+        &self,
+        name: &str,
+        expected: &Arc<Skill>,
+        replacement: Option<Arc<Skill>>,
+    ) -> bool {
+        let mut skills = self.skills.write().unwrap();
+        let Some(current) = skills.get(name) else {
+            return false;
+        };
+        if !Arc::ptr_eq(current, expected) {
+            return false;
+        }
+
+        match replacement {
+            Some(skill) => {
+                skills.insert(name.to_string(), skill);
+            }
+            None => {
+                skills.remove(name);
+            }
+        }
+        true
     }
 
     fn register_builtin(&self, skill: Arc<Skill>) {

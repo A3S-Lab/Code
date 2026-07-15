@@ -184,6 +184,29 @@ impl AgentSession {
         RunControl::from_session(self).cancel_current().await
     }
 
+    /// Cancel the current operation and wait for its single-flight lease to be
+    /// released. Streaming workers first receive cooperative cancellation; a
+    /// worker that exceeds `grace` is aborted, then given `abort_grace` to run
+    /// destructors and release admission ownership.
+    ///
+    /// Returns `true` once the session is safe to reuse. A blocking `send`
+    /// future cannot be force-aborted by the session and may return `false` if
+    /// its caller does not poll it to completion.
+    pub async fn cancel_and_settle(
+        &self,
+        grace: std::time::Duration,
+        abort_grace: std::time::Duration,
+    ) -> bool {
+        let _ = self.cancel().await;
+        if self.run_admission.wait_until_idle(grace).await {
+            return true;
+        }
+        if !self.run_admission.abort_stream_worker() {
+            return false;
+        }
+        self.run_admission.wait_until_idle(abort_grace).await
+    }
+
     /// Return a snapshot of the session's conversation history.
     pub fn history(&self) -> Vec<Message> {
         SessionView::from_session(self).history()

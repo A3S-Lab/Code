@@ -182,7 +182,13 @@ impl AgentLoop {
                 Self::delegated_task_args_with_goal(plan_goal, step, *step_number, total_steps)
             })
             .collect::<Vec<_>>();
-        json!({ "tasks": tasks })
+        // A plan wave owns per-step status and dependency handling. Let the
+        // tool preserve successful siblings when one branch fails instead of
+        // escalating the whole wave as a single opaque tool failure.
+        json!({
+            "tasks": tasks,
+            "allow_partial_failure": true,
+        })
     }
 
     fn delegated_parallel_child_results(
@@ -202,7 +208,7 @@ impl AgentLoop {
                     .and_then(Value::as_bool)
                     .unwrap_or(fallback_success);
                 let output = child
-                    .and_then(|value| value.get("output"))
+                    .and_then(|value| value.get("output_excerpt").or_else(|| value.get("output")))
                     .and_then(Value::as_str)
                     .map(str::to_string);
 
@@ -817,5 +823,36 @@ impl AgentLoop {
             tool_calls_count,
             verification_reports: Vec::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delegated_results_use_each_child_output_excerpt() {
+        let metadata = serde_json::json!({
+            "results": [
+                {
+                    "success": true,
+                    "output_excerpt": "auth branch evidence"
+                },
+                {
+                    "success": false,
+                    "output_excerpt": "docs branch failed: status 529"
+                }
+            ]
+        });
+
+        let results = AgentLoop::delegated_parallel_child_results(Some(&metadata), 2, false);
+
+        assert!(results[0].success);
+        assert_eq!(results[0].output.as_deref(), Some("auth branch evidence"));
+        assert!(!results[1].success);
+        assert_eq!(
+            results[1].output.as_deref(),
+            Some("docs branch failed: status 529")
+        );
     }
 }

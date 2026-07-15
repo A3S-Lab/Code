@@ -146,7 +146,7 @@ fn append_entry(source: &str, entry: &str) -> String {
 }
 
 fn apply_edits(source: &str, mut edits: Vec<(usize, usize, String)>) -> String {
-    edits.sort_by(|left, right| right.0.cmp(&left.0));
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.0));
     let mut output = source.to_string();
     for (start, end, replacement) in edits {
         let replacement = if replacement.trim().is_empty() {

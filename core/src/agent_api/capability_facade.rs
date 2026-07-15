@@ -121,6 +121,31 @@ impl AgentSession {
         })
     }
 
+    /// Add or replace a skill in this live session.
+    ///
+    /// The Skill and `search_skills` tools observe the new definition
+    /// immediately, and the model-visible skills catalog observes it on the
+    /// next turn. Removing the live definition restores any session skill it
+    /// shadowed at installation time.
+    pub fn add_skill(&self, skill: Arc<crate::skills::Skill>) -> crate::error::Result<()> {
+        self.close_handle
+            .mutate_immediate(|| SessionExtensionRuntime::from_session(self).add_skill(skill))?
+    }
+
+    /// Remove a skill previously installed through [`Self::add_skill`].
+    ///
+    /// This is a no-op when the name is not owned by the live session API; base
+    /// session skills and later host registrations are never removed.
+    pub fn remove_skill(&self, name: &str) -> crate::error::Result<()> {
+        self.close_handle
+            .mutate_immediate(|| SessionExtensionRuntime::from_session(self).remove_skill(name))
+    }
+
+    /// Return the names in the session's current live skill registry.
+    pub fn skill_names(&self) -> Vec<String> {
+        self.close_handle.skill_registry.list()
+    }
+
     /// Add an MCP server to this session.
     ///
     /// Registers, connects, and makes all tools immediately available for the
