@@ -199,7 +199,7 @@ impl LanguageServerProfile {
                 canonical_root
                     .join(marker.path.as_str())
                     .to_string_lossy()
-                    .into_owned()
+                    .replace('\\', "/")
             })
             .collect()
     }
@@ -286,7 +286,7 @@ mod tests {
         let layout = layout(&["crates/a/Cargo.toml", "crates/b/Cargo.toml"]);
         let root = Path::new("/workspace");
         let linked_projects = ["crates/a/Cargo.toml", "crates/b/Cargo.toml"]
-            .map(|manifest| root.join(manifest).to_string_lossy().into_owned());
+            .map(|manifest| root.join(manifest).to_string_lossy().replace('\\', "/"));
         let expected = json!({
             "linkedProjects": linked_projects,
             "cargo": {
@@ -304,6 +304,17 @@ mod tests {
         assert_eq!(
             profile.workspace_settings(root, &layout)["rust-analyzer"],
             profile.initialization_options(root, &layout)
+        );
+    }
+
+    #[test]
+    fn rust_linked_projects_use_protocol_path_separators() {
+        let profile = LanguageServerProfile::rust("server");
+        let layout = layout(&["crates/a/Cargo.toml"]);
+
+        assert_eq!(
+            profile.initialization_options(Path::new(r"C:\workspace"), &layout)["linkedProjects"],
+            json!(["C:/workspace/crates/a/Cargo.toml"])
         );
     }
 }

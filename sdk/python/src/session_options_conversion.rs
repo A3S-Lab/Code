@@ -179,15 +179,7 @@ pub(super) fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustS
     if !so.inline_skills.is_empty() {
         let registry = a3s_code_core::skills::SkillRegistry::new();
         for (name, kind, content) in so.inline_skills {
-            let raw = format!("---\nname: {name}\nkind: {kind}\n---\n{content}");
-            if let Some(skill) = a3s_code_core::skills::Skill::parse(&raw) {
-                registry.register_unchecked(Arc::new(skill));
-            } else {
-                eprintln!(
-                    "a3s-code: failed to parse inline skill '{}' — skipping",
-                    name
-                );
-            }
+            registry.register_unchecked(inline_skill_to_rust(name, content, &kind)?);
         }
         o = o.with_skill_registry(Arc::new(registry));
     }

@@ -124,7 +124,6 @@ pub mod telemetry;
 #[cfg(feature = "telemetry")]
 pub mod telemetry_otel;
 pub(crate) mod text;
-pub(crate) mod token_estimate;
 pub(crate) mod tool_confirmation;
 pub mod tools;
 pub mod trace;

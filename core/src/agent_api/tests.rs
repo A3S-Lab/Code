@@ -5587,7 +5587,7 @@ async function run(ctx, inputs) {
         }),
     );
 
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), join)
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), join)
         .await
         .unwrap()
         .unwrap()

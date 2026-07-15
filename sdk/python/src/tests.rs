@@ -1,5 +1,21 @@
 use super::*;
 
+#[test]
+fn inline_skill_conversion_is_typed_and_rejects_invalid_input() {
+    pyo3::prepare_freethreaded_python();
+    let skill = inline_skill_to_rust(
+        "  live-review  ".to_string(),
+        "Review the current change.".to_string(),
+        "tool",
+    )
+    .unwrap();
+
+    assert_eq!(skill.name, "live-review");
+    assert_eq!(skill.kind, RustSkillKind::Tool);
+    assert_eq!(skill.content, "Review the current change.");
+    assert!(inline_skill_to_rust("live-review".to_string(), String::new(), "unknown",).is_err());
+}
+
 fn sdk_test_config() -> a3s_code_core::CodeConfig {
     a3s_code_core::CodeConfig {
         default_model: Some("openai/gpt-4o".to_string()),

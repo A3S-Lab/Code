@@ -1,10 +1,11 @@
 //! Browser runtime lifecycle API for headless web search.
 //!
 //! This is a stable A3S Code entry point over the browser management surface
-//! provided by a3s-search. Status checks are read-only; install, update, and
-//! repair are explicit host operations and are never triggered by inspection.
+//! provided by a3s-use-browser through a3s-search's public Browser dependency.
+//! Status checks are read-only; install, update, and repair are explicit host
+//! operations and are never triggered by inspection.
 
-pub use a3s_search::browser_management::{
+pub use a3s_search::a3s_use_browser::{
     browser_status, browser_statuses, install_browser, repair_browser, update_browser,
     BrowserInstallSource, BrowserRuntimeStatus, ManagedBrowser,
 };

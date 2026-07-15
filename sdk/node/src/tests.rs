@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn inline_skill_conversion_is_typed_and_rejects_invalid_input() {
+    let skill = inline_skill_to_rust(InlineSkill {
+        name: "  live-review  ".to_string(),
+        kind: "tool".to_string(),
+        content: "Review the current change.".to_string(),
+    })
+    .unwrap();
+
+    assert_eq!(skill.name, "live-review");
+    assert_eq!(skill.kind, RustSkillKind::Tool);
+    assert_eq!(skill.content, "Review the current change.");
+    assert!(inline_skill_to_rust(InlineSkill {
+        name: "live-review".to_string(),
+        kind: "unknown".to_string(),
+        content: String::new(),
+    })
+    .is_err());
+}
+
+#[test]
 fn orchestration_object_conversions_round_trip_fields() {
     let schema = serde_json::json!({ "type": "object" });
     let spec = AgentStepSpecObject {

@@ -2,14 +2,15 @@
 
 use crate::config::{BrowserBackend, HeadlessConfig};
 use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
+use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider};
 use a3s_search::engines::{
     Baidu, BingChina, BraveParser, DuckDuckGoParser, Google, So360Parser, SogouParser, Wikipedia,
 };
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
 use a3s_search::WaitStrategy;
 use a3s_search::{
-    BrowserFetcher, BrowserPool, BrowserPoolConfig, HtmlEngine, HttpFetcher, Metrics,
-    MetricsSnapshot, Search, SearchQuery, SearchResult,
+    BrowserFetcher, HtmlEngine, HttpFetcher, Metrics, MetricsSnapshot, Search, SearchQuery,
+    SearchResult,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -32,26 +33,20 @@ impl WebSearchTool {
     /// success, error, timeout, or caller cancellation.
     fn create_pool(headless_config: Option<&HeadlessConfig>) -> Option<Arc<BrowserPool>> {
         let config = headless_config?;
+        let executable = config.browser_path.as_ref().map(std::path::PathBuf::from);
+        let provider = match (config.backend, executable) {
+            (BrowserBackend::Chrome, Some(path)) => BrowserProvider::ChromeExecutable(path),
+            (BrowserBackend::Chrome, None) => BrowserProvider::DiscoveredChrome,
+            (BrowserBackend::Lightpanda, Some(path)) => BrowserProvider::LightpandaExecutable(path),
+            (BrowserBackend::Lightpanda, None) => BrowserProvider::DiscoveredLightpanda,
+        };
 
         let pool_config = BrowserPoolConfig {
             max_tabs: config.max_tabs,
             headless: true,
-            chrome_path: if config.backend == BrowserBackend::Chrome {
-                config.browser_path.clone()
-            } else {
-                None
-            },
-            lightpanda_path: if config.backend == BrowserBackend::Lightpanda {
-                config.browser_path.clone()
-            } else {
-                None
-            },
+            provider,
             proxy_url: config.proxy_url.clone(),
             launch_args: config.launch_args.clone(),
-            backend: match config.backend {
-                BrowserBackend::Chrome => a3s_search::BrowserBackend::Chrome,
-                BrowserBackend::Lightpanda => a3s_search::BrowserBackend::Lightpanda,
-            },
         };
 
         Some(Arc::new(BrowserPool::new(pool_config)))
@@ -94,10 +89,6 @@ impl Drop for BrowserPoolCleanup {
         let Some(pool) = self.pool.take() else {
             return;
         };
-        // Establish the cancellation boundary synchronously. The runtime may
-        // be saturated and delay polling the spawned shutdown future, but no
-        // new tab acquisition should be admitted after this guard is dropped.
-        pool.tab_semaphore().close();
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
                 runtime.spawn(async move {
@@ -113,9 +104,8 @@ impl Drop for BrowserPoolCleanup {
 }
 
 fn managed_headless_config() -> Option<HeadlessConfig> {
-    let status = a3s_search::browser_management::browser_status(
-        a3s_search::browser_management::ManagedBrowser::Chrome,
-    );
+    let status =
+        crate::search_runtime::browser_status(crate::search_runtime::ManagedBrowser::Chrome);
     let path = status.available.then_some(status.path).flatten()?;
     Some(HeadlessConfig {
         backend: BrowserBackend::Chrome,

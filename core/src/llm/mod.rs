@@ -9,6 +9,7 @@ pub mod factory;
 pub mod http;
 pub mod openai;
 pub mod structured;
+mod token_estimation;
 mod types;
 pub mod zhipu;
 
@@ -22,6 +23,7 @@ pub use http::{
     HttpMetricsCallback, HttpMetricsRecord, HttpResponse, StreamingHttpResponse,
 };
 pub use openai::OpenAiClient;
+pub(crate) use token_estimation::{estimate_message_tokens, estimate_prompt_tokens};
 pub use types::*;
 pub use zhipu::ZhipuClient;
 

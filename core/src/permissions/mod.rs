@@ -7,6 +7,7 @@
 //! 3. Ask rules - checked third, forces confirmation prompt
 //! 4. Default behavior - falls back to HITL policy
 
+mod interactive;
 mod manager;
 mod policy;
 mod rule;
@@ -16,6 +17,7 @@ mod tests;
 
 use serde::{Deserialize, Serialize};
 
+pub use interactive::{InteractiveApprovalMode, InteractiveToolGuardrail};
 pub use manager::{MatchingRules, PermissionManager};
 pub use policy::PermissionPolicy;
 pub use rule::PermissionRule;

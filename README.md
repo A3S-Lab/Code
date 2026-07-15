@@ -220,6 +220,10 @@ context providers, policies, stores, and active child work. The runtime can:
 - atomically replace an idle persisted session with new runtime options;
 - list and close live sessions owned by an `Agent`;
 - cancel and settle an active operation before safely reusing its session;
+- add, replace, list, and remove lifecycle-owned Skills while restoring an
+  exactly shadowed registration on removal;
+- add and remove session-local MCP servers without disturbing inherited or
+  later host-owned tools;
 - save, cancel, or close without abandoning active child work; and
 - inspect runs, paginated run events, active tools, tasks, and verification.
 
@@ -271,6 +275,13 @@ directories, `AgentDir`, inline host input, or live registration. The
 model-visible `program` tool executes JavaScript in QuickJS, not arbitrary
 Python or a shell-script catalog.
 
+Long-running hosts can call `AgentSession::add_skill`, `remove_skill`, and
+`skill_names` without rebuilding the session. The model-visible Skill catalog
+reads the same live registry, so a successful mutation is visible on the next
+turn. Live registrations use pointer identity as their ownership token: an
+upgrade preserves the original shadow chain, and removal never deletes a Skill
+installed later by another host.
+
 ### Code Intelligence
 
 Local hosts can attach native Code Intelligence with
@@ -315,9 +326,11 @@ idempotent and stale appends fail. Patch hunks validate positions, counts,
 context, removals, whitespace, and line endings before one compare-and-swap
 write; fuzzy application is intentionally rejected.
 
-An optional session queue routes work through Control, Query, Execute, and
-Generate lanes with bounded concurrency, handler modes, retry, DLQ, metrics,
-alerts, rate limits, and per-lane timeouts.
+An optional session queue routes agent tool work through the Query and Execute
+lanes with bounded concurrency, handler modes, retry, DLQ, metrics, alerts,
+rate limits, and per-lane timeouts. Control and Generate remain reserved lane
+types; conversation runs use a separate single-flight admission guard, so lane
+priority orders pending work but does not interrupt an active model future.
 
 Observations are bounded at their source. Reads, listings, globs, Git results,
 and fetched pages expose offsets or cursors. Large tool output and file changes
@@ -326,6 +339,10 @@ model deadlines propagate cancellation; on Unix, shell cancellation terminates
 the process group rather than only its parent.
 
 Optional permission policies resolve deny, allow, ask, and default behavior.
+Interactive Code hosts can additionally share `InteractiveToolGuardrail`, a
+conservative argument-aware classifier that quietly permits a narrow read-only
+subset, asks for ordinary side effects, denies workspace escapes and catastrophic
+shell operations, and keeps a non-bypassable safety floor in streamlined modes.
 Confirmation managers, hooks, budget guards, security providers, stream
 sanitization, retention limits, circuit breakers, duplicate-call guards, and
 no-progress detection compose around the same invocation path. Trusted direct
@@ -357,10 +374,12 @@ separate. Filesystem and recent-file providers are installed only when selected.
 
 Automatic compaction is opt-in. It monitors estimated or provider-reported
 usage against the configured model window, bounds oversized tool results,
-budgets retained history by estimated message tokens, summarizes older history
-without splitting tool calls from results, and re-arms after success so a long
-session can compact repeatedly. The summary is treated as untrusted transcript
-data, not as a new source of executable instructions.
+summarizes older history, and targets a safe post-compaction watermark after
+subtracting the fixed system-prompt and tool-schema cost. Recent raw messages
+are retained only within that token budget, while the latest user instruction
+and unresolved tool calls remain intact. The policy re-arms after success so a
+long session can compact repeatedly. The summary is treated as untrusted
+transcript data, not as a new source of executable instructions.
 
 ### Memory
 

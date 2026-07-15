@@ -63,6 +63,11 @@ pub(crate) struct SessionCloseHandle {
     /// Exact MCP wrapper identities installed by each session-local server.
     pub(crate) mcp_tool_ownership:
         std::sync::Mutex<super::session_extensions::SessionMcpToolOwnership>,
+    /// Effective session-local skill registry shared by the Skill tools and the
+    /// dynamic catalog context provider.
+    pub(crate) skill_registry: Arc<crate::skills::SkillRegistry>,
+    /// Exact live skill registrations owned by this session.
+    pub(crate) skill_ownership: std::sync::Mutex<super::session_extensions::SessionSkillOwnership>,
 }
 
 impl SessionCloseHandle {
@@ -185,6 +190,11 @@ impl SessionCloseHandle {
                 .unwrap_or_else(|poison| poison.into_inner())
                 .remove(&name, &self.tool_executor);
         }
+
+        self.skill_ownership
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove_all(&self.skill_registry);
 
         tracing::info!(session_id = %self.session_id, "AgentSession closed");
     }

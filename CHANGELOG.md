@@ -11,23 +11,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added workspace-scoped Code Intelligence for saved-file symbols,
-  definitions, declarations, references, implementations, and diagnostics,
-  with native Rust and TypeScript/JavaScript language-server profiles.
 - Added `AgentSession::cancel_and_settle(...)` and matching Node.js and Python
   SDK methods so hosts can cooperatively cancel a run, bound streaming-worker
   cleanup, and know when a session is safe to reuse.
 
 ### Fixed
 
-- Made workspace manifest discovery cancellation-aware and kept watcher setup,
-  ownership, and teardown outside Tokio's blocking pool so host shutdown does
-  not wait indefinitely on filesystem work.
 - Stabilized the first navigation query for each saved document revision after
   language-server initialization, preventing cold empty or partial reference
   results without treating a legitimate empty result as an error.
 - Bounded language-service shutdown and force-reaped its dedicated process
   group when a server closed protocol streams without exiting.
+
+## [5.2.7] - 2026-07-15
+
+### Fixed
+
+- Normalized Rust Analyzer `linkedProjects` paths to protocol-safe forward
+  slashes on Windows.
+- Stabilized the Windows release gate for nested workflow cancellation and
+  delegated permission inheritance under heavily loaded runners without
+  weakening their side-effect or permission assertions.
+
+## [5.2.6] - 2026-07-15
+
+### Fixed
+
+- Reaped the complete process group for cancelled blocking workspace discovery
+  commands, so descendants holding inherited output streams cannot stall
+  manifest shutdown.
+- Kept process-group helpers warning-free on non-Unix targets and updated the
+  durable workflow dependency to `a3s-flow` 0.4.2.
+
+## [5.2.5] - 2026-07-15
+
+### Added
+
+- Added workspace-scoped Code Intelligence for saved-file symbols,
+  definitions, declarations, references, implementations, and diagnostics,
+  with native Rust and TypeScript/JavaScript language-server profiles.
+- Added an argument-aware interactive tool guardrail for Code hosts. It keeps
+  a non-bypassable safety floor while distinguishing narrow read-only actions
+  from ordinary side effects that require approval.
+- Added live `AgentSession` Skill lifecycle APIs and a dynamic Skill catalog
+  context provider. Session-owned upgrades preserve the original shadowed
+  Skill, removal is pointer-identity safe, built-ins remain protected, and
+  session close releases all live registrations.
+- Exposed live Skill lifecycle and cancellation-settlement APIs through the
+  Node.js and Python SDKs, with aligned package versions and generated types.
+
+### Fixed
+
+- Retried only transient failed branches in read-only parallel tasks while
+  preserving successful branch results and never replaying mutating work.
+- Made context compaction account for fixed system-prompt and tool-schema
+  tokens, preserve the latest user instruction and unresolved tool calls, and
+  target a bounded post-compaction watermark.
+- Made workspace manifest discovery cancellation-aware and kept watcher setup,
+  ownership, and teardown outside Tokio's blocking pool. Hosts can now stop a
+  manifest explicitly without runtime teardown waiting on platform watcher or
+  filesystem operations.
+- Bounded language-service shutdown and force-reaped the dedicated process
+  group when a server closes its protocol streams without exiting.
 
 ## [5.2.4] - 2026-07-14
 

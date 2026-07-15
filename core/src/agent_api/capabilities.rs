@@ -8,7 +8,9 @@
 use super::SessionOptions;
 use crate::agent::AgentConfig;
 use crate::config::CodeConfig;
-use crate::context::{ContextItem, ContextProvider, ContextType, StaticContextProvider};
+use crate::context::{
+    ContextItem, ContextProvider, ContextType, SkillCatalogContextProvider, StaticContextProvider,
+};
 use crate::llm::{LlmClient, ToolDefinition};
 use crate::mcp::McpTool;
 use crate::skills::SkillRegistry;
@@ -92,7 +94,8 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
 
     let skill_registry =
         build_effective_skill_registry(input.base_config.skill_registry.as_deref(), input.opts);
-    let context_providers = build_context_providers(input.opts, input.workspace, &skill_registry);
+    let context_providers =
+        build_context_providers(input.opts, input.workspace, Arc::clone(&skill_registry));
     let tool_defs = tool_executor.definitions();
 
     SessionCapabilities {
@@ -252,7 +255,7 @@ fn group_mcp_tools_by_server(all_tools: Vec<(String, McpTool)>) -> HashMap<Strin
 fn build_context_providers(
     opts: &SessionOptions,
     workspace: &Path,
-    skill_registry: &SkillRegistry,
+    skill_registry: Arc<SkillRegistry>,
 ) -> Vec<Arc<dyn ContextProvider>> {
     let mut providers = opts.context_providers.clone();
     push_agents_md_context(&mut providers, workspace);
@@ -308,21 +311,7 @@ fn push_agents_md_context(providers: &mut Vec<Arc<dyn ContextProvider>>, workspa
 
 fn push_skill_catalog_context(
     providers: &mut Vec<Arc<dyn ContextProvider>>,
-    skill_registry: &SkillRegistry,
+    skill_registry: Arc<SkillRegistry>,
 ) {
-    let skill_prompt = skill_registry.to_system_prompt();
-    if skill_prompt.is_empty() {
-        return;
-    }
-
-    let item = ContextItem::new("skills_catalog", ContextType::Skill, skill_prompt)
-        .with_source("a3s://skills/catalog")
-        .with_provenance("skill_registry")
-        .with_priority(0.85)
-        .with_trust(0.9)
-        .with_freshness(1.0)
-        .with_relevance(1.0);
-    providers.push(Arc::new(
-        StaticContextProvider::new("skills_catalog").with_item(item),
-    ));
+    providers.push(Arc::new(SkillCatalogContextProvider::new(skill_registry)));
 }

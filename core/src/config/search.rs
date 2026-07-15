@@ -21,8 +21,8 @@ pub struct SearchConfig {
     #[serde(default, rename = "engine")]
     pub engines: std::collections::HashMap<String, SearchEngineConfig>,
 
-    /// Headless browser configuration for JS-rendered engines (google, baidu, bing_cn).
-    /// When enabled, the browser binary is auto-detected or downloaded.
+    /// Headless browser configuration for JS-rendered engines (google and baidu).
+    /// When enabled, an existing system or explicitly managed runtime is discovered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headless: Option<HeadlessConfig>,
 }
@@ -51,7 +51,7 @@ pub struct HeadlessConfig {
     #[serde(default = "default_headless_max_tabs")]
     pub max_tabs: usize,
 
-    /// Path to the browser executable. If None, auto-detected or downloaded.
+    /// Path to the browser executable. If None, an existing runtime is discovered.
     #[serde(
         default,
         alias = "chromePath",

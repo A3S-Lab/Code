@@ -1,6 +1,283 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn interactive_guardrail_default_mode_balances_safe_and_sensitive_calls() {
+    let guardrail = InteractiveToolGuardrail::default();
+
+    assert_eq!(
+        guardrail.check("read", &json!({"file_path": "src/lib.rs"})),
+        PermissionDecision::Allow
+    );
+    for path in [
+        "/etc/passwd",
+        "../outside",
+        "C:\\Windows\\System32",
+        r"\\server\share\secret",
+    ] {
+        assert_eq!(
+            guardrail.check("read", &json!({"file_path": path})),
+            PermissionDecision::Deny,
+            "cross-platform absolute path must be denied: {path}"
+        );
+    }
+    assert_eq!(
+        guardrail.check("bash", &json!({"command": "pwd"})),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        guardrail.check("git", &json!({"command": "status"})),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        guardrail.check("write", &json!({"file_path": "src/lib.rs"})),
+        PermissionDecision::Ask
+    );
+    assert_eq!(
+        guardrail.check("bash", &json!({"command": "cargo test"})),
+        PermissionDecision::Ask
+    );
+    assert_eq!(
+        guardrail.check("bash", &json!({"command": "rm -rf /"})),
+        PermissionDecision::Deny
+    );
+}
+
+#[test]
+fn interactive_guardrail_rejects_silent_shell_escape_regressions() {
+    let guardrail = InteractiveToolGuardrail::default();
+
+    for command in [
+        "sort -o output.txt input.txt",
+        "sort --compress-program=touch input.txt",
+        "uniq input.txt output.txt",
+        "cat ../outside-workspace-secret",
+        "cat *",
+        "git -C .. status",
+        "git log --output=history.txt",
+        "find . -type f -fprint output.txt",
+        "find .\t-delete",
+        "sed -i.bak s/old/new/ README.md",
+        "rg --pre=touch pattern .",
+        "rg --follow pattern .",
+        "grep -R pattern .",
+        "du -L .",
+        "du -aL .",
+        "ls -L .",
+        "ls -RL .",
+        "find . -follow",
+        "find -L . -type f",
+        "date --set=2026-01-01",
+        "git diff --ext-diff",
+    ] {
+        assert_eq!(
+            guardrail.check("bash", &json!({"command": command})),
+            PermissionDecision::Ask,
+            "unsafe or boundary-crossing shell call was silently allowed: {command}"
+        );
+    }
+}
+
+#[test]
+fn interactive_guardrail_modes_keep_the_hard_deny_floor() {
+    for mode in ["default", "plan", "auto"] {
+        let guardrail = InteractiveToolGuardrail::for_mode(mode);
+        assert_eq!(
+            guardrail.check("bash", &json!({"command": "rm -rf /"})),
+            PermissionDecision::Deny,
+            "{mode} must retain catastrophic-operation denial"
+        );
+        assert_eq!(
+            guardrail.check("read", &json!({"file_path": "README.md"})),
+            PermissionDecision::Allow
+        );
+    }
+
+    assert_eq!(
+        InteractiveToolGuardrail::for_mode("default")
+            .check("write", &json!({"file_path": "README.md"})),
+        PermissionDecision::Ask
+    );
+    assert_eq!(
+        InteractiveToolGuardrail::for_mode("plan")
+            .check("write", &json!({"file_path": "README.md"})),
+        PermissionDecision::Ask,
+        "plan mode may request an explicit write escalation"
+    );
+    let auto = InteractiveToolGuardrail::for_mode("auto");
+    assert_eq!(
+        auto.check("write", &json!({"file_path": "README.md"})),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        auto.check("git", &json!({"command": "checkout", "ref": "feature"})),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        auto.check(
+            "git",
+            &json!({"command": "checkout", "ref": "feature", "force": true})
+        ),
+        PermissionDecision::Ask,
+        "auto mode must not silently approve potentially destructive Git operations"
+    );
+    for (tool, args) in [
+        ("bash", json!({"command": "cargo test"})),
+        ("runtime", json!({"tasks": ["external work"]})),
+        (
+            "dynamic_workflow",
+            json!({"source": "async function run() {}"}),
+        ),
+    ] {
+        assert_eq!(
+            auto.check(tool, &args),
+            PermissionDecision::Ask,
+            "auto mode must retain HITL for unbounded or external operation {tool}"
+        );
+    }
+    assert_eq!(
+        auto.check(
+            "batch",
+            &json!({"invocations": [
+                {"tool": "read", "args": {"file_path": "README.md"}},
+                {"tool": "write", "args": {"file_path": "README.md"}}
+            ]})
+        ),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        auto.check(
+            "batch",
+            &json!({"invocations": [
+                {"tool": "read", "args": {"file_path": "README.md"}},
+                {"tool": "bash", "args": {"command": "cargo test"}}
+            ]})
+        ),
+        PermissionDecision::Ask
+    );
+    for args in [json!({}), json!({"file_path": 7}), json!({"file_path": ""})] {
+        assert_eq!(
+            auto.check("write", &args),
+            PermissionDecision::Ask,
+            "auto mode must not approve malformed writes: {args}"
+        );
+        assert_eq!(
+            auto.check("edit", &args),
+            PermissionDecision::Ask,
+            "auto mode must not approve malformed edits: {args}"
+        );
+    }
+    for args in [
+        json!({}),
+        json!({"command": "not-a-real-git-operation"}),
+        json!({"command": "checkout", "ref": "feature", "force": "yes"}),
+        json!({"command": "remote", "path": "https://example.com/repo.git"}),
+        json!({"command": "status", "target": "unexpected"}),
+        json!({"command": "diff", "target": "--ext-diff"}),
+        json!({"command": "checkout", "ref": "-f"}),
+    ] {
+        assert_eq!(
+            auto.check("git", &args),
+            PermissionDecision::Ask,
+            "auto mode must not approve malformed or unknown Git calls: {args}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn interactive_guardrail_denies_paths_through_existing_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    symlink(outside.path(), workspace.path().join("escape")).unwrap();
+    let guardrail = InteractiveToolGuardrail::default().with_workspace(workspace.path());
+
+    for (tool, args) in [
+        ("read", json!({"file_path": "escape/secret.txt"})),
+        ("write", json!({"file_path": "escape/new.txt"})),
+        ("ls", json!({"path": "escape"})),
+        (
+            "batch",
+            json!({"invocations": [
+                {"tool": "read", "args": {"file_path": "README.md"}},
+                {"tool": "write", "args": {"file_path": "escape/new.txt"}}
+            ]}),
+        ),
+    ] {
+        assert_eq!(
+            guardrail.check(tool, &args),
+            PermissionDecision::Deny,
+            "{tool} must not traverse a workspace symlink"
+        );
+    }
+    assert_eq!(
+        guardrail.check("bash", &json!({"command": "cat escape/secret.txt"})),
+        PermissionDecision::Deny,
+        "shell calls through a workspace symlink must be blocked"
+    );
+}
+
+#[test]
+fn interactive_guardrail_batch_aggregates_risk_and_rejects_malformed_calls() {
+    let guardrail = InteractiveToolGuardrail::default();
+    assert_eq!(
+        guardrail.check(
+            "batch",
+            &json!({"invocations": [
+                {"tool": "read", "args": {"file_path": "README.md"}},
+                {"tool": "git", "args": {"command": "status"}}
+            ]})
+        ),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        guardrail.check(
+            "batch",
+            &json!({"invocations": [
+                {"tool": "read", "args": {"file_path": "README.md"}},
+                {"tool": "write", "args": {"file_path": "README.md"}}
+            ]})
+        ),
+        PermissionDecision::Ask
+    );
+    assert_eq!(
+        guardrail.check(
+            "batch",
+            &json!({"invocations": [
+                {"tool": "write", "args": {"file_path": "README.md"}},
+                {"tool": "bash", "args": {"command": "rm -rf /"}}
+            ]})
+        ),
+        PermissionDecision::Deny
+    );
+    assert_eq!(
+        guardrail.check(
+            "batch",
+            &json!({"invocations": [
+                {"tool": "batch", "args": {"invocations": [
+                    {"tool": "bash", "args": {"command": "rm -rf /"}}
+                ]}}
+            ]})
+        ),
+        PermissionDecision::Deny,
+        "nested batches must retain hard-deny aggregation"
+    );
+    for malformed in [
+        json!({}),
+        json!({"invocations": []}),
+        json!({"invocations": [{"tool": "read"}]}),
+        json!({"invocations": [{"args": {}}]}),
+        json!({"invocations": [{"tool": "batch", "args": {}}]}),
+    ] {
+        assert_eq!(
+            guardrail.check("batch", &malformed),
+            PermissionDecision::Ask
+        );
+    }
+}
+
 // ========================================================================
 // PermissionRule Tests
 // ========================================================================

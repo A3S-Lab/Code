@@ -1564,6 +1564,17 @@ export declare class Session {
    */
   queueMetrics(): Promise<any>
   /**
+   * Add or replace a Skill in this live session.
+   *
+   * The Skill tools and model-visible catalog observe the new definition
+   * immediately. Removing it restores the exact session Skill it shadowed.
+   */
+  addSkill(skill: InlineSkill): void
+  /** Remove a Skill installed through `addSkill`. */
+  removeSkill(name: string): void
+  /** Return the names in the session's current live Skill registry. */
+  skillNames(): Array<string>
+  /**
    * Add an MCP server to this live session.
    *
    * Connects the server and registers all its tools immediately so the agent

@@ -1,12 +1,6 @@
-//! Cheap prompt-token estimates used for admission control and compaction.
-//!
-//! Providers remain the authority for billed usage. These estimates only need
-//! to be stable and conservative enough for decisions made before a request.
+use super::{ContentBlock, Message, ToolDefinition, ToolResultContent, ToolResultContentField};
 
-use crate::llm::{
-    ContentBlock, Message, ToolDefinition, ToolResultContent, ToolResultContentField,
-};
-
+/// Cheap internal prompt-token estimator shared by governed LLM and compaction paths.
 pub(crate) fn estimate_prompt_tokens(
     messages: &[Message],
     system: Option<&str>,
@@ -17,7 +11,7 @@ pub(crate) fn estimate_prompt_tokens(
         chars = chars.saturating_add(message.role.len() + 4);
         chars = chars.saturating_add(message.reasoning_content.as_ref().map_or(0, String::len));
         for block in &message.content {
-            let block_chars = match block {
+            chars = chars.saturating_add(match block {
                 ContentBlock::Text { text } => text.len(),
                 ContentBlock::Image { source } => source.data.len(),
                 ContentBlock::ToolUse { id, name, input } => id
@@ -31,8 +25,7 @@ pub(crate) fn estimate_prompt_tokens(
                 } => tool_use_id
                     .len()
                     .saturating_add(tool_result_content_chars(content)),
-            };
-            chars = chars.saturating_add(block_chars);
+            });
         }
     }
     for tool in tools {
@@ -58,21 +51,5 @@ fn tool_result_content_chars(content: &ToolResultContentField) -> usize {
                 ToolResultContent::Image { source } => source.data.len(),
             })
         }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn message_estimate_matches_prompt_without_fixed_context() {
-        let messages = vec![Message::user(&"x".repeat(4_000))];
-
-        assert_eq!(
-            estimate_message_tokens(&messages),
-            estimate_prompt_tokens(&messages, None, &[])
-        );
-        assert!(estimate_message_tokens(&messages) >= 1_000);
     }
 }

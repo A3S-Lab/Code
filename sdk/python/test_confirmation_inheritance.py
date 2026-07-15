@@ -80,8 +80,8 @@ if os.environ.get('A3S_CODE_SDK_REAL_AGENT_SMOKE') != '0':
         'max_steps': 2,
     })
 
-    assert task_result['exit_code'] == 0, f"Task should succeed: {task_result['output']}"
-    output = task_result['output']
+    assert task_result.exit_code == 0, f"Task should succeed: {task_result.output}"
+    output = task_result.output
     assert 'CONFIRMATION_TEST_CONTENT' in output or 'test.txt' in output, \
         'Task output should reference the test file'
     print('[python-sdk-confirmation] Task delegation successful')

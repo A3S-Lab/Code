@@ -16,8 +16,8 @@ path = "src/lib.rs"
 a3s-common = { version = "0.1.1", path = "../../common" }
 a3s-memory = { version = "0.1.2", path = "../../memory" }
 a3s-lane = { version = "0.5", path = "../../lane" }
-a3s-search = { version = "1.4.1", path = "../../search", default-features = false, features = ["lightpanda"] }
-a3s-flow = { version = "0.4.1", path = "../../flow" }
+a3s-search = { version = "1.4.3", path = "../../search", default-features = false, features = ["lightpanda"] }
+a3s-flow = { version = "0.4.2", path = "../../flow" }
 
 # Async runtime
 tokio = { version = "1.35", features = [
@@ -39,7 +39,7 @@ serde_yaml = "0.9"
 toml = "0.8"
 
 # ACL config parsing
-a3s-acl = { git = "https://github.com/A3S-Lab/ACL.git", tag = "v0.2.0", version = "0.2.0" }
+a3s-acl = { git = "https://github.com/A3S-Lab/ACL.git", rev = "6e2a6469edc0f4c61b1e588d0ace873aaf15ce22", version = "0.2.1" }
 
 # Error handling
 anyhow = "1.0"

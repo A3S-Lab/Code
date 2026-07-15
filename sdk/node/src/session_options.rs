@@ -679,13 +679,7 @@ pub(super) fn js_session_options_to_rust(
         if !inline_skills.is_empty() {
             let registry = a3s_code_core::skills::SkillRegistry::new();
             for skill in inline_skills {
-                let raw = format!(
-                    "---\nname: {}\nkind: {}\n---\n{}",
-                    skill.name, skill.kind, skill.content
-                );
-                if let Some(parsed) = a3s_code_core::skills::Skill::parse(&raw) {
-                    registry.register_unchecked(std::sync::Arc::new(parsed));
-                }
+                registry.register_unchecked(inline_skill_to_rust(skill)?);
             }
             opts = opts.with_skill_registry(std::sync::Arc::new(registry));
         }

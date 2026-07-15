@@ -87,6 +87,7 @@ fn test_parallel_delegated_task_args_preserve_order() {
     assert_eq!(tasks.len(), 2);
     assert_eq!(tasks[0]["agent"], "explore");
     assert_eq!(tasks[1]["agent"], "verification");
+    assert_eq!(args["allow_partial_failure"], true);
 }
 
 #[test]

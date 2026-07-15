@@ -8,6 +8,7 @@
 use super::AgentSession;
 use crate::error::Result;
 use crate::mcp::{McpServerConfig, McpServerStatus};
+use crate::skills::{Skill, SkillRegistry};
 use crate::subagent::{AgentDefinition, WorkerAgentSpec};
 use crate::tools::{Tool, ToolExecutor};
 use std::collections::{BTreeMap, HashMap};
@@ -93,6 +94,75 @@ impl SessionMcpToolOwnership {
     }
 }
 
+struct OwnedSkill {
+    installed: Arc<Skill>,
+    shadowed: Option<Arc<Skill>>,
+}
+
+/// Exact skill registrations installed through the live session API.
+///
+/// A captured pointer is the ownership token. Removing a live skill restores
+/// its exact prior registration only while the installed pointer still owns
+/// the name, so direct host mutations made later are never undone.
+#[derive(Default)]
+pub(crate) struct SessionSkillOwnership {
+    by_name: HashMap<String, OwnedSkill>,
+}
+
+impl SessionSkillOwnership {
+    pub(crate) fn install(&mut self, registry: &SkillRegistry, skill: Arc<Skill>) -> Result<()> {
+        if skill.name.trim().is_empty() {
+            return Err(crate::error::CodeError::Config(
+                "Live skill name must not be empty".to_string(),
+            ));
+        }
+
+        let name = skill.name.clone();
+        let installed = Arc::clone(&skill);
+        let (accepted, mut shadowed) = registry.register_with_shadow(skill).map_err(|error| {
+            crate::error::CodeError::Config(format!(
+                "Live skill '{name}' failed validation: {error}"
+            ))
+        })?;
+        if !accepted {
+            return Err(crate::error::CodeError::Config(format!(
+                "Live skill '{name}' cannot shadow a built-in skill"
+            )));
+        }
+
+        if let Some(previous) = self.by_name.remove(&name) {
+            if shadowed
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &previous.installed))
+            {
+                shadowed = previous.shadowed;
+            }
+        }
+        self.by_name.insert(
+            name,
+            OwnedSkill {
+                installed,
+                shadowed,
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn remove(&mut self, name: &str, registry: &SkillRegistry) -> bool {
+        let Some(owned) = self.by_name.remove(name) else {
+            return false;
+        };
+        registry.restore_if_same(name, &owned.installed, owned.shadowed)
+    }
+
+    pub(crate) fn remove_all(&mut self, registry: &SkillRegistry) {
+        let names = self.by_name.keys().cloned().collect::<Vec<_>>();
+        for name in names {
+            self.remove(&name, registry);
+        }
+    }
+}
+
 pub(super) struct SessionExtensionRuntime<'a> {
     session: &'a AgentSession,
 }
@@ -122,6 +192,38 @@ impl<'a> SessionExtensionRuntime<'a> {
             .into_iter()
             .map(|spec| self.register_worker_agent(spec))
             .collect()
+    }
+
+    pub(super) fn add_skill(&self, skill: Arc<Skill>) -> Result<()> {
+        let name = skill.name.clone();
+        self.session
+            .close_handle
+            .skill_ownership
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .install(&self.session.close_handle.skill_registry, skill)?;
+        tracing::info!(
+            session_id = %self.session.session_id,
+            skill = %name,
+            "Skill added to live session"
+        );
+        Ok(())
+    }
+
+    pub(super) fn remove_skill(&self, name: &str) {
+        let restored = self
+            .session
+            .close_handle
+            .skill_ownership
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(name, &self.session.close_handle.skill_registry);
+        tracing::info!(
+            session_id = %self.session.session_id,
+            skill = %name,
+            restored_shadow = restored,
+            "Skill removed from live session"
+        );
     }
 
     pub(super) async fn add_mcp_server(&self, config: McpServerConfig) -> Result<usize> {

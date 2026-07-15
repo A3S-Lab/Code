@@ -5,6 +5,26 @@ use super::*;
 
 #[pymethods]
 impl PySession {
+    /// Add or replace a Skill in this live session.
+    ///
+    /// The Skill tools and model-visible catalog observe it immediately.
+    #[pyo3(signature = (name, content, kind="instruction"))]
+    fn add_skill(&self, name: String, content: String, kind: &str) -> PyResult<()> {
+        self.inner
+            .add_skill(inline_skill_to_rust(name, content, kind)?)
+            .map_err(py_code_error)
+    }
+
+    /// Remove a Skill installed through ``add_skill``.
+    fn remove_skill(&self, name: String) -> PyResult<()> {
+        self.inner.remove_skill(&name).map_err(py_code_error)
+    }
+
+    /// Return the names in the session's current live Skill registry.
+    fn skill_names(&self) -> Vec<String> {
+        self.inner.skill_names()
+    }
+
     /// Add an MCP server to this live session.
     ///
     /// Connects the server and registers all its tools immediately so the agent

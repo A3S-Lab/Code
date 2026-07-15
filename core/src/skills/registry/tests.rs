@@ -40,6 +40,76 @@ fn test_register_and_get() {
 }
 
 #[test]
+fn owned_registration_restores_only_the_exact_installed_skill() {
+    fn skill(description: &str) -> Arc<Skill> {
+        Arc::new(Skill {
+            name: "shared-skill".to_string(),
+            description: description.to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: description.to_string(),
+            tags: vec![],
+            version: None,
+        })
+    }
+
+    let registry = SkillRegistry::new();
+    let original = skill("original");
+    let installed = skill("installed");
+    registry.register_unchecked(Arc::clone(&original));
+
+    let (accepted, shadowed) = registry
+        .register_with_shadow(Arc::clone(&installed))
+        .unwrap();
+    assert!(accepted);
+    assert!(Arc::ptr_eq(shadowed.as_ref().unwrap(), &original));
+    assert!(registry.restore_if_same("shared-skill", &installed, shadowed));
+    assert!(Arc::ptr_eq(
+        &registry.get("shared-skill").unwrap(),
+        &original
+    ));
+
+    let (_, shadowed) = registry
+        .register_with_shadow(Arc::clone(&installed))
+        .unwrap();
+    let later = skill("later");
+    registry.register_unchecked(Arc::clone(&later));
+    assert!(!registry.restore_if_same("shared-skill", &installed, shadowed));
+    assert!(Arc::ptr_eq(&registry.get("shared-skill").unwrap(), &later));
+}
+
+#[test]
+fn owned_registration_cannot_shadow_a_builtin_skill() {
+    let registry = SkillRegistry::new();
+    let builtin = Arc::new(Skill {
+        name: "protected-skill".to_string(),
+        description: "built in".to_string(),
+        allowed_tools: None,
+        disable_model_invocation: false,
+        kind: SkillKind::Instruction,
+        content: "built in".to_string(),
+        tags: vec![],
+        version: None,
+    });
+    registry.register_builtin(Arc::clone(&builtin));
+
+    let replacement = Arc::new(Skill {
+        description: "replacement".to_string(),
+        content: "replacement".to_string(),
+        ..(*builtin).clone()
+    });
+    let (accepted, shadowed) = registry.register_with_shadow(replacement).unwrap();
+
+    assert!(!accepted);
+    assert!(shadowed.is_none());
+    assert!(Arc::ptr_eq(
+        &registry.get("protected-skill").unwrap(),
+        &builtin
+    ));
+}
+
+#[test]
 fn test_list() {
     let registry = SkillRegistry::with_builtins();
     let names = registry.list();
