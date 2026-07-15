@@ -4,20 +4,20 @@ version = 4
 
 [[package]]
 name = "a3s-acl"
-version = "0.2.0"
-source = "git+https://github.com/A3S-Lab/ACL.git?tag=v0.2.0#ccb8622b42847481c451197d4f9ce5623a350a25"
-
-[[package]]
-name = "a3s-acl"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35b83be97f61abdd33096446eae063f9d65d98e84c446560b59d3c744194287e"
 
 [[package]]
+name = "a3s-acl"
+version = "0.2.1"
+source = "git+https://github.com/A3S-Lab/ACL.git?rev=6e2a6469edc0f4c61b1e588d0ace873aaf15ce22#6e2a6469edc0f4c61b1e588d0ace873aaf15ce22"
+
+[[package]]
 name = "a3s-code-core"
 version = "5.2.4"
 dependencies = [
- "a3s-acl 0.2.0",
+ "a3s-acl 0.2.1 (git+https://github.com/A3S-Lab/ACL.git?rev=6e2a6469edc0f4c61b1e588d0ace873aaf15ce22)",
  "a3s-common",
  "a3s-flow",
  "a3s-lane",
@@ -147,11 +147,11 @@ dependencies = [
 name = "a3s-search"
 version = "1.4.1"
 dependencies = [
- "a3s-acl 0.2.1",
+ "a3s-acl 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "a3s-updater",
+ "a3s-use-browser",
  "anyhow",
  "async-trait",
- "chromiumoxide",
  "clap",
  "dom_smoothie",
  "futures",
@@ -166,8 +166,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "urlencoding",
- "which 7.0.3",
- "zip 2.4.2",
 ]
 
 [[package]]
@@ -184,6 +182,37 @@ dependencies = [
  "serde_json",
  "tar",
  "tokio",
+]
+
+[[package]]
+name = "a3s-use-browser"
+version = "0.1.0"
+source = "git+https://github.com/A3S-Lab/Use?rev=0ef4694172c09656d8a7c8f049dbaa4b05b7e274#0ef4694172c09656d8a7c8f049dbaa4b05b7e274"
+dependencies = [
+ "a3s-use-core",
+ "async-trait",
+ "chromiumoxide",
+ "fs2",
+ "futures",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "url",
+ "which 7.0.3",
+ "zip 2.4.2",
+]
+
+[[package]]
+name = "a3s-use-core"
+version = "0.1.0"
+source = "git+https://github.com/A3S-Lab/Use?rev=0ef4694172c09656d8a7c8f049dbaa4b05b7e274#0ef4694172c09656d8a7c8f049dbaa4b05b7e274"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5212,6 +5241,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

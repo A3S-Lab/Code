@@ -37,7 +37,7 @@ serde_yaml = "0.9"
 toml = "0.8"
 
 # ACL config parsing
-a3s-acl = { git = "https://github.com/A3S-Lab/ACL.git", tag = "v0.2.0", version = "0.2.0" }
+a3s-acl = { git = "https://github.com/A3S-Lab/ACL.git", rev = "6e2a6469edc0f4c61b1e588d0ace873aaf15ce22", version = "0.2.1" }
 
 # Error handling
 anyhow = "1.0"

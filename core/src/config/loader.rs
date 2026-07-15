@@ -4,8 +4,11 @@ use super::provider::{
 use super::{AutoDelegationConfig, CodeConfig, OsConfig, StorageBackend};
 use crate::error::{CodeError, Result};
 use crate::llm::LlmConfig;
+use crate::mcp::McpServerConfig;
 use crate::memory::MemoryConfig;
+use crate::queue::SessionQueueConfig;
 use a3s_memory::{PrunePolicy, RelevanceConfig};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -138,6 +141,28 @@ fn parse_memory_block(block: &a3s_acl::Block, base: Option<&MemoryConfig>) -> Me
         ));
     }
 
+    for child in &block.blocks {
+        let value = a3s_acl::Value::Object(
+            child
+                .attributes
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
+        match child.name.as_str() {
+            "relevance" => {
+                config.relevance = parse_relevance_value(&value, &config.relevance);
+            }
+            "prune" | "prune_policy" | "prunePolicy" => {
+                config.prune_policy = Some(parse_prune_policy_value(
+                    &value,
+                    config.prune_policy.as_ref(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
     config
 }
 
@@ -233,6 +258,202 @@ fn acl_path_list_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<Vec<PathB
     }
 }
 
+fn snake_to_camel(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut uppercase_next = false;
+    for ch in value.chars() {
+        if ch == '_' || ch == '-' {
+            uppercase_next = true;
+        } else if uppercase_next {
+            output.extend(ch.to_uppercase());
+            uppercase_next = false;
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
+fn acl_value_to_json(value: &a3s_acl::Value) -> Option<JsonValue> {
+    match value {
+        a3s_acl::Value::String(value) => Some(JsonValue::String(value.clone())),
+        a3s_acl::Value::Number(value) if value.fract() == 0.0 && *value >= 0.0 => {
+            Some(JsonValue::Number(serde_json::Number::from(*value as u64)))
+        }
+        a3s_acl::Value::Number(value) if value.fract() == 0.0 => {
+            Some(JsonValue::Number(serde_json::Number::from(*value as i64)))
+        }
+        a3s_acl::Value::Number(value) => {
+            serde_json::Number::from_f64(*value).map(JsonValue::Number)
+        }
+        a3s_acl::Value::Bool(value) => Some(JsonValue::Bool(*value)),
+        a3s_acl::Value::List(items) => Some(JsonValue::Array(
+            items.iter().filter_map(acl_value_to_json).collect(),
+        )),
+        a3s_acl::Value::Object(pairs) => {
+            let mut object = JsonMap::new();
+            for (key, value) in pairs {
+                if let Some(value) = acl_value_to_json(value) {
+                    object.insert(key.clone(), value);
+                }
+            }
+            Some(JsonValue::Object(object))
+        }
+        a3s_acl::Value::Null => Some(JsonValue::Null),
+        a3s_acl::Value::Call(name, _) if name == "env" => acl_string(value).map(JsonValue::String),
+        a3s_acl::Value::Call(_, _) => None,
+    }
+}
+
+fn insert_nested_json(object: &mut JsonMap<String, JsonValue>, key: String, value: JsonValue) {
+    match object.remove(&key) {
+        None => {
+            object.insert(key, value);
+        }
+        Some(JsonValue::Array(mut values)) => {
+            values.push(value);
+            object.insert(key, JsonValue::Array(values));
+        }
+        Some(previous) => {
+            object.insert(key, JsonValue::Array(vec![previous, value]));
+        }
+    }
+}
+
+fn acl_block_to_json(block: &a3s_acl::Block) -> JsonValue {
+    let mut object = JsonMap::new();
+    for (key, value) in &block.attributes {
+        if let Some(value) = acl_value_to_json(value) {
+            object.insert(snake_to_camel(key), value);
+        }
+    }
+
+    for child in &block.blocks {
+        let key = snake_to_camel(&child.name);
+        let value = acl_block_to_json(child);
+        if let Some(label) = child.labels.first() {
+            let entry = object
+                .entry(key)
+                .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+            if let JsonValue::Object(entries) = entry {
+                entries.insert(label.clone(), value);
+            }
+        } else {
+            insert_nested_json(&mut object, key, value);
+        }
+    }
+
+    JsonValue::Object(object)
+}
+
+fn normalize_lane_name(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "control" => Some("Control"),
+        "query" => Some("Query"),
+        "execute" => Some("Execute"),
+        "generate" => Some("Generate"),
+        _ => None,
+    }
+}
+
+fn normalize_lane_map(value: &mut JsonValue, normalize_handler_mode: bool) {
+    let JsonValue::Object(entries) = value else {
+        return;
+    };
+    let previous = std::mem::take(entries);
+    for (name, mut value) in previous {
+        let Some(name) = normalize_lane_name(&name) else {
+            continue;
+        };
+        if normalize_handler_mode {
+            if let JsonValue::Object(handler) = &mut value {
+                rename_json_key(handler, "timeoutMs", "timeout_ms");
+                if let Some(JsonValue::String(mode)) = handler.get_mut("mode") {
+                    *mode = match mode.trim().to_ascii_lowercase().as_str() {
+                        "external" => "External".to_string(),
+                        "hybrid" => "Hybrid".to_string(),
+                        _ => "Internal".to_string(),
+                    };
+                }
+            }
+        }
+        entries.insert(name.to_string(), value);
+    }
+}
+
+fn parse_queue_block(block: &a3s_acl::Block) -> Result<SessionQueueConfig> {
+    let mut value = acl_block_to_json(block);
+    if let Some(lane_handlers) = value.get_mut("laneHandlers") {
+        normalize_lane_map(lane_handlers, true);
+    }
+    if let Some(lane_timeouts) = value.get_mut("laneTimeouts") {
+        normalize_lane_map(lane_timeouts, false);
+    }
+    serde_json::from_value(value)
+        .map_err(|error| CodeError::Config(format!("Invalid queue configuration: {error}")))
+}
+
+fn parse_search_block(block: &a3s_acl::Block) -> Result<super::SearchConfig> {
+    serde_json::from_value(acl_block_to_json(block))
+        .map_err(|error| CodeError::Config(format!("Invalid search configuration: {error}")))
+}
+
+fn parse_document_parser_block(block: &a3s_acl::Block) -> Result<super::DocumentParserConfig> {
+    serde_json::from_value(acl_block_to_json(block)).map_err(|error| {
+        CodeError::Config(format!("Invalid document parser configuration: {error}"))
+    })
+}
+
+fn rename_json_key(object: &mut JsonMap<String, JsonValue>, from: &str, to: &str) {
+    if let Some(value) = object.remove(from) {
+        object.insert(to.to_string(), value);
+    }
+}
+
+fn parse_mcp_server_block(block: &a3s_acl::Block) -> Result<McpServerConfig> {
+    let mut value = acl_block_to_json(block);
+    let object = value.as_object_mut().ok_or_else(|| {
+        CodeError::Config("Invalid MCP server configuration: expected an object".to_string())
+    })?;
+    if let Some(label) = block.labels.first() {
+        object.insert("name".to_string(), JsonValue::String(label.clone()));
+    }
+    if let Some(JsonValue::Object(oauth)) = object.get_mut("oauth") {
+        rename_json_key(oauth, "authUrl", "auth_url");
+        rename_json_key(oauth, "tokenUrl", "token_url");
+        rename_json_key(oauth, "clientId", "client_id");
+        rename_json_key(oauth, "clientSecret", "client_secret");
+        rename_json_key(oauth, "redirectUri", "redirect_uri");
+        rename_json_key(oauth, "accessToken", "access_token");
+    }
+    serde_json::from_value(value)
+        .map_err(|error| CodeError::Config(format!("Invalid MCP server configuration: {error}")))
+}
+
+fn acl_string_map(value: &a3s_acl::Value) -> HashMap<String, String> {
+    match value {
+        a3s_acl::Value::Object(pairs) => pairs
+            .iter()
+            .filter_map(|(key, value)| acl_string(value).map(|value| (key.clone(), value)))
+            .collect(),
+        _ => HashMap::new(),
+    }
+}
+
+fn acl_string_list(value: &a3s_acl::Value) -> Vec<String> {
+    match value {
+        a3s_acl::Value::List(items) => items.iter().filter_map(acl_string).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn acl_object_f64_attr(value: &a3s_acl::Value, keys: &[&str]) -> Option<f64> {
+    match acl_object_attr(value, keys) {
+        Some(a3s_acl::Value::Number(value)) => Some(*value),
+        _ => None,
+    }
+}
+
 // ============================================================================
 // CodeConfig Implementation
 // ============================================================================
@@ -306,6 +527,18 @@ impl CodeConfig {
                 }
                 "memory" => {
                     config.memory = Some(parse_memory_block(&block, config.memory.as_ref()));
+                }
+                "queue" => {
+                    config.queue = Some(parse_queue_block(&block)?);
+                }
+                "search" => {
+                    config.search = Some(parse_search_block(&block)?);
+                }
+                "document_parser" | "documentParser" => {
+                    config.document_parser = Some(parse_document_parser_block(&block)?);
+                }
+                "mcp_servers" | "mcpServers" | "mcp_server" => {
+                    config.mcp_servers.push(parse_mcp_server_block(&block)?);
                 }
                 "storage_url" => {
                     if let Some(storage_url) = acl_string_attr(&block, &["storage_url"]) {
@@ -405,6 +638,9 @@ impl CodeConfig {
                                     provider.session_id_header = Some(header);
                                 }
                             }
+                            "headers" => {
+                                provider.headers = acl_string_map(value);
+                            }
                             _ => {}
                         }
                     }
@@ -465,6 +701,9 @@ impl CodeConfig {
                                             model.session_id_header = Some(header);
                                         }
                                     }
+                                    "headers" => {
+                                        model.headers = acl_string_map(value);
+                                    }
                                     "attachment" => {
                                         model.attachment =
                                             acl_bool_attr(model_block, &["attachment"])
@@ -524,6 +763,36 @@ impl CodeConfig {
                                             model.limit.context = context;
                                         }
                                     }
+                                    "modalities" => {
+                                        if let Some(input) = acl_object_attr(value, &["input"]) {
+                                            model.modalities.input = acl_string_list(input);
+                                        }
+                                        if let Some(output) = acl_object_attr(value, &["output"]) {
+                                            model.modalities.output = acl_string_list(output);
+                                        }
+                                    }
+                                    "cost" => {
+                                        if let Some(input) = acl_object_f64_attr(value, &["input"])
+                                        {
+                                            model.cost.input = input;
+                                        }
+                                        if let Some(output) =
+                                            acl_object_f64_attr(value, &["output"])
+                                        {
+                                            model.cost.output = output;
+                                        }
+                                        if let Some(cache_read) =
+                                            acl_object_f64_attr(value, &["cache_read", "cacheRead"])
+                                        {
+                                            model.cost.cache_read = cache_read;
+                                        }
+                                        if let Some(cache_write) = acl_object_f64_attr(
+                                            value,
+                                            &["cache_write", "cacheWrite"],
+                                        ) {
+                                            model.cost.cache_write = cache_write;
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -534,10 +803,7 @@ impl CodeConfig {
 
                     config.providers.push(provider);
                 }
-                _ => {
-                    // Other top-level blocks are not mapped by the lightweight
-                    // ACL loader yet (queue, search, memory, MCP, etc.).
-                }
+                _ => {}
             }
         }
 
