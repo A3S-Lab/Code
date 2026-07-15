@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.8] - 2026-07-15
+
 ### Changed
 
 - Child and delegated runs now inherit the session's effective live Skill

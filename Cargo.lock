@@ -15,7 +15,7 @@ source = "git+https://github.com/A3S-Lab/ACL.git?rev=6e2a6469edc0f4c61b1e588d0ac
 
 [[package]]
 name = "a3s-code-core"
-version = "5.2.7"
+version = "5.2.8"
 dependencies = [
  "a3s-acl 0.2.1 (git+https://github.com/A3S-Lab/ACL.git?rev=6e2a6469edc0f4c61b1e588d0ace873aaf15ce22)",
  "a3s-common",
