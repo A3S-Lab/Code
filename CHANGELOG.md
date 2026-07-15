@@ -18,7 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   language-server initialization, preventing cold empty or partial reference
   results without treating a legitimate empty result as an error.
 
-## [5.2.8] - 2026-07-15
+## [5.2.8] - 2026-07-16
+
+### Added
+
+- Added explainable four-level tool risk assessments for interactive Code
+  hosts. Assessments expose capability type, target, impact, reversibility,
+  environment sensitivity, stable reason codes, and explicit allow, confirm,
+  constrained-review, or rule-deny routing actions.
+- Added conservative aggregation for nested batch invocations and workspace
+  symlink boundary assessments while preserving the existing
+  `PermissionDecision` interface for backward-compatible HITL fallback.
 
 ### Changed
 

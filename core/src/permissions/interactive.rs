@@ -5,9 +5,15 @@
 //! radius are denied outright. Hosts can layer their own mode semantics over the
 //! resulting allow/ask/deny decision without duplicating command heuristics.
 
+mod assessment;
+
 use serde::{Deserialize, Serialize};
 
-use super::{PermissionChecker, PermissionDecision};
+use super::{
+    EnvironmentSensitivity, ImpactScope, OperationTarget, PermissionChecker, PermissionDecision,
+    Reversibility, ToolRiskAction, ToolRiskAssessment, ToolRiskLevel, ToolRiskReason,
+};
+use assessment::{assess_tool, assessment_permission, critical_assessment, tool_risk_type};
 
 /// How an interactive host treats operations that would normally require HITL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,21 +36,33 @@ impl InteractiveApprovalMode {
         }
     }
 
-    fn apply(
-        self,
-        tool_name: &str,
-        args: &serde_json::Value,
-        decision: PermissionDecision,
-    ) -> PermissionDecision {
-        match (self, decision) {
-            (_, PermissionDecision::Deny) => PermissionDecision::Deny,
-            // Planning stays risk-aware rather than hiding useful escalation:
-            // side effects still require an explicit user decision.
-            (Self::Plan, PermissionDecision::Ask) => PermissionDecision::Ask,
-            (Self::Auto, PermissionDecision::Ask) if auto_mode_may_approve(tool_name, args) => {
-                PermissionDecision::Allow
+    /// Apply the mode decision matrix to an explainable risk assessment.
+    ///
+    /// Routine calls are quiet in every mode. Default and plan require human
+    /// confirmation for bounded mutations, while auto streamlines them. High
+    /// risk is marked as a constrained-review candidate and falls back to HITL
+    /// through the legacy permission interface. Critical rule denials are
+    /// non-bypassable.
+    pub const fn action_for(self, assessment: &ToolRiskAssessment) -> ToolRiskAction {
+        match (self, assessment.level) {
+            (_, ToolRiskLevel::Routine) => ToolRiskAction::Allow,
+            (Self::Auto, ToolRiskLevel::Bounded) => ToolRiskAction::Allow,
+            (_, ToolRiskLevel::Bounded) => ToolRiskAction::RequireConfirmation,
+            (_, ToolRiskLevel::High) => ToolRiskAction::ReviewByLlm,
+            (_, ToolRiskLevel::Critical) => ToolRiskAction::RuleDeny,
+        }
+    }
+
+    fn apply(self, assessment: &ToolRiskAssessment) -> PermissionDecision {
+        match self.action_for(assessment) {
+            ToolRiskAction::Allow => PermissionDecision::Allow,
+            ToolRiskAction::RequireConfirmation | ToolRiskAction::ReviewByLlm => {
+                // PermissionDecision remains backward compatible. Hosts that
+                // understand ToolRiskAction can distinguish human confirmation
+                // from LLM review through `InteractiveToolGuardrail::assess`.
+                PermissionDecision::Ask
             }
-            (_, decision) => decision,
+            ToolRiskAction::RuleDeny => PermissionDecision::Deny,
         }
     }
 }
@@ -74,18 +92,49 @@ impl InteractiveToolGuardrail {
         self
     }
 
-    /// Return the conservative lexical risk decision before host mode semantics.
-    pub fn risk_decision(tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
-        classify_tool(tool_name, args)
+    /// Return the explainable risk assessment before host mode semantics.
+    pub fn risk_assessment(tool_name: &str, args: &serde_json::Value) -> ToolRiskAssessment {
+        assess_tool(tool_name, args)
     }
 
-    fn workspace_boundary_decision(
+    /// Return the conservative legacy permission decision before mode semantics.
+    ///
+    /// This projection preserves existing host integrations. New hosts should
+    /// consume [`Self::risk_assessment`] and the mode's decision matrix when they
+    /// need to distinguish human confirmation from LLM review.
+    pub fn risk_decision(tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
+        assessment_permission(&assess_tool(tool_name, args))
+    }
+
+    /// Assess an invocation, including workspace symlink boundary checks.
+    pub fn assess(&self, tool_name: &str, args: &serde_json::Value) -> ToolRiskAssessment {
+        if let Some(assessment) = self.workspace_boundary_assessment(tool_name, args) {
+            return assessment;
+        }
+        assess_tool(tool_name, args)
+    }
+
+    /// Return the explicit routing action selected for this guardrail mode.
+    pub fn risk_action(&self, tool_name: &str, args: &serde_json::Value) -> ToolRiskAction {
+        self.mode.action_for(&self.assess(tool_name, args))
+    }
+
+    fn workspace_boundary_assessment(
         &self,
         tool_name: &str,
         args: &serde_json::Value,
-    ) -> Option<PermissionDecision> {
+    ) -> Option<ToolRiskAssessment> {
         let root = self.workspace.as_deref()?;
-        invocation_crosses_local_symlink(root, tool_name, args).then_some(PermissionDecision::Deny)
+        invocation_crosses_local_symlink(root, tool_name, args).then(|| {
+            critical_assessment(
+                tool_risk_type(tool_name),
+                OperationTarget::OutsideWorkspace,
+                ImpactScope::Host,
+                Reversibility::Unknown,
+                EnvironmentSensitivity::Host,
+                ToolRiskReason::SymlinkBoundaryEscape,
+            )
+        })
     }
 }
 
@@ -97,11 +146,7 @@ impl Default for InteractiveToolGuardrail {
 
 impl PermissionChecker for InteractiveToolGuardrail {
     fn check(&self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
-        if let Some(decision) = self.workspace_boundary_decision(tool_name, args) {
-            return decision;
-        }
-        self.mode
-            .apply(tool_name, args, classify_tool(tool_name, args))
+        self.mode.apply(&self.assess(tool_name, args))
     }
 }
 
@@ -176,17 +221,15 @@ fn local_path_crosses_symlink(root: &std::path::Path, path: &str) -> bool {
     false
 }
 
-fn auto_mode_may_approve(tool_name: &str, args: &serde_json::Value) -> bool {
+pub(super) fn atomic_tool_is_bounded(tool_name: &str, args: &serde_json::Value) -> bool {
     match tool_name.to_ascii_lowercase().as_str() {
         // Workspace-confined edits and ordinary structured Git changes are the
         // bounded operations that auto mode exists to streamline.
-        "write" | "edit" => bounded_file_target(args),
-        "patch" => bounded_file_target(args),
+        "write" | "edit" | "patch" => bounded_file_target(args),
         "git" => {
             classify_git(args) == PermissionDecision::Ask
                 && git_call_is_known_bounded_mutation(args)
         }
-        "batch" => batch_auto_approvable(args),
         // Shell, delegation, runtime, dynamic scripts, skills, and unknown/MCP
         // tools retain HITL because their side effects cannot be bounded here.
         _ => false,
@@ -197,29 +240,6 @@ fn bounded_file_target(args: &serde_json::Value) -> bool {
     args.get("file_path")
         .and_then(serde_json::Value::as_str)
         .is_some_and(|path| !path.trim().is_empty() && !path_is_outside_workspace(path))
-}
-
-fn batch_auto_approvable(args: &serde_json::Value) -> bool {
-    let Some(invocations) = args
-        .get("invocations")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return false;
-    };
-    !invocations.is_empty()
-        && invocations.iter().all(|invocation| {
-            let Some(tool) = invocation.get("tool").and_then(serde_json::Value::as_str) else {
-                return false;
-            };
-            let Some(tool_args) = invocation.get("args") else {
-                return false;
-            };
-            match classify_tool(tool, tool_args) {
-                PermissionDecision::Deny => false,
-                PermissionDecision::Allow => true,
-                PermissionDecision::Ask => auto_mode_may_approve(tool, tool_args),
-            }
-        })
 }
 
 fn git_call_is_known_bounded_mutation(args: &serde_json::Value) -> bool {
@@ -254,7 +274,10 @@ fn git_requires_explicit_confirmation(args: &serde_json::Value) -> bool {
     args.get("force").is_some_and(|value| value != false)
 }
 
-fn classify_tool(tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
+pub(super) fn classify_atomic_tool(
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> PermissionDecision {
     match tool_name.to_ascii_lowercase().as_str() {
         "read" => classify_scoped_path(args, "file_path", PermissionDecision::Allow),
         "grep" | "glob" | "ls" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
@@ -269,7 +292,6 @@ fn classify_tool(tool_name: &str, args: &serde_json::Value) -> PermissionDecisio
         "patch" => classify_scoped_path(args, "file_path", PermissionDecision::Ask),
         "bash" => classify_bash(args),
         "git" => classify_git(args),
-        "batch" => classify_batch(args),
         // Delegation, scripts, skills, runtime calls, dynamic and MCP tools can
         // perform nested or external side effects, so they need authorization.
         _ => PermissionDecision::Ask,
@@ -302,42 +324,6 @@ fn classify_scoped_path(
     } else {
         safe_decision
     }
-}
-
-fn classify_batch(args: &serde_json::Value) -> PermissionDecision {
-    let Some(invocations) = args
-        .get("invocations")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return PermissionDecision::Ask;
-    };
-    if invocations.is_empty() {
-        return PermissionDecision::Ask;
-    }
-
-    let mut aggregate = PermissionDecision::Allow;
-    for invocation in invocations {
-        let Some(tool) = invocation.get("tool").and_then(serde_json::Value::as_str) else {
-            return PermissionDecision::Ask;
-        };
-        let Some(tool_args) = invocation.get("args") else {
-            return PermissionDecision::Ask;
-        };
-        if !tool_args.is_object() {
-            return PermissionDecision::Ask;
-        }
-        let decision = if tool.eq_ignore_ascii_case("batch") {
-            classify_batch(tool_args)
-        } else {
-            classify_tool(tool, tool_args)
-        };
-        match decision {
-            PermissionDecision::Deny => return PermissionDecision::Deny,
-            PermissionDecision::Ask => aggregate = PermissionDecision::Ask,
-            PermissionDecision::Allow => {}
-        }
-    }
-    aggregate
 }
 
 fn classify_git(args: &serde_json::Value) -> PermissionDecision {

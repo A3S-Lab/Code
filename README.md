@@ -344,6 +344,12 @@ Interactive Code hosts can additionally share `InteractiveToolGuardrail`, a
 conservative argument-aware classifier that quietly permits a narrow read-only
 subset, asks for ordinary side effects, denies workspace escapes and catastrophic
 shell operations, and keeps a non-bypassable safety floor in streamlined modes.
+Its explainable assessment API classifies each invocation as routine, bounded,
+high, or critical; records capability, target, impact, reversibility, environment,
+and stable reason codes; and routes the result to allow, human confirmation,
+constrained review, or deterministic denial. Nested batches inherit their
+highest child risk, while the legacy allow/ask/deny projection remains available
+to existing HITL integrations.
 Confirmation managers, hooks, budget guards, security providers, stream
 sanitization, retention limits, circuit breakers, duplicate-call guards, and
 no-progress detection compose around the same invocation path. Trusted direct
