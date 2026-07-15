@@ -1,4 +1,4 @@
-//! Versioned wire protocol for [`AgentEvent`](crate::AgentEvent).
+//! Versioned wire protocol for [`AgentEvent`].
 //!
 //! `AgentEvent` is the runtime enum. [`EventEnvelopeV1`] is its stable,
 //! language-neutral representation. SDKs consume the envelope instead of

@@ -135,7 +135,8 @@ impl Agent {
         agent_sessions::create_session(self, workspace, options)
     }
 
-    /// Create a session pre-configured from an [`AgentDefinition`].
+    /// Create a session pre-configured from an
+    /// [`AgentDefinition`](crate::subagent::AgentDefinition).
     ///
     /// Maps the definition's `permissions`, `prompt`, `model`, and `max_steps`
     /// directly into [`SessionOptions`], so markdown/YAML-defined subagents can

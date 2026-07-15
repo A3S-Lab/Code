@@ -80,6 +80,7 @@ async fn saved_document_runtime_completes_a_real_process_protocol_lifecycle() {
         layout,
         Arc::new(DocumentStore::new(8)),
         Arc::new(DiagnosticsStore::new(8)),
+        CancellationToken::new(),
         Duration::from_secs(5),
     )
     .await
@@ -196,6 +197,7 @@ async fn publish_only_diagnostics_wait_for_the_current_document_revision() {
         ProjectLayoutResolver::resolve(&snapshot),
         Arc::new(DocumentStore::new(1)),
         Arc::new(DiagnosticsStore::new(1)),
+        CancellationToken::new(),
         Duration::from_secs(5),
     )
     .await
@@ -214,6 +216,215 @@ async fn publish_only_diagnostics_wait_for_the_current_document_revision() {
     let protocol_log = std::fs::read_to_string(server.with_extension("log")).unwrap();
     assert!(protocol_log.contains("\"method\":\"textDocument/didOpen\""));
     assert!(!protocol_log.contains("\"method\":\"textDocument/diagnostic\""));
+}
+
+#[tokio::test]
+async fn initialization_settle_delays_readiness_and_honors_cancellation() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+    let canonical_root = std::fs::canonicalize(workspace.path()).unwrap();
+    let server_dir = tempfile::tempdir().unwrap();
+    let server = server_dir.path().join(if cfg!(windows) {
+        "code-intelligence-initialization-settle-lsp.exe"
+    } else {
+        "code-intelligence-initialization-settle-lsp"
+    });
+    compile_fake_server(&server);
+    let snapshot = LocalWorkspaceManifestSnapshot {
+        version: 1,
+        root: canonical_root.clone(),
+        files: vec![manifest_file("Cargo.toml"), manifest_file("src/lib.rs")],
+        scanned_at_ms: 1,
+    };
+    let layout = ProjectLayoutResolver::resolve(&snapshot);
+
+    let started = tokio::time::Instant::now();
+    let runtime = LanguageRuntime::start(
+        LanguageServerProfile::rust(&server)
+            .with_settle_delays(Duration::from_millis(75), Duration::ZERO),
+        canonical_root.clone(),
+        layout.clone(),
+        Arc::new(DocumentStore::new(1)),
+        Arc::new(DiagnosticsStore::new(1)),
+        CancellationToken::new(),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(60));
+    runtime.shutdown().await.unwrap();
+
+    let cancellation = CancellationToken::new();
+    let trigger = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        trigger.cancel();
+    });
+    let cancelled = tokio::time::timeout(
+        Duration::from_secs(1),
+        LanguageRuntime::start(
+            LanguageServerProfile::rust(&server)
+                .with_settle_delays(Duration::from_secs(5), Duration::ZERO),
+            canonical_root,
+            layout,
+            Arc::new(DocumentStore::new(1)),
+            Arc::new(DiagnosticsStore::new(1)),
+            cancellation,
+            Duration::from_secs(5),
+        ),
+    )
+    .await
+    .expect("cancellation must interrupt initialization settling");
+    assert!(matches!(
+        cancelled,
+        Err(super::LanguageRuntimeError::Cancelled)
+    ));
+}
+
+#[tokio::test]
+async fn first_navigation_waits_for_empty_and_partial_cold_results_to_settle() {
+    for mode in ["cold-empty", "cold-partial"] {
+        let workspace = tempfile::tempdir().unwrap();
+        let source_dir = workspace.path().join("src");
+        std::fs::create_dir(&source_dir).unwrap();
+        std::fs::write(
+            workspace.path().join("Cargo.toml"),
+            "[package]\nname='fixture'\n",
+        )
+        .unwrap();
+        let saved = "pub fn answer() -> u32 { 42 }\n";
+        std::fs::write(source_dir.join("lib.rs"), saved).unwrap();
+        let canonical_root = std::fs::canonicalize(workspace.path()).unwrap();
+
+        let server_dir = tempfile::tempdir().unwrap();
+        let server = server_dir.path().join(if cfg!(windows) {
+            format!("code-intelligence-{mode}-lsp.exe")
+        } else {
+            format!("code-intelligence-{mode}-lsp")
+        });
+        compile_fake_server(&server);
+        let snapshot = LocalWorkspaceManifestSnapshot {
+            version: 1,
+            root: canonical_root.clone(),
+            files: vec![manifest_file("Cargo.toml"), manifest_file("src/lib.rs")],
+            scanned_at_ms: 1,
+        };
+        let profile = LanguageServerProfile::rust(&server)
+            .with_settle_delays(Duration::ZERO, Duration::from_millis(25));
+        let runtime = LanguageRuntime::start(
+            profile,
+            canonical_root,
+            ProjectLayoutResolver::resolve(&snapshot),
+            Arc::new(DocumentStore::new(1)),
+            Arc::new(DiagnosticsStore::new(1)),
+            CancellationToken::new(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let path = WorkspacePath::from_normalized("src/lib.rs");
+
+        let first = runtime
+            .navigate(
+                NavigationKind::References,
+                &path,
+                CodePosition::new(0, 7),
+                saved,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.items.len(), 3, "{mode} did not settle");
+
+        let second = runtime
+            .navigate(
+                NavigationKind::References,
+                &path,
+                CodePosition::new(0, 7),
+                saved,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items.len(), 3);
+        runtime.shutdown().await.unwrap();
+
+        let protocol_log = std::fs::read_to_string(server.with_extension("log")).unwrap();
+        assert_eq!(
+            protocol_log
+                .matches("\"method\":\"textDocument/references\"")
+                .count(),
+            3,
+            "{mode} should retry only the first saved revision"
+        );
+    }
+}
+
+#[tokio::test]
+async fn navigation_stabilization_is_cancellable() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source_dir = workspace.path().join("src");
+    std::fs::create_dir(&source_dir).unwrap();
+    std::fs::write(
+        workspace.path().join("Cargo.toml"),
+        "[package]\nname='fixture'\n",
+    )
+    .unwrap();
+    let saved = "pub fn answer() -> u32 { 42 }\n";
+    std::fs::write(source_dir.join("lib.rs"), saved).unwrap();
+    let canonical_root = std::fs::canonicalize(workspace.path()).unwrap();
+
+    let server_dir = tempfile::tempdir().unwrap();
+    let server = server_dir.path().join(if cfg!(windows) {
+        "code-intelligence-cancellable-lsp.exe"
+    } else {
+        "code-intelligence-cancellable-lsp"
+    });
+    compile_fake_server(&server);
+    let snapshot = LocalWorkspaceManifestSnapshot {
+        version: 1,
+        root: canonical_root.clone(),
+        files: vec![manifest_file("Cargo.toml"), manifest_file("src/lib.rs")],
+        scanned_at_ms: 1,
+    };
+    let profile = LanguageServerProfile::rust(&server)
+        .with_settle_delays(Duration::ZERO, Duration::from_secs(5));
+    let runtime = LanguageRuntime::start(
+        profile,
+        canonical_root,
+        ProjectLayoutResolver::resolve(&snapshot),
+        Arc::new(DocumentStore::new(1)),
+        Arc::new(DiagnosticsStore::new(1)),
+        CancellationToken::new(),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    let path = WorkspacePath::from_normalized("src/lib.rs");
+    let cancellation = CancellationToken::new();
+    let trigger = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        trigger.cancel();
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        runtime.navigate(
+            NavigationKind::References,
+            &path,
+            CodePosition::new(0, 7),
+            saved,
+            cancellation,
+        ),
+    )
+    .await
+    .expect("cancellation must interrupt the settle delay");
+    assert!(matches!(
+        result,
+        Err(super::LanguageRuntimeError::Cancelled)
+    ));
+    runtime.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -240,6 +451,7 @@ async fn unexpected_process_exit_exposes_state_and_bounded_stderr() {
         ProjectLayoutResolver::resolve(&snapshot),
         Arc::new(DocumentStore::new(1)),
         Arc::new(DiagnosticsStore::new(1)),
+        CancellationToken::new(),
         Duration::from_secs(5),
     )
     .await

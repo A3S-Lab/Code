@@ -1,6 +1,7 @@
 //! Sandbox integration for bash tool execution.
 //!
-//! When a [`BashSandbox`] is provided via [`ToolContext::with_sandbox`], the
+//! When a [`BashSandbox`] is provided via
+//! [`ToolContext::with_sandbox`](crate::tools::ToolContext::with_sandbox), the
 //! `bash` built-in tool routes commands through that sandbox instead of
 //! `std::process::Command`. The workspace directory is mounted read-write
 //! at `/workspace` inside the sandbox.
@@ -28,7 +29,7 @@ pub struct SandboxOutput {
 ///
 /// Implement this trait to provide a custom sandbox backend. The host
 /// application constructs the implementation and passes it to the session
-/// via [`ToolContext::with_sandbox`].
+/// via [`ToolContext::with_sandbox`](crate::tools::ToolContext::with_sandbox).
 #[async_trait]
 pub trait BashSandbox: Send + Sync {
     /// Execute a shell command inside the sandbox.

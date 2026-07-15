@@ -1,21 +1,30 @@
 use std::{
     fs::OpenOptions,
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, Write},
     path::PathBuf,
 };
 
 fn main() -> io::Result<()> {
     let executable = std::env::current_exe()?;
     let log_path = executable.with_extension("log");
-    let push_diagnostics = executable
+    let executable_name = executable
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.contains("push-diagnostics"));
+        .unwrap_or_default();
+    let push_diagnostics = executable_name.contains("push-diagnostics");
+    let cold_navigation = if executable_name.contains("cold-empty") {
+        ColdNavigation::Empty
+    } else if executable_name.contains("cold-partial") {
+        ColdNavigation::Partial
+    } else {
+        ColdNavigation::Disabled
+    };
     let stdin = io::stdin();
     let mut input = BufReader::new(stdin.lock());
     let stdout = io::stdout();
     let mut output = stdout.lock();
     let mut document_uri = None;
+    let mut navigation_requests = 0_usize;
 
     while let Some(body) = read_message(&mut input)? {
         append_log(&log_path, &body)?;
@@ -40,13 +49,29 @@ fn main() -> io::Result<()> {
             }
             continue;
         };
-        let result = response_for(&method, document_uri.as_deref(), push_diagnostics);
+        if is_navigation_method(&method) {
+            navigation_requests += 1;
+        }
+        let result = response_for(
+            &method,
+            document_uri.as_deref(),
+            push_diagnostics,
+            cold_navigation,
+            navigation_requests,
+        );
         write_message(
             &mut output,
             &format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{result}}}"),
         )?;
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ColdNavigation {
+    Disabled,
+    Empty,
+    Partial,
 }
 
 fn read_message(reader: &mut impl BufRead) -> io::Result<Option<String>> {
@@ -114,7 +139,13 @@ fn string_field(body: &str, field: &str) -> Option<String> {
     Some(rest[..end].to_owned())
 }
 
-fn response_for(method: &str, uri: Option<&str>, push_diagnostics: bool) -> String {
+fn response_for(
+    method: &str,
+    uri: Option<&str>,
+    push_diagnostics: bool,
+    cold_navigation: ColdNavigation,
+    navigation_requests: usize,
+) -> String {
     let uri = uri.unwrap_or("file:///missing.rs");
     match method {
         "initialize" => initialize_response(push_diagnostics),
@@ -130,7 +161,12 @@ fn response_for(method: &str, uri: Option<&str>, push_diagnostics: bool) -> Stri
         "textDocument/definition"
         | "textDocument/declaration"
         | "textDocument/references"
-        | "textDocument/implementation" => locations_response(uri),
+        | "textDocument/implementation" => match (cold_navigation, navigation_requests) {
+            (ColdNavigation::Empty, 1) => "[]".to_owned(),
+            (ColdNavigation::Partial, 1) => locations_response(uri),
+            (ColdNavigation::Empty | ColdNavigation::Partial, _) => settled_locations_response(uri),
+            (ColdNavigation::Disabled, _) => locations_response(uri),
+        },
         "textDocument/diagnostic" => concat!(
             "{\"kind\":\"full\",\"resultId\":\"fixture-1\",\"items\":[{",
             "\"range\":{\"start\":{\"line\":0,\"character\":7},",
@@ -141,6 +177,16 @@ fn response_for(method: &str, uri: Option<&str>, push_diagnostics: bool) -> Stri
         "shutdown" => "null".to_owned(),
         _ => "null".to_owned(),
     }
+}
+
+fn is_navigation_method(method: &str) -> bool {
+    matches!(
+        method,
+        "textDocument/definition"
+            | "textDocument/declaration"
+            | "textDocument/references"
+            | "textDocument/implementation"
+    )
 }
 
 fn initialize_response(push_diagnostics: bool) -> String {
@@ -197,5 +243,22 @@ fn locations_response(uri: &str) -> String {
         "\",\"range\":{\"start\":{\"line\":0,\"character\":7},",
         "\"end\":{\"line\":0,\"character\":13}}}]"
     ));
+    response
+}
+
+fn settled_locations_response(uri: &str) -> String {
+    let mut response = String::from("[");
+    for (index, character) in [0, 7, 14].into_iter().enumerate() {
+        if index > 0 {
+            response.push(',');
+        }
+        response.push_str("{\"uri\":\"");
+        response.push_str(uri);
+        response.push_str(&format!(
+            "\",\"range\":{{\"start\":{{\"line\":0,\"character\":{character}}},\"end\":{{\"line\":0,\"character\":{}}}}}}}",
+            character + 1
+        ));
+    }
+    response.push(']');
     response
 }

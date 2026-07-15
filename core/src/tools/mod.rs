@@ -328,7 +328,7 @@ impl ToolExecutor {
         // Register native Rust built-in tools — only those whose required
         // workspace capability is available, so the model never sees a tool
         // the backend cannot service.
-        builtin::register_builtins(&registry, &workspace_services.capabilities());
+        builtin::register_builtins(&registry, &workspace_services);
         // Batch tool requires Arc<ToolRegistry>, registered separately
         builtin::register_batch(&registry);
         builtin::register_program(&registry);

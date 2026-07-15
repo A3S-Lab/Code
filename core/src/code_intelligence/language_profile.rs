@@ -7,6 +7,10 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+const DEFAULT_INITIALIZATION_SETTLE_DELAY: Duration = Duration::from_millis(750);
+const DEFAULT_NAVIGATION_SETTLE_DELAY: Duration = Duration::from_millis(250);
 
 /// Process topology used by a language server profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +45,8 @@ pub(crate) struct LanguageServerProfile {
     id: ProjectLanguageProfile,
     topology: ServerTopology,
     command: LanguageServerCommand,
+    initialization_settle_delay: Duration,
+    navigation_settle_delay: Duration,
 }
 
 impl LanguageServerProfile {
@@ -49,6 +55,8 @@ impl LanguageServerProfile {
             id: ProjectLanguageProfile::Rust,
             topology: ServerTopology::MultiFolder,
             command: LanguageServerCommand::new(program, std::iter::empty::<OsString>()),
+            initialization_settle_delay: DEFAULT_INITIALIZATION_SETTLE_DELAY,
+            navigation_settle_delay: DEFAULT_NAVIGATION_SETTLE_DELAY,
         }
     }
 
@@ -57,6 +65,8 @@ impl LanguageServerProfile {
             id: ProjectLanguageProfile::TypeScriptJavaScript,
             topology: ServerTopology::MultiFolder,
             command: LanguageServerCommand::new(program, ["--stdio"]),
+            initialization_settle_delay: DEFAULT_INITIALIZATION_SETTLE_DELAY,
+            navigation_settle_delay: DEFAULT_NAVIGATION_SETTLE_DELAY,
         }
     }
 
@@ -78,6 +88,25 @@ impl LanguageServerProfile {
 
     pub(crate) fn command(&self) -> &LanguageServerCommand {
         &self.command
+    }
+
+    pub(crate) fn initialization_settle_delay(&self) -> Duration {
+        self.initialization_settle_delay
+    }
+
+    pub(crate) fn navigation_settle_delay(&self) -> Duration {
+        self.navigation_settle_delay
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_settle_delays(
+        mut self,
+        initialization: Duration,
+        navigation: Duration,
+    ) -> Self {
+        self.initialization_settle_delay = initialization;
+        self.navigation_settle_delay = navigation;
+        self
     }
 
     pub(crate) fn language_ids(&self) -> &'static [&'static str] {
@@ -256,11 +285,10 @@ mod tests {
         let profile = LanguageServerProfile::rust("server");
         let layout = layout(&["crates/a/Cargo.toml", "crates/b/Cargo.toml"]);
         let root = Path::new("/workspace");
+        let linked_projects = ["crates/a/Cargo.toml", "crates/b/Cargo.toml"]
+            .map(|manifest| root.join(manifest).to_string_lossy().replace('\\', "/"));
         let expected = json!({
-            "linkedProjects": [
-                "/workspace/crates/a/Cargo.toml",
-                "/workspace/crates/b/Cargo.toml"
-            ],
+            "linkedProjects": linked_projects,
             "cargo": {
                 "buildScripts": {
                     "enable": false,

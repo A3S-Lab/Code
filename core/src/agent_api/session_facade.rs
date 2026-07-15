@@ -258,8 +258,8 @@ impl AgentSession {
     /// Return the names of all tools currently registered on this session.
     ///
     /// Equivalent to `tool_definitions().into_iter().map(|t| t.name).collect()`.
-    /// Tools added via [`add_mcp_server`] appear immediately; tools removed via
-    /// [`remove_mcp_server`] disappear immediately.
+    /// Tools added via [`Self::add_mcp_server`] appear immediately; tools
+    /// removed via [`Self::remove_mcp_server`] disappear immediately.
     pub fn tool_names(&self) -> Vec<String> {
         DirectToolRuntime::from_session(self).names()
     }

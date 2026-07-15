@@ -9,7 +9,7 @@ mod protocol;
 mod tests;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -43,7 +43,7 @@ use super::{
     },
     project_layout::ProjectLayout,
     CodeDiagnostic, CodeIntelligenceCapabilities, CodeLocation, CodePosition, CodeQueryResult,
-    DocumentSymbol, NavigationKind, SymbolInformation,
+    DocumentRevision, DocumentSymbol, NavigationKind, SymbolInformation,
 };
 use crate::workspace::WorkspacePath;
 
@@ -131,6 +131,8 @@ pub(crate) struct LanguageRuntime {
     diagnostic_updates: Arc<Mutex<()>>,
     open_documents: Mutex<HashSet<WorkspacePath>>,
     document_sync: Mutex<()>,
+    navigation_revisions: Mutex<HashMap<WorkspacePath, DocumentRevision>>,
+    navigation_stabilization: Mutex<()>,
     notification_task: Mutex<Option<JoinHandle<()>>>,
     timeout: Duration,
 }
@@ -155,6 +157,7 @@ impl LanguageRuntime {
         layout: ProjectLayout,
         documents: Arc<DocumentStore>,
         diagnostics: Arc<DiagnosticsStore>,
+        cancellation: CancellationToken,
         timeout: Duration,
     ) -> Result<Self, LanguageRuntimeError> {
         validate_canonical_root(&canonical_root).await?;
@@ -202,21 +205,24 @@ impl LanguageRuntime {
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION"),
         );
-        let initialized =
-            match initialize(&client, &config, CancellationToken::new(), timeout).await {
-                Ok(initialized) => initialized,
-                Err(source) => {
-                    let _ = process.shutdown(timeout, timeout).await;
-                    notification_task.abort();
-                    let _ = notification_task.await;
-                    return Err(LanguageRuntimeError::Client {
+        let initialized = match initialize(&client, &config, cancellation.clone(), timeout).await {
+            Ok(initialized) => initialized,
+            Err(source) => {
+                let _ = process.shutdown(timeout, timeout).await;
+                notification_task.abort();
+                let _ = notification_task.await;
+                return if cancellation.is_cancelled() {
+                    Err(LanguageRuntimeError::Cancelled)
+                } else {
+                    Err(LanguageRuntimeError::Client {
                         operation: "initialize",
                         source,
-                    });
-                }
-            };
+                    })
+                };
+            }
+        };
 
-        Ok(Self {
+        let runtime = Self {
             profile,
             canonical_root,
             layout,
@@ -228,9 +234,19 @@ impl LanguageRuntime {
             diagnostic_updates,
             open_documents: Mutex::new(HashSet::new()),
             document_sync: Mutex::new(()),
+            navigation_revisions: Mutex::new(HashMap::new()),
+            navigation_stabilization: Mutex::new(()),
             notification_task: Mutex::new(Some(notification_task)),
             timeout,
-        })
+        };
+        if let Err(error) = runtime
+            .wait_for_settle(runtime.profile.initialization_settle_delay(), &cancellation)
+            .await
+        {
+            let _ = runtime.shutdown().await;
+            return Err(error);
+        }
+        Ok(runtime)
     }
 
     pub(crate) fn supports_path(&self, path: &WorkspacePath) -> bool {
@@ -347,11 +363,63 @@ impl LanguageRuntime {
         let (uri, snapshot) = self
             .sync_saved_document(path, saved_content, &cancellation)
             .await?;
+        let items = if self
+            .navigation_revision_is_settled(path, snapshot.revision)
+            .await
+        {
+            self.navigation_items(kind, &uri, position, &cancellation)
+                .await?
+        } else {
+            let lock = self.navigation_stabilization.lock();
+            tokio::pin!(lock);
+            let _stabilization = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(LanguageRuntimeError::Cancelled),
+                guard = &mut lock => guard,
+            };
+            if self
+                .navigation_revision_is_settled(path, snapshot.revision)
+                .await
+            {
+                self.navigation_items(kind, &uri, position, &cancellation)
+                    .await?
+            } else {
+                // The protocol handshake can finish before a server has made
+                // its first saved document visible to cross-file navigation.
+                // Always discard one warmup response instead of guessing from
+                // whether it happens to be empty or how many locations it has.
+                let _ = self
+                    .navigation_items(kind, &uri, position, &cancellation)
+                    .await?;
+                self.wait_for_settle(self.profile.navigation_settle_delay(), &cancellation)
+                    .await?;
+                let items = self
+                    .navigation_items(kind, &uri, position, &cancellation)
+                    .await?;
+                self.navigation_revisions
+                    .lock()
+                    .await
+                    .insert(path.clone(), snapshot.revision);
+                items
+            }
+        };
+        ensure_not_cancelled(&cancellation)?;
+        let (items, truncated) = bound_items(items, MAX_NAVIGATION_RESULTS);
+        Ok(self.document_result(path, snapshot, items, truncated).await)
+    }
+
+    async fn navigation_items(
+        &self,
+        kind: NavigationKind,
+        uri: &lsp_types::Uri,
+        position: CodePosition,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<CodeLocation>, LanguageRuntimeError> {
         let text_position = TextDocumentPositionParams::new(
-            TextDocumentIdentifier::new(uri),
+            TextDocumentIdentifier::new(uri.clone()),
             Position::new(position.line, position.character),
         );
-        let items = match kind {
+        match kind {
             NavigationKind::References => {
                 let response: Option<Vec<Location>> = self
                     .request_typed(
@@ -370,7 +438,7 @@ impl LanguageRuntime {
                     .await?;
                 let mut mapped = Vec::new();
                 for location in response.unwrap_or_default() {
-                    ensure_not_cancelled(&cancellation)?;
+                    ensure_not_cancelled(cancellation)?;
                     mapped.push(
                         mapping::map_location(&self.canonical_root, location)
                             .await
@@ -380,7 +448,7 @@ impl LanguageRuntime {
                             })?,
                     );
                 }
-                mapped
+                Ok(mapped)
             }
             NavigationKind::Definition
             | NavigationKind::Declaration
@@ -400,12 +468,34 @@ impl LanguageRuntime {
                     .await?;
                 mapping::map_definition_response(&self.canonical_root, response)
                     .await
-                    .map_err(|source| LanguageRuntimeError::Mapping { operation, source })?
+                    .map_err(|source| LanguageRuntimeError::Mapping { operation, source })
             }
-        };
-        ensure_not_cancelled(&cancellation)?;
-        let (items, truncated) = bound_items(items, MAX_NAVIGATION_RESULTS);
-        Ok(self.document_result(path, snapshot, items, truncated).await)
+        }
+    }
+
+    async fn navigation_revision_is_settled(
+        &self,
+        path: &WorkspacePath,
+        revision: DocumentRevision,
+    ) -> bool {
+        self.navigation_revisions.lock().await.get(path) == Some(&revision)
+    }
+
+    async fn wait_for_settle(
+        &self,
+        delay: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<(), LanguageRuntimeError> {
+        ensure_not_cancelled(cancellation)?;
+        let delay = delay.min(self.timeout);
+        if delay.is_zero() {
+            return Ok(());
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(LanguageRuntimeError::Cancelled),
+            _ = tokio::time::sleep(delay) => Ok(()),
+        }
     }
 
     pub(crate) async fn diagnostics(

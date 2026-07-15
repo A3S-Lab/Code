@@ -119,6 +119,12 @@ def check_bootstrap_runtime_version(path):
     check_equal(f"{path} __version__", match.group(1))
 
 
+def check_changelog(path):
+    heading = f"## [{expected}]"
+    if heading not in read(path):
+        fail(f"{path}: missing release heading {heading}")
+
+
 if not expected:
     expected = first_manifest_version("core/Cargo.toml") or ""
 
@@ -134,6 +140,8 @@ check_package_json("sdk/node/package.json")
 check_pyproject("sdk/python/pyproject.toml")
 check_pyproject("sdk/python-bootstrap/pyproject.toml")
 check_bootstrap_runtime_version("sdk/python-bootstrap/src/a3s_code/_bootstrap.py")
+check_changelog("CHANGELOG.md")
+check_changelog("sdk/python/CHANGELOG.md")
 check_cargo_lock("Cargo.lock")
 check_cargo_lock_package("sdk/node/Cargo.lock", "a3s-code-node")
 check_cargo_lock_package("sdk/python/Cargo.lock", "a3s-code-py")

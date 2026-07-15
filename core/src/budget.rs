@@ -4,13 +4,13 @@
 //! decision points and emits structured events. The host
 //! implements [`BudgetGuard`] with whatever backend it likes
 //! (per-tenant counters in Redis, per-day USD caps in Postgres, etc.)
-//! and plugs it into [`SessionOptions::with_budget_guard`].
+//! and plugs it into [`SessionOptions::with_budget_guard`](crate::SessionOptions::with_budget_guard).
 //!
 //! Decision points wired today:
 //!
 //! 1. **Before each LLM call** — [`BudgetGuard::check_before_llm`].
 //!    A `Deny` aborts the call; a `SoftLimit` lets the call proceed but
-//!    triggers an [`AgentEvent::BudgetThresholdHit`] so in-session
+//!    triggers an [`AgentEvent::BudgetThresholdHit`](crate::AgentEvent::BudgetThresholdHit) so in-session
 //!    policy (hooks, custom prompts) can react.
 //! 2. **After each LLM call** — [`BudgetGuard::record_after_llm`].
 //!    The host updates its running spend total with the actual usage.

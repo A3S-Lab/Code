@@ -415,7 +415,7 @@ mod cancellation_tests {
 
     #[cfg(unix)]
     #[test]
-    fn cancellable_command_kills_a_blocked_child() {
+    fn cancellable_command_kills_a_blocked_process_group() {
         let cancelled = Arc::new(AtomicBool::new(false));
         let trigger = Arc::clone(&cancelled);
         let cancel_task = thread::spawn(move || {
@@ -423,7 +423,9 @@ mod cancellation_tests {
             trigger.store(true, Ordering::Release);
         });
         let mut command = Command::new("sh");
-        command.args(["-c", "sleep 30"]);
+        // Keep a shell leader and a separate descendant alive so the test
+        // fails if cancellation kills only the direct child.
+        command.args(["-c", "sleep 30 & wait"]);
         let started = std::time::Instant::now();
 
         let output = command_stdout_cancellable(command, &|| cancelled.load(Ordering::Acquire));

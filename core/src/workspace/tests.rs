@@ -201,60 +201,6 @@ async fn write_for_edit_succeeds_on_matching_version() {
     assert_eq!(current, "beta");
 }
 
-#[tokio::test]
-async fn write_for_edit_surfaces_conflict_when_version_changed() {
-    let fs = Arc::new(InMemoryFileSystem::new());
-    let seeded_version = seed(&fs, "doc.md", "alpha").await;
-    let services = versioned_services(fs.clone());
-    let path = WorkspacePath::from_normalized("doc.md");
-
-    let (_, version) = services.read_for_edit(&path).await.unwrap();
-    // Simulate a concurrent overwrite — a real "second writer" doing
-    // exactly what the conflict protection is meant to catch.
-    fs.write_text(&path, "from-concurrent-writer")
-        .await
-        .unwrap();
-
-    let err = services
-        .write_for_edit(&path, "beta", version.as_deref())
-        .await
-        .expect_err("write should reject with conflict");
-    let WorkspaceError::VersionConflict(conflict) = err else {
-        panic!("expected WorkspaceError::VersionConflict, got {err:?}");
-    };
-    assert_eq!(conflict.path, "doc.md");
-    assert_eq!(conflict.expected, seeded_version);
-    // We don't pin the actual version's exact value — only that the
-    // backend supplies one and that it differs from what we expected.
-    let actual = conflict
-        .actual
-        .as_deref()
-        .expect("conflict must report the current version");
-    assert_ne!(actual, seeded_version);
-}
-
-#[tokio::test]
-async fn write_for_edit_falls_back_to_plain_write_when_version_is_none() {
-    // Even with fs_ext present, passing version=None must route through
-    // unconditional write_text (e.g. for fresh-create paths).
-    let fs = Arc::new(InMemoryFileSystem::new());
-    seed(&fs, "doc.md", "alpha").await;
-    let services = versioned_services(fs.clone());
-    let path = WorkspacePath::from_normalized("doc.md");
-
-    // Concurrent overwriter, but caller did not request CAS semantics:
-    fs.write_text(&path, "from-concurrent-writer")
-        .await
-        .unwrap();
-
-    services
-        .write_for_edit(&path, "beta", None)
-        .await
-        .expect("plain write should not check version");
-    let current = fs.read_text(&path).await.unwrap();
-    assert_eq!(current, "beta");
-}
-
 struct TestCodeIntelligence {
     status: tokio::sync::watch::Sender<crate::code_intelligence::CodeIntelligenceStatus>,
 }
@@ -351,6 +297,7 @@ fn workspace_services_builder_attaches_code_intelligence() {
             .build();
 
     assert!(services.capabilities().code_intelligence);
+    assert!(services.code_intelligence().is_some());
     assert_eq!(
         services.code_intelligence().unwrap().status().state,
         CodeIntelligenceState::Ready
@@ -376,4 +323,58 @@ fn code_intelligence_decorator_preserves_existing_services() {
     assert!(decorated.capabilities().code_intelligence);
     assert!(decorated.code_intelligence().is_some());
     assert_eq!(decorated.workspace_ref(), services.workspace_ref());
+}
+
+#[tokio::test]
+async fn write_for_edit_surfaces_conflict_when_version_changed() {
+    let fs = Arc::new(InMemoryFileSystem::new());
+    let seeded_version = seed(&fs, "doc.md", "alpha").await;
+    let services = versioned_services(fs.clone());
+    let path = WorkspacePath::from_normalized("doc.md");
+
+    let (_, version) = services.read_for_edit(&path).await.unwrap();
+    // Simulate a concurrent overwrite — a real "second writer" doing
+    // exactly what the conflict protection is meant to catch.
+    fs.write_text(&path, "from-concurrent-writer")
+        .await
+        .unwrap();
+
+    let err = services
+        .write_for_edit(&path, "beta", version.as_deref())
+        .await
+        .expect_err("write should reject with conflict");
+    let WorkspaceError::VersionConflict(conflict) = err else {
+        panic!("expected WorkspaceError::VersionConflict, got {err:?}");
+    };
+    assert_eq!(conflict.path, "doc.md");
+    assert_eq!(conflict.expected, seeded_version);
+    // We don't pin the actual version's exact value — only that the
+    // backend supplies one and that it differs from what we expected.
+    let actual = conflict
+        .actual
+        .as_deref()
+        .expect("conflict must report the current version");
+    assert_ne!(actual, seeded_version);
+}
+
+#[tokio::test]
+async fn write_for_edit_falls_back_to_plain_write_when_version_is_none() {
+    // Even with fs_ext present, passing version=None must route through
+    // unconditional write_text (e.g. for fresh-create paths).
+    let fs = Arc::new(InMemoryFileSystem::new());
+    seed(&fs, "doc.md", "alpha").await;
+    let services = versioned_services(fs.clone());
+    let path = WorkspacePath::from_normalized("doc.md");
+
+    // Concurrent overwriter, but caller did not request CAS semantics:
+    fs.write_text(&path, "from-concurrent-writer")
+        .await
+        .unwrap();
+
+    services
+        .write_for_edit(&path, "beta", None)
+        .await
+        .expect("plain write should not check version");
+    let current = fs.read_text(&path).await.unwrap();
+    assert_eq!(current, "beta");
 }

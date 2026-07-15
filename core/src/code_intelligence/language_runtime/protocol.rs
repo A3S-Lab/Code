@@ -241,6 +241,7 @@ impl LanguageRuntime {
         cancellation: &CancellationToken,
     ) -> Result<(), LanguageRuntimeError> {
         self.documents.invalidate(path).await;
+        self.navigation_revisions.lock().await.remove(path);
         if self.open_documents.lock().await.contains(path) {
             self.close_document(path, cancellation).await?;
             self.open_documents.lock().await.remove(path);

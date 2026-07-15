@@ -657,6 +657,7 @@ impl WorkspaceRuntime {
             self.layout.clone(),
             Arc::clone(&slot.documents),
             Arc::clone(&self.diagnostics),
+            cancellation.clone(),
             self.timeout,
         )
         .await;

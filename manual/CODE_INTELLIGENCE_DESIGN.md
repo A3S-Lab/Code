@@ -71,6 +71,15 @@ provider retires an idle superseded layout immediately. Shutdown is explicit
 and idempotent; process exit also changes status immediately and permits a
 clean restart on the next query.
 
+Protocol initialization can complete before a language server finishes its
+first semantic index. Status therefore remains starting through a bounded,
+cancellable initialization-settle window. The first navigation query for each
+saved document revision performs one warmup request and returns a second,
+authoritative response after a short cancellable interval. This rule does not
+infer readiness from an empty result or an assumed reference count; legitimate
+empty results remain valid and later queries for the same revision avoid the
+warmup cost.
+
 The first workspace diagnostics query starts every language profile relevant
 to supported source files in the current manifest, then fairly queries a
 bounded number of saved documents with bounded concurrency. A missing runtime
@@ -118,8 +127,8 @@ or another working language.
 
 ## Product Surfaces
 
-Agent sessions expose three read-only tools when the workspace advertises the
-capability:
+Agent sessions expose three read-only tools when the workspace has an attached
+Code Intelligence provider:
 
 - `code_symbols` for document outlines and workspace symbol search;
 - `code_navigation` for definitions, declarations, references, and
@@ -161,5 +170,6 @@ location.
 
 Required regression coverage includes UTF-16 positions, stale evidence,
 unsupported capabilities, process crashes, delayed status subscribers,
-workspace isolation, traversal and symlink escapes, bounded results, explicit
+workspace isolation, cold empty and partial navigation results, cancellation
+during stabilization, traversal and symlink escapes, bounded results, explicit
 shutdown, and the absence of duplicate file/search/edit behavior.

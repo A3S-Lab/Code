@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-07-15
+
+### Fixed
+
+- Made language-server initialization and post-initialization settling
+  cooperatively cancellable so session shutdown does not wait for a cold
+  semantic runtime.
+- Stabilized the first navigation query for each saved document revision after
+  language-server initialization, preventing cold empty or partial reference
+  results without treating a legitimate empty result as an error.
+
 ## [5.2.8] - 2026-07-16
 
 ### Added

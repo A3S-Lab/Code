@@ -220,6 +220,7 @@ context providers, policies, stores, and active child work. The runtime can:
 - resume complete snapshots from a `SessionStore`;
 - atomically replace an idle persisted session with new runtime options;
 - list and close live sessions owned by an `Agent`;
+- cancel and settle an active operation before safely reusing its session;
 - add, replace, list, and remove lifecycle-owned Skills while restoring an
   exactly shadowed registration on removal;
 - add and remove session-local MCP servers without disturbing inherited or
@@ -302,9 +303,11 @@ npm install --global typescript typescript-language-server
 Queries use saved files only. Public lines and characters are zero-based, and
 characters count UTF-16 code units. Document results include the saved-content
 revision and hash plus a stale flag when the file changes while a query is in
-flight. The semantic tools return metadata and workspace-relative locations;
-agents continue to use `read`, `grep`, `edit`, and `patch` for source text and
-mutations.
+flight. The first navigation request for a saved revision includes a bounded,
+cancellable stabilization pass so a protocol-ready but still-indexing server
+does not leak a cold partial result. The semantic tools return metadata and
+workspace-relative locations; agents continue to use `read`, `grep`, `edit`,
+and `patch` for source text and mutations.
 
 See the [Code Intelligence design](manual/CODE_INTELLIGENCE_DESIGN.md) for the
 capability boundary, shared runtime architecture, lifecycle, and verification

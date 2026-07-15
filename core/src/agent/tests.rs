@@ -4088,11 +4088,14 @@ async function run(ctx, inputs) {
                 .await
         });
 
+        // This deadline protects test setup only. QuickJS initialization can
+        // take several seconds on a loaded Windows runner; cancellation latency
+        // remains independently bounded below.
         tokio::time::timeout(std::time::Duration::from_secs(10), started.notified())
             .await
             .expect("nested tool must start before cancellation");
         cancellation.cancel();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(10), run)
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
             .await
             .expect("cancellation must stop the dynamic workflow")
             .unwrap()

@@ -36,7 +36,7 @@ impl TaskExecutor {
     ///
     /// Spawns all tasks concurrently and waits for all to complete.
     /// Returns results in the same order as the input tasks. Routed through
-    /// the [`AgentExecutor`](crate::orchestration::AgentExecutor) seam so the
+    /// the [`AgentExecutor`] seam so the
     /// same fan-out works whether steps run locally (default) or are placed
     /// on remote nodes by a host.
     pub async fn execute_parallel(

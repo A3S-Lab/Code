@@ -817,7 +817,7 @@ fn emit_remote_git_event(
 }
 
 impl super::WorkspaceServices {
-    /// Attach a remote git provider to an existing [`WorkspaceServices`].
+    /// Attach a remote git provider to an existing [`super::WorkspaceServices`].
     ///
     /// Returns a new `Arc<WorkspaceServices>` with `git` and `git_stash`
     /// wired to the remote backend. The original `WorkspaceServices` is
@@ -826,8 +826,7 @@ impl super::WorkspaceServices {
     /// onto a remote service (see RFC §8). All other fields — including
     /// `local_root`, the command runner, the search provider, the
     /// optional `file_system_ext` (S3 CAS), and `operation_timeout` — are
-    /// preserved verbatim via
-    /// [`super::WorkspaceServices::with_git_provider`].
+    /// preserved verbatim via the internal `with_git_provider` constructor.
     pub fn with_remote_git(self: Arc<Self>, config: RemoteGitBackendConfig) -> Result<Arc<Self>> {
         let backend = RemoteGitBackend::new(config)?;
         let git: Arc<dyn WorkspaceGit> = backend.clone();

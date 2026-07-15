@@ -240,7 +240,8 @@ impl SessionOptions {
     }
 
     /// Add skill directories to scan for skill files (*.md).
-    /// Merged with any global `skill_dirs` from [`CodeConfig`] at session build time.
+    /// Merged with any global `skill_dirs` from
+    /// [`CodeConfig`](crate::config::CodeConfig) at session build time.
     pub fn with_skill_dirs(mut self, dirs: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
         self.skill_dirs.extend(dirs.into_iter().map(Into::into));
         self

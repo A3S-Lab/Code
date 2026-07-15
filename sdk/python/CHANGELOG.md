@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-07-15
+
+### Added
+
+- Added `Session.cancel_and_settle(...)` parity for bounded cooperative
+  cancellation and streaming-worker cleanup before session reuse.
+
 ## [5.2.4] - 2026-07-14
 
 ### Fixed
