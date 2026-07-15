@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Delegation tools now publish a deterministic live catalog of visible worker
+  names and purposes in both their descriptions and parameter schemas. Workers
+  registered after session creation become model-discoverable on the next run;
+  hidden or unregistered workers are omitted.
+- Tool implementations can override their complete model-facing definition
+  when descriptions or schemas depend on live runtime state.
+
+### Fixed
+
+- Live MCP additions and removals now refresh task delegation, and natural
+  language action tokens can select matching MCP tools without requiring the
+  caller to know their underscored protocol names.
+
 ## [5.3.0] - 2026-07-15
 
 ### Fixed

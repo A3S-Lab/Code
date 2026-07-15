@@ -151,10 +151,55 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
 }
 
 fn prompt_mentions_tool(prompt_lower: &str, tool_name_lower: &str) -> bool {
-    prompt_lower.contains(tool_name_lower)
-        || tool_name_lower
-            .split("__")
-            .any(|part| part.len() > 2 && prompt_lower.contains(part))
+    if prompt_lower.contains(tool_name_lower) {
+        return true;
+    }
+
+    // MCP names are `mcp__server__tool_name`. Match the action vocabulary
+    // using natural-language tokens so "open the page" can select
+    // `browser_open` without requiring the model to already know the exact
+    // underscored name. Skip the namespace/server segment and generic domain
+    // words; matching only "browser" or "use" would otherwise expose an
+    // entire large server catalog.
+    let mut segments = tool_name_lower.split("__");
+    let _protocol = segments.next();
+    if segments.next().is_some_and(|server| {
+        server
+            .split(|character: char| !character.is_alphanumeric())
+            .filter(|token| token.len() > 2 && !is_generic_mcp_namespace_token(token))
+            .any(|token| prompt_lower.contains(token))
+    }) {
+        return true;
+    }
+
+    segments
+        .flat_map(|segment| segment.split(|character: char| !character.is_alphanumeric()))
+        .filter(|token| token.len() > 2 && !is_generic_mcp_action_token(token))
+        .any(|token| prompt_lower.contains(token))
+}
+
+fn is_generic_mcp_namespace_token(token: &str) -> bool {
+    matches!(
+        token,
+        "agent" | "browser" | "office" | "officecli" | "mcp" | "tool" | "use"
+    )
+}
+
+fn is_generic_mcp_action_token(token: &str) -> bool {
+    is_generic_mcp_namespace_token(token)
+        || matches!(
+            token,
+            "call"
+                | "create"
+                | "delete"
+                | "get"
+                | "list"
+                | "read"
+                | "run"
+                | "set"
+                | "update"
+                | "write"
+        )
 }
 
 fn is_known_special_tool(name: &str) -> bool {
@@ -259,5 +304,20 @@ mod tests {
 
         assert!(names.contains(&"mcp__github__create_issue"));
         assert!(!names.contains(&"mcp__linear__create_ticket"));
+    }
+
+    #[test]
+    fn natural_language_action_tokens_select_use_mcp_tools() {
+        let selected = select_tools_for_prompt(
+            &defs(&[
+                "mcp__use_report__fixture_tool",
+                "mcp__use_browser__browser_open",
+                "mcp__use_office__office_write_cell",
+            ]),
+            "Call the report fixture and return what it observed",
+        );
+        let names: Vec<_> = selected.iter().map(|tool| tool.name.as_str()).collect();
+
+        assert_eq!(names, vec!["mcp__use_report__fixture_tool"]);
     }
 }

@@ -293,6 +293,12 @@ impl<'a> SessionExtensionRuntime<'a> {
             "MCP server added to live session"
         );
 
+        // TaskTool owns a TaskExecutor assembled from the session's effective
+        // MCP sources. Refresh the delegation boundary after publishing live
+        // wrappers so the next child run inherits the same capability set as
+        // its parent session.
+        self.session.refresh_task_delegation_tools();
+
         Ok(count)
     }
 
@@ -311,6 +317,11 @@ impl<'a> SessionExtensionRuntime<'a> {
         if had_owned_tools {
             self.restore_missing_inherited_tools(server_name).await;
         }
+
+        // Stop advertising the removed server to newly delegated child runs.
+        // An already-running task retains its own executor and settles through
+        // the normal MCP/session cancellation path.
+        self.session.refresh_task_delegation_tools();
 
         if let Err(error) = remove_result {
             return Err(crate::error::CodeError::Tool {

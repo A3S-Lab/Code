@@ -28,8 +28,14 @@ pub struct ParallelTaskParams {
     pub min_success_count: Option<usize>,
 }
 
-/// Get the JSON schema for ParallelTaskParams
+/// Get the JSON schema for ParallelTaskParams using the built-in agent catalog.
 pub fn parallel_task_params_schema() -> serde_json::Value {
+    parallel_task_params_schema_for_agents(&AgentRegistry::new().list_visible())
+}
+
+pub(super) fn parallel_task_params_schema_for_agents(
+    agents: &[AgentDefinition],
+) -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
@@ -41,10 +47,7 @@ pub fn parallel_task_params_schema() -> serde_json::Value {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "Required. Canonical agent type for this task."
-                        },
+                        "agent": task_agent_parameter_schema(agents),
                         "description": {
                             "type": "string",
                             "description": "Required. Short task label for display and tracking."

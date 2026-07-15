@@ -211,6 +211,10 @@ Rules:
   never mutation targets for a session. Every session owns a private live
   manager; add/remove affects only that session, and delegated children inherit
   the ordered sources without taking ownership.
+- Visible workers are listed by canonical name and purpose in the live
+  `task`/`parallel_task` tool definitions. Registration, replacement, and
+  removal are reflected on the next run; hidden workers remain callable only
+  when the caller already knows their name.
 - Dynamic workflow registration exposes the Rust core's A3S Flow-backed
   `dynamic_workflow` tool without requiring SDK callers to construct Rust trait
   objects. Arbitrary host-native dynamic tools remain Rust-only unless a typed

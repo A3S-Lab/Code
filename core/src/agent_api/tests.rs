@@ -4720,6 +4720,66 @@ async fn test_register_worker_agents_loads_batch_into_live_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_live_worker_catalog_is_model_visible_and_tracks_registry_changes() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent.session_async(".", None).await.unwrap();
+
+    session
+        .register_worker_agent(crate::subagent::WorkerAgentSpec::custom(
+            "use",
+            "Operate Browser and Office through A3S Use",
+        ))
+        .unwrap();
+    session
+        .register_worker_agent(
+            crate::subagent::WorkerAgentSpec::custom(
+                "hidden-use-helper",
+                "Internal application helper",
+            )
+            .hidden(true),
+        )
+        .unwrap();
+
+    for tool_name in ["task", "parallel_task"] {
+        let definition = session
+            .tool_definitions()
+            .into_iter()
+            .find(|tool| tool.name == tool_name)
+            .expect("delegation tool definition");
+        let agent_schema = if tool_name == "task" {
+            &definition.parameters["properties"]["agent"]
+        } else {
+            &definition.parameters["properties"]["tasks"]["items"]["properties"]["agent"]
+        };
+        let examples = agent_schema["examples"]
+            .as_array()
+            .expect("live canonical agent examples");
+
+        assert!(examples.contains(&serde_json::json!("use")));
+        assert!(!examples.contains(&serde_json::json!("hidden-use-helper")));
+        assert!(agent_schema["description"]
+            .as_str()
+            .unwrap()
+            .contains("use: Operate Browser and Office through A3S Use"));
+        assert!(definition
+            .description
+            .contains("use: Operate Browser and Office through A3S Use"));
+        assert!(!definition.description.contains("hidden-use-helper"));
+    }
+
+    assert!(session.agent_registry.unregister("use"));
+    for definition in session
+        .tool_definitions()
+        .into_iter()
+        .filter(|tool| matches!(tool.name.as_str(), "task" | "parallel_task"))
+    {
+        assert!(!definition
+            .description
+            .contains("Operate Browser and Office through A3S Use"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_session_options_worker_agents_register_for_task_delegation() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_worker_agent(crate::subagent::WorkerAgentSpec::planner(

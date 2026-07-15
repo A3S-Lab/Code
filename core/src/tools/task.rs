@@ -18,10 +18,10 @@ use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
 use crate::llm::structured::{
     generate_blocking, parse_validated_output, StructuredMode, StructuredRequest,
 };
-use crate::llm::LlmClient;
+use crate::llm::{LlmClient, ToolDefinition};
 use crate::mcp::manager::McpManager;
 use crate::orchestration::{AgentExecutor, AgentStepSpec, StepOutcome, ToolSourceAnchor};
-use crate::subagent::AgentRegistry;
+use crate::subagent::{AgentDefinition, AgentRegistry};
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -43,6 +43,8 @@ const MAX_TASK_SOURCE_CANDIDATES: usize = MAX_TASK_SOURCE_ANCHORS * 4;
 const MAX_TASK_SOURCE_TOOL_BYTES: usize = 64;
 const MAX_TASK_SOURCE_VALUE_BYTES: usize = 4 * 1024;
 const MAX_PARALLEL_TASK_SOURCE_ANCHORS: usize = MAX_TASK_SOURCE_ANCHORS;
+const TASK_TOOL_DESCRIPTION: &str = "Delegate a bounded task to a specialized child run. Choose the canonical worker name from the live agent catalog. Custom agents from agent_dirs and .a3s/agents are supported; .claude/agents is read for compatibility.";
+const PARALLEL_TASK_TOOL_DESCRIPTION: &str = "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. By default any failed child makes the tool fail; evidence-gathering callers may set allow_partial_failure=true to continue when at least one child succeeds. Transient provider failures may be retried once only for explicitly read-only branches; successful and potentially mutating branches are never replayed. Use this only when the work genuinely splits into branches that can be investigated or implemented separately. Do not use it for trivial, conversational, single-step, or dependent work. Choose canonical worker names from the live agent catalog.";
 
 /// Task tool parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +213,10 @@ impl TaskExecutor {
     ) -> Self {
         self.subagent_tracker = Some(tracker);
         self
+    }
+
+    fn visible_agents(&self) -> Vec<AgentDefinition> {
+        self.registry.list_visible()
     }
 
     /// Execute a task by spawning an isolated child AgentLoop.
@@ -707,16 +713,74 @@ fn structured_task_prompt(prompt: &str, schema: &serde_json::Value) -> String {
     )
 }
 
-/// Get the JSON schema for TaskParams
+#[derive(Debug, Clone)]
+struct AgentCatalogEntry {
+    name: String,
+    description: String,
+}
+
+fn agent_catalog_entries(agents: &[AgentDefinition]) -> Vec<AgentCatalogEntry> {
+    let mut entries = agents
+        .iter()
+        .map(|agent| AgentCatalogEntry {
+            name: agent.name.clone(),
+            description: agent
+                .description
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    entries
+}
+
+fn agent_catalog_text(agents: &[AgentDefinition]) -> String {
+    agent_catalog_entries(agents)
+        .into_iter()
+        .map(|entry| format!("{}: {}", entry.name, entry.description))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn delegation_tool_description(base: &str, agents: &[AgentDefinition]) -> String {
+    format!(
+        "{base}\n\nAvailable agents (live catalog; use canonical names):\n{}",
+        agent_catalog_text(agents)
+    )
+}
+
+pub(super) fn task_agent_parameter_schema(agents: &[AgentDefinition]) -> serde_json::Value {
+    let entries = agent_catalog_entries(agents);
+    let examples = entries
+        .iter()
+        .map(|entry| serde_json::Value::String(entry.name.clone()))
+        .collect::<Vec<_>>();
+    let catalog = entries
+        .into_iter()
+        .map(|entry| format!("{}: {}", entry.name, entry.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    serde_json::json!({
+        "type": "string",
+        "description": format!(
+            "Required. Canonical agent type to use. Always provide this exact field name: 'agent'. Live agent catalog:\n{catalog}"
+        ),
+        "examples": examples
+    })
+}
+
+/// Get the JSON schema for TaskParams using the built-in agent catalog.
 pub fn task_params_schema() -> serde_json::Value {
+    task_params_schema_for_agents(&AgentRegistry::new().list_visible())
+}
+
+fn task_params_schema_for_agents(agents: &[AgentDefinition]) -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "agent": {
-                "type": "string",
-                "description": "Required. Canonical agent type to use (for example: explore, general, plan, verification, review). Always provide this exact field name: 'agent'."
-            },
+            "agent": task_agent_parameter_schema(agents),
             "description": {
                 "type": "string",
                 "description": "Required. Short task label for display and tracking. Always provide this exact field name: 'description'."
@@ -776,11 +840,20 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Delegate a bounded task to a specialized child run. Built-in agents: explore (read-only codebase and web evidence search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
+        TASK_TOOL_DESCRIPTION
     }
 
     fn parameters(&self) -> serde_json::Value {
-        task_params_schema()
+        task_params_schema_for_agents(&self.executor.visible_agents())
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        let agents = self.executor.visible_agents();
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: delegation_tool_description(self.description(), &agents),
+            parameters: task_params_schema_for_agents(&agents),
+        }
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
@@ -856,11 +929,20 @@ impl Tool for ParallelTaskTool {
     }
 
     fn description(&self) -> &str {
-        "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. By default any failed child makes the tool fail; evidence-gathering callers may set allow_partial_failure=true to continue when at least one child succeeds. Transient provider failures may be retried once only for explicitly read-only branches; successful and potentially mutating branches are never replayed. Use this only when the work genuinely splits into branches that can be investigated or implemented separately (e.g. inspect several unrelated modules at once, or run review and verification in parallel). Do NOT use it for trivial, conversational, or single-step requests, or for steps that depend on one another — handle those directly. Built-in agents: explore (read-only codebase and web evidence search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
+        PARALLEL_TASK_TOOL_DESCRIPTION
     }
 
     fn parameters(&self) -> serde_json::Value {
-        parallel_task_params_schema()
+        parallel_params::parallel_task_params_schema_for_agents(&self.executor.visible_agents())
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        let agents = self.executor.visible_agents();
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: delegation_tool_description(self.description(), &agents),
+            parameters: parallel_params::parallel_task_params_schema_for_agents(&agents),
+        }
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {

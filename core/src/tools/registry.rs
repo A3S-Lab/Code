@@ -229,11 +229,7 @@ impl ToolRegistry {
         let tools = self.tools.read().unwrap();
         let mut definitions = tools
             .values()
-            .map(|tool| ToolDefinition {
-                name: tool.name().to_string(),
-                description: tool.description().to_string(),
-                parameters: tool.parameters(),
-            })
+            .map(|tool| tool.definition())
             .collect::<Vec<_>>();
         definitions.sort_by(|a, b| a.name.cmp(&b.name));
         definitions

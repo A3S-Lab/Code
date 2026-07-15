@@ -645,6 +645,19 @@ pub trait Tool: Send + Sync {
     /// JSON Schema for tool parameters
     fn parameters(&self) -> serde_json::Value;
 
+    /// Complete model-facing definition for this tool.
+    ///
+    /// Most tools have static metadata and use this default. Registry-backed
+    /// tools can override it to build a definition from live runtime state
+    /// without leaking owned strings through `description()`.
+    fn definition(&self) -> crate::llm::ToolDefinition {
+        crate::llm::ToolDefinition {
+            name: self.name().to_string(),
+            description: self.description().to_string(),
+            parameters: self.parameters(),
+        }
+    }
+
     /// Scheduling and result capabilities for this specific invocation.
     fn capabilities(&self, _args: &serde_json::Value) -> ToolCapabilities {
         ToolCapabilities::conservative()

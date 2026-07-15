@@ -97,8 +97,10 @@ impl AgentSession {
     /// Register a disposable worker agent with the live session.
     ///
     /// The returned definition is immediately available to the `task` tool by
-    /// worker name, so callers can create many reproducible workers without
-    /// writing temporary agent files or restarting the session.
+    /// worker name. Its canonical name and purpose also enter the model-facing
+    /// `task` and `parallel_task` definitions on the next run, so callers can
+    /// create discoverable reproducible workers without writing temporary agent
+    /// files or restarting the session.
     pub fn register_worker_agent(
         &self,
         spec: crate::subagent::WorkerAgentSpec,
