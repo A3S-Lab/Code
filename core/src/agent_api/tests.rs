@@ -5123,6 +5123,18 @@ async fn test_agent_executor_inherits_parent_run_context() {
     session
         .set_budget_guard(Some(Arc::clone(&runtime_budget)))
         .unwrap();
+    session
+        .add_skill(Arc::new(crate::skills::Skill {
+            name: "live-use-capability".to_string(),
+            description: "Live Use capability".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: crate::skills::SkillKind::Instruction,
+            content: "Use the attached capability.".to_string(),
+            tags: Vec::new(),
+            version: None,
+        }))
+        .unwrap();
     let ctx = session.parent_run_context();
 
     assert!(
@@ -5133,6 +5145,15 @@ async fn test_agent_executor_inherits_parent_run_context() {
         ctx.skill_registry.is_some(),
         "skill registry (skill restrictions) must propagate to child runs"
     );
+    let inherited_skills = ctx
+        .skill_registry
+        .as_ref()
+        .expect("inherited effective skill registry");
+    assert!(Arc::ptr_eq(
+        inherited_skills,
+        &session.close_handle.skill_registry
+    ));
+    assert!(inherited_skills.get("live-use-capability").is_some());
     assert!(
         ctx.permission_checker.is_some(),
         "permission checker must propagate to child runs"

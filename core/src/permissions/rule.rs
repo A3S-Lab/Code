@@ -78,13 +78,7 @@ impl PermissionRule {
 
     /// Check if this rule matches a tool invocation
     pub fn matches(&self, tool_name: &str, args: &serde_json::Value) -> bool {
-        // Check tool name
-        let rule_tool = match &self.tool_name {
-            Some(t) => t,
-            None => return false,
-        };
-
-        if !self.matches_tool_name(rule_tool, tool_name) {
+        if !self.matches_tool(tool_name) {
             return false;
         }
 
@@ -96,6 +90,20 @@ impl PermissionRule {
 
         // Match against argument pattern
         self.matches_args(pattern, tool_name, args)
+    }
+
+    /// Whether this rule can match a tool, independent of invocation args.
+    pub(super) fn matches_tool(&self, tool_name: &str) -> bool {
+        self.tool_name
+            .as_deref()
+            .is_some_and(|rule_tool| self.matches_tool_name(rule_tool, tool_name))
+    }
+
+    /// Whether a matching tool name is denied for every possible argument.
+    pub(super) fn matches_all_args(&self) -> bool {
+        self.arg_pattern
+            .as_deref()
+            .is_none_or(|pattern| pattern == "*")
     }
 
     /// Check if tool names match (case-insensitive, wildcard-aware)

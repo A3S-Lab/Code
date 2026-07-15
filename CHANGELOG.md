@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Child and delegated runs now inherit the session's effective live Skill
+  registry, including host-added Skills, instead of only the original session
+  option.
+- Permission policies now omit blanket-denied tools from the model-visible
+  catalog. Deny-by-default workers expose only tools covered by an Allow or Ask
+  rule, while argument-scoped rules remain execution-time enforced.
+
 ## [5.2.7] - 2026-07-15
 
 ### Fixed
