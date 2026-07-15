@@ -105,6 +105,7 @@ pub struct WorkspaceCapabilities {
     pub exec: bool,
     pub search: bool,
     pub git: bool,
+    pub code_intelligence: bool,
 }
 
 impl WorkspaceCapabilities {
@@ -115,6 +116,7 @@ impl WorkspaceCapabilities {
             exec: true,
             search: true,
             git: true,
+            code_intelligence: false,
         }
     }
 
@@ -125,6 +127,7 @@ impl WorkspaceCapabilities {
             exec: false,
             search: false,
             git: false,
+            code_intelligence: false,
         }
     }
 }

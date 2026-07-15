@@ -52,10 +52,10 @@ jobs:
           test -n "$VERSION"
           bash check-version.sh "$VERSION"
 
-      - name: Check public API compatibility with v5.2.4
+      - name: Check public API compatibility with v5.2.7
         run: |
           cargo install cargo-semver-checks --version 0.48.0 --locked
-          bash scripts/check_semver.sh 5.2.4
+          bash scripts/check_semver.sh 5.2.7
 
       - name: Check SDK protocol and API alignment
         run: |

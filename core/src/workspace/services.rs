@@ -71,6 +71,7 @@ impl WorkspaceServices {
         if git.is_none() {
             capabilities.git = false;
         }
+        capabilities.code_intelligence = false;
         Self {
             workspace_ref,
             capabilities,
@@ -245,9 +246,11 @@ impl WorkspaceServices {
         &self,
         provider: Arc<dyn WorkspaceCodeIntelligence>,
     ) -> Arc<Self> {
+        let mut capabilities = self.capabilities;
+        capabilities.code_intelligence = true;
         Arc::new(Self {
             workspace_ref: self.workspace_ref.clone(),
-            capabilities: self.capabilities,
+            capabilities,
             path_resolver: Arc::clone(&self.path_resolver),
             file_system: Arc::clone(&self.file_system),
             file_system_ext: self.file_system_ext.clone(),
@@ -491,6 +494,7 @@ impl WorkspaceServicesBuilder {
     }
 
     pub fn code_intelligence(mut self, provider: Arc<dyn WorkspaceCodeIntelligence>) -> Self {
+        self.capabilities.code_intelligence = true;
         self.code_intelligence = Some(provider);
         self
     }
@@ -545,6 +549,7 @@ impl WorkspaceServicesBuilder {
         );
         services.file_system_ext = self.file_system_ext;
         services.text_reader = self.text_reader;
+        services.capabilities.code_intelligence = self.code_intelligence.is_some();
         services.code_intelligence = self.code_intelligence;
         services.git_stash = self.git_stash;
         services.git_worktree = self.git_worktree;

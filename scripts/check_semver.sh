@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Compare the current public API with the published 5.2.4 baseline.
+# Compare the current public API with a verified published baseline.
 
 set -euo pipefail
 
-BASELINE_VERSION="${1:-5.2.4}"
+BASELINE_VERSION="${1:-5.2.7}"
 PACKAGE="a3s-code-core"
 
 case "$BASELINE_VERSION" in
+  5.2.7)
+    BASELINE_SHA256="59993ad1e362628c7665d817318271faff5b3f775dfad0d648b1cc4a17099784"
+    ;;
   5.2.4)
     BASELINE_SHA256="0066046ead6d44acac8a01a8bd1bd78c37aae02c14121f28ea77c15d9d0133a4"
     ;;
@@ -51,8 +54,9 @@ tar -xzf "$ARCHIVE" -C "$TEMP_ROOT"
 
 # The published 5.2.4 manifest used the compatible range `1.4.1`, but a later
 # incompatible a3s-search release now satisfies that range. Pin the dependency
-# version used by 5.2.4 so its unchanged public API can be documented.
-python3 - "$SOURCE_ROOT/Cargo.toml" <<'PY'
+# version used by 5.2.4 so its unchanged public API can still be documented.
+if [[ "$BASELINE_VERSION" == "5.2.4" ]]; then
+  python3 - "$SOURCE_ROOT/Cargo.toml" <<'PY'
 import pathlib
 import sys
 
@@ -64,6 +68,7 @@ if contents.count(original) != 1:
     raise SystemExit(f"unexpected baseline a3s-search declaration in {manifest}")
 manifest.write_text(contents.replace(original, replacement))
 PY
+fi
 
 cargo semver-checks check-release \
   --package "$PACKAGE" \

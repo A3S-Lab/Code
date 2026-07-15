@@ -296,6 +296,7 @@ fn workspace_services_builder_attaches_code_intelligence() {
             .code_intelligence(provider)
             .build();
 
+    assert!(services.capabilities().code_intelligence);
     assert!(services.code_intelligence().is_some());
     assert_eq!(
         services.code_intelligence().unwrap().status().state,
@@ -319,6 +320,7 @@ fn code_intelligence_decorator_preserves_existing_services() {
 
     assert!(decorated.capabilities().read);
     assert!(decorated.capabilities().write);
+    assert!(decorated.capabilities().code_intelligence);
     assert!(decorated.code_intelligence().is_some());
     assert_eq!(decorated.workspace_ref(), services.workspace_ref());
 }
