@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.6] - 2026-07-15
+
+### Fixed
+
+- Reaped the complete process group for cancelled blocking workspace discovery
+  commands, so descendants holding inherited output streams cannot stall
+  manifest shutdown.
+- Kept process-group helpers warning-free on non-Unix targets and updated the
+  durable workflow dependency to `a3s-flow` 0.4.2.
+
 ## [5.2.5] - 2026-07-15
 
 ### Added

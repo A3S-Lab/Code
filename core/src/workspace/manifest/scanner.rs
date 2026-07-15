@@ -105,7 +105,10 @@ fn command_stdout_cancellable(
     is_cancelled: &impl Fn() -> bool,
 ) -> Option<(ExitStatus, Vec<u8>)> {
     command.stdout(Stdio::piped()).stderr(Stdio::null());
+    crate::tools::process::configure_std_process_group(&mut command);
     let mut child = command.spawn().ok()?;
+    let mut process_group =
+        crate::tools::process::ProcessGroupGuard::for_process_id(Some(child.id()));
     let mut stdout = child.stdout.take()?;
     let reader = thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -114,6 +117,7 @@ fn command_stdout_cancellable(
 
     let status = loop {
         if is_cancelled() {
+            process_group.kill();
             let _ = child.kill();
             let _ = child.wait();
             let _ = reader.join();
@@ -123,6 +127,7 @@ fn command_stdout_cancellable(
             Ok(Some(status)) => break status,
             Ok(None) => thread::sleep(Duration::from_millis(10)),
             Err(_) => {
+                process_group.kill();
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = reader.join();
@@ -130,6 +135,7 @@ fn command_stdout_cancellable(
             }
         }
     };
+    process_group.disarm();
     let stdout = reader.join().ok()?.ok()?;
     Some((status, stdout))
 }

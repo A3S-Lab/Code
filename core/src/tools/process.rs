@@ -71,6 +71,21 @@ pub(crate) fn configure_process_group(command: &mut Command) {
         use std::os::unix::process::CommandExt;
         command.as_std_mut().process_group(0);
     }
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
+/// Configure a blocking child as the leader of its own process group when
+/// supported. Blocking workspace discovery commands use the same cancellation
+/// semantics as Tokio-managed tools and language servers.
+pub(crate) fn configure_std_process_group(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = command;
 }
 
 pub(crate) struct ProcessGroupGuard {
@@ -80,9 +95,15 @@ pub(crate) struct ProcessGroupGuard {
 
 impl ProcessGroupGuard {
     pub(crate) fn for_child(child: &Child) -> Self {
+        Self::for_process_id(child.id())
+    }
+
+    pub(crate) fn for_process_id(process_id: Option<u32>) -> Self {
+        #[cfg(not(unix))]
+        let _ = process_id;
         Self {
             #[cfg(unix)]
-            process_group: child.id().and_then(|id| i32::try_from(id).ok()),
+            process_group: process_id.and_then(|id| i32::try_from(id).ok()),
         }
     }
 
