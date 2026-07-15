@@ -190,6 +190,36 @@ impl PermissionPolicy {
 }
 
 impl PermissionChecker for PermissionPolicy {
+    fn expose_to_model(&self, tool_name: &str) -> bool {
+        if !self.enabled {
+            return true;
+        }
+
+        // A deny that covers every argument makes the entire capability
+        // unavailable. Argument-scoped denies keep the tool visible so an
+        // allowed invocation can still be formed and checked at execution.
+        if self
+            .deny
+            .iter()
+            .any(|rule| rule.matches_tool(tool_name) && rule.matches_all_args())
+        {
+            return false;
+        }
+
+        if self.default_decision != PermissionDecision::Deny {
+            return true;
+        }
+
+        // Under a deny-by-default worker policy, expose only tools for which
+        // at least one Allow or Ask rule can match. Argument patterns are
+        // intentionally ignored here; execution-time checks remain
+        // authoritative for the actual arguments.
+        self.allow
+            .iter()
+            .chain(&self.ask)
+            .any(|rule| rule.matches_tool(tool_name))
+    }
+
     fn check(&self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
         self.check(tool_name, args)
     }

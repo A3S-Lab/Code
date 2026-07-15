@@ -9,19 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [5.3.0] - 2026-07-15
 
-### Added
-
-- Added `AgentSession::cancel_and_settle(...)` and matching Node.js and Python
-  SDK methods so hosts can cooperatively cancel a run, bound streaming-worker
-  cleanup, and know when a session is safe to reuse.
-
 ### Fixed
 
+- Made language-server initialization and post-initialization settling
+  cooperatively cancellable so session shutdown does not wait for a cold
+  semantic runtime.
 - Stabilized the first navigation query for each saved document revision after
   language-server initialization, preventing cold empty or partial reference
   results without treating a legitimate empty result as an error.
-- Bounded language-service shutdown and force-reaped its dedicated process
-  group when a server closed protocol streams without exiting.
+
+## [5.2.8] - 2026-07-15
+
+### Changed
+
+- Child and delegated runs now inherit the session's effective live Skill
+  registry, including host-added Skills, instead of only the original session
+  option.
+- Permission policies now omit blanket-denied tools from the model-visible
+  catalog. Deny-by-default workers expose only tools covered by an Allow or Ask
+  rule, while argument-scoped rules remain execution-time enforced.
 
 ## [5.2.7] - 2026-07-15
 

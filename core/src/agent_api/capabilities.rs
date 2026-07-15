@@ -77,14 +77,14 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
         .iter()
         .map(|source| Arc::clone(&source.manager))
         .collect();
+    let skill_registry =
+        build_effective_skill_registry(input.base_config.skill_registry.as_deref(), input.opts);
     let agent_registry = register_task_capability(
-        input.code_config,
-        input.opts,
-        input.workspace,
-        Arc::clone(&input.llm_client),
+        &input,
         &tool_executor,
         Arc::clone(&subagent_tasks),
         mcp_managers,
+        Arc::clone(&skill_registry),
     );
 
     // Register generate_object tool (structured JSON output)
@@ -92,8 +92,6 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
 
     register_mcp_capabilities(&tool_executor, input.mcp_sources);
 
-    let skill_registry =
-        build_effective_skill_registry(input.base_config.skill_registry.as_deref(), input.opts);
     let context_providers =
         build_context_providers(input.opts, input.workspace, Arc::clone(&skill_registry));
     let tool_defs = tool_executor.definitions();
@@ -147,32 +145,32 @@ pub(super) fn build_effective_skill_registry(
 }
 
 fn register_task_capability(
-    code_config: &CodeConfig,
-    opts: &SessionOptions,
-    workspace: &Path,
-    llm_client: Arc<dyn LlmClient>,
+    input: &SessionCapabilityInput<'_>,
     tool_executor: &Arc<ToolExecutor>,
     subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
     mcp_managers: Vec<Arc<crate::mcp::manager::McpManager>>,
+    skill_registry: Arc<SkillRegistry>,
 ) -> Arc<AgentRegistry> {
     use crate::child_run::ChildRunContext;
     use crate::subagent::load_agents_from_dir;
     use crate::tools::register_task_with_mcp_managers;
 
     let registry = AgentRegistry::new();
-    let auto_delegation = super::session_config::resolve_auto_delegation_config(code_config, opts);
-    let built_in_agent_dirs = built_in_agent_dirs(workspace);
-    for dir in code_config
+    let auto_delegation =
+        super::session_config::resolve_auto_delegation_config(input.code_config, input.opts);
+    let built_in_agent_dirs = built_in_agent_dirs(input.workspace);
+    for dir in input
+        .code_config
         .agent_dirs
         .iter()
         .chain(built_in_agent_dirs.iter())
-        .chain(opts.agent_dirs.iter())
+        .chain(input.opts.agent_dirs.iter())
     {
         for agent in load_agents_from_dir(dir) {
             registry.register(agent);
         }
     }
-    for worker in &opts.worker_agents {
+    for worker in &input.opts.worker_agents {
         registry.register_worker(worker.clone());
     }
 
@@ -183,29 +181,35 @@ fn register_task_capability(
     }
 
     let parent_context = ChildRunContext {
-        security_provider: opts.security_provider.clone(),
+        security_provider: input.opts.security_provider.clone(),
         hook_engine: None,
-        skill_registry: opts.skill_registry.clone(),
-        permission_checker: opts.permission_checker.clone(),
-        permission_policy: opts.permission_policy.clone(),
-        tool_timeout_ms: opts.tool_timeout_ms,
-        llm_api_timeout_ms: opts.llm_api_timeout_ms.or(code_config.llm_api_timeout_ms),
-        max_parallel_tasks: opts.max_parallel_tasks.or(code_config.max_parallel_tasks),
-        max_execution_time_ms: opts.max_execution_time_ms,
-        circuit_breaker_threshold: opts.circuit_breaker_threshold,
-        duplicate_tool_call_threshold: opts.duplicate_tool_call_threshold,
-        confirmation_manager: opts.confirmation_manager.clone(),
-        enforce_active_skill_tool_restrictions: opts.enforce_active_skill_tool_restrictions,
-        workspace_services: opts.workspace_services.clone(),
-        budget_guard: opts.budget_guard.clone(),
+        skill_registry: Some(skill_registry),
+        permission_checker: input.opts.permission_checker.clone(),
+        permission_policy: input.opts.permission_policy.clone(),
+        tool_timeout_ms: input.opts.tool_timeout_ms,
+        llm_api_timeout_ms: input
+            .opts
+            .llm_api_timeout_ms
+            .or(input.code_config.llm_api_timeout_ms),
+        max_parallel_tasks: input
+            .opts
+            .max_parallel_tasks
+            .or(input.code_config.max_parallel_tasks),
+        max_execution_time_ms: input.opts.max_execution_time_ms,
+        circuit_breaker_threshold: input.opts.circuit_breaker_threshold,
+        duplicate_tool_call_threshold: input.opts.duplicate_tool_call_threshold,
+        confirmation_manager: input.opts.confirmation_manager.clone(),
+        enforce_active_skill_tool_restrictions: input.opts.enforce_active_skill_tool_restrictions,
+        workspace_services: input.opts.workspace_services.clone(),
+        budget_guard: input.opts.budget_guard.clone(),
     };
 
     let registry = Arc::new(registry);
     register_task_with_mcp_managers(
         tool_executor.registry(),
-        llm_client,
+        Arc::clone(&input.llm_client),
         Arc::clone(&registry),
-        workspace.display().to_string(),
+        input.workspace.display().to_string(),
         mcp_managers,
         Some(parent_context),
         Some(subagent_tasks),

@@ -500,6 +500,46 @@ fn test_policy_disabled() {
 }
 
 #[test]
+fn deny_by_default_exposes_only_tools_with_declared_rules() {
+    let mut policy = PermissionPolicy::new().allow("mcp__use_*");
+    policy.default_decision = PermissionDecision::Deny;
+
+    assert!(policy.expose_to_model("mcp__use_browser__browser_open"));
+    assert!(!policy.expose_to_model("mcp__github__search"));
+    assert!(!policy.expose_to_model("read"));
+    assert!(!policy.expose_to_model("bash"));
+    assert!(!policy.expose_to_model("task"));
+}
+
+#[test]
+fn argument_scoped_rules_keep_potentially_allowed_tool_visible() {
+    let mut policy = PermissionPolicy::new()
+        .allow("Bash(cargo:*)")
+        .deny("Bash(rm:*)");
+    policy.default_decision = PermissionDecision::Deny;
+
+    assert!(policy.expose_to_model("bash"));
+    assert_eq!(
+        policy.check("bash", &json!({"command": "cargo test"})),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        policy.check("bash", &json!({"command": "rm -rf /"})),
+        PermissionDecision::Deny
+    );
+}
+
+#[test]
+fn whole_tool_deny_hides_tool_even_when_default_is_allow() {
+    let policy = PermissionPolicy::new()
+        .allow("mcp__use_*")
+        .deny("mcp__use_office__*");
+
+    assert!(policy.expose_to_model("mcp__use_browser__browser_open"));
+    assert!(!policy.expose_to_model("mcp__use_office__office_write"));
+}
+
+#[test]
 fn test_policy_is_allowed() {
     let policy = PermissionPolicy::new().allow("Bash(cargo:*)");
 

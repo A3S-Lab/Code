@@ -114,6 +114,7 @@ explicit even when the supporting types are available.
 | Dynamic workflow | Explicit registration | QuickJS-authored commands executed by an A3S Flow-backed runtime |
 | State graph | Explicit application use | Event-sourced objects, relations, behaviors, patches, replay, forks, diffs, and Flow projection |
 | MCP | Config or session registration | stdio, SSE, streamable HTTP, OAuth, refresh, and live add/remove management |
+| Skills | Filesystem, registry, or live session registration | Search/execute tools, model-visible catalog, live add/remove with shadow restoration, and child-run inheritance |
 | Search runtime | Explicit host operation | Browser status, install, update, and repair APIs for managed search runtimes |
 | S3 workspace | Cargo feature `s3` | S3-compatible object storage backend with capability-aware tool visibility |
 | Agent daemon | Cargo feature `serve` | Filesystem-first agent serving and cron schedules |
@@ -402,6 +403,15 @@ credentials. Global managers can seed new sessions and refresh cached tools;
 session managers can connect, disconnect, and live-add or remove isolated
 servers. Tools remain source qualified so separate servers do not silently
 share ownership.
+
+Hosts can add or replace a Skill in a running session with
+`AgentSession::add_skill`, inspect the effective names with `skill_names`, and
+remove host-owned entries with `remove_skill`. The search tools and
+model-visible Skill catalog observe the live registry on the next query or
+turn. Removing a live Skill restores the session definition it shadowed;
+closing the session removes all host-owned entries. Delegated child runs share
+that same effective registry, so a capability attached after session creation
+does not disappear at the worker boundary.
 
 The browser search runtime exposes read-only status separately from explicit
 install, update, and repair operations. Inspecting runtime status never performs
