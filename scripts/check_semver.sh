@@ -3,10 +3,13 @@
 
 set -euo pipefail
 
-BASELINE_VERSION="${1:-5.2.7}"
+BASELINE_VERSION="${1:-5.2.8}"
 PACKAGE="a3s-code-core"
 
 case "$BASELINE_VERSION" in
+  5.2.8)
+    BASELINE_SHA256="059e9eefe6f2d0b816b9ec9f906878413a2f30fd1bc90a751c53b77972ff84a7"
+    ;;
   5.2.7)
     BASELINE_SHA256="59993ad1e362628c7665d817318271faff5b3f775dfad0d648b1cc4a17099784"
     ;;
