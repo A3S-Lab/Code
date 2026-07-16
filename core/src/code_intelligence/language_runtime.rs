@@ -547,6 +547,15 @@ impl LanguageRuntime {
             })
     }
 
+    pub(crate) fn force_kill(&self) {
+        self.process.force_kill();
+        if let Ok(mut task) = self.notification_task.try_lock() {
+            if let Some(task) = task.take() {
+                task.abort();
+            }
+        }
+    }
+
     pub(crate) fn unavailable_message(&self) -> Option<String> {
         use super::lsp::process::LspProcessState;
 

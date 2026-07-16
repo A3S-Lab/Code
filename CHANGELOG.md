@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.3] - 2026-07-16
+
+### Fixed
+
+- Kept a shared language-runtime startup alive when the query that initiated it
+  disconnects or is cancelled, so concurrent and subsequent semantic queries
+  reuse one process generation instead of restarting it.
+- Made language-runtime startup, source removal, and workspace shutdown use
+  bounded generation-aware cleanup, preventing late readiness updates,
+  overlapping replacement processes, and incomplete multi-language status.
+
 ## [5.3.2] - 2026-07-16
 
 ### Fixed

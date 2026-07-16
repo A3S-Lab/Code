@@ -1,7 +1,10 @@
 //! One lazily-started semantic runtime generation for a workspace layout.
 
 #[cfg(test)]
+mod integration_test_support;
+#[cfg(test)]
 mod integration_tests;
+mod lifecycle;
 mod support;
 #[cfg(test)]
 mod tests;
@@ -9,6 +12,8 @@ mod tests;
 use support::*;
 
 use std::{
+    any::Any,
+    panic::AssertUnwindSafe,
     path::Path,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -17,8 +22,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::{stream::FuturesUnordered, StreamExt};
-use tokio::sync::{watch, Mutex, RwLock};
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use tokio::{
+    sync::{oneshot, watch, Mutex, RwLock},
+    task::AbortHandle,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -43,14 +51,34 @@ const WORKSPACE_DIAGNOSTIC_DOCUMENT_LIMIT: usize = 128;
 const WORKSPACE_DIAGNOSTIC_CONCURRENCY: usize = 8;
 const MAX_SYMBOL_LIMIT: usize = 1_000;
 const START_RETRY_DELAY: Duration = Duration::from_secs(2);
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(4);
+const SHUTDOWN_ABORT_SETTLE: Duration = Duration::from_millis(500);
+
+type RuntimeStartOutcome = CodeIntelligenceResult<Arc<LanguageRuntime>>;
+
+#[derive(Clone)]
+struct RuntimeStart {
+    generation: u64,
+    cancellation: CancellationToken,
+    outcome: watch::Receiver<Option<RuntimeStartOutcome>>,
+    abort: AbortHandle,
+}
 
 struct StartFailure {
     at: Instant,
     message: String,
+    retained_runtime: Option<Arc<LanguageRuntime>>,
+}
+
+struct StartAttemptFailure {
+    public: CodeIntelligenceError,
+    message: String,
+    retained_runtime: Option<Arc<LanguageRuntime>>,
 }
 
 enum SlotState {
     Dormant,
+    Starting(RuntimeStart),
     Ready(Arc<LanguageRuntime>),
     Failed(StartFailure),
 }
@@ -58,6 +86,7 @@ enum SlotState {
 struct LanguageSlot {
     profile: LanguageServerProfile,
     relevant: AtomicBool,
+    generation: AtomicU64,
     documents: Arc<DocumentStore>,
     state: Arc<Mutex<SlotState>>,
 }
@@ -67,6 +96,7 @@ impl LanguageSlot {
         Self {
             profile,
             relevant: AtomicBool::new(relevant),
+            generation: AtomicU64::new(0),
             documents: Arc::new(DocumentStore::new(document_capacity)),
             state: Arc::new(Mutex::new(SlotState::Dormant)),
         }
@@ -84,6 +114,7 @@ pub(crate) struct WorkspaceRuntime {
     workspace_revision: AtomicU64,
     timeout: Duration,
     status: watch::Sender<CodeIntelligenceStatus>,
+    status_updates: Arc<Mutex<()>>,
     shutting_down: AtomicBool,
     lifetime: CancellationToken,
 }
@@ -183,7 +214,7 @@ impl WorkspaceRuntime {
         let source_paths = supported_source_paths(snapshot, |path| {
             profiles.iter().any(|profile| profile.supports_path(path))
         });
-        let slots = profiles
+        let slots: Vec<_> = profiles
             .into_iter()
             .map(|profile| {
                 let relevant = source_paths
@@ -192,8 +223,19 @@ impl WorkspaceRuntime {
                 LanguageSlot::new(profile, relevant, document_capacity)
             })
             .collect();
+        let languages = slots
+            .iter()
+            .filter(|slot| slot.relevant.load(Ordering::Acquire))
+            .map(|slot| CodeIntelligenceLanguageStatus {
+                language: profile_language(slot.profile.id()),
+                state: CodeIntelligenceState::Starting,
+                capabilities: CodeIntelligenceCapabilities::default(),
+                message: Some("starts on first semantic query".to_owned()),
+            })
+            .collect();
         let (status, _) = watch::channel(CodeIntelligenceStatus {
             state: CodeIntelligenceState::Starting,
+            languages,
             message: Some("Code Intelligence starts language runtimes on demand".to_owned()),
             ..CodeIntelligenceStatus::default()
         });
@@ -207,6 +249,7 @@ impl WorkspaceRuntime {
             source_paths: RwLock::new(source_paths),
             timeout,
             status,
+            status_updates: Arc::new(Mutex::new(())),
             shutting_down: AtomicBool::new(false),
             lifetime: CancellationToken::new(),
         }
@@ -235,22 +278,38 @@ impl WorkspaceRuntime {
                 .any(|path| slot.profile.supports_path(Path::new(path.as_str())));
             let was_relevant = slot.relevant.swap(relevant, Ordering::AcqRel);
             if was_relevant && !relevant {
-                let runtime = {
-                    let mut state = slot.state.lock().await;
-                    match std::mem::replace(&mut *state, SlotState::Dormant) {
-                        SlotState::Ready(runtime) => Some(runtime),
-                        SlotState::Dormant | SlotState::Failed(_) => None,
+                let mut state = slot.state.lock().await;
+                if let SlotState::Starting(start) = &*state {
+                    // Cancel while the slot is still locked. Otherwise the
+                    // start task can publish Ready after this lock is dropped
+                    // but before bounded cleanup observes the generation.
+                    start.cancellation.cancel();
+                    let start = start.clone();
+                    let generation = start.generation;
+                    drop(state);
+                    self.stop_generations(&[], std::slice::from_ref(&start), "source removal")
+                        .await;
+                    state = slot.state.lock().await;
+                    if matches!(
+                        &*state,
+                        SlotState::Starting(current) if current.generation == generation
+                    ) {
+                        *state = SlotState::Dormant;
                     }
+                    continue;
+                }
+
+                let runtime = match &*state {
+                    SlotState::Ready(runtime) => Some(Arc::clone(runtime)),
+                    SlotState::Failed(failure) => failure.retained_runtime.clone(),
+                    SlotState::Dormant => None,
+                    SlotState::Starting(_) => None,
                 };
                 if let Some(runtime) = runtime {
-                    if let Err(error) = runtime.shutdown().await {
-                        tracing::warn!(
-                            language = %profile_language(slot.profile.id()),
-                            error = %error,
-                            "Code Intelligence could not stop an irrelevant language runtime"
-                        );
-                    }
+                    self.stop_generations(std::slice::from_ref(&runtime), &[], "source removal")
+                        .await;
                 }
+                *state = SlotState::Dormant;
             }
         }
         self.refresh_status().await;
@@ -552,24 +611,6 @@ impl WorkspaceRuntime {
         }
     }
 
-    pub(crate) async fn shutdown(&self) {
-        if self.shutting_down.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        self.lifetime.cancel();
-        let runtimes = self.ready_runtimes().await;
-        for runtime in runtimes {
-            if let Err(error) = runtime.shutdown().await {
-                tracing::warn!(error = %error, "Code Intelligence runtime shutdown failed");
-            }
-        }
-        self.status.send_replace(CodeIntelligenceStatus {
-            state: CodeIntelligenceState::Unavailable,
-            message: Some("Code Intelligence runtime is shut down".to_owned()),
-            ..CodeIntelligenceStatus::default()
-        });
-    }
-
     async fn runtime_for_path(
         &self,
         path: &WorkspacePath,
@@ -589,178 +630,6 @@ impl WorkspaceRuntime {
         slot.relevant.store(true, Ordering::Release);
         let runtime = self.ensure_runtime(slot, cancellation).await?;
         Ok((slot.profile.id(), runtime))
-    }
-
-    async fn ensure_runtime(
-        &self,
-        slot: &LanguageSlot,
-        cancellation: &CancellationToken,
-    ) -> CodeIntelligenceResult<Arc<LanguageRuntime>> {
-        if self.shutting_down.load(Ordering::Acquire) {
-            return Err(CodeIntelligenceError::Unavailable {
-                message: "the workspace runtime is shutting down".to_owned(),
-            });
-        }
-        let mut state = tokio::select! {
-            _ = cancellation.cancelled() => return Err(CodeIntelligenceError::Cancelled),
-            state = slot.state.lock() => state,
-        };
-        let retiring = match &*state {
-            SlotState::Ready(runtime) => {
-                if let Some(message) = runtime.unavailable_message() {
-                    Some((Arc::clone(runtime), message))
-                } else {
-                    return Ok(Arc::clone(runtime));
-                }
-            }
-            SlotState::Failed(failure) if failure.at.elapsed() < START_RETRY_DELAY => {
-                return Err(CodeIntelligenceError::Unavailable {
-                    message: failure.message.clone(),
-                });
-            }
-            SlotState::Dormant | SlotState::Failed(_) => None,
-        };
-        if let Some((runtime, message)) = retiring {
-            tracing::warn!(
-                language = %profile_language(slot.profile.id()),
-                message,
-                "Code Intelligence will restart an exited language runtime"
-            );
-            // The client can observe protocol EOF before the process monitor
-            // has reaped a server that kept running. Keep the slot locked and
-            // finish the old generation before making it startable again.
-            if let Err(error) = runtime.shutdown().await {
-                tracing::warn!(
-                    language = %profile_language(slot.profile.id()),
-                    error = %error,
-                    "Code Intelligence could not fully retire an exited language runtime"
-                );
-                // Keep the failed generation in Ready. A later query may retry
-                // cleanup, but no replacement may start while the old process
-                // has not been confirmed reaped.
-                return Err(map_language_error(slot.profile.id(), error));
-            }
-            *state = SlotState::Dormant;
-        }
-        if cancellation.is_cancelled() {
-            return Err(CodeIntelligenceError::Cancelled);
-        }
-        if self.shutting_down.load(Ordering::Acquire) {
-            return Err(CodeIntelligenceError::Unavailable {
-                message: "the workspace runtime is shutting down".to_owned(),
-            });
-        }
-
-        let result = LanguageRuntime::start(
-            slot.profile.clone(),
-            self.canonical_root.clone(),
-            self.layout.clone(),
-            Arc::clone(&slot.documents),
-            Arc::clone(&self.diagnostics),
-            cancellation.clone(),
-            self.timeout,
-        )
-        .await;
-        if cancellation.is_cancelled() || self.shutting_down.load(Ordering::Acquire) {
-            if let Ok(runtime) = result {
-                if let Err(error) = runtime.shutdown().await {
-                    tracing::warn!(
-                        language = %profile_language(slot.profile.id()),
-                        error = %error,
-                        "Code Intelligence could not retire a cancelled language runtime start"
-                    );
-                }
-            }
-            *state = SlotState::Dormant;
-            return if cancellation.is_cancelled() {
-                Err(CodeIntelligenceError::Cancelled)
-            } else {
-                Err(CodeIntelligenceError::Unavailable {
-                    message: "the workspace runtime is shutting down".to_owned(),
-                })
-            };
-        }
-        match result {
-            Ok(runtime) => {
-                let runtime = Arc::new(runtime);
-                *state = SlotState::Ready(Arc::clone(&runtime));
-                drop(state);
-                self.spawn_runtime_monitor(slot, Arc::clone(&runtime));
-                self.refresh_status().await;
-                Ok(runtime)
-            }
-            Err(error) => {
-                let message = error.to_string();
-                let public = map_language_error(slot.profile.id(), error);
-                *state = SlotState::Failed(StartFailure {
-                    at: Instant::now(),
-                    message,
-                });
-                drop(state);
-                self.refresh_status().await;
-                Err(public)
-            }
-        }
-    }
-
-    fn spawn_runtime_monitor(&self, slot: &LanguageSlot, runtime: Arc<LanguageRuntime>) {
-        let state = Arc::clone(&slot.state);
-        let status = self.status.clone();
-        let lifetime = self.lifetime.clone();
-        let language = profile_language(slot.profile.id());
-        let mut process_state = runtime.subscribe_process_state();
-        tokio::spawn(async move {
-            loop {
-                if !matches!(
-                    *process_state.borrow(),
-                    super::lsp::process::LspProcessState::Running
-                ) {
-                    break;
-                }
-                tokio::select! {
-                    _ = lifetime.cancelled() => return,
-                    changed = process_state.changed() => {
-                        if changed.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-            if lifetime.is_cancelled() {
-                return;
-            }
-            let message = runtime
-                .unavailable_message()
-                .unwrap_or_else(|| "the language runtime stopped unexpectedly".to_owned());
-            let mut slot_state = state.lock().await;
-            let is_current = matches!(
-                &*slot_state,
-                SlotState::Ready(current) if Arc::ptr_eq(current, &runtime)
-            );
-            if !is_current {
-                return;
-            }
-            if let Err(error) = runtime.shutdown().await {
-                tracing::warn!(
-                    language = %language,
-                    error = %error,
-                    "Code Intelligence could not clean up a stopped language runtime"
-                );
-                // Leave the current generation installed. `ensure_runtime`
-                // will retry its cleanup and must not start a replacement
-                // until shutdown confirms the process has been reaped.
-                drop(slot_state);
-                publish_stopped_language_status(
-                    &status,
-                    language,
-                    format!("{message}; cleanup failed: {error}"),
-                );
-                return;
-            }
-            *slot_state = SlotState::Dormant;
-            drop(slot_state);
-            publish_stopped_language_status(&status, language, message);
-        });
     }
 
     async fn read_saved(
@@ -821,6 +690,10 @@ impl WorkspaceRuntime {
     }
 
     async fn refresh_status(&self) {
+        let _status_update = self.status_updates.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
         let mut languages = Vec::new();
         let mut capabilities = CodeIntelligenceCapabilities::default();
         let mut ready = 0_usize;
@@ -832,7 +705,7 @@ impl WorkspaceRuntime {
             }
             let state = slot.state.lock().await;
             let (runtime_state, runtime_capabilities, message) = match &*state {
-                SlotState::Dormant => {
+                SlotState::Dormant | SlotState::Starting(_) => {
                     dormant += 1;
                     (
                         CodeIntelligenceState::Starting,
@@ -841,10 +714,19 @@ impl WorkspaceRuntime {
                     )
                 }
                 SlotState::Ready(runtime) => {
-                    ready += 1;
-                    let current = runtime.capabilities();
-                    union_capabilities(&mut capabilities, current);
-                    (CodeIntelligenceState::Ready, current, None)
+                    if let Some(message) = runtime.unavailable_message() {
+                        failed += 1;
+                        (
+                            CodeIntelligenceState::Unavailable,
+                            CodeIntelligenceCapabilities::default(),
+                            Some(message),
+                        )
+                    } else {
+                        ready += 1;
+                        let current = runtime.capabilities();
+                        union_capabilities(&mut capabilities, current);
+                        (CodeIntelligenceState::Ready, current, None)
+                    }
                 }
                 SlotState::Failed(failure) => {
                     failed += 1;
