@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [5.3.3] - 2026-07-16
+
+### Fixed
+
+- Updated the bundled Core so abandoned semantic queries share cancellation-safe
+  language-runtime startup and workspace shutdown remains bounded.
+
 ## [5.3.2] - 2026-07-16
 
 ### Fixed
