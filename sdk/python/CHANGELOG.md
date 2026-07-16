@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [5.3.4] - 2026-07-16
+
+### Fixed
+
+- Updated the bundled Core so a cold workspace-symbol query prepares a saved
+  source document before asking the language server to search its projects.
+
 ## [5.3.3] - 2026-07-16
 
 ### Fixed
