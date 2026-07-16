@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.2] - 2026-07-16
+
+### Fixed
+
+- Made interactive shell risk classification distinguish executable positions
+  from harmless argument text, while retaining HITL for compact write options,
+  output-producing `find` actions, and unparsed `sed` scripts.
+
 ## [5.3.1] - 2026-07-16
 
 ### Added

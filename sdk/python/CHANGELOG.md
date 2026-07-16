@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [5.3.2] - 2026-07-16
+
+### Fixed
+
+- Updated the bundled Core with position-aware interactive shell risk
+  classification and stricter detection of implicit file-writing options.
+
 ## [5.3.1] - 2026-07-16
 
 ### Fixed

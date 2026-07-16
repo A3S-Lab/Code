@@ -458,7 +458,7 @@ fn is_catastrophic_bash_command(command: &str) -> bool {
     {
         return true;
     }
-    if lower.contains("mkfs")
+    if shell_invokes_mkfs(command)
         || lower.contains("diskutil erase")
         || lower.contains(":(){")
         || lower.contains("kill -9 -1")
@@ -490,6 +490,15 @@ fn is_catastrophic_bash_command(command: &str) -> bool {
         || lower.contains("rm -fr *")
         || lower == "rm -rf ."
         || lower == "rm -fr ."
+}
+
+fn shell_invokes_mkfs(command: &str) -> bool {
+    command
+        .split(['|', ';', '&'])
+        .filter_map(|segment| segment.split_whitespace().next())
+        .map(clean_shell_token)
+        .filter_map(|executable| executable.rsplit('/').next())
+        .any(|executable| executable == "mkfs" || executable.starts_with("mkfs."))
 }
 
 fn is_read_only_bash_command(command: &str) -> bool {
@@ -595,6 +604,7 @@ fn is_read_only_bash_segment(segment: &str) -> bool {
         }),
         "grep" => tokens.iter().skip(1).all(|value| {
             !option_executes_or_writes(value)
+                && !short_option_contains(value, 'f')
                 && !matches!(
                     *value,
                     "-R" | "-r"
@@ -602,7 +612,10 @@ fn is_read_only_bash_segment(segment: &str) -> bool {
                         | "--dereference-recursive"
                         | "--include"
                         | "--exclude-from"
+                        | "--file"
                 )
+                && !value.starts_with("--exclude-from=")
+                && !value.starts_with("--file=")
         }),
         "du" => tokens.iter().skip(1).all(|value| {
             !short_option_contains(value, 'L')
@@ -615,6 +628,7 @@ fn is_read_only_bash_segment(segment: &str) -> bool {
             .all(|value| !option_executes_or_writes(value)),
         "date" => tokens.iter().skip(1).all(|value| {
             !matches!(*value, "-s" | "--set")
+                && !short_option_contains(value, 's')
                 && !value.starts_with("--set=")
                 && !option_executes_or_writes(value)
         }),
@@ -623,8 +637,13 @@ fn is_read_only_bash_segment(segment: &str) -> bool {
             .skip(1)
             .all(|value| !option_executes_or_writes(value)),
         "sort" => tokens.iter().skip(1).all(|value| {
-            !matches!(*value, "-o" | "--output" | "--compress-program")
+            !matches!(
+                *value,
+                "-o" | "-T" | "--output" | "--temporary-directory" | "--compress-program"
+            ) && !short_option_contains(value, 'o')
+                && !short_option_contains(value, 'T')
                 && !value.starts_with("--output=")
+                && !value.starts_with("--temporary-directory=")
                 && !value.starts_with("--compress-program=")
                 && !option_executes_or_writes(value)
         }),
@@ -648,18 +667,17 @@ fn is_read_only_bash_segment(segment: &str) -> bool {
                     " -fprint",
                     " -fprint0",
                     " -fprintf",
+                    " -fls",
                     " -follow",
                     " -lname",
                 ]
                 .iter()
                 .any(|action| lower.contains(action))
         }
-        "sed" => !tokens.iter().skip(1).any(|value| {
-            *value == "-i"
-                || value.starts_with("-i")
-                || value.starts_with("--in-place")
-                || option_executes_or_writes(value)
-        }),
+        // Sed scripts can write files (`w`) or execute commands (`e`) without
+        // an option-level signal. Keep them behind HITL until a real parser can
+        // prove the script is read-only.
+        "sed" => false,
         "git" => is_read_only_git_segment(&tokens),
         _ => false,
     }

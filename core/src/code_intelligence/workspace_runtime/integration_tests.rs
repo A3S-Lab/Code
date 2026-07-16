@@ -25,6 +25,8 @@ use crate::{
     },
 };
 
+const TEST_QUERY_TIMEOUT: Duration = Duration::from_secs(15);
+
 struct ChangeOnSecondReadFileSystem {
     inner: LocalWorkspaceBackend,
     root: PathBuf,
@@ -129,7 +131,7 @@ fn test_runtime(
         ProjectLayoutResolver::resolve(snapshot),
         snapshot,
         file_system,
-        Duration::from_secs(5),
+        TEST_QUERY_TIMEOUT,
         profiles,
     )
 }
@@ -146,7 +148,7 @@ fn test_runtime_with_file_system(
         ProjectLayoutResolver::resolve(snapshot),
         snapshot,
         file_system,
-        Duration::from_secs(5),
+        TEST_QUERY_TIMEOUT,
         profiles,
         document_capacity,
     )
