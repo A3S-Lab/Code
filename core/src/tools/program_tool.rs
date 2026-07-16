@@ -22,10 +22,10 @@ const DELEGATION_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const DEFAULT_SCRIPT_MAX_TOOL_CALLS: usize = 20;
 const DEFAULT_SCRIPT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const PROGRAM_CANCELLATION_SETTLE_GRACE: Duration = Duration::from_millis(500);
-// Engineered workflows include planner, maker, checker, recovery, and event
-// projection logic in one auditable script. Keep a firm bound, but allow the
-// complete workflow contract without requiring opaque minification.
-const MAX_SCRIPT_SOURCE_BYTES: usize = 128 * 1024;
+// Engineered workflows include planner, maker, checker, deterministic evidence
+// gates, recovery, and event projection logic in one auditable script. Keep a
+// firm bound while leaving enough room for explicit contracts and diagnostics.
+pub const MAX_PROGRAM_SCRIPT_SOURCE_BYTES: usize = 192 * 1024;
 
 pub struct ProgramTool {
     fallback_invoker: Arc<dyn ToolInvoker>,
@@ -158,11 +158,11 @@ async fn execute_script_program(
         Ok(source) => source,
         Err(message) => return Ok(ToolOutput::error(message)),
     };
-    if source.len() > MAX_SCRIPT_SOURCE_BYTES {
+    if source.len() > MAX_PROGRAM_SCRIPT_SOURCE_BYTES {
         return Ok(ToolOutput::error(format!(
             "script source is too large: {} bytes exceeds {} bytes",
             source.len(),
-            MAX_SCRIPT_SOURCE_BYTES
+            MAX_PROGRAM_SCRIPT_SOURCE_BYTES
         )));
     }
     if let Err(message) = validate_script_source(&source) {
