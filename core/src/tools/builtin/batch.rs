@@ -268,11 +268,44 @@ fn compact_child_metadata(metadata: Option<serde_json::Value>) -> Option<serde_j
         return Some(metadata);
     }
 
-    Some(serde_json::json!({
-        "truncated": true,
-        "original_bytes": encoded.len(),
-        "artifact": metadata.get("artifact"),
-    }))
+    let mut compacted = serde_json::Map::from_iter([
+        ("truncated".to_string(), serde_json::Value::Bool(true)),
+        (
+            "original_bytes".to_string(),
+            serde_json::Value::from(encoded.len()),
+        ),
+    ]);
+    for key in [
+        "status",
+        "engine_selection_source",
+        "selected_engines",
+        "engine_fallback",
+        "artifact",
+    ] {
+        if let Some(value) = metadata.get(key) {
+            let value = if key == "selected_engines" {
+                serde_json::Value::Array(
+                    value
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(serde_json::Value::as_str)
+                        .take(8)
+                        .map(|engine| engine.chars().take(96).collect::<String>().into())
+                        .collect(),
+                )
+            } else {
+                value.clone()
+            };
+            compacted.insert(key.to_string(), value);
+            if serde_json::to_vec(&compacted)
+                .is_ok_and(|encoded| encoded.len() > MAX_CHILD_METADATA_BYTES)
+            {
+                compacted.remove(key);
+            }
+        }
+    }
+    Some(serde_json::Value::Object(compacted))
 }
 
 // ============================================================================
@@ -425,6 +458,30 @@ mod tests {
         let examples = params["examples"].as_array().unwrap();
         assert_eq!(examples[0]["invocations"][0]["tool"], "read");
         assert!(examples[0]["invocations"][0].get("name").is_none());
+    }
+
+    #[test]
+    fn compact_child_metadata_retains_search_routing_fields() {
+        let metadata = serde_json::json!({
+            "status": "failed",
+            "engine_selection_source": "config",
+            "selected_engines": ["private-search", "x".repeat(5 * 1024)],
+            "engine_fallback": null,
+            "search_metrics": {
+                "oversized": "x".repeat(5 * 1024)
+            }
+        });
+
+        let compacted = compact_child_metadata(Some(metadata)).expect("compacted metadata");
+
+        assert_eq!(compacted["truncated"], true);
+        assert_eq!(compacted["status"], "failed");
+        assert_eq!(compacted["engine_selection_source"], "config");
+        assert_eq!(compacted["selected_engines"][0], "private-search");
+        assert_eq!(compacted["selected_engines"][1].as_str().unwrap().len(), 96);
+        assert!(compacted.get("engine_fallback").is_some());
+        assert!(compacted.get("search_metrics").is_none());
+        assert!(serde_json::to_vec(&compacted).unwrap().len() <= 4 * 1024);
     }
 
     #[tokio::test]

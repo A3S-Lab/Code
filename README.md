@@ -452,7 +452,8 @@ repeating successful model work after a restart.
 
 `program` runs a bounded JavaScript module in QuickJS with a host-provided
 `ctx` surface. Time, nested tool calls, output bytes, recursion, and allowed
-tools are limited. Recursive `program`, `dynamic_workflow`, and
+tools are limited. Auditable workflow source is capped at 192 KiB. Recursive
+`program`, `dynamic_workflow`, and
 `parallel_task` calls are excluded from its normal allow-list.
 
 `DynamicWorkflowRuntime` is a separate, explicit capability. A sandboxed

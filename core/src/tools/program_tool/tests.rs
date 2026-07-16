@@ -133,7 +133,7 @@ async fn program_tool_rejects_unsupported_language() {
 #[tokio::test]
 async fn program_tool_rejects_source_above_engineered_workflow_limit() {
     let tool = ProgramTool::new(Arc::new(ToolRegistry::new(PathBuf::from("/tmp"))));
-    let source = "x".repeat(MAX_SCRIPT_SOURCE_BYTES + 1);
+    let source = "x".repeat(MAX_PROGRAM_SCRIPT_SOURCE_BYTES + 1);
     let output = tool
         .execute(
             &serde_json::json!({
@@ -147,9 +147,32 @@ async fn program_tool_rejects_source_above_engineered_workflow_limit() {
 
     assert!(!output.success);
     assert!(output.content.contains("script source is too large"));
-    assert!(output
-        .content
-        .contains(&format!("exceeds {} bytes", MAX_SCRIPT_SOURCE_BYTES)));
+    assert!(output.content.contains(&format!(
+        "exceeds {} bytes",
+        MAX_PROGRAM_SCRIPT_SOURCE_BYTES
+    )));
+}
+
+#[tokio::test]
+async fn program_tool_accepts_auditable_workflow_above_legacy_limit() {
+    let tool = ProgramTool::new(Arc::new(ToolRegistry::new(PathBuf::from("/tmp"))));
+    let source = format!(
+        "async function run() {{ return {{ accepted: true }}; }}{}",
+        " ".repeat(140 * 1024)
+    );
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "type": "script",
+                "source": source
+            }),
+            &ToolContext::new(PathBuf::from("/tmp")),
+        )
+        .await
+        .unwrap();
+
+    assert!(output.success, "{}", output.content);
+    assert!(output.content.contains("accepted"), "{}", output.content);
 }
 
 #[tokio::test]
