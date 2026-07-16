@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.4] - 2026-07-16
+
+### Fixed
+
+- Prepared one saved source document per active language before a cold
+  workspace-symbol search, so language servers that load projects on document
+  open can serve the first semantic query instead of returning `No Project`.
+
 ## [5.3.3] - 2026-07-16
 
 ### Fixed

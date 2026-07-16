@@ -257,6 +257,18 @@ impl LanguageRuntime {
         self.initialized.capabilities
     }
 
+    pub(crate) async fn prepare_saved_document(
+        &self,
+        path: &WorkspacePath,
+        saved_content: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), LanguageRuntimeError> {
+        self.require_path(path)?;
+        self.sync_saved_document(path, saved_content, cancellation)
+            .await?;
+        ensure_not_cancelled(cancellation)
+    }
+
     pub(crate) async fn document_symbols(
         &self,
         path: &WorkspacePath,
