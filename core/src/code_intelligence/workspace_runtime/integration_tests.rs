@@ -151,6 +151,53 @@ fn test_runtime_with_file_system(
 }
 
 #[tokio::test]
+async fn first_workspace_symbol_query_opens_a_saved_source_document() {
+    let workspace = tempfile::tempdir().unwrap();
+    write_workspace_files(
+        workspace.path(),
+        &[
+            ("package.json", "{}\n"),
+            (
+                "src/main.ts",
+                "export function answer(): number { return 42; }\n",
+            ),
+        ],
+    );
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let snapshot = snapshot(&root, &["package.json", "src/main.ts"]);
+    let server_dir = tempfile::tempdir().unwrap();
+    let server = server_dir.path().join(if cfg!(windows) {
+        "requires-open-fake-lsp.exe"
+    } else {
+        "requires-open-fake-lsp"
+    });
+    compile_fake_server(&server);
+    let runtime = test_runtime(
+        &root,
+        &snapshot,
+        vec![LanguageServerProfile::typescript_javascript(&server)],
+    );
+
+    let result = runtime
+        .search_symbols("answer", 10, CancellationToken::new())
+        .await
+        .expect("the first workspace symbol query must prepare a language project");
+
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].name, "answer");
+    assert_eq!(result.items[0].location.path.as_str(), "src/main.ts");
+    let log = std::fs::read_to_string(server.with_extension("log")).unwrap();
+    let did_open = log.find("\"method\":\"textDocument/didOpen\"").unwrap();
+    let workspace_symbol = log.find("\"method\":\"workspace/symbol\"").unwrap();
+    assert!(
+        did_open < workspace_symbol,
+        "the saved source must be opened before workspace symbol search: {log}"
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn abandoned_caller_does_not_restart_an_in_flight_language_runtime() {
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(

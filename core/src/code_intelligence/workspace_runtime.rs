@@ -346,15 +346,34 @@ impl WorkspaceRuntime {
             return Ok(self.workspace_result(Vec::new(), false));
         }
 
+        let source_paths = tokio::select! {
+            _ = cancellation.cancelled() => return Err(CodeIntelligenceError::Cancelled),
+            paths = self.source_paths.read() => paths.clone(),
+        };
         let mut queries = FuturesUnordered::new();
         for slot in self
             .slots
             .iter()
             .filter(|slot| slot.relevant.load(Ordering::Acquire))
         {
+            let anchor = source_paths
+                .iter()
+                .find(|path| slot.profile.supports_path(Path::new(path.as_str())))
+                .cloned();
             let cancellation = cancellation.clone();
             queries.push(async move {
+                let anchor = anchor.ok_or_else(|| CodeIntelligenceError::Unavailable {
+                    message: format!(
+                        "no saved source file can prepare the {} language runtime",
+                        profile_language(slot.profile.id())
+                    ),
+                })?;
                 let runtime = self.ensure_runtime(slot, &cancellation).await?;
+                let content = self.read_saved(&anchor, &cancellation).await?;
+                runtime
+                    .prepare_saved_document(&anchor, &content, &cancellation)
+                    .await
+                    .map_err(|error| map_language_error(slot.profile.id(), error))?;
                 runtime
                     .search_symbols(query, limit, cancellation)
                     .await

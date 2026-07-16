@@ -63,6 +63,18 @@ fn main() -> io::Result<()> {
             }
             continue;
         };
+        if executable_name.contains("requires-open")
+            && method == "workspace/symbol"
+            && document_uri.is_none()
+        {
+            write_message(
+                &mut output,
+                &format!(
+                    "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":1,\"message\":\"No Project.\"}}}}"
+                ),
+            )?;
+            continue;
+        }
         if is_navigation_method(&method) {
             navigation_requests += 1;
         }
