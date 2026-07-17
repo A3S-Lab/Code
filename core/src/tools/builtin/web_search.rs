@@ -289,9 +289,9 @@ fn add_http_engine(search: &mut Search, shortcut: &str, proxy_url: Option<&str>)
     }
 }
 
-fn default_engine_selection<'a>(
-    config: Option<&'a crate::config::SearchConfig>,
-) -> (Vec<&'a str>, &'static str) {
+fn default_engine_selection(
+    config: Option<&crate::config::SearchConfig>,
+) -> (Vec<&str>, &'static str) {
     match config {
         Some(config) if !config.engines.is_empty() => (
             config
