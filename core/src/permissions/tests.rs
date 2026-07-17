@@ -163,15 +163,23 @@ fn interactive_guardrail_rejects_silent_shell_escape_regressions() {
 
     for command in [
         "sort -o output.txt input.txt",
+        "sort -ooutput.txt input.txt",
+        "sort -o/tmp/a3s-hitl-bypass input.txt",
+        "sort -T/tmp input.txt",
+        "sort --temporary-directory=tmp input.txt",
         "sort --compress-program=touch input.txt",
         "uniq input.txt output.txt",
         "cat ../outside-workspace-secret",
         "cat *",
+        "grep -f/etc/passwd README.md",
         "git -C .. status",
         "git log --output=history.txt",
         "find . -type f -fprint output.txt",
+        "find . -fls output.txt",
         "find .\t-delete",
         "sed -i.bak s/old/new/ README.md",
+        "sed w output.txt README.md",
+        "sed e commands.txt",
         "rg --pre=touch pattern .",
         "rg --follow pattern .",
         "grep -R pattern .",
@@ -181,6 +189,7 @@ fn interactive_guardrail_rejects_silent_shell_escape_regressions() {
         "ls -RL .",
         "find . -follow",
         "find -L . -type f",
+        "date -s2026-01-01",
         "date --set=2026-01-01",
         "git diff --ext-diff",
     ] {
@@ -188,6 +197,26 @@ fn interactive_guardrail_rejects_silent_shell_escape_regressions() {
             guardrail.check("bash", &json!({"command": command})),
             PermissionDecision::Ask,
             "unsafe or boundary-crossing shell call was silently allowed: {command}"
+        );
+    }
+}
+
+#[test]
+fn interactive_guardrail_distinguishes_dangerous_commands_from_read_only_arguments() {
+    let guardrail = InteractiveToolGuardrail::default();
+
+    for command in ["rg mkfs README.md", "cat docs/mkfs-guide.md"] {
+        assert_eq!(
+            guardrail.check("bash", &json!({"command": command})),
+            PermissionDecision::Allow,
+            "a dangerous command name used only as data must not be hard denied: {command}"
+        );
+    }
+    for command in ["mkfs /dev/disk9", "/sbin/mkfs.ext4 /dev/disk9"] {
+        assert_eq!(
+            guardrail.check("bash", &json!({"command": command})),
+            PermissionDecision::Deny,
+            "actual filesystem formatting must remain a hard denial: {command}"
         );
     }
 }

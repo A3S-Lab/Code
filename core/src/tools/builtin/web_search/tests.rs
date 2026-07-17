@@ -380,6 +380,9 @@ fn test_web_search_schema_is_canonical() {
     // Example with engines should use array format
     assert!(examples[1]["engines"].is_array());
     assert_eq!(examples[1]["engines"].as_array().unwrap(), &["ddg", "wiki"]);
+    assert!(params["properties"]["engines"]["description"]
+        .as_str()
+        .is_some_and(|description| description.contains("bing (Bing RSS)")));
 }
 
 #[test]
@@ -418,8 +421,11 @@ fn test_add_http_engine_valid() {
     assert!(add_http_engine(&mut search, "brave", None));
     assert_eq!(search.engine_count(), 3);
 
-    assert!(add_http_engine(&mut search, "bing_cn", None));
+    assert!(add_http_engine(&mut search, "bing", None));
     assert_eq!(search.engine_count(), 4);
+
+    assert!(add_http_engine(&mut search, "bing_cn", None));
+    assert_eq!(search.engine_count(), 5);
 }
 
 #[test]

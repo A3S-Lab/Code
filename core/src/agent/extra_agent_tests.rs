@@ -5,6 +5,7 @@ use crate::queue::SessionQueueConfig;
 use crate::tools::ToolExecutor;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 fn test_tool_context() -> ToolContext {
@@ -3462,6 +3463,217 @@ async fn test_circuit_breaker_succeeds_if_llm_recovers() {
         "each provider retry must pass through the budget gateway"
     );
     assert_eq!(budget.records.load(Ordering::SeqCst), 1);
+}
+
+struct InterruptedStreamClient {
+    failures_before_success: usize,
+    calls: AtomicUsize,
+    requests: std::sync::Mutex<Vec<String>>,
+}
+
+impl InterruptedStreamClient {
+    fn new(failures_before_success: usize) -> Self {
+        Self {
+            failures_before_success,
+            calls: AtomicUsize::new(0),
+            requests: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for InterruptedStreamClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        anyhow::bail!("an established response stream must retry in streaming mode")
+    }
+
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        let attempt = self.calls.fetch_add(1, Ordering::SeqCst);
+        self.requests
+            .lock()
+            .unwrap()
+            .push(serde_json::to_string(messages).unwrap());
+        let failures_before_success = self.failures_before_success;
+        let (tx, rx) = mpsc::channel(2);
+        tokio::spawn(async move {
+            if attempt < failures_before_success {
+                tx.send(StreamEvent::TextDelta(format!("partial attempt {attempt}")))
+                    .await
+                    .ok();
+                return;
+            }
+
+            let response = MockLlmClient::text_response("Recovered in place.");
+            tx.send(StreamEvent::TextDelta(response.text())).await.ok();
+            tx.send(StreamEvent::Done(response)).await.ok();
+        });
+        Ok(rx)
+    }
+}
+
+async fn collect_stream_retry_events(
+    mut rx: mpsc::Receiver<AgentEvent>,
+) -> (Vec<AgentEvent>, usize) {
+    let mut events = Vec::new();
+    let mut turn_starts = 0usize;
+    while let Some(event) = rx.recv().await {
+        let terminal = matches!(event, AgentEvent::End { .. } | AgentEvent::Error { .. });
+        if matches!(event, AgentEvent::TurnStart { .. }) {
+            turn_starts += 1;
+            if turn_starts > 1 {
+                // Retry delays are capped at 30 seconds. Yield first so the
+                // producer can enter its cancellation-aware sleep.
+                tokio::task::yield_now().await;
+                tokio::time::advance(Duration::from_secs(31)).await;
+                tokio::task::yield_now().await;
+            }
+        }
+        events.push(event);
+        if terminal {
+            break;
+        }
+    }
+    (events, turn_starts)
+}
+
+#[tokio::test(start_paused = true)]
+async fn interrupted_stream_retries_ten_times_in_the_same_turn() {
+    let client = Arc::new(InterruptedStreamClient::new(10));
+    let agent = AgentLoop::new(
+        client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig {
+            planning_mode: crate::prompts::PlanningMode::Disabled,
+            ..AgentConfig::default()
+        },
+    );
+    let (tx, rx) = mpsc::channel(128);
+    let run = tokio::spawn(async move {
+        agent
+            .execute_with_session(&[], "keep this message once", None, Some(tx), None)
+            .await
+    });
+
+    let (events, turn_starts) = collect_stream_retry_events(rx).await;
+    let result = run.await.unwrap().unwrap();
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 11);
+    assert_eq!(turn_starts, 11, "one start plus ten in-place restarts");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::Error { .. }))
+            .count(),
+        0
+    );
+    assert_eq!(
+        result
+            .messages
+            .iter()
+            .filter(|message| message.role == "user")
+            .count(),
+        1,
+        "provider retries must not append another user message"
+    );
+    assert_eq!(
+        result
+            .messages
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .count(),
+        1,
+        "only the successful response may be committed"
+    );
+
+    let requests = client.requests.lock().unwrap();
+    assert_eq!(requests.len(), 11);
+    assert!(requests.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[tokio::test(start_paused = true)]
+async fn interrupted_stream_stops_after_ten_retries() {
+    let client = Arc::new(InterruptedStreamClient::new(usize::MAX));
+    let agent = AgentLoop::new(
+        client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig {
+            planning_mode: crate::prompts::PlanningMode::Disabled,
+            ..AgentConfig::default()
+        },
+    );
+    let (tx, rx) = mpsc::channel(128);
+    let run = tokio::spawn(async move {
+        agent
+            .execute_with_session(&[], "fail once", None, Some(tx), None)
+            .await
+    });
+
+    let (events, turn_starts) = collect_stream_retry_events(rx).await;
+    let error = run.await.unwrap().unwrap_err().to_string();
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 11);
+    assert_eq!(turn_starts, 11);
+    assert!(error.contains("after 10 retries"), "{error}");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::Error { .. }))
+            .count(),
+        1,
+        "retry exhaustion should emit one terminal error"
+    );
+}
+
+#[tokio::test]
+async fn interrupted_stream_backoff_stops_immediately_on_cancellation() {
+    let client = Arc::new(InterruptedStreamClient::new(usize::MAX));
+    let agent = AgentLoop::new(
+        client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig {
+            planning_mode: crate::prompts::PlanningMode::Disabled,
+            ..AgentConfig::default()
+        },
+    );
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let run_cancellation = cancellation.clone();
+    let (tx, mut rx) = mpsc::channel(16);
+    let run = tokio::spawn(async move {
+        agent
+            .execute_with_session(&[], "cancel retry", None, Some(tx), Some(&run_cancellation))
+            .await
+    });
+
+    let mut starts = 0usize;
+    while let Some(event) = rx.recv().await {
+        if matches!(event, AgentEvent::TurnStart { .. }) {
+            starts += 1;
+            if starts == 2 {
+                break;
+            }
+        }
+    }
+    cancellation.cancel();
+
+    let _result = tokio::time::timeout(Duration::from_millis(50), run)
+        .await
+        .expect("cancellation must interrupt exponential backoff")
+        .unwrap();
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
 }
 
 // ── Continuation detection tests ─────────────────────────────────────────

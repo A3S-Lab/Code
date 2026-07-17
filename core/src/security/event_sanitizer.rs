@@ -24,23 +24,40 @@ pub(crate) struct AgentEventStreamSanitizer {
     tool_inputs: HashMap<ToolInputKey, BufferedToolInput>,
     tool_outputs: HashMap<String, BufferedToolOutput>,
     current_tool_input_id: Option<String>,
+    active_turn: Option<usize>,
+    attempt_checkpoint: Option<StreamAttemptCheckpoint>,
 }
 
+#[derive(Clone)]
 struct BufferedDelta {
     sequence: u64,
     value: String,
 }
 
+#[derive(Clone)]
 struct BufferedToolInput {
     sequence: u64,
     emitted_id: Option<String>,
     value: String,
 }
 
+#[derive(Clone)]
 struct BufferedToolOutput {
     sequence: u64,
     name: String,
     value: String,
+}
+
+#[derive(Clone)]
+struct StreamAttemptCheckpoint {
+    next_sequence: u64,
+    buffered_bytes: usize,
+    failed_closed: bool,
+    text: Option<BufferedDelta>,
+    reasoning: Option<BufferedDelta>,
+    tool_inputs: HashMap<ToolInputKey, BufferedToolInput>,
+    tool_outputs: HashMap<String, BufferedToolOutput>,
+    current_tool_input_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -68,6 +85,8 @@ impl AgentEventStreamSanitizer {
             tool_inputs: HashMap::new(),
             tool_outputs: HashMap::new(),
             current_tool_input_id: None,
+            active_turn: None,
+            attempt_checkpoint: None,
         }
     }
 
@@ -158,6 +177,7 @@ impl AgentEventStreamSanitizer {
             event => {
                 let mut ready = Vec::new();
                 match &event {
+                    AgentEvent::TurnStart { turn } => self.begin_or_restart_turn(*turn),
                     AgentEvent::ToolStart { id, .. } => {
                         self.bind_anonymous_tool_input(id);
                         self.current_tool_input_id = Some(id.clone());
@@ -174,9 +194,15 @@ impl AgentEventStreamSanitizer {
                     | AgentEvent::ConfirmationTimeout { tool_id, .. } => {
                         self.take_tool_fields(tool_id, false, &mut ready);
                     }
-                    AgentEvent::TurnEnd { .. } => self.take_all_tool_inputs(&mut ready),
+                    AgentEvent::TurnEnd { .. } => {
+                        self.take_all_tool_inputs(&mut ready);
+                        self.active_turn = None;
+                        self.attempt_checkpoint = None;
+                    }
                     AgentEvent::End { .. } | AgentEvent::Error { .. } => {
                         self.take_all(&mut ready);
+                        self.active_turn = None;
+                        self.attempt_checkpoint = None;
                     }
                     _ => {}
                 }
@@ -198,6 +224,46 @@ impl AgentEventStreamSanitizer {
         let mut ready = Vec::new();
         self.take_all(&mut ready);
         self.sanitize_pending(ready)
+    }
+
+    /// A repeated `TurnStart` with the same turn number marks an in-place LLM
+    /// stream retry. Restore buffered security domains to their state before
+    /// that attempt so discarded partial output can never be concatenated with
+    /// the replacement response.
+    fn begin_or_restart_turn(&mut self, turn: usize) {
+        if self.active_turn == Some(turn) {
+            if let Some(checkpoint) = self.attempt_checkpoint.clone() {
+                self.restore_attempt_checkpoint(checkpoint);
+            }
+            return;
+        }
+
+        self.active_turn = Some(turn);
+        self.attempt_checkpoint = Some(self.attempt_checkpoint());
+    }
+
+    fn attempt_checkpoint(&self) -> StreamAttemptCheckpoint {
+        StreamAttemptCheckpoint {
+            next_sequence: self.next_sequence,
+            buffered_bytes: self.buffered_bytes,
+            failed_closed: self.failed_closed,
+            text: self.text.clone(),
+            reasoning: self.reasoning.clone(),
+            tool_inputs: self.tool_inputs.clone(),
+            tool_outputs: self.tool_outputs.clone(),
+            current_tool_input_id: self.current_tool_input_id.clone(),
+        }
+    }
+
+    fn restore_attempt_checkpoint(&mut self, checkpoint: StreamAttemptCheckpoint) {
+        self.next_sequence = checkpoint.next_sequence;
+        self.buffered_bytes = checkpoint.buffered_bytes;
+        self.failed_closed = checkpoint.failed_closed;
+        self.text = checkpoint.text;
+        self.reasoning = checkpoint.reasoning;
+        self.tool_inputs = checkpoint.tool_inputs;
+        self.tool_outputs = checkpoint.tool_outputs;
+        self.current_tool_input_id = checkpoint.current_tool_input_id;
     }
 
     fn reserve_sequence(&mut self) -> u64 {
@@ -611,6 +677,62 @@ mod tests {
             emitted.last(),
             Some(crate::agent::AgentEvent::Error { .. })
         ));
+    }
+
+    #[test]
+    fn repeated_turn_start_discards_only_the_interrupted_attempt_buffers() {
+        use crate::agent::AgentEvent;
+
+        let provider: Arc<dyn SecurityProvider> = Arc::new(DefaultSecurityProvider::new());
+        let mut sanitizer = AgentEventStreamSanitizer::new(Some(provider));
+        let mut emitted = Vec::new();
+
+        emitted.extend(sanitizer.push(AgentEvent::TurnStart { turn: 1 }));
+        emitted.extend(sanitizer.push(AgentEvent::TextDelta {
+            text: "stable response. ".to_string(),
+        }));
+        emitted.extend(sanitizer.push(AgentEvent::TurnEnd {
+            turn: 1,
+            usage: crate::llm::TokenUsage::default(),
+        }));
+
+        emitted.extend(sanitizer.push(AgentEvent::TurnStart { turn: 2 }));
+        emitted.extend(sanitizer.push(AgentEvent::TextDelta {
+            text: "discarded partial. ".to_string(),
+        }));
+        emitted.extend(sanitizer.push(AgentEvent::ReasoningDelta {
+            text: "discarded reasoning. ".to_string(),
+        }));
+        emitted.extend(sanitizer.push(AgentEvent::ToolStart {
+            id: "discarded-tool".to_string(),
+            name: "bash".to_string(),
+        }));
+        emitted.extend(sanitizer.push(AgentEvent::ToolInputDelta {
+            id: Some("discarded-tool".to_string()),
+            delta: "discarded input".to_string(),
+        }));
+
+        // Core re-emits the same turn number immediately before waiting and
+        // restarting the provider request.
+        emitted.extend(sanitizer.push(AgentEvent::TurnStart { turn: 2 }));
+        emitted.extend(sanitizer.push(AgentEvent::TextDelta {
+            text: "recovered response.".to_string(),
+        }));
+        emitted.extend(sanitizer.push(AgentEvent::End {
+            text: "recovered response.".to_string(),
+            usage: crate::llm::TokenUsage::default(),
+            verification_summary: Box::new(crate::verification::VerificationSummary::from_reports(
+                &[],
+            )),
+            meta: None,
+        }));
+
+        let serialized = serde_json::to_string(&emitted).unwrap();
+        assert!(serialized.contains("stable response"), "{serialized}");
+        assert!(serialized.contains("recovered response"), "{serialized}");
+        assert!(!serialized.contains("discarded partial"), "{serialized}");
+        assert!(!serialized.contains("discarded reasoning"), "{serialized}");
+        assert!(!serialized.contains("discarded input"), "{serialized}");
     }
 
     #[test]
