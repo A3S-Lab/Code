@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.5] - 2026-07-17
+
+### Added
+
+- Added `bing` as a first-class HTTP RSS search engine and exposed selected
+  engines plus their request, configuration, or built-in-default origin in
+  search result metadata.
+
+### Changed
+
+- Raised the bounded auditable `program` source limit to 192 KiB and retained
+  compact search-routing fields when oversized child metadata passes through a
+  batch workflow.
+
+### Fixed
+
+- Allowed hosts that supply an `LlmClient` in session options to bootstrap an
+  agent without a configured default model, while preserving session-time
+  validation when neither source is available.
+- Retried an established response stream up to ten times within the same turn,
+  with cancellation-aware exponential backoff and transactional rollback of
+  provisional text, reasoning, and tool drafts between attempts.
+
 ## [5.3.4] - 2026-07-16
 
 ### Fixed

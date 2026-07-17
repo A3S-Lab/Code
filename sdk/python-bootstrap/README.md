@@ -3,7 +3,7 @@
 `pip install a3s-code` ships this small pure-Python package. On first
 `import a3s_code` it downloads the native extension matching your
 interpreter and platform from the project's
-[GitHub Releases](https://github.com/AI45Lab/Code/releases), verifies
+[GitHub Releases](https://github.com/A3S-Lab/Code/releases), verifies
 the wheel's sha256 against the release manifest, extracts the compiled
 extension into a per-user cache, and exposes the normal `a3s_code` API.
 
@@ -41,5 +41,7 @@ wheel directly:
 
 ```bash
 pip install \
-  https://github.com/AI45Lab/Code/releases/download/v3.2.1/a3s_code-3.2.1-cp312-cp312-manylinux_2_28_x86_64.whl
+  'https://github.com/A3S-Lab/Code/releases/download/v<VERSION>/a3s_code-<VERSION>-cp312-cp312-manylinux_2_28_x86_64.whl'
 ```
+
+Replace `<VERSION>` with the release to install, for example `5.3.5`.

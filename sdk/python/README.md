@@ -10,7 +10,7 @@ pip install a3s-code
 
 From v3.2.1 onwards the PyPI `a3s-code` package is a small pure-Python
 bootstrap. On first `import a3s_code` it downloads the matching native
-wheel from [GitHub Releases](https://github.com/AI45Lab/Code/releases),
+wheel from [GitHub Releases](https://github.com/A3S-Lab/Code/releases),
 verifies the wheel's sha256 against the release manifest, and caches
 the compiled extension under `~/.cache/a3s-code/<version>/`. Subsequent
 imports use the cache.
@@ -25,8 +25,10 @@ interpreter directly:
 
 ```bash
 pip install \
-  https://github.com/AI45Lab/Code/releases/download/v3.2.1/a3s_code-3.2.1-cp312-cp312-manylinux_2_28_x86_64.whl
+  'https://github.com/A3S-Lab/Code/releases/download/v<VERSION>/a3s_code-<VERSION>-cp312-cp312-manylinux_2_28_x86_64.whl'
 ```
+
+Replace `<VERSION>` with the release to install, for example `5.3.5`.
 
 ## Quick Start
 
