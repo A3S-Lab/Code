@@ -22,7 +22,9 @@ struct FailingSseHttp {
     chunks: Vec<String>,
 }
 
-struct PartialThenPendingSseHttp;
+struct ChunksThenPendingSseHttp {
+    chunks: Vec<String>,
+}
 
 #[async_trait::async_trait]
 impl crate::llm::http::HttpClient for MockSseHttp {
@@ -120,7 +122,7 @@ impl crate::llm::http::HttpClient for FailingSseHttp {
 }
 
 #[async_trait::async_trait]
-impl crate::llm::http::HttpClient for PartialThenPendingSseHttp {
+impl crate::llm::http::HttpClient for ChunksThenPendingSseHttp {
     async fn post(
         &self,
         _url: &str,
@@ -128,7 +130,7 @@ impl crate::llm::http::HttpClient for PartialThenPendingSseHttp {
         _body: &serde_json::Value,
         _cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<crate::llm::http::HttpResponse> {
-        anyhow::bail!("post is unused in the partial cancellation test")
+        anyhow::bail!("post is unused in the pending streaming tests")
     }
 
     async fn post_streaming(
@@ -138,17 +140,15 @@ impl crate::llm::http::HttpClient for PartialThenPendingSseHttp {
         _body: &serde_json::Value,
         _cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<crate::llm::http::StreamingHttpResponse> {
-        let partial = Ok(bytes::Bytes::from_static(
-            br#"data: {"choices":[{"delta":{"content":"partial"}}]}
-
-"#,
-        ));
+        let items = self
+            .chunks
+            .iter()
+            .map(|chunk| Ok(bytes::Bytes::from(chunk.clone())))
+            .collect::<Vec<anyhow::Result<bytes::Bytes>>>();
         Ok(crate::llm::http::StreamingHttpResponse {
             status: 200,
             retry_after: None,
-            byte_stream: Box::pin(
-                futures::stream::iter(vec![partial]).chain(futures::stream::pending()),
-            ),
+            byte_stream: Box::pin(futures::stream::iter(items).chain(futures::stream::pending())),
             error_body: String::new(),
         })
     }
@@ -238,6 +238,40 @@ async fn streaming_transport_error_after_partial_delta_does_not_emit_done() {
 }
 
 #[tokio::test]
+async fn streaming_clean_eof_after_partial_delta_does_not_emit_done() {
+    use crate::llm::{LlmClient, StreamEvent};
+
+    let client = glm_client(vec![
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_string(),
+    ]);
+    let mut rx = client
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("stream opened");
+
+    let mut text = String::new();
+    let mut saw_done = false;
+    while let Some(event) = rx.recv().await {
+        match event {
+            StreamEvent::TextDelta(delta) => text.push_str(&delta),
+            StreamEvent::Done(_) => saw_done = true,
+            _ => {}
+        }
+    }
+
+    assert_eq!(text, "partial");
+    assert!(
+        !saw_done,
+        "EOF without protocol terminal evidence must close without Done"
+    );
+}
+
+#[tokio::test]
 async fn streaming_transport_error_after_finish_reason_can_finalize() {
     let client = OpenAiClient::new("k".to_string(), "model".to_string()).with_http_client(
         std::sync::Arc::new(FailingSseHttp {
@@ -254,11 +288,28 @@ async fn streaming_transport_error_after_finish_reason_can_finalize() {
 }
 
 #[tokio::test]
+async fn streaming_clean_eof_after_finish_reason_can_finalize() {
+    let client = glm_client(vec![
+        "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"}}]}\n\n".to_string(),
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_string(),
+    ]);
+
+    let response = drain_to_done(&client).await;
+    assert_eq!(response.text(), "complete");
+    assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+}
+
+#[tokio::test]
 async fn streaming_partial_response_is_not_finalized_after_cancellation() {
     use crate::llm::{LlmClient, StreamEvent};
 
-    let client = OpenAiClient::new("k".to_string(), "model".to_string())
-        .with_http_client(std::sync::Arc::new(PartialThenPendingSseHttp));
+    let client = OpenAiClient::new("k".to_string(), "model".to_string()).with_http_client(
+        std::sync::Arc::new(ChunksThenPendingSseHttp {
+            chunks: vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_string(),
+            ],
+        }),
+    );
     let cancellation = tokio_util::sync::CancellationToken::new();
     let mut rx = client
         .complete_streaming(&[Message::user("go")], None, &[], cancellation.clone())
@@ -275,6 +326,50 @@ async fn streaming_partial_response_is_not_finalized_after_cancellation() {
         .await
         .expect("provider parser must stop after cancellation");
     assert!(next.is_none(), "cancellation must not synthesize Done");
+}
+
+#[tokio::test]
+async fn streaming_done_closes_before_pending_transport_and_emits_once() {
+    use crate::llm::{LlmClient, StreamEvent};
+
+    let client = OpenAiClient::new("k".to_string(), "model".to_string()).with_http_client(
+        std::sync::Arc::new(ChunksThenPendingSseHttp {
+            chunks: vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"}}]}\n\n".to_string(),
+                "data: [DONE]\n\n".to_string(),
+                "data: [DONE]\n\n".to_string(),
+            ],
+        }),
+    );
+    let mut rx = client
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("stream opened");
+
+    let events = tokio::time::timeout(std::time::Duration::from_secs(1), async move {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    })
+    .await
+    .expect("[DONE] must close the parser without waiting for transport EOF");
+    let done = events
+        .into_iter()
+        .filter_map(|event| match event {
+            StreamEvent::Done(response) => Some(response),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(done.len(), 1, "[DONE] must emit exactly one final response");
+    assert_eq!(done[0].text(), "complete");
 }
 
 #[tokio::test]

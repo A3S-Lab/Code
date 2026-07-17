@@ -105,7 +105,6 @@ impl OpenAiClient {
                 let mut response_model = None;
                 let mut response_object = None;
                 let mut first_token_ms = None;
-                let mut saw_done = false;
                 let mut parsed_any_event = false;
                 let mut stream_failed = false;
 
@@ -137,7 +136,6 @@ impl OpenAiClient {
                         for line in event_data.lines() {
                             if let Some(data) = crate::sse::data_field_value(line) {
                                 if data == "[DONE]" {
-                                    saw_done = true;
                                     if !text_content.is_empty() {
                                         content_blocks.push(ContentBlock::Text {
                                             text: text_content.clone(),
@@ -185,7 +183,7 @@ impl OpenAiClient {
                                         }),
                                     };
                                     let _ = tx.send(StreamEvent::Done(response)).await;
-                                    continue;
+                                    return;
                                 }
 
                                 if let Ok(event) = serde_json::from_str::<OpenAiStreamChunk>(data) {
@@ -415,10 +413,6 @@ impl OpenAiClient {
                     }
                 }
 
-                if saw_done {
-                    return;
-                }
-
                 let trailing = buffer.trim();
                 if !trailing.is_empty() {
                     if let Ok(event) = serde_json::from_str::<OpenAiStreamChunk>(trailing) {
@@ -564,12 +558,27 @@ impl OpenAiClient {
                     }
                 }
 
-                if stream_failed && finish_reason.is_none() {
-                    tracing::warn!(
-                        provider = %provider_name,
-                        model = %request_model,
-                        "OpenAI-compatible stream failed before terminal evidence; closing without Done"
-                    );
+                if finish_reason.is_none() {
+                    if stream_failed {
+                        tracing::warn!(
+                            provider = %provider_name,
+                            model = %request_model,
+                            "OpenAI-compatible stream failed before terminal evidence; closing without Done"
+                        );
+                    } else if parsed_any_event {
+                        tracing::warn!(
+                            provider = %provider_name,
+                            model = %request_model,
+                            "OpenAI-compatible stream reached EOF before terminal evidence; closing without Done"
+                        );
+                    } else {
+                        tracing::warn!(
+                            provider = %provider_name,
+                            model = %request_model,
+                            trailing = %trailing.chars().take(400).collect::<String>(),
+                            "OpenAI-compatible stream ended without any parseable events"
+                        );
+                    }
                     return;
                 }
 
@@ -581,7 +590,7 @@ impl OpenAiClient {
                     tracing::warn!(
                         provider = %provider_name,
                         model = %request_model,
-                        "OpenAI-compatible stream ended without [DONE]; finalizing buffered response"
+                        "OpenAI-compatible stream ended without [DONE] after finish reason; finalizing buffered response"
                     );
                     if !text_content.is_empty() {
                         content_blocks.push(ContentBlock::Text {
@@ -627,13 +636,6 @@ impl OpenAiClient {
                         }),
                     };
                     let _ = tx.send(StreamEvent::Done(response)).await;
-                } else {
-                    tracing::warn!(
-                        provider = %provider_name,
-                        model = %request_model,
-                        trailing = %trailing.chars().take(400).collect::<String>(),
-                        "OpenAI-compatible stream ended without any parseable events"
-                    );
                 }
             });
 
