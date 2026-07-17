@@ -404,6 +404,15 @@ reasoning, tool calls, usage, images, retries, cancellation, and streaming where
 the provider supports them. Structured generation uses native response formats
 when available and a schema-validated prompt fallback otherwise.
 
+If an established response stream closes before its final response, Core
+restarts the same LLM turn with the same message snapshot up to ten times. The
+delay grows exponentially from one second and is capped at thirty seconds, with
+jitter. Core re-emits `TurnStart` with the same turn number before each wait so
+stream consumers can roll back provisional deltas and tool drafts in place;
+only the successful assistant response is committed. Cancellation interrupts
+the wait immediately, and setup/status retries remain owned by the provider
+transport rather than nesting another turn-level retry loop.
+
 MCP connections support stdio, HTTP SSE, streamable HTTP, and OAuth client
 credentials. Global managers can seed new sessions and refresh cached tools;
 session managers can connect, disconnect, and live-add or remove isolated

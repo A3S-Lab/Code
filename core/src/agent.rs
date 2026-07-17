@@ -295,7 +295,9 @@ pub enum AgentEvent {
         description: String,
     },
 
-    /// LLM turn started
+    /// LLM turn started. The same turn number is emitted again when an
+    /// interrupted response stream is retried; consumers should roll back
+    /// provisional output from that turn before applying replacement deltas.
     #[serde(rename = "turn_start")]
     TurnStart { turn: usize },
 

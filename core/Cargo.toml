@@ -147,6 +147,8 @@ s3 = [
 serve = ["dep:cron"]
 
 [dev-dependencies]
+# Deterministically advance the exponential stream-retry backoff in async tests.
+tokio = { version = "1.35", features = ["test-util"] }
 # HTTP mocking for the RemoteGitBackend (and any future HTTP-backed workspace
 # provider). Production code does not depend on wiremock.
 wiremock = "0.6"

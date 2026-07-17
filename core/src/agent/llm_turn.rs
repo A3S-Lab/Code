@@ -7,11 +7,21 @@ use crate::llm::{
     estimate_prompt_tokens, non_retryable_llm_error_message, LlmResponse, Message, ToolCall,
     ToolDefinition,
 };
+use crate::retry::RetryConfig;
 use anyhow::Context;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 const DEFAULT_AUTO_COMPACT_TIMEOUT_MS: u64 = 60_000;
+const MAX_STREAM_INTERRUPTION_RETRIES: u32 = 10;
+
+#[derive(Debug, thiserror::Error)]
+#[error("LLM response stream ended before the final response")]
+struct IncompleteLlmStream;
+
+fn stream_interruption_retry_delay(retry_index: u32) -> Duration {
+    RetryConfig::default().delay_for_attempt(retry_index)
+}
 
 pub(super) struct LlmTurnOutput {
     pub(super) turn: usize,
@@ -217,6 +227,7 @@ impl AgentLoop {
     ) -> anyhow::Result<LlmResponse> {
         let threshold = self.config.circuit_breaker_threshold.max(1);
         let mut attempt = 0u32;
+        let mut stream_retries = 0u32;
         let llm_client = self.scoped_llm_client_for_parts(
             request.session_id,
             request.event_tx,
@@ -250,7 +261,41 @@ impl AgentLoop {
                     }
 
                     let non_retryable_message = non_retryable_llm_error_message(&error);
-                    if non_retryable_message.is_none()
+                    let stream_interrupted = error.downcast_ref::<IncompleteLlmStream>().is_some();
+                    if stream_interrupted
+                        && non_retryable_message.is_none()
+                        && stream_retries < MAX_STREAM_INTERRUPTION_RETRIES
+                    {
+                        let retry_index = stream_retries;
+                        stream_retries += 1;
+                        let delay = stream_interruption_retry_delay(retry_index);
+                        tracing::warn!(
+                            turn = request.turn,
+                            attempt,
+                            retry = stream_retries,
+                            max_retries = MAX_STREAM_INTERRUPTION_RETRIES,
+                            delay_ms = delay.as_millis() as u64,
+                            error = %error,
+                            "LLM response stream was interrupted; restarting the same turn"
+                        );
+
+                        // Re-emitting the same turn number is the transactional
+                        // boundary for stream consumers: discard provisional
+                        // deltas/tool drafts from the failed attempt, but keep
+                        // the original user message and all prior turns.
+                        self.emit_turn_start(request.turn, request.event_tx).await;
+                        tokio::select! {
+                            biased;
+                            _ = request.cancel_token.cancelled() => {
+                                anyhow::bail!("Operation cancelled by user")
+                            }
+                            _ = tokio::time::sleep(delay) => {}
+                        }
+                        continue;
+                    }
+
+                    if !stream_interrupted
+                        && non_retryable_message.is_none()
                         && attempt < threshold
                         && (request.event_tx.is_none() || attempt == 1)
                     {
@@ -273,6 +318,11 @@ impl AgentLoop {
 
                     let msg = if let Some(message) = non_retryable_message {
                         message.to_string()
+                    } else if stream_interrupted {
+                        format!(
+                            "LLM response stream interrupted after {} retries ({} attempts): {}",
+                            stream_retries, attempt, error
+                        )
                     } else if attempt > 1 {
                         format!(
                             "LLM circuit breaker triggered: failed after {} attempt(s): {}",
@@ -593,7 +643,7 @@ impl AgentLoop {
                     }
                 }
             }
-            final_response.context("Stream ended without final response")
+            final_response.ok_or_else(|| anyhow::Error::new(IncompleteLlmStream))
         } else {
             self.call_non_streaming_llm(llm_client, messages, system, tools, cancel_token)
                 .await
@@ -688,5 +738,23 @@ impl AgentLoop {
             });
             let _ = he.fire(&event).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod stream_retry_tests {
+    use super::*;
+
+    #[test]
+    fn stream_retry_delay_is_exponential_and_capped() {
+        let first = stream_interruption_retry_delay(0).as_millis();
+        let second = stream_interruption_retry_delay(1).as_millis();
+        let third = stream_interruption_retry_delay(2).as_millis();
+        let capped = stream_interruption_retry_delay(9).as_millis();
+
+        assert!((750..=1_250).contains(&first));
+        assert!((1_500..=2_500).contains(&second));
+        assert!((3_000..=5_000).contains(&third));
+        assert!((22_500..=37_500).contains(&capped));
     }
 }
