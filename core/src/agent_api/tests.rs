@@ -1210,9 +1210,8 @@ async fn test_new_rejects_hcl_files() {
     assert!(msg.contains(".acl"));
 }
 
-#[test]
-fn test_from_config_requires_default_model() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
+#[tokio::test]
+async fn test_from_config_defers_default_model_validation_until_session() {
     let config = CodeConfig {
         providers: vec![ProviderConfig {
             name: "anthropic".to_string(),
@@ -1224,8 +1223,20 @@ fn test_from_config_requires_default_model() {
         }],
         ..Default::default()
     };
-    let result = rt.block_on(Agent::from_config(config));
-    assert!(result.is_err());
+    let agent = Agent::from_config(config)
+        .await
+        .expect("agent bootstrap should allow a host-supplied session client");
+
+    let result = agent
+        .session_async("/tmp/test-missing-default-model", None)
+        .await;
+    let error = result
+        .err()
+        .expect("session without an LLM source must fail");
+    assert!(
+        error.to_string().contains("default_model must be set"),
+        "unexpected session error: {error}"
+    );
 }
 
 #[tokio::test]
