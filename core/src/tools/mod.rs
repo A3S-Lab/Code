@@ -33,7 +33,7 @@ pub use builtin::{
 pub(crate) use invocation::{
     registry_tool_invoker, HostDirectPolicy, InvocationOrigin, ToolInvocation, ToolInvoker,
 };
-pub use program_tool::ProgramTool;
+pub use program_tool::{ProgramTool, MAX_PROGRAM_SCRIPT_SOURCE_BYTES};
 pub use registry::ToolRegistry;
 pub use selector::{select_tools_for_messages, select_tools_for_prompt};
 pub use task::{

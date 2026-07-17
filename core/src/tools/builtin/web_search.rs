@@ -4,7 +4,8 @@ use crate::config::{BrowserBackend, HeadlessConfig};
 use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider};
 use a3s_search::engines::{
-    Baidu, BingChina, BraveParser, DuckDuckGoParser, Google, So360Parser, SogouParser, Wikipedia,
+    Baidu, BingChina, BingParser, BraveParser, DuckDuckGoParser, Google, So360Parser, SogouParser,
+    Wikipedia,
 };
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
 use a3s_search::WaitStrategy;
@@ -264,6 +265,10 @@ fn add_http_engine(search: &mut Search, shortcut: &str, proxy_url: Option<&str>)
             search.add_engine(HtmlEngine::with_fetcher(BraveParser, Arc::new(fetcher())));
             true
         }
+        "bing" => {
+            search.add_engine(HtmlEngine::with_fetcher(BingParser, Arc::new(fetcher())));
+            true
+        }
         "wiki" => {
             search.add_engine(Wikipedia::with_http_fetcher(fetcher()));
             true
@@ -281,6 +286,23 @@ fn add_http_engine(search: &mut Search, shortcut: &str, proxy_url: Option<&str>)
             true
         }
         _ => false,
+    }
+}
+
+fn default_engine_selection(
+    config: Option<&crate::config::SearchConfig>,
+) -> (Vec<&str>, &'static str) {
+    match config {
+        Some(config) if !config.engines.is_empty() => (
+            config
+                .engines
+                .iter()
+                .filter(|(_, engine)| engine.enabled)
+                .map(|(name, _)| name.as_str())
+                .collect(),
+            "config",
+        ),
+        _ => (vec!["ddg", "wiki"], "builtin_default"),
     }
 }
 
@@ -315,7 +337,7 @@ impl Tool for WebSearchTool {
 
     fn description(&self) -> &str {
         "Search the web using multiple search engines. Aggregates results from multiple engines \
-         (DuckDuckGo, Wikipedia, Brave, Sogou, 360, Google, Baidu, Bing China, etc.). \
+         (DuckDuckGo, Wikipedia, Brave, Bing, Sogou, 360, Google, Baidu, Bing China, etc.). \
          Supports proxy configuration for anti-crawler protection. Returns deduplicated and ranked results. \
          Google and Baidu use a headless browser; Bing China uses its HTTP RSS endpoint."
     }
@@ -334,7 +356,7 @@ impl Tool for WebSearchTool {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
+                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
                 },
                 "limit": {
                     "type": "integer",
@@ -411,17 +433,14 @@ impl Tool for WebSearchTool {
         // Get configuration from context or use defaults
         let config = ctx.search_config.as_ref();
         let default_timeout = config.map(|c| c.timeout).unwrap_or(10);
-        let default_engines: Vec<&str> = if let Some(cfg) = config {
-            // Build default engines list from enabled engines in config
-            cfg.engines
-                .iter()
-                .filter(|(_, engine_cfg)| engine_cfg.enabled)
-                .map(|(name, _)| name.as_str())
-                .collect()
-        } else {
-            vec!["ddg", "wiki"]
-        };
+        let (default_engines, default_engine_selection_source) =
+            default_engine_selection(config.map(Arc::as_ref));
 
+        let engine_selection_source = if args.get("engines").is_some() {
+            "request"
+        } else {
+            default_engine_selection_source
+        };
         let engines: Vec<&str> = args
             .get("engines")
             .and_then(|v| {
@@ -438,6 +457,10 @@ impl Tool for WebSearchTool {
                 }
             })
             .unwrap_or_else(|| default_engines.clone());
+        let selected_engines = engines
+            .iter()
+            .map(|engine| engine.to_string())
+            .collect::<Vec<_>>();
 
         // HTTP-only searches must not probe for or initialize a managed browser.
         let needs_headless = requires_headless_browser(&engines);
@@ -533,7 +556,12 @@ impl Tool for WebSearchTool {
         if search.engine_count() == 0 {
             let message = format!("No valid engines found in: {:?}", engines);
             return Ok(ToolOutput::error(&message)
-                .with_error_kind(ToolErrorKind::InvalidArgument { message }));
+                .with_error_kind(ToolErrorKind::InvalidArgument { message })
+                .with_metadata(serde_json::json!({
+                    "status": "failed",
+                    "engine_selection_source": engine_selection_source,
+                    "selected_engines": &selected_engines,
+                })));
         }
 
         // Configure proxy if provided
@@ -562,6 +590,8 @@ impl Tool for WebSearchTool {
                 let output = ToolOutput::error(format!("Search failed: {message}")).with_metadata(
                     serde_json::json!({
                         "status": "failed",
+                        "engine_selection_source": engine_selection_source,
+                        "selected_engines": &selected_engines,
                         "search_metrics": search_metrics_json(&metrics),
                     }),
                 );
@@ -584,6 +614,8 @@ impl Tool for WebSearchTool {
                 })
                 .with_metadata(serde_json::json!({
                     "status": "failed",
+                    "engine_selection_source": engine_selection_source,
+                    "selected_engines": &selected_engines,
                     "search_metrics": search_metrics_json(&metrics),
                 })));
             }
@@ -625,6 +657,8 @@ impl Tool for WebSearchTool {
         if results.is_empty() {
             let metadata = serde_json::json!({
                 "status": if errors.is_empty() { "complete" } else { "failed" },
+                "engine_selection_source": engine_selection_source,
+                "selected_engines": &selected_engines,
                 "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
                 "search_metrics": metrics_json,
                 "engine_errors": engine_errors,
@@ -679,6 +713,8 @@ impl Tool for WebSearchTool {
         Ok(
             ToolOutput::success(output).with_metadata(serde_json::json!({
                 "status": if errors.is_empty() { "complete" } else { "partial" },
+                "engine_selection_source": engine_selection_source,
+                "selected_engines": &selected_engines,
                 "source_anchors": source_anchors,
                 "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
                 "search_metrics": metrics_json,

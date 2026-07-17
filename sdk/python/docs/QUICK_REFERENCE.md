@@ -13,14 +13,25 @@ session = agent.session(".")
 result = session.send({"prompt": "Find the code path that handles authentication."})
 print(result.text)
 
+active_turn = None
+attempt_text = []
 for event in session.stream({"prompt": "Refactor the tests around that code path."}):
-    if event.event_type == "text_delta":
-        print(event.text, end="", flush=True)
+    if event.event_type == "turn_start":
+        active_turn = event.turn
+        attempt_text.clear()
+    elif event.event_type == "text_delta":
+        attempt_text.append(event.text or "")
+    elif event.event_type == "turn_end" and event.turn == active_turn:
+        print("".join(attempt_text), end="", flush=True)
+        attempt_text.clear()
 ```
 
 Streaming events use envelope version `1`: `event.type` is the canonical open
 discriminant, `event.payload` is lossless, and `event.metadata` preserves
 optional protocol metadata. `event.event_type` is a compatibility alias.
+Repeated `turn_start` events with the same turn replace an interrupted stream
+attempt, so clear all provisional text, reasoning, and tool drafts for that
+turn before applying the replacement deltas.
 
 Use the short object-shaped request APIs first. They own normal model execution,
 built-in tools,

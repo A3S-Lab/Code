@@ -4,6 +4,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [5.3.5] - 2026-07-17
+
+### Changed
+
+- Updated the bundled Core with host-supplied session client bootstrap, bounded
+  in-place response-stream retry and rollback, explicit search-routing
+  metadata, and the Bing RSS engine.
+
 ## [5.3.4] - 2026-07-16
 
 ### Fixed

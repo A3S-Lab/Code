@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::{SearchConfig, SearchEngineConfig};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -50,6 +51,64 @@ fn latest_search_metrics_are_exposed_as_stable_metadata() {
     assert_eq!(metadata["latency_p99_ms"], 30);
 }
 
+fn search_config(engines: HashMap<String, SearchEngineConfig>) -> SearchConfig {
+    SearchConfig {
+        timeout: 10,
+        health: None,
+        engines,
+        headless: None,
+    }
+}
+
+#[test]
+fn default_engine_selection_uses_builtin_defaults_without_engine_configuration() {
+    let (engines, source) = default_engine_selection(None);
+    assert_eq!(engines, ["ddg", "wiki"]);
+    assert_eq!(source, "builtin_default");
+
+    let config = search_config(HashMap::new());
+    let (engines, source) = default_engine_selection(Some(&config));
+    assert_eq!(engines, ["ddg", "wiki"]);
+    assert_eq!(source, "builtin_default");
+}
+
+#[test]
+fn default_engine_selection_respects_explicit_configuration() {
+    let config = search_config(HashMap::from([
+        (
+            "enabled".to_string(),
+            SearchEngineConfig {
+                enabled: true,
+                weight: 1.0,
+                timeout: None,
+            },
+        ),
+        (
+            "disabled".to_string(),
+            SearchEngineConfig {
+                enabled: false,
+                weight: 1.0,
+                timeout: None,
+            },
+        ),
+    ]));
+    let (engines, source) = default_engine_selection(Some(&config));
+    assert_eq!(engines, ["enabled"]);
+    assert_eq!(source, "config");
+
+    let config = search_config(HashMap::from([(
+        "disabled".to_string(),
+        SearchEngineConfig {
+            enabled: false,
+            weight: 1.0,
+            timeout: None,
+        },
+    )]));
+    let (engines, source) = default_engine_selection(Some(&config));
+    assert!(engines.is_empty());
+    assert_eq!(source, "config");
+}
+
 #[tokio::test]
 async fn test_web_search_missing_query() {
     let tool = WebSearchTool::new();
@@ -85,6 +144,45 @@ async fn test_web_search_no_valid_engines() {
         .unwrap();
     assert!(!result.success);
     assert!(result.content.contains("No valid engines"));
+    let metadata = result.metadata.expect("search selection metadata");
+    assert_eq!(metadata["status"], "failed");
+    assert_eq!(metadata["engine_selection_source"], "request");
+    assert_eq!(
+        metadata["selected_engines"],
+        serde_json::json!(["nonexistent"])
+    );
+}
+
+#[tokio::test]
+async fn configured_engine_selection_is_identified_in_failure_metadata() {
+    let tool = WebSearchTool::new();
+    let ctx = ToolContext::new(PathBuf::from("/tmp")).with_search_config(SearchConfig {
+        timeout: 10,
+        health: None,
+        engines: HashMap::from([(
+            "private-search".to_string(),
+            SearchEngineConfig {
+                enabled: true,
+                weight: 1.0,
+                timeout: None,
+            },
+        )]),
+        headless: None,
+    });
+
+    let result = tool
+        .execute(&serde_json::json!({"query": "test"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    let metadata = result.metadata.expect("search selection metadata");
+    assert_eq!(metadata["status"], "failed");
+    assert_eq!(metadata["engine_selection_source"], "config");
+    assert_eq!(
+        metadata["selected_engines"],
+        serde_json::json!(["private-search"])
+    );
 }
 
 #[tokio::test]
@@ -282,6 +380,9 @@ fn test_web_search_schema_is_canonical() {
     // Example with engines should use array format
     assert!(examples[1]["engines"].is_array());
     assert_eq!(examples[1]["engines"].as_array().unwrap(), &["ddg", "wiki"]);
+    assert!(params["properties"]["engines"]["description"]
+        .as_str()
+        .is_some_and(|description| description.contains("bing (Bing RSS)")));
 }
 
 #[test]
@@ -320,8 +421,11 @@ fn test_add_http_engine_valid() {
     assert!(add_http_engine(&mut search, "brave", None));
     assert_eq!(search.engine_count(), 3);
 
-    assert!(add_http_engine(&mut search, "bing_cn", None));
+    assert!(add_http_engine(&mut search, "bing", None));
     assert_eq!(search.engine_count(), 4);
+
+    assert!(add_http_engine(&mut search, "bing_cn", None));
+    assert_eq!(search.engine_count(), 5);
 }
 
 #[test]
