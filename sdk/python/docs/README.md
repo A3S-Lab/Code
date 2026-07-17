@@ -119,9 +119,17 @@ session = agent.session("/my-project",
 
 # Send / Stream
 result = session.send({"prompt": "Explain the auth module"})
+active_turn = None
+attempt_text = []
 for event in session.stream({"prompt": "Refactor auth"}):
-    if event.event_type == "text_delta":
-        print(event.text, end="", flush=True)
+    if event.event_type == "turn_start":
+        active_turn = event.turn
+        attempt_text.clear()
+    elif event.event_type == "text_delta":
+        attempt_text.append(event.text or "")
+    elif event.event_type == "turn_end" and event.turn == active_turn:
+        print("".join(attempt_text), end="", flush=True)
+        attempt_text.clear()
 
 # Planning events
 # Prefer planning_mode="auto" | "enabled" | "disabled". The legacy planning

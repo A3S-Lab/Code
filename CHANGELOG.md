@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retried an established response stream up to ten times within the same turn,
   with cancellation-aware exponential backoff and transactional rollback of
   provisional text, reasoning, and tool drafts between attempts.
+- Treated OpenAI-compatible transport failures and cancellation before terminal
+  evidence as incomplete streams instead of synthesizing a successful partial
+  response; a received finish reason remains valid without a trailing
+  `[DONE]` marker.
 
 ## [5.3.4] - 2026-07-16
 

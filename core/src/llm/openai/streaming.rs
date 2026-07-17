@@ -107,12 +107,13 @@ impl OpenAiClient {
                 let mut first_token_ms = None;
                 let mut saw_done = false;
                 let mut parsed_any_event = false;
+                let mut stream_failed = false;
 
                 loop {
                     let chunk_result = tokio::select! {
                         biased;
-                        _ = stream_cancellation.cancelled() => break,
-                        _ = tx.closed() => break,
+                        _ = stream_cancellation.cancelled() => return,
+                        _ = tx.closed() => return,
                         chunk = stream.next() => match chunk {
                             Some(chunk) => chunk,
                             None => break,
@@ -122,6 +123,7 @@ impl OpenAiClient {
                         Ok(c) => c,
                         Err(e) => {
                             tracing::error!("Stream error: {}", e);
+                            stream_failed = true;
                             break;
                         }
                     };
@@ -560,6 +562,15 @@ impl OpenAiClient {
                             }
                         }
                     }
+                }
+
+                if stream_failed && finish_reason.is_none() {
+                    tracing::warn!(
+                        provider = %provider_name,
+                        model = %request_model,
+                        "OpenAI-compatible stream failed before terminal evidence; closing without Done"
+                    );
+                    return;
                 }
 
                 if parsed_any_event

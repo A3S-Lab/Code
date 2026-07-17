@@ -106,13 +106,26 @@ and `exit_code` are derived from the same core projection.
 ```python
 from a3s_code import EventType
 
+active_turn = None
+attempt_text = []
 for event in session.stream("Explain the current test failures"):
-    if event.type == EventType.TEXT_DELTA:
-        print(event.text or "", end="")
+    if event.type == EventType.TURN_START:
+        # A repeated turn number replaces an interrupted attempt.
+        active_turn = event.turn
+        attempt_text.clear()
+    elif event.type == EventType.TEXT_DELTA:
+        attempt_text.append(event.text or "")
+    elif event.type == EventType.TURN_END and event.turn == active_turn:
+        print("".join(attempt_text), end="", flush=True)
+        attempt_text.clear()
     elif event.type == EventType.AGENT_END:
         print(event.verification_summary_text or "")
     print(event.version, event.type, event.payload, event.metadata)
 ```
+
+`turn_start` may repeat with the same `turn` when an established provider
+stream is interrupted. Treat each turn as provisional until `turn_end`; reset
+text, reasoning, and tool-call drafts when that turn restarts.
 
 `agent_event_types_v1()` returns the ordered catalog known by the native
 runtime. `AgentEventTypeV1` and `EventType` are generated from the core catalog;
@@ -170,9 +183,17 @@ session = agent.session("/my-project",
 
 # Send / Stream
 result = session.send({"prompt": "Explain the auth module"})
+active_turn = None
+attempt_text = []
 for event in session.stream({"prompt": "Refactor auth"}):
-    if event.event_type == "text_delta":
-        print(event.text, end="", flush=True)
+    if event.event_type == "turn_start":
+        active_turn = event.turn
+        attempt_text.clear()
+    elif event.event_type == "text_delta":
+        attempt_text.append(event.text or "")
+    elif event.event_type == "turn_end" and event.turn == active_turn:
+        print("".join(attempt_text), end="", flush=True)
+        attempt_text.clear()
 
 # Streams with no custom history update session history and verification evidence
 # when the stream completes. Passing explicit history keeps the stream isolated.
