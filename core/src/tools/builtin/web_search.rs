@@ -4,7 +4,8 @@ use crate::config::{BrowserBackend, HeadlessConfig};
 use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider};
 use a3s_search::engines::{
-    Baidu, BingChina, BraveParser, DuckDuckGoParser, Google, So360Parser, SogouParser, Wikipedia,
+    Baidu, BingChina, BingParser, BraveParser, DuckDuckGoParser, Google, So360Parser, SogouParser,
+    Wikipedia,
 };
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
 use a3s_search::WaitStrategy;
@@ -264,6 +265,10 @@ fn add_http_engine(search: &mut Search, shortcut: &str, proxy_url: Option<&str>)
             search.add_engine(HtmlEngine::with_fetcher(BraveParser, Arc::new(fetcher())));
             true
         }
+        "bing" => {
+            search.add_engine(HtmlEngine::with_fetcher(BingParser, Arc::new(fetcher())));
+            true
+        }
         "wiki" => {
             search.add_engine(Wikipedia::with_http_fetcher(fetcher()));
             true
@@ -332,7 +337,7 @@ impl Tool for WebSearchTool {
 
     fn description(&self) -> &str {
         "Search the web using multiple search engines. Aggregates results from multiple engines \
-         (DuckDuckGo, Wikipedia, Brave, Sogou, 360, Google, Baidu, Bing China, etc.). \
+         (DuckDuckGo, Wikipedia, Brave, Bing, Sogou, 360, Google, Baidu, Bing China, etc.). \
          Supports proxy configuration for anti-crawler protection. Returns deduplicated and ranked results. \
          Google and Baidu use a headless browser; Bing China uses its HTTP RSS endpoint."
     }
@@ -351,7 +356,7 @@ impl Tool for WebSearchTool {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
+                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
                 },
                 "limit": {
                     "type": "integer",
