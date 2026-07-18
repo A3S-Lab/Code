@@ -162,6 +162,11 @@ async fn saved_document_runtime_completes_a_real_process_protocol_lifecycle() {
             "protocol log did not contain {method}: {protocol_log}"
         );
     }
+    assert!(
+        !protocol_log.contains("\"identifier\":null")
+            && !protocol_log.contains("\"previousResultId\":null"),
+        "optional diagnostic parameters must be omitted instead of serialized as null: {protocol_log}"
+    );
 }
 
 #[tokio::test]
