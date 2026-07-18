@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added an invariant-checked session snapshot fork operation that rebinds the
+  session, workspace, run ownership, and subagent parent ownership while
+  preserving the complete persisted generation.
+
 ## [5.3.5] - 2026-07-17
 
 ### Added

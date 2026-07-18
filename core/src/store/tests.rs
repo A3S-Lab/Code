@@ -155,6 +155,31 @@ async fn create_test_snapshot() -> SessionSnapshotV1 {
     )
 }
 
+#[tokio::test]
+async fn snapshot_fork_rebinds_every_top_level_session_owner() {
+    let mut snapshot = create_test_snapshot().await;
+    for record in &mut snapshot.run_records {
+        record.snapshot.session_id = snapshot.session.id.clone();
+    }
+    snapshot.validate_for_session("test-session-1").unwrap();
+
+    let fork = snapshot
+        .fork_for_session("fork-session", "/tmp/fork-workspace")
+        .unwrap();
+
+    assert_eq!(fork.session.id, "fork-session");
+    assert_eq!(fork.session.config.workspace, "/tmp/fork-workspace");
+    assert!(fork
+        .run_records
+        .iter()
+        .all(|record| record.snapshot.session_id == "fork-session"));
+    assert!(fork
+        .subagent_tasks
+        .iter()
+        .all(|task| task.parent_session_id == "fork-session"));
+    fork.validate_for_session("fork-session").unwrap();
+}
+
 // ========================================================================
 // FileSessionStore Tests
 // ========================================================================
