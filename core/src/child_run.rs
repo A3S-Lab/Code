@@ -30,7 +30,7 @@
 use crate::agent::AgentConfig;
 use crate::hitl::ConfirmationProvider;
 use crate::hooks::HookExecutor;
-use crate::permissions::{PermissionChecker, PermissionPolicy};
+use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
 use crate::security::SecurityProvider;
 use crate::skills::SkillRegistry;
 use std::sync::Arc;
@@ -60,6 +60,56 @@ pub struct ChildRunContext {
     pub budget_guard: Option<Arc<dyn crate::budget::BudgetGuard>>,
 }
 
+struct DelegatedPermissionChecker {
+    child: Arc<dyn PermissionChecker>,
+    child_policy: Option<PermissionPolicy>,
+    parent: Arc<dyn PermissionChecker>,
+    parent_policy: Option<PermissionPolicy>,
+}
+
+impl PermissionChecker for DelegatedPermissionChecker {
+    fn expose_to_model(&self, tool_name: &str) -> bool {
+        if !self.child.expose_to_model(tool_name) {
+            return false;
+        }
+
+        if self
+            .child_policy
+            .as_ref()
+            .is_some_and(|policy| policy.declares_tool_access(tool_name))
+        {
+            // A worker's explicitly declared capability may cross a host's
+            // ordinary parent-only visibility filter. A serializable parent
+            // deny remains authoritative and keeps the tool hidden.
+            return self
+                .parent_policy
+                .as_ref()
+                .map(|policy| policy.expose_to_model(tool_name))
+                .unwrap_or_else(|| self.parent.expose_to_model(tool_name));
+        }
+
+        self.parent.expose_to_model(tool_name)
+    }
+
+    fn check(&self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
+        stricter_decision(
+            self.child.check(tool_name, args),
+            self.parent.check(tool_name, args),
+        )
+    }
+}
+
+const fn stricter_decision(
+    left: PermissionDecision,
+    right: PermissionDecision,
+) -> PermissionDecision {
+    match (left, right) {
+        (PermissionDecision::Deny, _) | (_, PermissionDecision::Deny) => PermissionDecision::Deny,
+        (PermissionDecision::Ask, _) | (_, PermissionDecision::Ask) => PermissionDecision::Ask,
+        (PermissionDecision::Allow, PermissionDecision::Allow) => PermissionDecision::Allow,
+    }
+}
+
 impl ChildRunContext {
     /// Apply inherited capabilities to a child AgentConfig.
     ///
@@ -75,10 +125,26 @@ impl ChildRunContext {
         if config.skill_registry.is_none() {
             config.skill_registry = self.skill_registry.clone();
         }
-        if config.permission_checker.is_none() {
-            config.permission_checker = self.permission_checker.clone();
-            config.permission_policy = self.permission_policy.clone();
-        } else if config.permission_policy.is_none() {
+        match (
+            config.permission_checker.take(),
+            self.permission_checker.clone(),
+        ) {
+            (Some(child), Some(parent)) => {
+                config.permission_checker = Some(Arc::new(DelegatedPermissionChecker {
+                    child,
+                    child_policy: config.permission_policy.clone(),
+                    parent,
+                    parent_policy: self.permission_policy.clone(),
+                }));
+            }
+            (Some(child), None) => config.permission_checker = Some(child),
+            (None, Some(parent)) => {
+                config.permission_checker = Some(parent);
+                config.permission_policy = self.permission_policy.clone();
+            }
+            (None, None) => {}
+        }
+        if config.permission_policy.is_none() {
             config.permission_policy = self.permission_policy.clone();
         }
         if config.tool_timeout_ms.is_none() {
@@ -108,5 +174,79 @@ impl ChildRunContext {
         if config.budget_guard.is_none() {
             config.budget_guard = self.budget_guard.clone();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone)]
+    struct ParentVisibility {
+        policy: PermissionPolicy,
+        hide_use_from_primary: bool,
+    }
+
+    impl PermissionChecker for ParentVisibility {
+        fn expose_to_model(&self, tool_name: &str) -> bool {
+            !(self.hide_use_from_primary && tool_name.starts_with("mcp__use_"))
+                && self.policy.expose_to_model(tool_name)
+        }
+
+        fn check(&self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
+            self.policy.check(tool_name, args)
+        }
+    }
+
+    fn delegated(
+        child_policy: PermissionPolicy,
+        parent_policy: PermissionPolicy,
+    ) -> DelegatedPermissionChecker {
+        DelegatedPermissionChecker {
+            child: Arc::new(child_policy.clone()),
+            child_policy: Some(child_policy),
+            parent: Arc::new(ParentVisibility {
+                policy: parent_policy.clone(),
+                hide_use_from_primary: true,
+            }),
+            parent_policy: Some(parent_policy),
+        }
+    }
+
+    #[test]
+    fn explicitly_scoped_worker_can_see_parent_hidden_tool() {
+        let mut child = PermissionPolicy::new().allow("mcp__use_*");
+        child.default_decision = PermissionDecision::Deny;
+        let parent = PermissionPolicy::new().allow("mcp__use_*");
+        let checker = delegated(child, parent);
+
+        assert!(checker.expose_to_model("mcp__use_browser__browser_snapshot"));
+        assert_eq!(
+            checker.check("mcp__use_browser__browser_snapshot", &serde_json::json!({})),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn unrelated_worker_does_not_inherit_parent_hidden_use_tools() {
+        let child = PermissionPolicy::new().allow("read(*)");
+        let parent = PermissionPolicy::new().allow("mcp__use_*");
+        let checker = delegated(child, parent);
+
+        assert!(!checker.expose_to_model("mcp__use_browser__browser_snapshot"));
+    }
+
+    #[test]
+    fn parent_deny_remains_authoritative_for_explicit_worker_capability() {
+        let mut child = PermissionPolicy::new().allow("mcp__use_*");
+        child.default_decision = PermissionDecision::Deny;
+        let parent = PermissionPolicy::new().deny("mcp__use_ocr__ocr_extract");
+        let checker = delegated(child, parent);
+
+        assert!(!checker.expose_to_model("mcp__use_ocr__ocr_extract"));
+        assert_eq!(
+            checker.check("mcp__use_ocr__ocr_extract", &serde_json::json!({})),
+            PermissionDecision::Deny
+        );
     }
 }
