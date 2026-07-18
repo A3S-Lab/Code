@@ -8,6 +8,8 @@ use reqwest::{header::LOCATION, redirect::Policy, Url};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
+mod pdf;
+
 /// Maximum response size (5MB)
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024;
 /// Maximum number of redirects followed by a single fetch.
@@ -26,7 +28,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch content from a URL and convert to text or markdown. Supports HTML to Markdown conversion. 5MB download size limit and capped tool output. Configurable timeout (max 120 seconds)."
+        "Fetch content from a URL and convert to text or markdown. Supports HTML to Markdown conversion and text extraction from PDF documents. 5MB download size limit and capped tool output. Configurable timeout (max 120 seconds)."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -186,6 +188,8 @@ impl Tool for WebFetchTool {
         Ok(
             ToolOutput::success(range.content).with_metadata(serde_json::json!({
                 "source_anchors": source_anchors,
+                "document_kind": page.document_kind,
+                "content_type": page.content_type,
                 "range": {
                     "offset": offset,
                     "requested_max_chars": requested_max_chars,
@@ -266,6 +270,8 @@ fn parse_macos_proxy(text: &str) -> Option<String> {
 struct FetchedPage {
     content: String,
     final_url: Url,
+    document_kind: &'static str,
+    content_type: String,
 }
 
 /// Fetch a URL while validating and pinning DNS results for every redirect hop.
@@ -348,9 +354,22 @@ async fn fetch_url(
             bytes.extend_from_slice(&chunk);
         }
 
-        let body = String::from_utf8_lossy(&bytes).to_string();
-        if content_type.contains("text/html") {
-            if let Some(location) = html_refresh_location(&body) {
+        let is_pdf = pdf::response_is_pdf(&content_type, &bytes);
+        let is_html = !is_pdf
+            && content_type
+                .split(';')
+                .next()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/html"));
+        let document_kind = if is_pdf {
+            "pdf"
+        } else if is_html {
+            "html"
+        } else {
+            "text"
+        };
+        let html_body = is_html.then(|| String::from_utf8_lossy(&bytes).into_owned());
+        if let Some(body) = html_body.as_deref() {
+            if let Some(location) = html_refresh_location(body) {
                 if redirect_count == MAX_REDIRECTS {
                     return Err(format!(
                         "Too many redirects while fetching URL (max: {})",
@@ -361,21 +380,33 @@ async fn fetch_url(
                 continue;
             }
         }
-        let body = if body_only && content_type.contains("text/html") {
-            extract_html_body(&body).unwrap_or(body)
+        let body = if is_pdf {
+            pdf::extract_text(bytes).await?
         } else {
-            body
+            let body = html_body.unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+            if body_only && is_html {
+                extract_html_body(&body).unwrap_or(body)
+            } else {
+                body
+            }
         };
         let content = match format {
             "html" => body,
-            "text" if content_type.contains("text/html") => html_to_text(&body),
-            "markdown" if content_type.contains("text/html") => html_to_markdown(&body),
-            _ if content_type.contains("text/html") => html_to_markdown(&body),
+            "text" if is_html => html_to_text(&body),
+            "markdown" if is_html => html_to_markdown(&body),
+            _ if is_html => html_to_markdown(&body),
             _ => body,
         };
         return Ok(FetchedPage {
             content,
             final_url: url,
+            document_kind,
+            content_type: content_type
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase(),
         });
     }
 
