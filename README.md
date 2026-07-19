@@ -271,6 +271,10 @@ object-only backend that cannot execute it.
 | MCP | `mcp__<server>__<tool>` | Namespaced tools owned by their source manager |
 | Dynamic workflows | `dynamic_workflow` | Explicitly registered A3S Flow-backed, replayable per-turn workflows |
 
+Standalone greetings are conversational turns: the model receives no tool
+definitions and a friendly response is not converted into a synthetic
+continuation. A greeting that also asks for work keeps the normal tool surface.
+
 The built-in skill registry starts empty; skills come from configured
 directories, `AgentDir`, inline host input, or live registration. The
 model-visible `program` tool executes JavaScript in QuickJS, not arbitrary

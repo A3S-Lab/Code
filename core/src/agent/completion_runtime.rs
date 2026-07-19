@@ -64,7 +64,9 @@ impl AgentLoop {
             candidate_text
         };
 
-        if !force_terminal && self.inject_continuation_if_needed(state, turn, &candidate_text) {
+        if !force_terminal
+            && self.inject_continuation_if_needed(state, turn, &candidate_text, effective_prompt)
+        {
             return CompletionFlow::Continue;
         }
 
@@ -152,7 +154,12 @@ impl AgentLoop {
         state: &mut ExecutionLoopState,
         turn: usize,
         candidate_text: &str,
+        effective_prompt: &str,
     ) -> bool {
+        if crate::tools::is_standalone_conversation(effective_prompt) {
+            return false;
+        }
+
         let looks_incomplete = Self::looks_incomplete(candidate_text);
         if looks_incomplete && state.repeated_incomplete_response(candidate_text) {
             tracing::warn!(

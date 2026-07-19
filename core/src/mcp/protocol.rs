@@ -172,8 +172,39 @@ pub struct InitializeResult {
 pub struct McpTool {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub input_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<McpToolAnnotations>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub icons: Vec<serde_json::Value>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+}
+
+/// Standard MCP tool behavior hints.
+///
+/// These fields remain untrusted hints. Hosts may use them to request more
+/// confirmation, but never to weaken an existing permission policy.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolAnnotations {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
+    #[serde(flatten)]
+    pub additional: HashMap<String, serde_json::Value>,
 }
 
 /// List tools result
@@ -221,12 +252,17 @@ pub struct ResourceContent {
 }
 
 /// Call tool result
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallToolResult {
+    #[serde(default)]
     pub content: Vec<ToolContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<serde_json::Value>,
     #[serde(default)]
     pub is_error: bool,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
 }
 
 // ============================================================================

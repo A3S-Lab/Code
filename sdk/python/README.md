@@ -24,11 +24,11 @@ Air-gapped or hermetic install? Grab the wheel matching your
 interpreter directly:
 
 ```bash
-VERSION=5.3.5  # replace with the release version you are installing
-PYTAG=cp312-cp312-manylinux_2_28_x86_64
 pip install \
-  "https://github.com/A3S-Lab/Code/releases/download/v${VERSION}/a3s_code-${VERSION}-${PYTAG}.whl"
+  'https://github.com/A3S-Lab/Code/releases/download/v<VERSION>/a3s_code-<VERSION>-cp312-cp312-manylinux_2_28_x86_64.whl'
 ```
+
+Replace `<VERSION>` with the release to install, for example `6.0.0`.
 
 ## Quick Start
 

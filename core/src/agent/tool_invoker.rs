@@ -83,6 +83,11 @@ impl ScopedToolInvoker {
                 tool_name: &invocation.name,
                 args: &invocation.args,
                 pre_tool_block,
+                tool_requires_confirmation: self
+                    .agent
+                    .tool_executor
+                    .registry()
+                    .requires_confirmation(&invocation.name, &invocation.args),
             })
             .await
     }
@@ -395,7 +400,11 @@ impl ToolInvoker for ScopedToolInvoker {
     }
 
     fn available_tools(&self) -> Vec<String> {
-        self.agent.tool_executor.registry().list()
+        let mut tools = self.agent.tool_executor.registry().list();
+        if let Some(permission_checker) = &self.agent.config.permission_checker {
+            tools.retain(|tool| permission_checker.expose_to_model(tool));
+        }
+        tools
     }
 
     fn capabilities(&self, name: &str, args: &serde_json::Value) -> Option<ToolCapabilities> {
