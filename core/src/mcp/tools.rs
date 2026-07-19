@@ -2,8 +2,9 @@
 //!
 //! Integrates MCP tools with the A3S Code tool system.
 
-use crate::mcp::manager::{tool_result_to_string, McpManager};
+use crate::mcp::manager::McpManager;
 use crate::mcp::protocol::McpTool;
+use crate::mcp::result::project_tool_result;
 use crate::tools::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -44,6 +45,54 @@ impl McpToolWrapper {
     }
 }
 
+fn annotation_requires_confirmation(tool: &McpTool) -> bool {
+    let Some(annotations) = tool.annotations.as_ref() else {
+        // Missing behavior metadata is unknown, not read-only.
+        return true;
+    };
+
+    if annotations.destructive_hint == Some(true)
+        || annotations.read_only_hint != Some(true)
+        || annotations.open_world_hint != Some(false)
+    {
+        return true;
+    }
+
+    annotations
+        .additional
+        .iter()
+        .any(|(key, value)| custom_risk_requires_confirmation(key, value))
+        || tool.meta.as_ref().is_some_and(|meta| {
+            meta.as_object().is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|(key, value)| custom_risk_requires_confirmation(key, value))
+            })
+        })
+}
+
+fn custom_risk_requires_confirmation(key: &str, value: &serde_json::Value) -> bool {
+    let key = key.to_ascii_lowercase();
+    if !matches!(
+        key.as_str(),
+        "x-a3s-risk" | "a3s/risk" | "a3s.risk" | "risk"
+    ) {
+        return false;
+    }
+
+    match value {
+        serde_json::Value::String(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "read" | "read_only" | "read-only" | "routine" | "closed_world_read"
+        ),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| custom_risk_requires_confirmation(key.as_str(), value)),
+        // A declared but malformed risk value cannot reduce confirmation.
+        _ => true,
+    }
+}
+
 #[async_trait]
 impl Tool for McpToolWrapper {
     fn name(&self) -> &str {
@@ -58,7 +107,11 @@ impl Tool for McpToolWrapper {
         self.mcp_tool.input_schema.clone()
     }
 
-    async fn execute(&self, args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+    fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
+        annotation_requires_confirmation(&self.mcp_tool)
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         // Call the MCP tool through the manager
         let result = self
             .manager
@@ -66,14 +119,7 @@ impl Tool for McpToolWrapper {
             .await;
 
         match result {
-            Ok(tool_result) => {
-                let output = tool_result_to_string(&tool_result);
-                if tool_result.is_error {
-                    Ok(ToolOutput::error(output))
-                } else {
-                    Ok(ToolOutput::success(output))
-                }
-            }
+            Ok(tool_result) => project_tool_result(&self.full_name, &tool_result, ctx).await,
             Err(e) => Ok(ToolOutput::error(format!("MCP tool error: {}", e))),
         }
     }
@@ -100,12 +146,16 @@ pub fn create_mcp_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::protocol::McpToolAnnotations;
+    use crate::tools::Tool;
+    use std::collections::HashMap;
 
     #[test]
     fn test_mcp_tool_wrapper_name() {
         let manager = Arc::new(McpManager::new());
         let mcp_tool = McpTool {
             name: "create_issue".to_string(),
+            title: None,
             description: Some("Create a GitHub issue".to_string()),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -113,6 +163,10 @@ mod tests {
                     "title": {"type": "string"}
                 }
             }),
+            output_schema: None,
+            annotations: None,
+            icons: Vec::new(),
+            meta: None,
         };
 
         let wrapper = McpToolWrapper::new("github".to_string(), mcp_tool, manager);
@@ -129,13 +183,23 @@ mod tests {
         let tools = vec![
             McpTool {
                 name: "tool1".to_string(),
+                title: None,
                 description: Some("Tool 1".to_string()),
                 input_schema: serde_json::json!({}),
+                output_schema: None,
+                annotations: None,
+                icons: Vec::new(),
+                meta: None,
             },
             McpTool {
                 name: "tool2".to_string(),
+                title: None,
                 description: Some("Tool 2".to_string()),
                 input_schema: serde_json::json!({}),
+                output_schema: None,
+                annotations: None,
+                icons: Vec::new(),
+                meta: None,
             },
         ];
 
@@ -144,5 +208,71 @@ mod tests {
         assert_eq!(wrappers.len(), 2);
         assert_eq!(wrappers[0].name(), "mcp__test__tool1");
         assert_eq!(wrappers[1].name(), "mcp__test__tool2");
+    }
+
+    fn annotated_tool(annotations: Option<McpToolAnnotations>) -> McpTool {
+        McpTool {
+            name: "fixture".to_string(),
+            title: None,
+            description: None,
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: None,
+            annotations,
+            icons: Vec::new(),
+            meta: None,
+        }
+    }
+
+    #[test]
+    fn closed_world_read_only_annotation_does_not_escalate_confirmation() {
+        let manager = Arc::new(McpManager::new());
+        let wrapper = McpToolWrapper::new(
+            "use_fixture".to_string(),
+            annotated_tool(Some(McpToolAnnotations {
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+                open_world_hint: Some(false),
+                ..Default::default()
+            })),
+            manager,
+        );
+
+        assert!(!wrapper.requires_confirmation(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn unknown_open_world_mutating_and_submit_tools_escalate_confirmation() {
+        let cases = [
+            None,
+            Some(McpToolAnnotations {
+                read_only_hint: Some(true),
+                open_world_hint: Some(true),
+                ..Default::default()
+            }),
+            Some(McpToolAnnotations {
+                read_only_hint: Some(false),
+                open_world_hint: Some(false),
+                ..Default::default()
+            }),
+            Some(McpToolAnnotations {
+                read_only_hint: Some(true),
+                open_world_hint: Some(false),
+                additional: HashMap::from([(
+                    "x-a3s-risk".to_string(),
+                    serde_json::json!("submit"),
+                )]),
+                ..Default::default()
+            }),
+        ];
+
+        for annotations in cases {
+            let wrapper = McpToolWrapper::new(
+                "use_fixture".to_string(),
+                annotated_tool(annotations),
+                Arc::new(McpManager::new()),
+            );
+            assert!(wrapper.requires_confirmation(&serde_json::json!({})));
+        }
     }
 }

@@ -167,8 +167,9 @@ impl LanguageRuntime {
             workspace_folders.clone(),
             WorkspaceSettings::new(profile.workspace_settings(&canonical_root, &layout)),
         ));
+        let launch = profile.launch(&canonical_root, &layout).await;
         let process =
-            LspProcess::spawn(profile.command(), &canonical_root, router).map_err(|source| {
+            LspProcess::spawn(&launch.command, &canonical_root, router).map_err(|source| {
                 LanguageRuntimeError::Process {
                     operation: "start",
                     source,
@@ -195,9 +196,8 @@ impl LanguageRuntime {
             Arc::clone(&diagnostic_updates),
         ));
 
-        let initialization_options = profile.initialization_options(&canonical_root, &layout);
         let initialization_options =
-            (!initialization_options.is_null()).then_some(initialization_options);
+            (!launch.initialization_options.is_null()).then_some(launch.initialization_options);
         let config = InitializeConfig::new(
             root_url,
             workspace_folders,

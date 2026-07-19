@@ -64,6 +64,39 @@ const PROGRAM_TERMS: &[&str] = &[
 
 const MCP_TERMS: &[&str] = &["mcp", "external tool", "external server", "外部工具"];
 
+const STANDALONE_CONVERSATION: &[&str] = &[
+    "hi",
+    "hi there",
+    "hello",
+    "hello there",
+    "hey",
+    "greetings",
+    "good morning",
+    "good afternoon",
+    "good evening",
+    "how are you",
+    "how's it going",
+    "hows it going",
+    "what's up",
+    "whats up",
+    "thanks",
+    "thank you",
+    "你好",
+    "您好",
+    "嗨",
+    "哈喽",
+    "哈啰",
+    "早",
+    "早上好",
+    "上午好",
+    "下午好",
+    "晚上好",
+    "在吗",
+    "你好吗",
+    "谢谢",
+    "多谢",
+];
+
 /// Select the tools that should be exposed to the model for this turn.
 ///
 /// The executor still owns every registered tool. This function only trims the
@@ -78,7 +111,7 @@ pub fn select_tools_for_messages(
 }
 
 pub fn select_tools_for_prompt(tools: &[ToolDefinition], prompt: &str) -> Vec<ToolDefinition> {
-    if tools.is_empty() {
+    if tools.is_empty() || is_standalone_conversation(prompt) {
         return Vec::new();
     }
 
@@ -112,6 +145,32 @@ pub fn select_tools_for_prompt(tools: &[ToolDefinition], prompt: &str) -> Vec<To
     }
 
     selected
+}
+
+/// Return whether a prompt is only a short conversational acknowledgement.
+///
+/// This is deliberately exact after whitespace and terminal-punctuation
+/// normalization. A greeting that also contains an action must retain the
+/// ordinary tool surface.
+pub(crate) fn is_standalone_conversation(prompt: &str) -> bool {
+    let normalized = prompt
+        .trim()
+        .trim_matches(is_conversational_boundary)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    STANDALONE_CONVERSATION.contains(&normalized.as_str())
+}
+
+fn is_conversational_boundary(character: char) -> bool {
+    character.is_ascii_punctuation()
+        || character.is_whitespace()
+        || matches!(
+            character,
+            '。' | '，' | '、' | '！' | '？' | '…' | '～' | '👋'
+        )
 }
 
 fn should_include_mcp_tool(
@@ -262,6 +321,38 @@ mod tests {
         assert!(!names.contains(&"batch"));
         assert!(!names.contains(&"program"));
         assert!(!names.contains(&"mcp__github__create_issue"));
+    }
+
+    #[test]
+    fn standalone_greetings_do_not_expose_tools() {
+        let tools = defs(&["read", "grep", "bash", "web_search", "task"]);
+
+        for prompt in [
+            "hi",
+            "Hello!",
+            "how are you?",
+            "你好",
+            "您好！",
+            "在吗？",
+            "谢谢",
+        ] {
+            assert!(
+                select_tools_for_prompt(&tools, prompt).is_empty(),
+                "standalone greeting exposed tools: {prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn greeting_with_an_action_keeps_relevant_tools() {
+        let selected = select_tools_for_prompt(
+            &defs(&["read", "grep", "web_search"]),
+            "Hello! Inspect this repository for the parser implementation.",
+        );
+        let names: Vec<_> = selected.iter().map(|tool| tool.name.as_str()).collect();
+
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"grep"));
     }
 
     #[test]

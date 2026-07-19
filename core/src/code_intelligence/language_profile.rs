@@ -26,6 +26,19 @@ pub(crate) struct LanguageServerCommand {
     pub(crate) env: BTreeMap<OsString, OsString>,
 }
 
+/// Process command and initialization payload resolved for one workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LanguageServerLaunch {
+    pub(crate) command: LanguageServerCommand,
+    pub(crate) initialization_options: Value,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LaunchResolution {
+    Static,
+    WorkspaceTypeScript,
+}
+
 impl LanguageServerCommand {
     fn new(
         program: impl Into<PathBuf>,
@@ -45,6 +58,7 @@ pub(crate) struct LanguageServerProfile {
     id: ProjectLanguageProfile,
     topology: ServerTopology,
     command: LanguageServerCommand,
+    launch_resolution: LaunchResolution,
     initialization_settle_delay: Duration,
     navigation_settle_delay: Duration,
 }
@@ -55,6 +69,7 @@ impl LanguageServerProfile {
             id: ProjectLanguageProfile::Rust,
             topology: ServerTopology::MultiFolder,
             command: LanguageServerCommand::new(program, std::iter::empty::<OsString>()),
+            launch_resolution: LaunchResolution::Static,
             initialization_settle_delay: DEFAULT_INITIALIZATION_SETTLE_DELAY,
             navigation_settle_delay: DEFAULT_NAVIGATION_SETTLE_DELAY,
         }
@@ -65,6 +80,7 @@ impl LanguageServerProfile {
             id: ProjectLanguageProfile::TypeScriptJavaScript,
             topology: ServerTopology::MultiFolder,
             command: LanguageServerCommand::new(program, ["--stdio"]),
+            launch_resolution: LaunchResolution::Static,
             initialization_settle_delay: DEFAULT_INITIALIZATION_SETTLE_DELAY,
             navigation_settle_delay: DEFAULT_NAVIGATION_SETTLE_DELAY,
         }
@@ -73,8 +89,14 @@ impl LanguageServerProfile {
     pub(crate) fn built_in_defaults() -> Vec<Self> {
         vec![
             Self::rust("rust-analyzer"),
-            Self::typescript_javascript("typescript-language-server"),
+            Self::typescript_javascript("typescript-language-server")
+                .with_workspace_typescript_resolution(),
         ]
+    }
+
+    fn with_workspace_typescript_resolution(mut self) -> Self {
+        self.launch_resolution = LaunchResolution::WorkspaceTypeScript;
+        self
     }
 
     pub(crate) fn id(&self) -> ProjectLanguageProfile {
@@ -86,8 +108,32 @@ impl LanguageServerProfile {
         self.topology
     }
 
+    #[cfg(test)]
     pub(crate) fn command(&self) -> &LanguageServerCommand {
         &self.command
+    }
+
+    /// Resolve a project-local TypeScript runtime without assuming that a
+    /// monorepo hoists its SDK to the served workspace root. Classic SDKs are
+    /// pinned through `tsserver.path`; TypeScript 7+ uses its native LSP mode.
+    pub(crate) async fn launch(
+        &self,
+        canonical_root: &Path,
+        layout: &ProjectLayout,
+    ) -> LanguageServerLaunch {
+        if self.launch_resolution == LaunchResolution::WorkspaceTypeScript {
+            if let Some(launch) = self
+                .workspace_typescript_launch(canonical_root, layout)
+                .await
+            {
+                return launch;
+            }
+        }
+
+        LanguageServerLaunch {
+            command: self.command.clone(),
+            initialization_options: self.initialization_options(canonical_root, layout),
+        }
     }
 
     pub(crate) fn initialization_settle_delay(&self) -> Duration {
@@ -203,16 +249,134 @@ impl LanguageServerProfile {
             })
             .collect()
     }
+
+    async fn workspace_typescript_launch(
+        &self,
+        canonical_root: &Path,
+        layout: &ProjectLayout,
+    ) -> Option<LanguageServerLaunch> {
+        for search_root in self.typescript_search_roots(canonical_root, layout) {
+            for package_root in typescript_package_roots(&search_root) {
+                let lib = package_root.join("lib");
+                let tsserver = lib.join("tsserver.js");
+                if is_file(&tsserver).await {
+                    return Some(LanguageServerLaunch {
+                        command: self.command.clone(),
+                        initialization_options: json!({
+                            "tsserver": {
+                                "path": protocol_path(&tsserver),
+                            },
+                        }),
+                    });
+                }
+
+                let native_entry = lib.join("tsc.js");
+                if is_file(&native_entry).await
+                    && typescript_major_version(&package_root)
+                        .await
+                        .is_some_and(|major| major >= 7)
+                {
+                    return Some(LanguageServerLaunch {
+                        command: LanguageServerCommand::new(
+                            "node",
+                            [
+                                native_entry.into_os_string(),
+                                OsString::from("--lsp"),
+                                OsString::from("--stdio"),
+                            ],
+                        ),
+                        initialization_options: Value::Null,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    fn typescript_search_roots(
+        &self,
+        canonical_root: &Path,
+        layout: &ProjectLayout,
+    ) -> Vec<PathBuf> {
+        let project_directories = self
+            .project_roots(layout)
+            .into_iter()
+            .map(|root| {
+                if root.is_root() {
+                    canonical_root.to_path_buf()
+                } else {
+                    canonical_root.join(root.as_str())
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut roots = Vec::new();
+        let mut seen = BTreeSet::new();
+
+        // Prefer each package's own SDK before considering any hoisted SDK.
+        for directory in &project_directories {
+            push_unique_path(&mut roots, &mut seen, directory.clone());
+        }
+        for directory in project_directories {
+            let mut ancestor = directory.parent();
+            while let Some(candidate) = ancestor.filter(|path| path.starts_with(canonical_root)) {
+                push_unique_path(&mut roots, &mut seen, candidate.to_path_buf());
+                if candidate == canonical_root {
+                    break;
+                }
+                ancestor = candidate.parent();
+            }
+        }
+        roots
+    }
+}
+
+fn typescript_package_roots(search_root: &Path) -> [PathBuf; 3] {
+    [
+        search_root.join("node_modules/typescript"),
+        search_root.join(".yarn/sdks/typescript"),
+        search_root.join(".vscode/pnpify/typescript"),
+    ]
+}
+
+fn push_unique_path(target: &mut Vec<PathBuf>, seen: &mut BTreeSet<PathBuf>, path: PathBuf) {
+    if seen.insert(path.clone()) {
+        target.push(path);
+    }
+}
+
+async fn is_file(path: &Path) -> bool {
+    tokio::fs::metadata(path)
+        .await
+        .is_ok_and(|metadata| metadata.is_file())
+}
+
+async fn typescript_major_version(package_root: &Path) -> Option<u64> {
+    let package = tokio::fs::read_to_string(package_root.join("package.json"))
+        .await
+        .ok()?;
+    let package: Value = serde_json::from_str(&package).ok()?;
+    package
+        .get("version")?
+        .as_str()?
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn protocol_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LanguageServerProfile, ServerTopology};
+    use super::{protocol_path, LanguageServerProfile, ServerTopology};
     use crate::code_intelligence::project_layout::ProjectLayoutResolver;
     use crate::workspace::{
         LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifestSnapshot,
     };
-    use serde_json::json;
+    use serde_json::{json, Value};
+    use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
     fn file(path: &str) -> LocalWorkspaceFile {
@@ -255,6 +419,114 @@ mod tests {
         assert_eq!(web.command().args, ["--stdio"]);
         assert!(web.supports_path(Path::new("src/main.tsx")));
         assert!(web.supports_path(Path::new("src/main.jsx")));
+    }
+
+    #[tokio::test]
+    async fn built_in_typescript_uses_nested_classic_sdk() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let package = workspace.path().join("apps/web/node_modules/typescript");
+        tokio::fs::create_dir_all(package.join("lib"))
+            .await
+            .expect("create TypeScript SDK");
+        tokio::fs::write(package.join("lib/tsserver.js"), "")
+            .await
+            .expect("write tsserver entry");
+        tokio::fs::write(package.join("package.json"), r#"{"version":"5.9.3"}"#)
+            .await
+            .expect("write TypeScript package");
+        let profile = LanguageServerProfile::built_in_defaults()
+            .pop()
+            .expect("TypeScript profile");
+
+        let launch = profile
+            .launch(
+                workspace.path(),
+                &layout(&["apps/web/package.json", "apps/web/tsconfig.json"]),
+            )
+            .await;
+
+        assert_eq!(
+            launch.command.program,
+            PathBuf::from("typescript-language-server")
+        );
+        assert_eq!(launch.command.args, ["--stdio"]);
+        assert_eq!(
+            launch.initialization_options,
+            json!({
+                "tsserver": {
+                    "path": protocol_path(&package.join("lib/tsserver.js")),
+                },
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn built_in_typescript_uses_nested_native_sdk() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let package = workspace.path().join("apps/web/node_modules/typescript");
+        tokio::fs::create_dir_all(package.join("lib"))
+            .await
+            .expect("create TypeScript SDK");
+        tokio::fs::write(package.join("lib/tsc.js"), "")
+            .await
+            .expect("write native TypeScript entry");
+        tokio::fs::write(package.join("package.json"), r#"{"version":"7.0.2"}"#)
+            .await
+            .expect("write TypeScript package");
+        let profile = LanguageServerProfile::built_in_defaults()
+            .pop()
+            .expect("TypeScript profile");
+
+        let launch = profile
+            .launch(
+                workspace.path(),
+                &layout(&["apps/web/package.json", "apps/web/tsconfig.json"]),
+            )
+            .await;
+
+        assert_eq!(launch.command.program, PathBuf::from("node"));
+        assert_eq!(
+            launch.command.args,
+            [
+                package.join("lib/tsc.js").into_os_string(),
+                OsString::from("--lsp"),
+                OsString::from("--stdio"),
+            ]
+        );
+        assert_eq!(launch.initialization_options, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn workspace_typescript_prefers_package_sdk_over_hoisted_sdk() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let hoisted = workspace.path().join("node_modules/typescript");
+        let local = workspace.path().join("packages/ui/node_modules/typescript");
+        for package in [&hoisted, &local] {
+            tokio::fs::create_dir_all(package.join("lib"))
+                .await
+                .expect("create TypeScript SDK");
+            tokio::fs::write(package.join("lib/tsserver.js"), "")
+                .await
+                .expect("write tsserver entry");
+            tokio::fs::write(package.join("package.json"), r#"{"version":"5.9.3"}"#)
+                .await
+                .expect("write TypeScript package");
+        }
+        let profile = LanguageServerProfile::built_in_defaults()
+            .pop()
+            .expect("TypeScript profile");
+
+        let launch = profile
+            .launch(
+                workspace.path(),
+                &layout(&["apps/web/package.json", "packages/ui/package.json"]),
+            )
+            .await;
+
+        assert_eq!(
+            launch.initialization_options["tsserver"]["path"],
+            protocol_path(&local.join("lib/tsserver.js"))
+        );
     }
 
     #[test]
