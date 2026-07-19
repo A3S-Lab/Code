@@ -4,6 +4,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [5.3.6] - 2026-07-19
+
+### Changed
+
+- Updated the bundled Core with expanded TypeScript language profiles, PDF
+  fetching, invariant-safe session forks, typed MCP results and artifacts,
+  delegated permission boundaries, and tool-free standalone greetings.
+
 ## [5.3.5] - 2026-07-17
 
 ### Changed

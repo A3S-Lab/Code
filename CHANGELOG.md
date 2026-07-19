@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.6] - 2026-07-19
+
 ### Added
 
+- Expanded TypeScript code-intelligence discovery for nested monorepos,
+  hoisted and Yarn SDKs, classic `tsserver`, and the TypeScript 7 native LSP.
+- Added bounded PDF text extraction to `web_fetch`, including media/signature
+  detection, normalized metadata, malformed-document errors, and image-only
+  document handling.
 - Added an invariant-checked session snapshot fork operation that rebinds the
   session, workspace, run ownership, and subagent parent ownership while
   preserving the complete persisted generation.
