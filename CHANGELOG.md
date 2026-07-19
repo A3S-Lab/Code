@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output schemas, annotations, icons, `_meta`, `structuredContent`, decoded
   images, embedded resources, and bounded content-addressed artifacts.
 
+### Fixed
+
+- Kept standalone conversational greetings tool-free and prevented them from
+  triggering synthetic continuation turns, while retaining the normal tool
+  surface for greetings that also contain an action request.
+
 ### Security
 
 - Made MCP confirmation annotations escalation-only: tool metadata can require
