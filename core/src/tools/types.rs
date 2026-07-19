@@ -663,6 +663,16 @@ pub trait Tool: Send + Sync {
         ToolCapabilities::conservative()
     }
 
+    /// Whether tool-owned metadata requires this invocation to pass through
+    /// HITL even when the host permission policy would otherwise allow it.
+    ///
+    /// This is an escalation-only hint. The invocation gateway still applies
+    /// the host permission policy first, so a tool can never use this hook to
+    /// weaken an `Ask` or `Deny` decision.
+    fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
+        false
+    }
+
     /// Execute the tool with given arguments
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput>;
 }

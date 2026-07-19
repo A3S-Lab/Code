@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an invariant-checked session snapshot fork operation that rebinds the
   session, workspace, run ownership, and subagent parent ownership while
   preserving the complete persisted generation.
+- Preserved standard MCP tool metadata and call results end to end, including
+  output schemas, annotations, icons, `_meta`, `structuredContent`, decoded
+  images, embedded resources, and bounded content-addressed artifacts.
+
+### Security
+
+- Made MCP confirmation annotations escalation-only: tool metadata can require
+  HITL but cannot weaken a host Allow/Ask/Deny decision.
+- Allowed an explicitly scoped delegated worker to see a parent-hidden tool
+  while keeping both parent and worker execution policies authoritative.
 
 ## [5.3.5] - 2026-07-17
 

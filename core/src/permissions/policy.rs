@@ -187,6 +187,20 @@ impl PermissionPolicy {
 
         result
     }
+
+    /// Whether this policy explicitly declares that a tool may be considered
+    /// through an Allow or Ask rule.
+    ///
+    /// This ignores argument patterns and does not authorize execution. It is
+    /// used when composing parent and delegated-worker visibility: an explicit
+    /// worker capability can override a parent host's ordinary model hiding,
+    /// while execution-time checks from both scopes remain authoritative.
+    pub fn declares_tool_access(&self, tool_name: &str) -> bool {
+        self.allow
+            .iter()
+            .chain(&self.ask)
+            .any(|rule| rule.matches_tool(tool_name))
+    }
 }
 
 impl PermissionChecker for PermissionPolicy {
@@ -214,10 +228,7 @@ impl PermissionChecker for PermissionPolicy {
         // at least one Allow or Ask rule can match. Argument patterns are
         // intentionally ignored here; execution-time checks remain
         // authoritative for the actual arguments.
-        self.allow
-            .iter()
-            .chain(&self.ask)
-            .any(|rule| rule.matches_tool(tool_name))
+        self.declares_tool_access(tool_name)
     }
 
     fn check(&self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
