@@ -261,7 +261,7 @@ fn supported_srt_version_range_is_explicit() {
 
 #[cfg(unix)]
 #[test]
-fn discovered_installation_uses_the_expected_package_manifest_and_cli() {
+fn verified_installation_uses_the_expected_package_manifest_and_cli() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -303,6 +303,16 @@ fn workspace_cannot_supply_the_sandbox_executable() {
 
     let error = SrtBashSandbox::new(&binary, workspace.path()).unwrap_err();
     assert!(error.to_string().contains("inside the active workspace"));
+}
+
+#[test]
+fn sandbox_runtime_requires_an_explicit_path() {
+    let workspace = tempfile::tempdir().unwrap();
+    let error = SrtBashSandbox::new("srt", workspace.path()).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "an explicit SRT executable path is required; PATH discovery is unsupported"
+    );
 }
 
 #[test]

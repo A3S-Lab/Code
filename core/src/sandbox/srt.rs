@@ -21,7 +21,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_WORKSPACE_SCAN_ENTRIES: usize = 1_000_000;
 const MAX_WORKSPACE_SCAN_DEPTH: usize = 64;
 const MAX_WORKSPACE_HARDLINK_DENIES: usize = 4_096;
-/// npm package accepted by the verified SRT discovery path.
+/// npm package accepted by the verified SRT constructor.
 pub const SRT_NPM_PACKAGE_NAME: &str = "@anthropic-ai/sandbox-runtime";
 /// Exact SRT version provisioned by the current A3S CLI managed-runtime path.
 ///
@@ -47,6 +47,10 @@ pub struct SrtBashSandbox {
 impl SrtBashSandbox {
     /// Build an adapter from an explicit `srt` executable.
     pub fn new(binary: impl Into<PathBuf>, workspace: impl Into<PathBuf>) -> Result<Self> {
+        let binary = binary.into();
+        if binary.components().count() == 1 {
+            bail!("an explicit SRT executable path is required; PATH discovery is unsupported");
+        }
         let workspace = workspace
             .into()
             .canonicalize()
@@ -54,7 +58,7 @@ impl SrtBashSandbox {
         if !workspace.is_dir() {
             bail!("SRT workspace is not a directory: {}", workspace.display());
         }
-        let binary = resolve_executable(binary.into(), Some(&workspace))?;
+        let binary = resolve_executable(binary, Some(&workspace))?;
         if binary.starts_with(&workspace) {
             bail!(
                 "refusing to trust an SRT executable from inside the active workspace: {}",
@@ -66,24 +70,6 @@ impl SrtBashSandbox {
             .transpose()
             .context("failed to resolve a trusted Node.js launcher for SRT")?;
         Self::from_resolved(binary, node, workspace)
-    }
-
-    /// Discover a compatible npm-distributed `srt` on `PATH`.
-    ///
-    /// Missing executables return `Ok(None)` so the host can retain its
-    /// approval boundary without silently running on the host. A discovered
-    /// executable must resolve to the expected package and a tested pre-1.0
-    /// version; embedders that intentionally supply another implementation can
-    /// construct it explicitly with [`Self::new`].
-    pub fn discover(workspace: impl Into<PathBuf>) -> Result<Option<Self>> {
-        let workspace = workspace.into();
-        let canonical_workspace = workspace
-            .canonicalize()
-            .context("failed to canonicalize the SRT workspace")?;
-        let Some(binary) = find_executable_on_path("srt", Some(&canonical_workspace)) else {
-            return Ok(None);
-        };
-        Self::from_verified_npm(binary, canonical_workspace).map(Some)
     }
 
     /// Build an adapter from a compatible npm installation at an exact path.
@@ -437,19 +423,23 @@ fn node_script(path: &Path) -> bool {
 
 fn resolve_executable(binary: PathBuf, excluded_root: Option<&Path>) -> Result<PathBuf> {
     let candidate = if binary.components().count() == 1 {
-        find_executable_on_path(&binary, excluded_root)
-            .ok_or_else(|| anyhow!("SRT executable was not found on PATH: {}", binary.display()))?
+        find_executable_on_path(&binary, excluded_root).ok_or_else(|| {
+            anyhow!(
+                "required executable was not found on PATH: {}",
+                binary.display()
+            )
+        })?
     } else {
         binary
     };
     let candidate = candidate
         .canonicalize()
-        .with_context(|| format!("failed to resolve SRT executable {}", candidate.display()))?;
+        .with_context(|| format!("failed to resolve executable {}", candidate.display()))?;
     if !candidate.is_file() {
-        bail!("SRT executable is not a file: {}", candidate.display());
+        bail!("executable is not a file: {}", candidate.display());
     }
     if !is_executable(&candidate) {
-        bail!("SRT executable is not executable: {}", candidate.display());
+        bail!("executable is not executable: {}", candidate.display());
     }
     if excluded_root.is_some_and(|root| candidate.starts_with(root)) {
         bail!(

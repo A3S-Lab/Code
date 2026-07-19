@@ -295,9 +295,10 @@ language/bootstrap injection variables. It keeps stdout and stderr distinct
 under one global capture limit. Its deadline covers output draining and the
 child's complete lifetime, including a process that closes both streams before
 it exits; timeout or cancellation terminates the Unix process group. It never
-falls back to the host runner when `srt` is missing or fails. The embedding
-host remains responsible for choosing whether an unavailable sandbox causes
-an interactive escalation or a deterministic denial.
+searches `PATH` for a sandbox runtime and never falls back to the host runner
+when its explicitly provisioned runtime is missing or fails. The embedding host
+remains responsible for choosing whether an unavailable sandbox causes an
+interactive escalation or a deterministic denial.
 
 Shell isolation does not automatically govern in-process workspace tools.
 Interactive hosts should construct `LocalWorkspaceBackend` or
@@ -312,12 +313,12 @@ NUL-delimited format and regenerates output only for allowed paths; option-like
 revision input cannot become a Git flag, and displayed remote URLs omit
 embedded HTTP credentials and query tokens.
 
-Hosts may use `discover` for a compatible npm installation on `PATH`, or
-`from_verified_npm_with_node` when a lifecycle owner supplies exact SRT and Node
-paths. Both verified constructors require the expected npm package identity and
-a tested SRT version. The A3S CLI uses the exact-path form after validating and,
-when policy allows, preparing its user-wide managed installation; Core does not
-install host software.
+Hosts use `from_verified_npm_with_node` when a lifecycle owner supplies exact
+SRT and Node paths. The verified constructor requires the expected npm package
+identity and a tested SRT version; `new` likewise requires an explicit path for
+an intentionally supplied custom adapter. The A3S CLI uses the verified
+exact-path form after validating and, when policy allows, preparing its
+user-wide managed installation; Core does not install host software.
 
 This adapter is a low-latency local enforcement provider, not the stack-wide
 workload contract. Code owns agent permission and escalation policy, A3S
