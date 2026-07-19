@@ -38,11 +38,7 @@ impl ScopedToolInvoker {
         }
     }
 
-    async fn decide_gate(
-        &self,
-        invocation: &ToolInvocation,
-        ctx: &ToolContext,
-    ) -> ToolGateDecision {
+    async fn decide_gate(&self, invocation: &ToolInvocation) -> ToolGateDecision {
         let pre_tool_block = match self
             .agent
             .fire_pre_tool_use(
@@ -58,9 +54,10 @@ impl ScopedToolInvoker {
         };
 
         let host_direct_policy = match invocation.origin {
-            InvocationOrigin::HostDirect(policy) => Some(policy),
-            InvocationOrigin::Nested => ctx.host_direct_policy(),
-            InvocationOrigin::Agent => None,
+            InvocationOrigin::HostDirect(policy) | InvocationOrigin::HostDirectNested(policy) => {
+                Some(policy)
+            }
+            InvocationOrigin::Nested | InvocationOrigin::Agent => None,
         };
         if matches!(
             host_direct_policy,
@@ -131,24 +128,18 @@ impl ScopedToolInvoker {
                 {
                     let runtime =
                         ToolConfirmationRuntime::new(manager.as_ref(), self.event_tx.as_ref());
-                    let resolve = runtime.resolve(ToolConfirmationRequest {
-                        tool_id: &invocation.id,
-                        tool_name: &invocation.name,
-                        args: &invocation.args,
-                        timeout_ms,
-                        timeout_action,
-                    });
-                    let cancellation = ctx.cancellation_token();
-                    tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => {
-                            manager.cancel_all().await;
-                            ToolConfirmationResolution::Rejected {
-                                output: format!("Tool '{}' cancelled by caller", invocation.name),
-                            }
-                        }
-                        resolution = resolve => resolution,
-                    }
+                    runtime
+                        .resolve_with_cancellation(
+                            ToolConfirmationRequest {
+                                tool_id: &invocation.id,
+                                tool_name: &invocation.name,
+                                args: &invocation.args,
+                                timeout_ms,
+                                timeout_action,
+                            },
+                            &ctx.cancellation_token(),
+                        )
+                        .await
                 } else {
                     ToolConfirmationResolution::Rejected {
                         output: format!(
@@ -270,7 +261,7 @@ impl ScopedToolInvoker {
     }
 
     async fn emit_nested_tool_end(&self, invocation: &ToolInvocation, result: &ToolResult) {
-        if invocation.origin != InvocationOrigin::Nested {
+        if !invocation.origin.is_nested() {
             return;
         }
         if let Some(tx) = &self.event_tx {
@@ -361,12 +352,9 @@ impl ToolInvoker for ScopedToolInvoker {
         let decision = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
-                if let Some(manager) = self.agent.config.confirmation_manager.as_ref() {
-                    manager.cancel_all().await;
-                }
                 None
             }
-            decision = self.decide_gate(&invocation, &invocation_ctx) => Some(decision),
+            decision = self.decide_gate(&invocation) => Some(decision),
         };
         let normalized = match decision {
             Some(decision) => {
@@ -437,7 +425,7 @@ impl AgentLoop {
         let run_context =
             self.invocation_context(run_id, session_id, event_tx.clone(), cancel_token.clone());
         let ctx = run_context
-            .bind_tool_context(self.tool_context.clone())
+            .bind_tool_context(self.tool_context.clone().without_host_direct_policy())
             .with_tool_invoker(Arc::clone(&invoker));
         NormalizedToolResult::from_tool_result(invoker.invoke(invocation, &ctx).await)
     }

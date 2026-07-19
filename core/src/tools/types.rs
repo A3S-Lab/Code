@@ -223,6 +223,16 @@ pub struct ToolContext {
     pub command_env: Option<Arc<HashMap<String, String>>>,
     /// Host-provided workspace capabilities used by built-in tools.
     pub workspace_services: Arc<crate::workspace::WorkspaceServices>,
+    /// Permission boundary frozen by the agent run that owns this invocation.
+    ///
+    /// Child-run tools consult this value instead of the mutable session
+    /// configuration they were registered with.
+    pub(crate) run_permission_checker: Option<Arc<dyn crate::permissions::PermissionChecker>>,
+    /// Confirmation routing frozen by the agent run that owns this invocation.
+    pub(crate) run_confirmation_manager: Option<Arc<dyn crate::hitl::ConfirmationProvider>>,
+    /// Distinguishes an agent run that intentionally has no governance
+    /// provider from a plain low-level tool context that was never bound.
+    pub(crate) run_governance_bound: bool,
     /// Scoped invocation gateway installed by the agent runtime.
     pub(crate) tool_invoker: Option<Arc<dyn super::invocation::ToolInvoker>>,
     /// Per-run governed LLM facade for tools that perform model sub-calls.
@@ -253,6 +263,15 @@ impl std::fmt::Debug for ToolContext {
             .field("session_id", &self.session_id)
             .field("sandbox", &self.sandbox.is_some())
             .field("workspace_services", &self.workspace_services)
+            .field(
+                "has_run_permission_checker",
+                &self.run_permission_checker.is_some(),
+            )
+            .field(
+                "has_run_confirmation_manager",
+                &self.run_confirmation_manager.is_some(),
+            )
+            .field("run_governance_bound", &self.run_governance_bound)
             .field("has_tool_invoker", &self.tool_invoker.is_some())
             .field("has_llm_client", &self.llm_client.is_some())
             .field(
@@ -282,6 +301,9 @@ impl ToolContext {
             sandbox: None,
             command_env: None,
             workspace_services: crate::workspace::WorkspaceServices::local(workspace),
+            run_permission_checker: None,
+            run_confirmation_manager: None,
+            run_governance_bound: false,
             tool_invoker: None,
             llm_client: None,
             host_direct_policy: None,
@@ -355,6 +377,33 @@ impl ToolContext {
         self
     }
 
+    pub(crate) fn with_run_governance(
+        mut self,
+        permission_checker: Option<Arc<dyn crate::permissions::PermissionChecker>>,
+        confirmation_manager: Option<Arc<dyn crate::hitl::ConfirmationProvider>>,
+    ) -> Self {
+        self.run_permission_checker = permission_checker;
+        self.run_confirmation_manager = confirmation_manager;
+        self.run_governance_bound = true;
+        self
+    }
+
+    pub(crate) fn has_run_governance(&self) -> bool {
+        self.run_governance_bound
+    }
+
+    pub(crate) fn run_permission_checker(
+        &self,
+    ) -> Option<Arc<dyn crate::permissions::PermissionChecker>> {
+        self.run_permission_checker.clone()
+    }
+
+    pub(crate) fn run_confirmation_manager(
+        &self,
+    ) -> Option<Arc<dyn crate::hitl::ConfirmationProvider>> {
+        self.run_confirmation_manager.clone()
+    }
+
     /// Return the governed nested-invocation facade for this tool call.
     ///
     /// The facade is always constructible so tools can be tested with a plain
@@ -411,8 +460,28 @@ impl ToolContext {
         self
     }
 
-    pub(crate) fn host_direct_policy(&self) -> Option<super::invocation::HostDirectPolicy> {
-        self.host_direct_policy
+    pub(crate) fn without_host_direct_policy(mut self) -> Self {
+        self.host_direct_policy = None;
+        self
+    }
+
+    /// Construct a nested invocation for a built-in orchestrator.
+    ///
+    /// Only an explicit host-direct orchestration context propagates trusted
+    /// control-plane authority. Public custom tools use [`InvocationRuntime`],
+    /// whose `invoke_tool` method always creates an ordinary governed nested
+    /// invocation.
+    pub(crate) fn nested_tool_invocation(
+        &self,
+        name: impl Into<String>,
+        args: serde_json::Value,
+    ) -> super::invocation::ToolInvocation {
+        match self.host_direct_policy {
+            Some(policy) => {
+                super::invocation::ToolInvocation::host_direct_nested(name, args, policy)
+            }
+            None => super::invocation::ToolInvocation::nested(name, args),
+        }
     }
 
     pub(crate) fn enter_tool_invocation(

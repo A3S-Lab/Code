@@ -24,6 +24,8 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 const QUEUE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const RUN_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+const RUN_ABORT_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Bundle of `Arc`-shared session state needed to perform a graceful close
 /// from anywhere holding (a clone of) the handle.
@@ -47,6 +49,9 @@ pub(crate) struct SessionCloseHandle {
     /// Optional session-owned lane queue. Close first shuts it down to reject
     /// new work, then drains commands admitted before the close boundary.
     pub(crate) command_queue: Option<Arc<crate::session_lane_queue::SessionLaneQueue>>,
+    /// Single-flight run admission and the abort handles for any streaming
+    /// execution/forwarder tasks owned by the active lease.
+    pub(crate) run_admission: Arc<super::run_admission::RunAdmission>,
     /// Session-owned MCP source. Inherited/global managers are deliberately
     /// absent so closing one session cannot tear down shared connections.
     pub(crate) mcp_manager: Arc<crate::mcp::manager::McpManager>,
@@ -92,7 +97,9 @@ impl SessionCloseHandle {
     /// 6. Cancel pending HITL tool confirmations so blocked tool callers
     ///    receive a rejection instead of hanging.
     /// 7. Drain commands admitted before queue shutdown;
-    /// 8. Disconnect MCP servers owned by this session only.
+    /// 8. Settle the active stream, force-aborting its execution and forwarder
+    ///    after a bounded cooperative grace period;
+    /// 9. Disconnect MCP servers owned by this session only.
     pub(crate) async fn close(&self) {
         {
             let _mutation = self
@@ -156,7 +163,27 @@ impl SessionCloseHandle {
             }
         }
 
-        // 7. Wait for any extension mutation admitted before `closed` was
+        // 7. Give the active operation a bounded cooperative grace period.
+        // If a streaming execution or a blocked event forwarder ignores
+        // cancellation, abort those concrete tasks while leaving the lifecycle
+        // supervisor alive to clear run state and release admission.
+        if !self.run_admission.wait_until_idle(RUN_CANCEL_GRACE).await {
+            if self.run_admission.abort_stream_workers() {
+                if !self.run_admission.wait_until_idle(RUN_ABORT_GRACE).await {
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        "Session streaming tasks did not settle after forced abortion"
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    "Session blocking run did not settle before close timeout"
+                );
+            }
+        }
+
+        // 8. Wait for any extension mutation admitted before `closed` was
         // flipped, then release only session-owned MCP resources. Removing all
         // configurations (not only connected clients) also cleans up a failed
         // add transaction. Agent-global and host-owned inherited managers have

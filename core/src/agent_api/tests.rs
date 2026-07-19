@@ -3150,6 +3150,117 @@ async fn test_session_confirmation_api_resolves_pending_request() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn session_close_rejects_and_clears_every_pending_confirmation() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let (event_tx, _) = tokio::sync::broadcast::channel(8);
+    let manager = Arc::new(crate::hitl::ConfirmationManager::new(
+        crate::hitl::ConfirmationPolicy::enabled(),
+        event_tx,
+    ));
+    let opts = SessionOptions::new().with_confirmation_manager(manager.clone());
+    let session = agent
+        .session_async("/tmp/test-workspace-close-confirmations", Some(opts))
+        .await
+        .unwrap();
+
+    let first = manager
+        .request_confirmation("tool-close-1", "bash", &serde_json::json!({}))
+        .await;
+    let second = manager
+        .request_confirmation("tool-close-2", "write", &serde_json::json!({}))
+        .await;
+    assert_eq!(session.pending_confirmations().await.len(), 2);
+
+    session.close().await;
+
+    for response in [first, second] {
+        let response = tokio::time::timeout(std::time::Duration::from_secs(1), response)
+            .await
+            .expect("session close must settle confirmations promptly")
+            .expect("confirmation sender must return a rejection");
+        assert!(!response.approved);
+        assert_eq!(response.reason.as_deref(), Some("Confirmation cancelled"));
+    }
+    assert!(session.pending_confirmations().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_close_settles_a_stream_blocked_on_confirmation() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let (event_tx, _) = tokio::sync::broadcast::channel(8);
+    let manager = Arc::new(crate::hitl::ConfirmationManager::new(
+        crate::hitl::ConfirmationPolicy::enabled()
+            .with_timeout(5_000, crate::hitl::TimeoutAction::Reject),
+        event_tx,
+    ));
+    let opts = SessionOptions::new()
+        .with_confirmation_manager(manager.clone())
+        .with_permission_policy(crate::permissions::PermissionPolicy::new());
+    let session = agent
+        .build_session(
+            "/tmp/test-close-stream-confirmation".into(),
+            Arc::new(ScriptedStreamingClient::new(vec![
+                scripted_tool_call_response(
+                    "tool-close-stream",
+                    "bash",
+                    serde_json::json!({"command": "echo must-not-run"}),
+                ),
+                scripted_text_response("must not continue"),
+            ])),
+            &opts,
+        )
+        .unwrap();
+
+    let (mut rx, handle) = session.stream("run a command", None).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while manager.pending_count().await != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the tool confirmation must become pending");
+    let run_id = session.current_run().await.unwrap().id().to_string();
+
+    session.close().await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+        .await
+        .expect("close must settle the stream lifecycle")
+        .expect("stream lifecycle must not panic");
+
+    let mut events = Vec::new();
+    while let Some(event) = rx.recv().await {
+        events.push(event);
+    }
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ConfirmationRequired {
+            tool_id,
+            tool_name,
+            ..
+        } if tool_id == "tool-close-stream" && tool_name == "bash"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ConfirmationReceived {
+            tool_id,
+            approved: false,
+            reason,
+        } if tool_id == "tool-close-stream"
+            && reason.as_deref() == Some("Confirmation cancelled")
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolExecutionStart { id, .. } if id == "tool-close-stream"
+    )));
+    assert_eq!(manager.pending_count().await, 0);
+    assert!(session.current_run().await.is_none());
+    assert_eq!(
+        session.run_snapshot(&run_id).await.unwrap().status,
+        crate::run::RunStatus::Cancelled
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_session_confirmation_api_without_manager_is_noop() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
@@ -5468,6 +5579,7 @@ async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
         "needs-parent-hitl",
         "Uses parent HITL for Ask decisions",
     )
+    .with_confirmation(crate::subagent::ConfirmationInheritance::InheritParent)
     .with_max_steps(3);
     let opts = SessionOptions::new()
         .with_llm_client(client)

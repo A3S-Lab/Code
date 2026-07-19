@@ -3648,6 +3648,8 @@ mod nested_tool_governance_tests {
         calls: Arc<AtomicUsize>,
     }
 
+    struct PublicRuntimeOrchestrator;
+
     struct ParallelSideEffectTool {
         calls: Arc<AtomicUsize>,
     }
@@ -3678,6 +3680,33 @@ mod nested_tool_governance_tests {
         ) -> anyhow::Result<ToolOutput> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(ToolOutput::success("delegated-side-effect-ok"))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for PublicRuntimeOrchestrator {
+        fn name(&self) -> &str {
+            "public_runtime_orchestrator"
+        }
+
+        fn description(&self) -> &str {
+            "Invokes a child through the public governed runtime"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "additionalProperties": false})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> anyhow::Result<ToolOutput> {
+            let result = ctx
+                .invocation_runtime()
+                .invoke_tool("side_effect", serde_json::json!({}))
+                .await?;
+            Ok(ToolOutput::success(result.output))
         }
     }
 
@@ -3789,6 +3818,180 @@ mod nested_tool_governance_tests {
             AgentLoop::new(client.clone(), executor, test_tool_context(), config),
             client,
         )
+    }
+
+    #[tokio::test]
+    async fn cancelling_one_invocation_settles_only_its_confirmation() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        executor.register_dynamic_tool(Arc::new(SideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        let (confirmation_events, _) = tokio::sync::broadcast::channel(8);
+        let confirmations = Arc::new(crate::hitl::ConfirmationManager::new(
+            crate::hitl::ConfirmationPolicy::enabled()
+                .with_timeout(5_000, crate::hitl::TimeoutAction::Reject),
+            confirmation_events,
+        ));
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            executor,
+            test_tool_context(),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "side_effect",
+                    decision: PermissionDecision::Ask,
+                })),
+                confirmation_manager: Some(confirmations.clone()),
+                ..Default::default()
+            },
+        );
+        let invoker = agent.scoped_tool_invoker(Some("confirmation-isolation"), &None);
+        let cancellation_a = tokio_util::sync::CancellationToken::new();
+        let cancellation_b = tokio_util::sync::CancellationToken::new();
+        let invocation_a = crate::tools::ToolInvocation::agent(
+            "confirmation-a",
+            "side_effect",
+            serde_json::json!({}),
+            Vec::new(),
+        );
+        let invocation_b = crate::tools::ToolInvocation::agent(
+            "confirmation-b",
+            "side_effect",
+            serde_json::json!({}),
+            Vec::new(),
+        );
+        let invoker_a = Arc::clone(&invoker);
+        let context_a = test_tool_context().with_cancellation(cancellation_a.clone());
+        let run_a = tokio::spawn(async move { invoker_a.invoke(invocation_a, &context_a).await });
+        let invoker_b = Arc::clone(&invoker);
+        let context_b = test_tool_context().with_cancellation(cancellation_b);
+        let run_b = tokio::spawn(async move { invoker_b.invoke(invocation_b, &context_b).await });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while confirmations.pending_count().await != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both confirmation requests must become pending");
+
+        cancellation_a.cancel();
+        let result_a = run_a.await.unwrap();
+        assert_ne!(result_a.exit_code, 0);
+        assert!(result_a.output.contains("cancelled by caller"));
+        let pending = confirmations.pending_confirmations().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, "confirmation-b");
+
+        confirmations
+            .confirm("confirmation-b", true, None)
+            .await
+            .unwrap();
+        let result_b = run_b.await.unwrap();
+        assert_eq!(result_b.exit_code, 0, "{}", result_b.output);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn trusted_host_batch_and_program_propagate_only_builtin_nested_authority() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        executor.register_dynamic_tool(Arc::new(SideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            executor,
+            test_tool_context(),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "side_effect",
+                    decision: PermissionDecision::Deny,
+                })),
+                ..Default::default()
+            },
+        );
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let context = test_tool_context();
+        let calls_to_run = [
+            (
+                "batch",
+                serde_json::json!({
+                    "invocations": [{"tool": "side_effect", "args": {}}]
+                }),
+            ),
+            (
+                "program",
+                serde_json::json!({
+                    "type": "script",
+                    "language": "javascript",
+                    "source": "async function run(ctx) { return await ctx.tool('side_effect', {}); }",
+                    "allowed_tools": ["side_effect"]
+                }),
+            ),
+        ];
+
+        for (index, (name, args)) in calls_to_run.into_iter().enumerate() {
+            let result = agent
+                .invoke_host_tool(
+                    crate::tools::ToolInvocation::host_direct(
+                        format!("host-orchestrator-{index}"),
+                        name,
+                        args,
+                    ),
+                    "host-orchestrator",
+                    &None,
+                    &cancellation,
+                    &context,
+                )
+                .await;
+            assert_eq!(result.exit_code, 0, "{name}: {}", result.output);
+            assert!(result.output.contains("side-effect-ok"), "{name}");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn public_runtime_cannot_amplify_a_host_direct_custom_tool_call() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        executor.register_dynamic_tool(Arc::new(SideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        executor.register_dynamic_tool(Arc::new(PublicRuntimeOrchestrator));
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            executor,
+            test_tool_context(),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "side_effect",
+                    decision: PermissionDecision::Deny,
+                })),
+                ..Default::default()
+            },
+        );
+        let result = agent
+            .invoke_host_tool(
+                crate::tools::ToolInvocation::host_direct(
+                    "host-custom",
+                    "public_runtime_orchestrator",
+                    serde_json::json!({}),
+                ),
+                "host-custom",
+                &None,
+                &tokio_util::sync::CancellationToken::new(),
+                &test_tool_context(),
+            )
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(
+            result.output.contains("Permission denied"),
+            "{}",
+            result.output
+        );
     }
 
     #[tokio::test]

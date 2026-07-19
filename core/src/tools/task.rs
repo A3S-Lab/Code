@@ -96,6 +96,7 @@ mod parallel_execution;
 const MAX_PARALLEL_TASKS_PER_CALL: usize = 32;
 
 /// Task executor for delegated child runs.
+#[derive(Clone)]
 pub struct TaskExecutor {
     /// Agent registry for looking up agent definitions
     registry: Arc<AgentRegistry>,
@@ -184,6 +185,17 @@ impl TaskExecutor {
         }
         self.parent_context = Some(ctx);
         self
+    }
+
+    fn scoped_for_invocation(self: &Arc<Self>, ctx: &ToolContext) -> Arc<Self> {
+        if !ctx.has_run_governance() {
+            return Arc::clone(self);
+        }
+        let mut scoped = self.as_ref().clone();
+        scoped.parent_context = scoped.parent_context.take().map(|parent| {
+            parent.with_run_governance(ctx.run_permission_checker(), ctx.run_confirmation_manager())
+        });
+        Arc::new(scoped)
     }
 
     /// Bind every run started by this executor to a parent lifetime.
@@ -405,6 +417,10 @@ impl TaskExecutor {
         if let Some(ref parent_ctx) = self.parent_context {
             if let Some(ref services) = parent_ctx.workspace_services {
                 tool_context = tool_context.with_workspace_services(Arc::clone(services));
+            }
+            if let Some(ref sandbox) = parent_ctx.sandbox_handle {
+                child_executor.registry().set_sandbox(Arc::clone(sandbox));
+                tool_context = tool_context.with_sandbox(Arc::clone(sandbox));
             }
         }
 
@@ -860,9 +876,10 @@ impl Tool for TaskTool {
         let params: TaskParams =
             serde_json::from_value(args.clone()).context("Invalid task parameters")?;
         let parent_cancellation = ctx.cancellation_token();
+        let executor = self.executor.scoped_for_invocation(ctx);
 
         if params.background {
-            let task_id = Arc::clone(&self.executor).execute_background_with_parent_cancellation(
+            let task_id = executor.execute_background_with_parent_cancellation(
                 params,
                 ctx.agent_event_tx.clone(),
                 ctx.session_id.clone(),
@@ -874,8 +891,7 @@ impl Tool for TaskTool {
             )));
         }
 
-        let result = self
-            .executor
+        let result = executor
             .execute_with_parent_cancellation(
                 params,
                 ctx.agent_event_tx.clone(),
@@ -950,6 +966,7 @@ impl Tool for ParallelTaskTool {
         let params: ParallelTaskParams =
             serde_json::from_value(args.clone()).context("Invalid parallel task parameters")?;
         let parent_cancellation = ctx.cancellation_token();
+        let executor = self.executor.scoped_for_invocation(ctx);
 
         if params.tasks.is_empty() {
             return Ok(ToolOutput::error("No tasks provided".to_string()));
@@ -963,8 +980,7 @@ impl Tool for ParallelTaskTool {
         let task_count = params.tasks.len();
         let tasks = params.tasks.clone();
 
-        let mut run = self
-            .executor
+        let mut run = executor
             .execute_parallel_for_tool(
                 tasks.clone(),
                 ctx.agent_event_tx.clone(),
@@ -977,8 +993,7 @@ impl Tool for ParallelTaskTool {
                 },
             )
             .await;
-        let retry_summary = self
-            .executor
+        let retry_summary = executor
             .retry_transient_parallel_failures(
                 &tasks,
                 parallel_execution::ParallelRetryOptions {

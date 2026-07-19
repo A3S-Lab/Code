@@ -201,7 +201,7 @@ impl AgentSession {
         if self.run_admission.wait_until_idle(grace).await {
             return true;
         }
-        if !self.run_admission.abort_stream_worker() {
+        if !self.run_admission.abort_stream_workers() {
             return false;
         }
         self.run_admission.wait_until_idle(abort_grace).await

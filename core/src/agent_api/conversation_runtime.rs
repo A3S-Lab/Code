@@ -76,8 +76,11 @@ pub(super) async fn stream_with_attachments(
 
     let input = ConversationInput::with_attachments(session, history, prompt, attachments);
     let stream_run = StreamRunContext::start(session, prompt, input.persistence).await;
-    let (rx, handle) = stream_run.spawn_from_messages(input.messages);
-    Ok((rx, run_admission::guard_stream_handle(handle, lease)))
+    let (rx, handle, worker_aborts) = stream_run.spawn_from_messages(input.messages);
+    Ok((
+        rx,
+        run_admission::guard_stream_handle(handle, worker_aborts, lease),
+    ))
 }
 
 pub(super) async fn stream(
@@ -90,13 +93,21 @@ pub(super) async fn stream(
     let lease = admit(session)?;
 
     if let Some((rx, handle)) = command_runtime::dispatch_streaming(session, prompt).await {
-        return Ok((rx, run_admission::guard_stream_handle(handle, lease)));
+        let worker_abort = handle.abort_handle();
+        return Ok((
+            rx,
+            run_admission::guard_stream_handle(handle, vec![worker_abort], lease),
+        ));
     }
 
     let input = ConversationInput::from_history(session, history);
     let stream_run = StreamRunContext::start(session, prompt, input.persistence).await;
-    let (rx, handle) = stream_run.spawn_with_prompt(input.messages, prompt.to_string());
-    Ok((rx, run_admission::guard_stream_handle(handle, lease)))
+    let (rx, handle, worker_aborts) =
+        stream_run.spawn_with_prompt(input.messages, prompt.to_string());
+    Ok((
+        rx,
+        run_admission::guard_stream_handle(handle, worker_aborts, lease),
+    ))
 }
 
 /// Resume a previously-checkpointed run on this session (P3 cut 2).

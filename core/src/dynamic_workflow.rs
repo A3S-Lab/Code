@@ -5,8 +5,7 @@
 //! existing `program` tool remains the sandbox and tool-call boundary.
 
 use crate::tools::{
-    registry_tool_invoker, Tool, ToolContext, ToolInvocation, ToolInvoker, ToolOutput,
-    ToolRegistry, ToolResult,
+    registry_tool_invoker, Tool, ToolContext, ToolInvoker, ToolOutput, ToolRegistry, ToolResult,
 };
 use crate::{
     agent::AgentEvent,
@@ -118,7 +117,10 @@ impl DynamicWorkflowRuntime {
 
         let result = self
             .invoker
-            .invoke(ToolInvocation::nested(PROGRAM_TOOL, args), &self.context)
+            .invoke(
+                self.context.nested_tool_invocation(PROGRAM_TOOL, args),
+                &self.context,
+            )
             .await;
         if result.exit_code != 0 {
             return Err(a3s_flow::FlowError::Runtime(result.output));
@@ -130,7 +132,8 @@ impl DynamicWorkflowRuntime {
         let result = self
             .invoker
             .invoke(
-                ToolInvocation::nested(tool_name.to_string(), args),
+                self.context
+                    .nested_tool_invocation(tool_name.to_string(), args),
                 &self.context,
             )
             .await;

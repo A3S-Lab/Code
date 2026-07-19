@@ -30,6 +30,7 @@ pub(crate) enum ToolGateDenial {
     HookBlock,
     PermissionDeny,
     MissingConfirmationManager,
+    ConfirmationUnavailable,
 }
 
 impl ToolGateDenial {
@@ -39,6 +40,7 @@ impl ToolGateDenial {
             ToolGateDenial::HookBlock => "hook_block",
             ToolGateDenial::PermissionDeny => "permission_deny",
             ToolGateDenial::MissingConfirmationManager => "missing_confirmation_manager",
+            ToolGateDenial::ConfirmationUnavailable => "confirmation_unavailable",
         }
     }
 }
@@ -99,12 +101,16 @@ impl<'a> ToolSafetyGate<'a> {
                 reason: ToolGateDenial::PermissionDeny,
             },
             PermissionDecision::Allow if input.tool_requires_confirmation => {
-                self.confirmation_decision(input.tool_name).await
+                self.confirmation_decision(input.tool_name, input.args)
+                    .await
             }
             PermissionDecision::Allow => ToolGateDecision::Execute {
                 reason: ToolGateApproval::PermissionAllow,
             },
-            PermissionDecision::Ask => self.confirmation_decision(input.tool_name).await,
+            PermissionDecision::Ask => {
+                self.confirmation_decision(input.tool_name, input.args)
+                    .await
+            }
         }
     }
 
@@ -146,31 +152,56 @@ impl<'a> ToolSafetyGate<'a> {
             .unwrap_or(PermissionDecision::Ask)
     }
 
-    async fn confirmation_decision(&self, tool_name: &str) -> ToolGateDecision {
+    async fn confirmation_decision(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> ToolGateDecision {
         let Some(cm) = &self.config.confirmation_manager else {
-            let msg = format!(
-                "Tool '{}' requires confirmation but no HITL confirmation manager is configured. \
-                 Configure a confirmation policy to enable tool execution.",
-                tool_name
-            );
-            return ToolGateDecision::Deny {
-                output: msg.clone(),
-                event_reason: msg,
-                reason: ToolGateDenial::MissingConfirmationManager,
-            };
+            return missing_confirmation_manager(tool_name);
         };
 
-        if !cm.requires_confirmation(tool_name).await {
+        if !cm.confirmation_available_for(tool_name, args).await {
+            return confirmation_unavailable(tool_name);
+        };
+
+        if !cm.requires_confirmation_for(tool_name, args).await {
             return ToolGateDecision::Execute {
                 reason: ToolGateApproval::ConfirmationNotRequired,
             };
         }
 
-        let policy = cm.policy().await;
+        let policy = cm.policy_for(tool_name, args).await;
         ToolGateDecision::Confirm {
             timeout_ms: policy.default_timeout_ms,
             timeout_action: policy.timeout_action,
         }
+    }
+}
+
+fn missing_confirmation_manager(tool_name: &str) -> ToolGateDecision {
+    let msg = format!(
+        "Tool '{}' requires confirmation but no HITL confirmation manager is configured. \
+         Configure a confirmation policy to enable tool execution.",
+        tool_name
+    );
+    ToolGateDecision::Deny {
+        output: msg.clone(),
+        event_reason: msg,
+        reason: ToolGateDenial::MissingConfirmationManager,
+    }
+}
+
+fn confirmation_unavailable(tool_name: &str) -> ToolGateDecision {
+    let msg = format!(
+        "Tool '{}' requires authority outside the active execution boundary. \
+         The current confirmation policy cannot authorize this invocation.",
+        tool_name
+    );
+    ToolGateDecision::Deny {
+        output: msg.clone(),
+        event_reason: msg,
+        reason: ToolGateDenial::ConfirmationUnavailable,
     }
 }
 

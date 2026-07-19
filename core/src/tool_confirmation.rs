@@ -9,6 +9,7 @@ use crate::hitl::{ConfirmationProvider, TimeoutAction};
 use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ToolConfirmationResolution {
@@ -37,9 +38,19 @@ impl<'a> ToolConfirmationRuntime<'a> {
         Self { manager, event_tx }
     }
 
+    #[cfg(test)]
     pub(crate) async fn resolve(
         &self,
         request: ToolConfirmationRequest<'_>,
+    ) -> ToolConfirmationResolution {
+        self.resolve_with_cancellation(request, &CancellationToken::new())
+            .await
+    }
+
+    pub(crate) async fn resolve_with_cancellation(
+        &self,
+        request: ToolConfirmationRequest<'_>,
+        cancellation: &CancellationToken,
     ) -> ToolConfirmationResolution {
         let rx = self
             .manager
@@ -54,7 +65,26 @@ impl<'a> ToolConfirmationRuntime<'a> {
         })
         .await;
 
-        match tokio::time::timeout(Duration::from_millis(request.timeout_ms), rx).await {
+        let response = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                self.manager.cancel(request.tool_id).await;
+                self.forward_event(AgentEvent::ConfirmationReceived {
+                    tool_id: request.tool_id.to_string(),
+                    approved: false,
+                    reason: Some("Confirmation cancelled".to_string()),
+                })
+                .await;
+                return ToolConfirmationResolution::Rejected {
+                    output: format!("Tool '{}' cancelled by caller", request.tool_name),
+                };
+            }
+            response = tokio::time::timeout(Duration::from_millis(request.timeout_ms), rx) => {
+                response
+            }
+        };
+
+        match response {
             Ok(Ok(response)) => {
                 self.forward_event(AgentEvent::ConfirmationReceived {
                     tool_id: request.tool_id.to_string(),
@@ -78,6 +108,7 @@ impl<'a> ToolConfirmationRuntime<'a> {
                 }
             }
             Ok(Err(_)) => {
+                self.manager.cancel(request.tool_id).await;
                 self.forward_timeout(request.tool_id, "rejected").await;
                 ToolConfirmationResolution::Rejected {
                     output: format!(
@@ -87,7 +118,9 @@ impl<'a> ToolConfirmationRuntime<'a> {
                 }
             }
             Err(_) => {
-                self.manager.check_timeouts().await;
+                self.manager
+                    .expire(request.tool_id, request.timeout_action)
+                    .await;
                 self.forward_timeout(request.tool_id, action_taken(request.timeout_action))
                     .await;
 
@@ -249,6 +282,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invocation_cancellation_rejects_the_exact_request_and_pairs_events() {
+        let (broadcast_tx, _) = broadcast::channel(8);
+        let manager = Arc::new(ConfirmationManager::new(
+            enabled_policy(1_000, TimeoutAction::Reject),
+            broadcast_tx,
+        ));
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let cancellation = CancellationToken::new();
+        let runtime = ToolConfirmationRuntime::new(manager.as_ref(), Some(&event_tx));
+
+        let cancel_when_pending = async {
+            for _ in 0..20 {
+                if manager.pending_count().await == 1 {
+                    cancellation.cancel();
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            panic!("confirmation request was not created");
+        };
+        let args = json!({"command": "pwd"});
+        let (resolution, ()) = tokio::join!(
+            runtime.resolve_with_cancellation(
+                ToolConfirmationRequest {
+                    tool_id: "tool-cancelled",
+                    tool_name: "bash",
+                    args: &args,
+                    timeout_ms: 1_000,
+                    timeout_action: TimeoutAction::Reject,
+                },
+                &cancellation,
+            ),
+            cancel_when_pending,
+        );
+
+        let ToolConfirmationResolution::Rejected { output } = resolution else {
+            panic!("expected rejection");
+        };
+        assert!(output.contains("cancelled by caller"));
+        assert_eq!(manager.pending_count().await, 0);
+
+        let events = collect_events(&mut event_rx, 2).await;
+        assert!(matches!(
+            events[0],
+            AgentEvent::ConfirmationRequired {
+                ref tool_id,
+                ..
+            } if tool_id == "tool-cancelled"
+        ));
+        assert!(matches!(
+            events[1],
+            AgentEvent::ConfirmationReceived {
+                ref tool_id,
+                approved: false,
+                ref reason,
+            } if tool_id == "tool-cancelled"
+                && reason.as_deref() == Some("Confirmation cancelled")
+        ));
+    }
+
+    #[tokio::test]
     async fn timeout_rejects_and_forwards_timeout_event() {
         let (broadcast_tx, _) = broadcast::channel(8);
         let manager = Arc::new(ConfirmationManager::new(
@@ -311,6 +405,39 @@ mod tests {
             AgentEvent::ConfirmationTimeout { ref action_taken, .. }
                 if action_taken == "auto_approved"
         ));
+    }
+
+    #[tokio::test]
+    async fn invocation_timeout_expires_only_its_own_confirmation() {
+        let (broadcast_tx, _) = broadcast::channel(8);
+        let manager = Arc::new(ConfirmationManager::new(
+            enabled_policy(1_000, TimeoutAction::Reject),
+            broadcast_tx,
+        ));
+        let untouched = manager
+            .request_confirmation("tool-untouched", "write", &json!({}))
+            .await;
+
+        let runtime = ToolConfirmationRuntime::new(manager.as_ref(), None);
+        let resolution = runtime
+            .resolve(ToolConfirmationRequest {
+                tool_id: "tool-expired",
+                tool_name: "bash",
+                args: &json!({"command": "sleep 1"}),
+                timeout_ms: 5,
+                timeout_action: TimeoutAction::Reject,
+            })
+            .await;
+
+        assert!(matches!(
+            resolution,
+            ToolConfirmationResolution::Rejected { .. }
+        ));
+        let pending = manager.pending_confirmations().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, "tool-untouched");
+        manager.confirm("tool-untouched", true, None).await.unwrap();
+        assert!(untouched.await.unwrap().approved);
     }
 
     struct ClosedConfirmationProvider;

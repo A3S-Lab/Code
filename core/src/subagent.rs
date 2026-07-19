@@ -538,22 +538,30 @@ impl AgentDefinition {
             }
         }
 
-        // Confirmation inheritance: resolve Ask decisions in child runs.
+        // Confirmation inheritance: record how child-local Ask decisions are
+        // resolved before the parent boundary is composed into this run.
+        if config.confirmation_inheritance.is_none() {
+            config.confirmation_inheritance =
+                Some(self.confirmation_inheritance.clone().unwrap_or_else(|| {
+                    if self.has_defined_permissions() {
+                        ConfirmationInheritance::AutoApprove
+                    } else {
+                        ConfirmationInheritance::DenyOnAsk
+                    }
+                }));
+        }
         if config.confirmation_manager.is_none() {
-            let inheritance = self.confirmation_inheritance.clone().unwrap_or_else(|| {
-                if self.has_defined_permissions() {
-                    ConfirmationInheritance::AutoApprove
-                } else {
-                    ConfirmationInheritance::DenyOnAsk
-                }
-            });
-            match inheritance {
-                ConfirmationInheritance::AutoApprove => {
+            match config.confirmation_inheritance.as_ref() {
+                Some(ConfirmationInheritance::AutoApprove) => {
                     config.confirmation_manager =
                         Some(Arc::new(crate::hitl::AutoApproveConfirmation));
                 }
-                ConfirmationInheritance::DenyOnAsk => { /* leave None — safety_gate denies */ }
-                ConfirmationInheritance::InheritParent => { /* caller passes parent's manager */ }
+                Some(ConfirmationInheritance::DenyOnAsk) | None => {
+                    /* leave None — safety_gate denies */
+                }
+                Some(ConfirmationInheritance::InheritParent) => {
+                    /* caller passes parent's manager */
+                }
             }
         }
     }
