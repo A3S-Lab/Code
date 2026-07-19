@@ -800,11 +800,27 @@ fn bounded_diff_output(args: &serde_json::Value, diff: String) -> Result<ToolOut
 }
 
 fn format_remote(remote: &WorkspaceGitRemote) -> String {
+    let url = sanitize_remote_url(&remote.url);
     if remote.direction.is_empty() {
-        format!("{}\t{}", remote.name, remote.url)
+        format!("{}\t{url}", remote.name)
     } else {
-        format!("{}\t{} ({})", remote.name, remote.url, remote.direction)
+        format!("{}\t{url} ({})", remote.name, remote.direction)
     }
+}
+
+fn sanitize_remote_url(raw: &str) -> String {
+    let Ok(mut url) = url::Url::parse(raw) else {
+        return raw.to_string();
+    };
+    if matches!(url.scheme(), "http" | "https") {
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+    } else if url.password().is_some() {
+        let _ = url.set_password(None);
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    url.into()
 }
 
 #[cfg(test)]
@@ -935,5 +951,22 @@ mod tests {
             next
         );
         assert!(!second.content.contains("diff --git"));
+    }
+
+    #[test]
+    fn remote_urls_do_not_expose_embedded_credentials_or_query_tokens() {
+        let remote = WorkspaceGitRemote {
+            name: "origin".to_string(),
+            url: "https://user:secret@example.com/org/repo.git?access_token=hidden#fragment"
+                .to_string(),
+            direction: "fetch".to_string(),
+        };
+
+        let rendered = format_remote(&remote);
+
+        assert_eq!(rendered, "origin\thttps://example.com/org/repo.git (fetch)");
+        for secret in ["user", "secret", "access_token", "hidden", "fragment"] {
+            assert!(!rendered.contains(secret), "{secret} leaked in {rendered}");
+        }
     }
 }

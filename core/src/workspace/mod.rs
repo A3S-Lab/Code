@@ -11,6 +11,7 @@
 pub(crate) mod conformance;
 mod error;
 mod local;
+mod local_access;
 mod manifest;
 mod path;
 mod remote_git;
@@ -20,6 +21,7 @@ mod services;
 
 pub use error::{WorkspaceError, WorkspaceResult};
 pub use local::LocalWorkspaceBackend;
+pub use local_access::LocalWorkspaceAccessPolicy;
 pub use manifest::{
     scan_workspace_files, LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifest,
     LocalWorkspaceManifestSnapshot, ManifestWorkspaceBackend, RecentWorkspaceFile,
