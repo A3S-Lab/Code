@@ -3,7 +3,7 @@ use crate::tools::types::ToolOutput;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 
 #[cfg(windows)]
-pub(super) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(windows)]
 const WINDOWS_POWERSHELL_COMPAT_SHIM: &str = r#"
@@ -372,7 +372,7 @@ function which {
 "#;
 
 #[cfg(windows)]
-pub(super) fn build_powershell_command(command: &str) -> String {
+pub(crate) fn build_powershell_command(command: &str) -> String {
     format!(
         "{WINDOWS_POWERSHELL_COMPAT_SHIM}\n{}",
         preprocess_windows_command(command)
@@ -380,7 +380,7 @@ pub(super) fn build_powershell_command(command: &str) -> String {
 }
 
 #[cfg(windows)]
-pub(super) fn encode_powershell_command(command: &str) -> String {
+pub(crate) fn encode_powershell_command(command: &str) -> String {
     let utf16_le: Vec<u8> = command
         .encode_utf16()
         .flat_map(|unit| unit.to_le_bytes())
