@@ -28,7 +28,7 @@ pip install \
   'https://github.com/A3S-Lab/Code/releases/download/v<VERSION>/a3s_code-<VERSION>-cp312-cp312-manylinux_2_28_x86_64.whl'
 ```
 
-Replace `<VERSION>` with the release to install, for example `5.3.6`.
+Replace `<VERSION>` with the release to install, for example `6.0.0`.
 
 ## Quick Start
 

@@ -424,7 +424,12 @@ mod tests {
     #[tokio::test]
     async fn built_in_typescript_uses_nested_classic_sdk() {
         let workspace = tempfile::tempdir().expect("temporary workspace");
-        let package = workspace.path().join("apps/web/node_modules/typescript");
+        let package = workspace
+            .path()
+            .join("apps")
+            .join("web")
+            .join("node_modules")
+            .join("typescript");
         tokio::fs::create_dir_all(package.join("lib"))
             .await
             .expect("create TypeScript SDK");
@@ -463,7 +468,12 @@ mod tests {
     #[tokio::test]
     async fn built_in_typescript_uses_nested_native_sdk() {
         let workspace = tempfile::tempdir().expect("temporary workspace");
-        let package = workspace.path().join("apps/web/node_modules/typescript");
+        let package = workspace
+            .path()
+            .join("apps")
+            .join("web")
+            .join("node_modules")
+            .join("typescript");
         tokio::fs::create_dir_all(package.join("lib"))
             .await
             .expect("create TypeScript SDK");
