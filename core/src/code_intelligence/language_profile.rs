@@ -242,8 +242,7 @@ impl LanguageServerProfile {
                     && marker.kind == ProjectMarkerKind::CargoManifest
             })
             .map(|marker| {
-                canonical_root
-                    .join(marker.path.as_str())
+                join_workspace_path(canonical_root, &marker.path)
                     .to_string_lossy()
                     .replace('\\', "/")
             })
@@ -305,7 +304,7 @@ impl LanguageServerProfile {
                 if root.is_root() {
                     canonical_root.to_path_buf()
                 } else {
-                    canonical_root.join(root.as_str())
+                    join_workspace_path(canonical_root, &root)
                 }
             })
             .collect::<Vec<_>>();
@@ -332,10 +331,21 @@ impl LanguageServerProfile {
 
 fn typescript_package_roots(search_root: &Path) -> [PathBuf; 3] {
     [
-        search_root.join("node_modules/typescript"),
-        search_root.join(".yarn/sdks/typescript"),
-        search_root.join(".vscode/pnpify/typescript"),
+        search_root.join("node_modules").join("typescript"),
+        search_root.join(".yarn").join("sdks").join("typescript"),
+        search_root
+            .join(".vscode")
+            .join("pnpify")
+            .join("typescript"),
     ]
+}
+
+fn join_workspace_path(root: &Path, path: &WorkspacePath) -> PathBuf {
+    path.as_str()
+        .split('/')
+        .fold(root.to_path_buf(), |joined, component| {
+            joined.join(component)
+        })
 }
 
 fn push_unique_path(target: &mut Vec<PathBuf>, seen: &mut BTreeSet<PathBuf>, path: PathBuf) {
@@ -424,11 +434,16 @@ mod tests {
     #[tokio::test]
     async fn built_in_typescript_uses_nested_classic_sdk() {
         let workspace = tempfile::tempdir().expect("temporary workspace");
-        let package = workspace.path().join("apps/web/node_modules/typescript");
+        let package = workspace
+            .path()
+            .join("apps")
+            .join("web")
+            .join("node_modules")
+            .join("typescript");
         tokio::fs::create_dir_all(package.join("lib"))
             .await
             .expect("create TypeScript SDK");
-        tokio::fs::write(package.join("lib/tsserver.js"), "")
+        tokio::fs::write(package.join("lib").join("tsserver.js"), "")
             .await
             .expect("write tsserver entry");
         tokio::fs::write(package.join("package.json"), r#"{"version":"5.9.3"}"#)
@@ -454,7 +469,7 @@ mod tests {
             launch.initialization_options,
             json!({
                 "tsserver": {
-                    "path": protocol_path(&package.join("lib/tsserver.js")),
+                    "path": protocol_path(&package.join("lib").join("tsserver.js")),
                 },
             })
         );
@@ -463,11 +478,16 @@ mod tests {
     #[tokio::test]
     async fn built_in_typescript_uses_nested_native_sdk() {
         let workspace = tempfile::tempdir().expect("temporary workspace");
-        let package = workspace.path().join("apps/web/node_modules/typescript");
+        let package = workspace
+            .path()
+            .join("apps")
+            .join("web")
+            .join("node_modules")
+            .join("typescript");
         tokio::fs::create_dir_all(package.join("lib"))
             .await
             .expect("create TypeScript SDK");
-        tokio::fs::write(package.join("lib/tsc.js"), "")
+        tokio::fs::write(package.join("lib").join("tsc.js"), "")
             .await
             .expect("write native TypeScript entry");
         tokio::fs::write(package.join("package.json"), r#"{"version":"7.0.2"}"#)
@@ -488,7 +508,7 @@ mod tests {
         assert_eq!(
             launch.command.args,
             [
-                package.join("lib/tsc.js").into_os_string(),
+                package.join("lib").join("tsc.js").into_os_string(),
                 OsString::from("--lsp"),
                 OsString::from("--stdio"),
             ]
@@ -499,13 +519,18 @@ mod tests {
     #[tokio::test]
     async fn workspace_typescript_prefers_package_sdk_over_hoisted_sdk() {
         let workspace = tempfile::tempdir().expect("temporary workspace");
-        let hoisted = workspace.path().join("node_modules/typescript");
-        let local = workspace.path().join("packages/ui/node_modules/typescript");
+        let hoisted = workspace.path().join("node_modules").join("typescript");
+        let local = workspace
+            .path()
+            .join("packages")
+            .join("ui")
+            .join("node_modules")
+            .join("typescript");
         for package in [&hoisted, &local] {
             tokio::fs::create_dir_all(package.join("lib"))
                 .await
                 .expect("create TypeScript SDK");
-            tokio::fs::write(package.join("lib/tsserver.js"), "")
+            tokio::fs::write(package.join("lib").join("tsserver.js"), "")
                 .await
                 .expect("write tsserver entry");
             tokio::fs::write(package.join("package.json"), r#"{"version":"5.9.3"}"#)
@@ -525,7 +550,7 @@ mod tests {
 
         assert_eq!(
             launch.initialization_options["tsserver"]["path"],
-            protocol_path(&local.join("lib/tsserver.js"))
+            protocol_path(&local.join("lib").join("tsserver.js"))
         );
     }
 

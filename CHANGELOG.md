@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.3.6] - 2026-07-19
+## [6.0.0] - 2026-07-19
 
 ### Added
 
@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserved standard MCP tool metadata and call results end to end, including
   output schemas, annotations, icons, `_meta`, `structuredContent`, decoded
   images, embedded resources, and bounded content-addressed artifacts.
+
+### Changed
+
+- Raised the major version because the standard MCP metadata support extends
+  the public `McpTool` and `CallToolResult` structures with new fields.
 
 ### Fixed
 
