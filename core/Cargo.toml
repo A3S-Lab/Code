@@ -86,8 +86,7 @@ shell-words = "1.1"
 # HTML to text/markdown conversion
 html2text = "0.16"
 htmd = "0.5"
-pdf-extract = "0.7"
-lopdf = "0.34"
+pdf-extract = "0.12"
 roxmltree = "0.20"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 cfb = "0.14"
@@ -147,6 +146,8 @@ s3 = [
 serve = ["dep:cron"]
 
 [dev-dependencies]
+# Build deterministic PDF fixtures for web_fetch extraction tests.
+lopdf = "0.42"
 # Deterministically advance the exponential stream-retry backoff in async tests.
 tokio = { version = "1.35", features = ["test-util"] }
 # HTTP mocking for the RemoteGitBackend (and any future HTTP-backed workspace
