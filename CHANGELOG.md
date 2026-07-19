@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hidden or unregistered workers are omitted.
 - Tool implementations can override their complete model-facing definition
   when descriptions or schemas depend on live runtime state.
+- The Code TUI now projects A3S Use's built-in local PP-OCRv6 MCP and Skill
+  surfaces, reports its pinned model and ONNX Runtime status, and provides the
+  explicit `a3s install use/ocr` repair command.
+
+### Removed
+
+- Removed the unused `document_parser.ocr` backend configuration. OCR in Code
+  is owned exclusively by A3S Use and runs locally through PP-OCRv6.
 
 ### Fixed
 
@@ -1351,43 +1359,15 @@ conflicts. They now `switch` / `match` on `error_kind.type` instead.
 
 - **HWPX Table Extraction**: Added structured table extraction from Korean HWPX documents. Parses `tbl/tr/tc` XML hierarchy and includes `structured_payload` for `tables[]` output.
 
-- **Vision OCR Provider**: New OCR backend supporting OpenAI-compatible vision APIs for document OCR fallback.
-
-  ```hcl
-  document_parser {
-    ocr {
-      enabled  = true
-      model    = "openai/gpt-4.1-mini"
-      api_key  = "sk-..."
-      base_url = "https://api.openai.com/v1"  # optional
-      prompt   = "Extract all text from this document..."
-      max_images = 8
-      dpi     = 144
-    }
-  }
-  ```
-
-  Provider priority: External provider > Vision API (if model+api_key configured) > Builtin tesseract
-
 #### Search Ranking
 
 - **Tabular Query Intent Detection**: Automatically detects when queries relate to tables (keywords: table, column, row, spreadsheet, excel, csv, cell, data, record, etc.) and boosts table line matches by +10 keyword hits plus 1.3x relevance multiplier.
 
 - **Heading Inheritance Boost**: When search matches appear under headings that also match the query, those matches receive a relevance boost (up to 1.3x). Looks backwards to find the closest preceding heading.
 
-### Changed
-
-#### Configuration
-
-- `DocumentOcrConfig` extended with new fields:
-  - `provider: Option<String>` - Backend selection ("vision" or "builtin")
-  - `base_url: Option<String>` - Custom API endpoint
-  - `api_key: Option<String>` - API authentication
-
 #### Dependencies
 
 - Added `calamine = "0.26"` for XLSB parsing
-- Added `reqwest/blocking` feature for Vision API HTTP calls
 
 ### Fixed
 

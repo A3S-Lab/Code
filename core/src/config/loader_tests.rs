@@ -134,16 +134,6 @@ document_parser {
     enabled = true
     directory = "./document-cache"
   }
-  ocr {
-    enabled = true
-    model = "openai/gpt-vision"
-    prompt = "Extract tables"
-    max_images = 12
-    dpi = 192
-    provider = "vision"
-    base_url = "https://vision.example.test/v1"
-    api_key = "ocr-secret"
-  }
 }
 
 mcp_servers "filesystem" {
@@ -248,10 +238,6 @@ mcp_servers "filesystem" {
 
     let parser = config.document_parser.expect("document parser config");
     assert_eq!(parser.max_file_size_mb, 80);
-    assert_eq!(
-        parser.ocr.as_ref().and_then(|ocr| ocr.api_key.as_deref()),
-        Some("ocr-secret")
-    );
     assert_eq!(
         parser
             .cache
