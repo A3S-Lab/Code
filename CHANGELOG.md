@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Kept standalone conversational greetings tool-free and prevented them from
+  triggering synthetic continuation turns, while retaining the normal tool
+  surface for greetings that also contain an action request.
+
 ## [5.3.5] - 2026-07-17
 
 ### Added
