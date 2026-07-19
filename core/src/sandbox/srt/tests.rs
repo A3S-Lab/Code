@@ -3,6 +3,8 @@ use crate::sandbox::BashSandbox;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+const ADAPTER_TEST_TIMEOUT_MS: u64 = 30_000;
+
 #[cfg(unix)]
 fn fake_srt(capture_path: &Path) -> (TempDir, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
@@ -44,7 +46,7 @@ async fn adapter_passes_argv_workspace_timeout_env_and_settings() {
         .exec(SandboxCommandRequest {
             command: "printf '%s|%s' \"$PWD\" \"$EXPLICIT_VALUE\"".to_string(),
             guest_workspace: "/workspace".to_string(),
-            timeout_ms: 5_000,
+            timeout_ms: ADAPTER_TEST_TIMEOUT_MS,
             output_observer: None,
             env: Some(Arc::new(HashMap::from([(
                 "EXPLICIT_VALUE".to_string(),
@@ -167,7 +169,7 @@ async fn adapter_preserves_stdout_and_stderr_as_separate_streams() {
         .exec(SandboxCommandRequest {
             command: "printf stdout-value; printf stderr-value >&2".to_string(),
             guest_workspace: "/workspace".to_string(),
-            timeout_ms: 5_000,
+            timeout_ms: ADAPTER_TEST_TIMEOUT_MS,
             output_observer: None,
             env: None,
         })

@@ -280,6 +280,52 @@ directories, `AgentDir`, inline host input, or live registration. The
 model-visible `program` tool executes JavaScript in QuickJS, not arbitrary
 Python or a shell-script catalog.
 
+### Process sandbox contract
+
+Hosts can attach a `BashSandbox` through `SessionOptions::with_sandbox_handle`.
+The extended execution request preserves the command, guest workspace, timeout,
+stream observer, and explicit command environment; existing implementations
+remain compatible through `exec_command`.
+
+`SrtBashSandbox` is the fail-closed local adapter. It denies command network
+egress, local binding, and Unix sockets; limits writes to the active workspace
+and a private per-run scratch directory; protects repository and agent-control
+metadata; blocks common credential reads; and scrubs ambient secrets and
+language/bootstrap injection variables. It keeps stdout and stderr distinct
+under one global capture limit. Its deadline covers output draining and the
+child's complete lifetime, including a process that closes both streams before
+it exits; timeout or cancellation terminates the Unix process group. It never
+falls back to the host runner when `srt` is missing or fails. The embedding
+host remains responsible for choosing whether an unavailable sandbox causes
+an interactive escalation or a deterministic denial.
+
+Shell isolation does not automatically govern in-process workspace tools.
+Interactive hosts should construct `LocalWorkspaceBackend` or
+`ManifestWorkspaceBackend` with
+`LocalWorkspaceAccessPolicy::CredentialBoundary`. That opt-in applies the
+credential boundary to direct reads, range reads, writes, and both indexed and
+fallback grep. Directory grep omits denied candidates, explicit sensitive
+targets fail closed, source-tree multi-link files are rejected, and ordinary
+package-store hardlinks remain usable unless they alias a discovered
+credential inode. Guarded local Git diff enumerates changed paths with Git's
+NUL-delimited format and regenerates output only for allowed paths; option-like
+revision input cannot become a Git flag, and displayed remote URLs omit
+embedded HTTP credentials and query tokens.
+
+Hosts may use `discover` for a compatible npm installation on `PATH`, or
+`from_verified_npm_with_node` when a lifecycle owner supplies exact SRT and Node
+paths. Both verified constructors require the expected npm package identity and
+a tested SRT version. The A3S CLI uses the exact-path form after validating and,
+when policy allows, preparing its user-wide managed installation; Core does not
+install host software.
+
+This adapter is a low-latency local enforcement provider, not the stack-wide
+workload contract. Code owns agent permission and escalation policy, A3S
+Runtime owns provider-neutral Task and Service lifecycle and placement, and A3S
+Box owns OCI and stronger-isolation workloads. Replacing the CLI's transitional
+npm bootstrap with an A3S-signed sandbox artifact does not change the
+`BashSandbox` contract.
+
 Long-running hosts can call `AgentSession::add_skill`, `remove_skill`, and
 `skill_names` without rebuilding the session. The model-visible Skill catalog
 reads the same live registry, so a successful mutation is visible on the next
@@ -358,7 +404,20 @@ Confirmation managers, hooks, budget guards, security providers, stream
 sanitization, retention limits, circuit breakers, duplicate-call guards, and
 no-progress detection compose around the same invocation path. Trusted direct
 host calls skip model-facing permission prompts, so an embedding application
-must authorize its callers.
+must authorize its callers. Only built-in control-plane orchestrators may carry
+that authority into host-selected nested calls. A public custom tool's
+`InvocationRuntime`, and every model sub-run created from a direct host context,
+produce ordinary governed invocations instead of inheriting ambient trust.
+
+Delegated tasks, workflow steps, and Skill child runs retain the parent sandbox
+and intersect their local permission policy with the parent checker. A
+child-local `Ask` follows that worker's `auto_approve`, `deny_on_ask`, or
+`inherit_parent` policy, while an `Ask` introduced by the parent remains under
+the parent confirmation provider. If both scopes ask, both remain effective and
+the same provider is de-duplicated. Tool-owned confirmation after both policies
+allow is also governed by the parent, so a child-local auto-approver cannot
+waive a host escalation boundary. Cancellation and timeout settle only the
+matching confirmation ID; unrelated concurrent prompts remain pending.
 
 ### Workspace backends
 

@@ -829,7 +829,10 @@ mod tests {
                 )
             })
         });
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Other subprocess-heavy tests can saturate constrained CI runners.
+        // Wait for the descendant's explicit on-disk handshake instead of
+        // treating scheduler delay as a cancellation failure.
+        let deadline = Instant::now() + Duration::from_secs(30);
         while !descendant_started.exists() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }

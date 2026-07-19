@@ -233,11 +233,24 @@ async fn command_output_with_timeout(
     mut command: tokio::process::Command,
     timeout: Duration,
 ) -> Option<std::process::Output> {
-    command.kill_on_drop(true);
-    tokio::time::timeout(timeout, command.output())
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    crate::tools::process::configure_process_group(&mut command);
+    let mut child = command.spawn().ok()?;
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let output = crate::tools::process::read_process_output(&mut child, timeout_ms, None)
         .await
-        .ok()?
-        .ok()
+        .ok()?;
+    if output.timed_out {
+        return None;
+    }
+    Some(std::process::Output {
+        status: output.status?,
+        stdout: output.stdout.into_bytes(),
+        stderr: output.stderr.into_bytes(),
+    })
 }
 
 #[cfg(not(target_os = "macos"))]

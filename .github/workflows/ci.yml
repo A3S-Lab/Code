@@ -35,10 +35,10 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --lib --bins -- -D warnings
 
-      - name: Check public API compatibility with v5.3.5
+      - name: Check public API compatibility with v6.0.0
         run: |
           cargo install cargo-semver-checks --version 0.48.0 --locked
-          bash scripts/check_semver.sh 5.3.5
+          bash scripts/check_semver.sh 6.0.0
 
       - name: Default tests
         run: cargo test --workspace

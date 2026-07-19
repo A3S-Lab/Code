@@ -23,10 +23,11 @@ use super::{
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use std::io::Read as _;
+use std::io::SeekFrom;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 
 /// Local filesystem-backed workspace implementation.
 #[derive(Debug)]
@@ -228,6 +229,9 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .write(true)
+            // Truncation happens only after the opened inode passes the
+            // credential and hardlink boundary below.
+            .truncate(false)
             .open(&resolved)
             .await
             .map_err(|e| {
@@ -252,9 +256,23 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
                 e
             ))
         })?;
+        file.seek(SeekFrom::Start(0)).await.map_err(|e| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to position file {} for writing: {}",
+                resolved.display(),
+                e
+            ))
+        })?;
         file.write_all(content.as_bytes()).await.map_err(|e| {
             WorkspaceError::Backend(anyhow!(
                 "Failed to write file {}: {}",
+                resolved.display(),
+                e
+            ))
+        })?;
+        file.flush().await.map_err(|e| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to flush file {} after writing: {}",
                 resolved.display(),
                 e
             ))

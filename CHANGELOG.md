@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-07-19
+
+### Added
+
+- Added per-run snapshot hooks to `PermissionChecker` and
+  `ConfirmationProvider`. Agent invocations bind the frozen checker and
+  confirmation route into their tool context so delegated, parallel, Skill,
+  workflow, and background child runs retain their admitted authority across
+  later session-policy changes.
+- Added an extended `BashSandbox` request/result contract and an
+  `SrtBashSandbox` adapter with timeout, bounded streaming output, explicit
+  environment, network denial, workspace/scratch write limits, protected
+  control metadata, credential-read denial, and no unsandboxed fallback.
+- Added opt-in `LocalWorkspaceAccessPolicy::CredentialBoundary` enforcement
+  for local and manifest-backed workspace services. Direct and range reads,
+  writes, and indexed or fallback grep share the command sandbox's credential
+  and source-hardlink boundary.
+
+### Fixed
+
+- Kept admitted non-interactive execution policy stable for an entire run,
+  including delegated, parallel, Skill, workflow, and background execution.
+  Unexpected parent or tool-owned escalation can now fail closed before a
+  confirmation event is emitted.
+- Preserved the parent sandbox and confirmation boundary in child runs.
+  Child-local allow rules and automatic confirmation may narrow execution but
+  cannot replace the host boundary; explicit Bash host escalation is
+  tool-declared.
+- Extended the local credential boundary to nested `.env*` files and
+  pre-existing multi-link source files while preserving ordinary package-store
+  hardlinks that do not alias a discovered credential inode.
+- Hardened read-only Git output: option-like diff targets cannot become flags,
+  guarded diffs omit denied paths, and displayed remote URLs remove embedded
+  HTTP credentials, query strings, and fragments.
+
 ## [6.0.0] - 2026-07-19
 
 ### Added

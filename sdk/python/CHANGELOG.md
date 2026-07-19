@@ -4,6 +4,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-07-19
+
+### Changed
+
+- Updated the bundled Core with run-scoped execution governance, inherited
+  child authorization, fail-closed local SRT isolation, workspace credential
+  boundaries, and hardened Git output.
+
 ## [6.0.0] - 2026-07-19
 
 ### Changed
