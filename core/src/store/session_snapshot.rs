@@ -62,6 +62,39 @@ impl SessionSnapshotV1 {
         )
     }
 
+    /// Rebind a complete snapshot to a new session and workspace.
+    ///
+    /// Session forks retain historical artifacts, traces, run ids, and child
+    /// session ids. Top-level run ownership and subagent parent ownership must
+    /// move with the new session or the aggregate would no longer be loadable.
+    pub fn fork_for_session(
+        mut self,
+        session_id: impl Into<String>,
+        workspace: impl Into<String>,
+    ) -> Result<Self> {
+        let source_session_id = self.session.id.clone();
+        self.validate_for_session(&source_session_id)?;
+
+        let session_id = session_id.into();
+        if session_id.trim().is_empty() {
+            bail!("forked session id cannot be empty");
+        }
+
+        self.session.id = session_id.clone();
+        self.session.config.workspace = workspace.into();
+        for record in &mut self.run_records {
+            record.snapshot.session_id.clone_from(&session_id);
+        }
+        for task in &mut self.subagent_tasks {
+            if !task.parent_session_id.is_empty() {
+                task.parent_session_id.clone_from(&session_id);
+            }
+        }
+
+        self.validate_for_session(&session_id)?;
+        Ok(self)
+    }
+
     pub fn artifact_store(&self) -> ArtifactStore {
         artifact_store_from(&self.artifacts)
     }
