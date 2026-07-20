@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-07-20
+
+### Changed
+
+- Updated the bundled Core to `a3s-search` 2.0, with AnySearch as the default
+  web-search provider and Tavily available as an explicit native provider.
+
 ## [6.0.0] - 2026-07-19
 
 ### Changed

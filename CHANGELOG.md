@@ -7,12 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-07-20
+
 ### Added
 
 - Added a closed, bounded `.a3s/asset.acl` Agent release contract with immutable
   OCI and provenance digests, static entrypoint and health declarations, typed
   storage boundaries, schema-aware canonical identity, and pre-activation
   protocol and capability checks.
+- Integrated `a3s-search` 2.0 native AnySearch and Tavily providers into the
+  built-in `web_search` engine catalog. Both providers support their documented
+  credential-free modes and optional environment-based authentication.
+
+### Changed
+
+- Made AnySearch the sole built-in default for `web_search` when neither the
+  request nor `SearchConfig` selects engines. Explicit request and ACL engine
+  selections continue to override the built-in default.
 
 ### Security
 

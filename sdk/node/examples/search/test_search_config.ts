@@ -2,7 +2,7 @@
 /**
  * A3S Code Node.js SDK - Web Search Configuration Test
  *
- * Tests A3S Search v0.7.0 configurable web search with real LLM.
+ * Tests A3S Search v2.0.0 configurable web search with real LLM.
  *
  * Run with: npx ts-node examples/test_search_config.ts
  */
@@ -60,10 +60,10 @@ class SearchConfigTest {
     console.log("\nTest 1: Default Search Configuration");
     console.log("-".repeat(80));
 
-    // Use config from file (should have default search engines)
+    // Use config from file (uses AnySearch when no engines are configured)
     const session: Session = this.agent.session(".");
 
-    console.log("Testing: Web search with default engines (ddg, wiki)...");
+    console.log("Testing: Web search with the default AnySearch provider...");
     try {
       const result: AgentResult = await session.send("Search the web for 'Rust async programming' and give me the top 3 results");
       console.log("Default search works");
