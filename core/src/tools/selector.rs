@@ -191,17 +191,27 @@ fn should_include_mcp_tool(
 }
 
 fn selection_context(messages: &[Message]) -> String {
-    let mut parts = Vec::new();
-    for message in messages.iter().rev().take(6).rev() {
-        if message.role == "tool" {
-            continue;
-        }
-        for block in &message.content {
-            if let ContentBlock::Text { text } = block {
-                parts.push(text.as_str());
+    let mut parts = messages
+        .iter()
+        .rev()
+        .filter_map(|message| {
+            if message.role == "tool" {
+                return None;
             }
-        }
-    }
+            let text = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        })
+        .take(6)
+        .collect::<Vec<_>>();
+    parts.reverse();
     parts.join("\n")
 }
 
@@ -410,5 +420,33 @@ mod tests {
         let names: Vec<_> = selected.iter().map(|tool| tool.name.as_str()).collect();
 
         assert_eq!(names, vec!["mcp__use_report__fixture_tool"]);
+    }
+
+    #[test]
+    fn tool_heavy_history_keeps_the_original_textual_intent() {
+        let tool = "mcp__use_browser__agent_browser_open";
+        let mut messages = vec![Message::user(&format!("Call {tool} after diagnostics"))];
+        for index in 0..3 {
+            let id = format!("call-{index}");
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: id.clone(),
+                    name: format!("diagnostic-{index}"),
+                    input: json!({}),
+                }],
+                reasoning_content: None,
+            });
+            messages.push(Message::tool_result(&id, "ok", false));
+        }
+
+        let selected = select_tools_for_messages(&defs(&[tool]), &messages);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![tool]
+        );
     }
 }

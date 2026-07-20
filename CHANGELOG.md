@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Forwarded delegated child confirmation-required, confirmation-received, and
+  confirmation-timeout events through the parent runtime stream so shared HITL
+  providers cannot deadlock while the host UI waits for an event it never saw.
+- Built MCP tool-selection context from the last six text-bearing messages
+  instead of counting tool-use and tool-result messages that are discarded,
+  preserving the original request across long delegated tool sequences.
+
 ## [6.1.0] - 2026-07-20
 
 ### Added
