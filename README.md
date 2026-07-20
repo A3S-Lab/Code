@@ -280,13 +280,18 @@ object-only backend that cannot execute it.
 | Workspace search | `glob`, `grep` | Bounded matching with explicit result metadata and continuation |
 | Code Intelligence | `code_symbols`, `code_navigation`, `code_diagnostics` | Saved-file semantic metadata and locations with bounded results; source retrieval and mutation stay in the existing file tools |
 | Commands and source control | `bash`, `git` | Bounded output, cancellation, process-group termination on Unix, and typed Git operations |
-| Web evidence | `web_search`, `web_fetch` | Ranked multi-engine search, normalized sources, SSRF protections, extraction, and bounded pages |
+| Web evidence | `web_search`, `web_fetch` | AnySearch by default, optional Tavily and conventional engines, normalized sources, SSRF protections, extraction, and bounded pages |
 | Structured output | `generate_object` | Schema-constrained model generation with validation and repair |
 | Composition | `batch`, `program` | Safe batch scheduling and sandboxed JavaScript programmatic tool calling |
 | Delegation | `task`, `parallel_task` | Foreground/background workers, bounded parallelism, partial results, and task tracking |
 | Skills | `Skill`, `search_skills` | Filesystem or inline skill discovery and execution with optional tool restrictions |
 | MCP | `mcp__<server>__<tool>` | Namespaced tools owned by their source manager |
 | Dynamic workflows | `dynamic_workflow` | Explicitly registered A3S Flow-backed, replayable per-turn workflows |
+
+Without an explicit request or `SearchConfig` engine selection, `web_search`
+uses AnySearch in its anonymous mode. Set `ANYSEARCH_API_KEY` to authenticate,
+or select `tavily`, `ddg`, `wiki`, and the other documented engines through
+the tool arguments or ACL configuration.
 
 Standalone greetings are conversational turns: the model receives no tool
 definitions and a friendly response is not converted into a synthetic
