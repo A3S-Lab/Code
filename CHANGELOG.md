@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a closed, bounded `.a3s/asset.acl` Agent release contract with immutable
+  OCI and provenance digests, static entrypoint and health declarations, typed
+  storage boundaries, schema-aware canonical identity, and pre-activation
+  protocol and capability checks.
+
+### Security
+
+- Restricted release secret requirements to unique environment or
+  `/run/secrets/` injection slots, rejected embedded values and ambiguous
+  destinations, and kept admission diagnostics from echoing manifest values.
+
 ## [6.0.0] - 2026-07-19
 
 ### Added
