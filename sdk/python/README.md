@@ -280,6 +280,24 @@ session.tool("dynamic_workflow", {
 })
 session.unregister_dynamic_tool("dynamic_workflow")
 
+# Folder-style skills
+workspace = "/my-project"
+skill_dir = f"{workspace}/skills"
+session = agent.session(workspace, skill_dirs=[skill_dir])
+matches = session.tool("search_skills", {"query": "review database schema", "limit": 5})
+print(matches.output)
+
+skill_result = session.tool("Skill", {
+    "skill_name": "db-review",
+    "prompt": "Review the migrations and summarize correctness risks.",
+})
+print(skill_result.output)
+
+# Or configure skill directories through SessionOptions.
+opts = SessionOptions()
+opts.skill_dirs = [skill_dir]
+session = agent.session(workspace, opts)
+
 # S3-compatible workspace — point the same direct tools at object storage.
 # `bash`, `git`, `grep`, `glob` are automatically hidden because object
 # storage cannot service them. Works with AWS S3, MinIO, RustFS, R2, B2.

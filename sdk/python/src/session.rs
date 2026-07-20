@@ -846,7 +846,7 @@ impl PySession {
     ///         return f"pong! session={ctx['session_id']}"
     ///
     ///     session.register_command("ping", "Pong!", ping_handler)
-    ///     result = await session.send("/ping hello")
+    ///     result = session.send("/ping hello")
     #[pyo3(signature = (name, description, handler))]
     fn register_command(
         &self,
