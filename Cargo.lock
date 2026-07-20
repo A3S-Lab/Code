@@ -10,14 +10,19 @@ checksum = "35b83be97f61abdd33096446eae063f9d65d98e84c446560b59d3c744194287e"
 
 [[package]]
 name = "a3s-acl"
-version = "0.2.1"
-source = "git+https://github.com/A3S-Lab/ACL.git?rev=6e2a6469edc0f4c61b1e588d0ace873aaf15ce22#6e2a6469edc0f4c61b1e588d0ace873aaf15ce22"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "add06e627b80ea0d3f6de5ecfb2708cfcf4c6d022806ae33aec0905aeffde3ce"
+dependencies = [
+ "ryu-js",
+ "sha2 0.10.9",
+]
 
 [[package]]
 name = "a3s-code-core"
 version = "6.0.0"
 dependencies = [
- "a3s-acl 0.2.1 (git+https://github.com/A3S-Lab/ACL.git?rev=6e2a6469edc0f4c61b1e588d0ace873aaf15ce22)",
+ "a3s-acl 0.3.0",
  "a3s-common",
  "a3s-flow",
  "a3s-lane",
@@ -149,7 +154,7 @@ dependencies = [
 name = "a3s-search"
 version = "1.4.3"
 dependencies = [
- "a3s-acl 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "a3s-acl 0.2.1",
  "a3s-updater",
  "a3s-use-browser",
  "anyhow",
@@ -4423,6 +4428,12 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "ryu-js"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
 
 [[package]]
 name = "same-file"
