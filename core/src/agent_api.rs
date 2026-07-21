@@ -370,6 +370,9 @@ pub struct SessionOptions {
 /// A streaming operation remains active until its returned handle completes.
 pub struct AgentSession {
     llm_client: Arc<dyn LlmClient>,
+    /// Provider-reported generation capacity shared by every loop and
+    /// host-direct tool call created for this session.
+    model_generation_admission: crate::llm::ModelGenerationAdmission,
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,

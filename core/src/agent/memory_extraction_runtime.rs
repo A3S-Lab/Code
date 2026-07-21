@@ -6,6 +6,7 @@ use a3s_memory::{MemoryItem, MemoryType};
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -15,9 +16,11 @@ You extract durable, reusable memory for a coding agent.
 Return JSON only. Do not include markdown.
 Keep only facts, preferences, decisions, workflows, and failure lessons that are likely useful in future sessions.
 Do not store transient progress, generic praise, raw logs, secrets, credentials, or information that only matters inside the current answer.
-Each memory must be standalone and concise.";
+Never narrate what the user or assistant did in this turn.
+Each memory must be standalone, concise, scoped, and justified. Return an empty items array when nothing qualifies.";
 
 const MAX_MEMORY_CONTENT_CHARS: usize = 1_200;
+const MAX_MEMORY_REASON_CHARS: usize = 320;
 const MAX_MEMORY_TAGS: usize = 8;
 const MAX_RELATED_MEMORY_ITEMS: usize = 5;
 const MAX_RELATED_MEMORY_CHARS: usize = 2_000;
@@ -25,6 +28,8 @@ const MAX_RELATED_MEMORY_CONTENT_CHARS: usize = 320;
 const MAX_DIRECT_TURN_FIELD_CHARS: usize = 2_000;
 const MAX_TRANSCRIPT_MESSAGE_CHARS: usize = 1_200;
 const SENSITIVE_REDACTION: &str = "[redacted sensitive value]";
+const MIN_MEMORY_IMPORTANCE: f32 = 0.70;
+const MIN_MEMORY_CONFIDENCE: f32 = 0.75;
 
 #[derive(Debug, Deserialize)]
 struct ExtractedMemory {
@@ -35,9 +40,15 @@ struct ExtractedMemory {
     #[serde(default)]
     importance: Option<f32>,
     #[serde(default)]
+    confidence: Option<f32>,
+    #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
     source: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
     #[serde(default, alias = "replaces")]
     supersedes: Vec<String>,
     #[serde(default, alias = "conflictsWith", alias = "conflicts")]
@@ -53,16 +64,12 @@ struct RelatedMemoryContext {
 #[derive(Debug, Clone)]
 pub(super) struct MemoryExtractionSnapshot {
     messages: Vec<Message>,
-    tool_calls_count: usize,
-    recent_tool_signatures: Vec<String>,
 }
 
 impl MemoryExtractionSnapshot {
     pub(super) fn from_state(state: &ExecutionLoopState) -> Self {
         Self {
             messages: state.messages.clone(),
-            tool_calls_count: state.tool_calls_count,
-            recent_tool_signatures: state.recent_tool_signatures(),
         }
     }
 }
@@ -87,6 +94,7 @@ impl AgentLoop {
         if !should_attempt_llm_memory_extraction(&snapshot, prompt, response) {
             return;
         }
+        let ticket = memory.enqueue_llm_extraction();
 
         if event_tx.is_some() {
             let agent = self.clone();
@@ -104,6 +112,7 @@ impl AgentLoop {
                         &session_id,
                         &no_events,
                         &cancel_token,
+                        ticket,
                     )
                     .await;
             });
@@ -117,6 +126,7 @@ impl AgentLoop {
             session_id,
             event_tx,
             cancel_token,
+            ticket,
         )
         .await;
     }
@@ -129,22 +139,15 @@ impl AgentLoop {
         session_id: &str,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &CancellationToken,
+        mut ticket: crate::memory::MemoryExtractionTicket,
     ) {
+        ticket.wait_for_turn().await;
         let Some(memory) = self.config.memory.as_ref().cloned() else {
             return;
         };
         if !memory.llm_extraction_enabled() {
             return;
         }
-        if !should_attempt_llm_memory_extraction(snapshot, prompt, response) {
-            return;
-        }
-        let Some(_permit) = memory.try_begin_llm_extraction() else {
-            tracing::debug!(
-                "Skipping LLM memory extraction because another extraction is already running"
-            );
-            return;
-        };
 
         let max_items = memory.llm_extraction_max_items().clamp(1, 10);
         let related_memories = related_memories_for_extraction(&memory, prompt, response).await;
@@ -179,7 +182,7 @@ impl AgentLoop {
         let mut seen = HashSet::new();
         for extracted in extracted.into_iter().take(max_items) {
             let Some((item, supersedes, conflicts_with)) = extracted.into_memory_item(
-                prompt,
+                &self.tool_context.workspace,
                 session_id,
                 &related_memories.allowed_supersedes,
             ) else {
@@ -236,10 +239,11 @@ impl AgentLoop {
 impl ExtractedMemory {
     fn into_memory_item(
         self,
-        prompt: &str,
+        workspace: impl AsRef<Path>,
         session_id: &str,
         allowed_supersedes: &HashSet<String>,
     ) -> Option<(MemoryItem, Vec<String>, Vec<String>)> {
+        let workspace = workspace.as_ref();
         let content = compact(self.content.trim(), MAX_MEMORY_CONTENT_CHARS);
         if content.chars().count() < 20 {
             return None;
@@ -251,19 +255,44 @@ impl ExtractedMemory {
             return None;
         }
 
-        let memory_type = parse_memory_type(&self.memory_type);
-        let source = normalize_extraction_source(self.source);
-        let prompt_metadata = redact_sensitive_text(&compact(prompt, 500));
+        let memory_type = parse_durable_memory_type(&self.memory_type)?;
+        let source = normalize_extraction_source(self.source)?;
+        if !source_matches_memory_type(&source, memory_type) {
+            tracing::debug!(
+                source,
+                memory_type = memory_type_label(memory_type),
+                "Skipping extracted memory because its source and type are inconsistent"
+            );
+            return None;
+        }
+        let importance = self.importance.filter(|value| value.is_finite())?;
+        if !(MIN_MEMORY_IMPORTANCE..=1.0).contains(&importance) {
+            return None;
+        }
+        let confidence = self.confidence.filter(|value| value.is_finite())?;
+        if !(MIN_MEMORY_CONFIDENCE..=1.0).contains(&confidence) {
+            return None;
+        }
+        let scope = normalize_memory_scope(self.scope)?;
+        let reason = compact(self.reason?.trim(), MAX_MEMORY_REASON_CHARS);
+        if reason.chars().count() < 12 || contains_sensitive_memory_material(&reason) {
+            return None;
+        }
         let supersedes = normalize_supersedes(self.supersedes, allowed_supersedes);
         let conflicts_with = normalize_related_ids(self.conflicts_with, allowed_supersedes);
         let mut item = MemoryItem::new(content)
             .with_type(memory_type)
-            .with_importance(self.importance.unwrap_or(0.65).clamp(0.1, 1.0))
+            .with_importance(importance)
             .with_tag("llm")
             .with_tag("extracted")
+            .with_tag(source.clone())
             .with_metadata("source", source)
+            .with_metadata("confidence", format!("{confidence:.2}"))
+            .with_metadata("scope", scope)
+            .with_metadata("reason", reason)
+            .with_metadata("workspace", workspace.display().to_string())
             .with_metadata("session_id", session_id)
-            .with_metadata("prompt", prompt_metadata);
+            .with_metadata("schema", "a3s.memory.durable.v1");
         if !supersedes.is_empty() {
             item = item
                 .with_tag("consolidated")
@@ -308,7 +337,15 @@ Only put ids from Related existing memories in supersedes when the new memory di
 Use conflicts_with for directly contradictory related memories that should remain available instead of being deleted.
 
 Return exactly this JSON shape:
-{{\"items\":[{{\"memory_type\":\"semantic|procedural|episodic\",\"content\":\"standalone memory\",\"importance\":0.0,\"tags\":[\"tag\"],\"source\":\"project_fact|workflow|failure|preference|decision\",\"supersedes\":[\"related-memory-id\"],\"conflicts_with\":[\"related-memory-id\"]}}]}}
+{{\"items\":[{{\"memory_type\":\"semantic|procedural\",\"content\":\"standalone reusable memory\",\"importance\":0.0,\"confidence\":0.0,\"tags\":[\"tag\"],\"source\":\"project_fact|workflow|failure|preference|decision\",\"scope\":\"workspace|user\",\"reason\":\"why this will matter in a future session\",\"supersedes\":[\"related-memory-id\"],\"conflicts_with\":[\"related-memory-id\"]}}]}}
+
+Acceptance rules:
+- Return {{\"items\":[]}} unless the memory is likely to change a future answer or action.
+- Use semantic only for durable facts, preferences, or decisions; use procedural only for reusable workflows or failure lessons.
+- importance must be at least {MIN_MEMORY_IMPORTANCE:.2} and confidence at least {MIN_MEMORY_CONFIDENCE:.2}.
+- scope is workspace for repository-specific knowledge and user for stable user preferences.
+- failure memories must state a reusable cause, diagnostic, or prevention rule, never a raw error or stack trace.
+- Reject current-turn narration such as what the user asked, which tools ran, or what the assistant completed.
 
 User request:
 {prompt}
@@ -540,27 +577,43 @@ fn extract_json(text: &str) -> Option<String> {
     }
 }
 
-fn parse_memory_type(value: &str) -> MemoryType {
+fn parse_durable_memory_type(value: &str) -> Option<MemoryType> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "semantic" => MemoryType::Semantic,
-        "procedural" => MemoryType::Procedural,
-        "working" => MemoryType::Working,
-        _ => MemoryType::Episodic,
+        "semantic" => Some(MemoryType::Semantic),
+        "procedural" => Some(MemoryType::Procedural),
+        _ => None,
     }
 }
 
-fn normalize_extraction_source(source: Option<String>) -> String {
-    let Some(source) = source else {
-        return "llm_extractor".to_string();
-    };
+fn normalize_extraction_source(source: Option<String>) -> Option<String> {
+    let source = source?;
     match source.trim().to_ascii_lowercase().as_str() {
-        "project_fact" | "workflow" | "failure" | "preference" | "decision" => source
-            .trim()
-            .to_ascii_lowercase()
-            .chars()
-            .take(40)
-            .collect(),
-        _ => "llm_extractor".to_string(),
+        "project_fact" | "workflow" | "failure" | "preference" | "decision" => Some(
+            source
+                .trim()
+                .to_ascii_lowercase()
+                .chars()
+                .take(40)
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn normalize_memory_scope(scope: Option<String>) -> Option<String> {
+    match scope?.trim().to_ascii_lowercase().as_str() {
+        "workspace" | "project" | "repository" | "repo" => Some("workspace".to_string()),
+        "user" | "personal" => Some("user".to_string()),
+        _ => None,
+    }
+}
+
+fn source_matches_memory_type(source: &str, memory_type: MemoryType) -> bool {
+    match source {
+        "project_fact" | "preference" => memory_type == MemoryType::Semantic,
+        "workflow" | "failure" => memory_type == MemoryType::Procedural,
+        "decision" => matches!(memory_type, MemoryType::Semantic | MemoryType::Procedural),
+        _ => false,
     }
 }
 
@@ -685,57 +738,7 @@ async fn similar_existing_memory(
 fn memory_contents_are_duplicates(existing: &str, extracted: &str) -> bool {
     let existing = normalize_memory_content(existing);
     let extracted = normalize_memory_content(extracted);
-    if existing.is_empty() || extracted.is_empty() {
-        return false;
-    }
-    if existing == extracted {
-        return true;
-    }
-
-    let existing_terms = durable_memory_terms(&existing);
-    let extracted_terms = durable_memory_terms(&extracted);
-    if existing_terms.len() < 4 || extracted_terms.len() < 4 {
-        return false;
-    }
-
-    let overlap = existing_terms.intersection(&extracted_terms).count();
-    let union = existing_terms.len() + extracted_terms.len() - overlap;
-    union > 0 && overlap as f32 / union as f32 >= 0.85
-}
-
-fn durable_memory_terms(content: &str) -> HashSet<String> {
-    content
-        .split(|ch: char| !(ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/')))
-        .map(str::trim)
-        .filter(|term| term.chars().count() >= 3)
-        .filter(|term| !is_memory_stopword(term))
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn is_memory_stopword(term: &str) -> bool {
-    matches!(
-        term,
-        "the"
-            | "and"
-            | "for"
-            | "with"
-            | "after"
-            | "before"
-            | "from"
-            | "that"
-            | "this"
-            | "when"
-            | "then"
-            | "than"
-            | "into"
-            | "must"
-            | "should"
-            | "would"
-            | "could"
-            | "about"
-            | "memory"
-    )
+    !existing.is_empty() && existing == extracted
 }
 
 fn compact(text: &str, max_chars: usize) -> String {
@@ -792,117 +795,11 @@ fn sensitive_memory_patterns() -> &'static [Regex] {
 }
 
 fn should_attempt_llm_memory_extraction(
-    snapshot: &MemoryExtractionSnapshot,
+    _snapshot: &MemoryExtractionSnapshot,
     prompt: &str,
     response: &str,
 ) -> bool {
-    if prompt.trim().is_empty() || response.trim().is_empty() {
-        return false;
-    }
-
-    if tool_activity_warrants_extraction(snapshot) {
-        return true;
-    }
-
-    let combined = format!("{prompt}\n{response}").to_ascii_lowercase();
-    if combined.chars().count() >= 600 {
-        return true;
-    }
-
-    durable_signal_keywords()
-        .iter()
-        .any(|needle| combined.contains(needle))
-}
-
-fn durable_signal_keywords() -> &'static [&'static str] {
-    &[
-        "remember",
-        "always",
-        "never",
-        "prefer",
-        "preference",
-        "decision",
-        "decided",
-        "root cause",
-        "bug",
-        "fix",
-        "fixed",
-        "failed",
-        "failure",
-        "regression",
-        "workflow",
-        "convention",
-        "rule",
-        "project",
-        "repo",
-        "module",
-        "crate",
-        "api",
-        "config",
-        "migration",
-        "请记住",
-        "记住",
-        "记忆",
-        "偏好",
-        "决策",
-        "决定",
-        "约定",
-        "规范",
-        "工作流",
-        "流程",
-        "失败",
-        "错误",
-        "修复",
-        "根因",
-        "项目",
-        "仓库",
-        "配置",
-        "迁移",
-        "模块",
-        "接口",
-    ]
-}
-
-fn tool_activity_warrants_extraction(snapshot: &MemoryExtractionSnapshot) -> bool {
-    if snapshot.tool_calls_count == 0 {
-        return false;
-    }
-
-    let signatures = &snapshot.recent_tool_signatures;
-    if signatures.is_empty() {
-        return true;
-    }
-
-    signatures.iter().any(|signature| {
-        tool_signature_is_error(signature)
-            || !tool_signature_name(signature).is_some_and(is_read_only_memory_tool)
-    })
-}
-
-fn tool_signature_name(signature: &str) -> Option<&str> {
-    signature.split_once(':').map(|(name, _)| name)
-}
-
-fn tool_signature_is_error(signature: &str) -> bool {
-    signature
-        .rsplit_once("=>")
-        .map(|(_, status)| status.trim() == "error")
-        .unwrap_or(true)
-}
-
-fn is_read_only_memory_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name.to_ascii_lowercase().as_str(),
-        "read"
-            | "grep"
-            | "glob"
-            | "ls"
-            | "web_fetch"
-            | "web_search"
-            | "code_symbols"
-            | "code_navigation"
-            | "code_diagnostics"
-    )
+    !prompt.trim().is_empty() && !response.trim().is_empty()
 }
 
 #[cfg(test)]

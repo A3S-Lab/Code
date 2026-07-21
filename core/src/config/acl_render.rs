@@ -54,7 +54,7 @@ pub(super) fn render_single_section(
         )],
         ConfigSection::DocumentParser => vec![block_entry(
             &["document_parser", "documentParser"],
-            render_document_parser(config, original, document),
+            render_document_parser(config, document),
         )],
         ConfigSection::Providers | ConfigSection::McpServers => Vec::new(),
     }
@@ -546,13 +546,8 @@ fn render_search(config: &CodeConfig, document: &Document) -> Option<Block> {
     Some(block)
 }
 
-fn render_document_parser(
-    config: &CodeConfig,
-    original: &CodeConfig,
-    document: &Document,
-) -> Option<Block> {
+fn render_document_parser(config: &CodeConfig, document: &Document) -> Option<Block> {
     let parser = config.document_parser.as_ref()?;
-    let original_parser = original.document_parser.as_ref();
     let mut block = base_block(
         document,
         &["document_parser", "documentParser"],
@@ -585,66 +580,7 @@ fn render_document_parser(
             cache_block
         }),
     );
-    let original_ocr_block = find_nested(&block, &["ocr"], None).cloned();
-    replace_nested(
-        &mut block,
-        &["ocr"],
-        parser.ocr.as_ref().map(|ocr| {
-            let mut ocr_block = original_ocr_block.unwrap_or_else(|| empty_block("ocr"));
-            ocr_block.name = "ocr".to_string();
-            set_attr(
-                &mut ocr_block,
-                &["enabled"],
-                "enabled",
-                Some(Value::Bool(ocr.enabled)),
-            );
-            set_attr(
-                &mut ocr_block,
-                &["model"],
-                "model",
-                ocr.model.as_deref().map(string),
-            );
-            set_attr(
-                &mut ocr_block,
-                &["prompt"],
-                "prompt",
-                ocr.prompt.as_deref().map(string),
-            );
-            set_attr(
-                &mut ocr_block,
-                &["max_images", "maxImages"],
-                "max_images",
-                Some(number(ocr.max_images)),
-            );
-            set_attr(&mut ocr_block, &["dpi"], "dpi", Some(number(ocr.dpi)));
-            set_attr(
-                &mut ocr_block,
-                &["provider"],
-                "provider",
-                ocr.provider.as_deref().map(string),
-            );
-            set_attr(
-                &mut ocr_block,
-                &["base_url", "baseUrl"],
-                "base_url",
-                ocr.base_url.as_deref().map(string),
-            );
-            let original_secret = find_attr(&ocr_block, &["api_key", "apiKey"]).cloned();
-            set_attr(
-                &mut ocr_block,
-                &["api_key", "apiKey"],
-                "api_key",
-                preserved_string(
-                    ocr.api_key.as_deref(),
-                    original_parser
-                        .and_then(|parser| parser.ocr.as_ref())
-                        .and_then(|ocr| ocr.api_key.as_deref()),
-                    original_secret.as_ref(),
-                ),
-            );
-            ocr_block
-        }),
-    );
+    replace_nested(&mut block, &["ocr"], None);
     Some(block)
 }
 

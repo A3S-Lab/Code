@@ -457,14 +457,6 @@ document_parser {
     enabled = true
     directory = "./document-cache"
   }
-  ocr {
-    enabled = true
-    model = "openai/gpt-test"
-    max_images = 12
-    dpi = 192
-    provider = "vision"
-    api_key = env("A3S_EDITOR_OCR_KEY")
-  }
 }
 
 mcp_servers "remote" {
@@ -560,7 +552,6 @@ unknown { nested { enabled = true } }
             "env(\"A3S_EDITOR_PROVIDER_KEY\")",
             "env(\"A3S_EDITOR_PROVIDER_TOKEN\")",
             "env(\"A3S_EDITOR_MODEL_KEY\")",
-            "env(\"A3S_EDITOR_OCR_KEY\")",
             "env(\"A3S_EDITOR_MCP_HEADER\")",
             "env(\"A3S_EDITOR_MCP_TOKEN\")",
             "env(\"A3S_EDITOR_OAUTH_SECRET\")",

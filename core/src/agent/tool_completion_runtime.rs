@@ -9,7 +9,6 @@ pub(super) struct ToolCompletionInput<'a> {
     pub(super) tool_call: &'a ToolCall,
     pub(super) event_tx: &'a Option<mpsc::Sender<AgentEvent>>,
     pub(super) session_id: Option<&'a str>,
-    pub(super) effective_prompt: &'a str,
     pub(super) tool_start: Instant,
     pub(super) normalized: NormalizedToolResult,
 }
@@ -24,7 +23,6 @@ impl AgentLoop {
             tool_call,
             event_tx,
             session_id,
-            effective_prompt,
             tool_start,
             normalized,
         } = input;
@@ -50,15 +48,6 @@ impl AgentLoop {
                 .as_ref()
                 .map(|kind| format!("{kind:?}")),
         );
-
-        self.remember_tool_result(
-            effective_prompt,
-            &tool_call.name,
-            &output,
-            normalized.exit_code,
-            event_tx,
-        )
-        .await;
 
         if let Some(tx) = event_tx {
             tx.send(AgentEvent::ToolEnd {

@@ -201,6 +201,7 @@ fn register_task_capability(
         confirmation_manager: input.opts.confirmation_manager.clone(),
         enforce_active_skill_tool_restrictions: input.opts.enforce_active_skill_tool_restrictions,
         workspace_services: input.opts.workspace_services.clone(),
+        sandbox_handle: input.opts.sandbox_handle.clone(),
         budget_guard: input.opts.budget_guard.clone(),
     };
 

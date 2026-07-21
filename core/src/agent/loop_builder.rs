@@ -1,5 +1,5 @@
 use super::{AgentConfig, AgentLoop};
-use crate::llm::LlmClient;
+use crate::llm::{LlmClient, ModelGenerationAdmission};
 use crate::loop_checkpoint::LoopCheckpointSink;
 use crate::session_lane_queue::SessionLaneQueue;
 use crate::tools::{ToolContext, ToolExecutor};
@@ -12,8 +12,11 @@ impl AgentLoop {
         tool_context: ToolContext,
         config: AgentConfig,
     ) -> Self {
+        let model_generation_admission =
+            ModelGenerationAdmission::new(llm_client.model_generation_concurrency());
         Self {
             llm_client,
+            model_generation_admission,
             tool_executor,
             tool_context,
             config,
@@ -21,6 +24,20 @@ impl AgentLoop {
             checkpoint_sink: None,
             checkpoint_run_id: None,
         }
+    }
+
+    /// Reuse the provider admission gate owned by the surrounding session.
+    ///
+    /// `AgentLoop` instances are rebuilt for each host-direct call so they can
+    /// snapshot live tools and governance. Model-generation capacity is a
+    /// provider/session contract, not a per-call resource, and therefore must
+    /// survive those rebuilds.
+    pub(crate) fn with_model_generation_admission(
+        mut self,
+        admission: ModelGenerationAdmission,
+    ) -> Self {
+        self.model_generation_admission = admission;
+        self
     }
 
     /// Set the lane queue for priority-based tool execution.

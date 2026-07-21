@@ -382,7 +382,11 @@ fn test_web_search_schema_is_canonical() {
     assert_eq!(examples[1]["engines"].as_array().unwrap(), &["ddg", "wiki"]);
     assert!(params["properties"]["engines"]["description"]
         .as_str()
-        .is_some_and(|description| description.contains("bing (Bing RSS)")));
+        .is_some_and(|description| {
+            description.contains("bing (Bing RSS)")
+                && description.contains("anysearch")
+                && description.contains("tavily")
+        }));
 }
 
 #[test]
@@ -426,6 +430,12 @@ fn test_add_http_engine_valid() {
 
     assert!(add_http_engine(&mut search, "bing_cn", None));
     assert_eq!(search.engine_count(), 5);
+
+    assert!(add_http_engine(&mut search, "anysearch", None));
+    assert_eq!(search.engine_count(), 6);
+
+    assert!(add_http_engine(&mut search, "tavily", None));
+    assert_eq!(search.engine_count(), 7);
 }
 
 #[test]

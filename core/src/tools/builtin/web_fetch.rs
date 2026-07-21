@@ -8,6 +8,8 @@ use reqwest::{header::LOCATION, redirect::Policy, Url};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
+mod pdf;
+
 /// Maximum response size (5MB)
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024;
 /// Maximum number of redirects followed by a single fetch.
@@ -26,7 +28,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch content from a URL and convert to text or markdown. Supports HTML to Markdown conversion. 5MB download size limit and capped tool output. Configurable timeout (max 120 seconds)."
+        "Fetch content from a URL and convert to text or markdown. Supports HTML to Markdown conversion and text extraction from PDF documents. 5MB download size limit and capped tool output. Configurable timeout (max 120 seconds)."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -49,7 +51,7 @@ impl Tool for WebFetchTool {
                 },
                 "body_only": {
                     "type": "boolean",
-                    "description": "Optional. For HTML responses, extract the body element before conversion. Default: true."
+                    "description": "Optional. For HTML responses, extract the semantic main element when present, otherwise the body element, before conversion. Default: true."
                 },
                 "offset": {
                     "type": "integer",
@@ -186,6 +188,8 @@ impl Tool for WebFetchTool {
         Ok(
             ToolOutput::success(range.content).with_metadata(serde_json::json!({
                 "source_anchors": source_anchors,
+                "document_kind": page.document_kind,
+                "content_type": page.content_type,
                 "range": {
                     "offset": offset,
                     "requested_max_chars": requested_max_chars,
@@ -214,7 +218,7 @@ pub(super) fn explicit_web_proxy_from_env() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 pub(super) async fn system_web_proxy() -> Option<String> {
-    let mut command = tokio::process::Command::new("scutil");
+    let mut command = tokio::process::Command::new("/usr/sbin/scutil");
     command.arg("--proxy");
     let output = command_output_with_timeout(command, SYSTEM_PROXY_LOOKUP_TIMEOUT).await?;
     output
@@ -229,11 +233,24 @@ async fn command_output_with_timeout(
     mut command: tokio::process::Command,
     timeout: Duration,
 ) -> Option<std::process::Output> {
-    command.kill_on_drop(true);
-    tokio::time::timeout(timeout, command.output())
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    crate::tools::process::configure_process_group(&mut command);
+    let mut child = command.spawn().ok()?;
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let output = crate::tools::process::read_process_output(&mut child, timeout_ms, None)
         .await
-        .ok()?
-        .ok()
+        .ok()?;
+    if output.timed_out {
+        return None;
+    }
+    Some(std::process::Output {
+        status: output.status?,
+        stdout: output.stdout.into_bytes(),
+        stderr: output.stderr.into_bytes(),
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -266,6 +283,8 @@ fn parse_macos_proxy(text: &str) -> Option<String> {
 struct FetchedPage {
     content: String,
     final_url: Url,
+    document_kind: &'static str,
+    content_type: String,
 }
 
 /// Fetch a URL while validating and pinning DNS results for every redirect hop.
@@ -348,8 +367,21 @@ async fn fetch_url(
             bytes.extend_from_slice(&chunk);
         }
 
-        let body = String::from_utf8_lossy(&bytes).to_string();
-        if content_type.contains("text/html") {
+        let is_pdf = pdf::response_is_pdf(&content_type, &bytes);
+        let is_html = !is_pdf
+            && content_type
+                .split(';')
+                .next()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/html"));
+        let document_kind = if is_pdf {
+            "pdf"
+        } else if is_html {
+            "html"
+        } else {
+            "text"
+        };
+        let html_body = is_html.then(|| String::from_utf8_lossy(&bytes).into_owned());
+        if let Some(body) = html_body.as_deref() {
             if let Some(location) = html_refresh_location(&body) {
                 if redirect_count == MAX_REDIRECTS {
                     return Err(format!(
@@ -361,21 +393,35 @@ async fn fetch_url(
                 continue;
             }
         }
-        let body = if body_only && content_type.contains("text/html") {
-            extract_html_body(&body).unwrap_or(body)
+        let body = if is_pdf {
+            pdf::extract_text(bytes).await?
         } else {
-            body
+            let body = html_body.unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+            if body_only && is_html {
+                extract_html_main(&body)
+                    .or_else(|| extract_html_body(&body))
+                    .unwrap_or(body)
+            } else {
+                body
+            }
         };
         let content = match format {
             "html" => body,
-            "text" if content_type.contains("text/html") => html_to_text(&body),
-            "markdown" if content_type.contains("text/html") => html_to_markdown(&body),
-            _ if content_type.contains("text/html") => html_to_markdown(&body),
+            "text" if is_html => html_to_text(&body),
+            "markdown" if is_html => html_to_markdown(&body),
+            _ if is_html => html_to_markdown(&body),
             _ => body,
         };
         return Ok(FetchedPage {
             content,
             final_url: url,
+            document_kind,
+            content_type: content_type
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase(),
         });
     }
 
@@ -431,6 +477,17 @@ fn extract_html_body(html: &str) -> Option<String> {
         .captures(html)
         .and_then(|captures| captures.get(1))
         .map(|body| body.as_str().to_string())
+}
+
+fn extract_html_main(html: &str) -> Option<String> {
+    static MAIN_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let main_re = MAIN_RE.get_or_init(|| {
+        regex::Regex::new(r"(?is)<main\b[^>]*>(.*?)</main\s*>").expect("static HTML main regex")
+    });
+    main_re
+        .captures(html)
+        .and_then(|captures| captures.get(1))
+        .map(|main| main.as_str().to_string())
 }
 
 /// Return the target of an HTML meta-refresh redirect.
@@ -750,272 +807,5 @@ fn html_to_markdown(html: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_html_to_text_basic() {
-        let html = "<p>Hello <b>world</b></p>";
-        let text = html_to_text(html);
-        assert!(text.contains("Hello"));
-        assert!(text.contains("world"));
-        assert!(!text.contains("<p>"));
-        assert!(!text.contains("<b>"));
-    }
-
-    #[test]
-    fn test_html_to_text_entities() {
-        let html = "foo &amp; bar &lt; baz &gt; qux";
-        let text = html_to_text(html);
-        assert!(text.contains("foo & bar < baz > qux"));
-    }
-
-    #[test]
-    fn test_html_to_text_strips_script() {
-        let html = "<p>before</p><script>alert('xss')</script><p>after</p>";
-        let text = html_to_text(html);
-        assert!(text.contains("before"));
-        assert!(text.contains("after"));
-        assert!(!text.contains("alert"));
-    }
-
-    #[test]
-    fn test_html_to_text_multibyte_utf8() {
-        let html = "<p>Diseño español — café résumé naïve</p>";
-        let text = html_to_text(html);
-        assert!(text.contains("Diseño"));
-        assert!(text.contains("café"));
-        assert!(text.contains("résumé"));
-    }
-
-    #[test]
-    fn test_html_refresh_location_handles_static_doc_redirect() {
-        let html = r#"<!doctype html><html>
-          <meta http-equiv="refresh" content="0; url=/docs/current/overview.html">
-          <h1>Redirecting&hellip;</h1>
-        </html>"#;
-
-        assert_eq!(
-            html_refresh_location(html).as_deref(),
-            Some("/docs/current/overview.html")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_web_fetch_invalid_url() {
-        let tool = WebFetchTool;
-        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp"));
-
-        let result = tool
-            .execute(&serde_json::json!({"url": "not-a-url"}), &ctx)
-            .await
-            .unwrap();
-
-        assert!(!result.success);
-        assert!(result.content.contains("must start with"));
-    }
-
-    #[tokio::test]
-    async fn test_web_fetch_missing_url() {
-        let tool = WebFetchTool;
-        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp"));
-
-        let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
-        assert!(!result.success);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires external network"]
-    async fn real_system_proxy_fetches_official_https_source() {
-        let tool = WebFetchTool;
-        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp"));
-        let result = tool
-            .execute(
-                &serde_json::json!({
-                    "url": "https://tokio.rs/tokio/tutorial",
-                    "format": "markdown",
-                    "timeout": 20
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert!(result.success, "{}", result.content);
-        assert!(result.content.to_ascii_lowercase().contains("tokio"));
-    }
-
-    #[test]
-    fn test_web_fetch_schema_is_canonical() {
-        let tool = WebFetchTool;
-        let params = tool.parameters();
-        assert_eq!(params["additionalProperties"], false);
-        assert_eq!(params["required"], serde_json::json!(["url"]));
-        let examples = params["examples"].as_array().unwrap();
-        assert_eq!(examples[0]["url"], "https://example.com");
-        assert!(examples[0].get("link").is_none());
-    }
-
-    #[test]
-    fn test_web_fetch_request_and_diagnostics_use_safe_url() {
-        let (request, anchor) = parse_safe_request_url(
-            "https://fetch-user:fetch-password@example.com/page?api_key=secret#private",
-        )
-        .unwrap();
-
-        assert_eq!(request.as_str(), "https://example.com/page");
-        assert_eq!(anchor, "https://example.com/page");
-        assert_eq!(safe_url_for_diagnostic(&request), anchor);
-        for secret in [
-            "fetch-user",
-            "fetch-password",
-            "api_key",
-            "secret",
-            "private",
-        ] {
-            assert!(!request.as_str().contains(secret));
-            assert!(!anchor.contains(secret));
-        }
-    }
-
-    #[test]
-    fn test_web_fetch_request_preserves_functional_query_but_redacts_anchor() {
-        let (request, anchor) = parse_safe_request_url(
-            "https://api.example.com/scores?from=2026-07-09&to=2026-07-19&limit=20&api_key=secret#private",
-        )
-        .unwrap();
-
-        assert_eq!(
-            request.as_str(),
-            "https://api.example.com/scores?from=2026-07-09&to=2026-07-19&limit=20"
-        );
-        assert_eq!(anchor, "https://api.example.com/scores");
-        assert!(!request.as_str().contains("api_key"));
-        assert!(!request.as_str().contains("secret"));
-        assert!(!request.as_str().contains("private"));
-    }
-
-    #[test]
-    fn test_web_fetch_blocks_non_public_literal_hosts() {
-        for url in [
-            "http://localhost/",
-            "http://sub.localhost/",
-            "http://127.0.0.1/",
-            "http://127.1/",
-            "http://2130706433/",
-            "http://0x7f000001/",
-            "http://10.0.0.1/",
-            "http://100.64.0.1/",
-            "http://169.254.169.254/latest/meta-data/",
-            "http://172.16.0.1/",
-            "http://192.168.1.1/",
-            "http://[::1]/",
-            "http://[fc00::1]/",
-            "http://[fe80::1]/",
-            "http://[::ffff:127.0.0.1]/",
-            "http://[2002:7f00:1::]/",
-        ] {
-            assert!(parse_http_url(url).is_err(), "{url} must be blocked");
-        }
-
-        assert!(parse_http_url("https://8.8.8.8/").is_ok());
-        assert!(parse_http_url("https://[2606:4700:4700::1111]/").is_ok());
-    }
-
-    #[test]
-    fn test_web_fetch_revalidates_redirect_targets() {
-        let base = parse_http_url("https://example.com/public/page").unwrap();
-        assert!(redirect_target(&base, "/next").is_ok());
-        assert!(redirect_target(&base, "http://127.0.0.1/admin").is_err());
-        assert!(redirect_target(&base, "//169.254.169.254/latest/meta-data").is_err());
-        assert!(redirect_target(&base, "file:///etc/passwd").is_err());
-    }
-
-    #[test]
-    fn test_web_fetch_rejects_mixed_public_private_dns_answers() {
-        let addresses = [
-            SocketAddr::from(([93, 184, 216, 34], 443)),
-            SocketAddr::from(([127, 0, 0, 1], 443)),
-        ];
-        assert!(validate_resolved_addresses("example.com", &addresses).is_err());
-        assert!(validate_resolved_addresses("example.com", &addresses[..1]).is_ok());
-        assert!(validate_resolved_addresses("example.com", &[]).is_err());
-    }
-
-    #[test]
-    fn test_web_fetch_proxy_mode_is_explicit_and_keeps_literal_ssrf_checks() {
-        assert!(build_proxy_client("http://127.0.0.1:7897").is_ok());
-        assert!(build_proxy_client("not a proxy URL").is_err());
-        assert!(parse_http_url("http://127.0.0.1/admin").is_err());
-        assert!(parse_http_url("http://169.254.169.254/latest/meta-data").is_err());
-        assert!(parse_http_url("https://www.jma.go.jp/").is_ok());
-    }
-
-    #[test]
-    fn test_macos_system_proxy_parser_prefers_https() {
-        let text = r#"
-            HTTPEnable : 1
-            HTTPPort : 8080
-            HTTPProxy : 127.0.0.1
-            HTTPSEnable : 1
-            HTTPSPort : 7897
-            HTTPSProxy : proxy.local
-        "#;
-        assert_eq!(
-            parse_macos_proxy(text).as_deref(),
-            Some("http://proxy.local:7897")
-        );
-        assert_eq!(parse_macos_proxy("HTTPSEnable : 0"), None);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn test_system_proxy_command_timeout_bounds_hanging_process() {
-        assert_eq!(
-            SYSTEM_PROXY_LOOKUP_TIMEOUT,
-            Duration::from_millis(750),
-            "macOS proxy detection must retain its bounded production budget"
-        );
-        let mut command = tokio::process::Command::new("/bin/sleep");
-        command.arg("30");
-        let started = std::time::Instant::now();
-
-        let output = command_output_with_timeout(command, Duration::from_millis(20)).await;
-
-        assert!(output.is_none());
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "proxy command timeout did not converge promptly: {:?}",
-            started.elapsed()
-        );
-    }
-
-    #[test]
-    fn test_html_to_markdown() {
-        let html = "<h1>Title</h1><p>Content here</p>";
-        let md = html_to_markdown(html);
-        assert!(md.contains("Title"));
-        assert!(md.contains("Content here"));
-        // htmd produces proper markdown headers
-        assert!(md.contains("# Title"));
-    }
-}
-#[test]
-fn content_range_is_unicode_safe_and_resumable() {
-    let first = content_range("甲乙丙丁戊", 1, 2).unwrap();
-    assert!(first.content.starts_with("乙丙"));
-    assert_eq!(first.returned_chars, 2);
-    assert_eq!(first.total_chars, 5);
-    assert_eq!(first.next_offset, Some(3));
-
-    let second = content_range("甲乙丙丁戊", 3, 2).unwrap();
-    assert_eq!(second.content, "丁戊");
-    assert_eq!(second.next_offset, None);
-}
-
-#[test]
-fn html_body_extraction_excludes_head_content() {
-    let html = "<html><head><title>Hidden</title></head><body><main>Visible</main></body></html>";
-    let body = extract_html_body(html).unwrap();
-    assert!(body.contains("Visible"));
-    assert!(!body.contains("Hidden"));
-}
+#[path = "web_fetch/tests.rs"]
+mod tests;

@@ -198,7 +198,11 @@ impl StreamRunContext {
         self,
         messages: Vec<Message>,
         prompt: String,
-    ) -> (mpsc::Receiver<AgentEvent>, JoinHandle<()>) {
+    ) -> (
+        mpsc::Receiver<AgentEvent>,
+        JoinHandle<()>,
+        Vec<tokio::task::AbortHandle>,
+    ) {
         let Self {
             agent_loop,
             invocation,
@@ -213,13 +217,18 @@ impl StreamRunContext {
                 .await;
             worker_state.complete(result).await;
         });
-        (rx, lifecycle.wrap(handle, forwarder))
+        let (lifecycle, worker_aborts) = lifecycle.wrap(handle, forwarder);
+        (rx, lifecycle, worker_aborts)
     }
 
     pub(super) fn spawn_from_messages(
         self,
         messages: Vec<Message>,
-    ) -> (mpsc::Receiver<AgentEvent>, JoinHandle<()>) {
+    ) -> (
+        mpsc::Receiver<AgentEvent>,
+        JoinHandle<()>,
+        Vec<tokio::task::AbortHandle>,
+    ) {
         let Self {
             agent_loop,
             invocation,
@@ -234,6 +243,7 @@ impl StreamRunContext {
                 .await;
             worker_state.complete(result).await;
         });
-        (rx, lifecycle.wrap(handle, forwarder))
+        let (lifecycle, worker_aborts) = lifecycle.wrap(handle, forwarder);
+        (rx, lifecycle, worker_aborts)
     }
 }

@@ -4,7 +4,7 @@
 //! turn, reducing round-trips when operations don't depend on each other.
 
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use crate::tools::{registry_tool_invoker, ToolInvocation, ToolInvoker, ToolRegistry, ToolResult};
+use crate::tools::{registry_tool_invoker, ToolInvoker, ToolRegistry, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
@@ -179,7 +179,10 @@ impl Tool for BatchTool {
                     }
 
                     let result = invoker
-                        .invoke(ToolInvocation::nested(tool_name.clone(), tool_args), &ctx)
+                        .invoke(
+                            ctx.nested_tool_invocation(tool_name.clone(), tool_args),
+                            &ctx,
+                        )
                         .await;
                     (index, correlation_id, tool_name, result)
                 }

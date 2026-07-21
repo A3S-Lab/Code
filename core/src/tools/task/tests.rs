@@ -1004,10 +1004,10 @@ fn test_task_params_schema_hides_permissive_field() {
 use crate::agent::tests::MockLlmClient;
 use crate::budget::{BudgetDecision, BudgetGuard};
 use crate::llm::{ContentBlock, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition};
-use crate::permissions::PermissionPolicy;
+use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
 use crate::subagent::AgentRegistry;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::{mpsc, Barrier, Notify};
@@ -1267,6 +1267,7 @@ fn child_context_with_budget(
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        sandbox_handle: None,
         budget_guard: Some(budget_guard),
     }
 }
@@ -2005,6 +2006,7 @@ fn redacting_parent_context() -> crate::child_run::ChildRunContext {
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        sandbox_handle: None,
         budget_guard: None,
     }
 }
@@ -2012,6 +2014,94 @@ fn redacting_parent_context() -> crate::child_run::ChildRunContext {
 struct BlockingTaskClient {
     started: Arc<Notify>,
     calls: Arc<AtomicUsize>,
+}
+
+struct DelayedBackgroundWriteClient {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+    calls: AtomicUsize,
+}
+
+impl DelayedBackgroundWriteClient {
+    async fn next_response(&self) -> LlmResponse {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            let release = self.release.notified();
+            self.started.notify_one();
+            release.await;
+            MockLlmClient::tool_call_response(
+                "background-write",
+                "write",
+                serde_json::json!({
+                    "file_path": "run-snapshot.txt",
+                    "content": "kept-original-run-authority"
+                }),
+            )
+        } else {
+            MockLlmClient::text_response("Background write completed.")
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for DelayedBackgroundWriteClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        Ok(self.next_response().await)
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        let response = self.next_response().await;
+        let (tx, rx) = mpsc::channel(2);
+        tokio::spawn(async move {
+            let _ = tx.send(StreamEvent::Done(response)).await;
+        });
+        Ok(rx)
+    }
+}
+
+struct MutableRunBoundary {
+    deny_writes: Arc<AtomicBool>,
+}
+
+struct FrozenRunBoundary {
+    deny_writes: bool,
+}
+
+impl PermissionChecker for MutableRunBoundary {
+    fn snapshot_for_run(&self) -> Option<Arc<dyn PermissionChecker>> {
+        Some(Arc::new(FrozenRunBoundary {
+            deny_writes: self.deny_writes.load(Ordering::SeqCst),
+        }))
+    }
+
+    fn check(&self, tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+        if tool_name.eq_ignore_ascii_case("write") && self.deny_writes.load(Ordering::SeqCst) {
+            PermissionDecision::Deny
+        } else {
+            PermissionDecision::Allow
+        }
+    }
+}
+
+impl PermissionChecker for FrozenRunBoundary {
+    fn check(&self, tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+        if tool_name.eq_ignore_ascii_case("write") && self.deny_writes {
+            PermissionDecision::Deny
+        } else {
+            PermissionDecision::Allow
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -2153,6 +2243,108 @@ async fn background_task_updates_shared_tracker_without_an_event_receiver() {
             tool: "read".to_string(),
             url_or_path: "source.md".to_string(),
         }]
+    );
+}
+
+#[tokio::test]
+async fn background_task_keeps_the_admitted_run_permission_snapshot_across_turn_changes() {
+    use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let deny_writes = Arc::new(AtomicBool::new(false));
+    let live_boundary = Arc::new(MutableRunBoundary {
+        deny_writes: Arc::clone(&deny_writes),
+    });
+    let admitted_boundary = live_boundary
+        .snapshot_for_run()
+        .expect("mutable host boundary must produce a run snapshot");
+    let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+    let parent_context = crate::child_run::ChildRunContext {
+        security_provider: None,
+        hook_engine: None,
+        skill_registry: None,
+        permission_checker: Some(live_boundary.clone()),
+        permission_policy: None,
+        tool_timeout_ms: None,
+        llm_api_timeout_ms: None,
+        max_parallel_tasks: None,
+        max_execution_time_ms: None,
+        circuit_breaker_threshold: None,
+        duplicate_tool_call_threshold: None,
+        confirmation_manager: None,
+        enforce_active_skill_tool_restrictions: None,
+        workspace_services: None,
+        sandbox_handle: None,
+        budget_guard: None,
+    };
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_writer(),
+            Arc::new(DelayedBackgroundWriteClient {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+                calls: AtomicUsize::new(0),
+            }),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_parent_context(parent_context)
+        .with_subagent_tracker(Arc::clone(&tracker)),
+    );
+    let tool = TaskTool::new(executor);
+    let context = ToolContext::new(workspace.path().to_path_buf())
+        .with_session_id("auto-turn")
+        .with_run_governance(Some(admitted_boundary), None);
+    let started_wait = started.notified();
+
+    let launch = tool
+        .execute(
+            &serde_json::json!({
+                "agent": "writer",
+                "description": "continue after parent turn",
+                "prompt": "Write run-snapshot.txt after the parent turn ends.",
+                "background": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    let task_id = launch
+        .content
+        .split("Task ID: ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    tokio::time::timeout(Duration::from_secs(1), started_wait)
+        .await
+        .expect("background child should reach the delayed model response");
+    deny_writes.store(true, Ordering::SeqCst);
+    assert_eq!(
+        live_boundary.check("write", &serde_json::json!({})),
+        PermissionDecision::Deny
+    );
+    release.notify_waiters();
+
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(snapshot) = tracker.get(&task_id).await {
+                if snapshot.status != SubagentStatus::Running {
+                    break snapshot;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background child should finish");
+
+    assert_eq!(snapshot.status, SubagentStatus::Completed);
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("run-snapshot.txt")).unwrap(),
+        "kept-original-run-authority"
     );
 }
 
@@ -2397,7 +2589,30 @@ async fn task_child_run_permission_deny() {
 
 #[tokio::test]
 async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
+    struct RecordingSandbox {
+        called: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::sandbox::BashSandbox for RecordingSandbox {
+        async fn exec_command(
+            &self,
+            command: &str,
+            _guest_workspace: &str,
+        ) -> anyhow::Result<crate::sandbox::SandboxOutput> {
+            self.called.store(true, Ordering::SeqCst);
+            Ok(crate::sandbox::SandboxOutput {
+                stdout: format!("sandboxed: {command}"),
+                stderr: String::new(),
+                exit_code: 0,
+            })
+        }
+
+        async fn shutdown(&self) {}
+    }
+
     let workspace = tempfile::tempdir().unwrap();
+    let sandbox_called = Arc::new(AtomicBool::new(false));
     let mock = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::tool_call_response(
             "t1",
@@ -2422,6 +2637,9 @@ async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        sandbox_handle: Some(Arc::new(RecordingSandbox {
+            called: Arc::clone(&sandbox_called),
+        })),
         budget_guard: None,
     };
 
@@ -2457,6 +2675,10 @@ async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
         !result.output.contains("Permission denied"),
         "no inherited child permission denial: {}",
         result.output
+    );
+    assert!(
+        sandbox_called.load(Ordering::SeqCst),
+        "delegated bash must retain the parent sandbox instead of using the host runner"
     );
 }
 
@@ -3665,6 +3887,7 @@ async fn child_source_anchor_is_sanitized_before_task_metadata_persistence() {
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        sandbox_handle: None,
         budget_guard: None,
     };
     let executor = TaskExecutor::new(

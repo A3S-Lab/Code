@@ -12,7 +12,7 @@ fn make_client() -> OpenAiClient {
 // before the model emits its tool call (asset-diagnose "未返回结构化输出").
 
 struct MockSseHttp {
-    chunks: Vec<String>,
+    chunks: Vec<bytes::Bytes>,
 }
 
 struct PendingSseHttp;
@@ -36,11 +36,8 @@ impl crate::llm::http::HttpClient for MockSseHttp {
         _body: &serde_json::Value,
         _cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<crate::llm::http::StreamingHttpResponse> {
-        let items: Vec<anyhow::Result<bytes::Bytes>> = self
-            .chunks
-            .iter()
-            .map(|s| Ok(bytes::Bytes::from(s.clone())))
-            .collect();
+        let items: Vec<anyhow::Result<bytes::Bytes>> =
+            self.chunks.iter().cloned().map(Ok).collect();
         Ok(crate::llm::http::StreamingHttpResponse {
             status: 200,
             retry_after: None,
@@ -79,6 +76,14 @@ impl crate::llm::http::HttpClient for PendingSseHttp {
 }
 
 fn glm_client(chunks: Vec<String>) -> OpenAiClient {
+    OpenAiClient::new("k".to_string(), "glm-test".to_string()).with_http_client(
+        std::sync::Arc::new(MockSseHttp {
+            chunks: chunks.into_iter().map(bytes::Bytes::from).collect(),
+        }),
+    )
+}
+
+fn byte_chunk_client(chunks: Vec<bytes::Bytes>) -> OpenAiClient {
     OpenAiClient::new("k".to_string(), "glm-test".to_string())
         .with_http_client(std::sync::Arc::new(MockSseHttp { chunks }))
 }
@@ -121,6 +126,26 @@ async fn streaming_parser_closes_when_caller_cancels() {
         .await
         .expect("provider parser must stop after cancellation");
     assert!(next.is_none());
+}
+
+#[tokio::test]
+async fn streaming_parser_preserves_unicode_split_across_transport_chunks() {
+    let wire = concat!(
+        "data: {\"id\":\"response-1\",\"object\":\"chat.completion.chunk\",",
+        "\"model\":\"glm-test\",\"choices\":[{\"index\":0,\"delta\":",
+        "{\"content\":\"维护治理\"},\"finish_reason\":null}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let split = wire.find("治理").unwrap() + 1;
+    let chunks = vec![
+        bytes::Bytes::copy_from_slice(&wire.as_bytes()[..split]),
+        bytes::Bytes::copy_from_slice(&wire.as_bytes()[split..]),
+    ];
+
+    let response = drain_to_done(&byte_chunk_client(chunks)).await;
+
+    assert_eq!(response.text(), "维护治理");
+    assert!(!response.text().contains('\u{fffd}'));
 }
 
 #[tokio::test]

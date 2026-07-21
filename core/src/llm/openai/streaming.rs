@@ -92,6 +92,7 @@ impl OpenAiClient {
             let stream_cancellation = cancel_token.clone();
             tokio::spawn(async move {
                 let mut buffer = String::new();
+                let mut utf8_decoder = crate::sse::Utf8StreamDecoder::default();
                 let mut content_blocks: Vec<ContentBlock> = Vec::new();
                 let mut text_content = String::new();
                 let mut reasoning_content_accum = String::new();
@@ -126,7 +127,10 @@ impl OpenAiClient {
                         }
                     };
 
-                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    if let Err(error) = utf8_decoder.push_to(&chunk, &mut buffer) {
+                        tracing::error!(%error, "OpenAI-compatible stream returned invalid UTF-8");
+                        break;
+                    }
 
                     while let Some(event_end) = buffer.find("\n\n") {
                         let event_data: String = buffer.drain(..event_end).collect();
@@ -411,6 +415,10 @@ impl OpenAiClient {
                             }
                         }
                     }
+                }
+
+                if let Err(error) = utf8_decoder.finish() {
+                    tracing::error!(%error, "OpenAI-compatible stream ended inside a UTF-8 code point");
                 }
 
                 if saw_done {

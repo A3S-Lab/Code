@@ -1151,23 +1151,13 @@ fn test_llm_config_missing_model() {
 }
 
 #[test]
-fn test_document_parser_config_normalizes_nested_ocr_values() {
+fn test_document_parser_config_normalizes_values() {
     let config = DocumentParserConfig {
         enabled: true,
         max_file_size_mb: 0,
         cache: Some(DocumentCacheConfig {
             enabled: true,
             directory: Some(PathBuf::from("/tmp/cache")),
-        }),
-        ocr: Some(DocumentOcrConfig {
-            enabled: true,
-            model: Some("openai/gpt-4.1-mini".to_string()),
-            prompt: None,
-            max_images: 0,
-            dpi: 10,
-            provider: None,
-            base_url: None,
-            api_key: None,
         }),
     }
     .normalized();
@@ -1176,7 +1166,4 @@ fn test_document_parser_config_normalizes_nested_ocr_values() {
     let cache = config.cache.unwrap();
     assert!(cache.enabled);
     assert_eq!(cache.directory, Some(PathBuf::from("/tmp/cache")));
-    let ocr = config.ocr.unwrap();
-    assert_eq!(ocr.max_images, 1);
-    assert_eq!(ocr.dpi, 72);
 }

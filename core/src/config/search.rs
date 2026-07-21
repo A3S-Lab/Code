@@ -101,14 +101,6 @@ pub struct DocumentParserConfig {
     #[serde(default = "default_document_parser_max_file_size_mb")]
     pub max_file_size_mb: u64,
 
-    /// Optional OCR / vision-model settings for image-heavy documents.
-    ///
-    /// These settings control OCR fallback when context extraction reaches
-    /// scanned or image-heavy inputs. Current parsers may not execute OCR for
-    /// every format.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ocr: Option<DocumentOcrConfig>,
-
     /// Optional cache settings for parsed / normalized document context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<DocumentCacheConfig>,
@@ -119,7 +111,6 @@ impl Default for DocumentParserConfig {
         Self {
             enabled: true,
             max_file_size_mb: default_document_parser_max_file_size_mb(),
-            ocr: None,
             cache: Some(DocumentCacheConfig::default()),
         }
     }
@@ -130,7 +121,6 @@ impl DocumentParserConfig {
         Self {
             enabled: self.enabled,
             max_file_size_mb: self.max_file_size_mb.clamp(1, 1024),
-            ocr: self.ocr.as_ref().map(DocumentOcrConfig::normalized),
             cache: self.cache.as_ref().map(DocumentCacheConfig::normalized),
         }
     }
@@ -160,75 +150,6 @@ impl DocumentCacheConfig {
         Self {
             enabled: self.enabled,
             directory: self.directory.clone(),
-        }
-    }
-}
-
-/// OCR / vision-model configuration for built-in document context extraction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DocumentOcrConfig {
-    /// Whether OCR fallback is enabled for image-heavy documents.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-
-    /// Vision-capable model identifier, for example `openai/gpt-4.1-mini`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-
-    /// Optional custom OCR prompt / extraction instruction.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
-
-    /// Maximum number of rendered images/pages to send for OCR fallback.
-    #[serde(default = "default_document_ocr_max_images")]
-    pub max_images: usize,
-
-    /// Render DPI when rasterizing pages for OCR fallback.
-    #[serde(default = "default_document_ocr_dpi")]
-    pub dpi: u32,
-
-    /// OCR provider backend. Defaults to "vision" when model is set.
-    /// "vision" - Vision API (OpenAI-compatible)
-    /// "builtin" - Local tesseract (requires tesseract + pdftoppm binaries)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-
-    /// Base URL for vision API. Defaults to OpenAI API if not set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-
-    /// API key for vision API.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key: Option<String>,
-}
-
-impl Default for DocumentOcrConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            model: None,
-            prompt: None,
-            max_images: default_document_ocr_max_images(),
-            dpi: default_document_ocr_dpi(),
-            provider: None,
-            base_url: None,
-            api_key: None,
-        }
-    }
-}
-
-impl DocumentOcrConfig {
-    pub fn normalized(&self) -> Self {
-        Self {
-            enabled: self.enabled,
-            model: self.model.clone(),
-            prompt: self.prompt.clone(),
-            max_images: self.max_images.clamp(1, 64),
-            dpi: self.dpi.clamp(72, 600),
-            provider: self.provider.clone(),
-            base_url: self.base_url.clone(),
-            api_key: self.api_key.clone(),
         }
     }
 }
@@ -289,12 +210,4 @@ fn default_weight() -> f64 {
 
 pub(crate) fn default_document_parser_max_file_size_mb() -> u64 {
     50
-}
-
-pub(crate) fn default_document_ocr_max_images() -> usize {
-    8
-}
-
-pub(crate) fn default_document_ocr_dpi() -> u32 {
-    144
 }

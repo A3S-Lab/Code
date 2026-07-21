@@ -10,7 +10,7 @@ use super::{
 use crate::agent::AgentResult;
 use crate::error::{CodeError, Result};
 use std::sync::Arc;
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 #[derive(Clone)]
 pub(super) struct StreamRunWorkerState {
@@ -251,8 +251,13 @@ impl StreamRunLifecycle {
         }
     }
 
-    pub(super) fn wrap(self, worker: JoinHandle<()>, forwarder: JoinHandle<()>) -> JoinHandle<()> {
-        tokio::spawn(async move {
+    pub(super) fn wrap(
+        self,
+        worker: JoinHandle<()>,
+        forwarder: JoinHandle<()>,
+    ) -> (JoinHandle<()>, Vec<AbortHandle>) {
+        let worker_aborts = vec![worker.abort_handle(), forwarder.abort_handle()];
+        let lifecycle = tokio::spawn(async move {
             let _ = worker.await;
             let _ = forwarder.await;
             if self
@@ -273,7 +278,8 @@ impl StreamRunLifecycle {
             }
             self.cleanup.clear_cancel_token().await;
             self.cleanup.finish().await;
-        })
+        });
+        (lifecycle, worker_aborts)
     }
 }
 

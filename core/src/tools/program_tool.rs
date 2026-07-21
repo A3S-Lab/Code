@@ -3,7 +3,7 @@
 use crate::program::ProgramCatalog;
 use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use crate::tools::{registry_tool_invoker, ToolInvocation, ToolInvoker, ToolRegistry};
+use crate::tools::{registry_tool_invoker, ToolInvoker, ToolRegistry};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use rquickjs::function::{Async, Func};
@@ -548,7 +548,7 @@ async fn execute_host_tool_json(
     let result = outer
         .spawn(async move {
             invoker
-                .invoke(ToolInvocation::nested(tool_for_spawn, args), &ctx)
+                .invoke(ctx.nested_tool_invocation(tool_for_spawn, args), &ctx)
                 .await
         })
         .await

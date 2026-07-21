@@ -213,8 +213,13 @@ fn test_json_rpc_notification_serialization() {
 fn test_mcp_tool_serialize() {
     let tool = McpTool {
         name: "test_tool".to_string(),
+        title: None,
         description: Some("A test tool".to_string()),
         input_schema: serde_json::json!({"type": "object"}),
+        output_schema: None,
+        annotations: None,
+        icons: Vec::new(),
+        meta: None,
     };
     let json = serde_json::to_string(&tool).unwrap();
     assert!(json.contains("\"name\":\"test_tool\""));
@@ -227,6 +232,39 @@ fn test_mcp_tool_without_description() {
     let tool: McpTool = serde_json::from_str(json).unwrap();
     assert_eq!(tool.name, "tool");
     assert!(tool.description.is_none());
+}
+
+#[test]
+fn test_mcp_tool_preserves_output_schema_annotations_icons_and_meta() {
+    let json = serde_json::json!({
+        "name": "ocr_extract",
+        "title": "Extract image text",
+        "description": "Extract OCR text",
+        "inputSchema": {"type": "object"},
+        "outputSchema": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {"text": {"type": "string"}}
+        },
+        "annotations": {
+            "readOnlyHint": true,
+            "idempotentHint": true,
+            "openWorldHint": true,
+            "x-a3s-risk": "submit"
+        },
+        "icons": [{"src": "data:image/png;base64,AA==", "mimeType": "image/png"}],
+        "_meta": {"provider": "vision"}
+    });
+    let tool: McpTool = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(tool.title.as_deref(), Some("Extract image text"));
+    assert_eq!(tool.output_schema.as_ref().unwrap()["required"][0], "text");
+    let annotations = tool.annotations.as_ref().unwrap();
+    assert_eq!(annotations.read_only_hint, Some(true));
+    assert_eq!(annotations.open_world_hint, Some(true));
+    assert_eq!(annotations.additional["x-a3s-risk"], "submit");
+    assert_eq!(tool.icons.len(), 1);
+    assert_eq!(tool.meta.as_ref().unwrap()["provider"], "vision");
+    assert_eq!(serde_json::to_value(tool).unwrap(), json);
 }
 
 #[test]
@@ -310,6 +348,7 @@ fn test_call_tool_result_serialization() {
             text: "Result".to_string(),
         }],
         is_error: false,
+        ..CallToolResult::default()
     };
     let json = serde_json::to_string(&result).unwrap();
     assert!(json.contains("\"content\""));
@@ -323,6 +362,7 @@ fn test_call_tool_result_error_flag() {
             text: "Error occurred".to_string(),
         }],
         is_error: true,
+        ..CallToolResult::default()
     };
     assert!(result.is_error);
 }
@@ -332,6 +372,26 @@ fn test_call_tool_result_default() {
     let json = r#"{"content":[]}"#;
     let result: CallToolResult = serde_json::from_str(json).unwrap();
     assert!(!result.is_error);
+}
+
+#[test]
+fn test_call_tool_result_preserves_structured_content_and_meta() {
+    let value = serde_json::json!({
+        "content": [{"type": "text", "text": "{\"text\":\"A3S\"}"}],
+        "structuredContent": {
+            "text": "A3S",
+            "source": {"sha256": "abc"}
+        },
+        "isError": false,
+        "_meta": {"requestId": "ocr-1"}
+    });
+    let result: CallToolResult = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        result.structured_content.as_ref().unwrap()["source"]["sha256"],
+        "abc"
+    );
+    assert_eq!(result.meta.as_ref().unwrap()["requestId"], "ocr-1");
+    assert_eq!(serde_json::to_value(result).unwrap(), value);
 }
 
 #[test]
@@ -363,8 +423,13 @@ fn test_list_tools_result_serialization() {
     let result = ListToolsResult {
         tools: vec![McpTool {
             name: "tool1".to_string(),
+            title: None,
             description: None,
             input_schema: serde_json::json!({"type": "object"}),
+            output_schema: None,
+            annotations: None,
+            icons: Vec::new(),
+            meta: None,
         }],
     };
     let json = serde_json::to_string(&result).unwrap();

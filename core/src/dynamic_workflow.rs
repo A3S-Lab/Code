@@ -5,8 +5,7 @@
 //! existing `program` tool remains the sandbox and tool-call boundary.
 
 use crate::tools::{
-    registry_tool_invoker, Tool, ToolContext, ToolInvocation, ToolInvoker, ToolOutput,
-    ToolRegistry, ToolResult,
+    registry_tool_invoker, Tool, ToolContext, ToolInvoker, ToolOutput, ToolRegistry, ToolResult,
 };
 use crate::{
     agent::AgentEvent,
@@ -31,6 +30,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
 
 const DYNAMIC_WORKFLOW_TOOL: &str = "dynamic_workflow";
+const GENERATE_OBJECT_TOOL: &str = "generate_object";
 const PROGRAM_TOOL: &str = "program";
 const PARALLEL_TASK_TOOL: &str = "parallel_task";
 const MAX_INLINE_RETRY_RESUMES: usize = 8;
@@ -100,7 +100,11 @@ impl DynamicWorkflowRuntime {
         self
     }
 
-    async fn run_script(&self, payload: Value) -> a3s_flow::Result<ToolResult> {
+    async fn run_script(
+        &self,
+        payload: Value,
+        context: &ToolContext,
+    ) -> a3s_flow::Result<ToolResult> {
         let mut args = json!({
             "type": "script",
             "language": "javascript",
@@ -118,7 +122,7 @@ impl DynamicWorkflowRuntime {
 
         let result = self
             .invoker
-            .invoke(ToolInvocation::nested(PROGRAM_TOOL, args), &self.context)
+            .invoke(context.nested_tool_invocation(PROGRAM_TOOL, args), context)
             .await;
         if result.exit_code != 0 {
             return Err(a3s_flow::FlowError::Runtime(result.output));
@@ -126,11 +130,37 @@ impl DynamicWorkflowRuntime {
         Ok(result)
     }
 
+    async fn context_for_step(&self, step_name: &str) -> a3s_flow::Result<ToolContext> {
+        if step_name != GENERATE_OBJECT_TOOL {
+            return Ok(self.context.clone());
+        }
+        let Some(admission) = self.context.model_generation_admission() else {
+            return Ok(self.context.clone());
+        };
+        let permit = admission
+            .acquire(&self.context.cancellation_token())
+            .await
+            .map_err(|error| {
+                a3s_flow::FlowError::Runtime(format!(
+                    "model-generation admission failed before workflow step: {error}"
+                ))
+            })?;
+        self.context
+            .clone()
+            .with_model_generation_permit(admission, Arc::new(permit))
+            .map_err(|error| {
+                a3s_flow::FlowError::Runtime(format!(
+                    "bind model-generation admission to workflow step: {error}"
+                ))
+            })
+    }
+
     async fn run_tool_step(&self, tool_name: &str, args: Value) -> a3s_flow::Result<Value> {
         let result = self
             .invoker
             .invoke(
-                ToolInvocation::nested(tool_name.to_string(), args),
+                self.context
+                    .nested_tool_invocation(tool_name.to_string(), args),
                 &self.context,
             )
             .await;
@@ -154,7 +184,7 @@ impl FlowRuntime for DynamicWorkflowRuntime {
     ) -> a3s_flow::Result<RuntimeCommand> {
         let payload = invocation_payload("workflow", &invocation.run_id, &invocation.history)
             .with("input", invocation.input);
-        let result = self.run_script(payload.into_value()).await?;
+        let result = self.run_script(payload.into_value(), &self.context).await?;
         serde_json::from_value(script_result(&result)?).map_err(a3s_flow::FlowError::from)
     }
 
@@ -165,11 +195,12 @@ impl FlowRuntime for DynamicWorkflowRuntime {
                 .await;
         }
 
+        let context = self.context_for_step(&invocation.step_name).await?;
         let payload = invocation_payload("step", &invocation.run_id, &invocation.history)
             .with("step_id", invocation.step_id)
             .with("step_name", invocation.step_name)
             .with("input", invocation.input);
-        let result = self.run_script(payload.into_value()).await?;
+        let result = self.run_script(payload.into_value(), &context).await?;
         script_result(&result)
     }
 }

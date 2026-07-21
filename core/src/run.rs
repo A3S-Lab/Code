@@ -22,6 +22,12 @@ pub enum RunStatus {
     Cancelled,
 }
 
+impl RunStatus {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunEventRecord {
     pub sequence: usize,
@@ -870,6 +876,13 @@ impl RunHandle {
 }
 
 fn apply_event_to_snapshot(run: &mut RunSnapshot, event: &AgentEvent) {
+    // Events can arrive through independent runtime and high-level channels.
+    // Keep recording late events for replay, but never let their delivery
+    // order regress a terminal run back to Planning or Executing.
+    if run.status.is_terminal() {
+        return;
+    }
+
     match event {
         AgentEvent::Start { prompt } => {
             run.status = RunStatus::Executing;
@@ -889,17 +902,11 @@ fn apply_event_to_snapshot(run: &mut RunSnapshot, event: &AgentEvent) {
             run.status = RunStatus::Executing;
         }
         AgentEvent::End { text, .. } => {
-            if run.status == RunStatus::Cancelled {
-                return;
-            }
             run.status = RunStatus::Completed;
             run.result_text = Some(text.clone());
             run.error = None;
         }
         AgentEvent::Error { message } => {
-            if run.status == RunStatus::Cancelled {
-                return;
-            }
             run.status = RunStatus::Failed;
             run.error = Some(message.clone());
         }
@@ -993,5 +1000,48 @@ mod tests {
 
         *current_run_id.lock().await = Some("other-run".to_string());
         assert!(!handle.cancel().await);
+    }
+
+    #[tokio::test]
+    async fn late_events_cannot_regress_a_terminal_run_status() {
+        let store = InMemoryRunStore::new();
+        let cancelled = store.create_run("session-1", "cancelled").await;
+        store.mark_cancelled(&cancelled.id).await;
+        store
+            .record_event(&cancelled.id, AgentEvent::TurnStart { turn: 2 })
+            .await;
+        assert_eq!(
+            store.snapshot(&cancelled.id).await.unwrap().status,
+            RunStatus::Cancelled
+        );
+
+        let completed = store.create_run("session-1", "completed").await;
+        store
+            .record_event(
+                &completed.id,
+                AgentEvent::End {
+                    text: "done".to_string(),
+                    usage: Default::default(),
+                    verification_summary: Box::new(
+                        crate::verification::VerificationSummary::from_reports(&[]),
+                    ),
+                    meta: None,
+                },
+            )
+            .await;
+        store
+            .record_event(
+                &completed.id,
+                AgentEvent::ToolExecutionStart {
+                    id: "late-tool".to_string(),
+                    name: "bash".to_string(),
+                    args: serde_json::json!({}),
+                },
+            )
+            .await;
+        assert_eq!(
+            store.snapshot(&completed.id).await.unwrap().status,
+            RunStatus::Completed
+        );
     }
 }

@@ -61,13 +61,15 @@ pub mod client;
 pub mod manager;
 pub mod oauth;
 pub mod protocol;
+mod result;
 pub mod tools;
 pub mod transport;
 
 pub use client::McpClient;
-pub use manager::{tool_result_to_string, McpManager, McpServerStatus};
+pub use manager::{McpManager, McpServerStatus};
 pub use protocol::{
-    CallToolResult, McpNotification, McpResource, McpServerConfig, McpTool, McpTransportConfig,
-    OAuthConfig, ServerCapabilities, ToolContent,
+    CallToolResult, McpNotification, McpResource, McpServerConfig, McpTool, McpToolAnnotations,
+    McpTransportConfig, OAuthConfig, ServerCapabilities, ToolContent,
 };
+pub use result::tool_result_to_string;
 pub use tools::{create_mcp_tools, McpToolWrapper};

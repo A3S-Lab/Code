@@ -54,7 +54,6 @@ mod tool_completion_runtime;
 mod tool_execution_runtime;
 mod tool_guard_runtime;
 mod tool_invoker;
-mod tool_memory_runtime;
 mod tool_result_runtime;
 mod tool_turn;
 mod turn_context;
@@ -82,6 +81,13 @@ pub(crate) struct AgentConfig {
     pub permission_policy: Option<PermissionPolicy>,
     /// Optional confirmation manager for HITL (Human-in-the-Loop)
     pub confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
+    /// Child-local resolution policy for `Ask` decisions.
+    ///
+    /// This marker remains separate from `confirmation_manager` because both
+    /// `deny_on_ask` and `inherit_parent` intentionally start without a
+    /// child-local provider and must be distinguished when the parent boundary
+    /// is composed into a delegated run.
+    pub confirmation_inheritance: Option<crate::subagent::ConfirmationInheritance>,
     /// Serializable confirmation policy used to build the manager, when available.
     pub confirmation_policy: Option<crate::hitl::ConfirmationPolicy>,
     /// Serializable queue configuration used to build the optional command queue.
@@ -192,6 +198,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("permission_checker", &self.permission_checker.is_some())
             .field("permission_policy", &self.permission_policy.is_some())
             .field("confirmation_manager", &self.confirmation_manager.is_some())
+            .field("confirmation_inheritance", &self.confirmation_inheritance)
             .field("confirmation_policy", &self.confirmation_policy.is_some())
             .field("queue_config", &self.queue_config.is_some())
             .field("context_providers", &self.context_providers.len())
@@ -241,6 +248,7 @@ impl Default for AgentConfig {
             permission_checker: None,
             permission_policy: None,
             confirmation_manager: None,
+            confirmation_inheritance: None,
             confirmation_policy: None,
             queue_config: None,
             context_providers: Vec::new(),
@@ -823,6 +831,7 @@ impl SessionCommand for ToolCommand {
 #[derive(Clone)]
 pub(crate) struct AgentLoop {
     llm_client: Arc<dyn LlmClient>,
+    model_generation_admission: crate::llm::ModelGenerationAdmission,
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,

@@ -7,6 +7,7 @@ use a3s_search::engines::{
     Baidu, BingChina, BingParser, BraveParser, DuckDuckGoParser, Google, So360Parser, SogouParser,
     Wikipedia,
 };
+use a3s_search::providers::BuiltinProvider;
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
 use a3s_search::WaitStrategy;
 use a3s_search::{
@@ -285,13 +286,31 @@ fn add_http_engine(search: &mut Search, shortcut: &str, proxy_url: Option<&str>)
             search.add_engine(BingChina::new(Arc::new(fetcher())));
             true
         }
+        "anysearch" | "tavily" => {
+            let provider = BuiltinProvider::from_id(shortcut.trim())
+                .expect("matched built-in search provider");
+            match provider.create_engine() {
+                Ok(engine) => {
+                    search.add_engine(engine);
+                    true
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        provider = shortcut.trim(),
+                        %error,
+                        "Could not initialize native search provider"
+                    );
+                    false
+                }
+            }
+        }
         _ => false,
     }
 }
 
-fn default_engine_selection<'a>(
-    config: Option<&'a crate::config::SearchConfig>,
-) -> (Vec<&'a str>, &'static str) {
+fn default_engine_selection(
+    config: Option<&crate::config::SearchConfig>,
+) -> (Vec<&str>, &'static str) {
     match config {
         Some(config) if !config.engines.is_empty() => (
             config
@@ -356,7 +375,7 @@ impl Tool for WebSearchTool {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
+                    "description": "Optional. List of search engines or native providers to use. Default: [\"ddg\",\"wiki\"]. Available: anysearch (anonymous or authenticated native provider), tavily (keyless or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
                 },
                 "limit": {
                     "type": "integer",
