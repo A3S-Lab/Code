@@ -421,10 +421,6 @@ impl OpenAiClient {
                     tracing::error!(%error, "OpenAI-compatible stream ended inside a UTF-8 code point");
                 }
 
-                if saw_done {
-                    return;
-                }
-
                 let trailing = buffer.trim();
                 if !trailing.is_empty() {
                     if let Ok(event) = serde_json::from_str::<OpenAiStreamChunk>(trailing) {

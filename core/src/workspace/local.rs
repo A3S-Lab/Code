@@ -227,6 +227,7 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
         let resolved = self.local_path_for_write(path)?;
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(&resolved)
             .await
@@ -255,6 +256,13 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
         file.write_all(content.as_bytes()).await.map_err(|e| {
             WorkspaceError::Backend(anyhow!(
                 "Failed to write file {}: {}",
+                resolved.display(),
+                e
+            ))
+        })?;
+        file.flush().await.map_err(|e| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to flush file {} after writing: {}",
                 resolved.display(),
                 e
             ))

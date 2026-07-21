@@ -74,6 +74,15 @@ impl MemoryExtractionSnapshot {
     }
 }
 
+struct TurnMemoryExtraction<'a> {
+    snapshot: &'a MemoryExtractionSnapshot,
+    prompt: &'a str,
+    response: &'a str,
+    session_id: &'a str,
+    event_tx: &'a Option<mpsc::Sender<AgentEvent>>,
+    cancel_token: &'a CancellationToken,
+}
+
 impl AgentLoop {
     pub(super) async fn schedule_turn_memory_extraction(
         &self,
@@ -106,12 +115,14 @@ impl AgentLoop {
                 let no_events = None;
                 agent
                     .extract_turn_memories_with_llm(
-                        &snapshot,
-                        &prompt,
-                        &response,
-                        &session_id,
-                        &no_events,
-                        &cancel_token,
+                        TurnMemoryExtraction {
+                            snapshot: &snapshot,
+                            prompt: &prompt,
+                            response: &response,
+                            session_id: &session_id,
+                            event_tx: &no_events,
+                            cancel_token: &cancel_token,
+                        },
                         ticket,
                     )
                     .await;
@@ -120,27 +131,32 @@ impl AgentLoop {
         }
 
         self.extract_turn_memories_with_llm(
-            &snapshot,
-            prompt,
-            response,
-            session_id,
-            event_tx,
-            cancel_token,
+            TurnMemoryExtraction {
+                snapshot: &snapshot,
+                prompt,
+                response,
+                session_id,
+                event_tx,
+                cancel_token,
+            },
             ticket,
         )
         .await;
     }
 
-    pub(super) async fn extract_turn_memories_with_llm(
+    async fn extract_turn_memories_with_llm(
         &self,
-        snapshot: &MemoryExtractionSnapshot,
-        prompt: &str,
-        response: &str,
-        session_id: &str,
-        event_tx: &Option<mpsc::Sender<AgentEvent>>,
-        cancel_token: &CancellationToken,
+        extraction: TurnMemoryExtraction<'_>,
         mut ticket: crate::memory::MemoryExtractionTicket,
     ) {
+        let TurnMemoryExtraction {
+            snapshot,
+            prompt,
+            response,
+            session_id,
+            event_tx,
+            cancel_token,
+        } = extraction;
         ticket.wait_for_turn().await;
         let Some(memory) = self.config.memory.as_ref().cloned() else {
             return;

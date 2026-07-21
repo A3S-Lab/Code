@@ -76,17 +76,14 @@ pub(crate) async fn project_tool_result(
                 artifacts.push(artifact.value("image", None));
             }
             ToolContent::Resource { resource } => {
-                project_resource(
-                    tool_name,
-                    resource,
-                    context,
-                    &mut text_parts,
-                    &mut images,
-                    &mut artifacts,
-                    &mut content,
-                    &mut decoded_bytes,
-                )
-                .await?;
+                let mut projection = ResourceProjection {
+                    text_parts: &mut text_parts,
+                    images: &mut images,
+                    artifacts: &mut artifacts,
+                    content: &mut content,
+                    decoded_bytes: &mut decoded_bytes,
+                };
+                project_resource(tool_name, resource, context, &mut projection).await?;
             }
         }
     }
@@ -126,15 +123,19 @@ pub(crate) async fn project_tool_result(
     Ok(output)
 }
 
+struct ResourceProjection<'a> {
+    text_parts: &'a mut Vec<String>,
+    images: &'a mut Vec<Attachment>,
+    artifacts: &'a mut Vec<Value>,
+    content: &'a mut Vec<Value>,
+    decoded_bytes: &'a mut usize,
+}
+
 async fn project_resource(
     tool_name: &str,
     resource: &ResourceContent,
     context: &ToolContext,
-    text_parts: &mut Vec<String>,
-    images: &mut Vec<Attachment>,
-    artifacts: &mut Vec<Value>,
-    content: &mut Vec<Value>,
-    decoded_bytes: &mut usize,
+    projection: &mut ResourceProjection<'_>,
 ) -> Result<()> {
     let mut descriptor = json!({
         "type": "resource",
@@ -145,11 +146,11 @@ async fn project_resource(
     });
 
     if let Some(text) = &resource.text {
-        text_parts.push(text.clone());
+        projection.text_parts.push(text.clone());
         descriptor["textBytes"] = json!(text.len());
     }
     if let Some(blob) = &resource.blob {
-        let bytes = decode_bounded(blob, decoded_bytes)?;
+        let bytes = decode_bounded(blob, projection.decoded_bytes)?;
         let mime_type = resource
             .mime_type
             .as_deref()
@@ -157,24 +158,30 @@ async fn project_resource(
         let artifact =
             materialize_artifact(tool_name, Some(&resource.uri), mime_type, &bytes, context)
                 .await?;
-        text_parts.push(format!(
+        projection.text_parts.push(format!(
             "[Resource: {}, {mime_type}, {} bytes, artifact: {}]",
             resource.uri,
             bytes.len(),
             artifact.path.display()
         ));
         if model_image_mime_type(mime_type) {
-            images.push(Attachment::new(bytes.clone(), mime_type.to_string()));
+            projection
+                .images
+                .push(Attachment::new(bytes.clone(), mime_type.to_string()));
         }
         descriptor["blobBytes"] = json!(bytes.len());
         descriptor["sha256"] = json!(artifact.sha256.clone());
         descriptor["path"] = json!(artifact.path.clone());
         descriptor["attachedToModel"] = json!(model_image_mime_type(mime_type));
-        artifacts.push(artifact.value("resource", Some(&resource.uri)));
+        projection
+            .artifacts
+            .push(artifact.value("resource", Some(&resource.uri)));
     } else if resource.text.is_none() {
-        text_parts.push(format!("[Resource: {}]", resource.uri));
+        projection
+            .text_parts
+            .push(format!("[Resource: {}]", resource.uri));
     }
-    content.push(descriptor);
+    projection.content.push(descriptor);
     Ok(())
 }
 
@@ -461,9 +468,7 @@ pub fn tool_result_to_string(result: &CallToolResult) -> String {
                 if let Some(text) = &resource.text {
                     output.push(text.clone());
                 }
-                if resource.blob.is_some() {
-                    output.push(format!("[Resource: {}]", resource.uri));
-                } else if resource.text.is_none() {
+                if resource.blob.is_some() || resource.text.is_none() {
                     output.push(format!("[Resource: {}]", resource.uri));
                 }
             }

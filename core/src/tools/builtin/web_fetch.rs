@@ -382,7 +382,7 @@ async fn fetch_url(
         };
         let html_body = is_html.then(|| String::from_utf8_lossy(&bytes).into_owned());
         if let Some(body) = html_body.as_deref() {
-            if let Some(location) = html_refresh_location(&body) {
+            if let Some(location) = html_refresh_location(body) {
                 if redirect_count == MAX_REDIRECTS {
                     return Err(format!(
                         "Too many redirects while fetching URL (max: {})",
