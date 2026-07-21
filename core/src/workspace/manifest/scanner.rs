@@ -397,6 +397,7 @@ pub(super) fn is_relevant_event(event: &Event, root: &Path) -> bool {
 mod cancellation_tests {
     use super::*;
     use std::cell::Cell;
+    #[cfg(unix)]
     use std::sync::Arc;
 
     #[test]

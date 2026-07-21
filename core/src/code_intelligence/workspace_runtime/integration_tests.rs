@@ -487,7 +487,9 @@ async fn forced_shutdown_reaps_an_unresponsive_language_runtime() {
     };
     let process_state = language_runtime.subscribe_process_state();
     let log_path = server.with_extension("log");
+    #[cfg(unix)]
     let log = std::fs::read_to_string(&log_path).unwrap();
+    #[cfg(unix)]
     let pid = *fixture_started_pids(&log).last().unwrap();
 
     tokio::time::timeout(Duration::from_secs(6), runtime.shutdown())

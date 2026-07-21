@@ -7,12 +7,11 @@ use super::super::{
     document_store::DocumentObservationKind, lsp::initialize::ServerTextSyncMode, CodePosition,
     CodeRange, CodeSymbolKind, DocumentSymbol,
 };
+#[cfg(unix)]
+use super::paths::existing_workspace_file_uri;
 use super::{
     bound_document_symbols,
-    paths::{
-        existing_workspace_file_uri, valid_utf16_position, validate_canonical_root,
-        validate_workspace_path,
-    },
+    paths::{valid_utf16_position, validate_canonical_root, validate_workspace_path},
     protocol::{bound_items, did_save_params, document_sync_plan, DocumentSyncStep},
     MAX_DOCUMENT_SYMBOLS,
 };
