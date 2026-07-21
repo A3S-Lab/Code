@@ -200,10 +200,10 @@ impl Tool for BashTool {
             }
         };
         if require_escalated
-            && args
+            && !args
                 .get("justification")
                 .and_then(serde_json::Value::as_str)
-                .is_none_or(|value| value.trim().is_empty())
+                .is_some_and(|value| !value.trim().is_empty())
         {
             return Ok(ToolOutput::error(
                 "justification is required when sandbox_permissions is require_escalated",
