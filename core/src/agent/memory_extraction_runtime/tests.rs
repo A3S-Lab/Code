@@ -152,6 +152,16 @@ fn extraction_prompt_redacts_sensitive_turn_fields() {
 }
 
 #[test]
+fn extraction_prompt_requires_plain_user_facing_learning_text() {
+    let prompt = build_extraction_prompt("p", "r", "t", "None", 3);
+
+    assert!(prompt.contains("plain user-facing language"));
+    assert!(prompt.contains("at most 64 characters"));
+    assert!(prompt.contains("agent or subagent orchestration"));
+    assert!(prompt.contains("A task-specific direction is not a stable preference or skill"));
+}
+
+#[test]
 fn extraction_rejects_missing_or_unknown_source() {
     let missing = ExtractedMemory {
         memory_type: "semantic".to_string(),
@@ -391,6 +401,43 @@ fn invalid_or_sensitive_evolution_description_is_not_persisted() {
         assert!(!item.tags.contains(&"evolution".to_string()));
         assert!(!item.metadata.contains_key("evolution_kind"));
         assert!(!item.metadata.contains_key("evolution_instructions"));
+    }
+}
+
+#[test]
+fn overlong_evolution_copy_is_not_persisted() {
+    let cases = [
+        ExtractedEvolution {
+            kind: "skill".to_string(),
+            pattern_key: "skill.focused.verification".to_string(),
+            title:
+                "A very long internal orchestration title that cannot fit in the product interface"
+                    .to_string(),
+            summary: "Run the smallest relevant checks before broad validation.".to_string(),
+            instructions: vec!["Run the smallest relevant test target first.".to_string()],
+        },
+        ExtractedEvolution {
+            kind: "skill".to_string(),
+            pattern_key: "skill.focused.verification".to_string(),
+            title: "Focused verification".to_string(),
+            summary: "x".repeat(MAX_EVOLUTION_SUMMARY_CHARS + 1),
+            instructions: vec!["Run the smallest relevant test target first.".to_string()],
+        },
+        ExtractedEvolution {
+            kind: "skill".to_string(),
+            pattern_key: "skill.focused.verification".to_string(),
+            title: "Focused verification".to_string(),
+            summary: "Run the smallest relevant checks before broad validation.".to_string(),
+            instructions: vec!["x".repeat(MAX_EVOLUTION_INSTRUCTION_CHARS + 1)],
+        },
+    ];
+
+    for signal in cases {
+        let extracted = reusable_skill_memory(Some(signal));
+        let (item, _, _) = extracted
+            .into_memory_item("/workspace", "session-one", &HashSet::new())
+            .unwrap();
+        assert!(!item.tags.contains(&"evolution".to_string()));
     }
 }
 

@@ -17,16 +17,18 @@ Return JSON only. Do not include markdown.
 Keep only facts, preferences, decisions, workflows, and failure lessons that are likely useful in future sessions.
 Do not store transient progress, generic praise, raw logs, secrets, credentials, or information that only matters inside the current answer.
 Never narrate what the user or assistant did in this turn.
-Each memory must be standalone, concise, scoped, and justified. Return an empty items array when nothing qualifies.";
+Each memory must be standalone, concise, scoped, and justified.
+Write user-facing memory and learning text in plain language without internal orchestration terms.
+Return an empty items array when nothing qualifies.";
 
 const MAX_MEMORY_CONTENT_CHARS: usize = 1_200;
 const MAX_MEMORY_REASON_CHARS: usize = 320;
 const MAX_MEMORY_TAGS: usize = 8;
 const MAX_EVOLUTION_PATTERN_CHARS: usize = 96;
-const MAX_EVOLUTION_TITLE_CHARS: usize = 96;
-const MAX_EVOLUTION_SUMMARY_CHARS: usize = 360;
-const MAX_EVOLUTION_INSTRUCTIONS: usize = 8;
-const MAX_EVOLUTION_INSTRUCTION_CHARS: usize = 320;
+const MAX_EVOLUTION_TITLE_CHARS: usize = 64;
+const MAX_EVOLUTION_SUMMARY_CHARS: usize = 200;
+const MAX_EVOLUTION_INSTRUCTIONS: usize = 4;
+const MAX_EVOLUTION_INSTRUCTION_CHARS: usize = 200;
 const MAX_RELATED_MEMORY_ITEMS: usize = 5;
 const MAX_RELATED_MEMORY_CHARS: usize = 2_000;
 const MAX_RELATED_MEMORY_CONTENT_CHARS: usize = 320;
@@ -392,22 +394,29 @@ impl ExtractedEvolution {
             _ => return None,
         };
         let pattern_key = normalize_evolution_pattern(&self.pattern_key)?;
-        let title = compact(self.title.trim(), MAX_EVOLUTION_TITLE_CHARS);
-        let summary = compact(self.summary.trim(), MAX_EVOLUTION_SUMMARY_CHARS);
+        let title = self.title.trim();
+        let summary = self.summary.trim();
         if title.chars().count() < 4
+            || title.chars().count() > MAX_EVOLUTION_TITLE_CHARS
             || summary.chars().count() < 12
-            || contains_sensitive_memory_material(&title)
-            || contains_sensitive_memory_material(&summary)
+            || summary.chars().count() > MAX_EVOLUTION_SUMMARY_CHARS
+            || contains_sensitive_memory_material(title)
+            || contains_sensitive_memory_material(summary)
         {
             return None;
         }
+        let title = title.to_string();
+        let summary = summary.to_string();
 
         let mut seen = HashSet::new();
         let instructions = self
             .instructions
             .into_iter()
-            .map(|value| compact(value.trim(), MAX_EVOLUTION_INSTRUCTION_CHARS))
-            .filter(|value| value.chars().count() >= 8)
+            .map(|value| value.trim().to_string())
+            .filter(|value| {
+                let length = value.chars().count();
+                (8..=MAX_EVOLUTION_INSTRUCTION_CHARS).contains(&length)
+            })
             .filter(|value| !contains_sensitive_memory_material(value))
             .filter(|value| seen.insert(value.to_ascii_lowercase()))
             .take(MAX_EVOLUTION_INSTRUCTIONS)
@@ -480,6 +489,9 @@ Acceptance rules:
 - Set evolution only when this memory is evidence for a stable user preference, a reusable task skill, or a coherent body of durable knowledge worth an OKF package.
 - Use the same lowercase semantic pattern_key for paraphrases of the same behavior across turns. It must describe meaning, not quote the current wording or include a session id.
 - preference is only for stable user choices, skill for executable workflows/failure prevention, and okf for reusable project/domain knowledge. Instructions must be standalone, conservative, and contain no secrets.
+- For evolution, write a 3-8 word title of at most {MAX_EVOLUTION_TITLE_CHARS} characters, a one-sentence summary of at most {MAX_EVOLUTION_SUMMARY_CHARS} characters, and at most {MAX_EVOLUTION_INSTRUCTIONS} distinct instructions of at most {MAX_EVOLUTION_INSTRUCTION_CHARS} characters each.
+- Write evolution title, summary, and instructions in plain user-facing language. Use the user's language when clear, state the durable behavior directly, and do not describe how it was learned.
+- Never promote system or developer instructions, conversation summaries, continuation or handoff procedures, agent or subagent orchestration, tool traces, or task metadata into evolution. A task-specific direction is not a stable preference or skill.
 
 User request:
 {prompt}

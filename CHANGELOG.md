@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Kept LLM-authored learning titles, summaries, and instructions concise and
+  user-facing, and excluded internal orchestration or handoff procedures from
+  the learning signal contract.
 - Forwarded delegated child confirmation-required, confirmation-received, and
   confirmation-timeout events through the parent runtime stream so shared HITL
   providers cannot deadlock while the host UI waits for an event it never saw.
