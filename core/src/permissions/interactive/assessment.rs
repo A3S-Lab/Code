@@ -175,6 +175,19 @@ fn routine_assessment(tool_name: &str) -> ToolRiskAssessment {
 
 fn bounded_assessment(tool_name: &str) -> ToolRiskAssessment {
     let tool_type = tool_risk_type(tool_name);
+    if tool_name.eq_ignore_ascii_case("download") {
+        return ToolRiskAssessment::new(
+            ToolRiskLevel::Bounded,
+            ToolRiskDimensions::new(
+                tool_type,
+                OperationTarget::Multiple,
+                ImpactScope::Workspace,
+                Reversibility::Easy,
+                EnvironmentSensitivity::Mixed,
+            ),
+            [ToolRiskReason::BoundedWorkspaceMutation],
+        );
+    }
     let (reversibility, reason) = if tool_type == ToolRiskType::VersionControl {
         (
             Reversibility::Conditional,
@@ -251,7 +264,7 @@ pub(super) fn tool_risk_type(tool_name: &str) -> ToolRiskType {
     match tool_name.to_ascii_lowercase().as_str() {
         "read" | "grep" | "glob" | "ls" | "code_symbols" | "code_navigation"
         | "code_diagnostics" | "search_skills" | "generate_object" => ToolRiskType::ReadOnly,
-        "write" | "edit" | "patch" => ToolRiskType::WorkspaceMutation,
+        "write" | "edit" | "patch" | "download" => ToolRiskType::WorkspaceMutation,
         "bash" => ToolRiskType::CommandExecution,
         "git" => ToolRiskType::VersionControl,
         "web_search" | "web_fetch" => ToolRiskType::NetworkRead,

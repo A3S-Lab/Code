@@ -243,6 +243,19 @@ fn successful_source_tool_metadata_becomes_normalized_anchors() {
     };
     collect_tool_source_anchors(&web, &ctx, &mut anchors, &mut seen, &mut scanned);
 
+    let download = AgentEvent::ToolEnd {
+        id: "download-1".to_string(),
+        name: "download".to_string(),
+        args: Some(serde_json::json!({"url": "https://example.com/archive.zip"})),
+        output: "downloaded".to_string(),
+        exit_code: 0,
+        metadata: Some(serde_json::json!({
+            "source_anchors": ["https://example.com/archive.zip?signature=secret"]
+        })),
+        error_kind: None,
+    };
+    collect_tool_source_anchors(&download, &ctx, &mut anchors, &mut seen, &mut scanned);
+
     let failed = AgentEvent::ToolEnd {
         id: "fetch-1".to_string(),
         name: "web_fetch".to_string(),
@@ -266,6 +279,10 @@ fn successful_source_tool_metadata_becomes_normalized_anchors() {
             ToolSourceAnchor {
                 tool: "web_search".to_string(),
                 url_or_path: "https://example.com/report".to_string(),
+            },
+            ToolSourceAnchor {
+                tool: "download".to_string(),
+                url_or_path: "https://example.com/archive.zip".to_string(),
             },
         ]
     );

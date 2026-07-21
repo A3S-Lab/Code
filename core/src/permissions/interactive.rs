@@ -178,7 +178,7 @@ fn invocation_crosses_local_symlink(
         return shell_path_crosses_symlink(root, args);
     }
     let field = match tool.as_str() {
-        "read" | "write" | "edit" | "patch" => "file_path",
+        "read" | "write" | "edit" | "patch" | "download" => "file_path",
         "grep" | "glob" | "ls" | "code_symbols" | "code_navigation" | "code_diagnostics" => "path",
         _ => return false,
     };
@@ -226,6 +226,9 @@ pub(super) fn atomic_tool_is_bounded(tool_name: &str, args: &serde_json::Value) 
         // Workspace-confined edits and ordinary structured Git changes are the
         // bounded operations that auto mode exists to streamline.
         "write" | "edit" | "patch" => bounded_file_target(args),
+        // A missing destination is still bounded because download derives and
+        // sanitizes a workspace-relative filename from the response metadata.
+        "download" => args.get("file_path").is_none() || bounded_file_target(args),
         "git" => {
             classify_git(args) == PermissionDecision::Ask
                 && git_call_is_known_bounded_mutation(args)
@@ -287,6 +290,8 @@ pub(super) fn classify_atomic_tool(
             PermissionDecision::Allow
         }
         "write" | "edit" => classify_scoped_path(args, "file_path", PermissionDecision::Ask),
+        "download" if args.get("file_path").is_none() => PermissionDecision::Ask,
+        "download" => classify_scoped_path(args, "file_path", PermissionDecision::Ask),
         // Patch carries its target in a separate top-level field. A missing or
         // boundary-crossing target must never be silently approved.
         "patch" => classify_scoped_path(args, "file_path", PermissionDecision::Ask),

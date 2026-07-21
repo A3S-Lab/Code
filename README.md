@@ -264,6 +264,7 @@ object-only backend that cannot execute it.
 | Code Intelligence | `code_symbols`, `code_navigation`, `code_diagnostics` | Saved-file semantic metadata and locations with bounded results; source retrieval and mutation stay in the existing file tools |
 | Commands and source control | `bash`, `git` | Bounded output, cancellation, process-group termination on Unix, and typed Git operations |
 | Web evidence | `web_search`, `web_fetch` | Ranked multi-engine search, normalized sources, SSRF protections, extraction, and bounded pages |
+| Downloads | `download` | Workspace-confined binary downloads with strict range validation, bounded parallelism, retries, checksums, and atomic publication |
 | Structured output | `generate_object` | Schema-constrained model generation with validation and repair |
 | Composition | `batch`, `program` | Safe batch scheduling and sandboxed JavaScript programmatic tool calling |
 | Delegation | `task`, `parallel_task` | Foreground/background workers, bounded parallelism, partial results, and task tracking |

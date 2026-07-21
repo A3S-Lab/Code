@@ -77,6 +77,7 @@ impl Default for DefaultSkillValidator {
                 "write(*)".to_string(),
                 "edit(*)".to_string(),
                 "patch(*)".to_string(),
+                "download(*)".to_string(),
             ],
             injection_patterns: vec![
                 "ignore previous".to_string(),
@@ -313,7 +314,14 @@ mod tests {
     #[test]
     fn test_dangerous_tool_patterns() {
         let v = validator();
-        let dangerous = &["Bash(*)", "bash(*)", "write(*)", "edit(*)", "patch(*)"];
+        let dangerous = &[
+            "Bash(*)",
+            "bash(*)",
+            "write(*)",
+            "edit(*)",
+            "patch(*)",
+            "download(*)",
+        ];
         for pattern in dangerous {
             let mut skill = make_skill("safe-skill", "content");
             skill.allowed_tools = Some(pattern.to_string());

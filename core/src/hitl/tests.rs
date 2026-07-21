@@ -14,6 +14,10 @@ fn test_session_lane() {
     );
     assert_eq!(SessionLane::from_tool_name("bash"), SessionLane::Execute);
     assert_eq!(SessionLane::from_tool_name("write"), SessionLane::Execute);
+    assert_eq!(
+        SessionLane::from_tool_name("download"),
+        SessionLane::Execute
+    );
 }
 
 #[test]
@@ -54,7 +58,9 @@ fn test_session_lane_all_query() {
 
 #[test]
 fn test_session_lane_all_execute() {
-    let execute_tools = ["bash", "write", "edit", "delete", "move", "copy", "execute"];
+    let execute_tools = [
+        "bash", "write", "edit", "download", "delete", "move", "copy", "execute",
+    ];
     for tool in execute_tools {
         assert_eq!(
             SessionLane::from_tool_name(tool),

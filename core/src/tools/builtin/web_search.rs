@@ -473,9 +473,9 @@ impl Tool for WebSearchTool {
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .or_else(|| configured_headless.and_then(|config| config.proxy_url.clone()))
-            .or_else(super::web_fetch::explicit_web_proxy_from_env);
+            .or_else(super::safe_http::explicit_web_proxy_from_env);
         if proxy_url.is_none() {
-            proxy_url = super::web_fetch::system_web_proxy().await;
+            proxy_url = super::safe_http::system_web_proxy().await;
         }
 
         // Get or initialize BrowserPool if needed

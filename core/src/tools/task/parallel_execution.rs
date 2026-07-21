@@ -433,7 +433,7 @@ impl TaskExecutor {
         // mutation-capable tool; Ask is not safe because a parent confirmation
         // policy may auto-approve it. This keeps retries to read-only agents.
         let empty_args = serde_json::json!({});
-        ["write", "edit", "patch", "batch", "bash", "git"]
+        ["write", "edit", "patch", "download", "batch", "bash", "git"]
             .iter()
             .all(|tool| agent.permissions.is_denied(tool, &empty_args))
     }
