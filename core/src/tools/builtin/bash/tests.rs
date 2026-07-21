@@ -1,7 +1,10 @@
 use super::*;
-use crate::sandbox::{BashSandbox, SandboxOutput};
+use crate::sandbox::{BashSandbox, SandboxCommandRequest, SandboxExecutionOutput, SandboxOutput};
+use crate::workspace::CommandOutputSummary;
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 // ------------------------------------------------------------------
@@ -31,6 +34,56 @@ impl BashSandbox for MockSandbox {
     async fn shutdown(&self) {}
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct RecordedSandboxRequest {
+    command: String,
+    guest_workspace: String,
+    timeout_ms: u64,
+    env: Option<HashMap<String, String>>,
+    had_output_observer: bool,
+}
+
+struct RecordingExtendedSandbox {
+    called: Arc<AtomicBool>,
+    request: Arc<std::sync::Mutex<Option<RecordedSandboxRequest>>>,
+    output: SandboxExecutionOutput,
+    summary: CommandOutputSummary,
+}
+
+#[async_trait]
+impl BashSandbox for RecordingExtendedSandbox {
+    async fn exec_command(
+        &self,
+        _command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<SandboxOutput> {
+        anyhow::bail!("the bash tool must use the extended sandbox contract")
+    }
+
+    async fn exec(&self, request: SandboxCommandRequest) -> anyhow::Result<SandboxExecutionOutput> {
+        self.called.store(true, Ordering::SeqCst);
+        *self.request.lock().unwrap() = Some(RecordedSandboxRequest {
+            command: request.command,
+            guest_workspace: request.guest_workspace,
+            timeout_ms: request.timeout_ms,
+            env: request.env.as_deref().cloned(),
+            had_output_observer: request.output_observer.is_some(),
+        });
+        if let Some(observer) = request.output_observer {
+            observer.on_output_delta("streamed sandbox output").await;
+            observer.on_output_complete(&self.summary).await;
+        }
+        Ok(SandboxExecutionOutput {
+            stdout: self.output.stdout.clone(),
+            stderr: self.output.stderr.clone(),
+            exit_code: self.output.exit_code,
+            timed_out: self.output.timed_out,
+        })
+    }
+
+    async fn shutdown(&self) {}
+}
+
 #[tokio::test]
 async fn test_bash_delegates_to_sandbox() {
     let tool = BashTool;
@@ -48,7 +101,186 @@ async fn test_bash_delegates_to_sandbox() {
 
     assert!(result.success);
     assert!(result.content.contains("sandbox output"));
-    assert_eq!(result.metadata.unwrap()["exit_code"], 0);
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["exit_code"], 0);
+    assert_eq!(metadata["sandboxed"], true);
+}
+
+#[tokio::test]
+async fn default_sandbox_execution_preserves_timeout_env_and_streaming_contract() {
+    let tool = BashTool;
+    let called = Arc::new(AtomicBool::new(false));
+    let request = Arc::new(std::sync::Mutex::new(None));
+    let sandbox = Arc::new(RecordingExtendedSandbox {
+        called: Arc::clone(&called),
+        request: Arc::clone(&request),
+        output: SandboxExecutionOutput {
+            stdout: "sandbox result".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        },
+        summary: CommandOutputSummary {
+            total_bytes: 23,
+            captured_bytes: 23,
+            truncated: false,
+            timed_out: false,
+        },
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+    let ctx = ToolContext::new(temp.path().to_path_buf())
+        .with_sandbox(sandbox)
+        .with_command_env(Arc::new(HashMap::from([(
+            "A3S_TEST_ENV".to_string(),
+            "visible".to_string(),
+        )])))
+        .with_event_tx(event_tx);
+
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": "printf result",
+                "timeout": 42,
+                "sandbox_permissions": "use_default"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "{}", result.content);
+    assert!(called.load(Ordering::SeqCst));
+    assert_eq!(
+        request.lock().unwrap().as_ref(),
+        Some(&RecordedSandboxRequest {
+            command: "printf result".to_string(),
+            guest_workspace: "/workspace".to_string(),
+            timeout_ms: MIN_TIMEOUT_MS,
+            env: Some(HashMap::from([(
+                "A3S_TEST_ENV".to_string(),
+                "visible".to_string(),
+            )])),
+            had_output_observer: true,
+        })
+    );
+    assert!(matches!(
+        event_rx.recv().await,
+        Some(ToolStreamEvent::OutputDelta(delta))
+            if delta == "streamed sandbox output"
+    ));
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["sandboxed"], true);
+    assert_eq!(metadata["output"]["total_bytes"], 23);
+}
+
+#[tokio::test]
+async fn escalated_execution_requires_a_justification() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf());
+
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": "printf host",
+                "sandbox_permissions": "require_escalated"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    assert!(result.content.contains("justification is required"));
+}
+
+#[tokio::test]
+#[cfg(not(windows))]
+async fn escalated_execution_skips_the_configured_sandbox() {
+    let tool = BashTool;
+    let called = Arc::new(AtomicBool::new(false));
+    let request = Arc::new(std::sync::Mutex::new(None));
+    let sandbox = Arc::new(RecordingExtendedSandbox {
+        called: Arc::clone(&called),
+        request,
+        output: SandboxExecutionOutput {
+            stdout: "wrong boundary".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        },
+        summary: CommandOutputSummary {
+            total_bytes: 0,
+            captured_bytes: 0,
+            truncated: false,
+            timed_out: false,
+        },
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf()).with_sandbox(sandbox);
+
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": "printf host",
+                "sandbox_permissions": "require_escalated",
+                "justification": "The exact command needs an approved host capability."
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "{}", result.content);
+    assert_eq!(result.content, "host");
+    assert!(!called.load(Ordering::SeqCst));
+    assert_eq!(result.metadata.unwrap()["sandboxed"], false);
+}
+
+#[tokio::test]
+async fn sandbox_timeout_uses_the_sandbox_result_and_metadata() {
+    let tool = BashTool;
+    let sandbox = Arc::new(RecordingExtendedSandbox {
+        called: Arc::new(AtomicBool::new(false)),
+        request: Arc::new(std::sync::Mutex::new(None)),
+        output: SandboxExecutionOutput {
+            stdout: "partial".to_string(),
+            stderr: String::new(),
+            exit_code: -1,
+            timed_out: true,
+        },
+        summary: CommandOutputSummary {
+            total_bytes: 7,
+            captured_bytes: 7,
+            truncated: false,
+            timed_out: true,
+        },
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf()).with_sandbox(sandbox);
+
+    let result = tool
+        .execute(
+            &serde_json::json!({"command": "slow", "timeout": 1_500}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    assert!(result.content.contains("timed out after 1500ms"));
+    assert!(matches!(
+        result.error_kind,
+        Some(ToolErrorKind::Timeout {
+            ref op,
+            duration_ms: 1_500
+        }) if op == "bash"
+    ));
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["sandboxed"], true);
+    assert_eq!(metadata["timeout_ms"], 1_500);
+    assert_eq!(metadata["output"]["timed_out"], true);
 }
 
 #[tokio::test]
@@ -406,6 +638,15 @@ fn test_bash_schema_is_canonical() {
         "cargo test -p a3s-code-core skill::"
     );
     assert!(examples[0].get("cmd").is_none());
+    assert!(!tool.requires_confirmation(&serde_json::json!({
+        "command": "cargo test",
+        "sandbox_permissions": "use_default"
+    })));
+    assert!(tool.requires_confirmation(&serde_json::json!({
+        "command": "cargo test",
+        "sandbox_permissions": "require_escalated",
+        "justification": "Needs an approved host capability."
+    })));
 }
 
 #[test]

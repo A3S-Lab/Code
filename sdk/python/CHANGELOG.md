@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.2.0] - 2026-07-22
+
+### Changed
+
+- Updated the bundled Core with the verified SRT process-sandbox contract and
+  the latest delegated confirmation propagation fixes.
+
 ## [6.1.0] - 2026-07-20
 
 ### Changed
