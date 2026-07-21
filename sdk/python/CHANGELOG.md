@@ -4,6 +4,59 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-07-20
+
+### Changed
+
+- Updated the bundled Core to `a3s-search` 2.0, with AnySearch as the default
+  web-search provider and Tavily available as an explicit native provider.
+
+## [6.0.0] - 2026-07-19
+
+### Changed
+
+- Updated the bundled Core with expanded TypeScript language profiles, PDF
+  fetching, invariant-safe session forks, typed MCP results and artifacts,
+  delegated permission boundaries, and tool-free standalone greetings.
+- Raised the major version with Core's public standard MCP metadata fields.
+
+## [5.3.5] - 2026-07-17
+
+### Changed
+
+- Updated the bundled Core with host-supplied session client bootstrap, bounded
+  in-place response-stream retry and rollback, explicit search-routing
+  metadata, and the Bing RSS engine.
+
+## [5.3.4] - 2026-07-16
+
+### Fixed
+
+- Updated the bundled Core so a cold workspace-symbol query prepares a saved
+  source document before asking the language server to search its projects.
+
+## [5.3.3] - 2026-07-16
+
+### Fixed
+
+- Updated the bundled Core so abandoned semantic queries share cancellation-safe
+  language-runtime startup and workspace shutdown remains bounded.
+
+## [5.3.2] - 2026-07-16
+
+### Fixed
+
+- Updated the bundled Core with position-aware interactive shell risk
+  classification and stricter detection of implicit file-writing options.
+
+## [5.3.1] - 2026-07-16
+
+### Fixed
+
+- Updated the bundled Core so live worker registration is reflected in the
+  model-facing delegation catalog and delegated sessions inherit live MCP
+  additions and removals.
+
 ## [5.3.0] - 2026-07-15
 
 ### Added

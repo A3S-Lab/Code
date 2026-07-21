@@ -7,6 +7,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Forwarded delegated child confirmation-required, confirmation-received, and
+  confirmation-timeout events through the parent runtime stream so shared HITL
+  providers cannot deadlock while the host UI waits for an event it never saw.
+- Built MCP tool-selection context from the last six text-bearing messages
+  instead of counting tool-use and tool-result messages that are discarded,
+  preserving the original request across long delegated tool sequences.
+
+## [6.1.0] - 2026-07-20
+
+### Added
+
+- Added a closed, bounded `.a3s/asset.acl` Agent release contract with immutable
+  OCI and provenance digests, static entrypoint and health declarations, typed
+  storage boundaries, schema-aware canonical identity, and pre-activation
+  protocol and capability checks.
+- Integrated `a3s-search` 2.0 native AnySearch and Tavily providers into the
+  built-in `web_search` engine catalog. Both providers support their documented
+  credential-free modes and optional environment-based authentication.
+
+### Changed
+
+- Made AnySearch the sole built-in default for `web_search` when neither the
+  request nor `SearchConfig` selects engines. Explicit request and ACL engine
+  selections continue to override the built-in default.
+
+### Security
+
+- Restricted release secret requirements to unique environment or
+  `/run/secrets/` injection slots, rejected embedded values and ambiguous
+  destinations, and kept admission diagnostics from echoing manifest values.
+
+## [6.0.0] - 2026-07-19
+
+### Added
+
+- Expanded TypeScript code-intelligence discovery for nested monorepos,
+  hoisted and Yarn SDKs, classic `tsserver`, and the TypeScript 7 native LSP.
+- Added bounded PDF text extraction to `web_fetch`, including media/signature
+  detection, normalized metadata, malformed-document errors, and image-only
+  document handling.
+- Added an invariant-checked session snapshot fork operation that rebinds the
+  session, workspace, run ownership, and subagent parent ownership while
+  preserving the complete persisted generation.
+- Preserved standard MCP tool metadata and call results end to end, including
+  output schemas, annotations, icons, `_meta`, `structuredContent`, decoded
+  images, embedded resources, and bounded content-addressed artifacts.
+
+### Changed
+
+- Raised the major version because the standard MCP metadata support extends
+  the public `McpTool` and `CallToolResult` structures with new fields.
+
+### Fixed
+
+- Kept standalone conversational greetings tool-free and prevented them from
+  triggering synthetic continuation turns, while retaining the normal tool
+  surface for greetings that also contain an action request.
+
+### Security
+
+- Made MCP confirmation annotations escalation-only: tool metadata can require
+  HITL but cannot weaken a host Allow/Ask/Deny decision.
+- Allowed an explicitly scoped delegated worker to see a parent-hidden tool
+  while keeping both parent and worker execution policies authoritative.
+
+## [5.3.5] - 2026-07-17
+
+### Added
+
+- Added `bing` as a first-class HTTP RSS search engine and exposed selected
+  engines plus their request, configuration, or built-in-default origin in
+  search result metadata.
+
+### Changed
+
+- Raised the bounded auditable `program` source limit to 192 KiB and retained
+  compact search-routing fields when oversized child metadata passes through a
+  batch workflow.
+
+### Fixed
+
+- Allowed hosts that supply an `LlmClient` in session options to bootstrap an
+  agent without a configured default model, while preserving session-time
+  validation when neither source is available.
+- Retried an established response stream up to ten times within the same turn,
+  with cancellation-aware exponential backoff and transactional rollback of
+  provisional text, reasoning, and tool drafts between attempts.
+- Treated OpenAI-compatible transport failures and cancellation before terminal
+  evidence as incomplete streams instead of synthesizing a successful partial
+  response; a received finish reason remains valid without a trailing
+  `[DONE]` marker.
+
+## [5.3.4] - 2026-07-16
+
+### Fixed
+
+- Prepared one saved source document per active language before a cold
+  workspace-symbol search, so language servers that load projects on document
+  open can serve the first semantic query instead of returning `No Project`.
+
+## [5.3.3] - 2026-07-16
+
+### Fixed
+
+- Kept a shared language-runtime startup alive when the query that initiated it
+  disconnects or is cancelled, so concurrent and subsequent semantic queries
+  reuse one process generation instead of restarting it.
+- Made language-runtime startup, source removal, and workspace shutdown use
+  bounded generation-aware cleanup, preventing late readiness updates,
+  overlapping replacement processes, and incomplete multi-language status.
+
+## [5.3.2] - 2026-07-16
+
+### Fixed
+
+- Made interactive shell risk classification distinguish executable positions
+  from harmless argument text, while retaining HITL for compact write options,
+  output-producing `find` actions, and unparsed `sed` scripts.
+
+## [5.3.1] - 2026-07-16
+
 ### Added
 
 - Added the Search 2 native `anysearch` and `tavily` providers to the built-in

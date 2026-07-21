@@ -10,6 +10,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   # ───────────────────────────────────────────────
@@ -52,10 +55,10 @@ jobs:
           test -n "$VERSION"
           bash check-version.sh "$VERSION"
 
-      - name: Check public API compatibility with v5.2.8
+      - name: Check public API compatibility with v5.3.5
         run: |
           cargo install cargo-semver-checks --version 0.48.0 --locked
-          bash scripts/check_semver.sh 5.2.8
+          bash scripts/check_semver.sh 5.3.5
 
       - name: Check SDK protocol and API alignment
         run: |
@@ -67,6 +70,12 @@ jobs:
 
       - name: Check Python SDK
         run: cargo check --manifest-path sdk/python/Cargo.toml
+
+      - name: Reclaim build space before tests
+        run: |
+          cargo clean --manifest-path sdk/node/Cargo.toml
+          cargo clean --manifest-path sdk/python/Cargo.toml
+          cargo clean
 
       - name: Default tests
         run: cargo test --workspace

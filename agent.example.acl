@@ -81,7 +81,8 @@ search {
     suspend_seconds = 60
   }
 
-  # Engine configurations
+  # Engine configurations. Omit this block to use the built-in AnySearch
+  # default; any entries here explicitly replace that default selection.
   engine {
     google {
       enabled = true

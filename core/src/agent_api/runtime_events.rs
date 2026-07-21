@@ -487,6 +487,13 @@ fn should_bridge_agent_event(event: &AgentEvent) -> bool {
         AgentEvent::SubagentStart { .. }
             | AgentEvent::SubagentProgress { .. }
             | AgentEvent::SubagentEnd { .. }
+            // A delegated child that inherits the parent confirmation provider
+            // waits for the parent UI to answer these events. Filtering them
+            // here leaves the child blocked even though its confirmation is
+            // registered on the shared provider.
+            | AgentEvent::ConfirmationRequired { .. }
+            | AgentEvent::ConfirmationReceived { .. }
+            | AgentEvent::ConfirmationTimeout { .. }
     )
 }
 
@@ -759,6 +766,72 @@ mod tests {
             &record.event,
             AgentEvent::SubagentStart { task_id, .. } if task_id == "task-b"
         )));
+    }
+
+    #[tokio::test]
+    async fn forwarder_exposes_delegated_confirmation_lifecycle() {
+        let run_store = Arc::new(crate::run::InMemoryRunStore::new());
+        let run = run_store.create_run("session-1", "prompt").await;
+        let sink = RuntimeEventSink::new(RuntimeEventSinkConfig {
+            run_store: Arc::clone(&run_store),
+            run_id: run.id.clone(),
+            session_id: "session-1".to_string(),
+            hook_executor: None,
+            security_provider: None,
+            persistence_state: persistence_state(),
+            active_tools: active_tools(),
+            subagent_tasks: Arc::new(
+                crate::subagent_task_tracker::InMemorySubagentTaskTracker::new(),
+            ),
+        });
+        let (runtime_tx, runtime_rx) = mpsc::channel(4);
+        let (stream_tx, mut stream_rx) = mpsc::channel(4);
+        let (agent_tx, barrier, agent_rx) = run_agent_event_channel(8);
+        let forwarder = sink.spawn_forwarder(runtime_rx, stream_tx, Some(agent_rx));
+
+        let expected = vec![
+            AgentEvent::ConfirmationRequired {
+                tool_id: "child-tool-1".to_string(),
+                tool_name: "install".to_string(),
+                args: serde_json::json!({"component": "browser"}),
+                timeout_ms: 30_000,
+            },
+            AgentEvent::ConfirmationReceived {
+                tool_id: "child-tool-1".to_string(),
+                approved: true,
+                reason: Some("approved by parent".to_string()),
+            },
+            AgentEvent::ConfirmationTimeout {
+                tool_id: "child-tool-2".to_string(),
+                action_taken: "rejected".to_string(),
+            },
+        ];
+        for event in &expected {
+            agent_tx.send(event.clone()).unwrap();
+        }
+        barrier.flush().await;
+        drop(agent_tx);
+        drop(runtime_tx);
+        forwarder.await.unwrap();
+
+        let mut streamed = Vec::new();
+        while let Some(event) = stream_rx.recv().await {
+            streamed.push(event);
+        }
+        assert_eq!(
+            serde_json::to_value(&streamed).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        let persisted = run_store
+            .events(&run.id)
+            .await
+            .into_iter()
+            .map(|record| record.event)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            serde_json::to_value(&persisted).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
     }
 
     #[tokio::test]

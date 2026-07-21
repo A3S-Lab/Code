@@ -35,6 +35,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --lib --bins -- -D warnings
 
+      - name: Check public API compatibility with v5.3.5
+        run: |
+          cargo install cargo-semver-checks --version 0.48.0 --locked
+          bash scripts/check_semver.sh 5.3.5
+
       - name: Default tests
         run: cargo test --workspace
 
@@ -75,3 +80,26 @@ jobs:
 
       - name: Check Python SDK
         run: cargo check --manifest-path sdk/python/Cargo.toml
+
+  windows-check:
+    name: Windows check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        shell: bash
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --workspace --lib --bins -- -D warnings
+
+      - name: Library tests
+        run: cargo test --workspace --lib

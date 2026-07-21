@@ -158,6 +158,7 @@ async fn removing_the_last_supported_source_resets_failed_runtime_state() {
     *rust.state.lock().await = SlotState::Failed(StartFailure {
         at: Instant::now(),
         message: "failed".to_owned(),
+        retained_runtime: None,
     });
 
     runtime.update_snapshot(&snapshot(&root, 2, &[])).await;

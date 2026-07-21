@@ -1,6 +1,5 @@
 use std::{
     path::{Path, PathBuf},
-    process::Command,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -11,7 +10,12 @@ use std::{
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use super::WorkspaceRuntime;
+#[cfg(unix)]
+use super::integration_test_support::process_exists;
+use super::{
+    integration_test_support::{compile_fake_server, fixture_started_pids},
+    WorkspaceRuntime,
+};
 use crate::{
     code_intelligence::{
         language_profile::LanguageServerProfile,
@@ -24,6 +28,8 @@ use crate::{
         WorkspaceResult, WorkspaceWriteOutcome,
     },
 };
+
+const TEST_QUERY_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct ChangeOnSecondReadFileSystem {
     inner: LocalWorkspaceBackend,
@@ -100,27 +106,19 @@ fn write_workspace_files(root: &Path, files: &[(&str, &str)]) {
     }
 }
 
-fn compile_fake_server(output: &Path) {
-    let source =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/code_intelligence_fake_lsp.rs");
-    let result = Command::new("rustc")
-        .arg("--edition=2021")
-        .arg(source)
-        .arg("-o")
-        .arg(output)
-        .output()
-        .expect("rustc must be available while Cargo tests are running");
-    assert!(
-        result.status.success(),
-        "failed to compile fake language server: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-}
-
 fn test_runtime(
     root: &Path,
     snapshot: &LocalWorkspaceManifestSnapshot,
     profiles: Vec<LanguageServerProfile>,
+) -> WorkspaceRuntime {
+    test_runtime_with_timeout(root, snapshot, profiles, TEST_QUERY_TIMEOUT)
+}
+
+fn test_runtime_with_timeout(
+    root: &Path,
+    snapshot: &LocalWorkspaceManifestSnapshot,
+    profiles: Vec<LanguageServerProfile>,
+    timeout: Duration,
 ) -> WorkspaceRuntime {
     let file_system: Arc<dyn WorkspaceFileSystem> =
         Arc::new(LocalWorkspaceBackend::new(root.to_path_buf()));
@@ -129,7 +127,7 @@ fn test_runtime(
         ProjectLayoutResolver::resolve(snapshot),
         snapshot,
         file_system,
-        Duration::from_secs(5),
+        timeout,
         profiles,
     )
 }
@@ -146,10 +144,543 @@ fn test_runtime_with_file_system(
         ProjectLayoutResolver::resolve(snapshot),
         snapshot,
         file_system,
-        Duration::from_secs(5),
+        TEST_QUERY_TIMEOUT,
         profiles,
         document_capacity,
     )
+}
+
+#[tokio::test]
+async fn first_workspace_symbol_query_opens_a_saved_source_document() {
+    let workspace = tempfile::tempdir().unwrap();
+    write_workspace_files(
+        workspace.path(),
+        &[
+            ("package.json", "{}\n"),
+            (
+                "src/main.ts",
+                "export function answer(): number { return 42; }\n",
+            ),
+        ],
+    );
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let snapshot = snapshot(&root, &["package.json", "src/main.ts"]);
+    let server_dir = tempfile::tempdir().unwrap();
+    let server = server_dir.path().join(if cfg!(windows) {
+        "requires-open-fake-lsp.exe"
+    } else {
+        "requires-open-fake-lsp"
+    });
+    compile_fake_server(&server);
+    let runtime = test_runtime(
+        &root,
+        &snapshot,
+        vec![LanguageServerProfile::typescript_javascript(&server)],
+    );
+
+    let result = runtime
+        .search_symbols("answer", 10, CancellationToken::new())
+        .await
+        .expect("the first workspace symbol query must prepare a language project");
+
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].name, "answer");
+    assert_eq!(result.items[0].location.path.as_str(), "src/main.ts");
+    let log = std::fs::read_to_string(server.with_extension("log")).unwrap();
+    let did_open = log.find("\"method\":\"textDocument/didOpen\"").unwrap();
+    let workspace_symbol = log.find("\"method\":\"workspace/symbol\"").unwrap();
+    assert!(
+        did_open < workspace_symbol,
+        "the saved source must be opened before workspace symbol search: {log}"
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn abandoned_caller_does_not_restart_an_in_flight_language_runtime() {
+    let workspace = tempfile::tempdir().unwrap();
+    write_workspace_files(
+        workspace.path(),
+        &[
+            ("package.json", "{}\n"),
+            (
+                "src/main.ts",
+                "export function answer(): number { return 42; }\n",
+            ),
+        ],
+    );
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let snapshot = snapshot(&root, &["package.json", "src/main.ts"]);
+    let server_dir = tempfile::tempdir().unwrap();
+    let server = server_dir.path().join(if cfg!(windows) {
+        "slow-initialize-fake-lsp.exe"
+    } else {
+        "slow-initialize-fake-lsp"
+    });
+    compile_fake_server(&server);
+    let runtime = Arc::new(test_runtime(
+        &root,
+        &snapshot,
+        vec![LanguageServerProfile::typescript_javascript(&server)],
+    ));
+    let path = WorkspacePath::from_normalized("src/main.ts");
+
+    let abandoned = {
+        let runtime = Arc::clone(&runtime);
+        let path = path.clone();
+        tokio::spawn(async move {
+            runtime
+                .document_symbols(&path, CancellationToken::new())
+                .await
+        })
+    };
+    let log_path = server.with_extension("log");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if std::fs::read_to_string(&log_path)
+                .is_ok_and(|log| log.contains("\"method\":\"initialize\""))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the first runtime must begin initialization");
+
+    let surviving = {
+        let runtime = Arc::clone(&runtime);
+        let path = path.clone();
+        tokio::spawn(async move {
+            runtime
+                .document_symbols(&path, CancellationToken::new())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    abandoned.abort();
+    assert!(abandoned.await.unwrap_err().is_cancelled());
+
+    let result = tokio::time::timeout(Duration::from_secs(3), surviving)
+        .await
+        .expect("the concurrent waiter must remain bounded")
+        .expect("the concurrent waiter task must not fail")
+        .expect("the concurrent waiter must reuse the in-flight runtime");
+    assert_eq!(result.items.len(), 1);
+
+    let mut status = runtime.subscribe_status();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if status.borrow().state == CodeIntelligenceState::Ready {
+                break;
+            }
+            status.changed().await.expect("runtime status channel");
+        }
+    })
+    .await
+    .expect("detached initialization must publish ready status");
+    let current_status = status.borrow().clone();
+    assert_eq!(current_status.languages.len(), 1);
+    assert_eq!(
+        current_status.languages[0].state,
+        CodeIntelligenceState::Ready
+    );
+    assert!(current_status.languages[0].capabilities.document_symbols);
+    assert!(current_status.languages[0].message.is_none());
+    tokio::time::timeout(Duration::from_secs(2), runtime.shutdown())
+        .await
+        .expect("runtime shutdown must remain bounded");
+
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert_eq!(
+        log.matches("\"method\":\"initialize\"").count(),
+        1,
+        "abandoning one caller must not kill and restart shared initialization: {log}"
+    );
+}
+
+#[tokio::test]
+async fn abandoned_caller_before_start_task_runs_does_not_strand_the_slot() {
+    let workspace = tempfile::tempdir().unwrap();
+    write_workspace_files(
+        workspace.path(),
+        &[
+            ("package.json", "{}\n"),
+            ("src/main.ts", "export function answer() { return 42; }\n"),
+        ],
+    );
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let snapshot = snapshot(&root, &["package.json", "src/main.ts"]);
+    let server_dir = tempfile::tempdir().unwrap();
+    let server = server_dir.path().join(if cfg!(windows) {
+        "preflight-slow-initialize-fake-lsp.exe"
+    } else {
+        "preflight-slow-initialize-fake-lsp"
+    });
+    compile_fake_server(&server);
+    let runtime = Arc::new(test_runtime(
+        &root,
+        &snapshot,
+        vec![LanguageServerProfile::typescript_javascript(&server)],
+    ));
+    let path = WorkspacePath::from_normalized("src/main.ts");
+
+    // Hold status publication so the detached task cannot begin its attempt
+    // until after the initiating query has been force-abandoned.
+    let status_update = runtime.status_updates.lock().await;
+    let abandoned = {
+        let runtime = Arc::clone(&runtime);
+        let path = path.clone();
+        tokio::spawn(async move {
+            runtime
+                .document_symbols(&path, CancellationToken::new())
+                .await
+        })
+    };
+    let slot = runtime
+        .slots
+        .iter()
+        .find(|slot| slot.profile.id() == ProjectLanguageProfile::TypeScriptJavaScript)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if matches!(&*slot.state.lock().await, super::SlotState::Starting(_)) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the slot must publish its shared starting generation");
+    abandoned.abort();
+    assert!(abandoned.await.unwrap_err().is_cancelled());
+    drop(status_update);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        runtime.document_symbols(&path, CancellationToken::new()),
+    )
+    .await
+    .expect("a later query must not wait on a stranded starting state")
+    .expect("a later query must share the detached start");
+    assert_eq!(result.items.len(), 1);
+    let status = runtime.subscribe_status().borrow().clone();
+    assert_eq!(status.state, CodeIntelligenceState::Ready);
+    assert_eq!(status.languages.len(), 1);
+    assert_eq!(status.languages[0].state, CodeIntelligenceState::Ready);
+
+    tokio::time::timeout(Duration::from_secs(2), runtime.shutdown())
+        .await
+        .expect("runtime shutdown must remain bounded");
+    let log = std::fs::read_to_string(server.with_extension("log")).unwrap();
+    assert_eq!(log.matches("\"method\":\"initialize\"").count(), 1);
+}
+
+#[tokio::test]
+async fn shutdown_cancels_and_reaps_an_in_flight_language_runtime_start() {
+    let workspace = tempfile::tempdir().unwrap();
+    write_workspace_files(
+        workspace.path(),
+        &[
+            ("package.json", "{}\n"),
+            ("src/main.ts", "export function answer() { return 42; }\n"),
+        ],
+    );
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let snapshot = snapshot(&root, &["package.json", "src/main.ts"]);
+    let server_dir = tempfile::tempdir().unwrap();
+    let server = server_dir.path().join(if cfg!(windows) {
+        "shutdown-slow-initialize-fake-lsp.exe"
+    } else {
+        "shutdown-slow-initialize-fake-lsp"
+    });
+    compile_fake_server(&server);
+    let runtime = Arc::new(test_runtime(
+        &root,
+        &snapshot,
+        vec![LanguageServerProfile::typescript_javascript(&server)],
+    ));
+    let query = {
+        let runtime = Arc::clone(&runtime);
+        tokio::spawn(async move {
+            runtime
+                .document_symbols(
+                    &WorkspacePath::from_normalized("src/main.ts"),
+                    CancellationToken::new(),
+                )
+                .await
+        })
+    };
+    let log_path = server.with_extension("log");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if std::fs::read_to_string(&log_path)
+                .is_ok_and(|log| log.contains("\"method\":\"initialize\""))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the runtime must begin initialization");
+
+    tokio::time::timeout(Duration::from_secs(2), runtime.shutdown())
+        .await
+        .expect("shutdown must cancel an in-flight startup within its host bound");
+    let result = tokio::time::timeout(Duration::from_secs(1), query)
+        .await
+        .expect("the initiating query must settle after shutdown")
+        .expect("the query task must not panic");
+    assert!(result.is_err());
+
+    let status = runtime.subscribe_status().borrow().clone();
+    assert_eq!(status.state, CodeIntelligenceState::Unavailable);
+    assert!(status.languages.is_empty());
+    assert_eq!(
+        status.message.as_deref(),
+        Some("Code Intelligence runtime is shut down")
+    );
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert_eq!(log.matches("\"method\":\"initialize\"").count(), 1);
+}
+
+#[tokio::test]
+async fn forced_shutdown_reaps_an_unresponsive_language_runtime() {
+    let workspace = tempfile::tempdir().unwrap();
+    write_workspace_files(
+        workspace.path(),
+        &[
+            ("package.json", "{}\n"),
+            ("src/main.ts", "export function answer() { return 42; }\n"),
+        ],
+    );
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let snapshot = snapshot(&root, &["package.json", "src/main.ts"]);
+    let server_dir = tempfile::tempdir().unwrap();
+    let server = server_dir.path().join(if cfg!(windows) {
+        "ignore-shutdown-fake-lsp.exe"
+    } else {
+        "ignore-shutdown-fake-lsp"
+    });
+    compile_fake_server(&server);
+    let runtime = Arc::new(test_runtime_with_timeout(
+        &root,
+        &snapshot,
+        vec![LanguageServerProfile::typescript_javascript(&server)],
+        Duration::from_secs(10),
+    ));
+    runtime
+        .document_symbols(
+            &WorkspacePath::from_normalized("src/main.ts"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let language_runtime = {
+        let state = runtime.slots[0].state.lock().await;
+        match &*state {
+            super::SlotState::Ready(runtime) => Arc::clone(runtime),
+            _ => panic!("language runtime must be ready before forced shutdown"),
+        }
+    };
+    let process_state = language_runtime.subscribe_process_state();
+    let log_path = server.with_extension("log");
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    let pid = *fixture_started_pids(&log).last().unwrap();
+
+    tokio::time::timeout(Duration::from_secs(6), runtime.shutdown())
+        .await
+        .expect("forced shutdown must remain within the workspace bound");
+    assert!(!matches!(
+        *process_state.borrow(),
+        crate::code_intelligence::lsp::process::LspProcessState::Running
+    ));
+    #[cfg(unix)]
+    assert!(
+        !process_exists(pid),
+        "forced language process {pid} survived"
+    );
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert!(log.contains("\"method\":\"shutdown\""));
+}
+
+#[tokio::test]
+async fn removing_a_source_during_start_reaps_it_before_the_slot_reopens() {
+    let workspace = tempfile::tempdir().unwrap();
+    write_workspace_files(
+        workspace.path(),
+        &[
+            ("package.json", "{}\n"),
+            ("src/main.ts", "export function answer() { return 42; }\n"),
+        ],
+    );
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let initial = snapshot(&root, &["package.json", "src/main.ts"]);
+    let server_dir = tempfile::tempdir().unwrap();
+    let server = server_dir.path().join(if cfg!(windows) {
+        "source-removal-slow-initialize-fake-lsp.exe"
+    } else {
+        "source-removal-slow-initialize-fake-lsp"
+    });
+    compile_fake_server(&server);
+    let runtime = Arc::new(test_runtime(
+        &root,
+        &initial,
+        vec![LanguageServerProfile::typescript_javascript(&server)],
+    ));
+    let path = WorkspacePath::from_normalized("src/main.ts");
+    let query = {
+        let runtime = Arc::clone(&runtime);
+        let path = path.clone();
+        tokio::spawn(async move {
+            runtime
+                .document_symbols(&path, CancellationToken::new())
+                .await
+        })
+    };
+    let log_path = server.with_extension("log");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if std::fs::read_to_string(&log_path)
+                .is_ok_and(|log| log.contains("\"method\":\"initialize\""))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the removed language runtime must begin initialization");
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.update_snapshot(&snapshot(&root, &[])),
+    )
+    .await
+    .expect("source removal cleanup must remain bounded");
+    assert!(tokio::time::timeout(Duration::from_secs(1), query)
+        .await
+        .expect("the cancelled query must settle")
+        .expect("the cancelled query task must not panic")
+        .is_err());
+    assert!(matches!(
+        *runtime.slots[0].state.lock().await,
+        super::SlotState::Dormant
+    ));
+    let first_log = std::fs::read_to_string(&log_path).unwrap();
+    let first_pid = fixture_started_pids(&first_log)[0];
+    assert!(first_log.contains(&format!(
+        "\"event\":\"process_exiting\",\"pid\":{first_pid}"
+    )));
+    #[cfg(unix)]
+    assert!(
+        !process_exists(first_pid),
+        "removed language process {first_pid} survived cleanup"
+    );
+
+    runtime.update_snapshot(&initial).await;
+    runtime
+        .document_symbols(&path, CancellationToken::new())
+        .await
+        .expect("the reopened slot must start a fresh generation");
+    let final_log = std::fs::read_to_string(&log_path).unwrap();
+    assert_eq!(fixture_started_pids(&final_log).len(), 2);
+    assert_eq!(final_log.matches("\"method\":\"initialize\"").count(), 2);
+    tokio::time::timeout(Duration::from_secs(2), runtime.shutdown())
+        .await
+        .expect("restored runtime shutdown must remain bounded");
+}
+
+#[tokio::test]
+async fn abandoned_multi_language_start_publishes_a_complete_ready_snapshot() {
+    let workspace = tempfile::tempdir().unwrap();
+    write_workspace_files(
+        workspace.path(),
+        &[
+            ("Cargo.toml", "[package]\nname='fixture'\n"),
+            ("package.json", "{}\n"),
+            ("src/lib.rs", "pub fn answer() -> u32 { 42 }\n"),
+            ("web/main.ts", "export function answer() { return 42; }\n"),
+        ],
+    );
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let snapshot = snapshot(
+        &root,
+        &["Cargo.toml", "package.json", "src/lib.rs", "web/main.ts"],
+    );
+    let server_dir = tempfile::tempdir().unwrap();
+    let rust_server = server_dir.path().join(if cfg!(windows) {
+        "rust-slow-initialize-fake-lsp.exe"
+    } else {
+        "rust-slow-initialize-fake-lsp"
+    });
+    let typescript_server = server_dir.path().join(if cfg!(windows) {
+        "typescript-slow-initialize-fake-lsp.exe"
+    } else {
+        "typescript-slow-initialize-fake-lsp"
+    });
+    compile_fake_server(&rust_server);
+    compile_fake_server(&typescript_server);
+    let runtime = Arc::new(test_runtime(
+        &root,
+        &snapshot,
+        vec![
+            LanguageServerProfile::rust(&rust_server),
+            LanguageServerProfile::typescript_javascript(&typescript_server),
+        ],
+    ));
+    let abandoned = {
+        let runtime = Arc::clone(&runtime);
+        tokio::spawn(async move { runtime.diagnostics(None, CancellationToken::new()).await })
+    };
+    let logs = [
+        rust_server.with_extension("log"),
+        typescript_server.with_extension("log"),
+    ];
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if logs.iter().all(|log| {
+                std::fs::read_to_string(log)
+                    .is_ok_and(|content| content.contains("\"method\":\"initialize\""))
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("both language runtimes must begin initialization");
+    abandoned.abort();
+    assert!(abandoned.await.unwrap_err().is_cancelled());
+
+    let mut status = runtime.subscribe_status();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let current = status.borrow().clone();
+            if current.state == CodeIntelligenceState::Ready
+                && current.languages.len() == 2
+                && current
+                    .languages
+                    .iter()
+                    .all(|language| language.state == CodeIntelligenceState::Ready)
+            {
+                break;
+            }
+            status.changed().await.expect("runtime status channel");
+        }
+    })
+    .await
+    .expect("both detached starts must publish a complete ready snapshot");
+
+    tokio::time::timeout(Duration::from_secs(2), runtime.shutdown())
+        .await
+        .expect("multi-language shutdown must remain bounded");
+    for log_path in logs {
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert_eq!(log.matches("\"method\":\"initialize\"").count(), 1);
+    }
 }
 
 #[tokio::test]

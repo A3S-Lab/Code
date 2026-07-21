@@ -233,10 +233,13 @@ pub(super) fn union_capabilities(
     target.diagnostics |= source.diagnostics;
 }
 
-pub(super) fn publish_stopped_language_status(
+pub(super) fn publish_language_status(
     sender: &watch::Sender<CodeIntelligenceStatus>,
     language: LanguageId,
-    message: String,
+    state: CodeIntelligenceState,
+    runtime_capabilities: CodeIntelligenceCapabilities,
+    runtime_message: Option<String>,
+    unavailable_summary: &'static str,
 ) {
     let mut status = sender.borrow().clone();
     if let Some(current) = status
@@ -244,15 +247,15 @@ pub(super) fn publish_stopped_language_status(
         .iter_mut()
         .find(|current| current.language == language)
     {
-        current.state = CodeIntelligenceState::Unavailable;
-        current.capabilities = CodeIntelligenceCapabilities::default();
-        current.message = Some(message);
+        current.state = state;
+        current.capabilities = runtime_capabilities;
+        current.message = runtime_message;
     } else {
         status.languages.push(CodeIntelligenceLanguageStatus {
             language,
-            state: CodeIntelligenceState::Unavailable,
-            capabilities: CodeIntelligenceCapabilities::default(),
-            message: Some(message),
+            state,
+            capabilities: runtime_capabilities,
+            message: runtime_message,
         });
     }
 
@@ -287,8 +290,23 @@ pub(super) fn publish_stopped_language_status(
         CodeIntelligenceState::Unavailable
     };
     status.capabilities = capabilities;
-    status.message = Some("one or more language runtimes stopped unexpectedly".to_owned());
+    status.message = (unavailable > 0).then(|| unavailable_summary.to_owned());
     sender.send_replace(status);
+}
+
+pub(super) fn publish_stopped_language_status(
+    sender: &watch::Sender<CodeIntelligenceStatus>,
+    language: LanguageId,
+    message: String,
+) {
+    publish_language_status(
+        sender,
+        language,
+        CodeIntelligenceState::Unavailable,
+        CodeIntelligenceCapabilities::default(),
+        Some(message),
+        "one or more language runtimes stopped unexpectedly",
+    );
 }
 
 pub(super) fn symbol_key(symbol: &SymbolInformation) -> (String, u32, u32, String) {

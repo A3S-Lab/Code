@@ -88,6 +88,9 @@ the session for its next transcript operation.
   explicitly registered A3S Flow-backed dynamic workflows
 - **Durable Evidence**: Persist atomic snapshots, versioned events, traces,
   artifacts, verification reports, checkpoints, and optional RL trajectories
+- **Immutable Release Admission**: Validate bounded `.a3s/asset.acl` manifests,
+  derive schema-aware identities, and reject incompatible runtime capabilities
+  before activation
 - **Event-Sourced State Graph**: Coordinate typed objects and relations through
   hash-linked records, optimistic patches, strict replay, forks, and diffs
 
@@ -116,6 +119,7 @@ explicit even when the supporting types are available.
 | MCP | Config or session registration | stdio, SSE, streamable HTTP, OAuth, refresh, and live add/remove management |
 | Skills | Filesystem, registry, or live session registration | Search/execute tools, model-visible catalog, live add/remove with shadow restoration, and child-run inheritance |
 | Search runtime | Explicit host operation | Browser status, install, update, and repair APIs for managed search runtimes |
+| Agent release contract | Baseline admission API | Closed, bounded manifest validation, immutable OCI/provenance binding, canonical identity, typed storage and secret slots, and pre-activation compatibility checks |
 | S3 workspace | Cargo feature `s3` | S3-compatible object storage backend with capability-aware tool visibility |
 | Agent daemon | Cargo feature `serve` | Filesystem-first agent serving and cron schedules |
 | OpenTelemetry | Cargo feature `telemetry` | OTLP trace export; normal `tracing` remains available without it |
@@ -211,6 +215,19 @@ already initialized resources and never start or block a Tokio runtime.
 
 ## Application Model
 
+### Release admission and identity
+
+`AgentReleaseManifest` admits the versioned `.a3s/asset.acl` contract, returns
+schema-aware canonical ACL and its SHA-256 identity, and verifies an
+`AgentReleaseCompatibility` before activation. Secret declarations are typed
+injection slots only; values and external secret identifiers remain outside
+the release document.
+
+This API does not build or run the declared OCI artifact and does not implement
+its readiness, liveness, or shutdown behavior. See the
+[Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) for the complete v1
+schema, compatibility policy, security boundary, and fixture status.
+
 ### Sessions and lifecycle
 
 A session owns conversation history, workspace services, tool registrations,
@@ -270,6 +287,15 @@ object-only backend that cannot execute it.
 | Skills | `Skill`, `search_skills` | Filesystem or inline skill discovery and execution with optional tool restrictions |
 | MCP | `mcp__<server>__<tool>` | Namespaced tools owned by their source manager |
 | Dynamic workflows | `dynamic_workflow` | Explicitly registered A3S Flow-backed, replayable per-turn workflows |
+
+Without an explicit request or `SearchConfig` engine selection, `web_search`
+uses AnySearch in its anonymous mode. Set `ANYSEARCH_API_KEY` to authenticate,
+or select `tavily`, `ddg`, `wiki`, and the other documented engines through
+the tool arguments or ACL configuration.
+
+Standalone greetings are conversational turns: the model receives no tool
+definitions and a friendly response is not converted into a synthetic
+continuation. A greeting that also asks for work keeps the normal tool surface.
 
 The built-in skill registry starts empty; skills come from configured
 directories, `AgentDir`, inline host input, or live registration. The

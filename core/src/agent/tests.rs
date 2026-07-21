@@ -3387,6 +3387,29 @@ async fn test_repeated_incomplete_text_converges_after_one_continuation() {
 }
 
 #[tokio::test]
+async fn test_standalone_greeting_does_not_trigger_continuation() {
+    let greeting = "I'll be happy to help. What would you like to work on?";
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response(greeting),
+        MockLlmClient::text_response("This response must not be consumed."),
+    ]));
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig {
+            max_continuation_turns: 20,
+            max_tool_rounds: 100,
+            ..Default::default()
+        },
+    );
+
+    let result = agent.execute(&[], "你好", None).await.unwrap();
+    assert_eq!(result.text, greeting);
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn test_agent_multiple_tools_single_turn() {
     // LLM returns 2 tool calls in one response
     let mock_client = Arc::new(MockLlmClient::new(vec![

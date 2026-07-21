@@ -1,0 +1,60 @@
+agent_release {
+  schema = "a3s.code.agent-release.v1"
+  protocol = "a3s.code.agent.v1"
+
+  artifact {
+    digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    media_type = "application/vnd.oci.image.manifest.v1+json"
+  }
+
+  entrypoint {
+    command = "/usr/bin/a3s-code-agent"
+    args = ["serve", "--manifest", "/app/.a3s/asset.acl"]
+  }
+
+  health {
+    transport = "http"
+    port = 8080
+    readiness_path = "/health/ready"
+    liveness_path = "/health/live"
+    shutdown_grace_seconds = 30
+  }
+
+  storage {
+    workspace = "ephemeral"
+    cache = "ephemeral"
+    persistent_data = "none"
+  }
+
+  capability "runtime.service" {
+    level = 1
+  }
+
+  capability "secrets.external" {
+    level = 1
+  }
+
+  capability "workspace.local" {
+    level = 1
+  }
+
+  secret "provider-api-key" {
+    target = "environment"
+    destination = "PROVIDER_API_KEY"
+  }
+
+  secret "signing-key" {
+    target = "file"
+    destination = "/run/secrets/signing-key"
+  }
+
+  provenance "source" {
+    uri = "https://github.com/A3S-Lab/Code"
+    digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  }
+
+  provenance "builder" {
+    uri = "urn:a3s:builder:github-actions"
+    digest = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+  }
+}

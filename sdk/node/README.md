@@ -76,15 +76,31 @@ switching on `type`: future event names remain intact instead of becoming
 
 ```js
 const stream = await session.stream('Explain the current test failures')
+let activeTurn
+let attemptText = ''
 while (true) {
   const { value: event, done } = await stream.next()
   if (!event) break
-  if (event.type === 'text_delta') process.stdout.write(event.text ?? '')
+  if (event.type === 'turn_start') {
+    // The same turn number means the provider stream was retried. Discard
+    // provisional output from that attempt before accepting replacement deltas.
+    activeTurn = event.turn
+    attemptText = ''
+  } else if (event.type === 'text_delta') {
+    attemptText += event.text ?? ''
+  } else if (event.type === 'turn_end' && event.turn === activeTurn) {
+    process.stdout.write(attemptText)
+    attemptText = ''
+  }
   if (event.type === 'agent_end') console.log(event.verificationSummaryText ?? '')
   console.debug(event.version, event.type, event.payload, event.metadata)
   if (done) break
 }
 ```
+
+`turn_start` may repeat with the same `turn` when an established provider
+stream is interrupted. Treat each turn as provisional until `turn_end`; reset
+text, reasoning, and tool-call drafts when that turn restarts.
 
 `agentEventTypesV1()` returns the ordered catalog known by this build, while
 the exported `AgentEventTypeV1` TypeScript type deliberately remains open for

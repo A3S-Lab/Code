@@ -1,5 +1,6 @@
 use super::*;
 use crate::llm::types::{Message, ToolDefinition};
+use futures::StreamExt;
 
 fn make_client() -> OpenAiClient {
     OpenAiClient::new("test-key".to_string(), "gpt-test".to_string())
@@ -16,6 +17,14 @@ struct MockSseHttp {
 }
 
 struct PendingSseHttp;
+
+struct FailingSseHttp {
+    chunks: Vec<String>,
+}
+
+struct ChunksThenPendingSseHttp {
+    chunks: Vec<String>,
+}
 
 #[async_trait::async_trait]
 impl crate::llm::http::HttpClient for MockSseHttp {
@@ -70,6 +79,73 @@ impl crate::llm::http::HttpClient for PendingSseHttp {
             status: 200,
             retry_after: None,
             byte_stream: Box::pin(futures::stream::pending()),
+            error_body: String::new(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::llm::http::HttpClient for FailingSseHttp {
+    async fn post(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::llm::http::HttpResponse> {
+        anyhow::bail!("post is unused in the interrupted streaming test")
+    }
+
+    async fn post_streaming(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::llm::http::StreamingHttpResponse> {
+        let mut items = self
+            .chunks
+            .iter()
+            .map(|chunk| Ok(bytes::Bytes::from(chunk.clone())))
+            .collect::<Vec<anyhow::Result<bytes::Bytes>>>();
+        items.push(Err(anyhow::anyhow!("connection reset")));
+        Ok(crate::llm::http::StreamingHttpResponse {
+            status: 200,
+            retry_after: None,
+            byte_stream: Box::pin(futures::stream::iter(items)),
+            error_body: String::new(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::llm::http::HttpClient for ChunksThenPendingSseHttp {
+    async fn post(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::llm::http::HttpResponse> {
+        anyhow::bail!("post is unused in the pending streaming tests")
+    }
+
+    async fn post_streaming(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::llm::http::StreamingHttpResponse> {
+        let items = self
+            .chunks
+            .iter()
+            .map(|chunk| Ok(bytes::Bytes::from(chunk.clone())))
+            .collect::<Vec<anyhow::Result<bytes::Bytes>>>();
+        Ok(crate::llm::http::StreamingHttpResponse {
+            status: 200,
+            retry_after: None,
+            byte_stream: Box::pin(futures::stream::iter(items).chain(futures::stream::pending())),
             error_body: String::new(),
         })
     }

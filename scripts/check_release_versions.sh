@@ -109,6 +109,8 @@ def check_node_lockfile(path):
         for name, value in optional.items():
             if name.startswith("@a3s-lab/code-"):
                 check_equal(f"{path} package {key or '<root>'} optionalDependency {name}", value)
+        if key.startswith("node_modules/@a3s-lab/code-") and package.get("version") is not None:
+            check_equal(f"{path} platform package {key}", package.get("version"))
 
 
 def check_bootstrap_runtime_version(path):
@@ -143,7 +145,9 @@ check_bootstrap_runtime_version("sdk/python-bootstrap/src/a3s_code/_bootstrap.py
 check_changelog("CHANGELOG.md")
 check_changelog("sdk/python/CHANGELOG.md")
 check_cargo_lock("Cargo.lock")
+check_cargo_lock("sdk/node/Cargo.lock")
 check_cargo_lock_package("sdk/node/Cargo.lock", "a3s-code-node")
+check_cargo_lock("sdk/python/Cargo.lock")
 check_cargo_lock_package("sdk/python/Cargo.lock", "a3s-code-py")
 check_node_lockfile("sdk/node/package-lock.json")
 check_node_lockfile("sdk/node/examples/package-lock.json")
