@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.3.0] - 2026-07-22
+
+### Added
+
+- Added typed model-generation concurrency and admission contracts so hosts can
+  declare and enforce bounded active generations without provider-name checks.
+- Added durable `MemoryObservation` and `MemoryObserver` extension points for
+  auditable preference, skill, and knowledge projections after persistence.
+- Added run-scoped permission and confirmation snapshots plus targeted
+  cancellation and expiry for pending tool approvals.
+
+### Changed
+
+- Serialized completed-turn memory extraction, drained accepted extractions at
+  session close, and preserved canonical duplicate-consolidation results for
+  observers.
+
+### Fixed
+
+- Kept LLM-authored learning titles, summaries, and instructions concise and
+  user-facing, and excluded internal orchestration or handoff procedures from
+  the learning signal contract.
+
 ## [6.2.0] - 2026-07-22
 
 ### Added
@@ -140,15 +163,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the Search 2 native `anysearch` and `tavily` providers to the built-in
+  `web_search` engine catalog while preserving the existing default engine
+  selection for ordinary callers. Provider results retain normalized
+  publication dates and stable contributing-engine metadata in JSON output.
+- Added a typed model-generation concurrency contract and shared,
+  cancellation-safe admission gate for structured generation. Providers that
+  do not explicitly advertise safe parallel capacity default to
+  single-flight. `generate_object` starts its active deadline only after
+  admission, holds one permit across bounded schema-repair calls, and records
+  queue wait, capacity, and active timeout in result metadata. A Flow step
+  whose exact tool identity is `generate_object` acquires that same capacity
+  before entering the bounded `program` VM, and the nested call reuses the
+  one-shot identity-checked permit, so the VM deadline also excludes queue
+  wait without permitting a foreign-gate or concurrent-reuse bypass.
+- Added per-run snapshot hooks to `PermissionChecker` and
+  `ConfirmationProvider`. Agent invocations bind the frozen checker and
+  confirmation route into their tool context so delegated, parallel, Skill,
+  and background child runs keep their admitted authority across later
+  session-policy changes.
+- Added an extended `BashSandbox` request/result contract and an
+  `SrtBashSandbox` adapter with timeout, bounded streaming output, explicit
+  environment, network denial, workspace/scratch write limits, protected
+  control metadata, credential-read denial, and no unsandboxed fallback.
+  Verified constructors now accept an exact npm installation and an explicitly
+  selected Node executable so lifecycle-owning hosts do not rediscover either
+  process from `PATH`.
+- Added opt-in `LocalWorkspaceAccessPolicy::CredentialBoundary` enforcement
+  for local and manifest-backed workspace services. Direct file reads,
+  range reads, writes, and indexed or fallback grep now share the local
+  command sandbox's credential and source-hardlink boundary while preserving
+  ordinary package-store hardlinks. Guarded local Git diff first enumerates
+  NUL-delimited changed paths and regenerates output only for allowed files.
 - Delegation tools now publish a deterministic live catalog of visible worker
   names and purposes in both their descriptions and parameter schemas. Workers
   registered after session creation become model-discoverable on the next run;
   hidden or unregistered workers are omitted.
 - Tool implementations can override their complete model-facing definition
   when descriptions or schemas depend on live runtime state.
+- The Code TUI now projects A3S Use's built-in local PP-OCRv6 MCP and Skill
+  surfaces, reports its pinned model and ONNX Runtime status, and provides the
+  explicit `a3s install use/ocr` repair command.
+
+### Removed
+
+- Removed the unused `document_parser.ocr` backend configuration. OCR in Code
+  is owned exclusively by A3S Use and runs locally through PP-OCRv6.
 
 ### Fixed
 
+- Preferred the semantic HTML `<main>` element before falling back to `<body>`
+  in `web_fetch`, removing site navigation and footer chrome from ordinary
+  evidence pages while preserving the existing bounded conversion and SSRF
+  boundary. The oversized fetch test module now lives in its own concern file.
+- Decoded Anthropic and OpenAI-compatible SSE response bodies with one
+  incremental UTF-8 decoder per stream. Multibyte text split across arbitrary
+  network chunks now reaches event parsing intact instead of producing Unicode
+  replacement characters in streamed research and conversation output.
+- Made provider generation admission session-owned. Rebuilding an `AgentLoop`
+  for each concurrent host-direct tool call now reuses the same typed capacity
+  gate, so separate DynamicWorkflow calls cannot each manufacture an
+  independent single-flight slot.
+- Extended the local SRT credential boundary to existing `.env*` files at
+  every governed source-tree depth and read/write-masked pre-existing
+  multi-link source files, closing nested credential and hardlink-alias reads.
+- Closed the built-in workspace-tool path around the local command sandbox:
+  guarded `read`, `grep`, `write`, `edit`, and `patch` operations can no
+  longer expose or mutate protected credential files or source hardlink
+  aliases.
+- Hardened read-only Git output: diff targets cannot be interpreted as
+  options, guarded diffs omit sensitive and multi-link paths, and displayed
+  remote URLs remove embedded HTTP credentials, query strings, and fragments.
+- Auto-mode hosts can declare confirmation unavailable before Core emits a
+  confirmation event. Unexpected parent or tool-owned escalation therefore
+  fails closed instead of opening HITL or being automatically authorized.
+- Propagated the parent sandbox and confirmation boundary into delegated,
+  workflow, and Skill child runs. Child-local allow rules and automatic
+  confirmation can narrow execution but can no longer replace the host
+  boundary, and explicit Bash host escalation is now tool-declared.
 - Live MCP additions and removals now refresh task delegation, and natural
   language action tokens can select matching MCP tools without requiring the
   caller to know their underscored protocol names.
@@ -1482,43 +1574,15 @@ conflicts. They now `switch` / `match` on `error_kind.type` instead.
 
 - **HWPX Table Extraction**: Added structured table extraction from Korean HWPX documents. Parses `tbl/tr/tc` XML hierarchy and includes `structured_payload` for `tables[]` output.
 
-- **Vision OCR Provider**: New OCR backend supporting OpenAI-compatible vision APIs for document OCR fallback.
-
-  ```hcl
-  document_parser {
-    ocr {
-      enabled  = true
-      model    = "openai/gpt-4.1-mini"
-      api_key  = "sk-..."
-      base_url = "https://api.openai.com/v1"  # optional
-      prompt   = "Extract all text from this document..."
-      max_images = 8
-      dpi     = 144
-    }
-  }
-  ```
-
-  Provider priority: External provider > Vision API (if model+api_key configured) > Builtin tesseract
-
 #### Search Ranking
 
 - **Tabular Query Intent Detection**: Automatically detects when queries relate to tables (keywords: table, column, row, spreadsheet, excel, csv, cell, data, record, etc.) and boosts table line matches by +10 keyword hits plus 1.3x relevance multiplier.
 
 - **Heading Inheritance Boost**: When search matches appear under headings that also match the query, those matches receive a relevance boost (up to 1.3x). Looks backwards to find the closest preceding heading.
 
-### Changed
-
-#### Configuration
-
-- `DocumentOcrConfig` extended with new fields:
-  - `provider: Option<String>` - Backend selection ("vision" or "builtin")
-  - `base_url: Option<String>` - Custom API endpoint
-  - `api_key: Option<String>` - API authentication
-
 #### Dependencies
 
 - Added `calamine = "0.26"` for XLSB parsing
-- Added `reqwest/blocking` feature for Vision API HTTP calls
 
 ### Fixed
 

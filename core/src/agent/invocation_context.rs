@@ -2,6 +2,8 @@
 
 use super::{AgentEvent, AgentLoop};
 use crate::budget::BudgetGuard;
+use crate::hitl::ConfirmationProvider;
+use crate::permissions::PermissionChecker;
 use crate::tools::{AgentEventBarrier, ToolContext};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -15,12 +17,34 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Default)]
 pub(crate) struct InvocationGovernance {
     budget_guard: Option<Arc<dyn BudgetGuard>>,
+    permission_checker: Option<Arc<dyn PermissionChecker>>,
+    confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
 }
 
 impl InvocationGovernance {
     pub(crate) fn budget_guard(&self) -> Option<&Arc<dyn BudgetGuard>> {
         self.budget_guard.as_ref()
     }
+}
+
+fn snapshot_permission_checker(
+    checker: Option<&Arc<dyn PermissionChecker>>,
+) -> Option<Arc<dyn PermissionChecker>> {
+    checker.map(|checker| {
+        checker
+            .snapshot_for_run()
+            .unwrap_or_else(|| Arc::clone(checker))
+    })
+}
+
+fn snapshot_confirmation_manager(
+    provider: Option<&Arc<dyn ConfirmationProvider>>,
+) -> Option<Arc<dyn ConfirmationProvider>> {
+    provider.map(|provider| {
+        provider
+            .snapshot_for_run()
+            .unwrap_or_else(|| Arc::clone(provider))
+    })
 }
 
 /// The single source of truth for metadata shared by every operation in a run.
@@ -48,6 +72,14 @@ impl std::fmt::Debug for InvocationContext {
                 &self.agent_event_barrier.is_some(),
             )
             .field("has_budget_guard", &self.governance.budget_guard.is_some())
+            .field(
+                "has_permission_checker",
+                &self.governance.permission_checker.is_some(),
+            )
+            .field(
+                "has_confirmation_manager",
+                &self.governance.confirmation_manager.is_some(),
+            )
             .finish()
     }
 }
@@ -122,7 +154,12 @@ impl InvocationContext {
         if let Some(barrier) = &self.agent_event_barrier {
             context = context.with_agent_event_barrier(barrier.clone());
         }
-        context.with_cancellation(self.cancellation.clone())
+        context
+            .with_run_governance(
+                self.governance.permission_checker.clone(),
+                self.governance.confirmation_manager.clone(),
+            )
+            .with_cancellation(self.cancellation.clone())
     }
 
     /// Clone an agent loop and install this invocation's run-owned tool scope.
@@ -130,6 +167,8 @@ impl InvocationContext {
     /// clone inherit the same event sender and acknowledgement barrier.
     pub(crate) fn bind_agent_loop(&self, agent: &AgentLoop) -> AgentLoop {
         let mut scoped = agent.clone();
+        scoped.config.permission_checker = self.governance.permission_checker.clone();
+        scoped.config.confirmation_manager = self.governance.confirmation_manager.clone();
         scoped.tool_context = self.bind_tool_context(scoped.tool_context);
         scoped
     }
@@ -150,6 +189,12 @@ impl AgentLoop {
             event_tx,
             InvocationGovernance {
                 budget_guard: self.config.budget_guard.clone(),
+                permission_checker: snapshot_permission_checker(
+                    self.config.permission_checker.as_ref(),
+                ),
+                confirmation_manager: snapshot_confirmation_manager(
+                    self.config.confirmation_manager.as_ref(),
+                ),
             },
         )
     }
@@ -158,7 +203,43 @@ impl AgentLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permissions::{PermissionChecker, PermissionDecision};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct MutablePermission {
+        deny: Arc<AtomicBool>,
+    }
+
+    struct FrozenPermission {
+        deny: bool,
+    }
+
+    impl PermissionChecker for MutablePermission {
+        fn snapshot_for_run(&self) -> Option<Arc<dyn PermissionChecker>> {
+            Some(Arc::new(FrozenPermission {
+                deny: self.deny.load(Ordering::SeqCst),
+            }))
+        }
+
+        fn check(&self, _tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+            if self.deny.load(Ordering::SeqCst) {
+                PermissionDecision::Deny
+            } else {
+                PermissionDecision::Allow
+            }
+        }
+    }
+
+    impl PermissionChecker for FrozenPermission {
+        fn check(&self, _tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+            if self.deny {
+                PermissionDecision::Deny
+            } else {
+                PermissionDecision::Allow
+            }
+        }
+    }
 
     #[test]
     fn binding_installs_run_cancellation_and_session_identity() {
@@ -176,5 +257,59 @@ mod tests {
         assert!(!tool_context.is_cancelled());
         token.cancel();
         assert!(tool_context.is_cancelled());
+    }
+
+    #[test]
+    fn agent_invocation_freezes_permission_governance_once_per_run() {
+        let workspace = tempfile::tempdir().unwrap();
+        let deny = Arc::new(AtomicBool::new(false));
+        let live = Arc::new(MutablePermission {
+            deny: Arc::clone(&deny),
+        });
+        let executor = Arc::new(crate::tools::ToolExecutor::new(
+            workspace.path().to_string_lossy().into_owned(),
+        ));
+        let agent = AgentLoop::new(
+            Arc::new(crate::agent::tests::MockLlmClient::new(Vec::new())),
+            executor,
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig {
+                permission_checker: Some(live.clone()),
+                ..Default::default()
+            },
+        );
+        let invocation = agent.invocation_context(
+            "run-snapshot",
+            Some("session"),
+            None,
+            CancellationToken::new(),
+        );
+
+        deny.store(true, Ordering::SeqCst);
+        assert_eq!(
+            live.check("write", &serde_json::json!({})),
+            PermissionDecision::Deny
+        );
+
+        let scoped = invocation.bind_agent_loop(&agent);
+        assert_eq!(
+            scoped
+                .config
+                .permission_checker
+                .as_ref()
+                .unwrap()
+                .check("write", &serde_json::json!({})),
+            PermissionDecision::Allow
+        );
+        let tool_context =
+            invocation.bind_tool_context(ToolContext::new(workspace.path().to_path_buf()));
+        assert!(tool_context.has_run_governance());
+        assert_eq!(
+            tool_context
+                .run_permission_checker()
+                .unwrap()
+                .check("write", &serde_json::json!({})),
+            PermissionDecision::Allow
+        );
     }
 }

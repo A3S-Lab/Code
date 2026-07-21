@@ -2048,7 +2048,7 @@ async fn test_agent_llm_memory_extraction_stores_durable_items() {
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::text_response("Use focused memory tests after store changes."),
         MockLlmClient::text_response(
-            r#"{"items":[{"memory_type":"procedural","content":"Run focused memory store tests after changing FileMemoryStore behavior.","importance":0.85,"tags":["memory","tests"],"source":"workflow"}]}"#,
+            r#"{"items":[{"memory_type":"procedural","content":"Run focused memory store tests after changing FileMemoryStore behavior.","importance":0.85,"confidence":0.94,"tags":["memory","tests"],"source":"workflow","scope":"workspace","reason":"This repeatable verification catches persistence regressions in future changes."}]}"#,
         ),
     ]));
 
@@ -2087,6 +2087,65 @@ async fn test_agent_llm_memory_extraction_stores_durable_items() {
     assert!(recalled[0]
         .content
         .contains("Run focused memory store tests"));
+}
+
+#[tokio::test]
+async fn completed_tool_results_do_not_become_long_term_memory_history() {
+    let memory = Arc::new(crate::memory::AgentMemory::with_config(
+        Arc::new(a3s_memory::InMemoryStore::new()),
+        crate::memory::MemoryConfig {
+            llm_extraction: false,
+            ..Default::default()
+        },
+    ));
+    let temp_dir = tempfile::tempdir().unwrap();
+    let agent = AgentLoop::new(
+        Arc::new(MockLlmClient::new(vec![])),
+        Arc::new(ToolExecutor::new(temp_dir.path().display().to_string())),
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        AgentConfig {
+            memory: Some(Arc::clone(&memory)),
+            ..Default::default()
+        },
+    );
+    let mut state = super::execution_state::ExecutionLoopState::new(&[]);
+    let no_events = None;
+
+    for (tool_call, result) in [
+        (
+            crate::llm::ToolCall {
+                id: "tool-success".to_string(),
+                name: "bash".to_string(),
+                args: serde_json::json!({"command":"cargo test"}),
+            },
+            crate::tools::ToolResult::success("bash", "tests passed".to_string()),
+        ),
+        (
+            crate::llm::ToolCall {
+                id: "tool-failure".to_string(),
+                name: "read".to_string(),
+                args: serde_json::json!({"file_path":"missing.rs"}),
+            },
+            crate::tools::ToolResult::error("read", "file not found".to_string()),
+        ),
+    ] {
+        agent
+            .complete_tool_call(
+                &mut state,
+                super::tool_completion_runtime::ToolCompletionInput {
+                    tool_call: &tool_call,
+                    event_tx: &no_events,
+                    session_id: Some("sess-tool-history"),
+                    tool_start: std::time::Instant::now(),
+                    normalized: super::tool_result_runtime::NormalizedToolResult::from_tool_result(
+                        result,
+                    ),
+                },
+            )
+            .await;
+    }
+
+    assert_eq!(memory.stats().await.unwrap().long_term_count, 0);
 }
 
 #[tokio::test]
@@ -2361,7 +2420,7 @@ async fn test_auto_compact_can_repeat_inside_one_tool_driven_task() {
 }
 
 #[tokio::test]
-async fn test_streaming_llm_memory_extraction_is_single_flight_per_memory() {
+async fn test_streaming_llm_memory_extraction_queues_every_completed_turn() {
     let mock_client = Arc::new(BlockingExtractionLlmClient::new());
 
     let memory = crate::memory::AgentMemory::new(Arc::new(a3s_memory::InMemoryStore::new()));
@@ -2423,7 +2482,7 @@ async fn test_streaming_llm_memory_extraction_is_single_flight_per_memory() {
     assert_eq!(
         mock_client.call_count.load(Ordering::SeqCst),
         3,
-        "the second significant turn should reuse the in-flight extraction budget instead of starting another extraction LLM call"
+        "the second extraction must wait behind the first instead of running concurrently"
     );
 
     mock_client.extraction_release.notify_one();
@@ -2433,13 +2492,34 @@ async fn test_streaming_llm_memory_extraction_is_single_flight_per_memory() {
     )
     .await
     .expect("first background extraction should finish after release");
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        mock_client.extraction_started.notified(),
+    )
+    .await
+    .expect("the queued second extraction should start after the first finishes");
+    assert_eq!(
+        mock_client.call_count.load(Ordering::SeqCst),
+        4,
+        "both completed turns must receive an extraction call"
+    );
+
+    mock_client.extraction_release.notify_one();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        mock_client.extraction_finished.notified(),
+    )
+    .await
+    .expect("second queued extraction should finish after release");
 }
 
 #[tokio::test]
-async fn test_streaming_llm_memory_extraction_does_not_spawn_for_trivial_turns() {
-    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-        "hello",
-    )]));
+async fn test_streaming_llm_memory_judge_evaluates_trivial_turns_asynchronously() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("hello"),
+        MockLlmClient::text_response(r#"{"items":[]}"#),
+    ]));
 
     let memory = crate::memory::AgentMemory::new(Arc::new(a3s_memory::InMemoryStore::new()));
     let temp_dir = tempfile::tempdir().unwrap();
@@ -2472,8 +2552,8 @@ async fn test_streaming_llm_memory_extraction_does_not_spawn_for_trivial_turns()
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(
         mock_client.call_count.load(Ordering::SeqCst),
-        1,
-        "trivial streaming turns should not start a memory extraction LLM call"
+        2,
+        "the LLM value judge should evaluate even short completed turns"
     );
 }
 
@@ -2482,7 +2562,7 @@ async fn test_agent_llm_memory_extraction_uses_budget_guard() {
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::text_response("Use focused memory tests after store changes."),
         MockLlmClient::text_response(
-            r#"{"items":[{"memory_type":"procedural","content":"Run focused memory store tests after changing FileMemoryStore behavior.","importance":0.85,"tags":["memory","tests"],"source":"workflow"}]}"#,
+            r#"{"items":[{"memory_type":"procedural","content":"Run focused memory store tests after changing FileMemoryStore behavior.","importance":0.85,"confidence":0.94,"tags":["memory","tests"],"source":"workflow","scope":"workspace","reason":"This repeatable verification catches persistence regressions in future changes."}]}"#,
         ),
     ]));
     let budget = Arc::new(CountingBudgetGuard::new(0));
@@ -2588,7 +2668,7 @@ async fn test_agent_llm_memory_extraction_supersedes_related_memory() {
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::text_response("Use focused memory and file store tests after changes."),
         MockLlmClient::text_response(&format!(
-            r#"{{"items":[{{"memory_type":"procedural","content":"Run focused memory store and file-backed persistence tests after changing FileMemoryStore behavior.","importance":0.9,"tags":["memory","tests"],"source":"workflow","supersedes":["{old_id}"]}}]}}"#
+            r#"{{"items":[{{"memory_type":"procedural","content":"Run focused memory store and file-backed persistence tests after changing FileMemoryStore behavior.","importance":0.9,"confidence":0.96,"tags":["memory","tests"],"source":"workflow","scope":"workspace","reason":"This improved workflow verifies both in-memory and file-backed persistence regressions.","supersedes":["{old_id}"]}}]}}"#
         )),
     ]));
 
@@ -2645,7 +2725,7 @@ async fn test_agent_llm_memory_extraction_marks_conflicting_related_memory() {
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::text_response("SDK sessions use workspace-local memory by default."),
         MockLlmClient::text_response(&format!(
-            r#"{{"items":[{{"memory_type":"semantic","content":"SDK sessions default to workspace-local .a3s/memory stores, while the TUI default is global ~/.a3s/memory.","importance":0.8,"tags":["memory","defaults"],"source":"project_fact","conflicts_with":["{old_id}"]}}]}}"#
+            r#"{{"items":[{{"memory_type":"semantic","content":"SDK sessions default to workspace-local .a3s/memory stores, while the TUI default is global ~/.a3s/memory.","importance":0.8,"confidence":0.93,"tags":["memory","defaults"],"source":"project_fact","scope":"workspace","reason":"This durable default changes where future sessions look for persisted memory.","conflicts_with":["{old_id}"]}}]}}"#
         )),
     ]));
 
@@ -2746,12 +2826,11 @@ async fn test_agent_llm_memory_extraction_skips_when_budget_denies() {
 async fn test_agent_llm_memory_extraction_merges_duplicate_durable_items() {
     let existing_content =
         "Run focused memory store tests after changing FileMemoryStore behavior.";
-    let extracted_content =
-        "Run focused memory store regression tests after changing FileMemoryStore behavior.";
+    let extracted_content = existing_content;
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::text_response("Already noted."),
         MockLlmClient::text_response(&format!(
-            r#"{{"items":[{{"memory_type":"procedural","content":"{extracted_content}","importance":0.85,"tags":["memory","tests"],"source":"workflow"}}]}}"#
+            r#"{{"items":[{{"memory_type":"procedural","content":"{extracted_content}","importance":0.85,"confidence":0.94,"tags":["memory","tests"],"source":"workflow","scope":"workspace","reason":"This exact workflow is reusable after future FileMemoryStore changes."}}]}}"#
         )),
     ]));
 
@@ -2800,7 +2879,7 @@ async fn test_agent_llm_memory_extraction_merges_duplicate_durable_items() {
         .await
         .unwrap()
         .unwrap();
-    assert!(merged.content.contains("regression tests"));
+    assert_eq!(merged.content, existing_content);
     assert_eq!(merged.importance, 0.85);
     assert!(merged.tags.contains(&"tests".to_string()));
     assert_eq!(
@@ -2814,10 +2893,11 @@ async fn test_agent_llm_memory_extraction_merges_duplicate_durable_items() {
 }
 
 #[tokio::test]
-async fn test_agent_llm_memory_extraction_skips_trivial_turns() {
-    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-        "Hello.",
-    )]));
+async fn test_agent_llm_memory_judge_returns_empty_for_trivial_turns() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("Hello."),
+        MockLlmClient::text_response(r#"{"items":[]}"#),
+    ]));
     let memory = crate::memory::AgentMemory::new(Arc::new(a3s_memory::InMemoryStore::new()));
     let temp_dir = tempfile::tempdir().unwrap();
     let tool_executor = Arc::new(ToolExecutor::new(temp_dir.path().display().to_string()));
@@ -2832,10 +2912,13 @@ async fn test_agent_llm_memory_extraction_skips_trivial_turns() {
         ToolContext::new(temp_dir.path().to_path_buf()),
         config,
     );
-    let result = agent.execute(&[], "hi", None).await.unwrap();
+    let result = agent
+        .execute_with_session(&[], "hi", Some("sess-memory-trivial"), None, None)
+        .await
+        .unwrap();
 
     assert_eq!(result.text, "Hello.");
-    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 1);
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 2);
     assert_eq!(
         agent
             .config
@@ -2851,7 +2934,7 @@ async fn test_agent_llm_memory_extraction_skips_trivial_turns() {
 }
 
 #[tokio::test]
-async fn test_agent_llm_memory_extraction_skips_short_read_only_tool_turns() {
+async fn test_agent_llm_memory_judge_returns_empty_for_read_only_tool_turns() {
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
     use crate::queue::SessionLane;
     use tokio::sync::broadcast;
@@ -2869,6 +2952,7 @@ async fn test_agent_llm_memory_extraction_skips_short_read_only_tool_turns() {
             serde_json::json!({"file_path": "README.md"}),
         ),
         MockLlmClient::text_response("README says A3S memory notes."),
+        MockLlmClient::text_response(r#"{"items":[]}"#),
     ]));
     let memory = crate::memory::AgentMemory::new(Arc::new(a3s_memory::InMemoryStore::new()));
     let tool_executor = Arc::new(ToolExecutor::new(temp_dir.path().display().to_string()));
@@ -2909,7 +2993,7 @@ async fn test_agent_llm_memory_extraction_skips_short_read_only_tool_turns() {
 
     assert_eq!(result.text, "README says A3S memory notes.");
     assert_eq!(result.tool_calls_count, 1);
-    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 2);
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 3);
     assert_eq!(
         agent
             .config
@@ -3648,6 +3732,8 @@ mod nested_tool_governance_tests {
         calls: Arc<AtomicUsize>,
     }
 
+    struct PublicRuntimeOrchestrator;
+
     struct ParallelSideEffectTool {
         calls: Arc<AtomicUsize>,
     }
@@ -3678,6 +3764,33 @@ mod nested_tool_governance_tests {
         ) -> anyhow::Result<ToolOutput> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(ToolOutput::success("delegated-side-effect-ok"))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for PublicRuntimeOrchestrator {
+        fn name(&self) -> &str {
+            "public_runtime_orchestrator"
+        }
+
+        fn description(&self) -> &str {
+            "Invokes a child through the public governed runtime"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "additionalProperties": false})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> anyhow::Result<ToolOutput> {
+            let result = ctx
+                .invocation_runtime()
+                .invoke_tool("side_effect", serde_json::json!({}))
+                .await?;
+            Ok(ToolOutput::success(result.output))
         }
     }
 
@@ -3789,6 +3902,180 @@ mod nested_tool_governance_tests {
             AgentLoop::new(client.clone(), executor, test_tool_context(), config),
             client,
         )
+    }
+
+    #[tokio::test]
+    async fn cancelling_one_invocation_settles_only_its_confirmation() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        executor.register_dynamic_tool(Arc::new(SideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        let (confirmation_events, _) = tokio::sync::broadcast::channel(8);
+        let confirmations = Arc::new(crate::hitl::ConfirmationManager::new(
+            crate::hitl::ConfirmationPolicy::enabled()
+                .with_timeout(5_000, crate::hitl::TimeoutAction::Reject),
+            confirmation_events,
+        ));
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            executor,
+            test_tool_context(),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "side_effect",
+                    decision: PermissionDecision::Ask,
+                })),
+                confirmation_manager: Some(confirmations.clone()),
+                ..Default::default()
+            },
+        );
+        let invoker = agent.scoped_tool_invoker(Some("confirmation-isolation"), &None);
+        let cancellation_a = tokio_util::sync::CancellationToken::new();
+        let cancellation_b = tokio_util::sync::CancellationToken::new();
+        let invocation_a = crate::tools::ToolInvocation::agent(
+            "confirmation-a",
+            "side_effect",
+            serde_json::json!({}),
+            Vec::new(),
+        );
+        let invocation_b = crate::tools::ToolInvocation::agent(
+            "confirmation-b",
+            "side_effect",
+            serde_json::json!({}),
+            Vec::new(),
+        );
+        let invoker_a = Arc::clone(&invoker);
+        let context_a = test_tool_context().with_cancellation(cancellation_a.clone());
+        let run_a = tokio::spawn(async move { invoker_a.invoke(invocation_a, &context_a).await });
+        let invoker_b = Arc::clone(&invoker);
+        let context_b = test_tool_context().with_cancellation(cancellation_b);
+        let run_b = tokio::spawn(async move { invoker_b.invoke(invocation_b, &context_b).await });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while confirmations.pending_count().await != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both confirmation requests must become pending");
+
+        cancellation_a.cancel();
+        let result_a = run_a.await.unwrap();
+        assert_ne!(result_a.exit_code, 0);
+        assert!(result_a.output.contains("cancelled by caller"));
+        let pending = confirmations.pending_confirmations().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, "confirmation-b");
+
+        confirmations
+            .confirm("confirmation-b", true, None)
+            .await
+            .unwrap();
+        let result_b = run_b.await.unwrap();
+        assert_eq!(result_b.exit_code, 0, "{}", result_b.output);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn trusted_host_batch_and_program_propagate_only_builtin_nested_authority() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        executor.register_dynamic_tool(Arc::new(SideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            executor,
+            test_tool_context(),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "side_effect",
+                    decision: PermissionDecision::Deny,
+                })),
+                ..Default::default()
+            },
+        );
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let context = test_tool_context();
+        let calls_to_run = [
+            (
+                "batch",
+                serde_json::json!({
+                    "invocations": [{"tool": "side_effect", "args": {}}]
+                }),
+            ),
+            (
+                "program",
+                serde_json::json!({
+                    "type": "script",
+                    "language": "javascript",
+                    "source": "async function run(ctx) { return await ctx.tool('side_effect', {}); }",
+                    "allowed_tools": ["side_effect"]
+                }),
+            ),
+        ];
+
+        for (index, (name, args)) in calls_to_run.into_iter().enumerate() {
+            let result = agent
+                .invoke_host_tool(
+                    crate::tools::ToolInvocation::host_direct(
+                        format!("host-orchestrator-{index}"),
+                        name,
+                        args,
+                    ),
+                    "host-orchestrator",
+                    &None,
+                    &cancellation,
+                    &context,
+                )
+                .await;
+            assert_eq!(result.exit_code, 0, "{name}: {}", result.output);
+            assert!(result.output.contains("side-effect-ok"), "{name}");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn public_runtime_cannot_amplify_a_host_direct_custom_tool_call() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        executor.register_dynamic_tool(Arc::new(SideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        executor.register_dynamic_tool(Arc::new(PublicRuntimeOrchestrator));
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            executor,
+            test_tool_context(),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "side_effect",
+                    decision: PermissionDecision::Deny,
+                })),
+                ..Default::default()
+            },
+        );
+        let result = agent
+            .invoke_host_tool(
+                crate::tools::ToolInvocation::host_direct(
+                    "host-custom",
+                    "public_runtime_orchestrator",
+                    serde_json::json!({}),
+                ),
+                "host-custom",
+                &None,
+                &tokio_util::sync::CancellationToken::new(),
+                &test_tool_context(),
+            )
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(
+            result.output.contains("Permission denied"),
+            "{}",
+            result.output
+        );
     }
 
     #[tokio::test]

@@ -316,9 +316,24 @@ The skill's allowed-tools are granted during execution and revoked after complet
 
         // Create a modified config with the skill's permissions
         let mut skill_config = self.base_config.clone();
+        if ctx.has_run_governance() {
+            skill_config.permission_checker = ctx.run_permission_checker();
+            skill_config.confirmation_manager = ctx.run_confirmation_manager();
+        }
 
-        // Set the skill's permission policy as the permission checker
-        skill_config.permission_checker = Some(Arc::new(skill_permission_policy));
+        // A skill narrows the tools it may use; it must not replace the host
+        // boundary. Compose both checkers so TUI mode decisions, sandbox
+        // availability, and explicit escalation denials remain authoritative
+        // inside the skill child run.
+        let parent_checker = skill_config.permission_checker.take();
+        let parent_policy = skill_config.permission_policy.clone();
+        skill_config.permission_checker = Some(crate::child_run::compose_permission_checker(
+            Arc::new(skill_permission_policy.clone()),
+            Some(skill_permission_policy.clone()),
+            parent_checker,
+            parent_policy,
+        ));
+        skill_config.permission_policy = Some(skill_permission_policy);
         skill_config.enforce_active_skill_tool_restrictions = true;
 
         // Create a temporary skill registry with only this skill
@@ -428,6 +443,30 @@ mod tests {
                 meta: None,
             }
         }
+
+        fn tool_call_response(id: &str, name: &str, input: serde_json::Value) -> LlmResponse {
+            LlmResponse {
+                message: Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::ToolUse {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        input,
+                    }],
+                    reasoning_content: None,
+                },
+                usage: TokenUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                },
+                stop_reason: Some("tool_use".to_string()),
+                token_logprobs: Vec::new(),
+                meta: None,
+            }
+        }
     }
 
     #[async_trait]
@@ -483,6 +522,34 @@ mod tests {
     struct BlockingSkillClient {
         started: Arc<Notify>,
         calls: Arc<AtomicUsize>,
+    }
+
+    struct SkillSideEffectTool {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Tool for SkillSideEffectTool {
+        fn name(&self) -> &str {
+            "side_effect"
+        }
+
+        fn description(&self) -> &str {
+            "Records a test-only side effect"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "additionalProperties": false})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput::success("unexpected-side-effect"))
+        }
     }
 
     #[async_trait]
@@ -818,6 +885,155 @@ mod tests {
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["skill_name"], "test-skill");
         assert_eq!(metadata["tool_calls"], 0);
+    }
+
+    #[tokio::test]
+    async fn skill_permissions_cannot_replace_the_parent_host_boundary() {
+        use crate::prompts::PlanningMode;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let registry = Arc::new(SkillRegistry::new());
+        registry.register_unchecked(Arc::new(Skill {
+            name: "bash-skill".to_string(),
+            description: "Attempt a shell call".to_string(),
+            allowed_tools: Some("bash(*)".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Use Bash once.".to_string(),
+            tags: Vec::new(),
+            version: None,
+        }));
+        let llm = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "bash-call",
+                "bash",
+                serde_json::json!({"command": "printf leaked > skill-boundary-leak"}),
+            ),
+            MockLlmClient::text_response("The host boundary rejected the call."),
+        ]));
+        let parent_policy = PermissionPolicy::new().deny("bash(*)");
+        let config = AgentConfig {
+            planning_mode: PlanningMode::Disabled,
+            continuation_enabled: false,
+            permission_checker: Some(Arc::new(parent_policy.clone())),
+            permission_policy: Some(parent_policy),
+            ..Default::default()
+        };
+        let tool = SkillTool::new(
+            registry,
+            llm,
+            Arc::new(ToolExecutor::new(
+                workspace.path().to_string_lossy().into_owned(),
+            )),
+            config,
+        );
+
+        let result = tool
+            .execute(
+                &serde_json::json!({"skill_name": "bash-skill"}),
+                &ToolContext::new(workspace.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert!(
+            !workspace.path().join("skill-boundary-leak").exists(),
+            "a skill-local allow-list must not bypass the parent host boundary"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_direct_context_does_not_leak_into_skill_model_orchestrators() {
+        use crate::prompts::PlanningMode;
+
+        struct RecordingBoundary {
+            checked: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl crate::permissions::PermissionChecker for RecordingBoundary {
+            fn check(&self, tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+                self.checked.lock().unwrap().push(tool_name.to_string());
+                if tool_name == "side_effect" {
+                    PermissionDecision::Deny
+                } else {
+                    PermissionDecision::Allow
+                }
+            }
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let checked = Arc::new(Mutex::new(Vec::new()));
+        let registry = Arc::new(SkillRegistry::new());
+        registry.register_unchecked(Arc::new(Skill {
+            name: "orchestrator-skill".to_string(),
+            description: "Exercise governed orchestrators".to_string(),
+            allowed_tools: Some("batch(*), program(*), side_effect(*)".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Run the requested orchestration.".to_string(),
+            tags: Vec::new(),
+            version: None,
+        }));
+        let llm = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "model-batch",
+                "batch",
+                serde_json::json!({
+                    "invocations": [{
+                        "tool": "program",
+                        "args": {
+                            "type": "script",
+                            "language": "javascript",
+                            "source": "async function run(ctx) { return await ctx.tool('side_effect', {}); }",
+                            "allowed_tools": ["side_effect"]
+                        }
+                    }]
+                }),
+            ),
+            MockLlmClient::text_response("The boundary held."),
+        ]));
+        let executor = Arc::new(ToolExecutor::new(
+            workspace.path().to_string_lossy().into_owned(),
+        ));
+        executor.register_dynamic_tool(Arc::new(SkillSideEffectTool {
+            calls: Arc::clone(&calls),
+        }));
+        let tool = SkillTool::new(
+            registry,
+            llm,
+            executor,
+            AgentConfig {
+                planning_mode: PlanningMode::Disabled,
+                continuation_enabled: false,
+                permission_checker: Some(Arc::new(RecordingBoundary {
+                    checked: Arc::clone(&checked),
+                })),
+                ..Default::default()
+            },
+        );
+        let context = ToolContext::new(workspace.path().to_path_buf())
+            .with_host_direct_policy(crate::tools::HostDirectPolicy::TrustedControlPlane);
+
+        let result = tool
+            .execute(
+                &serde_json::json!({"skill_name": "orchestrator-skill"}),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert_eq!(result.content, "The boundary held.");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let checked = checked.lock().unwrap();
+        for expected in ["batch", "program", "side_effect"] {
+            assert!(
+                checked.iter().any(|tool| tool == expected),
+                "{expected} must cross the parent permission boundary: {checked:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -287,9 +287,8 @@ fn add_http_engine(search: &mut Search, shortcut: &str, proxy_url: Option<&str>)
             true
         }
         "anysearch" | "tavily" => {
-            let Some(provider) = BuiltinProvider::from_id(shortcut.trim()) else {
-                return false;
-            };
+            let provider = BuiltinProvider::from_id(shortcut.trim())
+                .expect("matched built-in search provider");
             match provider.create_engine() {
                 Ok(engine) => {
                     search.add_engine(engine);
@@ -322,7 +321,7 @@ fn default_engine_selection(
                 .collect(),
             "config",
         ),
-        _ => (vec!["anysearch"], "builtin_default"),
+        _ => (vec!["ddg", "wiki"], "builtin_default"),
     }
 }
 
@@ -356,9 +355,9 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the web using AnySearch by default or an explicit set of native providers and \
-         search engines. Supports AnySearch, Tavily, DuckDuckGo, Wikipedia, Brave, Bing, Sogou, \
-         360, Google, Baidu, and Bing China. Returns normalized, deduplicated, and ranked results. \
+        "Search the web using multiple search engines. Aggregates results from multiple engines \
+         (DuckDuckGo, Wikipedia, Brave, Bing, Sogou, 360, Google, Baidu, Bing China, etc.). \
+         Supports proxy configuration for anti-crawler protection. Returns deduplicated and ranked results. \
          Google and Baidu use a headless browser; Bing China uses its HTTP RSS endpoint."
     }
 
@@ -376,7 +375,7 @@ impl Tool for WebSearchTool {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Optional. List of native providers or search engines to use. Default: [\"anysearch\"]. Available: anysearch (anonymous or authenticated native provider), tavily (keyless or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
+                    "description": "Optional. List of search engines or native providers to use. Default: [\"ddg\",\"wiki\"]. Available: anysearch (anonymous or authenticated native provider), tavily (keyless or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
                 },
                 "limit": {
                     "type": "integer",

@@ -9,8 +9,8 @@ use super::{AgentEvent, AgentLoop, InvocationContext};
 use crate::budget::{BudgetDecision, BudgetGuard};
 use crate::llm::structured::{NativeStructuredSupport, StructuredDirective};
 use crate::llm::{
-    estimate_prompt_tokens, LlmClient, LlmResponse, Message, StreamEvent, TokenUsage,
-    ToolDefinition,
+    estimate_prompt_tokens, LlmClient, LlmResponse, Message, ModelGenerationConcurrency,
+    StreamEvent, TokenUsage, ToolDefinition,
 };
 use async_trait::async_trait;
 use std::future::Future;
@@ -167,6 +167,10 @@ impl LlmInvoker {
 
 #[async_trait]
 impl LlmClient for LlmInvoker {
+    fn model_generation_concurrency(&self) -> ModelGenerationConcurrency {
+        self.inner.model_generation_concurrency()
+    }
+
     async fn complete(
         &self,
         messages: &[Message],

@@ -280,7 +280,7 @@ object-only backend that cannot execute it.
 | Workspace search | `glob`, `grep` | Bounded matching with explicit result metadata and continuation |
 | Code Intelligence | `code_symbols`, `code_navigation`, `code_diagnostics` | Saved-file semantic metadata and locations with bounded results; source retrieval and mutation stay in the existing file tools |
 | Commands and source control | `bash`, `git` | Bounded output, cancellation, process-group termination on Unix, and typed Git operations |
-| Web evidence | `web_search`, `web_fetch` | AnySearch by default, optional Tavily and conventional engines, normalized sources, SSRF protections, extraction, and bounded pages |
+| Web evidence | `web_search`, `web_fetch` | Ranked multi-engine search, including native AnySearch and Tavily providers, normalized sources, semantic `<main>` extraction with `<body>` fallback, SSRF protections, and bounded pages |
 | Structured output | `generate_object` | Schema-constrained model generation with validation and repair |
 | Composition | `batch`, `program` | Safe batch scheduling and sandboxed JavaScript programmatic tool calling |
 | Delegation | `task`, `parallel_task` | Foreground/background workers, bounded parallelism, partial results, and task tracking |
@@ -317,10 +317,10 @@ language/bootstrap injection variables. It keeps stdout and stderr distinct
 under one global capture limit. Its deadline covers output draining and the
 child's complete lifetime, including a process that closes both streams before
 it exits; timeout or cancellation terminates the Unix process group. It never
-searches `PATH` for a sandbox runtime and never falls back to the host runner
-when its explicitly provisioned runtime is missing or fails. The embedding host
-remains responsible for choosing whether an unavailable sandbox causes an
-interactive escalation or a deterministic denial.
+ searches `PATH` for a sandbox runtime and never falls back to the host runner
+ when its explicitly provisioned runtime is missing or fails. The embedding host
+ remains responsible for choosing whether an unavailable sandbox causes an
+ interactive escalation or a deterministic denial.
 
 Shell isolation does not automatically govern in-process workspace tools.
 Interactive hosts should construct `LocalWorkspaceBackend` or
@@ -427,7 +427,20 @@ Confirmation managers, hooks, budget guards, security providers, stream
 sanitization, retention limits, circuit breakers, duplicate-call guards, and
 no-progress detection compose around the same invocation path. Trusted direct
 host calls skip model-facing permission prompts, so an embedding application
-must authorize its callers.
+must authorize its callers. Only built-in control-plane orchestrators may carry
+that authority into host-selected nested calls. A public custom tool's
+`InvocationRuntime`, and every model sub-run created from a direct host context,
+produce ordinary governed invocations instead of inheriting ambient trust.
+
+Delegated tasks, workflow steps, and Skill child runs retain the parent sandbox
+and intersect their local permission policy with the parent checker. A
+child-local `Ask` follows that worker's `auto_approve`, `deny_on_ask`, or
+`inherit_parent` policy, while an `Ask` introduced by the parent remains under
+the parent confirmation provider. If both scopes ask, both remain effective and
+the same provider is de-duplicated. Tool-owned confirmation after both policies
+allow is also governed by the parent, so a child-local auto-approver cannot
+waive a host escalation boundary. Cancellation and timeout settle only the
+matching confirmation ID; unrelated concurrent prompts remain pending.
 
 ### Workspace backends
 
@@ -466,8 +479,15 @@ transcript data, not as a new source of executable instructions.
 The memory layer separates working, short-term, and durable long-term state.
 It supports relevance and recency scoring, typed memories, relations,
 successful and failed pattern capture, file or custom stores, optional pruning,
-and context injection. Significant completed turns can use the active model to
-extract a bounded set of durable memories; hosts can disable or tune extraction.
+and context injection. By default, every completed non-empty session turn is
+sent to the active model for a semantic value judgment; the model returns an
+empty set when nothing is reusable. Automatic extraction writes only validated
+semantic or procedural memories and never mechanically persists tool results or
+turn history. Streaming turns register extraction before publishing their final
+event, run through a FIFO background queue, and graceful session close drains
+already-accepted work for a bounded period. Stored extractor metadata records
+source, confidence, scope, reason, workspace, session, and schema version.
+Hosts can disable extraction or tune its input and output bounds.
 
 ### Models and MCP
 
@@ -476,6 +496,26 @@ Core includes clients for Anthropic, Zhipu, and OpenAI-compatible APIs, plus the
 reasoning, tool calls, usage, images, retries, cancellation, and streaming where
 the provider supports them. Structured generation uses native response formats
 when available and a schema-validated prompt fallback otherwise.
+
+Anthropic and OpenAI-compatible SSE transports decode UTF-8 incrementally
+across raw network chunks before splitting events. A multibyte character may
+therefore cross any transport boundary without being replaced or corrupting the
+event payload.
+
+`LlmClient::model_generation_concurrency` is the typed admission contract for
+structured model transactions. The default is conservative single-flight;
+providers may explicitly report a larger finite bound.
+Each `AgentSession` owns one cancellation-safe gate and reuses it across
+conversation loops, host-direct calls, and rebuilt direct-tool runtimes.
+`generate_object` waits on that gate before starting its active deadline,
+retains the permit through schema repairs, and reports the queue wait
+separately in metadata. `DynamicWorkflowRuntime` recognizes the exact
+`generate_object` Flow step identity and acquires the same capacity before
+starting its bounded `program` VM. The nested generation reuses that one-shot
+identity-checked permit, so neither the generation deadline nor the Program
+deadline includes admission queue time, parallel nested calls cannot reuse one
+reservation, and concurrent host-direct workflows cannot create independent
+provider gates.
 
 If an established response stream closes before its final response, Core
 restarts the same LLM turn with the same message snapshot up to ten times. The
@@ -490,7 +530,11 @@ MCP connections support stdio, HTTP SSE, streamable HTTP, and OAuth client
 credentials. Global managers can seed new sessions and refresh cached tools;
 session managers can connect, disconnect, and live-add or remove isolated
 servers. Tools remain source qualified so separate servers do not silently
-share ownership.
+share ownership. A local stdio server leads a dedicated Unix process group.
+Transport close or drop stops its pipe tasks, fails pending requests, reaps the
+direct child, and terminates descendants; stderr is drained independently so a
+diagnostic-heavy server cannot block the protocol pipe. This lifecycle
+containment does not make the configured server an untrusted sandbox.
 
 Hosts can add or replace a Skill in a running session with
 `AgentSession::add_skill`, inspect the effective names with `skill_names`, and

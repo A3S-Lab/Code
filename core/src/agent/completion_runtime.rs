@@ -78,10 +78,12 @@ impl AgentLoop {
 
         let final_text = self.sanitize_final_text(&candidate_text);
         self.log_execution_completed(state, turn);
-        self.emit_end_if_requested(state, response, &final_text, event_tx, emit_end)
-            .await;
 
         if let Some(sid) = session_id {
+            // Register the completed turn before publishing `End`. A streaming
+            // host may close the session as soon as it receives that event;
+            // registering first lets graceful close drain this extraction
+            // instead of racing past it.
             self.schedule_turn_memory_extraction(
                 state,
                 effective_prompt,
@@ -94,6 +96,9 @@ impl AgentLoop {
             self.notify_turn_complete(sid, effective_prompt, &final_text)
                 .await;
         }
+
+        self.emit_end_if_requested(state, response, &final_text, event_tx, emit_end)
+            .await;
 
         CompletionFlow::Finished(final_text)
     }

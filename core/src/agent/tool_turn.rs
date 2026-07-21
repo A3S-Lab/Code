@@ -13,7 +13,6 @@ impl AgentLoop {
         state: &mut ExecutionLoopState,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         session_id: Option<&str>,
-        effective_prompt: &str,
         cancel_token: &CancellationToken,
     ) -> anyhow::Result<()> {
         if self.can_run_parallel_write_batch(&tool_calls) {
@@ -29,15 +28,8 @@ impl AgentLoop {
         }
 
         for tool_call in tool_calls {
-            self.execute_sequential_tool_call(
-                tool_call,
-                state,
-                event_tx,
-                session_id,
-                effective_prompt,
-                cancel_token,
-            )
-            .await?;
+            self.execute_sequential_tool_call(tool_call, state, event_tx, session_id, cancel_token)
+                .await?;
         }
 
         Ok(())
@@ -49,7 +41,6 @@ impl AgentLoop {
         state: &mut ExecutionLoopState,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         session_id: Option<&str>,
-        effective_prompt: &str,
         cancel_token: &CancellationToken,
     ) -> anyhow::Result<()> {
         state.record_tool_call();
@@ -94,7 +85,6 @@ impl AgentLoop {
                 tool_call: &tool_call,
                 event_tx,
                 session_id,
-                effective_prompt,
                 tool_start,
                 normalized,
             },

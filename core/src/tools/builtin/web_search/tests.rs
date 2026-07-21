@@ -61,14 +61,14 @@ fn search_config(engines: HashMap<String, SearchEngineConfig>) -> SearchConfig {
 }
 
 #[test]
-fn default_engine_selection_uses_anysearch_without_engine_configuration() {
+fn default_engine_selection_uses_builtin_defaults_without_engine_configuration() {
     let (engines, source) = default_engine_selection(None);
-    assert_eq!(engines, ["anysearch"]);
+    assert_eq!(engines, ["ddg", "wiki"]);
     assert_eq!(source, "builtin_default");
 
     let config = search_config(HashMap::new());
     let (engines, source) = default_engine_selection(Some(&config));
-    assert_eq!(engines, ["anysearch"]);
+    assert_eq!(engines, ["ddg", "wiki"]);
     assert_eq!(source, "builtin_default");
 }
 
@@ -383,10 +383,9 @@ fn test_web_search_schema_is_canonical() {
     assert!(params["properties"]["engines"]["description"]
         .as_str()
         .is_some_and(|description| {
-            description.contains("Default: [\"anysearch\"]")
+            description.contains("bing (Bing RSS)")
                 && description.contains("anysearch")
                 && description.contains("tavily")
-                && description.contains("bing (Bing RSS)")
         }));
 }
 

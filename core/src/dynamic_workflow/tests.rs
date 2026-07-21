@@ -1,6 +1,56 @@
 use super::*;
-use crate::tools::{ToolExecutor, ToolOutput};
+use crate::llm::{
+    ContentBlock, LlmClient, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition,
+};
+use crate::tools::{register_generate_object, ToolExecutor, ToolOutput};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+struct DelayedObjectClient {
+    delay: Duration,
+}
+
+#[async_trait]
+impl LlmClient for DelayedObjectClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        tokio::time::sleep(self.delay).await;
+        Ok(LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: r#"{"ok":true}"#.to_string(),
+                }],
+                reasoning_content: None,
+            },
+            usage: TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            stop_reason: Some("end_turn".to_string()),
+            token_logprobs: Vec::new(),
+            meta: None,
+        })
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming is not used by this test")
+    }
+}
 
 struct FakeParallelTaskTool;
 
@@ -103,6 +153,100 @@ impl Tool for RetryOnceRuntimeTool {
             ToolOutput::success("runtime recovered")
         })
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn generate_object_step_waits_for_admission_before_program_timeout_starts() {
+    const PROGRAM_TIMEOUT: Duration = Duration::from_millis(500);
+    const QUEUE_WAIT: Duration = Duration::from_millis(700);
+    const GENERATION_DELAY: Duration = Duration::from_millis(100);
+
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    register_generate_object(
+        executor.registry(),
+        Arc::new(DelayedObjectClient {
+            delay: GENERATION_DELAY,
+        }),
+    );
+
+    let admission = crate::llm::ModelGenerationAdmission::default();
+    let holder = admission
+        .acquire(&CancellationToken::new())
+        .await
+        .expect("hold the only active model-generation slot");
+    let context = executor
+        .registry()
+        .context()
+        .with_model_generation_admission(admission);
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind !== "step" || inputs.step_name !== "generate_object") {
+    throw new Error("unexpected invocation");
+  }
+  return await ctx.tool("generate_object", {
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { ok: { type: "boolean" } },
+      required: ["ok"],
+    },
+    schema_name: "admission_result",
+    prompt: "Return an object whose ok field is true.",
+    mode: "prompt",
+    max_repair_attempts: 0,
+    timeout_ms: 2000,
+  });
+}
+"#;
+    let runtime = DynamicWorkflowRuntime::new(Arc::clone(executor.registry()), context, source)
+        .with_allowed_tools([GENERATE_OBJECT_TOOL.to_string()])
+        .with_limits(DynamicWorkflowScriptLimits {
+            timeout_ms: Some(PROGRAM_TIMEOUT.as_millis() as u64),
+            max_tool_calls: Some(1),
+            max_output_bytes: None,
+        });
+    let run = tokio::spawn(async move {
+        runtime
+            .run_step(StepInvocation {
+                run_id: "model-admission-before-program-timeout".to_string(),
+                step_id: "generate".to_string(),
+                step_name: GENERATE_OBJECT_TOOL.to_string(),
+                input: json!({}),
+                history: Vec::new(),
+            })
+            .await
+    });
+
+    tokio::time::sleep(QUEUE_WAIT).await;
+    assert!(
+        !run.is_finished(),
+        "the Program active timeout must not include model-admission queue wait"
+    );
+    drop(holder);
+
+    let output = tokio::time::timeout(Duration::from_secs(2), run)
+        .await
+        .expect("step should receive its full Program timeout after admission")
+        .expect("step task should join")
+        .expect("step should complete");
+    assert_eq!(output["exitCode"], 0);
+    assert!(
+        output["metadata"]["generation_admission"]["queue_wait_ms"]
+            .as_u64()
+            .is_some_and(|wait_ms| wait_ms >= 600),
+        "{output}"
+    );
+    assert_eq!(
+        output["metadata"]["generation_admission"]["active_timeout_ms"],
+        2_000
+    );
+    assert!(
+        output["output"]
+            .as_str()
+            .is_some_and(|value| value.contains(r#""ok":true"#)),
+        "{output}"
+    );
 }
 
 #[tokio::test]

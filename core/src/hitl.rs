@@ -125,8 +125,50 @@ pub struct PendingConfirmationInfo {
 /// (e.g., interactive, auto-approve, test mocks) while keeping the agent logic clean.
 #[async_trait::async_trait]
 pub trait ConfirmationProvider: Send + Sync {
+    /// Freeze host confirmation semantics for one agent run.
+    ///
+    /// The returned provider may share its pending-request store with the
+    /// session provider, but mode-dependent routing must no longer change
+    /// after this snapshot is created. Stateless providers can keep the
+    /// default and will be shared as-is.
+    fn snapshot_for_run(&self) -> Option<Arc<dyn ConfirmationProvider>> {
+        None
+    }
+
     /// Check if a tool requires confirmation
     async fn requires_confirmation(&self, tool_name: &str) -> bool;
+
+    /// Check whether this exact invocation requires confirmation.
+    ///
+    /// Providers that do not inspect arguments inherit the tool-level behavior.
+    /// Composed child-run providers override this method so an Ask introduced by
+    /// the parent boundary cannot be auto-approved by a child-local policy.
+    async fn requires_confirmation_for(&self, tool_name: &str, _args: &serde_json::Value) -> bool {
+        self.requires_confirmation(tool_name).await
+    }
+
+    /// Whether this provider can resolve confirmation for this invocation.
+    ///
+    /// Most providers are always available. A composed child-run provider uses
+    /// this hook to fail closed before emitting a HITL request when the policy
+    /// scope that produced `Ask` deliberately has no provider (`deny_on_ask`),
+    /// or when a parent escalation boundary has no confirmation channel.
+    async fn confirmation_available_for(
+        &self,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+    ) -> bool {
+        true
+    }
+
+    /// Return the effective confirmation policy for this invocation.
+    ///
+    /// Argument-insensitive providers inherit the session-wide policy. A
+    /// composed provider overrides this so timeout behavior comes only from the
+    /// child and/or parent scopes that actually requested confirmation.
+    async fn policy_for(&self, _tool_name: &str, _args: &serde_json::Value) -> ConfirmationPolicy {
+        self.policy().await
+    }
 
     /// Request confirmation for a tool execution
     ///
@@ -157,6 +199,36 @@ pub trait ConfirmationProvider: Send + Sync {
 
     /// Check for and handle timed out confirmations
     async fn check_timeouts(&self) -> usize;
+
+    /// Cancel one exact pending confirmation.
+    ///
+    /// The default uses the provider's targeted `confirm` operation so existing
+    /// provider implementations remain source-compatible. Session shutdown
+    /// should use [`Self::cancel_all`]; invocation cancellation must use this
+    /// method so concurrent, unrelated confirmations remain pending.
+    async fn cancel(&self, tool_id: &str) -> bool {
+        self.confirm(tool_id, false, Some("Confirmation cancelled".to_string()))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Settle one exact confirmation after its invocation deadline expires.
+    ///
+    /// Providers may override this to emit a native timeout event. The default
+    /// remains targeted and therefore cannot settle another invocation.
+    async fn expire(&self, tool_id: &str, action: TimeoutAction) -> bool {
+        let (approved, action_taken) = match action {
+            TimeoutAction::Reject => (false, "rejected"),
+            TimeoutAction::AutoApprove => (true, "auto_approved"),
+        };
+        self.confirm(
+            tool_id,
+            approved,
+            Some(format!("Confirmation timed out, action: {action_taken}")),
+        )
+        .await
+        .unwrap_or(false)
+    }
 
     /// Cancel all pending confirmations
     async fn cancel_all(&self) -> usize;
@@ -256,10 +328,38 @@ impl ConfirmationManager {
             response_tx: tx,
         };
 
-        // Store the pending confirmation
-        {
+        // A tool id is the authority boundary used by the host to settle a
+        // request. Two live requests with the same id cannot be distinguished
+        // safely, so reject both instead of replacing one receiver and letting
+        // a later approval apply to ambiguous arguments.
+        let collision = {
             let mut pending_map = self.pending.write().await;
-            pending_map.insert(tool_id.to_string(), pending);
+            match pending_map.entry(tool_id.to_string()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(pending);
+                    None
+                }
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    Some((entry.remove(), pending))
+                }
+            }
+        };
+        if let Some((existing, duplicate)) = collision {
+            let reason = Some(format!(
+                "Duplicate confirmation tool id '{tool_id}'; both requests were rejected"
+            ));
+            let response = ConfirmationResponse {
+                approved: false,
+                reason: reason.clone(),
+            };
+            let _ = existing.response_tx.send(response.clone());
+            let _ = duplicate.response_tx.send(response);
+            let _ = self.event_tx.send(AgentEvent::ConfirmationReceived {
+                tool_id: tool_id.to_string(),
+                approved: false,
+                reason,
+            });
+            return rx;
         }
 
         // Emit confirmation required event
@@ -326,35 +426,14 @@ impl ConfirmationManager {
             }
         }
 
-        // Handle timed out confirmations
+        let mut settled = 0usize;
         for tool_id in &timed_out {
-            let pending = {
-                let mut pending_map = self.pending.write().await;
-                pending_map.remove(tool_id)
-            };
-
-            if let Some(confirmation) = pending {
-                let (approved, action_taken) = match timeout_action {
-                    TimeoutAction::Reject => (false, "rejected"),
-                    TimeoutAction::AutoApprove => (true, "auto_approved"),
-                };
-
-                // Emit timeout event
-                let _ = self.event_tx.send(AgentEvent::ConfirmationTimeout {
-                    tool_id: tool_id.clone(),
-                    action_taken: action_taken.to_string(),
-                });
-
-                // Send the response
-                let response = ConfirmationResponse {
-                    approved,
-                    reason: Some(format!("Confirmation timed out, action: {}", action_taken)),
-                };
-                let _ = confirmation.response_tx.send(response);
+            if self.expire(tool_id, timeout_action).await {
+                settled = settled.saturating_add(1);
             }
         }
 
-        timed_out.len()
+        settled
     }
 
     /// Get the number of pending confirmations
@@ -402,6 +481,31 @@ impl ConfirmationManager {
         } else {
             false
         }
+    }
+
+    /// Settle one exact pending confirmation as timed out.
+    pub async fn expire(&self, tool_id: &str, action: TimeoutAction) -> bool {
+        let pending = {
+            let mut pending_map = self.pending.write().await;
+            pending_map.remove(tool_id)
+        };
+
+        let Some(confirmation) = pending else {
+            return false;
+        };
+        let (approved, action_taken) = match action {
+            TimeoutAction::Reject => (false, "rejected"),
+            TimeoutAction::AutoApprove => (true, "auto_approved"),
+        };
+        let _ = self.event_tx.send(AgentEvent::ConfirmationTimeout {
+            tool_id: tool_id.to_string(),
+            action_taken: action_taken.to_string(),
+        });
+        let _ = confirmation.response_tx.send(ConfirmationResponse {
+            approved,
+            reason: Some(format!("Confirmation timed out, action: {action_taken}")),
+        });
+        true
     }
 
     /// Cancel all pending confirmations
@@ -462,6 +566,14 @@ impl ConfirmationProvider for ConfirmationManager {
         self.check_timeouts().await
     }
 
+    async fn cancel(&self, tool_id: &str) -> bool {
+        self.cancel(tool_id).await
+    }
+
+    async fn expire(&self, tool_id: &str, action: TimeoutAction) -> bool {
+        self.expire(tool_id, action).await
+    }
+
     async fn cancel_all(&self) -> usize {
         self.cancel_all().await
     }
@@ -518,6 +630,14 @@ impl ConfirmationProvider for AutoApproveConfirmation {
 
     async fn check_timeouts(&self) -> usize {
         0
+    }
+
+    async fn cancel(&self, _tool_id: &str) -> bool {
+        false
+    }
+
+    async fn expire(&self, _tool_id: &str, _action: TimeoutAction) -> bool {
+        false
     }
 
     async fn cancel_all(&self) -> usize {

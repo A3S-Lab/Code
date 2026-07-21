@@ -329,7 +329,9 @@ mod tests {
     use super::*;
     use crate::code_intelligence::lsp::router::{ServerRequestRouter, ServerRequestRouterConfig};
     use std::collections::BTreeMap;
+    #[cfg(unix)]
     use std::ffi::OsString;
+    #[cfg(unix)]
     use std::time::Instant;
 
     #[test]

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -223,10 +223,24 @@ pub struct ToolContext {
     pub command_env: Option<Arc<HashMap<String, String>>>,
     /// Host-provided workspace capabilities used by built-in tools.
     pub workspace_services: Arc<crate::workspace::WorkspaceServices>,
+    /// Permission boundary frozen by the agent run that owns this invocation.
+    ///
+    /// Child-run tools consult this value instead of the mutable session
+    /// configuration they were registered with.
+    pub(crate) run_permission_checker: Option<Arc<dyn crate::permissions::PermissionChecker>>,
+    /// Confirmation routing frozen by the agent run that owns this invocation.
+    pub(crate) run_confirmation_manager: Option<Arc<dyn crate::hitl::ConfirmationProvider>>,
+    /// Distinguishes an agent run that intentionally has no governance
+    /// provider from a plain low-level tool context that was never bound.
+    pub(crate) run_governance_bound: bool,
     /// Scoped invocation gateway installed by the agent runtime.
     pub(crate) tool_invoker: Option<Arc<dyn super::invocation::ToolInvoker>>,
     /// Per-run governed LLM facade for tools that perform model sub-calls.
     pub(crate) llm_client: Option<Arc<dyn crate::llm::LlmClient>>,
+    /// Shared active-generation gate for this agent/session runtime.
+    pub(crate) model_generation_admission: Option<crate::llm::ModelGenerationAdmission>,
+    /// Optional capacity already acquired by an outer model-generation step.
+    model_generation_permit: Option<Arc<ModelGenerationPermitReservation>>,
     /// Trust policy inherited by nested calls of a host-direct orchestrator.
     pub(crate) host_direct_policy: Option<super::invocation::HostDirectPolicy>,
     /// Cancellation for the invocation that owns this tool call.
@@ -246,6 +260,42 @@ pub struct ToolContext {
     inside_tool_queue: bool,
 }
 
+#[derive(Debug)]
+struct ModelGenerationPermitReservation {
+    permit: Mutex<Option<Arc<crate::llm::ModelGenerationPermit>>>,
+}
+
+impl ModelGenerationPermitReservation {
+    fn new(permit: Arc<crate::llm::ModelGenerationPermit>) -> Self {
+        Self {
+            permit: Mutex::new(Some(permit)),
+        }
+    }
+
+    fn owns(&self, admission: &crate::llm::ModelGenerationAdmission) -> bool {
+        self.permit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|permit| admission.owns(permit))
+    }
+
+    fn claim(
+        &self,
+        admission: &crate::llm::ModelGenerationAdmission,
+    ) -> Option<Arc<crate::llm::ModelGenerationPermit>> {
+        let mut permit = self
+            .permit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if permit.as_ref().is_some_and(|permit| admission.owns(permit)) {
+            permit.take()
+        } else {
+            None
+        }
+    }
+}
+
 impl std::fmt::Debug for ToolContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolContext")
@@ -253,8 +303,25 @@ impl std::fmt::Debug for ToolContext {
             .field("session_id", &self.session_id)
             .field("sandbox", &self.sandbox.is_some())
             .field("workspace_services", &self.workspace_services)
+            .field(
+                "has_run_permission_checker",
+                &self.run_permission_checker.is_some(),
+            )
+            .field(
+                "has_run_confirmation_manager",
+                &self.run_confirmation_manager.is_some(),
+            )
+            .field("run_governance_bound", &self.run_governance_bound)
             .field("has_tool_invoker", &self.tool_invoker.is_some())
             .field("has_llm_client", &self.llm_client.is_some())
+            .field(
+                "has_model_generation_admission",
+                &self.model_generation_admission.is_some(),
+            )
+            .field(
+                "has_model_generation_permit",
+                &self.model_generation_permit.is_some(),
+            )
             .field(
                 "has_agent_event_barrier",
                 &self.agent_event_barrier.is_some(),
@@ -282,8 +349,13 @@ impl ToolContext {
             sandbox: None,
             command_env: None,
             workspace_services: crate::workspace::WorkspaceServices::local(workspace),
+            run_permission_checker: None,
+            run_confirmation_manager: None,
+            run_governance_bound: false,
             tool_invoker: None,
             llm_client: None,
+            model_generation_admission: None,
+            model_generation_permit: None,
             host_direct_policy: None,
             cancellation: CancellationToken::new(),
             invocation_stack: Vec::new(),
@@ -355,6 +427,33 @@ impl ToolContext {
         self
     }
 
+    pub(crate) fn with_run_governance(
+        mut self,
+        permission_checker: Option<Arc<dyn crate::permissions::PermissionChecker>>,
+        confirmation_manager: Option<Arc<dyn crate::hitl::ConfirmationProvider>>,
+    ) -> Self {
+        self.run_permission_checker = permission_checker;
+        self.run_confirmation_manager = confirmation_manager;
+        self.run_governance_bound = true;
+        self
+    }
+
+    pub(crate) fn has_run_governance(&self) -> bool {
+        self.run_governance_bound
+    }
+
+    pub(crate) fn run_permission_checker(
+        &self,
+    ) -> Option<Arc<dyn crate::permissions::PermissionChecker>> {
+        self.run_permission_checker.clone()
+    }
+
+    pub(crate) fn run_confirmation_manager(
+        &self,
+    ) -> Option<Arc<dyn crate::hitl::ConfirmationProvider>> {
+        self.run_confirmation_manager.clone()
+    }
+
     /// Return the governed nested-invocation facade for this tool call.
     ///
     /// The facade is always constructible so tools can be tested with a plain
@@ -403,6 +502,50 @@ impl ToolContext {
         self.llm_client.clone()
     }
 
+    pub(crate) fn with_model_generation_admission(
+        mut self,
+        admission: crate::llm::ModelGenerationAdmission,
+    ) -> Self {
+        let retains_permit = self
+            .model_generation_permit
+            .as_ref()
+            .is_some_and(|reservation| reservation.owns(&admission));
+        self.model_generation_admission = Some(admission);
+        if !retains_permit {
+            self.model_generation_permit = None;
+        }
+        self
+    }
+
+    pub(crate) fn model_generation_admission(
+        &self,
+    ) -> Option<crate::llm::ModelGenerationAdmission> {
+        self.model_generation_admission.clone()
+    }
+
+    pub(crate) fn with_model_generation_permit(
+        mut self,
+        admission: crate::llm::ModelGenerationAdmission,
+        permit: Arc<crate::llm::ModelGenerationPermit>,
+    ) -> std::result::Result<Self, crate::llm::ModelGenerationAdmissionError> {
+        if !admission.owns(&permit) {
+            return Err(crate::llm::ModelGenerationAdmissionError::ForeignPermit);
+        }
+        self.model_generation_admission = Some(admission);
+        self.model_generation_permit =
+            Some(Arc::new(ModelGenerationPermitReservation::new(permit)));
+        Ok(self)
+    }
+
+    pub(crate) fn model_generation_permit(
+        &self,
+        admission: &crate::llm::ModelGenerationAdmission,
+    ) -> Option<Arc<crate::llm::ModelGenerationPermit>> {
+        self.model_generation_permit
+            .as_ref()
+            .and_then(|reservation| reservation.claim(admission))
+    }
+
     pub(crate) fn with_host_direct_policy(
         mut self,
         policy: super::invocation::HostDirectPolicy,
@@ -411,8 +554,28 @@ impl ToolContext {
         self
     }
 
-    pub(crate) fn host_direct_policy(&self) -> Option<super::invocation::HostDirectPolicy> {
-        self.host_direct_policy
+    pub(crate) fn without_host_direct_policy(mut self) -> Self {
+        self.host_direct_policy = None;
+        self
+    }
+
+    /// Construct a nested invocation for a built-in orchestrator.
+    ///
+    /// Only an explicit host-direct orchestration context propagates trusted
+    /// control-plane authority. Public custom tools use [`InvocationRuntime`],
+    /// whose `invoke_tool` method always creates an ordinary governed nested
+    /// invocation.
+    pub(crate) fn nested_tool_invocation(
+        &self,
+        name: impl Into<String>,
+        args: serde_json::Value,
+    ) -> super::invocation::ToolInvocation {
+        match self.host_direct_policy {
+            Some(policy) => {
+                super::invocation::ToolInvocation::host_direct_nested(name, args, policy)
+            }
+            None => super::invocation::ToolInvocation::nested(name, args),
+        }
     }
 
     pub(crate) fn enter_tool_invocation(
@@ -767,6 +930,52 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("unavailable outside"));
+    }
+
+    #[tokio::test]
+    async fn tool_context_rejects_a_model_permit_from_another_admission_gate() {
+        let first = crate::llm::ModelGenerationAdmission::default();
+        let second = crate::llm::ModelGenerationAdmission::default();
+        let permit = first
+            .acquire(&CancellationToken::new())
+            .await
+            .expect("first admission permit");
+
+        let error = ToolContext::new(PathBuf::from("/tmp"))
+            .with_model_generation_permit(second, Arc::new(permit))
+            .expect_err("a foreign permit must not bypass the configured admission gate");
+
+        assert_eq!(
+            error,
+            crate::llm::ModelGenerationAdmissionError::ForeignPermit
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_context_preacquired_model_permit_can_only_be_claimed_once() {
+        let admission = crate::llm::ModelGenerationAdmission::default();
+        let permit = admission
+            .acquire(&CancellationToken::new())
+            .await
+            .expect("admission permit");
+        let ctx = ToolContext::new(PathBuf::from("/tmp"))
+            .with_model_generation_permit(admission.clone(), Arc::new(permit))
+            .expect("bind matching permit");
+
+        let claimed = ctx
+            .model_generation_permit(&admission)
+            .expect("first claim");
+        assert!(
+            ctx.model_generation_permit(&admission).is_none(),
+            "one pre-admission permit must not authorize concurrent nested generations"
+        );
+        drop(claimed);
+
+        let replacement = admission
+            .acquire(&CancellationToken::new())
+            .await
+            .expect("claimed permit should release normally");
+        drop(replacement);
     }
 
     #[test]

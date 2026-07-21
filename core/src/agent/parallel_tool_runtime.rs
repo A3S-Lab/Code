@@ -29,6 +29,7 @@ impl AgentLoop {
         let tool_context = self
             .tool_context
             .clone()
+            .without_host_direct_policy()
             .with_cancellation(cancel_token.clone())
             .with_tool_invoker(Arc::clone(&invoker));
         let results = crate::ordered_parallel::run_ordered_parallel_with_limit(

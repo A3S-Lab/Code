@@ -14,7 +14,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 #[derive(Debug)]
 pub(super) struct RunAdmission {
     active: AtomicBool,
-    stream_abort: Mutex<Option<AbortHandle>>,
+    stream_aborts: Mutex<Vec<AbortHandle>>,
     idle: Notify,
 }
 
@@ -22,7 +22,7 @@ impl Default for RunAdmission {
     fn default() -> Self {
         Self {
             active: AtomicBool::new(false),
-            stream_abort: Mutex::new(None),
+            stream_aborts: Mutex::new(Vec::new()),
             idle: Notify::new(),
         }
     }
@@ -41,33 +41,37 @@ impl RunAdmission {
         })
     }
 
-    fn register_stream_worker(&self, abort: AbortHandle) {
+    fn register_stream_workers(&self, aborts: Vec<AbortHandle>) {
         *self
-            .stream_abort
+            .stream_aborts
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = Some(abort);
+            .unwrap_or_else(|poison| poison.into_inner()) = aborts;
     }
 
-    fn clear_stream_worker(&self) {
-        self.stream_abort
+    fn clear_stream_workers(&self) {
+        self.stream_aborts
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .take();
+            .clear();
     }
 
-    /// Abort only the real streaming worker registered for the current lease.
-    /// Blocking sends have no registered worker and remain cooperative-only.
-    pub(super) fn abort_stream_worker(&self) -> bool {
-        let abort = self
-            .stream_abort
+    /// Abort the real execution and event-forwarding tasks registered for the
+    /// current streaming lease. The lifecycle supervisor remains alive so it
+    /// can clear run state and release the lease after both tasks settle.
+    /// Blocking sends have no registered workers and remain cooperative-only.
+    pub(super) fn abort_stream_workers(&self) -> bool {
+        let aborts = self
+            .stream_aborts
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
-        if let Some(abort) = abort {
-            abort.abort();
-            true
-        } else {
+        if aborts.is_empty() {
             false
+        } else {
+            for abort in aborts {
+                abort.abort();
+            }
+            true
         }
     }
 
@@ -105,15 +109,14 @@ impl Drop for RunAdmissionLease {
 /// still active.
 pub(super) fn guard_stream_handle(
     handle: JoinHandle<()>,
+    worker_aborts: Vec<AbortHandle>,
     lease: RunAdmissionLease,
 ) -> JoinHandle<()> {
-    lease
-        .admission
-        .register_stream_worker(handle.abort_handle());
+    lease.admission.register_stream_workers(worker_aborts);
     let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let _ = handle.await;
-        lease.admission.clear_stream_worker();
+        lease.admission.clear_stream_workers();
         drop(lease);
         let _ = finished_tx.send(());
     });
@@ -149,8 +152,9 @@ mod tests {
         let inner = tokio::spawn(async move {
             let _ = release_rx.await;
         });
+        let inner_abort = inner.abort_handle();
 
-        let public_handle = guard_stream_handle(inner, lease);
+        let public_handle = guard_stream_handle(inner, vec![inner_abort], lease);
         public_handle.abort();
         tokio::task::yield_now().await;
 
@@ -181,10 +185,20 @@ mod tests {
     async fn registered_stream_worker_can_be_force_settled() {
         let admission = Arc::new(RunAdmission::default());
         let lease = admission.try_acquire("session-1").unwrap();
-        let inner = tokio::spawn(std::future::pending::<()>());
-        let proxy = guard_stream_handle(inner, lease);
+        let worker = tokio::spawn(std::future::pending::<()>());
+        let worker_abort = worker.abort_handle();
+        let (cleanup_tx, cleanup_rx) = tokio::sync::oneshot::channel();
+        let supervisor = tokio::spawn(async move {
+            let error = worker.await.expect_err("worker must be aborted");
+            assert!(error.is_cancelled());
+            let _ = cleanup_tx.send(());
+        });
+        let proxy = guard_stream_handle(supervisor, vec![worker_abort], lease);
 
-        assert!(admission.abort_stream_worker());
+        assert!(admission.abort_stream_workers());
+        cleanup_rx
+            .await
+            .expect("the lifecycle supervisor must survive worker abortion");
         assert!(admission.wait_until_idle(Duration::from_secs(1)).await);
         assert!(proxy.await.is_ok());
         assert!(admission.try_acquire("session-1").is_ok());

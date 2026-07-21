@@ -827,7 +827,7 @@ mod extra_llm_tests2 {
     use std::sync::Arc;
 
     struct MockStreamingHttpClient {
-        chunks: Vec<String>,
+        chunks: Vec<Bytes>,
     }
 
     struct PendingStreamingHttpClient;
@@ -851,12 +851,7 @@ mod extra_llm_tests2 {
             _body: &serde_json::Value,
             _cancel_token: CancellationToken,
         ) -> Result<StreamingHttpResponse> {
-            let items = self
-                .chunks
-                .iter()
-                .cloned()
-                .map(|chunk| Ok(Bytes::from(chunk)))
-                .collect::<Vec<_>>();
+            let items = self.chunks.iter().cloned().map(Ok).collect::<Vec<_>>();
             Ok(StreamingHttpResponse {
                 status: 200,
                 retry_after: None,
@@ -1247,8 +1242,11 @@ mod extra_llm_tests2 {
             "data: {\"type\":\"message_stop\"}\n\n".to_string(),
         ];
 
-        let client = AnthropicClient::new("key".to_string(), "model".to_string())
-            .with_http_client(Arc::new(MockStreamingHttpClient { chunks: sse }));
+        let client = AnthropicClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: sse.into_iter().map(Bytes::from).collect(),
+            }),
+        );
 
         let mut rx = client
             .complete_streaming(
@@ -1293,6 +1291,48 @@ mod extra_llm_tests2 {
         assert_eq!(tool_calls[0].name, "Skill");
         assert_eq!(tool_calls[0].args["skill_name"], "hello-skill");
         assert_eq!(tool_calls[0].args["prompt"], "run");
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_stream_preserves_unicode_split_across_transport_chunks() {
+        let wire = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",",
+            "\"type\":\"message\",\"model\":\"model\",\"usage\":{\"input_tokens\":10}}}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,",
+            "\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,",
+            "\"delta\":{\"type\":\"text_delta\",\"text\":\"维护治理\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},",
+            "\"usage\":{\"output_tokens\":4}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+        let split = wire.find("治理").unwrap() + 1;
+        let chunks = vec![
+            Bytes::copy_from_slice(&wire.as_bytes()[..split]),
+            Bytes::copy_from_slice(&wire.as_bytes()[split..]),
+        ];
+        let client = AnthropicClient::new("key".to_string(), "model".to_string())
+            .with_http_client(Arc::new(MockStreamingHttpClient { chunks }));
+        let mut rx = client
+            .complete_streaming(
+                &[Message::user("unicode")],
+                None,
+                &[],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let mut final_response = None;
+        while let Some(event) = rx.recv().await {
+            if let StreamEvent::Done(response) = event {
+                final_response = Some(response);
+                break;
+            }
+        }
+
+        let response = final_response.expect("expected final response");
+        assert_eq!(response.text(), "维护治理");
+        assert!(!response.text().contains('\u{fffd}'));
     }
 
     #[tokio::test]
@@ -1453,8 +1493,11 @@ mod extra_llm_tests2 {
             "data: [DONE]\n\n".to_string(),
         ];
 
-        let client = OpenAiClient::new("key".to_string(), "glm-5.2".to_string())
-            .with_http_client(Arc::new(MockStreamingHttpClient { chunks: sse }));
+        let client = OpenAiClient::new("key".to_string(), "glm-5.2".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: sse.into_iter().map(Bytes::from).collect(),
+            }),
+        );
 
         let mut rx = client
             .complete_streaming(
@@ -1532,8 +1575,11 @@ mod extra_llm_tests2 {
             "data: [DONE]\n\n".to_string(),
         ];
 
-        let client = OpenAiClient::new("key".to_string(), "model".to_string())
-            .with_http_client(Arc::new(MockStreamingHttpClient { chunks: sse }));
+        let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: sse.into_iter().map(Bytes::from).collect(),
+            }),
+        );
         let mut rx = client
             .complete_streaming(
                 &[Message::user("use tools")],

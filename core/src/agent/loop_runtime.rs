@@ -187,14 +187,7 @@ impl AgentLoop {
             }
 
             if let Err(e) = self
-                .execute_tool_turn(
-                    tool_calls,
-                    &mut state,
-                    &event_tx,
-                    session_id,
-                    effective_prompt,
-                    cancel_token,
-                )
+                .execute_tool_turn(tool_calls, &mut state, &event_tx, session_id, cancel_token)
                 .await
             {
                 // Same as above: a cancelled tool round commits its partial

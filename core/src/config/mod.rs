@@ -25,8 +25,8 @@ pub use agent_dir::{AgentDir, ScheduleSpec, ScriptToolLimits, ScriptToolSpec, To
 pub use editor::{rewrite_acl_sections, ConfigSection};
 pub use provider::{ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use search::{
-    BrowserBackend, DocumentCacheConfig, DocumentOcrConfig, DocumentParserConfig, HeadlessConfig,
-    SearchConfig, SearchEngineConfig, SearchHealthConfig,
+    BrowserBackend, DocumentCacheConfig, DocumentParserConfig, HeadlessConfig, SearchConfig,
+    SearchEngineConfig, SearchHealthConfig,
 };
 
 use crate::memory::MemoryConfig;

@@ -17,77 +17,6 @@ const MAX_PROTOCOL_META_BYTES: usize = 1024 * 1024;
 const MAX_CACHED_ARTIFACTS_PER_TOOL: usize = 64;
 const MAX_CACHED_ARTIFACT_BYTES_PER_TOOL: u64 = 128 * 1024 * 1024;
 
-struct ToolResultProjection {
-    text_parts: Vec<String>,
-    images: Vec<Attachment>,
-    artifacts: Vec<Value>,
-    content: Vec<Value>,
-    decoded_bytes: usize,
-}
-
-impl ToolResultProjection {
-    fn new(content_capacity: usize) -> Self {
-        Self {
-            text_parts: Vec::new(),
-            images: Vec::new(),
-            artifacts: Vec::new(),
-            content: Vec::with_capacity(content_capacity),
-            decoded_bytes: 0,
-        }
-    }
-
-    async fn project_resource(
-        &mut self,
-        tool_name: &str,
-        resource: &ResourceContent,
-        context: &ToolContext,
-    ) -> Result<()> {
-        let mut descriptor = json!({
-            "type": "resource",
-            "uri": resource.uri,
-            "mimeType": resource.mime_type,
-            "hasText": resource.text.is_some(),
-            "hasBlob": resource.blob.is_some(),
-        });
-
-        if let Some(text) = &resource.text {
-            self.text_parts.push(text.clone());
-            descriptor["textBytes"] = json!(text.len());
-        }
-        if let Some(blob) = &resource.blob {
-            let bytes = decode_bounded(blob, &mut self.decoded_bytes)?;
-            let mime_type = resource
-                .mime_type
-                .as_deref()
-                .unwrap_or("application/octet-stream");
-            let artifact =
-                materialize_artifact(tool_name, Some(&resource.uri), mime_type, &bytes, context)
-                    .await?;
-            self.text_parts.push(format!(
-                "[Resource: {}, {mime_type}, {} bytes, artifact: {}]",
-                resource.uri,
-                bytes.len(),
-                artifact.path.display()
-            ));
-            if model_image_mime_type(mime_type) {
-                self.images
-                    .push(Attachment::new(bytes.clone(), mime_type.to_string()));
-            }
-            descriptor["blobBytes"] = json!(bytes.len());
-            descriptor["sha256"] = json!(artifact.sha256.clone());
-            descriptor["path"] = json!(artifact.path.clone());
-            descriptor["attachedToModel"] = json!(model_image_mime_type(mime_type));
-            self.artifacts
-                .push(artifact.value("resource", Some(&resource.uri)));
-        } else if resource.text.is_none() {
-            self.text_parts
-                .push(format!("[Resource: {}]", resource.uri));
-        }
-        self.content.push(descriptor);
-        Ok(())
-    }
-}
-
 /// Convert an MCP result to model-visible text without discarding structured
 /// content, decoded images, embedded resources, or protocol metadata.
 pub(crate) async fn project_tool_result(
@@ -109,32 +38,34 @@ pub(crate) async fn project_tool_result(
     )?;
     validate_json_size("_meta", result.meta.as_ref(), MAX_PROTOCOL_META_BYTES)?;
 
-    let mut projection = ToolResultProjection::new(result.content.len());
+    let mut text_parts = Vec::new();
+    let mut images = Vec::new();
+    let mut artifacts = Vec::new();
+    let mut content = Vec::with_capacity(result.content.len());
+    let mut decoded_bytes = 0usize;
 
     for item in &result.content {
         match item {
             ToolContent::Text { text } => {
-                projection.text_parts.push(text.clone());
-                projection.content.push(json!({
+                text_parts.push(text.clone());
+                content.push(json!({
                     "type": "text",
                     "bytes": text.len(),
                 }));
             }
             ToolContent::Image { data, mime_type } => {
-                let bytes = decode_bounded(data, &mut projection.decoded_bytes)?;
+                let bytes = decode_bounded(data, &mut decoded_bytes)?;
                 let artifact =
                     materialize_artifact(tool_name, None, mime_type, &bytes, context).await?;
-                projection.text_parts.push(format!(
+                text_parts.push(format!(
                     "[Image: {mime_type}, {} bytes, artifact: {}]",
                     bytes.len(),
                     artifact.path.display()
                 ));
                 if model_image_mime_type(mime_type) {
-                    projection
-                        .images
-                        .push(Attachment::new(bytes.clone(), mime_type.clone()));
+                    images.push(Attachment::new(bytes.clone(), mime_type.clone()));
                 }
-                projection.content.push(json!({
+                content.push(json!({
                     "type": "image",
                     "mimeType": mime_type,
                     "bytes": bytes.len(),
@@ -142,23 +73,21 @@ pub(crate) async fn project_tool_result(
                     "path": artifact.path.clone(),
                     "attachedToModel": model_image_mime_type(mime_type),
                 }));
-                projection.artifacts.push(artifact.value("image", None));
+                artifacts.push(artifact.value("image", None));
             }
             ToolContent::Resource { resource } => {
-                projection
-                    .project_resource(tool_name, resource, context)
-                    .await?;
+                let mut projection = ResourceProjection {
+                    text_parts: &mut text_parts,
+                    images: &mut images,
+                    artifacts: &mut artifacts,
+                    content: &mut content,
+                    decoded_bytes: &mut decoded_bytes,
+                };
+                project_resource(tool_name, resource, context, &mut projection).await?;
             }
         }
     }
 
-    let ToolResultProjection {
-        mut text_parts,
-        images,
-        artifacts,
-        content,
-        ..
-    } = projection;
     if text_parts.is_empty() {
         if let Some(structured) = &result.structured_content {
             text_parts.push(
@@ -192,6 +121,68 @@ pub(crate) async fn project_tool_result(
     .with_metadata(json!({ "mcp": Value::Object(metadata) }))
     .with_images(images);
     Ok(output)
+}
+
+struct ResourceProjection<'a> {
+    text_parts: &'a mut Vec<String>,
+    images: &'a mut Vec<Attachment>,
+    artifacts: &'a mut Vec<Value>,
+    content: &'a mut Vec<Value>,
+    decoded_bytes: &'a mut usize,
+}
+
+async fn project_resource(
+    tool_name: &str,
+    resource: &ResourceContent,
+    context: &ToolContext,
+    projection: &mut ResourceProjection<'_>,
+) -> Result<()> {
+    let mut descriptor = json!({
+        "type": "resource",
+        "uri": resource.uri,
+        "mimeType": resource.mime_type,
+        "hasText": resource.text.is_some(),
+        "hasBlob": resource.blob.is_some(),
+    });
+
+    if let Some(text) = &resource.text {
+        projection.text_parts.push(text.clone());
+        descriptor["textBytes"] = json!(text.len());
+    }
+    if let Some(blob) = &resource.blob {
+        let bytes = decode_bounded(blob, projection.decoded_bytes)?;
+        let mime_type = resource
+            .mime_type
+            .as_deref()
+            .unwrap_or("application/octet-stream");
+        let artifact =
+            materialize_artifact(tool_name, Some(&resource.uri), mime_type, &bytes, context)
+                .await?;
+        projection.text_parts.push(format!(
+            "[Resource: {}, {mime_type}, {} bytes, artifact: {}]",
+            resource.uri,
+            bytes.len(),
+            artifact.path.display()
+        ));
+        if model_image_mime_type(mime_type) {
+            projection
+                .images
+                .push(Attachment::new(bytes.clone(), mime_type.to_string()));
+        }
+        descriptor["blobBytes"] = json!(bytes.len());
+        descriptor["sha256"] = json!(artifact.sha256.clone());
+        descriptor["path"] = json!(artifact.path.clone());
+        descriptor["attachedToModel"] = json!(model_image_mime_type(mime_type));
+        projection
+            .artifacts
+            .push(artifact.value("resource", Some(&resource.uri)));
+    } else if resource.text.is_none() {
+        projection
+            .text_parts
+            .push(format!("[Resource: {}]", resource.uri));
+    }
+    projection.content.push(descriptor);
+    Ok(())
 }
 
 fn decode_bounded(data: &str, decoded_total: &mut usize) -> Result<Vec<u8>> {
