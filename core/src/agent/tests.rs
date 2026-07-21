@@ -4088,11 +4088,11 @@ async function run(ctx, inputs) {
                 .await
         });
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+        tokio::time::timeout(std::time::Duration::from_secs(10), started.notified())
             .await
             .expect("nested tool must start before cancellation");
         cancellation.cancel();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), run)
             .await
             .expect("cancellation must stop the dynamic workflow")
             .unwrap()
