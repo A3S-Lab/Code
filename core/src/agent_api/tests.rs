@@ -18,6 +18,20 @@ struct NoopSessionCommand;
 
 struct FailingCloseSessionTransport;
 
+#[derive(Default)]
+struct CountingMemoryObserver(std::sync::atomic::AtomicUsize);
+
+#[async_trait::async_trait]
+impl crate::memory::MemoryObserver for CountingMemoryObserver {
+    async fn on_memory_stored(
+        &self,
+        _observation: crate::memory::MemoryObservation,
+    ) -> anyhow::Result<()> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::tools::Tool for NamedSessionTool {
     fn name(&self) -> &str {
@@ -2398,6 +2412,32 @@ async fn test_agent_rejects_duplicate_live_ids_across_sync_and_async_factories()
         vec!["duplicate-factory-id".to_string()]
     );
     drop(async_session);
+}
+
+#[tokio::test]
+async fn synchronous_session_build_keeps_configured_memory_observers() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let observer = Arc::new(CountingMemoryObserver::default());
+    let session = agent
+        .session(
+            "/tmp/test-sync-memory-observer",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("sync-memory-observer")
+                    .with_memory(Arc::new(a3s_memory::InMemoryStore::new()))
+                    .with_memory_observer(observer.clone()),
+            ),
+        )
+        .unwrap();
+
+    session
+        .memory()
+        .unwrap()
+        .remember(a3s_memory::MemoryItem::new("A durable learned preference."))
+        .await
+        .unwrap();
+
+    assert_eq!(observer.0.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

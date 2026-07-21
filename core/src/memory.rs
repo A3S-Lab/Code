@@ -14,6 +14,28 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{oneshot, Notify, RwLock};
 
+/// One durable-memory write as observed by a host integration.
+///
+/// `incoming` preserves the identity and per-turn metadata of this observation,
+/// while `stored` is the canonical item returned by the memory backend. They
+/// differ when a backend consolidates a duplicate into an existing item.
+#[derive(Debug, Clone)]
+pub struct MemoryObservation {
+    pub incoming: MemoryItem,
+    pub stored: MemoryItem,
+    pub merged: bool,
+}
+
+/// Host extension point invoked after a durable memory has been persisted.
+///
+/// Observer failures are logged but never roll back the memory write. This is
+/// intended for derived, auditable projections such as preference and workflow
+/// learning; the memory store remains the source of truth.
+#[async_trait::async_trait]
+pub trait MemoryObserver: Send + Sync {
+    async fn on_memory_stored(&self, observation: MemoryObservation) -> anyhow::Result<()>;
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -124,6 +146,7 @@ pub struct AgentMemory {
     pub(crate) llm_extraction_max_items: usize,
     pub(crate) llm_extraction_max_input_chars: usize,
     extraction_queue: Arc<MemoryExtractionQueue>,
+    observers: Arc<Vec<Arc<dyn MemoryObserver>>>,
 }
 
 #[derive(Default)]
@@ -174,6 +197,7 @@ impl std::fmt::Debug for AgentMemory {
         f.debug_struct("AgentMemory")
             .field("max_short_term", &self.max_short_term)
             .field("max_working", &self.max_working)
+            .field("observers", &self.observers.len())
             .finish()
     }
 }
@@ -189,6 +213,17 @@ impl AgentMemory {
     /// If `config.prune_policy` is `Some`, a background Tokio task is spawned
     /// that periodically calls `store.prune()` at the configured interval.
     pub fn with_config(store: Arc<dyn MemoryStore>, config: MemoryConfig) -> Self {
+        Self::with_config_and_observers(store, config, Vec::new())
+    }
+
+    /// Create a memory system with host observers for successful durable
+    /// writes. Observers receive both the incoming observation and the
+    /// canonical stored item so duplicate consolidation remains auditable.
+    pub fn with_config_and_observers(
+        store: Arc<dyn MemoryStore>,
+        config: MemoryConfig,
+        observers: Vec<Arc<dyn MemoryObserver>>,
+    ) -> Self {
         if let Some(policy) = config.prune_policy.clone() {
             let store_for_task = Arc::clone(&store);
             let interval_secs = config.prune_interval_secs;
@@ -225,6 +260,7 @@ impl AgentMemory {
             llm_extraction_max_items: config.llm_extraction_max_items,
             llm_extraction_max_input_chars: config.llm_extraction_max_input_chars,
             extraction_queue: Arc::new(MemoryExtractionQueue::default()),
+            observers: Arc::new(observers),
         }
     }
 
@@ -242,6 +278,7 @@ impl AgentMemory {
 
     /// Store a memory and return the normalized item that was sent to storage.
     pub async fn remember_item(&self, item: MemoryItem) -> anyhow::Result<MemoryItem> {
+        let incoming = item.clone();
         let item = self.store.store_and_return(item).await?;
         let mut short_term = self.short_term.write().await;
         if let Some(existing) = short_term
@@ -254,6 +291,20 @@ impl AgentMemory {
         }
         if short_term.len() > self.max_short_term {
             short_term.pop_front();
+        }
+        drop(short_term);
+
+        if !self.observers.is_empty() {
+            let observation = MemoryObservation {
+                merged: item.id != incoming.id,
+                incoming,
+                stored: item.clone(),
+            };
+            for observer in self.observers.iter() {
+                if let Err(error) = observer.on_memory_stored(observation.clone()).await {
+                    tracing::warn!(%error, "memory observer failed after persistence");
+                }
+            }
         }
         Ok(item)
     }
@@ -626,7 +677,24 @@ mod tests {
     use super::*;
     use crate::context::ContextProvider;
     use a3s_memory::InMemoryStore;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        observations: Mutex<Vec<MemoryObservation>>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryObserver for RecordingObserver {
+        async fn on_memory_stored(&self, observation: MemoryObservation) -> anyhow::Result<()> {
+            self.observations.lock().unwrap().push(observation);
+            if self.fail {
+                anyhow::bail!("observer projection failed");
+            }
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn test_agent_memory_remember_and_recall() {
@@ -696,6 +764,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_memory_observer_receives_incoming_and_canonical_duplicate() {
+        let observer = Arc::new(RecordingObserver::default());
+        let memory = AgentMemory::with_config_and_observers(
+            Arc::new(InMemoryStore::new()),
+            MemoryConfig::default(),
+            vec![observer.clone()],
+        );
+        let first = memory
+            .remember_item(
+                MemoryItem::new("Run focused observer tests after memory persistence changes.")
+                    .with_importance(0.8)
+                    .with_metadata("session_id", "session-one"),
+            )
+            .await
+            .unwrap();
+        let duplicate_input =
+            MemoryItem::new("  run focused OBSERVER tests after memory persistence changes.  ")
+                .with_importance(0.95)
+                .with_metadata("session_id", "session-two");
+        let duplicate_input_id = duplicate_input.id.clone();
+        let duplicate = memory.remember_item(duplicate_input).await.unwrap();
+
+        let observations = observer.observations.lock().unwrap();
+        assert_eq!(observations.len(), 2);
+        assert!(!observations[0].merged);
+        assert_eq!(observations[0].incoming.id, observations[0].stored.id);
+        assert!(observations[1].merged);
+        assert_eq!(observations[1].incoming.id, duplicate_input_id);
+        assert_eq!(observations[1].stored.id, first.id);
+        assert_eq!(observations[1].stored.id, duplicate.id);
+        assert_ne!(observations[1].incoming.id, observations[1].stored.id);
+        assert_eq!(
+            observations[1]
+                .incoming
+                .metadata
+                .get("session_id")
+                .map(String::as_str),
+            Some("session-two")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memory_observer_failure_does_not_roll_back_persistence() {
+        let store = Arc::new(InMemoryStore::new());
+        let observer = Arc::new(RecordingObserver {
+            observations: Mutex::new(Vec::new()),
+            fail: true,
+        });
+        let memory = AgentMemory::with_config_and_observers(
+            store.clone(),
+            MemoryConfig::default(),
+            vec![observer.clone()],
+        );
+
+        let stored = memory
+            .remember_item(MemoryItem::new(
+                "Persist even if a derived projection fails.",
+            ))
+            .await
+            .expect("observer errors must not fail the durable memory write");
+
+        assert_eq!(store.count().await.unwrap(), 1);
+        assert_eq!(memory.short_term_count().await, 1);
+        assert_eq!(memory.get_short_term().await[0].id, stored.id);
+        assert_eq!(observer.observations.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_agent_memory_working() {
         let memory = AgentMemory::new(Arc::new(InMemoryStore::new()));
         memory
@@ -720,6 +856,7 @@ mod tests {
             llm_extraction_max_items: 5,
             llm_extraction_max_input_chars: 8_000,
             extraction_queue: Arc::new(MemoryExtractionQueue::default()),
+            observers: Arc::new(Vec::new()),
         };
         for i in 0..5 {
             memory
@@ -770,6 +907,7 @@ mod tests {
             llm_extraction_max_items: 5,
             llm_extraction_max_input_chars: 8_000,
             extraction_queue: Arc::new(MemoryExtractionQueue::default()),
+            observers: Arc::new(Vec::new()),
         };
         for i in 0..5 {
             memory

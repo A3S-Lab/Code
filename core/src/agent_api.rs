@@ -195,6 +195,8 @@ pub struct SessionOptions {
     ///
     /// Sessions resolve a default store when this is not set.
     pub memory_store: Option<Arc<dyn MemoryStore>>,
+    /// Host observers notified after successful durable memory writes.
+    pub memory_observers: Vec<Arc<dyn crate::memory::MemoryObserver>>,
     /// Deferred file memory directory — constructed async in `build_session()`
     pub(crate) file_memory_dir: Option<PathBuf>,
     /// Optional session store for persistence

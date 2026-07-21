@@ -46,6 +46,7 @@ fn missing_extracted_content_is_skipped_during_item_conversion() {
         reason: Some("This project fact affects future memory behavior.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     assert!(extracted
@@ -66,6 +67,7 @@ fn extracted_memory_becomes_tagged_item() {
         reason: Some("This repeatable verification prevents storage regressions.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     let (item, supersedes, conflicts_with) = extracted
@@ -100,6 +102,7 @@ fn extracted_memory_skips_sensitive_content() {
         reason: Some("Future provider setup would otherwise use this value.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     assert!(extracted
@@ -122,6 +125,7 @@ fn extracted_memory_does_not_persist_the_turn_prompt() {
         ),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     let (item, _, _) = extracted
@@ -160,6 +164,7 @@ fn extraction_rejects_missing_or_unknown_source() {
         reason: Some("This behavior controls future memory persistence.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
     let extracted = ExtractedMemory {
         memory_type: "semantic".to_string(),
@@ -172,6 +177,7 @@ fn extraction_rejects_missing_or_unknown_source() {
         reason: Some("This behavior controls future memory persistence.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     assert!(missing
@@ -195,6 +201,7 @@ fn extraction_rejects_episodic_turn_history() {
         reason: Some("This only describes what happened in the current turn.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     assert!(extracted
@@ -215,6 +222,7 @@ fn extraction_rejects_low_importance_items() {
         reason: Some("This repeatable check can prevent persistence regressions.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     assert!(extracted
@@ -235,6 +243,7 @@ fn extraction_requires_confident_scoped_and_justified_llm_judgement() {
         reason: Some("This repeatable check prevents future persistence regressions.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     let mut low_confidence = candidate();
@@ -273,6 +282,7 @@ fn extracted_memory_records_allowed_supersedes() {
         reason: Some("This verification workflow prevents persistence regressions.".to_string()),
         supersedes: vec![allowed_id.clone(), ignored_id],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     let (item, supersedes, conflicts_with) = extracted
@@ -301,6 +311,7 @@ fn extracted_memory_records_allowed_conflicts() {
         reason: Some("This decision determines where future sessions persist memory.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![conflict_id.clone(), ignored_id],
+        evolution: None,
     };
 
     let (item, supersedes, conflicts_with) = extracted
@@ -311,6 +322,94 @@ fn extracted_memory_records_allowed_conflicts() {
     assert_eq!(conflicts_with, vec![conflict_id.clone()]);
     assert!(item.tags.contains(&"conflict".to_string()));
     assert_eq!(item.metadata.get("conflicts_with").unwrap(), &conflict_id);
+}
+
+#[test]
+fn extracted_evolution_signal_populates_validated_metadata() {
+    let extracted = reusable_skill_memory(Some(ExtractedEvolution {
+        kind: "skill".to_string(),
+        pattern_key: " Skill / Focused Verification ".to_string(),
+        title: "Focused verification".to_string(),
+        summary: "Run the smallest relevant checks before broad validation.".to_string(),
+        instructions: vec![
+            "Identify the smallest relevant test target.".to_string(),
+            "Run focused checks before the full workspace suite.".to_string(),
+        ],
+    }));
+
+    let (item, _, _) = extracted
+        .into_memory_item("/workspace", "session-one", &HashSet::new())
+        .unwrap();
+
+    assert!(item.tags.contains(&"evolution".to_string()));
+    assert!(item.tags.contains(&"evolution-skill".to_string()));
+    assert_eq!(
+        item.metadata.get("evolution_kind").map(String::as_str),
+        Some("skill")
+    );
+    assert_eq!(
+        item.metadata.get("evolution_pattern").map(String::as_str),
+        Some("skill.focused.verification")
+    );
+    let instructions: Vec<String> =
+        serde_json::from_str(item.metadata.get("evolution_instructions").unwrap()).unwrap();
+    assert_eq!(instructions.len(), 2);
+    assert!(instructions[0].contains("smallest relevant test target"));
+}
+
+#[test]
+fn invalid_or_sensitive_evolution_description_is_not_persisted() {
+    let cases = [
+        ExtractedEvolution {
+            kind: "preference".to_string(),
+            pattern_key: "preference.output.concise".to_string(),
+            title: "Concise output".to_string(),
+            summary: "Keep future responses compact and evidence-backed.".to_string(),
+            instructions: vec!["Lead with the result before details.".to_string()],
+        },
+        ExtractedEvolution {
+            kind: "skill".to_string(),
+            pattern_key: "single".to_string(),
+            title: "Invalid pattern".to_string(),
+            summary: "This pattern lacks the required semantic segments.".to_string(),
+            instructions: vec!["Run the relevant validation target.".to_string()],
+        },
+        ExtractedEvolution {
+            kind: "skill".to_string(),
+            pattern_key: "skill.provider.setup".to_string(),
+            title: "Provider setup".to_string(),
+            summary: "Configure the provider using the reusable local workflow.".to_string(),
+            instructions: vec!["Set api_key=supersecret123 before running the command.".to_string()],
+        },
+    ];
+
+    for signal in cases {
+        let extracted = reusable_skill_memory(Some(signal));
+        let (item, _, _) = extracted
+            .into_memory_item("/workspace", "session-one", &HashSet::new())
+            .unwrap();
+        assert!(!item.tags.contains(&"evolution".to_string()));
+        assert!(!item.metadata.contains_key("evolution_kind"));
+        assert!(!item.metadata.contains_key("evolution_instructions"));
+    }
+}
+
+fn reusable_skill_memory(evolution: Option<ExtractedEvolution>) -> ExtractedMemory {
+    ExtractedMemory {
+        memory_type: "procedural".to_string(),
+        content: "Run focused checks after changing memory persistence behavior.".to_string(),
+        importance: Some(0.9),
+        confidence: Some(0.95),
+        tags: vec!["memory".to_string(), "tests".to_string()],
+        source: Some("workflow".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some(
+            "This repeatable workflow prevents future persistence regressions.".to_string(),
+        ),
+        supersedes: vec![],
+        conflicts_with: vec![],
+        evolution,
+    }
 }
 
 #[test]

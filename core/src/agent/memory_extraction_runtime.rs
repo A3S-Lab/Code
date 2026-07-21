@@ -22,6 +22,11 @@ Each memory must be standalone, concise, scoped, and justified. Return an empty 
 const MAX_MEMORY_CONTENT_CHARS: usize = 1_200;
 const MAX_MEMORY_REASON_CHARS: usize = 320;
 const MAX_MEMORY_TAGS: usize = 8;
+const MAX_EVOLUTION_PATTERN_CHARS: usize = 96;
+const MAX_EVOLUTION_TITLE_CHARS: usize = 96;
+const MAX_EVOLUTION_SUMMARY_CHARS: usize = 360;
+const MAX_EVOLUTION_INSTRUCTIONS: usize = 8;
+const MAX_EVOLUTION_INSTRUCTION_CHARS: usize = 320;
 const MAX_RELATED_MEMORY_ITEMS: usize = 5;
 const MAX_RELATED_MEMORY_CHARS: usize = 2_000;
 const MAX_RELATED_MEMORY_CONTENT_CHARS: usize = 320;
@@ -53,6 +58,31 @@ struct ExtractedMemory {
     supersedes: Vec<String>,
     #[serde(default, alias = "conflictsWith", alias = "conflicts")]
     conflicts_with: Vec<String>,
+    #[serde(default)]
+    evolution: Option<ExtractedEvolution>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtractedEvolution {
+    #[serde(default)]
+    kind: String,
+    #[serde(default, alias = "patternKey")]
+    pattern_key: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default, alias = "guidance")]
+    instructions: Vec<String>,
+}
+
+#[derive(Debug)]
+struct EvolutionSignal {
+    kind: &'static str,
+    pattern_key: String,
+    title: String,
+    summary: String,
+    instructions: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -296,6 +326,7 @@ impl ExtractedMemory {
         }
         let supersedes = normalize_supersedes(self.supersedes, allowed_supersedes);
         let conflicts_with = normalize_related_ids(self.conflicts_with, allowed_supersedes);
+        let evolution = self.evolution.and_then(|signal| signal.normalize(&source));
         let mut item = MemoryItem::new(content)
             .with_type(memory_type)
             .with_importance(importance)
@@ -319,6 +350,21 @@ impl ExtractedMemory {
                 .with_tag("conflict")
                 .with_metadata("conflicts_with", conflicts_with.join(","));
         }
+        if let Some(signal) = evolution {
+            item = item
+                .with_tag("evolution")
+                .with_tag(format!("evolution-{}", signal.kind))
+                .with_metadata("evolution_schema", "a3s.evolution.signal.v1")
+                .with_metadata("evolution_kind", signal.kind)
+                .with_metadata("evolution_pattern", signal.pattern_key)
+                .with_metadata("evolution_title", signal.title)
+                .with_metadata("evolution_summary", signal.summary)
+                .with_metadata(
+                    "evolution_instructions",
+                    serde_json::to_string(&signal.instructions)
+                        .unwrap_or_else(|_| "[]".to_string()),
+                );
+        }
 
         for tag in self
             .tags
@@ -332,6 +378,75 @@ impl ExtractedMemory {
         }
 
         Some((item, supersedes, conflicts_with))
+    }
+}
+
+impl ExtractedEvolution {
+    fn normalize(self, source: &str) -> Option<EvolutionSignal> {
+        let kind = match self.kind.trim().to_ascii_lowercase().as_str() {
+            "preference" if matches!(source, "preference" | "decision") => "preference",
+            "skill" if matches!(source, "workflow" | "failure" | "decision") => "skill",
+            "okf" | "knowledge" if matches!(source, "project_fact" | "workflow" | "decision") => {
+                "okf"
+            }
+            _ => return None,
+        };
+        let pattern_key = normalize_evolution_pattern(&self.pattern_key)?;
+        let title = compact(self.title.trim(), MAX_EVOLUTION_TITLE_CHARS);
+        let summary = compact(self.summary.trim(), MAX_EVOLUTION_SUMMARY_CHARS);
+        if title.chars().count() < 4
+            || summary.chars().count() < 12
+            || contains_sensitive_memory_material(&title)
+            || contains_sensitive_memory_material(&summary)
+        {
+            return None;
+        }
+
+        let mut seen = HashSet::new();
+        let instructions = self
+            .instructions
+            .into_iter()
+            .map(|value| compact(value.trim(), MAX_EVOLUTION_INSTRUCTION_CHARS))
+            .filter(|value| value.chars().count() >= 8)
+            .filter(|value| !contains_sensitive_memory_material(value))
+            .filter(|value| seen.insert(value.to_ascii_lowercase()))
+            .take(MAX_EVOLUTION_INSTRUCTIONS)
+            .collect::<Vec<_>>();
+        if instructions.is_empty() {
+            return None;
+        }
+
+        Some(EvolutionSignal {
+            kind,
+            pattern_key,
+            title,
+            summary,
+            instructions,
+        })
+    }
+}
+
+fn normalize_evolution_pattern(raw: &str) -> Option<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    for ch in raw.trim().to_ascii_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            segments.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    let value = segments.join(".");
+    if segments.len() < 2
+        || value.chars().count() > MAX_EVOLUTION_PATTERN_CHARS
+        || segments.iter().any(|segment| segment.len() > 40)
+    {
+        None
+    } else {
+        Some(value)
     }
 }
 
@@ -353,7 +468,7 @@ Only put ids from Related existing memories in supersedes when the new memory di
 Use conflicts_with for directly contradictory related memories that should remain available instead of being deleted.
 
 Return exactly this JSON shape:
-{{\"items\":[{{\"memory_type\":\"semantic|procedural\",\"content\":\"standalone reusable memory\",\"importance\":0.0,\"confidence\":0.0,\"tags\":[\"tag\"],\"source\":\"project_fact|workflow|failure|preference|decision\",\"scope\":\"workspace|user\",\"reason\":\"why this will matter in a future session\",\"supersedes\":[\"related-memory-id\"],\"conflicts_with\":[\"related-memory-id\"]}}]}}
+{{\"items\":[{{\"memory_type\":\"semantic|procedural\",\"content\":\"standalone reusable memory\",\"importance\":0.0,\"confidence\":0.0,\"tags\":[\"tag\"],\"source\":\"project_fact|workflow|failure|preference|decision\",\"scope\":\"workspace|user\",\"reason\":\"why this will matter in a future session\",\"supersedes\":[\"related-memory-id\"],\"conflicts_with\":[\"related-memory-id\"],\"evolution\":null|{{\"kind\":\"preference|skill|okf\",\"pattern_key\":\"stable.semantic.pattern\",\"title\":\"short reusable title\",\"summary\":\"what should be learned\",\"instructions\":[\"standalone instruction or fact\"]}}}}]}}
 
 Acceptance rules:
 - Return {{\"items\":[]}} unless the memory is likely to change a future answer or action.
@@ -362,6 +477,9 @@ Acceptance rules:
 - scope is workspace for repository-specific knowledge and user for stable user preferences.
 - failure memories must state a reusable cause, diagnostic, or prevention rule, never a raw error or stack trace.
 - Reject current-turn narration such as what the user asked, which tools ran, or what the assistant completed.
+- Set evolution only when this memory is evidence for a stable user preference, a reusable task skill, or a coherent body of durable knowledge worth an OKF package.
+- Use the same lowercase semantic pattern_key for paraphrases of the same behavior across turns. It must describe meaning, not quote the current wording or include a session id.
+- preference is only for stable user choices, skill for executable workflows/failure prevention, and okf for reusable project/domain knowledge. Instructions must be standalone, conservative, and contain no secrets.
 
 User request:
 {prompt}
@@ -711,6 +829,7 @@ fn record_duplicate_memory_metadata(
         chrono::Utc::now().to_rfc3339(),
     );
     if !duplicate_id.trim().is_empty() {
+        metadata.insert("last_observation_id".to_string(), duplicate_id.to_string());
         metadata
             .entry("duplicate_ids".to_string())
             .and_modify(|existing| {
