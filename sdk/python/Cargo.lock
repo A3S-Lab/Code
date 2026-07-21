@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "a3s-acl 0.3.0",
  "a3s-common",
@@ -75,12 +75,13 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
  "zip 0.6.6",
 ]
 
 [[package]]
 name = "a3s-code-py"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "a3s-code-core",
  "anyhow",
@@ -96,6 +97,8 @@ dependencies = [
 [[package]]
 name = "a3s-common"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40cd6201d7bcccd75f7719d5f3054c275dc31d0f406eab40d591d2c907f4fc60"
 dependencies = [
  "async-trait",
  "bytes",
@@ -112,6 +115,8 @@ dependencies = [
 [[package]]
 name = "a3s-flow"
 version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "699f3b680a1d4c5cb08e178ebab3d4b9c37fc3a31b9348ddb980ae9dceb48e10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -127,6 +132,8 @@ dependencies = [
 [[package]]
 name = "a3s-lane"
 version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d1893dcc53093f705a21a7b5160509af3ddf5c872391e65509b9c944129cb46"
 dependencies = [
  "async-trait",
  "chrono",
@@ -148,6 +155,8 @@ dependencies = [
 [[package]]
 name = "a3s-memory"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10288750681acd08de9a4d7daef80550d72017dc4aef00256c8aad44c55e35e6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -161,6 +170,8 @@ dependencies = [
 [[package]]
 name = "a3s-search"
 version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f942ff1a7f591b07c9a9af381148adc21df692eb1439b292fd7c4f7224e2232"
 dependencies = [
  "a3s-acl 0.2.1",
  "a3s-updater",

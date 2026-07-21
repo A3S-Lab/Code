@@ -627,6 +627,7 @@ fn compose_srt_process_env(
     }
 }
 
+#[cfg(not(windows))]
 fn compose_wrapper_env(workspace: &Path) -> HashMap<OsString, OsString> {
     const SAFE_KEYS: &[&str] = &[
         "HOME",
@@ -707,6 +708,7 @@ fn remove_bootstrap_injection_variables(environment: &mut HashMap<OsString, OsSt
     });
 }
 
+#[cfg(not(windows))]
 fn environment_assignment(key: &OsStr, value: &OsStr) -> OsString {
     let mut assignment = key.to_os_string();
     assignment.push("=");
@@ -927,7 +929,7 @@ pub(crate) fn workspace_hardlink_paths(workspace: &Path) -> Result<Vec<PathBuf>>
                 pending.push((path, depth + 1));
                 continue;
             }
-            if metadata.is_file() && hard_link_count(&metadata) > 1 {
+            if metadata.is_file() && hard_link_count(&path, &metadata) > 1 {
                 hardlinks.push(path);
                 if hardlinks.len() > MAX_WORKSPACE_HARDLINK_DENIES {
                     bail!(
@@ -972,19 +974,32 @@ pub(crate) fn should_skip_workspace_scan_directory(name: &OsStr) -> bool {
 }
 
 #[cfg(unix)]
-pub(crate) fn hard_link_count(metadata: &std::fs::Metadata) -> u64 {
+pub(crate) fn hard_link_count(_path: &Path, metadata: &std::fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
     metadata.nlink()
 }
 
 #[cfg(windows)]
-pub(crate) fn hard_link_count(metadata: &std::fs::Metadata) -> u64 {
-    use std::os::windows::fs::MetadataExt;
-    u64::from(metadata.number_of_links().unwrap_or(1))
+pub(crate) fn hard_link_count(path: &Path, _metadata: &std::fs::Metadata) -> u64 {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let Ok(file) = std::fs::File::open(path) else {
+        return u64::MAX;
+    };
+    let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    // SAFETY: `file` owns a valid handle for the duration of this call and
+    // `information` points to writable storage of the required type.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return u64::MAX;
+    }
+    u64::from(information.nNumberOfLinks.max(1))
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn hard_link_count(_metadata: &std::fs::Metadata) -> u64 {
+pub(crate) fn hard_link_count(_path: &Path, _metadata: &std::fs::Metadata) -> u64 {
     1
 }
 

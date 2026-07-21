@@ -1,6 +1,8 @@
 use super::*;
 use crate::sandbox::BashSandbox;
+#[cfg(not(windows))]
 use std::sync::Arc;
+#[cfg(not(windows))]
 use tempfile::TempDir;
 
 #[cfg(unix)]
