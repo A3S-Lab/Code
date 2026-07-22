@@ -132,7 +132,7 @@ impl SrtBashSandbox {
         deny_read.extend(read_denied_roots());
         let mut allow_read = readable_tool_paths(&self.workspace, scratch);
         deny_write.extend(sensitive_paths.iter().cloned());
-        deduplicate_paths(&mut deny_write);
+        remove_redundant_deny_write_descendants(&mut deny_write);
         deduplicate_paths(&mut sensitive_paths);
         deduplicate_paths(&mut deny_read);
         deduplicate_paths(&mut allow_read);
@@ -1045,6 +1045,16 @@ fn resolved_git_dir(workspace: &Path) -> Option<PathBuf> {
 fn deduplicate_paths(paths: &mut Vec<PathBuf>) {
     paths.sort();
     paths.dedup();
+}
+
+fn remove_redundant_deny_write_descendants(paths: &mut Vec<PathBuf>) {
+    deduplicate_paths(paths);
+    let candidates = paths.clone();
+    paths.retain(|path| {
+        !candidates
+            .iter()
+            .any(|ancestor| ancestor != path && path.starts_with(ancestor))
+    });
 }
 
 fn path_strings<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Vec<String> {
