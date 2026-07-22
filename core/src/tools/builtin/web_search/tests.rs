@@ -64,12 +64,173 @@ fn search_config(engines: HashMap<String, SearchEngineConfig>) -> SearchConfig {
 fn default_engine_selection_uses_builtin_defaults_without_engine_configuration() {
     let (engines, source) = default_engine_selection(None);
     assert_eq!(engines, ["ddg", "wiki"]);
+    assert!(!engines.contains(&"anysearch"));
     assert_eq!(source, "builtin_default");
 
     let config = search_config(HashMap::new());
     let (engines, source) = default_engine_selection(Some(&config));
     assert_eq!(engines, ["ddg", "wiki"]);
     assert_eq!(source, "builtin_default");
+}
+
+#[test]
+fn configured_default_engine_selection_can_enable_anysearch_explicitly() {
+    let config = search_config(HashMap::from([(
+        "anysearch".to_string(),
+        SearchEngineConfig {
+            enabled: true,
+            weight: 1.0,
+            timeout: None,
+        },
+    )]));
+
+    let (engines, source) = default_engine_selection(Some(&config));
+
+    assert_eq!(engines, ["anysearch"]);
+    assert_eq!(source, "config");
+}
+
+#[test]
+fn config_acl_controls_the_default_engine_selection() {
+    let config = crate::config::CodeConfig::from_acl(
+        r#"
+search {
+  engine {
+    anysearch {
+      enabled = true
+      weight = 1.0
+    }
+  }
+}
+"#,
+    )
+    .expect("valid search config");
+    let search = config.search.as_ref().expect("search config");
+
+    let (engines, source) = default_engine_selection(Some(search));
+
+    assert_eq!(engines, ["anysearch"]);
+    assert_eq!(source, "config");
+}
+
+#[test]
+fn fallback_policy_uses_untried_http_engines_in_stable_order() {
+    assert_eq!(
+        fallback_engine_shortcuts(&["anysearch".to_string(), "ddg".to_string()], None),
+        ["brave", "bing", "wiki"]
+    );
+    assert_eq!(
+        fallback_engine_shortcuts(
+            &[
+                "wiki".to_string(),
+                "BING".to_string(),
+                "brave".to_string(),
+                "ddg".to_string(),
+            ],
+            None
+        ),
+        Vec::<&str>::new()
+    );
+}
+
+#[test]
+fn fallback_policy_normalizes_aliases_and_respects_disabled_configuration() {
+    let config = search_config(HashMap::from([
+        (
+            "duckduckgo".to_string(),
+            SearchEngineConfig {
+                enabled: false,
+                weight: 1.0,
+                timeout: None,
+            },
+        ),
+        (
+            "wikipedia".to_string(),
+            SearchEngineConfig {
+                enabled: false,
+                weight: 1.0,
+                timeout: None,
+            },
+        ),
+    ]));
+
+    assert_eq!(
+        fallback_engine_shortcuts(&["AnySearch".to_string()], Some(&config)),
+        ["brave", "bing"]
+    );
+    assert_eq!(
+        fallback_engine_shortcuts(&["duckduckgo".to_string(), "wikipedia".to_string()], None,),
+        ["brave", "bing"]
+    );
+}
+
+#[test]
+fn fallback_notice_uses_structured_failure_kinds_for_every_provider() {
+    let failures = vec![
+        EngineFailure::new("AnySearch", "provider_quota", "redacted").with_provider("anysearch"),
+        EngineFailure::new("Tavily", "provider_rate_limited", "redacted")
+            .with_provider("tavily")
+            .with_transient(true),
+    ];
+
+    assert_eq!(
+        failure_summary(&failures),
+        "AnySearch quota is exhausted; Tavily was rate limited"
+    );
+    assert_eq!(failure_metadata(&failures)[0]["kind"], "provider_quota");
+    assert_eq!(failure_metadata(&failures)[1]["provider"], "tavily");
+}
+
+#[test]
+fn tool_error_kind_uses_structured_failure_kinds_instead_of_messages() {
+    let rate_limited = [
+        EngineFailure::new("Provider A", "provider_rate_limited", "opaque"),
+        EngineFailure::new("Provider B", "rate_limited", "unrelated text"),
+    ];
+    assert_eq!(
+        tool_error_kind_for_failures(&rate_limited, Duration::from_secs(10)),
+        Some(ToolErrorKind::RateLimited {
+            retry_after_ms: None,
+        })
+    );
+
+    let timed_out = [
+        EngineFailure::new("Provider A", "timeout", "opaque"),
+        EngineFailure::new("Provider B", "http_timeout", "unrelated text"),
+    ];
+    assert_eq!(
+        tool_error_kind_for_failures(&timed_out, Duration::from_secs(10)),
+        Some(ToolErrorKind::Timeout {
+            op: "web_search".to_string(),
+            duration_ms: 10_000,
+        })
+    );
+
+    let mixed = [
+        EngineFailure::new("Provider A", "provider_quota", "rate limit"),
+        EngineFailure::new("Provider B", "provider_rate_limited", "rate limit"),
+    ];
+    assert_eq!(
+        tool_error_kind_for_failures(&mixed, Duration::from_secs(10)),
+        None,
+        "quota exhaustion must remain distinguishable in engine_failures metadata"
+    );
+}
+
+#[test]
+fn primary_search_timeout_reserves_bounded_fallback_time() {
+    assert_eq!(
+        primary_search_timeout(Duration::from_secs(12), false),
+        Duration::from_secs(12)
+    );
+    assert_eq!(
+        primary_search_timeout(Duration::from_secs(12), true),
+        Duration::from_secs(8)
+    );
+    assert_eq!(
+        primary_search_timeout(Duration::from_secs(1), true),
+        Duration::from_millis(500)
+    );
 }
 
 #[test]
@@ -107,6 +268,57 @@ fn default_engine_selection_respects_explicit_configuration() {
     let (engines, source) = default_engine_selection(Some(&config));
     assert!(engines.is_empty());
     assert_eq!(source, "config");
+}
+
+#[test]
+fn configured_default_engine_selection_deduplicates_aliases() {
+    let config = search_config(HashMap::from([
+        (
+            "ddg".to_string(),
+            SearchEngineConfig {
+                enabled: true,
+                weight: 1.0,
+                timeout: None,
+            },
+        ),
+        (
+            "duckduckgo".to_string(),
+            SearchEngineConfig {
+                enabled: true,
+                weight: 1.0,
+                timeout: None,
+            },
+        ),
+    ]));
+
+    let (engines, source) = default_engine_selection(Some(&config));
+    assert_eq!(engines, ["ddg"]);
+    assert_eq!(source, "config");
+}
+
+#[test]
+fn configured_engine_aliases_are_executable() {
+    let mut search = Search::new();
+    assert!(add_http_engine(&mut search, "duckduckgo", None).expect("engine setup"));
+    assert!(add_http_engine(&mut search, "wikipedia", None).expect("engine setup"));
+    assert_eq!(search.engine_count(), 2);
+}
+
+#[test]
+fn provider_setup_failures_are_eligible_for_generic_fallback() {
+    let error = a3s_search::SearchError::Other("provider setup failed".to_string());
+    let failure = super::engines::provider_setup_failure(
+        a3s_search::providers::BuiltinProvider::AnySearch,
+        &error,
+    );
+
+    assert_eq!(failure.engine, "anysearch");
+    assert_eq!(failure.provider.as_deref(), Some("anysearch"));
+    assert_eq!(failure.kind, "other");
+    assert!(!failure.transient);
+    assert!(!should_reject_engine_selection(0, &[failure]));
+    assert!(should_reject_engine_selection(0, &[]));
+    assert!(!should_reject_engine_selection(1, &[]));
 }
 
 #[tokio::test]
@@ -416,32 +628,32 @@ fn test_parse_proxy_url_empty() {
 #[test]
 fn test_add_http_engine_valid() {
     let mut search = Search::new();
-    assert!(add_http_engine(&mut search, "ddg", None));
+    assert!(add_http_engine(&mut search, "ddg", None).expect("engine setup"));
     assert_eq!(search.engine_count(), 1);
 
-    assert!(add_http_engine(&mut search, "wiki", None));
+    assert!(add_http_engine(&mut search, "wiki", None).expect("engine setup"));
     assert_eq!(search.engine_count(), 2);
 
-    assert!(add_http_engine(&mut search, "brave", None));
+    assert!(add_http_engine(&mut search, "brave", None).expect("engine setup"));
     assert_eq!(search.engine_count(), 3);
 
-    assert!(add_http_engine(&mut search, "bing", None));
+    assert!(add_http_engine(&mut search, "bing", None).expect("engine setup"));
     assert_eq!(search.engine_count(), 4);
 
-    assert!(add_http_engine(&mut search, "bing_cn", None));
+    assert!(add_http_engine(&mut search, "bing_cn", None).expect("engine setup"));
     assert_eq!(search.engine_count(), 5);
 
-    assert!(add_http_engine(&mut search, "anysearch", None));
+    assert!(add_http_engine(&mut search, "anysearch", None).expect("engine setup"));
     assert_eq!(search.engine_count(), 6);
 
-    assert!(add_http_engine(&mut search, "tavily", None));
+    assert!(add_http_engine(&mut search, "tavily", None).expect("engine setup"));
     assert_eq!(search.engine_count(), 7);
 }
 
 #[test]
 fn test_add_http_engine_unknown() {
     let mut search = Search::new();
-    assert!(!add_http_engine(&mut search, "nonexistent", None));
+    assert!(!add_http_engine(&mut search, "nonexistent", None).expect("engine setup"));
     assert_eq!(search.engine_count(), 0);
 }
 

@@ -283,22 +283,16 @@ fn compact_child_metadata(metadata: Option<serde_json::Value>) -> Option<serde_j
         "engine_selection_source",
         "selected_engines",
         "engine_fallback",
+        "notices",
+        "search_fallback",
         "artifact",
     ] {
         if let Some(value) = metadata.get(key) {
-            let value = if key == "selected_engines" {
-                serde_json::Value::Array(
-                    value
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(serde_json::Value::as_str)
-                        .take(8)
-                        .map(|engine| engine.chars().take(96).collect::<String>().into())
-                        .collect(),
-                )
-            } else {
-                value.clone()
+            let value = match key {
+                "selected_engines" => compact_string_array(value, 8, 96),
+                "notices" => compact_string_array(value, 4, 512),
+                "search_fallback" => compact_search_fallback(value),
+                _ => value.clone(),
             };
             compacted.insert(key.to_string(), value);
             if serde_json::to_vec(&compacted)
@@ -309,6 +303,63 @@ fn compact_child_metadata(metadata: Option<serde_json::Value>) -> Option<serde_j
         }
     }
     Some(serde_json::Value::Object(compacted))
+}
+
+fn compact_string_array(
+    value: &serde_json::Value,
+    maximum_items: usize,
+    maximum_chars: usize,
+) -> serde_json::Value {
+    serde_json::Value::Array(
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .take(maximum_items)
+            .map(|item| item.chars().take(maximum_chars).collect::<String>().into())
+            .collect(),
+    )
+}
+
+fn compact_search_fallback(value: &serde_json::Value) -> serde_json::Value {
+    let Some(fallback) = value.as_object() else {
+        return serde_json::Value::Null;
+    };
+    let mut compacted = serde_json::Map::new();
+    for key in ["trigger", "mode", "attempted", "successful"] {
+        if let Some(value) = fallback.get(key) {
+            compacted.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(engines) = fallback.get("engines") {
+        compacted.insert("engines".to_string(), compact_string_array(engines, 8, 96));
+    }
+    if let Some(failures) = fallback
+        .get("failures")
+        .and_then(serde_json::Value::as_array)
+    {
+        let failures = failures
+            .iter()
+            .take(8)
+            .filter_map(serde_json::Value::as_object)
+            .map(|failure| {
+                let mut item = serde_json::Map::new();
+                for key in ["engine", "provider", "kind", "transient"] {
+                    if let Some(value) = failure.get(key) {
+                        let value = value
+                            .as_str()
+                            .map(|text| text.chars().take(96).collect::<String>().into())
+                            .unwrap_or_else(|| value.clone());
+                        item.insert(key.to_string(), value);
+                    }
+                }
+                serde_json::Value::Object(item)
+            })
+            .collect();
+        compacted.insert("failures".to_string(), serde_json::Value::Array(failures));
+    }
+    serde_json::Value::Object(compacted)
 }
 
 // ============================================================================
@@ -470,6 +521,20 @@ mod tests {
             "engine_selection_source": "config",
             "selected_engines": ["private-search", "x".repeat(5 * 1024)],
             "engine_fallback": null,
+            "notices": ["AnySearch quota is exhausted", "x".repeat(5 * 1024)],
+            "search_fallback": {
+                "trigger": "engine_failure",
+                "mode": "additional_engines",
+                "attempted": true,
+                "engines": ["brave", "bing"],
+                "successful": true,
+                "failures": [{
+                    "engine": "AnySearch",
+                    "provider": "anysearch",
+                    "kind": "provider_quota",
+                    "transient": false
+                }]
+            },
             "search_metrics": {
                 "oversized": "x".repeat(5 * 1024)
             }
@@ -483,6 +548,13 @@ mod tests {
         assert_eq!(compacted["selected_engines"][0], "private-search");
         assert_eq!(compacted["selected_engines"][1].as_str().unwrap().len(), 96);
         assert!(compacted.get("engine_fallback").is_some());
+        assert_eq!(compacted["notices"][0], "AnySearch quota is exhausted");
+        assert_eq!(compacted["notices"][1].as_str().unwrap().len(), 512);
+        assert_eq!(compacted["search_fallback"]["trigger"], "engine_failure");
+        assert_eq!(
+            compacted["search_fallback"]["failures"][0]["kind"],
+            "provider_quota"
+        );
         assert!(compacted.get("search_metrics").is_none());
         assert!(serde_json::to_vec(&compacted).unwrap().len() <= 4 * 1024);
     }
