@@ -317,10 +317,12 @@ language/bootstrap injection variables. It keeps stdout and stderr distinct
 under one global capture limit. Its deadline covers output draining and the
 child's complete lifetime, including a process that closes both streams before
 it exits; timeout or cancellation terminates the Unix process group. It never
- searches `PATH` for a sandbox runtime and never falls back to the host runner
- when its explicitly provisioned runtime is missing or fails. The embedding host
- remains responsible for choosing whether an unavailable sandbox causes an
- interactive escalation or a deterministic denial.
+searches `PATH` for a sandbox runtime and never falls back to the host runner
+when its explicitly provisioned runtime is missing or fails. Write-deny paths
+already covered by a protected ancestor are collapsed before SRT startup,
+while more-specific credential read denies remain intact. The embedding host
+remains responsible for choosing whether an unavailable sandbox causes an
+interactive escalation or a deterministic denial.
 
 Shell isolation does not automatically govern in-process workspace tools.
 Interactive hosts should construct `LocalWorkspaceBackend` or

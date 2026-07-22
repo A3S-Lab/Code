@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.3.1] - 2026-07-22
+
+### Fixed
+
+- Removed redundant nested SRT write-deny mounts when a protected workspace
+  ancestor already blocks writes, while retaining credential read denial and
+  standalone sensitive-file write protection.
+
 ## [6.3.0] - 2026-07-22
 
 ### Added

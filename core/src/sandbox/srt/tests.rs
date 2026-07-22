@@ -98,7 +98,22 @@ async fn adapter_passes_argv_workspace_timeout_env_and_settings() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|path| path.as_str().unwrap().ends_with("/.codex/auth.json")));
+        .any(|path| path
+            == &json!(workspace
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(".codex/auth.json"))));
+    assert!(settings["filesystem"]["denyRead"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path
+            == &json!(workspace
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(".a3s/os-auth.json"))));
     assert!(settings["filesystem"]["denyRead"]
         .as_array()
         .unwrap()
@@ -114,11 +129,29 @@ async fn adapter_passes_argv_workspace_timeout_env_and_settings() {
                 .canonicalize()
                 .unwrap()
                 .join("services/api/.env"))));
+    assert!(
+        !settings["filesystem"]["denyWrite"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path
+                == &json!(workspace
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(".a3s/os-auth.json"))),
+        "a protected parent directory must cover sensitive descendants without a nested mount"
+    );
     assert!(settings["filesystem"]["denyWrite"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|path| path.as_str().unwrap().ends_with("/.codex/auth.json")));
+        .any(|path| path
+            == &json!(workspace
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("services/api/.env"))));
     assert_eq!(settings["enableWeakerNestedSandbox"], false);
     assert_eq!(settings["allowAppleEvents"], false);
 }
