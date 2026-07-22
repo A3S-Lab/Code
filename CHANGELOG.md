@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserved bounded fallback notices and failure metadata when web search runs
   inside a batch workflow.
 
+### Fixed
+
+- Accepted a complete schema-valid streamed object after a short terminal-event
+  grace period, so an OpenAI-compatible endpoint that omits or delays its final
+  `Done` event cannot turn an already generated result into a timeout.
+
 ## [6.3.1] - 2026-07-22
 
 ### Fixed
