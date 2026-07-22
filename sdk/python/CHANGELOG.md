@@ -4,6 +4,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.4.0] - 2026-07-22
+
+### Changed
+
+- Updated the bundled Core to Search 2.1 with structured engine failures,
+  bounded automatic fallback, DuckDuckGo and Wikipedia defaults, and opt-in
+  AnySearch selection.
+
 ## [6.3.1] - 2026-07-22
 
 ### Fixed
