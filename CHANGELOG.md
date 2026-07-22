@@ -7,11 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.3.1] - 2026-07-22
+
+### Fixed
+
+- Removed redundant nested SRT write-deny mounts when a protected workspace
+  ancestor already blocks writes, while retaining credential read denial and
+  standalone sensitive-file write protection.
+
+## [6.3.0] - 2026-07-22
+
+### Added
+
+- Added typed model-generation concurrency and admission contracts so hosts can
+  declare and enforce bounded active generations without provider-name checks.
+- Added durable `MemoryObservation` and `MemoryObserver` extension points for
+  auditable preference, skill, and knowledge projections after persistence.
+- Added run-scoped permission and confirmation snapshots plus targeted
+  cancellation and expiry for pending tool approvals.
+
+### Changed
+
+- Serialized completed-turn memory extraction, drained accepted extractions at
+  session close, and preserved canonical duplicate-consolidation results for
+  observers.
+
 ### Fixed
 
 - Kept LLM-authored learning titles, summaries, and instructions concise and
   user-facing, and excluded internal orchestration or handoff procedures from
   the learning signal contract.
+
+## [6.2.0] - 2026-07-22
+
+### Added
+
+- Added a fail-closed SRT-backed `BashSandbox` with bounded execution,
+  separated output streams, protected workspace control metadata, credential
+  read boundaries, and verified exact-path npm and Node runtime constructors.
+
+### Fixed
+
 - Forwarded delegated child confirmation-required, confirmation-received, and
   confirmation-timeout events through the parent runtime stream so shared HITL
   providers cannot deadlock while the host UI waits for an event it never saw.

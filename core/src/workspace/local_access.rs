@@ -51,9 +51,12 @@ impl LocalWorkspaceAccessBoundary {
 
         let sensitive_file_ids = paths
             .into_iter()
-            .filter_map(|path| std::fs::metadata(path).ok())
-            .filter(|metadata| metadata.is_file())
-            .filter_map(|metadata| FileIdentity::from_metadata(&metadata))
+            .filter_map(|path| {
+                let metadata = std::fs::metadata(&path).ok()?;
+                metadata
+                    .is_file()
+                    .then(|| FileIdentity::from_path(&path, &metadata))?
+            })
             .collect();
 
         let denied_hardlink_paths = workspace_hardlink_paths(workspace)
@@ -100,15 +103,18 @@ impl LocalWorkspaceAccessBoundary {
         let Some(metadata) = metadata.filter(|metadata| metadata.is_file()) else {
             return Ok(());
         };
-        if hard_link_count(metadata) <= 1 {
+        let checked_path = resolved_path
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| workspace.join(logical_path));
+        if hard_link_count(&checked_path, metadata) <= 1 {
             return Ok(());
         }
 
         let relative = resolved_relative.unwrap_or(logical_path);
-        let identity = FileIdentity::from_metadata(metadata);
-        let aliases_known_sensitive = identity
-            .as_ref()
-            .is_some_and(|identity| self.sensitive_file_ids.contains(identity));
+        let Some(identity) = FileIdentity::from_path(&checked_path, metadata) else {
+            return denied(operation);
+        };
+        let aliases_known_sensitive = self.sensitive_file_ids.contains(&identity);
         let inside_package_or_build_tree = is_skipped_workspace_tree(relative);
 
         // Source-tree multi-link files are denied conservatively because one
@@ -198,7 +204,7 @@ struct FileIdentity {
 
 #[cfg(unix)]
 impl FileIdentity {
-    fn from_metadata(metadata: &Metadata) -> Option<Self> {
+    fn from_path(_path: &Path, metadata: &Metadata) -> Option<Self> {
         use std::os::unix::fs::MetadataExt;
         Some(Self {
             device: metadata.dev(),
@@ -216,11 +222,23 @@ struct FileIdentity {
 
 #[cfg(windows)]
 impl FileIdentity {
-    fn from_metadata(metadata: &Metadata) -> Option<Self> {
-        use std::os::windows::fs::MetadataExt;
+    fn from_path(path: &Path, _metadata: &Metadata) -> Option<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+
+        let file = std::fs::File::open(path).ok()?;
+        let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+        // SAFETY: `file` owns a valid handle for this call and `information`
+        // points to writable storage of the required type.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+            return None;
+        }
         Some(Self {
-            volume: metadata.volume_serial_number()?,
-            index: metadata.file_index()?,
+            volume: information.dwVolumeSerialNumber,
+            index: (u64::from(information.nFileIndexHigh) << 32)
+                | u64::from(information.nFileIndexLow),
         })
     }
 }
@@ -231,7 +249,7 @@ struct FileIdentity;
 
 #[cfg(not(any(unix, windows)))]
 impl FileIdentity {
-    fn from_metadata(_metadata: &Metadata) -> Option<Self> {
+    fn from_path(_path: &Path, _metadata: &Metadata) -> Option<Self> {
         None
     }
 }

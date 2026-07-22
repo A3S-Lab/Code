@@ -798,31 +798,19 @@ impl WorkspaceCommandRunner for LocalWorkspaceBackend {
         )
         .map_err(|e| anyhow!("Failed to spawn shell: {}", e))?;
 
-        let process = crate::tools::process::read_process_output(
+        let output = crate::tools::process::read_process_output(
             &mut child,
             request.timeout_ms,
             request.output_observer.as_deref(),
         )
         .await
-        .map_err(|e| anyhow!("Failed to wait for shell: {}", e))?;
-
-        if process.timed_out {
-            return Ok(CommandOutput {
-                output: process.combined,
-                exit_code: -1,
-                timed_out: true,
-            });
-        }
-
-        let exit_code = process
-            .status
-            .and_then(|status| status.code())
-            .unwrap_or(-1);
+        .map_err(|error| anyhow!("Failed to capture shell output: {error}"))?;
+        let exit_code = output.status.and_then(|status| status.code()).unwrap_or(-1);
 
         Ok(CommandOutput {
-            output: process.combined,
+            output: output.combined,
             exit_code,
-            timed_out: false,
+            timed_out: output.timed_out,
         })
     }
 }

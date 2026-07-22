@@ -66,6 +66,10 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
   ],
   ['skill_registry', 'Rust SkillRegistry handle; SDKs expose builtin/dir/inline skill inputs.'],
   [
+    'memory_observers',
+    'Rust MemoryObserver trait objects require SDK-specific callback adapters before they can be value-typed options.',
+  ],
+  [
     'budget_guard',
     'Node cannot carry JS functions in value-typed SessionOptions; SDKs expose set_budget_guard/setBudgetGuard.',
   ],

@@ -1,6 +1,8 @@
 use super::*;
 use crate::sandbox::BashSandbox;
+#[cfg(not(windows))]
 use std::sync::Arc;
+#[cfg(not(windows))]
 use tempfile::TempDir;
 
 #[cfg(unix)]
@@ -96,7 +98,22 @@ async fn adapter_passes_argv_workspace_timeout_env_and_settings() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|path| path.as_str().unwrap().ends_with("/.codex/auth.json")));
+        .any(|path| path
+            == &json!(workspace
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(".codex/auth.json"))));
+    assert!(settings["filesystem"]["denyRead"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path
+            == &json!(workspace
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(".a3s/os-auth.json"))));
     assert!(settings["filesystem"]["denyRead"]
         .as_array()
         .unwrap()
@@ -112,11 +129,29 @@ async fn adapter_passes_argv_workspace_timeout_env_and_settings() {
                 .canonicalize()
                 .unwrap()
                 .join("services/api/.env"))));
+    assert!(
+        !settings["filesystem"]["denyWrite"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path
+                == &json!(workspace
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(".a3s/os-auth.json"))),
+        "a protected parent directory must cover sensitive descendants without a nested mount"
+    );
     assert!(settings["filesystem"]["denyWrite"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|path| path.as_str().unwrap().ends_with("/.codex/auth.json")));
+        .any(|path| path
+            == &json!(workspace
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("services/api/.env"))));
     assert_eq!(settings["enableWeakerNestedSandbox"], false);
     assert_eq!(settings["allowAppleEvents"], false);
 }
@@ -259,7 +294,7 @@ fn supported_srt_version_range_is_explicit() {
 
 #[cfg(unix)]
 #[test]
-fn discovered_installation_uses_the_expected_package_manifest_and_cli() {
+fn verified_installation_uses_the_expected_package_manifest_and_cli() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -301,6 +336,16 @@ fn workspace_cannot_supply_the_sandbox_executable() {
 
     let error = SrtBashSandbox::new(&binary, workspace.path()).unwrap_err();
     assert!(error.to_string().contains("inside the active workspace"));
+}
+
+#[test]
+fn sandbox_runtime_requires_an_explicit_path() {
+    let workspace = tempfile::tempdir().unwrap();
+    let error = SrtBashSandbox::new("srt", workspace.path()).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "an explicit SRT executable path is required; PATH discovery is unsupported"
+    );
 }
 
 #[test]

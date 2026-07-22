@@ -4342,7 +4342,7 @@ async fn test_resume_session_restores_verification_reports() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_verify_commands_builds_report_from_bash_results() {
+async fn test_verify_commands_builds_report_from_shell_results() {
     let temp_dir = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
@@ -4354,7 +4354,7 @@ async fn test_verify_commands_builds_report_from_bash_results() {
             "check:smoke",
             "smoke",
             "Run smoke command",
-            "printf ok",
+            "echo ok",
         ),
         crate::verification::VerificationCommand::required(
             "check:failure",

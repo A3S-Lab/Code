@@ -338,7 +338,7 @@ async fn prune_artifact_directory(directory: &Path, current: &Path) {
 fn artifact_root(context: &ToolContext) -> PathBuf {
     #[cfg(test)]
     {
-        return context.workspace.join(".a3s-test-mcp-artifacts");
+        context.workspace.join(".a3s-test-mcp-artifacts")
     }
     #[cfg(not(test))]
     {

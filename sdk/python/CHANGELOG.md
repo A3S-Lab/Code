@@ -4,6 +4,28 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.3.1] - 2026-07-22
+
+### Fixed
+
+- Updated the bundled Core so managed SRT sandboxes start when protected
+  workspace directories contain absent sensitive-file descendants.
+
+## [6.3.0] - 2026-07-22
+
+### Changed
+
+- Updated the bundled Core with typed model-generation admission, durable
+  memory observers, ordered extraction draining, and run-scoped permission and
+  confirmation snapshots.
+
+## [6.2.0] - 2026-07-22
+
+### Changed
+
+- Updated the bundled Core with the verified SRT process-sandbox contract and
+  the latest delegated confirmation propagation fixes.
+
 ## [6.1.0] - 2026-07-20
 
 ### Changed

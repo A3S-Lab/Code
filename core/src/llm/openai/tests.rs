@@ -205,6 +205,179 @@ async fn streaming_parser_closes_when_caller_cancels() {
 }
 
 #[tokio::test]
+async fn streaming_transport_error_after_partial_delta_does_not_emit_done() {
+    use crate::llm::{LlmClient, StreamEvent};
+
+    let client = OpenAiClient::new("k".to_string(), "model".to_string()).with_http_client(
+        std::sync::Arc::new(FailingSseHttp {
+            chunks: vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_string(),
+            ],
+        }),
+    );
+    let mut rx = client
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("stream opened");
+
+    let mut text = String::new();
+    let mut saw_done = false;
+    while let Some(event) = rx.recv().await {
+        match event {
+            StreamEvent::TextDelta(delta) => text.push_str(&delta),
+            StreamEvent::Done(_) => saw_done = true,
+            _ => {}
+        }
+    }
+
+    assert_eq!(text, "partial");
+    assert!(
+        !saw_done,
+        "a failed transport must close without Done so the agent retries the turn"
+    );
+}
+
+#[tokio::test]
+async fn streaming_clean_eof_after_partial_delta_does_not_emit_done() {
+    use crate::llm::{LlmClient, StreamEvent};
+
+    let client = glm_client(vec![
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_string(),
+    ]);
+    let mut rx = client
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("stream opened");
+
+    let mut text = String::new();
+    let mut saw_done = false;
+    while let Some(event) = rx.recv().await {
+        match event {
+            StreamEvent::TextDelta(delta) => text.push_str(&delta),
+            StreamEvent::Done(_) => saw_done = true,
+            _ => {}
+        }
+    }
+
+    assert_eq!(text, "partial");
+    assert!(
+        !saw_done,
+        "EOF without protocol terminal evidence must close without Done"
+    );
+}
+
+#[tokio::test]
+async fn streaming_transport_error_after_finish_reason_can_finalize() {
+    let client = OpenAiClient::new("k".to_string(), "model".to_string()).with_http_client(
+        std::sync::Arc::new(FailingSseHttp {
+            chunks: vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"}}]}\n\n".to_string(),
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_string(),
+            ],
+        }),
+    );
+
+    let response = drain_to_done(&client).await;
+    assert_eq!(response.text(), "complete");
+    assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+}
+
+#[tokio::test]
+async fn streaming_clean_eof_after_finish_reason_can_finalize() {
+    let client = glm_client(vec![
+        "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"}}]}\n\n".to_string(),
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_string(),
+    ]);
+
+    let response = drain_to_done(&client).await;
+    assert_eq!(response.text(), "complete");
+    assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+}
+
+#[tokio::test]
+async fn streaming_partial_response_is_not_finalized_after_cancellation() {
+    use crate::llm::{LlmClient, StreamEvent};
+
+    let client = OpenAiClient::new("k".to_string(), "model".to_string()).with_http_client(
+        std::sync::Arc::new(ChunksThenPendingSseHttp {
+            chunks: vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_string(),
+            ],
+        }),
+    );
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let mut rx = client
+        .complete_streaming(&[Message::user("go")], None, &[], cancellation.clone())
+        .await
+        .expect("stream opened");
+
+    assert!(matches!(
+        rx.recv().await,
+        Some(StreamEvent::TextDelta(text)) if text == "partial"
+    ));
+    cancellation.cancel();
+
+    let next = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+        .await
+        .expect("provider parser must stop after cancellation");
+    assert!(next.is_none(), "cancellation must not synthesize Done");
+}
+
+#[tokio::test]
+async fn streaming_done_closes_before_pending_transport_and_emits_once() {
+    use crate::llm::{LlmClient, StreamEvent};
+
+    let client = OpenAiClient::new("k".to_string(), "model".to_string()).with_http_client(
+        std::sync::Arc::new(ChunksThenPendingSseHttp {
+            chunks: vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"}}]}\n\n".to_string(),
+                "data: [DONE]\n\n".to_string(),
+                "data: [DONE]\n\n".to_string(),
+            ],
+        }),
+    );
+    let mut rx = client
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("stream opened");
+
+    let events = tokio::time::timeout(std::time::Duration::from_secs(1), async move {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    })
+    .await
+    .expect("[DONE] must close the parser without waiting for transport EOF");
+    let done = events
+        .into_iter()
+        .filter_map(|event| match event {
+            StreamEvent::Done(response) => Some(response),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(done.len(), 1, "[DONE] must emit exactly one final response");
+    assert_eq!(done[0].text(), "complete");
+}
+
+#[tokio::test]
 async fn streaming_parser_preserves_unicode_split_across_transport_chunks() {
     let wire = concat!(
         "data: {\"id\":\"response-1\",\"object\":\"chat.completion.chunk\",",
