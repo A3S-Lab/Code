@@ -19,6 +19,7 @@ sed -i.bak \
   -e 's|a3s-search = { version = "1.4.3", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.4.3", default-features = false, features = ["lightpanda"] }|' \
   -e 's|a3s-search = { version = "1.3.0", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.3.0", default-features = false, features = ["lightpanda"] }|' \
   -e 's|a3s-search = { version = "1.2.3", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.2.3", default-features = false, features = ["lightpanda"] }|' \
+  -e 's|a3s-flow = { version = "0.4.3", path = "../../flow" }|a3s-flow = "0.4.3"|' \
   -e 's|a3s-flow = { version = "0.4.2", path = "../../flow" }|a3s-flow = "0.4.2"|' \
   -e 's|a3s-box-sdk = { version = "0.7", path = "../../box/src/sdk", optional = true }|a3s-box-sdk = { version = "0.7", optional = true }|' \
   core/Cargo.toml
