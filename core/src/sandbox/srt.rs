@@ -870,17 +870,27 @@ fn workspace_nested_env_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
 
     while let Some((directory, depth)) = pending.pop() {
-        let entries = std::fs::read_dir(&directory)
-            .with_context(|| format!("failed to scan SRT workspace {}", directory.display()))?;
+        let Some(entries) = workspace_scan_result(std::fs::read_dir(&directory), || {
+            format!("failed to scan SRT workspace {}", directory.display())
+        })?
+        else {
+            continue;
+        };
         for entry in entries {
-            let entry = entry.with_context(|| {
+            let Some(entry) = workspace_scan_result(entry, || {
                 format!("failed to enumerate SRT workspace {}", directory.display())
-            })?;
+            })?
+            else {
+                continue;
+            };
             scanned = next_workspace_scan_entry(scanned)?;
             let path = entry.path();
-            let file_type = entry.file_type().with_context(|| {
+            let Some(file_type) = workspace_scan_result(entry.file_type(), || {
                 format!("failed to inspect SRT workspace path {}", path.display())
-            })?;
+            })?
+            else {
+                continue;
+            };
             if entry
                 .file_name()
                 .to_str()
@@ -906,18 +916,28 @@ pub(crate) fn workspace_hardlink_paths(workspace: &Path) -> Result<Vec<PathBuf>>
     let mut hardlinks = Vec::new();
 
     while let Some((directory, depth)) = pending.pop() {
-        let entries = std::fs::read_dir(&directory)
-            .with_context(|| format!("failed to scan SRT workspace {}", directory.display()))?;
+        let Some(entries) = workspace_scan_result(std::fs::read_dir(&directory), || {
+            format!("failed to scan SRT workspace {}", directory.display())
+        })?
+        else {
+            continue;
+        };
         for entry in entries {
-            let entry = entry.with_context(|| {
+            let Some(entry) = workspace_scan_result(entry, || {
                 format!("failed to enumerate SRT workspace {}", directory.display())
-            })?;
+            })?
+            else {
+                continue;
+            };
             scanned = next_workspace_scan_entry(scanned)?;
 
             let path = entry.path();
-            let metadata = std::fs::symlink_metadata(&path).with_context(|| {
+            let Some(metadata) = workspace_scan_result(std::fs::symlink_metadata(&path), || {
                 format!("failed to inspect SRT workspace path {}", path.display())
-            })?;
+            })?
+            else {
+                continue;
+            };
             if metadata.file_type().is_symlink() {
                 continue;
             }
@@ -943,6 +963,17 @@ pub(crate) fn workspace_hardlink_paths(workspace: &Path) -> Result<Vec<PathBuf>>
     hardlinks.sort();
     hardlinks.dedup();
     Ok(hardlinks)
+}
+
+fn workspace_scan_result<T>(
+    result: std::io::Result<T>,
+    context: impl FnOnce() -> String,
+) -> Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(context),
+    }
 }
 
 fn next_workspace_scan_entry(scanned: usize) -> Result<usize> {
