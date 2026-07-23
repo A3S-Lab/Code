@@ -270,6 +270,22 @@ fn child_environment_drops_ambient_secrets_and_pins_scratch_paths() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn wrapper_environment_pins_profile_files_to_the_private_scratch_directory() {
+    let workspace = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let environment = compose_srt_process_env(None, scratch.path(), workspace.path()).unwrap();
+
+    for key in ["TMPDIR", "TMP", "TEMP"] {
+        assert_eq!(
+            environment.get(OsStr::new(key)),
+            Some(&scratch.path().as_os_str().to_os_string()),
+            "{key} must keep managed SRT profile files inside the per-run scratch directory"
+        );
+    }
+}
+
 #[test]
 fn child_environment_rejects_explicit_bootstrap_injection_variables() {
     let scratch = tempfile::tempdir().unwrap();
@@ -314,7 +330,7 @@ fn child_environment_rejects_explicit_bootstrap_injection_variables() {
 
 #[test]
 fn supported_srt_version_range_is_explicit() {
-    for version in ["0.0.66", "v0.0.66", "0.0.99-beta.1"] {
+    for version in ["0.0.66", "0.0.67", "v0.0.67", "0.0.99-beta.1"] {
         ensure_supported_srt_version(version).unwrap();
     }
     for version in ["0.0.65", "0.1.0", "1.0.0", "unknown"] {
@@ -515,6 +531,89 @@ async fn real_srt_probe_survives_concurrent_workspace_churn() {
     running.store(false, Ordering::Release);
     writer.join().unwrap();
     result.unwrap();
+}
+
+/// Run explicitly with `A3S_TEST_SRT_BIN=/absolute/path/to/cli.js` and
+/// `A3S_TEST_SRT_NODE=/absolute/path/to/node`.
+#[tokio::test]
+#[ignore = "requires an installed A3S-patched srt runtime and Node.js"]
+async fn real_srt_probe_handles_many_nested_sensitive_paths_without_e2big() {
+    let binary = std::env::var_os("A3S_TEST_SRT_BIN")
+        .map(PathBuf::from)
+        .expect("set A3S_TEST_SRT_BIN");
+    let node = std::env::var_os("A3S_TEST_SRT_NODE")
+        .map(PathBuf::from)
+        .expect("set A3S_TEST_SRT_NODE");
+    let workspace = tempfile::tempdir().unwrap();
+
+    for directory in 0..128 {
+        let nested = workspace
+            .path()
+            .join(format!("service-{directory:03}/config"));
+        std::fs::create_dir_all(&nested).unwrap();
+        for variant in 0..4 {
+            std::fs::write(
+                nested.join(format!(".env.variant-{variant}")),
+                b"SECRET=hidden",
+            )
+            .unwrap();
+        }
+    }
+
+    let sandbox =
+        SrtBashSandbox::from_verified_npm_with_node(&binary, &node, workspace.path()).unwrap();
+    let output = sandbox
+        .exec_command("printf a3s-managed-srt-ready", "/workspace")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        output.exit_code, 0,
+        "large managed SRT profile failed: {}{}",
+        output.stdout, output.stderr
+    );
+    assert_eq!(output.stdout, "a3s-managed-srt-ready");
+}
+
+/// Run explicitly with `A3S_TEST_SRT_BIN=/absolute/path/to/cli.js` and
+/// `A3S_TEST_SRT_NODE=/absolute/path/to/node`.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires an installed A3S-patched srt runtime and Node.js"]
+async fn real_srt_probe_handles_a_large_hardlink_profile_without_e2big() {
+    let binary = std::env::var_os("A3S_TEST_SRT_BIN")
+        .map(PathBuf::from)
+        .expect("set A3S_TEST_SRT_BIN");
+    let node = std::env::var_os("A3S_TEST_SRT_NODE")
+        .map(PathBuf::from)
+        .expect("set A3S_TEST_SRT_NODE");
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let outside = root.path().join("outside-secret");
+    std::fs::write(&outside, "outside-secret").unwrap();
+    for index in 0..1_024 {
+        std::fs::hard_link(
+            &outside,
+            workspace.join(format!(
+                "source-tree-hardlink-alias-with-a-deliberately-long-name-{index:04}.txt"
+            )),
+        )
+        .unwrap();
+    }
+
+    let sandbox = SrtBashSandbox::from_verified_npm_with_node(&binary, &node, &workspace).unwrap();
+    let output = sandbox
+        .exec_command("printf a3s-managed-srt-ready", "/workspace")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        output.exit_code, 0,
+        "large managed SRT profile failed: {}{}",
+        output.stdout, output.stderr
+    );
+    assert_eq!(output.stdout, "a3s-managed-srt-ready");
 }
 
 /// Run explicitly with `A3S_TEST_SRT_BIN=/absolute/path/to/srt`.

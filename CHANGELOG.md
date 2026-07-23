@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Selected sandbox-runtime 0.0.67 for managed hosts.
+
+### Fixed
+
+- Pinned Unix managed-SRT temporary files to the private per-command scratch
+  directory so hosts can pass large macOS Seatbelt profiles by file without
+  exceeding the operating system argument-size limit.
+
 ## [6.4.1] - 2026-07-23
 
 ### Fixed

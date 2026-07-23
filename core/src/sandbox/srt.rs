@@ -28,7 +28,7 @@ pub const SRT_NPM_PACKAGE_NAME: &str = "@anthropic-ai/sandbox-runtime";
 /// Core accepts the tested compatibility range below so a host can roll a
 /// compatible patch independently. The CLI deliberately installs one exact
 /// version until an A3S-signed component artifact replaces registry bootstrap.
-pub const MANAGED_SRT_VERSION: &str = "0.0.66";
+pub const MANAGED_SRT_VERSION: &str = "0.0.67";
 const MINIMUM_SRT_VERSION: (u64, u64, u64) = (0, 0, 66);
 const MAXIMUM_SRT_VERSION_EXCLUSIVE: (u64, u64, u64) = (0, 1, 0);
 
@@ -611,8 +611,7 @@ fn compose_srt_process_env(
     #[cfg(not(windows))]
     {
         let _ = explicit;
-        let _ = scratch;
-        Ok(compose_wrapper_env(workspace))
+        Ok(compose_wrapper_env(workspace, scratch))
     }
     #[cfg(windows)]
     {
@@ -628,7 +627,7 @@ fn compose_srt_process_env(
 }
 
 #[cfg(not(windows))]
-fn compose_wrapper_env(workspace: &Path) -> HashMap<OsString, OsString> {
+fn compose_wrapper_env(workspace: &Path, scratch: &Path) -> HashMap<OsString, OsString> {
     const SAFE_KEYS: &[&str] = &[
         "HOME",
         "USER",
@@ -656,6 +655,10 @@ fn compose_wrapper_env(workspace: &Path) -> HashMap<OsString, OsString> {
     if let Some(path) = trusted_wrapper_path(workspace) {
         environment.insert(OsString::from("PATH"), path);
     }
+    let scratch = scratch.as_os_str().to_os_string();
+    environment.insert(OsString::from("TMPDIR"), scratch.clone());
+    environment.insert(OsString::from("TMP"), scratch.clone());
+    environment.insert(OsString::from("TEMP"), scratch);
     remove_bootstrap_injection_variables(&mut environment);
     environment
 }
