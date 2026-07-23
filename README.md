@@ -326,7 +326,9 @@ when its explicitly provisioned runtime is missing or fails. Write-deny paths
 already covered by a protected ancestor are collapsed before SRT startup,
 while more-specific credential read denies remain intact. Workspace policy
 scans treat an entry removed concurrently after enumeration as absent, but
-permission and other I/O failures remain fatal. The embedding host remains
+permission and other I/O failures remain fatal. Unix wrapper temporary files
+are pinned to the same private per-run scratch directory so a lifecycle host
+can pass large native sandbox policies by file. The embedding host remains
 responsible for choosing whether an unavailable sandbox causes an interactive
 escalation or a deterministic denial.
 
