@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.4.1] - 2026-07-23
+
+### Fixed
+
+- Updated the bundled Core so SRT workspace policy scans tolerate files and
+  directories removed concurrently by other workspace processes.
+
 ## [6.4.0] - 2026-07-22
 
 ### Changed
