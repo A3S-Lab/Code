@@ -190,6 +190,39 @@ async fn adapter_denies_every_preexisting_workspace_hardlink_alias() {
     }
 }
 
+#[test]
+fn workspace_scan_treats_a_concurrently_removed_entry_as_absent() {
+    let workspace = tempfile::tempdir().unwrap();
+    let transient = workspace.path().join("transient");
+    std::fs::write(&transient, "temporary").unwrap();
+    std::fs::remove_file(&transient).unwrap();
+
+    let metadata = workspace_scan_result(std::fs::symlink_metadata(&transient), || {
+        format!("failed to inspect {}", transient.display())
+    })
+    .unwrap();
+
+    assert!(metadata.is_none());
+}
+
+#[test]
+fn workspace_scan_keeps_non_missing_io_failures_fatal() {
+    let error = workspace_scan_result::<()>(
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        || "failed to inspect protected entry".to_string(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "failed to inspect protected entry");
+    assert_eq!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<std::io::Error>())
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::PermissionDenied)
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn adapter_preserves_stdout_and_stderr_as_separate_streams() {
@@ -418,6 +451,70 @@ async fn real_srt_allows_workspace_writes_and_blocks_outside_writes() {
         assert_ne!(denied.exit_code, 0);
         assert!(!outside.join("symlink-escaped.txt").exists());
     }
+}
+
+/// Run explicitly with `A3S_TEST_SRT_BIN=/absolute/path/to/cli.js` and
+/// `A3S_TEST_SRT_NODE=/absolute/path/to/node`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an installed srt runtime and Node.js"]
+async fn real_srt_probe_survives_concurrent_workspace_churn() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    let binary = std::env::var_os("A3S_TEST_SRT_BIN")
+        .map(PathBuf::from)
+        .expect("set A3S_TEST_SRT_BIN");
+    let node = std::env::var_os("A3S_TEST_SRT_NODE")
+        .map(PathBuf::from)
+        .expect("set A3S_TEST_SRT_NODE");
+    let workspace = tempfile::tempdir().unwrap();
+    let churn_root = workspace.path().join("concurrent-writer");
+    std::fs::create_dir_all(&churn_root).unwrap();
+
+    let running = Arc::new(AtomicBool::new(true));
+    let writer_running = Arc::clone(&running);
+    let writer = std::thread::spawn(move || {
+        let mut generation = 0usize;
+        while writer_running.load(Ordering::Acquire) {
+            let batch = churn_root.join(format!("batch-{}", generation % 4));
+            let nested = batch.join("nested");
+            let _ = std::fs::remove_dir_all(&batch);
+            if std::fs::create_dir_all(&nested).is_ok() {
+                for index in 0..4 {
+                    let _ =
+                        std::fs::write(nested.join(format!(".env-{index}")), b"TRANSIENT=removed");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&batch);
+            generation = generation.wrapping_add(1);
+        }
+    });
+
+    let result = async {
+        for _ in 0..50 {
+            let sandbox =
+                SrtBashSandbox::from_verified_npm_with_node(&binary, &node, workspace.path())?;
+            let output = sandbox
+                .exec_command("printf a3s-managed-srt-ready", "/workspace")
+                .await?;
+            if output.exit_code != 0 || output.stdout != "a3s-managed-srt-ready" {
+                bail!(
+                    "SRT capability probe failed with code {}: {}{}",
+                    output.exit_code,
+                    output.stdout,
+                    output.stderr
+                );
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    running.store(false, Ordering::Release);
+    writer.join().unwrap();
+    result.unwrap();
 }
 
 /// Run explicitly with `A3S_TEST_SRT_BIN=/absolute/path/to/srt`.
