@@ -27,6 +27,20 @@ pub(crate) enum InvocationOrigin {
     /// An explicit control-plane call made through `AgentSession::tool` or a
     /// typed direct-tool helper.
     HostDirect(HostDirectPolicy),
+    /// A nested call made by a built-in control-plane orchestrator that was
+    /// itself invoked directly by the host.
+    ///
+    /// This origin cannot be constructed through the public
+    /// [`super::InvocationRuntime`]. Keeping it distinct prevents arbitrary
+    /// custom tools and model sub-runs from amplifying one trusted top-level
+    /// call into unrestricted nested authority.
+    HostDirectNested(HostDirectPolicy),
+}
+
+impl InvocationOrigin {
+    pub(crate) fn is_nested(self) -> bool {
+        matches!(self, Self::Nested | Self::HostDirectNested(_))
+    }
 }
 
 /// Owned invocation data so calls can be dispatched across async tasks.
@@ -72,6 +86,21 @@ impl ToolInvocation {
             name: name.into(),
             args,
             origin: InvocationOrigin::HostDirect(HostDirectPolicy::TrustedControlPlane),
+            recent_tools: Vec::new(),
+        }
+    }
+
+    pub(crate) fn host_direct_nested(
+        name: impl Into<String>,
+        args: Value,
+        policy: HostDirectPolicy,
+    ) -> Self {
+        let name = name.into();
+        Self {
+            id: format!("nested-{name}-{}", uuid::Uuid::new_v4()),
+            name,
+            args,
+            origin: InvocationOrigin::HostDirectNested(policy),
             recent_tools: Vec::new(),
         }
     }

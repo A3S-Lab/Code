@@ -9,7 +9,6 @@ This script tests the Skill tool implementation by:
 4. Verifying permission isolation works
 """
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -21,7 +20,7 @@ sys.path.insert(0, str(sdk_path))
 
 from a3s_code import Agent
 
-async def main():
+def main():
     print("=" * 80)
     print("Skill Tool Test with Kimi Model")
     print("=" * 80)
@@ -90,7 +89,7 @@ You CANNOT:
 
         try:
             print("\n💬 Prompt: Use the file-reader skill to read test.txt")
-            result = await session.send(
+            result = session.send(
                 "Use the file-reader skill to read test.txt and tell me what it contains"
             )
             print(f"\n✅ Response:\n{result.text}")
@@ -107,7 +106,7 @@ You CANNOT:
 
         try:
             print("\n💬 Prompt: Use the file-reader skill to search for 'test' in all files")
-            result = await session.send(
+            result = session.send(
                 "Use the file-reader skill to search for the word 'test' in all files"
             )
             print(f"\n✅ Response:\n{result.text}")
@@ -124,7 +123,7 @@ You CANNOT:
 
         try:
             print("\n💬 Prompt: Use the file-reader skill to write a summary to output.txt")
-            result = await session.send(
+            result = session.send(
                 "Use the file-reader skill to write a summary of test.txt to output.txt"
             )
             print(f"\n✅ Response:\n{result.text}")
@@ -146,4 +145,4 @@ You CANNOT:
         print("=" * 80)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

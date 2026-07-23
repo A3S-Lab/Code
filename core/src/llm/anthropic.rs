@@ -415,6 +415,7 @@ impl AnthropicClient {
             let stream_cancellation = cancel_token.clone();
             tokio::spawn(async move {
                 let mut buffer = String::new();
+                let mut utf8_decoder = crate::sse::Utf8StreamDecoder::default();
                 let mut content_blocks: Vec<ContentBlock> = Vec::new();
                 let mut text_content = String::new();
                 let mut current_tool_id = String::new();
@@ -445,7 +446,10 @@ impl AnthropicClient {
                         }
                     };
 
-                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    if let Err(error) = utf8_decoder.push_to(&chunk, &mut buffer) {
+                        tracing::error!(%error, "Anthropic stream returned invalid UTF-8");
+                        break;
+                    }
 
                     while let Some(event_end) = buffer.find("\n\n") {
                         let event_data: String = buffer.drain(..event_end).collect();
@@ -617,6 +621,9 @@ impl AnthropicClient {
                             }
                         }
                     }
+                }
+                if let Err(error) = utf8_decoder.finish() {
+                    tracing::error!(%error, "Anthropic stream ended inside a UTF-8 code point");
                 }
             });
 

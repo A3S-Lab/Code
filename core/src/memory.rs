@@ -10,9 +10,31 @@ use a3s_memory::{MemoryItem, MemoryStore, MemoryType, PrunePolicy, RelevanceConf
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, Notify, RwLock};
+
+/// One durable-memory write as observed by a host integration.
+///
+/// `incoming` preserves the identity and per-turn metadata of this observation,
+/// while `stored` is the canonical item returned by the memory backend. They
+/// differ when a backend consolidates a duplicate into an existing item.
+#[derive(Debug, Clone)]
+pub struct MemoryObservation {
+    pub incoming: MemoryItem,
+    pub stored: MemoryItem,
+    pub merged: bool,
+}
+
+/// Host extension point invoked after a durable memory has been persisted.
+///
+/// Observer failures are logged but never roll back the memory write. This is
+/// intended for derived, auditable projections such as preference and workflow
+/// learning; the memory store remains the source of truth.
+#[async_trait::async_trait]
+pub trait MemoryObserver: Send + Sync {
+    async fn on_memory_stored(&self, observation: MemoryObservation) -> anyhow::Result<()>;
+}
 
 // ============================================================================
 // Configuration
@@ -37,11 +59,12 @@ pub struct MemoryConfig {
     /// How often the background pruning task runs, in seconds (default: 3600).
     #[serde(default = "MemoryConfig::default_prune_interval_secs")]
     pub prune_interval_secs: u64,
-    /// Use an LLM after significant completed turns to distill durable memories
-    /// from the turn transcript.
+    /// Use an LLM after every completed, non-empty turn to judge whether the
+    /// turn contains durable memories and, when it does, distill them from the
+    /// transcript.
     ///
-    /// Enabled by default when memory is configured. The runtime still applies
-    /// a significance gate so trivial turns do not trigger an extraction call.
+    /// Enabled by default when memory is configured. Semantic value decisions
+    /// belong to the LLM; the runtime does not use content-keyword gates.
     #[serde(
         default = "MemoryConfig::default_llm_extraction",
         alias = "llm_extraction"
@@ -122,16 +145,50 @@ pub struct AgentMemory {
     pub(crate) llm_extraction: bool,
     pub(crate) llm_extraction_max_items: usize,
     pub(crate) llm_extraction_max_input_chars: usize,
-    llm_extraction_in_flight: Arc<AtomicBool>,
+    extraction_queue: Arc<MemoryExtractionQueue>,
+    observers: Arc<Vec<Arc<dyn MemoryObserver>>>,
 }
 
-pub(crate) struct MemoryExtractionPermit {
-    in_flight: Arc<AtomicBool>,
+#[derive(Default)]
+struct MemoryExtractionQueue {
+    state: std::sync::Mutex<MemoryExtractionQueueState>,
+    pending: AtomicUsize,
+    idle: Notify,
 }
 
-impl Drop for MemoryExtractionPermit {
+#[derive(Default)]
+struct MemoryExtractionQueueState {
+    tail: Option<oneshot::Receiver<()>>,
+}
+
+/// A FIFO ticket for one completed-turn extraction.
+///
+/// Registration happens before a background task is spawned, so session close
+/// can observe every accepted extraction even if the task has not been polled
+/// yet. Chaining each ticket to its predecessor preserves completed-turn order
+/// without blocking streaming callers.
+pub(crate) struct MemoryExtractionTicket {
+    predecessor: Option<oneshot::Receiver<()>>,
+    completion: Option<oneshot::Sender<()>>,
+    queue: Arc<MemoryExtractionQueue>,
+}
+
+impl MemoryExtractionTicket {
+    pub(crate) async fn wait_for_turn(&mut self) {
+        if let Some(predecessor) = self.predecessor.take() {
+            let _ = predecessor.await;
+        }
+    }
+}
+
+impl Drop for MemoryExtractionTicket {
     fn drop(&mut self) {
-        self.in_flight.store(false, Ordering::Release);
+        if let Some(completion) = self.completion.take() {
+            let _ = completion.send(());
+        }
+        if self.queue.pending.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.queue.idle.notify_waiters();
+        }
     }
 }
 
@@ -140,6 +197,7 @@ impl std::fmt::Debug for AgentMemory {
         f.debug_struct("AgentMemory")
             .field("max_short_term", &self.max_short_term)
             .field("max_working", &self.max_working)
+            .field("observers", &self.observers.len())
             .finish()
     }
 }
@@ -155,6 +213,17 @@ impl AgentMemory {
     /// If `config.prune_policy` is `Some`, a background Tokio task is spawned
     /// that periodically calls `store.prune()` at the configured interval.
     pub fn with_config(store: Arc<dyn MemoryStore>, config: MemoryConfig) -> Self {
+        Self::with_config_and_observers(store, config, Vec::new())
+    }
+
+    /// Create a memory system with host observers for successful durable
+    /// writes. Observers receive both the incoming observation and the
+    /// canonical stored item so duplicate consolidation remains auditable.
+    pub fn with_config_and_observers(
+        store: Arc<dyn MemoryStore>,
+        config: MemoryConfig,
+        observers: Vec<Arc<dyn MemoryObserver>>,
+    ) -> Self {
         if let Some(policy) = config.prune_policy.clone() {
             let store_for_task = Arc::clone(&store);
             let interval_secs = config.prune_interval_secs;
@@ -190,7 +259,8 @@ impl AgentMemory {
             llm_extraction: config.llm_extraction,
             llm_extraction_max_items: config.llm_extraction_max_items,
             llm_extraction_max_input_chars: config.llm_extraction_max_input_chars,
-            llm_extraction_in_flight: Arc::new(AtomicBool::new(false)),
+            extraction_queue: Arc::new(MemoryExtractionQueue::default()),
+            observers: Arc::new(observers),
         }
     }
 
@@ -208,6 +278,7 @@ impl AgentMemory {
 
     /// Store a memory and return the normalized item that was sent to storage.
     pub async fn remember_item(&self, item: MemoryItem) -> anyhow::Result<MemoryItem> {
+        let incoming = item.clone();
         let item = self.store.store_and_return(item).await?;
         let mut short_term = self.short_term.write().await;
         if let Some(existing) = short_term
@@ -220,6 +291,20 @@ impl AgentMemory {
         }
         if short_term.len() > self.max_short_term {
             short_term.pop_front();
+        }
+        drop(short_term);
+
+        if !self.observers.is_empty() {
+            let observation = MemoryObservation {
+                merged: item.id != incoming.id,
+                incoming,
+                stored: item.clone(),
+            };
+            for observer in self.observers.iter() {
+                if let Err(error) = observer.on_memory_stored(observation.clone()).await {
+                    tracing::warn!(%error, "memory observer failed after persistence");
+                }
+            }
         }
         Ok(item)
     }
@@ -403,13 +488,37 @@ impl AgentMemory {
         self.llm_extraction_max_input_chars
     }
 
-    pub(crate) fn try_begin_llm_extraction(&self) -> Option<MemoryExtractionPermit> {
-        self.llm_extraction_in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()
-            .map(|_| MemoryExtractionPermit {
-                in_flight: Arc::clone(&self.llm_extraction_in_flight),
-            })
+    pub(crate) fn enqueue_llm_extraction(&self) -> MemoryExtractionTicket {
+        let (completion, receiver) = oneshot::channel();
+        let predecessor = {
+            let mut state = self
+                .extraction_queue
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.tail.replace(receiver)
+        };
+        self.extraction_queue.pending.fetch_add(1, Ordering::AcqRel);
+        MemoryExtractionTicket {
+            predecessor,
+            completion: Some(completion),
+            queue: Arc::clone(&self.extraction_queue),
+        }
+    }
+
+    /// Wait until every extraction registered before this call has settled.
+    /// Returns `false` when the bounded close-time wait expires.
+    pub(crate) async fn drain_llm_extractions(&self, timeout: std::time::Duration) -> bool {
+        let wait_until_idle = async {
+            loop {
+                let notified = self.extraction_queue.idle.notified();
+                if self.extraction_queue.pending.load(Ordering::Acquire) == 0 {
+                    return;
+                }
+                notified.await;
+            }
+        };
+        tokio::time::timeout(timeout, wait_until_idle).await.is_ok()
     }
 }
 
@@ -553,7 +662,7 @@ impl crate::context::ContextProvider for MemoryContextProvider {
         _prompt: &str,
         _response: &str,
     ) -> anyhow::Result<()> {
-        // Memory extraction is owned by the agent loop's gated LLM extractor.
+        // Memory extraction is owned by the agent loop's LLM value judge.
         // This provider only contributes recalled memories as prompt context.
         Ok(())
     }
@@ -568,7 +677,24 @@ mod tests {
     use super::*;
     use crate::context::ContextProvider;
     use a3s_memory::InMemoryStore;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        observations: Mutex<Vec<MemoryObservation>>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryObserver for RecordingObserver {
+        async fn on_memory_stored(&self, observation: MemoryObservation) -> anyhow::Result<()> {
+            self.observations.lock().unwrap().push(observation);
+            if self.fail {
+                anyhow::bail!("observer projection failed");
+            }
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn test_agent_memory_remember_and_recall() {
@@ -620,7 +746,7 @@ mod tests {
 
         let duplicate = memory
             .remember_item(
-                MemoryItem::new("run focused MEMORY extraction tests after parser changes!")
+                MemoryItem::new("  run focused MEMORY extraction tests after parser changes.  ")
                     .with_importance(0.9)
                     .with_tag("tests"),
             )
@@ -635,6 +761,74 @@ mod tests {
         assert_eq!(short_term[0].importance, 0.9);
         assert!(short_term[0].tags.contains(&"memory".to_string()));
         assert!(short_term[0].tags.contains(&"tests".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_memory_observer_receives_incoming_and_canonical_duplicate() {
+        let observer = Arc::new(RecordingObserver::default());
+        let memory = AgentMemory::with_config_and_observers(
+            Arc::new(InMemoryStore::new()),
+            MemoryConfig::default(),
+            vec![observer.clone()],
+        );
+        let first = memory
+            .remember_item(
+                MemoryItem::new("Run focused observer tests after memory persistence changes.")
+                    .with_importance(0.8)
+                    .with_metadata("session_id", "session-one"),
+            )
+            .await
+            .unwrap();
+        let duplicate_input =
+            MemoryItem::new("  run focused OBSERVER tests after memory persistence changes.  ")
+                .with_importance(0.95)
+                .with_metadata("session_id", "session-two");
+        let duplicate_input_id = duplicate_input.id.clone();
+        let duplicate = memory.remember_item(duplicate_input).await.unwrap();
+
+        let observations = observer.observations.lock().unwrap();
+        assert_eq!(observations.len(), 2);
+        assert!(!observations[0].merged);
+        assert_eq!(observations[0].incoming.id, observations[0].stored.id);
+        assert!(observations[1].merged);
+        assert_eq!(observations[1].incoming.id, duplicate_input_id);
+        assert_eq!(observations[1].stored.id, first.id);
+        assert_eq!(observations[1].stored.id, duplicate.id);
+        assert_ne!(observations[1].incoming.id, observations[1].stored.id);
+        assert_eq!(
+            observations[1]
+                .incoming
+                .metadata
+                .get("session_id")
+                .map(String::as_str),
+            Some("session-two")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memory_observer_failure_does_not_roll_back_persistence() {
+        let store = Arc::new(InMemoryStore::new());
+        let observer = Arc::new(RecordingObserver {
+            observations: Mutex::new(Vec::new()),
+            fail: true,
+        });
+        let memory = AgentMemory::with_config_and_observers(
+            store.clone(),
+            MemoryConfig::default(),
+            vec![observer.clone()],
+        );
+
+        let stored = memory
+            .remember_item(MemoryItem::new(
+                "Persist even if a derived projection fails.",
+            ))
+            .await
+            .expect("observer errors must not fail the durable memory write");
+
+        assert_eq!(store.count().await.unwrap(), 1);
+        assert_eq!(memory.short_term_count().await, 1);
+        assert_eq!(memory.get_short_term().await[0].id, stored.id);
+        assert_eq!(observer.observations.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -661,7 +855,8 @@ mod tests {
             llm_extraction: false,
             llm_extraction_max_items: 5,
             llm_extraction_max_input_chars: 8_000,
-            llm_extraction_in_flight: Arc::new(AtomicBool::new(false)),
+            extraction_queue: Arc::new(MemoryExtractionQueue::default()),
+            observers: Arc::new(Vec::new()),
         };
         for i in 0..5 {
             memory
@@ -711,7 +906,8 @@ mod tests {
             llm_extraction: false,
             llm_extraction_max_items: 5,
             llm_extraction_max_input_chars: 8_000,
-            llm_extraction_in_flight: Arc::new(AtomicBool::new(false)),
+            extraction_queue: Arc::new(MemoryExtractionQueue::default()),
+            observers: Arc::new(Vec::new()),
         };
         for i in 0..5 {
             memory

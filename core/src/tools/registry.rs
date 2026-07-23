@@ -218,6 +218,11 @@ impl ToolRegistry {
         self.get(name).map(|tool| tool.capabilities(args))
     }
 
+    pub(crate) fn requires_confirmation(&self, name: &str, args: &serde_json::Value) -> bool {
+        self.get(name)
+            .is_some_and(|tool| tool.requires_confirmation(args))
+    }
+
     /// Check if a tool exists
     pub fn contains(&self, name: &str) -> bool {
         let tools = self.tools.read().unwrap();

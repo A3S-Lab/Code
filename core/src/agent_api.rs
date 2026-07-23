@@ -195,6 +195,8 @@ pub struct SessionOptions {
     ///
     /// Sessions resolve a default store when this is not set.
     pub memory_store: Option<Arc<dyn MemoryStore>>,
+    /// Host observers notified after successful durable memory writes.
+    pub memory_observers: Vec<Arc<dyn crate::memory::MemoryObserver>>,
     /// Deferred file memory directory — constructed async in `build_session()`
     pub(crate) file_memory_dir: Option<PathBuf>,
     /// Optional session store for persistence
@@ -370,6 +372,9 @@ pub struct SessionOptions {
 /// A streaming operation remains active until its returned handle completes.
 pub struct AgentSession {
     llm_client: Arc<dyn LlmClient>,
+    /// Provider-reported generation capacity shared by every loop and
+    /// host-direct tool call created for this session.
+    model_generation_admission: crate::llm::ModelGenerationAdmission,
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,

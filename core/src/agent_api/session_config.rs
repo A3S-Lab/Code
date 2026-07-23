@@ -130,9 +130,10 @@ impl ResolvedSessionConfig {
         let llm_client =
             resolve_session_llm_client(&agent.code_config, &options, Some(&session_id))?;
         let model_name = resolved_model_name(&agent.code_config, &options);
-        let memory = Arc::new(crate::memory::AgentMemory::with_config(
+        let memory = Arc::new(crate::memory::AgentMemory::with_config_and_observers(
             memory_store,
             agent.code_config.memory.clone().unwrap_or_default(),
+            options.memory_observers.clone(),
         ));
         let mcp_manager = Arc::new(crate::mcp::manager::McpManager::new());
         let mut inherited_mcp_managers = Vec::new();
@@ -518,10 +519,13 @@ async fn resolve_session_memory(
     };
 
     let memory_config = code_config.memory.clone().unwrap_or_default();
-    Ok(Arc::new(crate::memory::AgentMemory::with_config(
-        store,
-        memory_config,
-    )))
+    Ok(Arc::new(
+        crate::memory::AgentMemory::with_config_and_observers(
+            store,
+            memory_config,
+            opts.memory_observers.clone(),
+        ),
+    ))
 }
 
 fn default_memory_dir(workspace: &Path) -> PathBuf {

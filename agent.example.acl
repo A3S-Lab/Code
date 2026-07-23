@@ -81,7 +81,9 @@ search {
     suspend_seconds = 60
   }
 
-  # Engine configurations
+  # Engine configurations. Omit this block to use the built-in ddg + wiki
+  # default; any entries here explicitly replace that default selection.
+  # AnySearch is opt-in: add `anysearch { enabled = true weight = 1.0 }` here.
   engine {
     google {
       enabled = true
@@ -94,7 +96,7 @@ search {
       timeout = 20
     }
 
-    duckduckgo {
+    ddg {
       enabled = true
       weight = 1.2
     }

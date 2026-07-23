@@ -5,7 +5,7 @@
 use crate::mcp::client::McpClient;
 use crate::mcp::oauth;
 use crate::mcp::protocol::{
-    CallToolResult, McpServerConfig, McpTool, McpTransportConfig, OAuthConfig, ToolContent,
+    CallToolResult, McpServerConfig, McpTool, McpTransportConfig, OAuthConfig,
 };
 use crate::mcp::transport::http_sse::HttpSseTransport;
 use crate::mcp::transport::stdio::StdioTransport;
@@ -15,6 +15,8 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+pub use crate::mcp::result::tool_result_to_string;
 
 /// MCP server status
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -487,33 +489,6 @@ fn now_epoch_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-/// Convert MCP tool result to string output
-pub fn tool_result_to_string(result: &CallToolResult) -> String {
-    let mut output = String::new();
-
-    for content in &result.content {
-        match content {
-            ToolContent::Text { text } => {
-                output.push_str(text);
-                output.push('\n');
-            }
-            ToolContent::Image { data: _, mime_type } => {
-                output.push_str(&format!("[Image: {}]\n", mime_type));
-            }
-            ToolContent::Resource { resource } => {
-                if let Some(text) = &resource.text {
-                    output.push_str(text);
-                    output.push('\n');
-                } else {
-                    output.push_str(&format!("[Resource: {}]\n", resource.uri));
-                }
-            }
-        }
-    }
-
-    output.trim_end().to_string()
 }
 
 #[cfg(test)]

@@ -1,409 +1,347 @@
-//! Git tool — Uses system git with auto-installation support
+//! Git helpers backed by the host's existing system Git.
 //!
-//! Provides Git operations using the external git command.
-//! If git is not installed, downloads and installs it automatically on Windows, macOS, and Linux.
+//! Agent-owned tool calls never install host software. Workspace Git operations
+//! require an existing Git executable and fail with an actionable error when
+//! it is missing.
 
 use anyhow::{anyhow, Result};
+use std::cell::RefCell;
+use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tokio::sync::OnceCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-static GIT_AVAILABLE: OnceCell<bool> = OnceCell::const_new();
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const GIT_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// Check if git is available on the system.
-pub fn is_git_available() -> bool {
-    Command::new("git")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+thread_local! {
+    static GIT_CANCELLATION: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
 }
 
-/// Get the git installation directory in user's home.
-fn git_install_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/usr/local"))
-        .join(".local")
-        .join("git")
+struct GitCancellationScopeGuard {
+    previous: Option<Arc<AtomicBool>>,
 }
 
-/// Check if a path is inside a git repository.
-pub fn is_git_repo(path: &Path) -> bool {
-    Command::new("git")
-        .args(["-C", &path.display().to_string()])
-        .args(["rev-parse", "--git-dir"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+impl Drop for GitCancellationScopeGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        GIT_CANCELLATION.with(|slot| {
+            slot.replace(previous);
+        });
+    }
 }
 
-/// Ensure git is installed. Downloads and installs git if not found.
-pub fn ensure_git_installed() -> Result<()> {
-    // Fast path: already checked and available
-    if GIT_AVAILABLE.get().copied().unwrap_or(false) {
-        return Ok(());
-    }
-
-    if is_git_available() {
-        let _ = GIT_AVAILABLE.set(true);
-        return Ok(());
-    }
-
-    // Try to download and install git
-    let install_result = if cfg!(target_os = "macos") {
-        install_git_macos()
-    } else if cfg!(target_os = "linux") {
-        install_git_linux()
-    } else if cfg!(target_os = "windows") {
-        install_git_windows()
-    } else {
-        Err(anyhow!(
-            "Unsupported platform: {}. Please install git manually from https://git-scm.com",
-            std::env::consts::OS
-        ))
-    };
-
-    if install_result.is_ok() {
-        let _ = GIT_AVAILABLE.set(true);
-    }
-
-    install_result
+pub(crate) fn with_git_cancellation<T>(
+    cancellation: Arc<AtomicBool>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let previous = GIT_CANCELLATION.with(|slot| slot.replace(Some(cancellation)));
+    let _guard = GitCancellationScopeGuard { previous };
+    operation()
 }
 
-fn install_git_macos() -> Result<()> {
-    // Download official macOS git installer
-    let install_dir = git_install_dir();
-    let bin_dir = install_dir.join("bin");
-    let git_path = bin_dir.join("git");
+fn git_operation_cancelled() -> bool {
+    GIT_CANCELLATION.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|cancellation| cancellation.load(Ordering::Acquire))
+    })
+}
 
-    // If already installed, just verify
-    if git_path.exists() {
-        return Ok(());
-    }
+/// Resolve Git from an absolute PATH directory outside the active workspace.
+///
+/// Empty/relative PATH entries and symlinks into the repository are resolved
+/// before selection, so repository content cannot supply the Git executable.
+pub(crate) fn trusted_git_executable(workspace: &Path) -> Result<PathBuf> {
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| anyhow!("Failed to resolve Git workspace: {error}"))?;
+    let current_directory = std::env::current_dir()
+        .map_err(|error| anyhow!("Failed to resolve the current directory: {error}"))?;
+    let path = std::env::var_os("PATH").ok_or_else(|| anyhow!("PATH is not configured"))?;
+    trusted_git_executable_from_path(&workspace, &current_directory, &path)
+}
 
-    std::fs::create_dir_all(&bin_dir)?;
-
-    // Download git-2.39.3-arm64-bin.tar.gz (Apple Silicon)
-    // and git-2.39.3-x86_64-bin.tar.gz (Intel)
-    let arch = if std::process::Command::new("uname")
-        .arg("-m")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("arm"))
-        .unwrap_or(false)
-    {
-        "arm64"
-    } else {
-        "x86_64"
-    };
-
-    let tarball_name = format!("git-2.39.3-{}-bin.tar.gz", arch);
-    let download_url = format!("https://git-scm.com/download/mac/{}", tarball_name);
-
-    let temp_tarball = std::env::temp_dir().join(&tarball_name);
-
-    // Download with retry
-    download_with_curl(&download_url, &temp_tarball)?;
-
-    // Extract tarball
-    let output = Command::new("tar")
-        .args([
-            "-xzf",
-            &temp_tarball.display().to_string(),
-            "-C",
-            &bin_dir.display().to_string(),
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        // Try alternative extraction
-        let output = Command::new("bash")
-            .args([
-                "-c",
-                &format!(
-                    "cd {} && tar -xzf {}",
-                    bin_dir.display(),
-                    temp_tarball.display()
-                ),
-            ])
-            .output()?;
-
-        if !output.status.success() {
-            return Err(anyhow!("Failed to extract git tarball"));
-        }
-    }
-
-    // Clean up
-    let _ = std::fs::remove_file(&temp_tarball);
-
-    // Verify installation
-    if bin_dir.join("git").exists() {
-        Ok(())
-    } else {
-        // Try extracting directly to install_dir
-        let output = Command::new("tar")
-            .args(["-xzf", &temp_tarball.display().to_string()])
-            .current_dir(&install_dir)
-            .output()?;
-
-        if output.status.success() {
-            // Move contents from bin to our bin dir
-            let extracted_bin = install_dir.join("usr").join("bin");
-            if extracted_bin.exists() {
-                for entry in std::fs::read_dir(&extracted_bin)?.flatten() {
-                    let _ = std::fs::rename(entry.path(), bin_dir.join(entry.file_name()));
-                }
-            }
-        }
-
-        if bin_dir.join("git").exists() {
-            Ok(())
+fn trusted_git_executable_from_path(
+    workspace: &Path,
+    current_directory: &Path,
+    path: &std::ffi::OsStr,
+) -> Result<PathBuf> {
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| anyhow!("Failed to resolve Git workspace: {error}"))?;
+    for directory in std::env::split_paths(path) {
+        let directory = if directory.as_os_str().is_empty() {
+            current_directory.to_path_buf()
+        } else if directory.is_absolute() {
+            directory
         } else {
-            Err(anyhow!(
-                "Failed to install git. Please download from https://git-scm.com/download/mac"
-            ))
+            current_directory.join(directory)
+        };
+        let Ok(directory) = directory.canonicalize() else {
+            continue;
+        };
+        if directory.starts_with(&workspace) {
+            continue;
         }
-    }
-}
-
-fn install_git_linux() -> Result<()> {
-    let install_dir = git_install_dir();
-    let bin_dir = install_dir.join("bin");
-    let git_path = bin_dir.join("git");
-
-    // If already installed, verify and return
-    if git_path.exists() {
-        return Ok(());
-    }
-
-    std::fs::create_dir_all(&bin_dir)?;
-
-    // Try to download static git binary for Linux
-    // Use the official git releases from GitHub
-    let version = "2.39.3";
-    let arch = if std::process::Command::new("uname")
-        .arg("-m")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("x86_64"))
-        .unwrap_or(true)
-    {
-        "amd64"
-    } else {
-        "386"
-    };
-
-    // Try GitHub releases first (has portable binaries)
-    let tarball_name = format!("git-{}-linux-{}.tar.gz", version, arch);
-    let download_url = format!(
-        "https://github.com/git/git/releases/download/v{}/{}",
-        version, tarball_name
-    );
-
-    let temp_tarball = std::env::temp_dir().join(&tarball_name);
-
-    // Try downloading from GitHub
-    if download_with_curl(&download_url, &temp_tarball).is_err() {
-        // Fallback: try official download page
-        let fallback_url = format!("https://git-scm.com/downloads?file=git-{}", tarball_name);
-        download_with_curl(&fallback_url, &temp_tarball)?;
-    }
-
-    // Extract
-    let output = Command::new("tar")
-        .args([
-            "-xzf",
-            &temp_tarball.display().to_string(),
-            "-C",
-            &bin_dir.display().to_string(),
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        // Alternative: extract to temp and move
-        let temp_dir = std::env::temp_dir().join("git-extract");
-        let _ = std::fs::create_dir_all(&temp_dir);
-
-        let output = Command::new("tar")
-            .args([
-                "-xzf",
-                &temp_tarball.display().to_string(),
-                "-C",
-                &temp_dir.display().to_string(),
-            ])
-            .output()?;
-
-        if output.status.success() {
-            // Find and move git binary
-            for path in walkdir(&temp_dir) {
-                if let Some(name) = path.file_name() {
-                    let name_str = name.to_string_lossy();
-                    if name_str.starts_with("git-") && path.extension().is_none() {
-                        let _ = std::fs::copy(&path, bin_dir.join("git"));
-                    }
-                }
+        for candidate in git_executable_candidates(&directory) {
+            let Ok(candidate) = candidate.canonicalize() else {
+                continue;
+            };
+            if candidate.starts_with(&workspace) || !is_executable_file(&candidate) {
+                continue;
             }
+            return Ok(candidate);
         }
-    }
-
-    let _ = std::fs::remove_file(&temp_tarball);
-
-    if bin_dir.join("git").exists() {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "Failed to install git automatically.\n\n\
-            Please install git via your system's package manager or download from:\n\
-            https://git-scm.com/download/linux"
-        ))
-    }
-}
-
-fn install_git_windows() -> Result<()> {
-    let install_dir = git_install_dir();
-    let bin_dir = install_dir.join("bin");
-    let git_exe = bin_dir.join("git.exe");
-
-    // If already installed, verify and return
-    if git_exe.exists() {
-        return Ok(());
-    }
-
-    std::fs::create_dir_all(&bin_dir)?;
-
-    // Download portable Git for Windows (MinGit)
-    let version = "2.39.3.windows.1";
-    let zip_name = format!("MinGit-{}-portable.zip", version);
-    let download_url = format!(
-        "https://github.com/git-for-windows/git/releases/download/{}/{}",
-        version, zip_name
-    );
-
-    let temp_zip = std::env::temp_dir().join(&zip_name);
-
-    download_with_curl(&download_url, &temp_zip)?;
-
-    // Extract zip
-    let output = Command::new("tar")
-        .args([
-            "-xf",
-            &temp_zip.display().to_string(),
-            "-C",
-            &bin_dir.display().to_string(),
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        // Try with PowerShell Expand-Archive on Windows
-        let ps_script = format!(
-            "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-            temp_zip.display(),
-            bin_dir.display()
-        );
-
-        let output = Command::new("powershell")
-            .args(["-Command", &ps_script])
-            .output()?;
-
-        if !output.status.success() {
-            return Err(anyhow!("Failed to extract git zip archive"));
-        }
-    }
-
-    // Find git.exe in the extracted contents
-    let extracted_dir = bin_dir.join(format!("MinGit-{}", version));
-    if extracted_dir.exists() {
-        // Move contents up one level
-        for entry in std::fs::read_dir(&extracted_dir)?.flatten() {
-            let dest = bin_dir.join(entry.file_name());
-            let _ = std::fs::rename(entry.path(), dest);
-        }
-        let _ = std::fs::remove_dir(&extracted_dir);
-    }
-
-    let _ = std::fs::remove_file(&temp_zip);
-
-    if git_exe.exists() {
-        // Also copy git.exe to git-bash.exe and cmd/git.exe
-        let cmd_dir = bin_dir.join("cmd");
-        std::fs::create_dir_all(&cmd_dir)?;
-        let _ = std::fs::copy(&git_exe, cmd_dir.join("git.exe"));
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "Failed to install git automatically.\n\n\
-            Please download and install Git from:\n\
-            https://git-scm.com/download/win"
-        ))
-    }
-}
-
-/// Download a file using curl with retry.
-fn download_with_curl(url: &str, path: &std::path::Path) -> Result<()> {
-    // Try curl first
-    let output = Command::new("curl")
-        .args([
-            "-L",
-            "--fail",
-            "--retry",
-            "3",
-            "--retry-delay",
-            "2",
-            "-o",
-            &path.display().to_string(),
-            url,
-        ])
-        .output()?;
-
-    if output.status.success() && path.exists() {
-        return Ok(());
-    }
-
-    // Fallback: try wget
-    let output = Command::new("wget")
-        .args(["-O", &path.display().to_string(), url])
-        .output()?;
-
-    if output.status.success() && path.exists() {
-        return Ok(());
     }
 
     Err(anyhow!(
-        "Failed to download git from {}.\n\
-        Please check your internet connection and try again.\n\
-        Or download manually from https://git-scm.com",
-        url
+        "Git was not found on a trusted absolute PATH entry outside {}",
+        workspace.display()
     ))
 }
 
-/// Walk directory recursively (simple implementation).
-fn walkdir(dir: &Path) -> Vec<std::path::PathBuf> {
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(walkdir(&path));
-            } else {
-                files.push(path);
-            }
-        }
+fn git_executable_candidates(directory: &Path) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        ["git.exe", "git.com", "git.cmd", "git.bat", "git"]
+            .into_iter()
+            .map(|name| directory.join(name))
+            .collect()
     }
-    files
+    #[cfg(not(windows))]
+    {
+        vec![directory.join("git")]
+    }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+fn disabled_hooks_path() -> &'static str {
+    #[cfg(windows)]
+    {
+        "NUL"
+    }
+    #[cfg(not(windows))]
+    {
+        "/dev/null"
+    }
+}
+
+fn hardened_git_arguments(repo_path: &Path) -> Vec<OsString> {
+    [
+        "--no-pager",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "diff.external=",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "protocol.allow=never",
+        "-c",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .chain(std::iter::once(OsString::from(format!(
+        "core.hooksPath={}",
+        disabled_hooks_path()
+    ))))
+    .chain([OsString::from("-C"), repo_path.as_os_str().to_os_string()])
+    .collect()
+}
+
+fn ambient_git_variables() -> Vec<OsString> {
+    std::env::vars_os()
+        .filter_map(|(key, _)| {
+            let normalized = key.to_string_lossy().to_ascii_uppercase();
+            (normalized.starts_with("GIT_")
+                || matches!(
+                    normalized.as_str(),
+                    "SSH_ASKPASS" | "SSH_AUTH_SOCK" | "GCM_INTERACTIVE"
+                ))
+            .then_some(key)
+        })
+        .collect()
+}
+
+pub(crate) fn configure_git_environment(command: &mut Command, repo_path: &Path) {
+    command.args(hardened_git_arguments(repo_path));
+    for key in ambient_git_variables() {
+        command.env_remove(key);
+    }
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", disabled_hooks_path())
+        .env("GIT_CONFIG_SYSTEM", disabled_hooks_path())
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+}
+
+pub(crate) fn configure_tokio_git_environment(
+    command: &mut tokio::process::Command,
+    repo_path: &Path,
+) {
+    command.args(hardened_git_arguments(repo_path));
+    for key in ambient_git_variables() {
+        command.env_remove(key);
+    }
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", disabled_hooks_path())
+        .env("GIT_CONFIG_SYSTEM", disabled_hooks_path())
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+}
+
+/// Check if a path is inside a Git repository without installing software.
+pub fn is_git_repo(path: &Path) -> bool {
+    run_git(path, &["rev-parse", "--git-dir"])
+        .map(|(success, _, _)| success)
+        .unwrap_or(false)
 }
 
 /// Run a git command.
 fn run_git(repo_path: &Path, args: &[&str]) -> Result<(bool, String, String)> {
-    ensure_git_installed()?;
+    let executable = trusted_git_executable(repo_path)?;
+    run_git_with_executable(&executable, repo_path, args, GIT_COMMAND_TIMEOUT)
+}
 
-    let output = Command::new("git")
-        .args(["-C", &repo_path.display().to_string()])
+fn run_git_with_executable(
+    executable: &Path,
+    repo_path: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<(bool, String, String)> {
+    let args = args.iter().map(OsString::from).collect::<Vec<_>>();
+    let (success, stdout, stderr) =
+        run_git_os_with_executable(executable, repo_path, &args, timeout)?;
+    Ok((
+        success,
+        String::from_utf8_lossy(&stdout).into_owned(),
+        String::from_utf8_lossy(&stderr).into_owned(),
+    ))
+}
+
+fn run_git_os(repo_path: &Path, args: &[OsString]) -> Result<(bool, Vec<u8>, Vec<u8>)> {
+    let executable = trusted_git_executable(repo_path)?;
+    run_git_os_with_executable(&executable, repo_path, args, GIT_COMMAND_TIMEOUT)
+}
+
+fn run_git_os_with_executable(
+    executable: &Path,
+    repo_path: &Path,
+    args: &[OsString],
+    timeout: Duration,
+) -> Result<(bool, Vec<u8>, Vec<u8>)> {
+    if git_operation_cancelled() {
+        return Err(anyhow!("Git command cancelled before execution"));
+    }
+
+    let mut command = Command::new(executable);
+    configure_git_environment(&mut command, repo_path);
+    command
         .args(args)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    crate::tools::process::configure_std_process_group(&mut command);
+    let mut child = command
+        .spawn()
         .map_err(|e| anyhow!("Failed to execute git: {}", e))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("Git stdout was not piped"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("Git stderr was not piped"))?;
+    let stdout = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let mut stdout = stdout;
+        stdout.read_to_end(&mut output).map(|_| output)
+    });
+    let stderr = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let mut stderr = stderr;
+        stderr.read_to_end(&mut output).map(|_| output)
+    });
+    let mut process_group =
+        crate::tools::process::ProcessGroupGuard::for_process_id(Some(child.id()));
+    let deadline = Instant::now() + timeout;
+    let mut cancelled = false;
+    let mut timed_out = false;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let status = loop {
+        if git_operation_cancelled() {
+            cancelled = true;
+            break None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(GIT_PROCESS_POLL_INTERVAL);
+            }
+            Ok(None) => {
+                timed_out = true;
+                break None;
+            }
+            Err(error) => {
+                process_group.kill();
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(anyhow!("Failed to wait for git: {error}"));
+            }
+        }
+    };
 
-    Ok((output.status.success(), stdout, stderr))
+    // Git commands own no background service. Terminate the group even after
+    // the direct process exits so a hook/helper cannot retain inherited pipes.
+    process_group.kill();
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let stdout = stdout
+        .join()
+        .map_err(|_| anyhow!("Git stdout reader panicked"))??;
+    let stderr = stderr
+        .join()
+        .map_err(|_| anyhow!("Git stderr reader panicked"))??;
+
+    if cancelled {
+        return Err(anyhow!("Git command cancelled"));
+    }
+    if timed_out {
+        return Err(anyhow!(
+            "Git command timed out after {}ms",
+            timeout.as_millis()
+        ));
+    }
+    let status = status.ok_or_else(|| anyhow!("Git command exited without a status"))?;
+
+    Ok((status.success(), stdout, stderr))
 }
 
 // ==================== Git Operations ====================
@@ -615,16 +553,81 @@ pub fn remove_worktree(repo_path: &Path, path: &Path, force: bool) -> Result<()>
     Ok(())
 }
 
-/// Get diff output.
-pub fn get_diff(repo_path: &Path, target: Option<&str>) -> Result<String> {
-    let args: Vec<&str> = if let Some(t) = target {
-        vec!["diff", t]
-    } else {
-        vec!["diff"]
-    };
+fn diff_arguments(target: Option<&str>, output_options: &[&str]) -> Result<Vec<OsString>> {
+    let mut args = ["diff", "--no-ext-diff", "--no-textconv", "--no-renames"]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+    args.extend(output_options.iter().map(OsString::from));
+    if let Some(target) = target {
+        if target.trim().is_empty() || target.contains('\0') {
+            return Err(anyhow!("Git diff target must be a non-empty revision"));
+        }
+        args.push(OsString::from("--end-of-options"));
+        args.push(OsString::from(target));
+    }
+    Ok(args)
+}
 
-    let (_, stdout, _) = run_git(repo_path, &args)?;
-    Ok(stdout)
+/// Return changed paths using Git's NUL-delimited, non-quoted format.
+pub(crate) fn get_diff_paths(repo_path: &Path, target: Option<&str>) -> Result<Vec<PathBuf>> {
+    let mut args = diff_arguments(target, &["--name-only", "-z"])?;
+    args.push(OsString::from("--"));
+    args.push(OsString::from("."));
+
+    let (success, stdout, stderr) = run_git_os(repo_path, &args)?;
+    if !success {
+        return Err(anyhow!(
+            "Failed to list Git diff paths: {}",
+            String::from_utf8_lossy(&stderr).trim_end()
+        ));
+    }
+    stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(git_output_path)
+        .collect()
+}
+
+/// Get diff output restricted to exact repository-relative paths.
+pub(crate) fn get_diff_for_paths(
+    repo_path: &Path,
+    target: Option<&str>,
+    paths: &[PathBuf],
+) -> Result<String> {
+    if paths.is_empty() {
+        return Ok(String::new());
+    }
+    let mut args = diff_arguments(target, &[])?;
+    args.push(OsString::from("--"));
+    args.extend(paths.iter().map(|path| path.as_os_str().to_os_string()));
+
+    let (success, stdout, stderr) = run_git_os(repo_path, &args)?;
+    if !success {
+        return Err(anyhow!(
+            "Failed to get Git diff: {}",
+            String::from_utf8_lossy(&stderr).trim_end()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
+}
+
+/// Get unfiltered diff output for embedders without a workspace access policy.
+pub fn get_diff(repo_path: &Path, target: Option<&str>) -> Result<String> {
+    get_diff_for_paths(repo_path, target, &[PathBuf::from(".")])
+}
+
+#[cfg(unix)]
+fn git_output_path(path: &[u8]) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(PathBuf::from(OsString::from_vec(path.to_vec())))
+}
+
+#[cfg(not(unix))]
+fn git_output_path(path: &[u8]) -> Result<PathBuf> {
+    let path = String::from_utf8(path.to_vec())
+        .map_err(|_| anyhow!("Git returned a non-UTF-8 path on this platform"))?;
+    Ok(PathBuf::from(path))
 }
 
 /// Stash information.
@@ -672,4 +675,171 @@ pub fn stash(repo_path: &Path, message: Option<&str>, include_untracked: bool) -
         return Err(anyhow!("Failed to stash: {}", stderr));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn fake_git_script(directory: &Path, source: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::create_dir_all(directory).unwrap();
+        let executable = directory.join("git");
+        std::fs::write(&executable, format!("#!/bin/sh\n{source}\n")).unwrap();
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+        executable
+    }
+
+    #[cfg(unix)]
+    fn fake_git(directory: &Path) -> PathBuf {
+        fake_git_script(directory, "exit 0")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trusted_git_resolution_rejects_workspace_and_symlinked_executables() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_git = fake_git(&workspace.join("bin"));
+        let outside_git = fake_git(&outside);
+        let linked_directory = root.path().join("linked");
+        std::os::unix::fs::symlink(workspace_git.parent().unwrap(), &linked_directory).unwrap();
+        let path = std::env::join_paths([
+            workspace_git.parent().unwrap(),
+            linked_directory.as_path(),
+            outside.as_path(),
+        ])
+        .unwrap();
+
+        let selected =
+            trusted_git_executable_from_path(&workspace, root.path(), path.as_os_str()).unwrap();
+
+        assert_eq!(selected, outside_git.canonicalize().unwrap());
+        let untrusted_only =
+            std::env::join_paths([workspace.join("bin"), linked_directory]).unwrap();
+        assert!(trusted_git_executable_from_path(
+            &workspace,
+            root.path(),
+            untrusted_only.as_os_str()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn hardened_git_command_disables_hooks_helpers_protocols_and_prompts() {
+        let mut command = Command::new("git");
+        configure_git_environment(&mut command, Path::new("/workspace"));
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        for expected in [
+            "--no-pager",
+            "core.fsmonitor=false",
+            "diff.external=",
+            "credential.helper=",
+            "protocol.allow=never",
+            "-C",
+            "/workspace",
+        ] {
+            assert!(arguments.iter().any(|argument| argument == expected));
+        }
+        assert!(arguments
+            .iter()
+            .any(|argument| argument.starts_with("core.hooksPath=")));
+        let environment = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            environment.get("GIT_TERMINAL_PROMPT").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            environment.get("GCM_INTERACTIVE").map(String::as_str),
+            Some("never")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_timeout_covers_closed_streams_and_kills_descendants() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path().join("repository");
+        std::fs::create_dir_all(&repository).unwrap();
+        let leak = directory.path().join("timeout-leak");
+        let executable = fake_git_script(
+            &directory.path().join("bin"),
+            &format!("exec 1>&- 2>&-; sleep 0.30; touch '{}'", leak.display()),
+        );
+
+        let error = run_git_with_executable(
+            &executable,
+            &repository,
+            &["status"],
+            Duration::from_millis(50),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("timed out"));
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(!leak.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_cancellation_kills_the_complete_process_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path().join("repository");
+        std::fs::create_dir_all(&repository).unwrap();
+        let descendant_started = directory.path().join("descendant-started");
+        let leak = directory.path().join("cancellation-leak");
+        let executable = fake_git_script(
+            &directory.path().join("bin"),
+            &format!(
+                "exec 1>&- 2>&-; \
+                 (: > '{}'; sleep 0.60; : > '{}') & wait",
+                descendant_started.display(),
+                leak.display()
+            ),
+        );
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let worker_cancellation = Arc::clone(&cancellation);
+        let worker = std::thread::spawn(move || {
+            with_git_cancellation(worker_cancellation, || {
+                run_git_with_executable(
+                    &executable,
+                    &repository,
+                    &["status"],
+                    Duration::from_secs(10),
+                )
+            })
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !descendant_started.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(descendant_started.exists());
+
+        cancellation.store(true, Ordering::Release);
+        let error = worker.join().unwrap().unwrap_err();
+
+        assert!(error.to_string().contains("cancelled"));
+        std::thread::sleep(Duration::from_millis(700));
+        assert!(!leak.exists());
+    }
 }

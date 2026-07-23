@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "5.3.0"
+version = "6.4.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -16,8 +16,8 @@ path = "src/lib.rs"
 a3s-common = { version = "0.1.1", path = "../../common" }
 a3s-memory = { version = "0.1.2", path = "../../memory" }
 a3s-lane = { version = "0.5", path = "../../lane" }
-a3s-search = { version = "1.4.3", path = "../../search", default-features = false, features = ["lightpanda"] }
-a3s-flow = { version = "0.4.2", path = "../../flow" }
+a3s-search = { version = "2.1.0", path = "../../search", default-features = false, features = ["lightpanda"] }
+a3s-flow = { version = "0.4.3", path = "../../flow" }
 
 # Async runtime
 tokio = { version = "1.35", features = [
@@ -39,7 +39,7 @@ serde_yaml = "0.9"
 toml = "0.8"
 
 # ACL config parsing
-a3s-acl = { git = "https://github.com/A3S-Lab/ACL.git", rev = "6e2a6469edc0f4c61b1e588d0ace873aaf15ce22", version = "0.2.1" }
+a3s-acl = "=0.3.0"
 
 # Error handling
 anyhow = "1.0"
@@ -86,8 +86,7 @@ shell-words = "1.1"
 # HTML to text/markdown conversion
 html2text = "0.16"
 htmd = "0.5"
-pdf-extract = "0.7"
-lopdf = "0.34"
+pdf-extract = "0.12"
 roxmltree = "0.20"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 cfb = "0.14"
@@ -123,6 +122,9 @@ aws-smithy-runtime-api = { version = "1", optional = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [features]
 default = []
 # Enable OpenTelemetry OTLP export for traces and metrics.
@@ -147,6 +149,10 @@ s3 = [
 serve = ["dep:cron"]
 
 [dev-dependencies]
+# Build deterministic PDF fixtures for web_fetch extraction tests.
+lopdf = "0.42"
+# Deterministically advance the exponential stream-retry backoff in async tests.
+tokio = { version = "1.35", features = ["test-util"] }
 # HTTP mocking for the RemoteGitBackend (and any future HTTP-backed workspace
 # provider). Production code does not depend on wiremock.
 wiremock = "0.6"

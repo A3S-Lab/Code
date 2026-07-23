@@ -101,6 +101,8 @@ fn finish_agent_session(
 ) -> Result<AgentSession> {
     let opts = &resolved.options;
     let llm_client = Arc::clone(&resolved.llm_client);
+    let model_generation_admission =
+        crate::llm::ModelGenerationAdmission::new(llm_client.model_generation_concurrency());
     let tool_executor = capabilities.tool_executor;
     let trace_sink = capabilities.trace_sink;
     let agent_registry = capabilities.agent_registry;
@@ -191,6 +193,7 @@ fn finish_agent_session(
     let session_cancel = tokio_util::sync::CancellationToken::new();
     let cancel_token = Arc::new(tokio::sync::Mutex::new(None));
     let current_run_id = Arc::new(tokio::sync::Mutex::new(None));
+    let run_admission = Arc::new(super::run_admission::RunAdmission::default());
     let run_store = Arc::new({
         let limits = resolved.limits.retention;
         crate::run::InMemoryRunStore::with_retention_limits(
@@ -211,6 +214,8 @@ fn finish_agent_session(
         confirmation_manager: config.confirmation_manager.clone(),
         hook_executor: opts.hook_executor.clone(),
         command_queue: command_queue.clone(),
+        run_admission: Arc::clone(&run_admission),
+        memory: memory.clone(),
         mcp_manager: Arc::clone(&resolved.mcp_manager),
         tool_executor: Arc::clone(&tool_executor),
         extension_mutation: tokio::sync::Mutex::new(()),
@@ -226,6 +231,7 @@ fn finish_agent_session(
 
     let session = AgentSession {
         llm_client,
+        model_generation_admission,
         tool_executor,
         tool_context,
         memory: config.memory.clone(),
@@ -233,7 +239,7 @@ fn finish_agent_session(
         workspace: canonical,
         session_id,
         history: Arc::new(RwLock::new(Vec::new())),
-        run_admission: Arc::new(super::run_admission::RunAdmission::default()),
+        run_admission,
         command_queue,
         session_store,
         persistence_state: Arc::new(RwLock::new(

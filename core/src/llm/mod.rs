@@ -3,6 +3,7 @@
 //! Provides a unified interface for interacting with LLM providers
 //! (Anthropic Claude, OpenAI, Zhipu AI GLM, and OpenAI-compatible providers).
 
+mod admission;
 pub mod anthropic;
 mod error;
 pub mod factory;
@@ -14,6 +15,10 @@ mod types;
 pub mod zhipu;
 
 // Re-export public types
+pub use admission::{
+    ModelGenerationAdmission, ModelGenerationAdmissionError, ModelGenerationConcurrency,
+    ModelGenerationPermit,
+};
 pub use anthropic::AnthropicClient;
 pub(crate) use error::non_retryable_llm_error_message;
 pub use error::NonRetryableLlmError;
@@ -35,6 +40,16 @@ use tokio_util::sync::CancellationToken;
 /// LLM client trait
 #[async_trait]
 pub trait LlmClient: Send + Sync {
+    /// Report the client's explicitly supported active-generation capacity.
+    ///
+    /// The conservative default is single-flight. Providers that can safely
+    /// serve more active generations must override this with a typed contract;
+    /// callers must not infer concurrency from provider names or endpoint
+    /// strings.
+    fn model_generation_concurrency(&self) -> ModelGenerationConcurrency {
+        ModelGenerationConcurrency::single_flight()
+    }
+
     /// Derive a provider client bound to one logical agent session.
     ///
     /// Stateless providers can keep the default and share the existing client.

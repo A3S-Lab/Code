@@ -40,6 +40,7 @@ impl std::fmt::Debug for SessionOptions {
                 &self.enforce_active_skill_tool_restrictions,
             )
             .field("memory_store", &self.memory_store.is_some())
+            .field("memory_observers", &self.memory_observers.len())
             .field("file_memory_dir", &self.file_memory_dir)
             .field("session_store", &self.session_store.is_some())
             .field("file_session_store_dir", &self.file_session_store_dir)
@@ -280,6 +281,17 @@ impl SessionOptions {
     pub fn with_file_memory(mut self, dir: impl Into<PathBuf>) -> Self {
         self.memory_store = None;
         self.file_memory_dir = Some(dir.into());
+        self
+    }
+
+    /// Observe successful durable memory writes without replacing the memory
+    /// backend. Observers are best-effort derived projections: their failures
+    /// never undo a persisted memory.
+    pub fn with_memory_observer(
+        mut self,
+        observer: Arc<dyn crate::memory::MemoryObserver>,
+    ) -> Self {
+        self.memory_observers.push(observer);
         self
     }
 

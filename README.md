@@ -88,6 +88,9 @@ the session for its next transcript operation.
   explicitly registered A3S Flow-backed dynamic workflows
 - **Durable Evidence**: Persist atomic snapshots, versioned events, traces,
   artifacts, verification reports, checkpoints, and optional RL trajectories
+- **Immutable Release Admission**: Validate bounded `.a3s/asset.acl` manifests,
+  derive schema-aware identities, and reject incompatible runtime capabilities
+  before activation
 - **Event-Sourced State Graph**: Coordinate typed objects and relations through
   hash-linked records, optimistic patches, strict replay, forks, and diffs
 
@@ -116,6 +119,7 @@ explicit even when the supporting types are available.
 | MCP | Config or session registration | stdio, SSE, streamable HTTP, OAuth, refresh, and live add/remove management |
 | Skills | Filesystem, registry, or live session registration | Search/execute tools, model-visible catalog, live add/remove with shadow restoration, and child-run inheritance |
 | Search runtime | Explicit host operation | Browser status, install, update, and repair APIs for managed search runtimes |
+| Agent release contract | Baseline admission API | Closed, bounded manifest validation, immutable OCI/provenance binding, canonical identity, typed storage and secret slots, and pre-activation compatibility checks |
 | S3 workspace | Cargo feature `s3` | S3-compatible object storage backend with capability-aware tool visibility |
 | Agent daemon | Cargo feature `serve` | Filesystem-first agent serving and cron schedules |
 | OpenTelemetry | Cargo feature `telemetry` | OTLP trace export; normal `tracing` remains available without it |
@@ -211,6 +215,19 @@ already initialized resources and never start or block a Tokio runtime.
 
 ## Application Model
 
+### Release admission and identity
+
+`AgentReleaseManifest` admits the versioned `.a3s/asset.acl` contract, returns
+schema-aware canonical ACL and its SHA-256 identity, and verifies an
+`AgentReleaseCompatibility` before activation. Secret declarations are typed
+injection slots only; values and external secret identifiers remain outside
+the release document.
+
+This API does not build or run the declared OCI artifact and does not implement
+its readiness, liveness, or shutdown behavior. See the
+[Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) for the complete v1
+schema, compatibility policy, security boundary, and fixture status.
+
 ### Sessions and lifecycle
 
 A session owns conversation history, workspace services, tool registrations,
@@ -263,7 +280,7 @@ object-only backend that cannot execute it.
 | Workspace search | `glob`, `grep` | Bounded matching with explicit result metadata and continuation |
 | Code Intelligence | `code_symbols`, `code_navigation`, `code_diagnostics` | Saved-file semantic metadata and locations with bounded results; source retrieval and mutation stay in the existing file tools |
 | Commands and source control | `bash`, `git` | Bounded output, cancellation, process-group termination on Unix, and typed Git operations |
-| Web evidence | `web_search`, `web_fetch` | Ranked multi-engine search, normalized sources, SSRF protections, extraction, and bounded pages |
+| Web evidence | `web_search`, `web_fetch` | Ranked multi-engine search with structured engine failures, policy-driven fallback, optional native AnySearch and Tavily providers, normalized sources, semantic `<main>` extraction with `<body>` fallback, SSRF protections, and bounded pages |
 | Structured output | `generate_object` | Schema-constrained model generation with validation and repair |
 | Composition | `batch`, `program` | Safe batch scheduling and sandboxed JavaScript programmatic tool calling |
 | Delegation | `task`, `parallel_task` | Foreground/background workers, bounded parallelism, partial results, and task tracking |
@@ -271,10 +288,72 @@ object-only backend that cannot execute it.
 | MCP | `mcp__<server>__<tool>` | Namespaced tools owned by their source manager |
 | Dynamic workflows | `dynamic_workflow` | Explicitly registered A3S Flow-backed, replayable per-turn workflows |
 
+Without an explicit request or `SearchConfig` engine selection, `web_search`
+uses DuckDuckGo and Wikipedia; AnySearch is not enabled by default. Configure
+the `search.engine` block in `config.acl` to replace that default selection,
+including an explicit `anysearch { enabled = true }` entry when desired. Set
+`ANYSEARCH_API_KEY` to authenticate it. When selected engines fail or return no
+usable result, the tool uses untried HTTP engines within the original timeout
+budget and reports the degradation through structured metadata and a visible
+notice.
+
+Standalone greetings are conversational turns: the model receives no tool
+definitions and a friendly response is not converted into a synthetic
+continuation. A greeting that also asks for work keeps the normal tool surface.
+
 The built-in skill registry starts empty; skills come from configured
 directories, `AgentDir`, inline host input, or live registration. The
 model-visible `program` tool executes JavaScript in QuickJS, not arbitrary
 Python or a shell-script catalog.
+
+### Process sandbox contract
+
+Hosts can attach a `BashSandbox` through `SessionOptions::with_sandbox_handle`.
+The extended execution request preserves the command, guest workspace, timeout,
+stream observer, and explicit command environment; existing implementations
+remain compatible through `exec_command`.
+
+`SrtBashSandbox` is the fail-closed local adapter. It denies command network
+egress, local binding, and Unix sockets; limits writes to the active workspace
+and a private per-run scratch directory; protects repository and agent-control
+metadata; blocks common credential reads; and scrubs ambient secrets and
+language/bootstrap injection variables. It keeps stdout and stderr distinct
+under one global capture limit. Its deadline covers output draining and the
+child's complete lifetime, including a process that closes both streams before
+it exits; timeout or cancellation terminates the Unix process group. It never
+searches `PATH` for a sandbox runtime and never falls back to the host runner
+when its explicitly provisioned runtime is missing or fails. Write-deny paths
+already covered by a protected ancestor are collapsed before SRT startup,
+while more-specific credential read denies remain intact. The embedding host
+remains responsible for choosing whether an unavailable sandbox causes an
+interactive escalation or a deterministic denial.
+
+Shell isolation does not automatically govern in-process workspace tools.
+Interactive hosts should construct `LocalWorkspaceBackend` or
+`ManifestWorkspaceBackend` with
+`LocalWorkspaceAccessPolicy::CredentialBoundary`. That opt-in applies the
+credential boundary to direct reads, range reads, writes, and both indexed and
+fallback grep. Directory grep omits denied candidates, explicit sensitive
+targets fail closed, source-tree multi-link files are rejected, and ordinary
+package-store hardlinks remain usable unless they alias a discovered
+credential inode. Guarded local Git diff enumerates changed paths with Git's
+NUL-delimited format and regenerates output only for allowed paths; option-like
+revision input cannot become a Git flag, and displayed remote URLs omit
+embedded HTTP credentials and query tokens.
+
+Hosts use `from_verified_npm_with_node` when a lifecycle owner supplies exact
+SRT and Node paths. The verified constructor requires the expected npm package
+identity and a tested SRT version; `new` likewise requires an explicit path for
+an intentionally supplied custom adapter. The A3S CLI uses the verified
+exact-path form after validating and, when policy allows, preparing its
+user-wide managed installation; Core does not install host software.
+
+This adapter is a low-latency local enforcement provider, not the stack-wide
+workload contract. Code owns agent permission and escalation policy, A3S
+Runtime owns provider-neutral Task and Service lifecycle and placement, and A3S
+Box owns OCI and stronger-isolation workloads. Replacing the CLI's transitional
+npm bootstrap with an A3S-signed sandbox artifact does not change the
+`BashSandbox` contract.
 
 Long-running hosts can call `AgentSession::add_skill`, `remove_skill`, and
 `skill_names` without rebuilding the session. The model-visible Skill catalog
@@ -354,7 +433,20 @@ Confirmation managers, hooks, budget guards, security providers, stream
 sanitization, retention limits, circuit breakers, duplicate-call guards, and
 no-progress detection compose around the same invocation path. Trusted direct
 host calls skip model-facing permission prompts, so an embedding application
-must authorize its callers.
+must authorize its callers. Only built-in control-plane orchestrators may carry
+that authority into host-selected nested calls. A public custom tool's
+`InvocationRuntime`, and every model sub-run created from a direct host context,
+produce ordinary governed invocations instead of inheriting ambient trust.
+
+Delegated tasks, workflow steps, and Skill child runs retain the parent sandbox
+and intersect their local permission policy with the parent checker. A
+child-local `Ask` follows that worker's `auto_approve`, `deny_on_ask`, or
+`inherit_parent` policy, while an `Ask` introduced by the parent remains under
+the parent confirmation provider. If both scopes ask, both remain effective and
+the same provider is de-duplicated. Tool-owned confirmation after both policies
+allow is also governed by the parent, so a child-local auto-approver cannot
+waive a host escalation boundary. Cancellation and timeout settle only the
+matching confirmation ID; unrelated concurrent prompts remain pending.
 
 ### Workspace backends
 
@@ -393,8 +485,15 @@ transcript data, not as a new source of executable instructions.
 The memory layer separates working, short-term, and durable long-term state.
 It supports relevance and recency scoring, typed memories, relations,
 successful and failed pattern capture, file or custom stores, optional pruning,
-and context injection. Significant completed turns can use the active model to
-extract a bounded set of durable memories; hosts can disable or tune extraction.
+and context injection. By default, every completed non-empty session turn is
+sent to the active model for a semantic value judgment; the model returns an
+empty set when nothing is reusable. Automatic extraction writes only validated
+semantic or procedural memories and never mechanically persists tool results or
+turn history. Streaming turns register extraction before publishing their final
+event, run through a FIFO background queue, and graceful session close drains
+already-accepted work for a bounded period. Stored extractor metadata records
+source, confidence, scope, reason, workspace, session, and schema version.
+Hosts can disable extraction or tune its input and output bounds.
 
 ### Models and MCP
 
@@ -404,11 +503,44 @@ reasoning, tool calls, usage, images, retries, cancellation, and streaming where
 the provider supports them. Structured generation uses native response formats
 when available and a schema-validated prompt fallback otherwise.
 
+Anthropic and OpenAI-compatible SSE transports decode UTF-8 incrementally
+across raw network chunks before splitting events. A multibyte character may
+therefore cross any transport boundary without being replaced or corrupting the
+event payload.
+
+`LlmClient::model_generation_concurrency` is the typed admission contract for
+structured model transactions. The default is conservative single-flight;
+providers may explicitly report a larger finite bound.
+Each `AgentSession` owns one cancellation-safe gate and reuses it across
+conversation loops, host-direct calls, and rebuilt direct-tool runtimes.
+`generate_object` waits on that gate before starting its active deadline,
+retains the permit through schema repairs, and reports the queue wait
+separately in metadata. `DynamicWorkflowRuntime` recognizes the exact
+`generate_object` Flow step identity and acquires the same capacity before
+starting its bounded `program` VM. The nested generation reuses that one-shot
+identity-checked permit, so neither the generation deadline nor the Program
+deadline includes admission queue time, parallel nested calls cannot reuse one
+reservation, and concurrent host-direct workflows cannot create independent
+provider gates.
+
+If an established response stream closes before its final response, Core
+restarts the same LLM turn with the same message snapshot up to ten times. The
+delay grows exponentially from one second and is capped at thirty seconds, with
+jitter. Core re-emits `TurnStart` with the same turn number before each wait so
+stream consumers can roll back provisional deltas and tool drafts in place;
+only the successful assistant response is committed. Cancellation interrupts
+the wait immediately, and setup/status retries remain owned by the provider
+transport rather than nesting another turn-level retry loop.
+
 MCP connections support stdio, HTTP SSE, streamable HTTP, and OAuth client
 credentials. Global managers can seed new sessions and refresh cached tools;
 session managers can connect, disconnect, and live-add or remove isolated
 servers. Tools remain source qualified so separate servers do not silently
-share ownership.
+share ownership. A local stdio server leads a dedicated Unix process group.
+Transport close or drop stops its pipe tasks, fails pending requests, reaps the
+direct child, and terminates descendants; stderr is drained independently so a
+diagnostic-heavy server cannot block the protocol pipe. This lifecycle
+containment does not make the configured server an untrusted sandbox.
 
 Hosts can add or replace a Skill in a running session with
 `AgentSession::add_skill`, inspect the effective names with `skill_names`, and

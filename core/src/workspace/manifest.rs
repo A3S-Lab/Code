@@ -8,15 +8,16 @@
 
 use super::{
     escape_control_chars_for_display, validate_relative_pattern, CommandOutput, CommandRequest,
-    LocalWorkspaceBackend, WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceFileSystem,
-    WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest,
-    WorkspaceGitCommit, WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest,
-    WorkspaceGitDiffRequest, WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest,
-    WorkspaceGitStash, WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus,
-    WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
-    WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest,
-    WorkspaceGrepResult, WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch,
-    WorkspaceTextRange, WorkspaceTextReader, WorkspaceWriteOutcome,
+    LocalWorkspaceAccessPolicy, LocalWorkspaceBackend, WorkspaceCommandRunner, WorkspaceDirEntry,
+    WorkspaceFileSystem, WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput,
+    WorkspaceGitCheckoutRequest, WorkspaceGitCommit, WorkspaceGitCreateBranchRequest,
+    WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest, WorkspaceGitRemote,
+    WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash, WorkspaceGitStashProvider,
+    WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
+    WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
+    WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest, WorkspaceGrepResult,
+    WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceTextRange,
+    WorkspaceTextReader, WorkspaceWriteOutcome,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -410,7 +411,17 @@ pub struct ManifestWorkspaceBackend {
 
 impl ManifestWorkspaceBackend {
     pub fn new(root: impl Into<PathBuf>) -> Arc<Self> {
-        let local = Arc::new(LocalWorkspaceBackend::new(root.into()));
+        Self::new_with_access_policy(root, LocalWorkspaceAccessPolicy::Unrestricted)
+    }
+
+    pub fn new_with_access_policy(
+        root: impl Into<PathBuf>,
+        access_policy: LocalWorkspaceAccessPolicy,
+    ) -> Arc<Self> {
+        let local = Arc::new(LocalWorkspaceBackend::new_with_access_policy(
+            root.into(),
+            access_policy,
+        ));
         let manifest = LocalWorkspaceManifest::start(local.root.clone());
         Self::from_manifest(local, manifest)
     }
@@ -551,6 +562,7 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
         if let Some(ref glob) = request.glob {
             validate_relative_pattern(glob, "grep glob filter")?;
         }
+        self.local.ensure_search_base_allowed(&request.base)?;
         let Some(search_snapshot) = self.manifest_ready() else {
             return self.fallback_search().grep_with_sources(request).await;
         };
@@ -600,10 +612,9 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
                 }
             }
 
-            let full_path = search_snapshot.snapshot.root.join(&file.path);
-            let content = match std::fs::read_to_string(&full_path) {
-                Ok(content) => content,
-                Err(_) => continue,
+            let workspace_path = WorkspacePath::from_normalized(file.path.clone());
+            let Some(content) = self.local.read_search_file(&workspace_path) else {
+                continue;
             };
             let lines: Vec<&str> = content.lines().collect();
             let file_matches = lines
@@ -617,7 +628,6 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
             }
 
             file_count += 1;
-            let workspace_path = WorkspacePath::from_normalized(file.path.clone());
             let display_path = escape_control_chars_for_display(&file.path);
             let mut path_recorded = false;
             for &match_idx in &file_matches {

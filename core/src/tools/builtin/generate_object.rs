@@ -5,12 +5,17 @@
 //! partial objects via `ToolStreamEvent::OutputDelta`.
 
 use crate::llm::structured::{self, PartialObjectCallback, StructuredMode, StructuredRequest};
-use crate::llm::LlmClient;
+use crate::llm::{
+    LlmClient, ModelGenerationAdmission, ModelGenerationAdmissionError, ModelGenerationConcurrency,
+    ModelGenerationPermit,
+};
 use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput, ToolStreamEvent};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const MAX_SCHEMA_BYTES: usize = 64 * 1024;
 const MAX_SCHEMA_DEPTH: usize = 32;
@@ -23,11 +28,16 @@ const MAX_PARTIAL_EVENT_BYTES: usize = 64 * 1024;
 
 pub struct GenerateObjectTool {
     llm_client: Arc<dyn LlmClient>,
+    admission: ModelGenerationAdmission,
 }
 
 impl GenerateObjectTool {
     pub fn new(llm_client: Arc<dyn LlmClient>) -> Self {
-        Self { llm_client }
+        let admission = ModelGenerationAdmission::new(llm_client.model_generation_concurrency());
+        Self {
+            llm_client,
+            admission,
+        }
     }
 }
 
@@ -93,7 +103,7 @@ impl Tool for GenerateObjectTool {
                     "type": "integer",
                     "minimum": 1000,
                     "maximum": MAX_TIMEOUT_MS,
-                    "description": "Independent generation deadline in milliseconds. Default 120000; maximum 600000."
+                    "description": "Active generation deadline in milliseconds. Admission queue wait is excluded. Default 120000; maximum 600000."
                 }
             }
         })
@@ -232,6 +242,10 @@ impl Tool for GenerateObjectTool {
         let llm_client = ctx
             .llm_client()
             .unwrap_or_else(|| Arc::clone(&self.llm_client));
+        let admission = ctx
+            .model_generation_admission()
+            .unwrap_or_else(|| self.admission.clone());
+        let preadmitted = ctx.model_generation_permit(&admission);
         let cancellation = ctx.cancellation_token();
         let generation = async {
             if let Some(ref tx) = ctx.event_tx {
@@ -267,12 +281,20 @@ impl Tool for GenerateObjectTool {
                 structured::generate_blocking(&*llm_client, &req).await
             }
         };
-        let result = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => Err(GenerationStop::Cancelled),
-            _ = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => Err(GenerationStop::TimedOut),
-            result = generation => result.map_err(GenerationStop::Failed),
-        };
+        let execution = run_generation_with_admission(
+            &admission,
+            preadmitted,
+            &cancellation,
+            Duration::from_millis(timeout_ms),
+            generation,
+        )
+        .await;
+        let admission_metadata = generation_admission_metadata(
+            admission.concurrency(),
+            execution.queue_wait,
+            timeout_ms,
+        );
+        let result = execution.result;
 
         match result {
             Ok(sr) => {
@@ -321,6 +343,7 @@ impl Tool for GenerateObjectTool {
                     "repair_rounds": sr.repair_rounds,
                     "usage": output["usage"].clone(),
                     "raw_text_included": include_raw_text,
+                    "generation_admission": admission_metadata,
                 });
                 Ok(ToolOutput::success(serde_json::to_string(&output)?).with_metadata(metadata))
             }
@@ -355,6 +378,7 @@ impl Tool for GenerateObjectTool {
                     "requested_mode": requested_mode,
                     "mode_requested": mode,
                     "timeout_ms": timeout_ms,
+                    "generation_admission": admission_metadata,
                 }));
                 Ok(match kind {
                     Some(kind) => output.with_error_kind(kind),
@@ -369,6 +393,65 @@ enum GenerationStop {
     Cancelled,
     TimedOut,
     Failed(anyhow::Error),
+}
+
+struct GenerationExecution<T> {
+    result: std::result::Result<T, GenerationStop>,
+    queue_wait: Duration,
+}
+
+async fn run_generation_with_admission<T, F>(
+    admission: &ModelGenerationAdmission,
+    preadmitted: Option<Arc<ModelGenerationPermit>>,
+    cancellation: &tokio_util::sync::CancellationToken,
+    active_timeout: Duration,
+    generation: F,
+) -> GenerationExecution<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    let queued_at = Instant::now();
+    let permit = match preadmitted {
+        Some(permit) => permit,
+        None => match admission.acquire(cancellation).await {
+            Ok(permit) => Arc::new(permit),
+            Err(ModelGenerationAdmissionError::Cancelled) => {
+                return GenerationExecution {
+                    result: Err(GenerationStop::Cancelled),
+                    queue_wait: queued_at.elapsed(),
+                };
+            }
+            Err(error) => {
+                return GenerationExecution {
+                    result: Err(GenerationStop::Failed(anyhow::Error::new(error))),
+                    queue_wait: queued_at.elapsed(),
+                };
+            }
+        },
+    };
+    let queue_wait = permit.queue_wait();
+    let result = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(GenerationStop::Cancelled),
+        _ = tokio::time::sleep(active_timeout) => Err(GenerationStop::TimedOut),
+        result = generation => result.map_err(GenerationStop::Failed),
+    };
+    drop(permit);
+    GenerationExecution { result, queue_wait }
+}
+
+fn generation_admission_metadata(
+    concurrency: ModelGenerationConcurrency,
+    queue_wait: Duration,
+    active_timeout_ms: u64,
+) -> Value {
+    let queue_wait_ms = u64::try_from(queue_wait.as_millis()).unwrap_or(u64::MAX);
+    serde_json::json!({
+        "mode": "bounded",
+        "max_concurrency": concurrency.max_concurrency().get(),
+        "queue_wait_ms": queue_wait_ms,
+        "active_timeout_ms": active_timeout_ms,
+    })
 }
 
 fn invalid_argument(message: String) -> ToolOutput {
@@ -594,6 +677,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admission_queue_wait_does_not_consume_active_generation_timeout() {
+        let admission = ModelGenerationAdmission::default();
+        let holder = admission
+            .acquire(&CancellationToken::new())
+            .await
+            .expect("hold the only active-generation slot");
+        let cancellation = CancellationToken::new();
+        let run = tokio::spawn({
+            let admission = admission.clone();
+            let cancellation = cancellation.clone();
+            async move {
+                run_generation_with_admission(
+                    &admission,
+                    None,
+                    &cancellation,
+                    Duration::from_millis(20),
+                    async { Ok::<_, anyhow::Error>("completed") },
+                )
+                .await
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !run.is_finished(),
+            "admission queue time must not consume the active deadline"
+        );
+        drop(holder);
+
+        let execution = tokio::time::timeout(Duration::from_millis(100), run)
+            .await
+            .expect("generation should start after admission")
+            .expect("generation task should join");
+        assert!(execution.queue_wait >= Duration::from_millis(40));
+        match execution.result {
+            Ok(value) => assert_eq!(value, "completed"),
+            Err(_) => panic!("queued generation should retain its full active deadline"),
+        }
+    }
+
+    #[tokio::test]
     async fn generate_object_tool_unwraps_array_schema_and_sets_metadata() {
         let tool = GenerateObjectTool::new(Arc::new(MockObjectClient::new(
             MockObjectClient::response(),
@@ -630,6 +754,14 @@ mod tests {
         assert_eq!(metadata["schema_name"], "colors");
         assert_eq!(metadata["requested_mode"], "tool");
         assert_eq!(metadata["raw_text_included"], false);
+        assert_eq!(
+            metadata["generation_admission"]["max_concurrency"],
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            metadata["generation_admission"]["active_timeout_ms"],
+            serde_json::json!(DEFAULT_TIMEOUT_MS)
+        );
     }
 
     #[tokio::test]
@@ -695,28 +827,30 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let started = Arc::new(Notify::new());
         let calls = Arc::new(AtomicUsize::new(0));
-        let tool = GenerateObjectTool::new(Arc::new(BlockingObjectClient {
+        let tool = Arc::new(GenerateObjectTool::new(Arc::new(BlockingObjectClient {
             started: Arc::clone(&started),
             calls: Arc::clone(&calls),
-        }));
+        })));
         let cancellation = CancellationToken::new();
         let ctx =
             ToolContext::new(temp.path().to_path_buf()).with_cancellation(cancellation.clone());
         let started_wait = started.notified();
+        let running_tool = Arc::clone(&tool);
         let run = tokio::spawn(async move {
-            tool.execute(
-                &serde_json::json!({
-                    "schema": {
-                        "type": "object",
-                        "properties": {"value": {"type": "string"}},
-                        "required": ["value"]
-                    },
-                    "prompt": "Wait forever",
-                    "mode": "tool"
-                }),
-                &ctx,
-            )
-            .await
+            running_tool
+                .execute(
+                    &serde_json::json!({
+                        "schema": {
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                            "required": ["value"]
+                        },
+                        "prompt": "Wait forever",
+                        "mode": "tool"
+                    }),
+                    &ctx,
+                )
+                .await
         });
 
         tokio::time::timeout(Duration::from_secs(1), started_wait)
@@ -732,5 +866,14 @@ mod tests {
         assert!(!output.success);
         assert!(output.content.contains("cancelled"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let replacement = tokio::time::timeout(
+            Duration::from_millis(100),
+            tool.admission.acquire(&CancellationToken::new()),
+        )
+        .await
+        .expect("cancellation must release active-generation admission")
+        .expect("replacement permit");
+        drop(replacement);
     }
 }
