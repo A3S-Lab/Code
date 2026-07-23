@@ -280,7 +280,7 @@ object-only backend that cannot execute it.
 | Workspace search | `glob`, `grep` | Bounded matching with explicit result metadata and continuation |
 | Code Intelligence | `code_symbols`, `code_navigation`, `code_diagnostics` | Saved-file semantic metadata and locations with bounded results; source retrieval and mutation stay in the existing file tools |
 | Commands and source control | `bash`, `git` | Bounded output, cancellation, process-group termination on Unix, and typed Git operations |
-| Web evidence | `web_search`, `web_fetch` | Ranked multi-engine search, including native AnySearch and Tavily providers, normalized sources, semantic `<main>` extraction with `<body>` fallback, SSRF protections, and bounded pages |
+| Web evidence | `web_search`, `web_fetch` | Ranked multi-engine search with structured engine failures, policy-driven fallback, optional native AnySearch and Tavily providers, normalized sources, semantic `<main>` extraction with `<body>` fallback, SSRF protections, and bounded pages |
 | Structured output | `generate_object` | Schema-constrained model generation with validation and repair |
 | Composition | `batch`, `program` | Safe batch scheduling and sandboxed JavaScript programmatic tool calling |
 | Delegation | `task`, `parallel_task` | Foreground/background workers, bounded parallelism, partial results, and task tracking |
@@ -289,9 +289,13 @@ object-only backend that cannot execute it.
 | Dynamic workflows | `dynamic_workflow` | Explicitly registered A3S Flow-backed, replayable per-turn workflows |
 
 Without an explicit request or `SearchConfig` engine selection, `web_search`
-uses AnySearch in its anonymous mode. Set `ANYSEARCH_API_KEY` to authenticate,
-or select `tavily`, `ddg`, `wiki`, and the other documented engines through
-the tool arguments or ACL configuration.
+uses DuckDuckGo and Wikipedia; AnySearch is not enabled by default. Configure
+the `search.engine` block in `config.acl` to replace that default selection,
+including an explicit `anysearch { enabled = true }` entry when desired. Set
+`ANYSEARCH_API_KEY` to authenticate it. When selected engines fail or return no
+usable result, the tool uses untried HTTP engines within the original timeout
+budget and reports the degradation through structured metadata and a visible
+notice.
 
 Standalone greetings are conversational turns: the model receives no tool
 definitions and a friendly response is not converted into a synthetic

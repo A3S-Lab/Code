@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.4.0] - 2026-07-22
+
+### Added
+
+- Added structured per-engine search failure metadata and provider-agnostic
+  fallback within the original request timeout budget.
+
+### Changed
+
+- Restored DuckDuckGo and Wikipedia as the built-in web-search defaults and
+  made AnySearch an explicit request or ACL selection.
+- Preserved bounded fallback notices and failure metadata when web search runs
+  inside a batch workflow.
+
+### Fixed
+
+- Accepted a complete schema-valid streamed object after a short terminal-event
+  grace period, so an OpenAI-compatible endpoint that omits or delays its final
+  `Done` event cannot turn an already generated result into a timeout.
+
 ## [6.3.1] - 2026-07-22
 
 ### Fixed

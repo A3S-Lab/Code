@@ -303,7 +303,13 @@ pub async fn generate_streaming(
 
     let cancel_token = CancellationToken::new();
     let mut rx = client
-        .complete_streaming_structured(&messages, Some(&system), &tools, &directive, cancel_token)
+        .complete_streaming_structured(
+            &messages,
+            Some(&system),
+            &tools,
+            &directive,
+            cancel_token.clone(),
+        )
         .await
         .context("LLM streaming call failed during structured generation")?;
 
@@ -311,10 +317,51 @@ pub async fn generate_streaming(
     let mut last_valid_partial: Option<Value> = None;
     let mut final_response: Option<super::LlmResponse> = None;
     let mut last_parse_len: usize = 0;
+    let mut complete_candidate: Option<(Value, String, tokio::time::Instant)> = None;
     // Minimum bytes of new data before attempting a partial parse (reduces CPU)
     const PARSE_THRESHOLD: usize = 8;
-
-    while let Some(event) = rx.recv().await {
+    // Well-behaved providers send Done immediately after the complete object.
+    // A short grace preserves their final usage metadata while preventing an
+    // otherwise valid result from hanging on a compatible endpoint that never
+    // terminates its stream.
+    const DONE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+    loop {
+        let event = if let Some((_, _, deadline)) = complete_candidate.as_ref() {
+            tokio::select! {
+                event = rx.recv() => event,
+                _ = tokio::time::sleep_until(*deadline) => {
+                    let candidate = complete_candidate
+                        .take()
+                        .expect("complete streamed candidate exists");
+                    let (value, raw_text, _) = candidate;
+                    cancel_token.cancel();
+                    on_partial(&value);
+                    return Ok(StructuredResult {
+                        object: value,
+                        raw_text: Some(raw_text),
+                        usage: TokenUsage::default(),
+                        repair_rounds: 0,
+                        mode_used: mode,
+                    });
+                }
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(event) = event else {
+            if let Some((value, raw_text, _)) = complete_candidate.take() {
+                cancel_token.cancel();
+                on_partial(&value);
+                return Ok(StructuredResult {
+                    object: value,
+                    raw_text: Some(raw_text),
+                    usage: TokenUsage::default(),
+                    repair_rounds: 0,
+                    mode_used: mode,
+                });
+            }
+            break;
+        };
         match event {
             StreamEvent::ToolUseInputDelta { delta, .. } if mode == StructuredMode::Tool => {
                 if final_response.is_some() {
@@ -333,6 +380,17 @@ pub async fn generate_streaming(
                         }
                     }
                     last_parse_len = json_buffer.len();
+                }
+                if complete_candidate.is_none() && (delta.contains('}') || delta.contains(']')) {
+                    complete_candidate = resolve_structured(
+                        std::slice::from_ref(&json_buffer),
+                        &req.schema,
+                        envelope,
+                    )
+                    .valid
+                    .map(|(value, raw_text)| {
+                        (value, raw_text, tokio::time::Instant::now() + DONE_GRACE)
+                    });
                 }
             }
             StreamEvent::TextDelta(delta) if mode != StructuredMode::Tool => {
@@ -356,9 +414,21 @@ pub async fn generate_streaming(
                     }
                     last_parse_len = json_buffer.len();
                 }
+                if complete_candidate.is_none() && (delta.contains('}') || delta.contains(']')) {
+                    complete_candidate = resolve_structured(
+                        std::slice::from_ref(&json_buffer),
+                        &req.schema,
+                        envelope,
+                    )
+                    .valid
+                    .map(|(value, raw_text)| {
+                        (value, raw_text, tokio::time::Instant::now() + DONE_GRACE)
+                    });
+                }
             }
             StreamEvent::Done(resp) => {
                 final_response = Some(resp);
+                break;
             }
             _ => {}
         }

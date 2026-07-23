@@ -1,24 +1,31 @@
 //! Web search tool - Search the web via a3s-search
 
+mod engines;
+mod fallback;
+
 use crate::config::{BrowserBackend, HeadlessConfig};
 use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider};
-use a3s_search::engines::{
-    Baidu, BingChina, BingParser, BraveParser, DuckDuckGoParser, Google, So360Parser, SogouParser,
-    Wikipedia,
-};
-use a3s_search::providers::BuiltinProvider;
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
-use a3s_search::WaitStrategy;
 use a3s_search::{
-    BrowserFetcher, HtmlEngine, HttpFetcher, Metrics, MetricsSnapshot, Search, SearchQuery,
-    SearchResult,
+    EngineFailure, Metrics, MetricsSnapshot, Search, SearchQuery, SearchResult, SearchResults,
 };
 use anyhow::Result;
 use async_trait::async_trait;
 use regex::Regex;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+use engines::{
+    add_headless_engine, add_http_engine, default_engine_selection, requires_headless_browser,
+    should_fallback_from_unavailable_headless, should_reject_engine_selection,
+};
+use fallback::{
+    configured_engine, failure_metadata, failure_summary, fallback_engine_names,
+    fallback_engine_shortcuts, merge_search_results, primary_search_timeout, text_notice_note,
+    tool_error_kind_for_failures, usable_result_engines,
+};
 
 pub struct WebSearchTool;
 
@@ -182,25 +189,6 @@ fn text_search_result(index: usize, result: &SearchResult) -> String {
     )
 }
 
-fn should_fallback_from_unavailable_headless(
-    engine_count: usize,
-    has_headless_config: bool,
-    engines: &[&str],
-) -> bool {
-    engine_count == 0
-        && !has_headless_config
-        && !engines.is_empty()
-        && engines
-            .iter()
-            .all(|engine| matches!(engine.trim(), "g" | "google" | "baidu"))
-}
-
-fn requires_headless_browser(engines: &[&str]) -> bool {
-    engines
-        .iter()
-        .any(|engine| matches!(engine.trim(), "g" | "google" | "baidu"))
-}
-
 fn sanitize_http_urls(text: &str) -> String {
     static URL_RE: OnceLock<Regex> = OnceLock::new();
     let url_re = URL_RE.get_or_init(|| {
@@ -245,107 +233,6 @@ fn search_metrics_json(snapshot: &MetricsSnapshot) -> serde_json::Value {
         "latency_p95_ms": snapshot.latency_p95_ms,
         "latency_p99_ms": snapshot.latency_p99_ms,
     })
-}
-
-/// Add an HTTP engine by shortcut
-fn add_http_engine(search: &mut Search, shortcut: &str, proxy_url: Option<&str>) -> bool {
-    let fetcher = || {
-        proxy_url
-            .and_then(|proxy| HttpFetcher::with_proxy(proxy).ok())
-            .unwrap_or_default()
-    };
-    match shortcut.trim() {
-        "ddg" => {
-            search.add_engine(HtmlEngine::with_fetcher(
-                DuckDuckGoParser,
-                Arc::new(fetcher()),
-            ));
-            true
-        }
-        "brave" => {
-            search.add_engine(HtmlEngine::with_fetcher(BraveParser, Arc::new(fetcher())));
-            true
-        }
-        "bing" => {
-            search.add_engine(HtmlEngine::with_fetcher(BingParser, Arc::new(fetcher())));
-            true
-        }
-        "wiki" => {
-            search.add_engine(Wikipedia::with_http_fetcher(fetcher()));
-            true
-        }
-        "sogou" => {
-            search.add_engine(HtmlEngine::with_fetcher(SogouParser, Arc::new(fetcher())));
-            true
-        }
-        "360" | "so360" => {
-            search.add_engine(HtmlEngine::with_fetcher(So360Parser, Arc::new(fetcher())));
-            true
-        }
-        "bing_cn" => {
-            search.add_engine(BingChina::new(Arc::new(fetcher())));
-            true
-        }
-        "anysearch" | "tavily" => {
-            let provider = BuiltinProvider::from_id(shortcut.trim())
-                .expect("matched built-in search provider");
-            match provider.create_engine() {
-                Ok(engine) => {
-                    search.add_engine(engine);
-                    true
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        provider = shortcut.trim(),
-                        %error,
-                        "Could not initialize native search provider"
-                    );
-                    false
-                }
-            }
-        }
-        _ => false,
-    }
-}
-
-fn default_engine_selection(
-    config: Option<&crate::config::SearchConfig>,
-) -> (Vec<&str>, &'static str) {
-    match config {
-        Some(config) if !config.engines.is_empty() => (
-            config
-                .engines
-                .iter()
-                .filter(|(_, engine)| engine.enabled)
-                .map(|(name, _)| name.as_str())
-                .collect(),
-            "config",
-        ),
-        _ => (vec!["ddg", "wiki"], "builtin_default"),
-    }
-}
-
-/// Add a headless engine using BrowserPool.
-fn add_headless_engine(search: &mut Search, shortcut: &str, pool: &Arc<BrowserPool>) -> bool {
-    match shortcut.trim() {
-        "g" | "google" => {
-            let fetcher = BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
-                css: "div.g".to_string(),
-                timeout_ms: 5000,
-            });
-            search.add_engine(Google::new(Arc::new(fetcher)));
-            true
-        }
-        "baidu" => {
-            let fetcher = BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
-                css: "div.c-container".to_string(),
-                timeout_ms: 5000,
-            });
-            search.add_engine(Baidu::new(Arc::new(fetcher)));
-            true
-        }
-        _ => false,
-    }
 }
 
 #[async_trait]
@@ -531,13 +418,13 @@ impl Tool for WebSearchTool {
         // Build Search instance with requested engines
         let search_metrics = Arc::new(Metrics::new());
         let mut search = Search::new().with_metrics(search_metrics.clone());
-        search.set_timeout(std::time::Duration::from_secs(timeout_secs));
+        let mut setup_failures = Vec::new();
 
         for shortcut in &engines {
             let shortcut_str = *shortcut;
 
             // Check if engine is configured and get its settings
-            let engine_config = config.and_then(|c| c.engines.get(shortcut_str));
+            let engine_config = config.and_then(|config| configured_engine(config, shortcut_str));
 
             // Skip if explicitly disabled in config
             if let Some(engine_cfg) = engine_config {
@@ -547,17 +434,33 @@ impl Tool for WebSearchTool {
                 }
             }
 
-            // Try HTTP engine first, then headless
-            if !add_http_engine(&mut search, shortcut_str, proxy_url.as_deref()) {
-                if let Some(ref pool) = browser_pool {
-                    if !add_headless_engine(&mut search, shortcut_str, pool) {
-                        tracing::warn!("Unknown or unavailable search engine: {}", shortcut_str);
+            // Try HTTP engine first, then headless. Native provider setup failures
+            // remain structured so they enter the same fallback policy as request failures.
+            match add_http_engine(&mut search, shortcut_str, proxy_url.as_deref()) {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Some(ref pool) = browser_pool {
+                        if !add_headless_engine(&mut search, shortcut_str, pool) {
+                            tracing::warn!(
+                                "Unknown or unavailable search engine: {}",
+                                shortcut_str
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            "Unknown or unavailable search engine: {} (headless engines require headless config)",
+                            shortcut_str
+                        );
                     }
-                } else {
+                }
+                Err(failure) => {
                     tracing::warn!(
-                        "Unknown or unavailable search engine: {} (headless engines require headless config)",
-                        shortcut_str
+                        provider = failure.provider.as_deref().unwrap_or("unknown"),
+                        kind = failure.kind,
+                        "Could not initialize native search provider"
                     );
+                    search_metrics.record_failure(&failure.kind, failure.transient);
+                    setup_failures.push(failure);
                 }
             }
         }
@@ -572,7 +475,7 @@ impl Tool for WebSearchTool {
             let _ = add_http_engine(&mut search, "wiki", proxy_url.as_deref());
         }
 
-        if search.engine_count() == 0 {
+        if should_reject_engine_selection(search.engine_count(), &setup_failures) {
             let message = format!("No valid engines found in: {:?}", engines);
             return Ok(ToolOutput::error(&message)
                 .with_error_kind(ToolErrorKind::InvalidArgument { message })
@@ -582,6 +485,17 @@ impl Tool for WebSearchTool {
                     "selected_engines": &selected_engines,
                 })));
         }
+
+        let mut attempted_engine_shortcuts = selected_engines.clone();
+        if fell_back_from_headless {
+            attempted_engine_shortcuts.extend(["ddg".to_string(), "wiki".to_string()]);
+        }
+        let available_fallback_shortcuts =
+            fallback_engine_shortcuts(&attempted_engine_shortcuts, config.map(Arc::as_ref));
+        let total_timeout = Duration::from_secs(timeout_secs.max(1));
+        let initial_timeout =
+            primary_search_timeout(total_timeout, !available_fallback_shortcuts.is_empty());
+        search.set_timeout(initial_timeout);
 
         // Configure proxy if provided
         if let Some(url) = proxy_url.as_deref() {
@@ -593,52 +507,177 @@ impl Tool for WebSearchTool {
             }
         }
 
-        let query = SearchQuery::new(&query_str);
-
-        let search_result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs.max(1)),
-            search.search(query),
-        )
-        .await;
-        browser_cleanup.shutdown().await;
-        let search_results = match search_result {
-            Ok(Ok(results)) => results,
-            Ok(Err(e)) => {
-                let metrics = search_metrics.snapshot().await;
-                let message = e.to_string();
-                let output = ToolOutput::error(format!("Search failed: {message}")).with_metadata(
-                    serde_json::json!({
-                        "status": "failed",
-                        "engine_selection_source": engine_selection_source,
-                        "selected_engines": &selected_engines,
-                        "search_metrics": search_metrics_json(&metrics),
-                    }),
-                );
-                return Ok(if looks_rate_limited(&message) {
-                    output.with_error_kind(ToolErrorKind::RateLimited {
-                        retry_after_ms: None,
-                    })
-                } else {
-                    output
-                });
-            }
-            Err(_) => {
-                let metrics = search_metrics.snapshot().await;
-                return Ok(ToolOutput::error(format!(
-                    "Search timed out after {timeout_secs} seconds"
-                ))
-                .with_error_kind(ToolErrorKind::Timeout {
-                    op: "web_search".to_string(),
-                    duration_ms: timeout_secs.saturating_mul(1_000),
-                })
-                .with_metadata(serde_json::json!({
-                    "status": "failed",
-                    "engine_selection_source": engine_selection_source,
-                    "selected_engines": &selected_engines,
-                    "search_metrics": search_metrics_json(&metrics),
-                })));
-            }
+        let search_started = Instant::now();
+        let search_deadline = search_started + total_timeout;
+        let initial_outer_timeout = initial_timeout
+            .saturating_add(Duration::from_millis(250))
+            .min(total_timeout);
+        let search_result = if search.engine_count() == 0 {
+            None
+        } else {
+            Some(
+                tokio::time::timeout(
+                    initial_outer_timeout,
+                    search.search(SearchQuery::new(&query_str)),
+                )
+                .await,
+            )
         };
+        browser_cleanup.shutdown().await;
+        let mut search_results = SearchResults::new();
+        for failure in setup_failures {
+            search_results.add_failure(failure);
+        }
+        match search_result {
+            Some(Ok(Ok(results))) => merge_search_results(&mut search_results, &results),
+            Some(Ok(Err(error))) => {
+                search_results.add_failure(
+                    EngineFailure::new("Selected search engines", error.kind(), error.to_string())
+                        .with_transient(error.is_transient()),
+                );
+            }
+            Some(Err(_)) => {
+                search_results.add_failure(
+                    EngineFailure::new(
+                        "Selected search engines",
+                        "timeout",
+                        "initial search stage timed out",
+                    )
+                    .with_transient(true),
+                );
+            }
+            None => {}
+        }
+
+        let mut notices = Vec::new();
+        let mut search_fallback = None;
+        let initial_failures = search_results.failures().to_vec();
+        let initial_failure_summary = failure_summary(&initial_failures);
+        let initial_failure_metadata = failure_metadata(&initial_failures);
+        let initial_result_engines = usable_result_engines(&search_results);
+        let has_usable_result = !initial_result_engines.is_empty();
+        let fallback_trigger = if !initial_failures.is_empty() {
+            "engine_failure"
+        } else if fell_back_from_headless {
+            "headless_unavailable"
+        } else {
+            "empty_results"
+        };
+        let degradation_cause = if !initial_failure_summary.is_empty() {
+            initial_failure_summary.clone()
+        } else if fell_back_from_headless {
+            "the selected headless engines were unavailable".to_string()
+        } else {
+            "the selected search engines returned no usable results".to_string()
+        };
+
+        if has_usable_result && (!initial_failures.is_empty() || fell_back_from_headless) {
+            notices.push(format!(
+                "Search degraded because {degradation_cause}; continued automatically with the engines that returned results."
+            ));
+            search_fallback = Some(serde_json::json!({
+                "trigger": fallback_trigger,
+                "mode": "selected_engines",
+                "attempted": true,
+                "engines": initial_result_engines,
+                "successful": true,
+                "failures": initial_failure_metadata,
+            }));
+        } else if !has_usable_result {
+            let mut fallback_search = Search::new().with_metrics(Arc::clone(&search_metrics));
+            let mut fallback_engines = Vec::new();
+            for shortcut in available_fallback_shortcuts {
+                match add_http_engine(&mut fallback_search, shortcut, proxy_url.as_deref()) {
+                    Ok(true) => fallback_engines.push(shortcut),
+                    Ok(false) => {}
+                    Err(failure) => {
+                        search_metrics.record_failure(&failure.kind, failure.transient);
+                        search_results.add_failure(failure);
+                    }
+                }
+            }
+
+            let remaining = search_deadline.saturating_duration_since(Instant::now());
+            if fallback_engines.is_empty() {
+                notices.push(format!(
+                    "Search degraded because {degradation_cause}; no additional fallback engine was available."
+                ));
+                search_fallback = Some(serde_json::json!({
+                    "trigger": fallback_trigger,
+                    "mode": "unavailable",
+                    "attempted": false,
+                    "engines": fallback_engines,
+                    "successful": false,
+                    "failures": initial_failure_metadata,
+                }));
+            } else if remaining.is_zero() {
+                search_results.add_failure(
+                    EngineFailure::new(
+                        "Fallback search",
+                        "timeout",
+                        "search timeout was exhausted before fallback could start",
+                    )
+                    .with_transient(true),
+                );
+                notices.push(format!(
+                    "Search degraded because {degradation_cause}; automatic fallback could not start because the search timeout was exhausted."
+                ));
+                search_fallback = Some(serde_json::json!({
+                    "trigger": fallback_trigger,
+                    "mode": "additional_engines",
+                    "attempted": false,
+                    "engines": fallback_engines,
+                    "successful": false,
+                    "failures": initial_failure_metadata,
+                }));
+            } else {
+                let fallback_names = fallback_engine_names(&fallback_engines);
+                let fallback_engine_timeout = remaining
+                    .saturating_sub(Duration::from_millis(100))
+                    .max(Duration::from_millis(1));
+                fallback_search.set_timeout(fallback_engine_timeout);
+                let fallback_result = tokio::time::timeout(
+                    remaining,
+                    fallback_search.search(SearchQuery::new(&query_str)),
+                )
+                .await;
+                match fallback_result {
+                    Ok(Ok(results)) => merge_search_results(&mut search_results, &results),
+                    Ok(Err(error)) => search_results.add_failure(
+                        EngineFailure::new("Fallback search", error.kind(), error.to_string())
+                            .with_transient(error.is_transient()),
+                    ),
+                    Err(_) => search_results.add_failure(
+                        EngineFailure::new(
+                            "Fallback search",
+                            "timeout",
+                            "fallback search timed out",
+                        )
+                        .with_transient(true),
+                    ),
+                }
+                let successful = !usable_result_engines(&search_results).is_empty();
+                notices.push(if successful {
+                    format!(
+                        "Search degraded because {degradation_cause}; automatically fell back to {fallback_names}."
+                    )
+                } else {
+                    format!(
+                        "Search degraded because {degradation_cause}; automatic fallback to {fallback_names} returned no usable results."
+                    )
+                });
+                search_fallback = Some(serde_json::json!({
+                    "trigger": fallback_trigger,
+                    "mode": "additional_engines",
+                    "attempted": true,
+                    "engines": fallback_engines,
+                    "successful": successful,
+                    "failures": initial_failure_metadata,
+                }));
+            }
+        }
+        search_results
+            .set_duration(u64::try_from(search_started.elapsed().as_millis()).unwrap_or(u64::MAX));
         let metrics = search_metrics.snapshot().await;
         let metrics_json = search_metrics_json(&metrics);
 
@@ -663,6 +702,7 @@ impl Tool for WebSearchTool {
                 })
             })
             .collect::<Vec<_>>();
+        let engine_failures = failure_metadata(search_results.failures());
         let error_note = if errors.is_empty() {
             String::new()
         } else {
@@ -672,6 +712,7 @@ impl Tool for WebSearchTool {
             }
             note
         };
+        let notice_note = text_notice_note(&notices);
 
         if results.is_empty() {
             let metadata = serde_json::json!({
@@ -679,26 +720,26 @@ impl Tool for WebSearchTool {
                 "engine_selection_source": engine_selection_source,
                 "selected_engines": &selected_engines,
                 "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
+                "notices": &notices,
+                "search_fallback": search_fallback.as_ref(),
                 "search_metrics": metrics_json,
                 "engine_errors": engine_errors,
+                "engine_failures": engine_failures,
             });
             let message = format!(
-                "No results found for query: \"{}\"{}",
-                query_str, error_note
+                "No results found for query: \"{}\"{}{}",
+                query_str, notice_note, error_note
             );
             if errors.is_empty() {
                 return Ok(ToolOutput::success(message).with_metadata(metadata));
             }
-            let output = ToolOutput::error(message).with_metadata(metadata);
-            return Ok(
-                if errors.iter().all(|(_, error)| looks_rate_limited(error)) {
-                    output.with_error_kind(ToolErrorKind::RateLimited {
-                        retry_after_ms: None,
-                    })
-                } else {
-                    output
-                },
-            );
+            let mut output = ToolOutput::error(message).with_metadata(metadata);
+            if let Some(error_kind) =
+                tool_error_kind_for_failures(search_results.failures(), total_timeout)
+            {
+                output = output.with_error_kind(error_kind);
+            }
+            return Ok(output);
         }
 
         let source_anchors = results
@@ -723,6 +764,9 @@ impl Tool for WebSearchTool {
             for (i, result) in results.iter().enumerate() {
                 text.push_str(&text_search_result(i, result));
             }
+            if !notice_note.is_empty() {
+                text.push_str(&notice_note);
+            }
             if !error_note.is_empty() {
                 text.push_str(&error_note);
             }
@@ -736,19 +780,14 @@ impl Tool for WebSearchTool {
                 "selected_engines": &selected_engines,
                 "source_anchors": source_anchors,
                 "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
+                "notices": &notices,
+                "search_fallback": search_fallback.as_ref(),
                 "search_metrics": metrics_json,
                 "engine_errors": engine_errors,
+                "engine_failures": engine_failures,
             })),
         )
     }
-}
-
-fn looks_rate_limited(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("rate limit")
-        || message.contains("too many requests")
-        || message.contains("http 429")
-        || message.contains("status 429")
 }
 
 /// Parse a proxy URL string like "http://host:port" into a ProxyConfig

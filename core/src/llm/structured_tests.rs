@@ -155,6 +155,39 @@ impl LlmClient for MockStructuredClient {
     }
 }
 
+struct CompleteObjectWithoutDoneClient;
+
+#[async_trait]
+impl LlmClient for CompleteObjectWithoutDoneClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        anyhow::bail!("blocking generation is not used in this test")
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            tx.send(StreamEvent::TextDelta(
+                r#"{"color":"blue","count":3}"#.to_string(),
+            ))
+            .await
+            .ok();
+            cancel_token.cancelled().await;
+        });
+        Ok(rx)
+    }
+}
+
 // ========================================================================
 // extract_json_value tests
 // ========================================================================
@@ -1209,6 +1242,39 @@ async fn test_generate_streaming_text_mode() {
     });
 
     let result = generate_streaming(&client, &req, callback).await.unwrap();
+    assert_eq!(result.object["color"], "blue");
+    assert_eq!(result.object["count"], 3);
+    assert_eq!(result.usage.total_tokens, 15);
+}
+
+#[tokio::test]
+async fn test_generate_streaming_accepts_a_complete_valid_object_without_done() {
+    let req = StructuredRequest {
+        prompt: "test".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["color", "count"],
+            "properties": {
+                "color": {"type": "string"},
+                "count": {"type": "integer"}
+            }
+        }),
+        schema_name: "result".to_string(),
+        schema_description: None,
+        mode: StructuredMode::Prompt,
+        max_repair_attempts: 0,
+    };
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        generate_streaming(&CompleteObjectWithoutDoneClient, &req, Box::new(|_| {})),
+    )
+    .await
+    .expect("a schema-valid streamed object must not wait forever for Done")
+    .expect("complete streamed object");
+
     assert_eq!(result.object["color"], "blue");
     assert_eq!(result.object["count"], 3);
 }
