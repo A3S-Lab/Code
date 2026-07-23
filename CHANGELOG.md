@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.4.2] - 2026-07-23
+
 ### Changed
 
 - Selected sandbox-runtime 0.0.67 for managed hosts.

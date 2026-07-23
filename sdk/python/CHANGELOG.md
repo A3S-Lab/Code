@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.4.2] - 2026-07-23
+
+### Fixed
+
+- Updated the bundled Core so managed macOS SRT hosts can pass large Seatbelt
+  profiles by private file without exceeding the process argument-size limit.
+
 ## [6.4.1] - 2026-07-23
 
 ### Fixed
