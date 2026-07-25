@@ -227,9 +227,9 @@ impl AgentLoop {
         style
     }
 
-    fn resolve_planning_decision(
+    pub(super) fn resolve_planning_decision(
         &self,
-        style: AgentStyle,
+        _style: AgentStyle,
         pre_analysis: Option<&PreAnalysis>,
     ) -> bool {
         match self.config.planning_mode {
@@ -237,7 +237,7 @@ impl AgentLoop {
             PlanningMode::Enabled => true,
             PlanningMode::Auto => pre_analysis
                 .map(|analysis| analysis.requires_planning)
-                .unwrap_or_else(|| style.requires_planning()),
+                .unwrap_or(false),
         }
     }
 
