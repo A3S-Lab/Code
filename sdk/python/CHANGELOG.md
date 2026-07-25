@@ -4,6 +4,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.4.3] - 2026-07-25
+
+### Fixed
+
+- Updated the bundled Core so Auto execution stays direct when structured
+  pre-analysis is unavailable and explicit fallback plans contain the original
+  request instead of fabricated numbered tasks.
+
 ## [6.4.2] - 2026-07-23
 
 ### Fixed
