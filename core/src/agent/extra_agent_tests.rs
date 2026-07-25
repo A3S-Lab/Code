@@ -610,6 +610,23 @@ fn test_disabled_planning_never_runs_pre_analysis() {
     assert!(!agent.should_run_pre_analysis());
 }
 
+#[test]
+fn auto_mode_does_not_fabricate_a_plan_when_pre_analysis_is_unavailable() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        test_tool_context(),
+        AgentConfig::default(),
+    );
+
+    assert!(
+        !agent.resolve_planning_decision(crate::prompts::AgentStyle::Plan, None),
+        "Auto must fall back to direct execution when structured pre-analysis failed"
+    );
+}
+
 #[derive(Debug)]
 struct PlanningHookRecorder {
     events: Arc<std::sync::Mutex<Vec<crate::hooks::HookEvent>>>,

@@ -152,37 +152,18 @@ impl LlmPlanner {
         Self::achievement_from_value(result.object)
     }
 
-    /// Create a fallback plan using heuristic logic (no LLM required)
+    /// Create a minimal fallback plan when explicit planning cannot use the LLM.
+    ///
+    /// The original request is the only honest executable step available here.
+    /// Fabricating numbered placeholder steps makes the task tracker look active
+    /// without conveying useful progress.
     pub fn fallback_plan(prompt: &str) -> ExecutionPlan {
-        let complexity = if prompt.len() < 50 {
-            Complexity::Simple
-        } else if prompt.len() < 150 {
-            Complexity::Medium
-        } else if prompt.len() < 300 {
-            Complexity::Complex
-        } else {
-            Complexity::VeryComplex
+        let content = match prompt.trim() {
+            "" => "Complete the requested task",
+            prompt => prompt,
         };
-
-        let mut plan = ExecutionPlan::new(prompt, complexity);
-
-        let step_count = match complexity {
-            Complexity::Simple => 2,
-            Complexity::Medium => 4,
-            Complexity::Complex => 7,
-            Complexity::VeryComplex => 10,
-        };
-
-        for i in 0..step_count {
-            let step = Task::new(
-                format!("step-{}", i + 1),
-                crate::prompts::render(
-                    crate::prompts::PLAN_FALLBACK_STEP,
-                    &[("step_num", &(i + 1).to_string())],
-                ),
-            );
-            plan.add_step(step);
-        }
+        let mut plan = ExecutionPlan::new(content, Complexity::Simple);
+        plan.add_step(Task::new("step-1", content));
 
         plan
     }
@@ -579,13 +560,23 @@ mod tests {
         let short_prompt = "Fix bug";
         let plan = LlmPlanner::fallback_plan(short_prompt);
         assert_eq!(plan.complexity, Complexity::Simple);
-        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.goal, short_prompt);
+        assert_eq!(plan.steps[0].content, short_prompt);
 
         let long_prompt = "Implement a comprehensive authentication system with OAuth2 support, JWT tokens, refresh token rotation, multi-factor authentication, and role-based access control across all API endpoints with proper audit logging and session management capabilities for both web and mobile clients, including password reset flows, account lockout policies, and integration with external identity providers such as Google, GitHub, and SAML-based enterprise SSO systems";
         let plan = LlmPlanner::fallback_plan(long_prompt);
-        assert_eq!(plan.complexity, Complexity::VeryComplex);
-        assert_eq!(plan.steps.len(), 10);
+        assert_eq!(plan.complexity, Complexity::Simple);
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].content, long_prompt);
+        assert!(
+            !plan.steps[0].content.contains("Execute step"),
+            "fallback plans must not expose placeholder task text"
+        );
+
+        let plan = LlmPlanner::fallback_plan("   ");
+        assert_eq!(plan.goal, "Complete the requested task");
+        assert_eq!(plan.steps[0].content, "Complete the requested task");
     }
 
     #[test]

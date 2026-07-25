@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Kept Auto execution direct when structured pre-analysis is unavailable, and
+  replaced fabricated numbered fallback tasks with one step containing the
+  original request when planning is explicitly enabled.
+
 ## [6.4.2] - 2026-07-23
 
 ### Changed

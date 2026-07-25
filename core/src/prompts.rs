@@ -87,9 +87,6 @@ pub const PLAN_EXECUTE_GOAL: &str = include_str!("../prompts/planning/plan_execu
 /// Template for per-step execution prompt
 pub const PLAN_EXECUTE_STEP: &str = include_str!("../prompts/planning/plan_execute_step.md");
 
-/// Template for fallback plan step description
-pub const PLAN_FALLBACK_STEP: &str = include_str!("../prompts/planning/plan_fallback_step.md");
-
 /// Skill catalog header injected before listing available skill names/descriptions.
 pub const SKILLS_CATALOG_HEADER: &str = include_str!("../prompts/common/skills_catalog_header.md");
 

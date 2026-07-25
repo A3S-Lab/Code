@@ -16,7 +16,6 @@ fn test_all_prompts_loaded() {
     assert!(!SKILLS_CATALOG_HEADER.is_empty());
     assert!(!PLAN_EXECUTE_GOAL.is_empty());
     assert!(!PLAN_EXECUTE_STEP.is_empty());
-    assert!(!PLAN_FALLBACK_STEP.is_empty());
 }
 
 #[test]
