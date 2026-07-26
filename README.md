@@ -1,39 +1,54 @@
-# A3S Code
-
 <p align="center">
-  <strong>Governed Agent Runtime for A3S</strong>
+  <img src="./assets/readme/hero.svg" width="100%" alt="A3S Code governed agent runtime with an explicit model, policy, tool, event, and snapshot flow">
 </p>
 
 <p align="center">
-  <em>Build auditable coding agents with bounded tools, resumable sessions, and deterministic coordination</em>
+  <a href="https://github.com/A3S-Lab/Code/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/A3S-Lab/Code?style=flat-square&color=6ca3ff"></a>
+  <a href="https://github.com/A3S-Lab/Code/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/A3S-Lab/Code/ci.yml?branch=main&style=flat-square&label=CI"></a>
+  <a href="https://crates.io/crates/a3s-code-core"><img alt="Crates.io" src="https://img.shields.io/crates/v/a3s-code-core?style=flat-square&color=f0b44d"></a>
+  <a href="https://www.npmjs.com/package/@a3s-lab/code"><img alt="npm" src="https://img.shields.io/npm/v/%40a3s-lab%2Fcode?style=flat-square&color=cb3837"></a>
+  <a href="https://pypi.org/project/a3s-code/"><img alt="PyPI" src="https://img.shields.io/pypi/v/a3s-code?style=flat-square&color=3775a9"></a>
+  <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3ccf91?style=flat-square"></a>
 </p>
-
-<p align="center">
-  <a href="#overview">Overview</a> •
-  <a href="#features">Features</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#application-model">Application Model</a> •
-  <a href="#tui-and-sdks">TUI and SDKs</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#development">Development</a>
-</p>
-
----
-
-## Overview
 
 **A3S Code** is an async Rust runtime for building governed coding agents. It
-owns the agent loop, workspace tools, model adapters, context assembly,
-permissions, human approval, memory, delegation, persistence, verification,
-and replay. Hosts can use the same runtime from Rust, Node.js, Python, or the
-`a3s code` terminal application.
+keeps the agent loop, workspace tools, model adapters, policy decisions,
+versioned events, and durable evidence behind explicit contracts. Use it from
+Rust, Node.js, Python, or through the `a3s code` terminal application.
 
-A3S Code is not a hosted agent service or a terminal widget library. The
-`a3s-code-core` crate provides the execution contracts. The interactive TUI is
-shipped by the separate [A3S CLI](https://github.com/A3S-Lab/CLI), and its
-account integrations and presentation policy remain host concerns.
+<p align="center">
+  <a href="#start-in-60-seconds">Start</a> ·
+  <a href="#why-a3s-code">Why Code</a> ·
+  <a href="#capability-map">Capabilities</a> ·
+  <a href="#configure-the-runtime">Configure</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#documentation">Documentation</a>
+</p>
 
-### Basic usage
+## Start in 60 seconds
+
+### Run the terminal product
+
+```bash
+brew install A3S-Lab/tap/a3s
+
+# Or install from crates.io
+cargo install a3s
+
+cd /path/to/your/project
+a3s code
+```
+
+The terminal product streams reasoning, tool activity, approvals, task
+progress, and diffs. Resume persisted work with `a3s code resume` or
+`a3s code resume <session-id>`.
+
+### Embed the runtime
+
+```bash
+cargo add a3s-code-core
+cargo add tokio --features macros,rt-multi-thread
+```
 
 ```rust,no_run
 use a3s_code_core::{Agent, AgentEvent};
@@ -60,101 +75,75 @@ async fn main() -> a3s_code_core::Result<()> {
 }
 ```
 
-An `Agent` owns resolved configuration and shared capabilities. An
-`AgentSession` binds them to one workspace and conversation; a configured
-`SessionStore` makes that state durable. Awaiting the stream lifecycle releases
-the session for its next transcript operation.
+`Agent` owns resolved configuration and shared capabilities. `AgentSession`
+binds them to one workspace and conversation. The event stream is the product
+boundary: a host can render the same lifecycle that the runtime persists and
+replays.
 
-## Features
+## Why A3S Code
 
-- **Async Agent Sessions**: Create, resume, atomically replace, cancel, close,
-  send, stream, attach images, dispatch slash commands, and replay runs
-- **Governed Tool Runtime**: Validate arguments, enforce permissions and human
-  approval, apply budgets and hooks, sanitize events, and propagate cancellation
-- **Bounded Workspace Tools**: Read, search, edit, patch, execute, fetch, batch,
-  and paginate without placing unbounded observations into model context
-- **Native Code Intelligence**: Query saved-file symbols, definitions,
-  declarations, references, implementations, and diagnostics through one
-  workspace-scoped semantic runtime
-- **Managed Context and Memory**: Assemble ranked context, compact repeatedly,
-  preserve tool evidence, recall durable memory, and extract significant facts
-- **Model and MCP Adapters**: Use OpenAI-compatible, Anthropic, Zhipu, custom
-  `LlmClient`, and session-isolated MCP capabilities through one event model
-- **Structured Generation**: Request schema-constrained objects through native
-  provider formats or validated prompt-and-repair fallbacks
-- **Agent Orchestration**: Plan, track goals, delegate foreground or background
-  tasks, run bounded parallel work, and resume deterministic workflows
-- **Programmable Workflows**: Execute sandboxed QuickJS tool programs and
-  explicitly registered A3S Flow-backed dynamic workflows
-- **Durable Evidence**: Persist atomic snapshots, versioned events, traces,
-  artifacts, verification reports, checkpoints, and optional RL trajectories
-- **Immutable Release Admission**: Validate bounded `.a3s/asset.acl` manifests,
-  derive schema-aware identities, and reject incompatible runtime capabilities
-  before activation
-- **Event-Sourced State Graph**: Coordinate typed objects and relations through
-  hash-linked records, optimistic patches, strict replay, forks, and diffs
+| Requirement | Runtime mechanism |
+| --- | --- |
+| **Govern every side effect** | JSON argument validation, typed tool capabilities, permission policy, human confirmation, hooks, budgets, security providers, and cancellation share one invocation path. |
+| **Keep context bounded** | Reads, searches, command output, Git results, and fetched pages expose ranges or cursors. Large evidence moves into bounded artifacts with previews, sizes, and hashes. |
+| **Own the UI without forking the loop** | Core emits `AgentEvent`; SDK streams and persisted runs use the lossless `EventEnvelopeV1` protocol. The host chooses presentation, identity, credentials, and deployment policy. |
+| **Resume from evidence, not guesswork** | `SessionSnapshotV1` can atomically commit session state, runs, artifacts, traces, verification reports, and child-task records as one generation. |
 
-### Feature matrix
+One turn follows a visible chain of responsibility:
 
-The core crate has no default Cargo features. Baseline capabilities are
-compiled without optional cloud or daemon dependencies; session policy remains
-explicit even when the supporting types are available.
+```text
+user request
+    │
+    ▼
+workspace-bound AgentSession
+    │ context + memory
+    ▼
+model adapter
+    │ proposed tool call
+    ▼
+validation → permission → confirmation → budget → sandbox
+    │ governed result
+    ▼
+AgentEvent / EventEnvelopeV1
+    │
+    └── runs + traces + artifacts + SessionSnapshotV1
+```
 
-| Area | Availability | Included capability |
+This separation lets an interactive terminal, an SDK application, and a
+background service share the same execution semantics without sharing a UI.
+
+## Capability map
+
+The Core crate has no default Cargo features. Baseline behavior stays small;
+cloud backends, serving, and telemetry are opt-in.
+
+| Area | What is available | Activation |
 | --- | --- | --- |
-| Agent runtime | Baseline | Async `Agent`, `SessionBuilder`, and workspace-bound `AgentSession` |
-| Conversation | Baseline | Send, stream, history, image attachments, slash commands, continuation, and cancellation |
-| Providers | Baseline | OpenAI-compatible, Anthropic, Zhipu, and custom `LlmClient` implementations |
-| Structured output | Baseline | Native or prompted JSON generation, JSON Schema validation, partial parsing, and repair |
-| Workspace tools | Baseline | Capability-gated file, search, shell, Git, web, batch, program, skill, and delegation tools |
-| Code Intelligence | Host-selected local workspace | Saved-file symbols, semantic navigation, diagnostics, typed status, and bounded result evidence |
-| Context | Baseline and host-selected | Ranked filesystem, recent-file, ripgrep, memory, prompt-slot, skill, project, and custom sources |
-| Memory | Baseline and configurable | Three-tier memory, a default workspace file store, typed overrides, recall, extraction, relations, and pruning |
-| Persistence | Configured store | Atomic `SessionSnapshotV1`, file or memory stores, run replay, traces, tasks, and checkpoints |
-| Planning | Baseline session policy | Automatic by default, forced or disabled modes, pre/post hooks, task events, and optional goals |
-| Delegation | Manual by default, automatic opt-in | Agent definitions, worker specs, `task`, `parallel_task`, tracking, cancellation, and source anchors |
-| Session queue | Config or session opt-in | Priority lanes, bounded concurrency, internal/external/hybrid handlers, retry, DLQ, metrics, alerts, rate limits, and timeouts |
-| Dynamic workflow | Explicit registration | QuickJS-authored commands executed by an A3S Flow-backed runtime |
-| State graph | Explicit application use | Event-sourced objects, relations, behaviors, patches, replay, forks, diffs, and Flow projection |
-| MCP | Config or session registration | stdio, SSE, streamable HTTP, OAuth, refresh, and live add/remove management |
-| Skills | Filesystem, registry, or live session registration | Search/execute tools, model-visible catalog, live add/remove with shadow restoration, and child-run inheritance |
-| Search runtime | Explicit host operation | Browser status, install, update, and repair APIs for managed search runtimes |
-| Agent release contract | Baseline admission API | Closed, bounded manifest validation, immutable OCI/provenance binding, canonical identity, typed storage and secret slots, and pre-activation compatibility checks |
-| S3 workspace | Cargo feature `s3` | S3-compatible object storage backend with capability-aware tool visibility |
-| Agent daemon | Cargo feature `serve` | Filesystem-first agent serving and cron schedules |
-| OpenTelemetry | Cargo feature `telemetry` | OTLP trace export; normal `tracing` remains available without it |
-| Native SDKs | Separate packages | N-API Node.js and PyO3 Python bindings over the Core runtime |
-| Terminal product | Separate A3S CLI | Streaming TUI, editors, account models, effort profiles, research, assets, and optional A3S OS views |
+| Agent runtime | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, and replay | Baseline |
+| Governed tools | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, and delegation | Exposed only when workspace and policy allow |
+| Code intelligence | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata | Host-selected local workspace |
+| Context and memory | Ranked context, repeated compaction, three-tier memory, typed stores, recall, extraction, relations, and pruning | Host-selected and configurable |
+| Model adapters | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations | Configuration or host injection |
+| Structured output | Native provider formats or schema-validated prompt, partial parse, and repair fallback | Baseline |
+| MCP and Skills | Isolated MCP transports plus filesystem, registry, inline, and live session Skills | Configuration or live registration |
+| Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation | Manual tools independently configurable; automation opt-in |
+| Programmable workflows | Bounded QuickJS `program` calls and replayable A3S Flow-backed dynamic workflows | `program` baseline; dynamic runtime explicitly registered |
+| Persistence | Atomic snapshots, run events, traces, artifacts, verification, checkpoints, and optional RL trajectories | Configured store and host policy |
+| State graph | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow projection | Explicit application use |
+| Agent release contract | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks | Baseline admission API |
+| S3 workspace | S3-compatible object backend | Cargo feature `s3` |
+| Filesystem agent server | Agent-directory serving and cron schedules | Cargo feature `serve` |
+| OpenTelemetry | OTLP export in addition to baseline `tracing` | Cargo feature `telemetry` |
 
-Feature availability does not bypass policy. Auto-save, automatic compaction,
-goals, automatic delegation, security providers, human approval, trajectory
-recording, and graph integration run only when a host configures them. The
-`dynamic_workflow` tool is not registered in a plain Core session.
+Availability never bypasses policy. Auto-save, automatic compaction, goals,
+automatic delegation, sandboxing, human approval, trajectory recording, and
+graph integration run only when a host configures them. Memory extraction is
+configurable and can be disabled.
 
-## Quick Start
+## Configure the runtime
 
-### Install the terminal application
-
-```bash
-brew install A3S-Lab/tap/a3s
-
-# or install from crates.io
-cargo install a3s
-
-a3s code
-```
-
-Run the TUI from the workspace the agent should inspect. Resume a saved session
-with `a3s code resume` or `a3s code resume <session-id>`.
-
-### Install the Rust runtime
-
-```bash
-cargo add a3s-code-core
-cargo add tokio --features macros,rt-multi-thread
-```
-
-Use ACL configuration and keep credentials in environment variables:
+A3S Code uses [A3S ACL](https://github.com/A3S-Lab/ACL) for product
+configuration. Keep credentials in environment variables rather than source.
 
 ```acl
 default_model = "anthropic/claude-sonnet-4-20250514"
@@ -179,467 +168,125 @@ skill_dirs = [".a3s/skills"]
 agent_dirs = [".a3s/agents"]
 ```
 
-`Agent::new` accepts either an ACL file path or inline ACL. Do not commit real
-API keys, access tokens, private endpoints, or tenant identifiers.
-
-### Configure a session
+`Agent::new` accepts an ACL path or inline ACL. Build sessions asynchronously
+so configuration, stores, queues, MCP sources, and workspace services are
+resolved before the first turn.
 
 ```rust,no_run
 use a3s_code_core::{Agent, PlanningMode, SessionOptions};
 
-# async fn run() -> a3s_code_core::Result<()> {
-let agent = Agent::new("agent.acl").await?;
-let options = SessionOptions::new()
-    .with_planning_mode(PlanningMode::Auto)
-    .with_tool_timeout(120_000)
-    .with_auto_compact(true)
-    .with_max_context_tokens(200_000)
-    .with_auto_compact_threshold(0.8);
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let options = SessionOptions::new()
+        .with_planning_mode(PlanningMode::Auto)
+        .with_tool_timeout(120_000)
+        .with_auto_compact(true)
+        .with_max_context_tokens(200_000)
+        .with_auto_compact_threshold(0.8);
 
-let session = agent
-    .session_builder("/path/to/workspace")
-    .options(options)
-    .build()
-    .await?;
+    let _session = Agent::new("agent.acl")
+        .await?
+        .session_builder("/path/to/workspace")
+        .options(options)
+        .build()
+        .await?;
 
-let result = session.send("Explain the test strategy.", None).await?;
-println!("{}", result.text);
-# Ok(())
-# }
+    Ok(())
+}
 ```
 
-`SessionBuilder::build` is the primary construction path. It resolves merged
-configuration and initializes filesystem stores, queues, trajectories, and MCP
-sources asynchronously. Synchronous constructors remain compatibility APIs for
-already initialized resources and never start or block a Tokio runtime.
-
-## Application Model
-
-### Release admission and identity
-
-`AgentReleaseManifest` admits the versioned `.a3s/asset.acl` contract, returns
-schema-aware canonical ACL and its SHA-256 identity, and verifies an
-`AgentReleaseCompatibility` before activation. Secret declarations are typed
-injection slots only; values and external secret identifiers remain outside
-the release document.
-
-This API does not build or run the declared OCI artifact and does not implement
-its readiness, liveness, or shutdown behavior. See the
-[Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) for the complete v1
-schema, compatibility policy, security boundary, and fixture status.
-
-### Sessions and lifecycle
-
-A session owns conversation history, workspace services, tool registrations,
-context providers, policies, stores, and active child work. The runtime can:
-
-- create sessions with generated or host-supplied identities;
-- resume complete snapshots from a `SessionStore`;
-- atomically replace an idle persisted session with new runtime options;
-- list and close live sessions owned by an `Agent`;
-- cancel and settle an active operation before safely reusing its session;
-- add, replace, list, and remove lifecycle-owned Skills while restoring an
-  exactly shadowed registration on removal;
-- add and remove session-local MCP servers without disturbing inherited or
-  later host-owned tools;
-- save, cancel, or close without abandoning active child work; and
-- inspect runs, paginated run events, active tools, tasks, and verification.
-
-Only one transcript-affecting operation may run at a time. Send, stream,
-attachment requests, slash commands, and run resumption fail fast with
-`CodeError::SessionBusy` when another such operation is active. Direct trusted
-host tool calls use a separate control-plane path.
-
-### Event protocol
-
-Core streams `AgentEvent` values. SDK live streams and persisted-run replay
-project them through `EventEnvelopeV1`: a stable version, event type, complete
-payload, and optional metadata. The protocol covers text and reasoning, tools,
-planning, tasks, memory, compaction, budgets, verification, and terminal state.
-SDKs preserve future event names and payloads for older clients.
-
-### Configuration
-
-`CodeConfig` is the typed source of truth for providers, models, stores, memory,
-queues, search, agents, skills, MCP, and execution limits. Hosts that provide a
-config editor can call `rewrite_acl_sections` to replace selected top-level ACL
-sections while preserving unrelated blocks, unknown fields, external comments,
-and raw expressions such as `env("TOKEN")`.
-
-## Tools and Workspaces
-
-### Built-in tools
-
-Tools are registered only when the selected workspace exposes the capability
-they require. A model never receives a local `bash` or `git` definition from an
-object-only backend that cannot execute it.
-
-| Concern | Tools | Behavior |
-| --- | --- | --- |
-| Files and directories | `read`, `write`, `edit`, `patch`, `ls` | Ranged reads, resumable writes, compare-and-swap edits, strict unified patches, and bounded listings |
-| Workspace search | `glob`, `grep` | Bounded matching with explicit result metadata and continuation |
-| Code Intelligence | `code_symbols`, `code_navigation`, `code_diagnostics` | Saved-file semantic metadata and locations with bounded results; source retrieval and mutation stay in the existing file tools |
-| Commands and source control | `bash`, `git` | Bounded output, cancellation, process-group termination on Unix, and typed Git operations |
-| Web evidence | `web_search`, `web_fetch` | Ranked multi-engine search with structured engine failures, policy-driven fallback, optional native AnySearch and Tavily providers, normalized sources, semantic `<main>` extraction with `<body>` fallback, SSRF protections, and bounded pages |
-| Structured output | `generate_object` | Schema-constrained model generation with validation and repair |
-| Composition | `batch`, `program` | Safe batch scheduling and sandboxed JavaScript programmatic tool calling |
-| Delegation | `task`, `parallel_task` | Foreground/background workers, bounded parallelism, partial results, and task tracking |
-| Skills | `Skill`, `search_skills` | Filesystem or inline skill discovery and execution with optional tool restrictions |
-| MCP | `mcp__<server>__<tool>` | Namespaced tools owned by their source manager |
-| Dynamic workflows | `dynamic_workflow` | Explicitly registered A3S Flow-backed, replayable per-turn workflows |
-
-Without an explicit request or `SearchConfig` engine selection, `web_search`
-uses DuckDuckGo and Wikipedia; AnySearch is not enabled by default. Configure
-the `search.engine` block in `config.acl` to replace that default selection,
-including an explicit `anysearch { enabled = true }` entry when desired. Set
-`ANYSEARCH_API_KEY` to authenticate it. When selected engines fail or return no
-usable result, the tool uses untried HTTP engines within the original timeout
-budget and reports the degradation through structured metadata and a visible
-notice.
-
-Standalone greetings are conversational turns: the model receives no tool
-definitions and a friendly response is not converted into a synthetic
-continuation. A greeting that also asks for work keeps the normal tool surface.
-
-The built-in skill registry starts empty; skills come from configured
-directories, `AgentDir`, inline host input, or live registration. The
-model-visible `program` tool executes JavaScript in QuickJS, not arbitrary
-Python or a shell-script catalog.
-
-### Process sandbox contract
-
-Hosts can attach a `BashSandbox` through `SessionOptions::with_sandbox_handle`.
-The extended execution request preserves the command, guest workspace, timeout,
-stream observer, and explicit command environment; existing implementations
-remain compatible through `exec_command`.
-
-`SrtBashSandbox` is the fail-closed local adapter. It denies command network
-egress, local binding, and Unix sockets; limits writes to the active workspace
-and a private per-run scratch directory; protects repository and agent-control
-metadata; blocks common credential reads; and scrubs ambient secrets and
-language/bootstrap injection variables. It keeps stdout and stderr distinct
-under one global capture limit. Its deadline covers output draining and the
-child's complete lifetime, including a process that closes both streams before
-it exits; timeout or cancellation terminates the Unix process group. It never
-searches `PATH` for a sandbox runtime and never falls back to the host runner
-when its explicitly provisioned runtime is missing or fails. Write-deny paths
-already covered by a protected ancestor are collapsed before SRT startup,
-while more-specific credential read denies remain intact. Workspace policy
-scans treat an entry removed concurrently after enumeration as absent, but
-permission and other I/O failures remain fatal. Unix wrapper temporary files
-are pinned to the same private per-run scratch directory so a lifecycle host
-can pass large native sandbox policies by file. The embedding host remains
-responsible for choosing whether an unavailable sandbox causes an interactive
-escalation or a deterministic denial.
-
-Shell isolation does not automatically govern in-process workspace tools.
-Interactive hosts should construct `LocalWorkspaceBackend` or
-`ManifestWorkspaceBackend` with
-`LocalWorkspaceAccessPolicy::CredentialBoundary`. That opt-in applies the
-credential boundary to direct reads, range reads, writes, and both indexed and
-fallback grep. Directory grep omits denied candidates, explicit sensitive
-targets fail closed, source-tree multi-link files are rejected, and ordinary
-package-store hardlinks remain usable unless they alias a discovered
-credential inode. Guarded local Git diff enumerates changed paths with Git's
-NUL-delimited format and regenerates output only for allowed paths; option-like
-revision input cannot become a Git flag, and displayed remote URLs omit
-embedded HTTP credentials and query tokens.
-
-Hosts use `from_verified_npm_with_node` when a lifecycle owner supplies exact
-SRT and Node paths. The verified constructor requires the expected npm package
-identity and a tested SRT version; `new` likewise requires an explicit path for
-an intentionally supplied custom adapter. The A3S CLI uses the verified
-exact-path form after validating and, when policy allows, preparing its
-user-wide managed installation; Core does not install host software.
-
-This adapter is a low-latency local enforcement provider, not the stack-wide
-workload contract. Code owns agent permission and escalation policy, A3S
-Runtime owns provider-neutral Task and Service lifecycle and placement, and A3S
-Box owns OCI and stronger-isolation workloads. Replacing the CLI's transitional
-npm bootstrap with an A3S-signed sandbox artifact does not change the
-`BashSandbox` contract.
-
-Long-running hosts can call `AgentSession::add_skill`, `remove_skill`, and
-`skill_names` without rebuilding the session. The model-visible Skill catalog
-reads the same live registry, so a successful mutation is visible on the next
-turn. Live registrations use pointer identity as their ownership token: an
-upgrade preserves the original shadow chain, and removal never deletes a Skill
-installed later by another host.
-
-### Code Intelligence
-
-Local hosts can attach native Code Intelligence with
-`WorkspaceServices::local_with_code_intelligence` or the shared-backend
-variant. The provider reuses the existing workspace manifest, filesystem,
-path resolver, cancellation, and tool policy. It does not create a competing
-file index, search implementation, editing path, memory store, or MCP server.
-
-The initial profiles require `rust-analyzer` for Rust and
-`typescript-language-server --stdio` for TypeScript and JavaScript. Install the
-executables before launching the host:
-
-```sh
-rustup component add rust-analyzer
-npm install --global typescript typescript-language-server
-```
-
-Queries use saved files only. Public lines and characters are zero-based, and
-characters count UTF-16 code units. Document results include the saved-content
-revision and hash plus a stale flag when the file changes while a query is in
-flight. The first navigation request for a saved revision includes a bounded,
-cancellable stabilization pass so a protocol-ready but still-indexing server
-does not leak a cold partial result. The semantic tools return metadata and
-workspace-relative locations; agents continue to use `read`, `grep`, `edit`,
-and `patch` for source text and mutations.
-
-See the [Code Intelligence design](manual/CODE_INTELLIGENCE_DESIGN.md) for the
-capability boundary, shared runtime architecture, lifecycle, and verification
-plan.
-
-### Tool governance
-
-Every invocation carries declared `ToolCapabilities`, including read-only,
-idempotent, resumable, cancellation-safe, paginated, output kind, and parallel
-limits. Model, nested-program, and session calls validate JSON arguments before
-permission prompts or side effects.
-
-`batch` runs children concurrently only when every call declares safe
-read-only parallel behavior; mutations and unknown tools are serialized.
-Segmented writes require the expected UTF-8 byte offset, so retries are
-idempotent and stale appends fail. Patch hunks validate positions, counts,
-context, removals, whitespace, and line endings before one compare-and-swap
-write; fuzzy application is intentionally rejected.
-
-An optional session queue routes agent tool work through the Query and Execute
-lanes with bounded concurrency, handler modes, retry, DLQ, metrics, alerts,
-rate limits, and per-lane timeouts. Control and Generate remain reserved lane
-types; conversation runs use a separate single-flight admission guard, so lane
-priority orders pending work but does not interrupt an active model future.
-
-Observations are bounded at their source. Reads, listings, globs, Git results,
-and fetched pages expose offsets or cursors. Large tool output and file changes
-move into bounded artifacts with previews, exact sizes, and hashes. Tool and
-model deadlines propagate cancellation; on Unix, shell cancellation terminates
-the process group rather than only its parent.
-
-Optional permission policies resolve deny, allow, ask, and default behavior.
-Interactive Code hosts can additionally share `InteractiveToolGuardrail`, a
-conservative argument-aware classifier that quietly permits a narrow read-only
-subset, asks for ordinary side effects, denies workspace escapes and catastrophic
-shell operations, and keeps a non-bypassable safety floor in streamlined modes.
-Its explainable assessment API classifies each invocation as routine, bounded,
-high, or critical; records capability, target, impact, reversibility, environment,
-and stable reason codes; and routes the result to allow, human confirmation,
-constrained review, or deterministic denial. Nested batches inherit their
-highest child risk, while the legacy allow/ask/deny projection remains available
-to existing HITL integrations.
-Confirmation managers, hooks, budget guards, security providers, stream
-sanitization, retention limits, circuit breakers, duplicate-call guards, and
-no-progress detection compose around the same invocation path. Trusted direct
-host calls skip model-facing permission prompts, so an embedding application
-must authorize its callers. Only built-in control-plane orchestrators may carry
-that authority into host-selected nested calls. A public custom tool's
-`InvocationRuntime`, and every model sub-run created from a direct host context,
-produce ordinary governed invocations instead of inheriting ambient trust.
-
-Delegated tasks, workflow steps, and Skill child runs retain the parent sandbox
-and intersect their local permission policy with the parent checker. A
-child-local `Ask` follows that worker's `auto_approve`, `deny_on_ask`, or
-`inherit_parent` policy, while an `Ask` introduced by the parent remains under
-the parent confirmation provider. If both scopes ask, both remain effective and
-the same provider is de-duplicated. Tool-owned confirmation after both policies
-allow is also governed by the parent, so a child-local auto-approver cannot
-waive a host escalation boundary. Cancellation and timeout settle only the
-matching confirmation ID; unrelated concurrent prompts remain pending.
-
-### Workspace backends
-
-The default `LocalWorkspaceBackend` provides filesystem, search, command, and
-Git services beneath a workspace root. `ManifestWorkspaceBackend` adds live
-file status and recent-file tracking. `RemoteGitBackend` exposes remote Git
-operations, and the `s3` Cargo feature provides an S3-compatible object backend
-for file tools.
-
-Applications can implement typed `WorkspaceFileSystem`, `WorkspaceSearch`,
-`WorkspaceCommandRunner`, `WorkspaceGit`, path resolution, stash, and worktree
-contracts. `WorkspaceServicesBuilder` combines only the services a backend can
-actually support.
-
-## Context, Memory, and Providers
-
-### Context and compaction
-
-`ContextAssembler` ranks and budgets items from static, filesystem, recent-file,
-ripgrep, memory, and host-defined `ContextProvider` implementations. Project
-instructions and skill catalogs join them during session prompt assembly.
-`SystemPromptSlots` keeps role, rules, workspace instructions, and host guidance
-separate. Filesystem and recent-file providers are installed only when selected.
-
-Automatic compaction is opt-in. It monitors estimated or provider-reported
-usage against the configured model window, bounds oversized tool results,
-summarizes older history, and targets a safe post-compaction watermark after
-subtracting the fixed system-prompt and tool-schema cost. Recent raw messages
-are retained only within that token budget, while the latest user instruction
-and unresolved tool calls remain intact. The policy re-arms after success so a
-long session can compact repeatedly. The summary is treated as untrusted
-transcript data, not as a new source of executable instructions.
-
-### Memory
-
-The memory layer separates working, short-term, and durable long-term state.
-It supports relevance and recency scoring, typed memories, relations,
-successful and failed pattern capture, file or custom stores, optional pruning,
-and context injection. By default, every completed non-empty session turn is
-sent to the active model for a semantic value judgment; the model returns an
-empty set when nothing is reusable. Automatic extraction writes only validated
-semantic or procedural memories and never mechanically persists tool results or
-turn history. Streaming turns register extraction before publishing their final
-event, run through a FIFO background queue, and graceful session close drains
-already-accepted work for a bounded period. Stored extractor metadata records
-source, confidence, scope, reason, workspace, session, and schema version.
-Hosts can disable extraction or tune its input and output bounds.
-
-### Models and MCP
-
-Core includes clients for Anthropic, Zhipu, and OpenAI-compatible APIs, plus the
-`LlmClient` trait for host adapters. The common model contract normalizes text,
-reasoning, tool calls, usage, images, retries, cancellation, and streaming where
-the provider supports them. Structured generation uses native response formats
-when available and a schema-validated prompt fallback otherwise.
-
-Anthropic and OpenAI-compatible SSE transports decode UTF-8 incrementally
-across raw network chunks before splitting events. A multibyte character may
-therefore cross any transport boundary without being replaced or corrupting the
-event payload.
-
-`LlmClient::model_generation_concurrency` is the typed admission contract for
-structured model transactions. The default is conservative single-flight;
-providers may explicitly report a larger finite bound.
-Each `AgentSession` owns one cancellation-safe gate and reuses it across
-conversation loops, host-direct calls, and rebuilt direct-tool runtimes.
-`generate_object` waits on that gate before starting its active deadline,
-retains the permit through schema repairs, and reports the queue wait
-separately in metadata. `DynamicWorkflowRuntime` recognizes the exact
-`generate_object` Flow step identity and acquires the same capacity before
-starting its bounded `program` VM. The nested generation reuses that one-shot
-identity-checked permit, so neither the generation deadline nor the Program
-deadline includes admission queue time, parallel nested calls cannot reuse one
-reservation, and concurrent host-direct workflows cannot create independent
-provider gates.
-
-If an established response stream closes before its final response, Core
-restarts the same LLM turn with the same message snapshot up to ten times. The
-delay grows exponentially from one second and is capped at thirty seconds, with
-jitter. Core re-emits `TurnStart` with the same turn number before each wait so
-stream consumers can roll back provisional deltas and tool drafts in place;
-only the successful assistant response is committed. Cancellation interrupts
-the wait immediately, and setup/status retries remain owned by the provider
-transport rather than nesting another turn-level retry loop.
-
-MCP connections support stdio, HTTP SSE, streamable HTTP, and OAuth client
-credentials. Global managers can seed new sessions and refresh cached tools;
-session managers can connect, disconnect, and live-add or remove isolated
-servers. Tools remain source qualified so separate servers do not silently
-share ownership. A local stdio server leads a dedicated Unix process group.
-Transport close or drop stops its pipe tasks, fails pending requests, reaps the
-direct child, and terminates descendants; stderr is drained independently so a
-diagnostic-heavy server cannot block the protocol pipe. This lifecycle
-containment does not make the configured server an untrusted sandbox.
-
-Hosts can add or replace a Skill in a running session with
-`AgentSession::add_skill`, inspect the effective names with `skill_names`, and
-remove host-owned entries with `remove_skill`. The search tools and
-model-visible Skill catalog observe the live registry on the next query or
-turn. Removing a live Skill restores the session definition it shadowed;
-closing the session removes all host-owned entries. Delegated child runs share
-that same effective registry, so a capability attached after session creation
-does not disappear at the worker boundary.
-
-The browser search runtime exposes read-only status separately from explicit
-install, update, and repair operations. Inspecting runtime status never performs
-an installation as a side effect.
-
-## Orchestration
-
-### Planning and goals
-
-Planning has three states: automatic, forced, and disabled. `PrePlanning` can
-block or modify planner input, while `PostPlanning` reports the outcome. Streams
-expose planning, task-snapshot, step, and optional goal-progress events so a
-host can render and replay the same lifecycle it supervises.
-
-Goal tracking and automatic delegation are opt-in. Bounded continuation is
-enabled by default and can be tuned or disabled. Manual `task` and
-`parallel_task` tools remain independently configurable, allowing a host to
-expose deliberate delegation without enabling heuristic fan-out.
-
-### Agents and deterministic workflows
-
-`AgentDefinition` loads reusable roles from Markdown or YAML. Explicit
-`WorkerAgentSpec` values describe reproducible disposable workers. Delegated
-tasks inherit bounded parent policy, can run foreground or background, can
-request structured output, record source anchors, expose progress snapshots,
-and accept targeted cancellation.
-
-The orchestration module provides sequential pipelines, bounded parallel steps,
-resumable parallel execution, loops, workflow events, token and step budgets,
-and checkpoints. Completed steps can be restored from a checkpoint instead of
-repeating successful model work after a restart.
-
-`program` runs a bounded JavaScript module in QuickJS with a host-provided
-`ctx` surface. Time, nested tool calls, output bytes, recursion, and allowed
-tools are limited. Auditable workflow source is capped at 192 KiB. Recursive
-`program`, `dynamic_workflow`, and
-`parallel_task` calls are excluded from its normal allow-list.
-
-`DynamicWorkflowRuntime` is a separate, explicit capability. A sandboxed
-program returns commands such as `complete`, `fail`, `schedule_step`, or
-`schedule_steps`; A3S Flow records workflow and step history, while the host
-executes allowed steps. A plain Core session must call
-`session.register_dynamic_workflow_runtime()` before invoking the
-`dynamic_workflow` tool.
-
-### Filesystem-first agents
-
-`AgentDir` keeps an agent's instructions, ACL, skills, tool specifications, and
-schedules in reviewable files:
-
-```text
-agent-dir/
-├── instructions.md
-├── agent.acl
-├── skills/
-├── tools/
-└── schedules/
-```
-
-Tool specifications can connect MCP servers or bounded PTC scripts. With the
-`serve` feature, a host can serve an agent directory and run cron schedules.
-Files do not bypass workspace, permission, confirmation, or verification policy.
-
-## Persistence and Observability
-
-`SessionSnapshotV1` commits the session, artifacts, trace events, run records,
-verification reports, and subagent tasks as one generation when the selected
-store advertises atomic snapshots. The built-in memory and file stores provide
-that guarantee; custom stores declare their own capabilities. Loop and workflow
-checkpoints use dedicated store APIs.
-
-Runs expose status, active tools, ordered event replay, exclusive pagination
-cursors, and retention-gap detection. File persistence uses temporary files and
-atomic replacement. Artifact stores bound both item count and bytes, while
-verification reports keep claims and evidence separate from final prose.
-
-`tracing` works in the baseline build. Enable `telemetry` for OpenTelemetry OTLP
-trace export. Training-oriented hosts can opt into JSONL RL trajectories
-covering prompts, model turns, tools, observations, usage, and termination
-reasons, and can request token log probabilities from compatible providers.
-
-## State Graph
-
-The state graph is a complementary coordination runtime, not hidden mutable
-state inside every session. Applications opt into it when several agents,
-behaviors, or workflow decisions need a shared auditable model.
+Typed session options accept custom model clients, context providers, memory
+stores, session stores, workspace backends, security providers, confirmation
+providers, permission checkers, and other host-owned extensions.
+
+## Tools that respect the workspace
+
+A tool is registered only when its workspace exposes the capability it needs.
+An object-only backend does not advertise local `bash` or `git` definitions to
+the model.
+
+| Concern | Built-in surface |
+| --- | --- |
+| Files and directories | `read`, `write`, `edit`, `patch`, `ls`, `glob`, `grep` with ranged or resumable operations and compare-and-swap mutation |
+| Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination |
+| Code intelligence | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools |
+| Web evidence | Multi-engine `web_search` and bounded `web_fetch` with structured failures, fallback, source normalization, and SSRF protections |
+| Composition | Safe `batch`, sandboxed QuickJS `program`, structured `generate_object`, `task`, and `parallel_task` |
+| Extensibility | `Skill`, `search_skills`, namespaced `mcp__<server>__<tool>`, and explicit `dynamic_workflow` |
+
+Every invocation declares `ToolCapabilities`, including read-only,
+idempotent, resumable, cancellation-safe, paginated, output-kind, and parallel
+limits. `batch` parallelizes only calls that declare safe read-only behavior;
+mutations and unknown tools are serialized.
+
+### Sandbox and credential boundaries
+
+Hosts can attach a `BashSandbox`. The fail-closed local `SrtBashSandbox` limits
+writes to the active workspace and private run scratch space, protects agent
+control metadata, blocks common credential reads, scrubs ambient secrets, and
+denies command network access, local binding, and Unix sockets. It never falls
+back to an unsandboxed host runner if its configured runtime fails.
+
+Shell isolation does not automatically govern in-process file tools. Local
+hosts should explicitly select `LocalWorkspaceAccessPolicy::CredentialBoundary`
+when direct workspace operations need the same credential boundary. See the
+[Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) for the full
+contract and host responsibilities.
+
+## Context, memory, and models
+
+`ContextAssembler` ranks and budgets filesystem, recent-file, ripgrep, memory,
+prompt-slot, project-instruction, Skill, and custom provider inputs. Automatic
+compaction is opt-in and can re-arm across long sessions. It retains the latest
+request and unresolved tool calls while treating generated summaries as
+untrusted transcript data.
+
+Memory separates working, short-term, and durable state. When memory is active,
+semantic extraction is enabled by default and can be disabled. It records only
+validated reusable memories with source, confidence, scope, reason, workspace,
+session, and schema metadata rather than mechanically persisting every tool
+result or conversation turn.
+
+Model adapters normalize text, reasoning, images, tool calls, token usage,
+streaming, cancellation, and retries. Structured generation uses native
+provider response formats when available and schema validation plus repair
+otherwise. MCP supports stdio, SSE, streamable HTTP, OAuth client credentials,
+refresh, and live session-scoped add/remove operations.
+
+## Orchestration without hidden authority
+
+- Planning can be automatic, forced, or disabled; goal tracking is opt-in.
+- `AgentDefinition` and `WorkerAgentSpec` describe reusable and disposable
+  workers without weakening parent policy.
+- Foreground and background tasks expose progress, sources, structured output,
+  cancellation, and durable task records.
+- Sequential, parallel, resumable, loop, budget, and checkpoint primitives are
+  available for deterministic host workflows.
+- `program` runs bounded JavaScript in QuickJS with explicit tool, time,
+  recursion, call-count, and output limits.
+- `dynamic_workflow` is absent from a plain session until the host registers an
+  A3S Flow-backed runtime.
+
+Delegated tasks, workflows, and Skill child runs retain the parent sandbox and
+intersect local permission policy with the parent checker. A child auto-approve
+setting cannot waive a host escalation boundary.
+
+## Events, persistence, and replay
+
+`AgentEvent` covers text, reasoning, tools, confirmation, planning, tasks,
+memory, compaction, budgets, verification, and terminal state. SDKs and run
+replay project these values through `EventEnvelopeV1`, which preserves its
+version, event type, complete payload, and optional metadata. Older SDK clients
+can retain future event names and payloads they do not yet understand.
+
+A configured `SessionStore` can persist complete `SessionSnapshotV1`
+generations. Runs expose status, active tools, ordered event replay, exclusive
+pagination cursors, and retention-gap detection. File persistence uses atomic
+replacement; artifacts are bounded by item count and bytes; verification keeps
+claims separate from evidence.
+
+The optional state graph is a complementary coordination runtime, not hidden
+session state:
 
 ```text
 external or agent event
@@ -651,66 +298,37 @@ hash-linked GraphEventRecord log
 typed objects + typed relations
         │ matching behaviors
         ▼
-optimistic GraphPatch values
-        │ version checks
-        ▼
-new graph version or explicit rejection
+optimistic GraphPatch → new version or explicit rejection
 ```
 
-`GraphRuntime` supports typed objects and relations, event filters, behaviors,
-per-event limits, optimistic object and relation versions,
-correlation and causation metadata, and custom external-event projection.
-Records carry previous-record and resulting-state hashes, making semantic or
-ordering changes detectable during strict replay.
+Applications opt into graph replay, branches, diffs, and Flow projection when
+multiple agents or behaviors need one auditable shared model.
 
-A runtime can fork at an event point and produce a structural diff without
-mutating its parent. `MemoryGraphEventStore` and `FileGraphEventStore` persist
-branches; capable stores publish extending generations with compare-and-swap
-head checks. The A3S Flow bridge projects workflow state into the graph and
-uses memory or file decision ledgers to claim, renew, complete, and recover
-durable decisions with at-least-once dispatch. Sinks must be idempotent by
-decision ID.
+## Runtime surfaces
 
-Node.js and Python expose `StateGraphRuntime` operations for event emission,
-patching, restore through strict replay, fork, and JSON diff exchange.
-
-## TUI and SDKs
-
-### Terminal application
-
-The [A3S CLI](https://github.com/A3S-Lab/CLI) builds the `a3s code` product on
-Core and the shared [A3S TUI](https://github.com/A3S-Lab/TUI) framework.
-
-| Area | TUI capability |
-| --- | --- |
-| Coding workspace | Streaming text, reasoning, tool cards, approvals, task progress, image/file input, session resume/fork, and bounded Markdown/diff rendering |
-| Workspace UI | Full-screen `/ide` file browser/editor with saved-file symbols, semantic navigation, and diagnostics, plus a `/config` ACL editor with shared workspace and permission boundaries |
-| Models and effort | ACL providers, signed-in Claude Code, Codex, and WorkBuddy accounts, host-provided models, and effort profiles from `low` through `ultracode` |
-| Long sessions | A single footer context meter, repeated model-aware compaction, past-session search, durable memory, daily consolidation, and local knowledge |
-| Orchestration | Planning, goals, tracked child tasks, parallel work, Ultracode workflows, bounded DeepResearch, and persistent maker/checker loops |
-| Local assets | Filesystem-first agents, MCP servers, skills, workflows, and knowledge packages with optional publishing and deployment |
-| Optional host integration | A3S OS login, runtime tools, activity, progressive responses, and trusted RemoteUI view links when configured |
-
-Account-backed Claude Code, Codex, and WorkBuddy clients are CLI adapters, not
-Core provider defaults. Local chat, tools, skills, MCP, memory, delegation, and
-dynamic workflows remain usable without an A3S OS account.
-
-### Native SDKs
-
-| Language | Package | Runtime surface |
+| Surface | Package | Intended use |
 | --- | --- | --- |
-| Rust | [`a3s-code-core`](https://crates.io/crates/a3s-code-core) | Complete Core API and extension traits |
-| Node.js | [`@a3s-lab/code`](sdk/node/README.md) | N-API bindings with async lifecycle, streaming, tools, orchestration, stores, MCP, and state graph |
-| Python | [`a3s-code`](sdk/python/README.md) | PyO3/bootstrap package with sync and async APIs, streaming, tools, orchestration, stores, MCP, and state graph |
+| Terminal | [`a3s code`](https://github.com/A3S-Lab/CLI) | Interactive coding product built on Core and the shared [A3S TUI](https://github.com/A3S-Lab/TUI) |
+| Rust | [`a3s-code-core`](https://crates.io/crates/a3s-code-core) | Complete runtime API and extension traits |
+| Node.js | [`@a3s-lab/code`](https://www.npmjs.com/package/@a3s-lab/code) | Native N-API bindings for async lifecycle, streams, tools, stores, orchestration, MCP, and state graph |
+| Python | [`a3s-code`](https://pypi.org/project/a3s-code/) | Native PyO3/bootstrap package with sync and async application APIs |
 
-Both native SDK crates enable the Core `s3` and `serve` features. Typed option
-objects carry memory, session, workspace, and security extensions, while the
-alignment check documents intentional language-specific omissions.
+```bash
+# Node.js
+npm install @a3s-lab/code
+
+# Python
+python -m pip install a3s-code
+```
+
+The native SDK crates enable the Core `s3` and `serve` features. See their
+[Node.js](sdk/node/README.md) and [Python](sdk/python/README.md) guides for
+surface-specific examples and intentional API differences.
 
 ## Architecture
 
 ```text
-Rust host / Node SDK / Python SDK / a3s code TUI
+Rust host / Node SDK / Python SDK / a3s code
                          │
                        Agent
                          │
@@ -726,15 +344,68 @@ Rust host / Node SDK / Python SDK / a3s code TUI
               optional StateGraph / Flow bridge
 ```
 
-The public extension boundaries are `LlmClient`, `ContextProvider`,
-`MemoryStore`, `SessionStore`, workspace service traits, permissions,
-confirmation, hooks, security, budget guards, tools, MCP transports, and graph
-stores. Core owns lifecycle and ordering; hosts own product UI, identity,
-credential access, and deployment policy.
+Core owns lifecycle, ordering, and execution contracts. Public extension
+boundaries include `LlmClient`, `ContextProvider`, `MemoryStore`,
+`SessionStore`, workspace service traits, tools, permissions, confirmations,
+hooks, security, MCP transports, and graph stores.
 
-Source is split by concern under `agent_api/`, `tools/`, `workspace/`,
+Source is grouped by concern under `agent_api/`, `tools/`, `workspace/`,
 `context/`, `llm/`, `mcp/`, `orchestration/`, `store/`, and `state_graph/`.
-Node and Python bindings remain separate crates over the same Rust core.
+Node.js and Python bindings remain separate native crates over the same Core.
+
+## Filesystem-first agents and releases
+
+`AgentDir` keeps reusable agents reviewable as files:
+
+```text
+agent-dir/
+├── instructions.md
+├── agent.acl
+├── skills/
+├── tools/
+└── schedules/
+```
+
+Tool specifications can connect MCP servers or bounded PTC scripts. With the
+`serve` feature, a host can serve an agent directory and run cron schedules.
+Files never bypass workspace, permission, confirmation, or verification
+policy.
+
+`AgentReleaseManifest` admits the versioned `.a3s/asset.acl` contract, derives
+schema-aware canonical ACL and a SHA-256 identity, and verifies runtime
+compatibility before activation. Secret declarations are typed injection slots;
+values remain outside the release document.
+
+Release admission validates metadata. It does **not** build or run an OCI
+artifact, implement health behavior, or own deployment lifecycle. Read the
+[Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) before integrating
+the v1 schema.
+
+## Explicit boundaries
+
+- Core is an embeddable runtime, not a hosted agent service or a terminal
+  widget library.
+- The separate A3S CLI owns the interactive TUI, account adapters, presentation
+  policy, and optional A3S OS integration.
+- Hosts own user identity, credential access, deployment policy, and trust
+  decisions around direct host tool calls.
+- Sandboxing, persistence, automatic compaction, goals, delegation, and graph
+  projection require explicit host configuration; memory extraction remains
+  host-configurable.
+- A session permits one transcript-affecting operation at a time; concurrent
+  send, stream, attachment, command, or resume operations fail fast.
+
+## Documentation
+
+| Guide | Focus |
+| --- | --- |
+| [User Guide](manual/USER_GUIDE.md) · [Chinese](manual/USER_GUIDE_CN.md) | Installation, configuration, sessions, tools, and common workflows |
+| [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) | Extension contracts, security, lifecycle, and production integration |
+| [SDK API Design](manual/SDK_API_DESIGN.md) | Cross-language API conventions and alignment |
+| [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) | Language runtime, capability boundary, lifecycle, and verification |
+| [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md) | Filesystem-first tool and agent definitions |
+| [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) | Admission schema, identity, compatibility, and security boundary |
+| [Changelog](CHANGELOG.md) | Release history and migration-relevant changes |
 
 ## Development
 
@@ -748,13 +419,9 @@ cargo clippy -p a3s-code-core --all-targets --all-features -- -D warnings
 node scripts/sdk_api_alignment_check.mjs
 ```
 
-Real-provider, browser-runtime, and S3 tests are intentionally ignored unless
-their credentials or external services are configured. Run only the focused
-ignored test whose prerequisites are available; the normal suite is hermetic.
-
-See the [Node SDK](sdk/node/README.md), [Python SDK](sdk/python/README.md), and
-[Changelog](CHANGELOG.md) for surface-specific details and release history.
+Real-provider, browser-runtime, and S3 tests are ignored unless their external
+prerequisites are configured. The normal test suite is hermetic.
 
 ## License
 
-MIT
+[MIT](LICENSE)
