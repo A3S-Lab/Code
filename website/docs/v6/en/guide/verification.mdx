@@ -17,9 +17,8 @@ Verification is session-scoped. The Rust core runs each command, records its
 exit status and output, and rolls every report up into a single summary that
 travels alongside the turn result.
 
-Product UIs can place the summary in `DeliverySummary` and file-level results in
-`ChangesInspector`. The [Web result components](/guide/components/web/results)
-shows that composition.
+Product UIs can present a delivery summary first, followed by the command output
+and file-level changes used to support it.
 
 ## Running Verification Commands
 

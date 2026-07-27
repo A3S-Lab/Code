@@ -2,12 +2,7 @@
   {
     "text": "Docs",
     "link": "/guide/",
-    "activeMatch": "^/guide/(?!examples/|components/)"
-  },
-  {
-    "text": "Components",
-    "link": "/guide/components/",
-    "activeMatch": "^/guide/components/"
+    "activeMatch": "^/guide/(?!examples/)"
   },
   {
     "text": "Examples",

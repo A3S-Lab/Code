@@ -10,9 +10,8 @@ session tool surface. That surface is assembled from the workspace capability
 set plus session-level integrations, so a non-local workspace can intentionally
 hide tools it cannot service.
 
-To see tool events in a UI first, open the Run step in the
-[A3S Web execution components](/guide/components/web/execution) or
-`ToolLogView` in the [TUI data components](/guide/components/tui/data).
+Tool activity reaches clients through the session event stream, so a UI can
+render starts, output, errors, and completion without parsing terminal text.
 
 ## Tool Surface
 

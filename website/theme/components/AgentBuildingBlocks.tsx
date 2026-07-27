@@ -257,12 +257,12 @@ const groups: BuildingBlockGroup[] = [
         path: '/guide/persistence.html',
       },
       {
-        name: 'A3S TUI / Web',
+        name: 'A3S Code TUI',
         description: {
-          zh: '逐个查看终端与网页组件怎样承接运行事件。',
-          en: 'Inspect how individual terminal and Web components render runtime events.',
+          zh: '在终端中查看同一条运行事件流。',
+          en: 'Render the same runtime event stream in a terminal.',
         },
-        path: '/guide/components/',
+        path: '/guide/tui.html',
       },
     ],
   },

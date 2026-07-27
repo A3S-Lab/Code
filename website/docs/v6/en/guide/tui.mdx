@@ -3,10 +3,12 @@ title: 'A3S Code TUI'
 description: 'Install, configure, and operate the a3s code terminal workspace'
 ---
 
+import { Tab, Tabs } from '@rspress/core/theme';
+
 # A3S Code TUI
 
 `a3s code` is the interactive terminal workspace for A3S Code. It is shipped by
-the [`a3s` CLI](https://github.com/A3S-Lab/Cli), drives the Rust
+the [`a3s` CLI](https://github.com/A3S-Lab/a3s), drives the Rust
 `a3s-code-core` runtime, and renders the runtime event stream with
 [`a3s-tui`](https://github.com/A3S-Lab/TUI).
 
@@ -14,17 +16,12 @@ Use the TUI when you want the ready coding-agent product in a terminal. Use
 `a3s-code-core` when you are embedding the same runtime in another Rust host,
 runner, IDE bridge, or controlled product surface.
 
-:::tip See the UI first
-The [TUI component docs](/guide/components/tui/) isolate run, diff, file-tree,
-and feedback controls without requiring the CLI.
-:::
-
 ## Surface Map
 
 | Surface         | Repository                                      | Responsibility                                                                                                                                                                                |
 | --------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `a3s-code-core` | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) | Rust runtime crate for sessions, tools, memory, permissions, delegation, persistence, verification, and event replay.                                                                         |
-| `a3s code`      | [A3S-Lab/Cli](https://github.com/A3S-Lab/Cli)   | Terminal coding-agent application that drives `a3s-code-core` sessions.                                                                                                                       |
+| `a3s code`      | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   | Terminal coding-agent application that drives `a3s-code-core` sessions.                                                                                                                       |
 | A3S Use         | [A3S-Lab/Use](https://github.com/A3S-Lab/Use)   | Independently released Browser, native Office, built-in OCR, optional Office compatibility, and signed external application capabilities projected into Code through standard MCP and Skills. |
 | `a3s-tui`       | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)   | Terminal UI framework used by the CLI. It is the renderer and component library, not the agent runtime.                                                                                       |
 | A3S Flow        | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow) | Durable workflow engine used by `DynamicWorkflowRuntime` for replayable per-turn dynamic workflows.                                                                                           |
@@ -32,18 +29,32 @@ and feedback controls without requiring the CLI.
 
 ## Install And Start
 
-Install the CLI, then run `a3s code` from the workspace the agent should
-inspect:
+Run the installer for your platform:
+
+<Tabs>
+<Tab label="macOS / Linux">
 
 ```bash
-brew install A3S-Lab/tap/a3s
-
-# or from crates.io
-cargo install a3s
-
-# or from the CLI repository
-cargo install --git https://github.com/A3S-Lab/Cli
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.sh | sh
 ```
+
+</Tab>
+<Tab label="Windows">
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
+```
+
+</Tab>
+</Tabs>
+
+The scripts select the release archive for the current system and architecture
+and verify its SHA-256 digest. You can also use
+`brew install a3s-lab/tap/a3s` or `cargo install a3s`.
+
+After installation, run the CLI from the workspace the agent should inspect:
 
 ```bash
 a3s code

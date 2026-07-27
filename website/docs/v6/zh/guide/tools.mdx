@@ -8,9 +8,8 @@ description: '工具选择、直接工具调用与验证证据'
 A3S Code 会保留工具注册表。`toolNames()` 返回当前 session 的工具表面。这个表面由
 workspace capability 与 session 级集成共同组装；因此非本地 workspace 可以有意隐藏它无法提供服务的工具。
 
-想先看工具事件在界面中的效果，可以打开
-[A3S Web 执行流组件](/guide/components/web/execution)，或
-[TUI 数据组件](/guide/components/tui/data) 中的 `ToolLogView`。
+工具活动通过 Session 事件流传给客户端。界面可以直接展示开始、输出、错误和完成状态，
+不需要解析终端文本。
 
 ## 工具表面
 

@@ -7,14 +7,14 @@ description: 'Creating, streaming, resuming, and saving workspace-bound sessions
 
 `Agent` owns configuration and provider state. `Session` binds that agent to one workspace and one conversation lifecycle.
 
-This is where UI integration usually begins. The
-[A3S Web execution components](/guide/components/web/execution) show how `ExecutionStream`
-presents session events as task progress.
+This is where UI integration usually begins: subscribe to `AgentEvent` values
+from the session and map them to progress, tool calls, confirmations, and results.
 
-```ts
+```ts title=session.ts
 import { Agent } from '@a3s-lab/code';
 
 const agent = await Agent.create('agent.acl');
+// !focus(1:7)
 const session = agent.session('/repo', {
   model: 'provider/model-id',
   planningMode: 'enabled',

@@ -11,7 +11,7 @@ A3S Code 提供 Rust、Node.js 和 Python SDK。想直接使用终端应用，�
 
 | 入口     | 包或命令        | 文档                                               | 适用场景                              |
 | -------- | --------------- | -------------------------------------------------- | ------------------------------------- |
-| Terminal | `a3s code`      | [A3S CLI](https://github.com/A3S-Lab/CLI)          | 直接在终端运行编码 Agent              |
+| Terminal | `a3s code`      | [A3S CLI](https://github.com/A3S-Lab/a3s)          | 直接在终端运行编码 Agent              |
 | Rust     | `a3s-code-core` | [docs.rs](https://docs.rs/a3s-code-core)           | 使用完整 Runtime API 或实现扩展 Trait |
 | Node.js  | `@a3s-lab/code` | [npm](https://www.npmjs.com/package/@a3s-lab/code) | 在 Node.js 应用中订阅异步事件流       |
 | Python   | `a3s-code`      | [PyPI](https://pypi.org/project/a3s-code/)         | 在 Python 中使用同步或异步 API        |
@@ -41,5 +41,4 @@ python -m pip install a3s-code
 
 接入自己的基础设施时，可以替换 `LlmClient`、`ContextProvider`、
 `MemoryStore`、`SessionStore`、Workspace 服务、工具、权限确认、Hook、MCP
-Transport 和 Graph Store。想先看事件怎样进入界面，可以打开
-[A3S TUI 与 A3S Web 组件文档](/guide/components/)。
+Transport 和 Graph Store。界面接入可从 [Session 与事件流](/guide/sessions) 开始。
