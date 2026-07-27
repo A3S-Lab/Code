@@ -1,0 +1,22 @@
+---
+title: 'A3S Web components'
+description: 'Task, execution, permission, coordination, result, and workspace components from A3S Web'
+---
+
+# A3S Web components
+
+A3S Web consumes runtime Sessions, event streams, permission requests, Artifacts, and Memory data.
+These pages group components by responsibility instead of placing everything in one fixed flow.
+
+| Category                                                      | Components                                                   |
+| ------------------------------------------------------------- | ------------------------------------------------------------ |
+| [Task input](/guide/components/web/tasks)                     | `TaskComposer`, `TaskLibrary`                                |
+| [Execution](/guide/components/web/execution)                  | `ExecutionStream`, `ReasoningDisclosure`, `ToolCallTimeline` |
+| [Permissions and recovery](/guide/components/web/permissions) | `PermissionDecision`, `RecoveryNotice`                       |
+| [Coordination](/guide/components/web/coordination)            | `TaskRuntimePlanList`, `TaskRuntimeSubagentList`             |
+| [Results](/guide/components/web/results)                      | `DeliverySummary`, `ArtifactEntries`, `ChangesInspector`     |
+| [Workspace](/guide/components/web/workspace)                  | `WorkspaceEditor`, `MemoryGraph`                             |
+
+See
+[`apps/web/docs/COMPONENT_SPEC.md`](https://github.com/A3S-Lab/a3s/blob/main/apps/web/docs/COMPONENT_SPEC.md)
+for the complete component boundary.

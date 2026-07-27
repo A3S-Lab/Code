@@ -1,0 +1,20 @@
+---
+title: '执行状态'
+description: '单独操作 ActivityBlock 与 Checklist'
+---
+
+# 执行状态
+
+## ActivityBlock
+
+一项推理或工具活动的摘要。切换等待、执行中、完成和失败状态，再点击主体展开日志。
+
+<A3SComponentDemo name="ActivityBlock" />
+
+## Checklist
+
+计划项的状态列表。点击任意一项，会在待处理、进行中和完成之间循环。
+
+<A3SComponentDemo name="Checklist" />
+
+这两类组件通常分别接收工具事件与 Plan 更新；它们只负责显示状态，不负责调度任务。

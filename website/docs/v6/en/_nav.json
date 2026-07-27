@@ -2,12 +2,12 @@
   {
     "text": "Docs",
     "link": "/guide/",
-    "activeMatch": "^/guide/(?!examples/|playground/)"
+    "activeMatch": "^/guide/(?!examples/|components/)"
   },
   {
-    "text": "Playground",
-    "link": "/guide/playground/",
-    "activeMatch": "^/guide/playground/"
+    "text": "Components",
+    "link": "/guide/components/",
+    "activeMatch": "^/guide/components/"
   },
   {
     "text": "Examples",

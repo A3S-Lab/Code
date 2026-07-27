@@ -3,8 +3,8 @@
   "tui",
   {
     "type": "dir",
-    "name": "playground",
-    "label": "Playground",
+    "name": "components",
+    "label": "Components",
     "collapsible": true,
     "collapsed": false
   },

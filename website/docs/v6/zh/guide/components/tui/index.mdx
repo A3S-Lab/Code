@@ -1,0 +1,20 @@
+---
+title: 'A3S TUI 组件'
+description: 'A3S TUI 的执行、输入、导航、数据与反馈组件'
+---
+
+# A3S TUI 组件
+
+A3S TUI 把 `AgentEvent`、任务计划、工具日志、Diff 和 Session 状态放进终端。下面按用途
+拆开，不要求先理解整套页面布局。
+
+| 分类                                       | 组件                                          |
+| ------------------------------------------ | --------------------------------------------- |
+| [执行状态](/guide/components/tui/activity) | `ActivityBlock`、`Checklist`                  |
+| [输入与确认](/guide/components/tui/input)  | `ChoicePrompt`、`Confirm`、`TextInput`        |
+| [导航](/guide/components/tui/navigation)   | `Tabs`、`TreePicker`                          |
+| [数据与改动](/guide/components/tui/data)   | `DataTable`、`DiffView`、`ToolLogView`        |
+| [反馈](/guide/components/tui/feedback)     | `Alert`、`Progress`、`Toast`、`SessionStatus` |
+
+完整导出列表见
+[`src/components/mod.rs`](https://github.com/A3S-Lab/TUI/blob/main/src/components/mod.rs)。

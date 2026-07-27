@@ -1,0 +1,17 @@
+[
+  "index",
+  {
+    "type": "dir",
+    "name": "tui",
+    "label": "A3S TUI",
+    "collapsible": true,
+    "collapsed": false
+  },
+  {
+    "type": "dir",
+    "name": "web",
+    "label": "A3S Web",
+    "collapsible": true,
+    "collapsed": false
+  }
+]

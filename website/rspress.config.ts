@@ -20,8 +20,7 @@ export default defineConfig({
   markdown: {
     globalComponents: [
       path.join(__dirname, 'theme/components/AgentBuildingBlocks.tsx'),
-      path.join(__dirname, 'theme/components/TuiPlayground.tsx'),
-      path.join(__dirname, 'theme/components/WebPlayground.tsx'),
+      path.join(__dirname, 'theme/components/A3SComponentDemo.tsx'),
     ],
   },
   multiVersion: {
