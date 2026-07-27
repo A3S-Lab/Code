@@ -1,0 +1,93 @@
+---
+title: 'Skill 工具'
+description: '将已注册的 skill 作为可调用工具来调用'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Skill 工具
+
+skills 以两个核心工具的形式暴露给模型：`search_skills`（按意图查找 skill）和
+`Skill`（按名称调用 skill）。tool 类型的 skill 会运行其处理器；instruction 类型的
+skill 会返回其正文供模型应用。你既可以让模型在一次运行中调用这些工具，也可以通过
+`session.tool('Skill', ...)` 直接从 SDK 调用某个 skill。
+
+通过 `skillDirs` / `skill_dirs` 注册 skill 目录（包含若干 `SKILL.md` 文件的文件夹），
+或通过 session options 传入 inline skills。A3S Code 不再内置默认 skills，
+`builtinSkills` / `builtin_skills` 只是兼容标记。注册后的 skills 会通过
+`Skill` 与 `search_skills` 可见。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session(process.cwd(), {
+  skillDirs: ['./skills'], // a folder of SKILL.md files
+});
+
+// Skill and search_skills are core tools — confirm they're on the surface.
+console.log(session.toolNames());
+
+// Option A: let the model search for and apply a skill during a run.
+const run = await session.run(
+  'Search available skills, then apply the most relevant one.',
+);
+console.log(run.text);
+
+// Option B: invoke a skill directly as a callable tool.
+// Canonical args: { skill_name, prompt? }.
+const result = await session.tool('Skill', {
+  skill_name: 'release-review',
+  prompt: 'Review this release patch for blockers and verification gaps.',
+});
+if (result.exitCode !== 0) {
+  throw new Error(result.output);
+}
+console.log(result.output);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.skill_dirs = ['./skills']  # a folder of SKILL.md files
+session = agent.session('.', opts)
+
+# Skill and search_skills are core tools — confirm they're on the surface.
+print(session.tool_names())
+
+# Option A: let the model search for and apply a skill during a run.
+run = session.run('Search available skills, then apply the most relevant one.')
+print(run.text)
+
+# Option B: invoke a skill directly as a callable tool.
+# Canonical args: { skill_name, prompt? }.
+result = session.tool('Skill', {
+    'skill_name': 'release-review',
+    'prompt': 'Review this release patch for blockers and verification gaps.',
+})
+if result.exit_code != 0:
+    raise RuntimeError(result.output)
+print(result.output)
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+`SKILL.md` 在 frontmatter 中声明其 `kind`（`tool`、`instruction` 或 `agent`）。对于
+tool 类型的 skill，`Skill` 工具会运行该 skill 的处理器并返回其输出；对于 instruction
+类型的 skill，则返回正文供模型应用。skill 管理由 SDK 注册、skill 目录或项目文件完成，
+而不是通过模型可见的管理工具处理。
+
+可运行版本位于 `crates/code/sdk/node/examples/skills/test_custom_skills_agents.ts`。

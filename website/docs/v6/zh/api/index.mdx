@@ -1,0 +1,42 @@
+---
+title: API 与包
+description: A3S Code 的 Rust、Node.js 与 Python API 入口，以及跨语言运行时契约。
+---
+
+# API 与包
+
+A3S Code 的四个产品表面共享同一个运行时内核，但各自承担不同的集成职责。
+版本号与发布状态请以对应 Registry 和
+[GitHub Releases](https://github.com/A3S-Lab/Code/releases) 为准。
+
+| 表面     | 包或命令        | API 入口                                           | 适用场景                      |
+| -------- | --------------- | -------------------------------------------------- | ----------------------------- |
+| Terminal | `a3s code`      | [A3S CLI](https://github.com/A3S-Lab/CLI)          | 直接运行交互式编码产品        |
+| Rust     | `a3s-code-core` | [docs.rs](https://docs.rs/a3s-code-core)           | 完整 Runtime API 与扩展 Trait |
+| Node.js  | `@a3s-lab/code` | [npm](https://www.npmjs.com/package/@a3s-lab/code) | N-API 原生绑定与异步事件流    |
+| Python   | `a3s-code`      | [PyPI](https://pypi.org/project/a3s-code/)         | PyO3 原生包的同步和异步 API   |
+
+## 安装
+
+```bash
+# Rust
+cargo add a3s-code-core
+
+# Node.js
+npm install @a3s-lab/code
+
+# Python
+python -m pip install a3s-code
+```
+
+## 跨语言契约
+
+跨语言产品边界由版本化事件、持久化 Snapshot 和明确的生命周期方法组成。
+先阅读 [API 契约](/guide/api-contract)，再根据需要进入
+[会话](/guide/sessions)、[工具](/guide/tools)、
+[Workspace 后端](/guide/workspace-backends) 和
+[持久化](/guide/persistence)。
+
+可替换的宿主扩展边界包括 `LlmClient`、`ContextProvider`、`MemoryStore`、
+`SessionStore`、Workspace 服务、工具、权限、确认、Hook、安全提供者、MCP
+Transport 和 Graph Store。

@@ -1,0 +1,169 @@
+---
+title: '概览'
+description: 'Rust coding-agent runtime 与 a3s code 终端工作区的执行内核'
+---
+
+# A3S Code
+
+A3S Code 是 `a3s code` 背后的 Rust runtime。它让 agent loop 保持可观测，并由
+同一个运行时内核负责上下文组装、受治理的 provider/tool 调用、权限策略、任务
+委派、workspace 访问、持久化、验证证据与 run replay。
+
+`a3s-code` 是可嵌入的运行时和 SDK surface。`a3s code` 是
+[`a3s` CLI](https://github.com/A3S-Lab/Cli) 提供的交互式终端应用；它驱动
+A3S Code session，并用 [`a3s-tui`](https://github.com/A3S-Lab/TUI) 框架渲染
+事件流。想要现成 TUI 时安装 CLI；要构建自己的宿主、runner、IDE bridge 或产品
+UI 时安装 SDK。
+
+## Surfaces
+
+| 名称           | 用途                                                         | 仓库                                            |
+| -------------- | ------------------------------------------------------------ | ----------------------------------------------- |
+| `a3s-code`     | 通过 Rust、Node.js 或 Python API 嵌入 coding-agent session。 | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) |
+| `a3s code` TUI | 运行现成的终端编程 agent。                                   | [A3S-Lab/Cli](https://github.com/A3S-Lab/Cli)   |
+| `a3s-tui`      | 构建终端 UI surface；它是 UI 框架，不是 agent runtime。      | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)   |
+| A3S Flow       | `DynamicWorkflowRuntime` 使用的持久化 workflow engine。      | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow) |
+| A3S monorepo   | 产品文档、发布编排、submodule pin 与相关 crates。            | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   |
+
+## 当前能力图
+
+| 领域         | 当前能力                                                                                                                                                                                                                                       |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent 会话   | 异步优先的 `SessionBuilder` 构建 workspace-bound `AgentSession`。Transcript 操作使用 fail-fast single-flight，并暴露 `send`、`run`、`stream`、直接工具、run 状态、取消、持久化与生命周期清理。                                                 |
+| TUI          | [`a3s code`](/guide/tui) 将运行时事件流渲染为终端 transcript，并提供 tool activity、approval、memory、file panel 与 session controls。                                                                                                         |
+| 文件系统优先 | [文件系统优先](/guide/filesystem-first) 把 `AGENTS.md`、`agent.acl`、`.a3s/agents/`、`skills/`、`tools/` 与 `schedules/` 组织成可审查的 Agent 产品接口。                                                                                       |
+| 工具         | 稳定工具名覆盖文件、搜索、shell、git、web fetch/search、batch、结构化输出、QuickJS 程序化工具链、skills、MCP tools 与子任务委派。Model、nested、delegated 与 trusted host-direct call 通过同一个 invocation kernel，并携带显式 origin policy。 |
+| 命令         | [命令](/guide/commands) 区分 TUI slash commands 与 SDK command registry，后者用于宿主自定义 `/command` handler。                                                                                                                               |
+| 委派         | 内置角色与自定义 Markdown/YAML agents 可通过 `task`、`parallel_task`、`session.task(...)`、`session.tasks(...)` 和自动委派控制使用。                                                                                                           |
+| 编排         | [`session.parallel`](/guide/orchestration)、`session.pipeline`、workflow phases、可恢复 checkpoint、loop caps 与 workflow budget ledger 支持确定性的宿主侧 fan-out。                                                                           |
+| 定时服务     | [AgentDir](/guide/agent-dir) 可通过 `serveAgentDir` / `serve_agent_dir` 运行定时 turn，每个启用 schedule 对应一个稳定的 `schedule:<name>` session。                                                                                            |
+| 安全         | 单个 run invocation context 传递 identity、cancellation、event 与 governance。权限策略、HITL、budget、workspace 路径检查、工具超时、hook 和 output sanitization 进入统一 provider/tool 边界。                                                  |
+| Workspace    | [Workspace 后端](/guide/workspace-backends) 让内置工具运行在本地文件、宿主提供的 workspace、可选 S3 兼容存储和可选 remote-git 服务上。                                                                                                         |
+| 事件         | `EventEnvelopeV1` 是 Rust/Node/Python 共用的无损 wire shape，event type 保持开放，并为未来事件完整保留 payload/metadata。                                                                                                                      |
+| 持久化       | Atomic `SessionSnapshotV1` generation、memory/file store、session ID、auto-save、run snapshot/event、trace artifact、loop/workflow checkpoint、memory recall 与 retention cap 支持可恢复会话和可 replay 的产品状态。                           |
+| 验证         | [验证](/guide/verification) 覆盖显式验证命令、预设、结构化 reports、summaries、artifacts、trace events 与 run replay 证据。                                                                                                                    |
+
+当前执行形态：
+
+```text
+Agent / AgentSession
+  -> 上下文组装
+  -> 可选 planning
+  -> 选择工具或委派子任务
+  -> 权限与确认策略
+  -> 执行
+  -> trace、artifact 与验证证据
+  -> 压缩与持久化
+```
+
+## 安装
+
+想使用交互式终端应用时安装 CLI：
+
+```bash
+brew install A3S-Lab/tap/a3s
+
+# 或从 crates.io 安装
+cargo install a3s
+
+# 或从 CLI 仓库安装
+cargo install --git https://github.com/A3S-Lab/Cli
+```
+
+当你要把 A3S Code 嵌入自己的产品时，安装 SDK 包：
+
+```bash
+npm install @a3s-lab/code
+pip install a3s-code
+cargo add a3s-code-core
+```
+
+## 配置
+
+A3S Code 使用 ACL。不要把真实 API Key、私有模型端点、本地配置路径或
+tenant/user 标识提交到仓库；提交只通过环境变量解析凭据的模板。
+
+```text
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+
+agent_dirs = ["./.a3s/agents"]
+skill_dirs = ["./skills"]
+storage_backend = "file"
+sessions_dir = ".a3s/sessions"
+```
+
+`auto_parallel = false` 只关闭自动并行子 agent fan-out。手动
+`parallel_task` 和 SDK `session.tasks(...)` 仍然可用，除非你单独关闭手动委派。
+本地 session 持久化需要把 `storage_backend = "file"` 和 `sessions_dir` 配对；
+SDK embedding 场景也可以直接传 typed `FileSessionStore`。
+
+## 使用 TUI
+
+在你希望 agent 检查的 workspace 中运行 `a3s code`：
+
+```bash
+a3s code
+a3s code resume <session-id>
+a3s code update
+```
+
+TUI 会按顺序发现配置：`A3S_CONFIG_FILE`、从当前目录向上查找的
+`.a3s/config.acl`，以及 `~/.a3s/config.acl`。
+顶层 `a3s update` 命令会进入同一个 updater。
+
+## 使用 SDK
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/path/to/workspace', {
+  planningMode: 'auto',
+  permissionPolicy: {
+    allow: ['read(*)', 'grep(*)', 'glob(*)'],
+    ask: ['bash(*)', 'write(*)'],
+    deny: ['write(**/.env*)', 'bash(rm -rf*)'],
+    defaultDecision: 'ask',
+    enabled: true,
+  },
+});
+
+const result = await session.send('Find the authentication entry points.');
+console.log(result.text);
+console.log(result.verificationSummaryText);
+
+session.close();
+await agent.close();
+```
+
+## 入口
+
+- [A3S Code TUI](/guide/tui) 说明安装、配置发现、slash commands，以及 CLI 与 runtime 的区别。
+- [文件系统优先](/guide/filesystem-first)覆盖可审查的项目约定和 AgentDir 约定。
+- [API 契约](/guide/api-contract)说明经过集成测试的 Node SDK surface。
+- [会话](/guide/sessions)覆盖生命周期、streaming、run 状态、持久化与取消。
+- [命令](/guide/commands) 区分 TUI 命令和 SDK command registry 中的自定义处理器。
+- [工具](/guide/tools)覆盖直接工具、typed tool errors、结构化输出与 QuickJS programs。
+- [验证](/guide/verification)覆盖命令证据、reports 与 summaries。
+- [任务](/guide/tasks)覆盖模型驱动的子任务委派。
+- [编排](/guide/orchestration)覆盖宿主驱动的 fan-out、pipeline 与可恢复 workflow。
+- [安全](/guide/security)覆盖权限、确认、hooks 与验证 gate。
+- [Hooks](/guide/hooks)覆盖工具、prompt、skill、session 与 error 生命周期拦截。
+- [Agent Directory](/guide/agent-dir)覆盖持久化文件系统优先 agents、tools 与 schedules。
+- [Memory](/guide/memory) 与 [持久化](/guide/persistence)覆盖可复用事实、session snapshot 与恢复路径。
+- [Provider 配置](/guide/providers)覆盖 ACL provider 配置与环境变量注入。

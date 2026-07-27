@@ -1,0 +1,147 @@
+---
+title: '直接工具'
+description: '不消耗 LLM 回合即可运行确定性宿主工具'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 直接工具
+
+`session.tool(name, args)`（以及 `glob`、`grep`、`readFile` 等类型化辅助方法）会直接运行宿主工具，循环中不发起任何模型调用。它们适用于测试、迁移以及宿主驱动的工作流——你需要确定性结果，而不是一次智能体回合。
+
+直接调用是宿主控制面调用。调用前请先执行你的产品授权逻辑；`permissionPolicy`
+管控的是 agent turn 内由模型选择的工具调用，不是你的应用代码是否可以调用 SDK helper。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.');
+
+const allowedDirectTools = new Set(['glob', 'grep', 'read', 'generate_object']);
+function assertDirectToolAllowed(name: string) {
+  if (!allowedDirectTools.has(name)) {
+    throw new Error(`direct tool not allowed here: ${name}`);
+  }
+}
+
+// Glob: list files by pattern
+assertDirectToolAllowed('glob');
+const files = await session.glob('**/*.ts');
+console.log(`glob found ${files.length} TypeScript files`);
+
+// Grep: search file contents
+assertDirectToolAllowed('grep');
+const matches = await session.grep('Agent.create');
+const matchCount = matches.split('\n').filter(Boolean).length;
+console.log(`grep found ${matchCount} matching lines`);
+
+// Read a file
+assertDirectToolAllowed('read');
+const readme = await session.readFile('README.md');
+console.log(`README is ${readme.length} bytes`);
+
+// Direct tool call by name
+assertDirectToolAllowed('read');
+const raw = await session.tool('read', { file_path: 'package.json' });
+console.log(`package.json via tool(): ${raw.output.length} bytes`);
+
+// Inspect available tool schemas
+const schemas = session.toolDefinitions();
+console.log(`session exposes ${schemas.length} tools`);
+
+// Structured output: generate a schema-validated JSON object
+assertDirectToolAllowed('generate_object');
+const structured = await session.tool('generate_object', {
+  schema: {
+    type: 'object',
+    required: ['count', 'language'],
+    properties: {
+      count: { type: 'integer' },
+      language: { type: 'string' },
+    },
+  },
+  prompt: 'How many TypeScript files are in this project?',
+  schema_name: 'file_stats',
+});
+if (structured.exitCode !== 0) {
+  throw new Error(structured.output);
+}
+console.log('structured output:', JSON.parse(structured.output).object);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import json
+
+from a3s_code import Agent
+
+agent = Agent.create("agent.acl")
+session = agent.session('.')
+
+ALLOWED_DIRECT_TOOLS = {'glob', 'grep', 'read', 'generate_object'}
+
+
+def assert_direct_tool_allowed(name: str) -> None:
+    if name not in ALLOWED_DIRECT_TOOLS:
+        raise RuntimeError(f'direct tool not allowed here: {name}')
+
+# Glob: list files by pattern
+assert_direct_tool_allowed('glob')
+files = session.glob('**/*.py')
+print(f'glob found {len(files)} Python files')
+
+# Grep: search file contents
+assert_direct_tool_allowed('grep')
+matches = session.grep('Agent.create')
+match_count = len([line for line in matches.splitlines() if line])
+print(f'grep found {match_count} matching lines')
+
+# Read a file
+assert_direct_tool_allowed('read')
+readme = session.read_file('README.md')
+print(f'README is {len(readme)} bytes')
+
+# Direct tool call by name
+assert_direct_tool_allowed('read')
+raw = session.tool('read', {'file_path': 'pyproject.toml'})
+print(f'pyproject.toml via tool(): {len(raw.output)} bytes')
+
+# Inspect available tool schemas
+schemas = session.tool_definitions()
+print(f'session exposes {len(schemas)} tools')
+
+# Structured output: generate a schema-validated JSON object
+assert_direct_tool_allowed('generate_object')
+structured = session.tool('generate_object', {
+    'schema': {
+        'type': 'object',
+        'required': ['count', 'language'],
+        'properties': {
+            'count': {'type': 'integer'},
+            'language': {'type': 'string'},
+        },
+    },
+    'prompt': 'How many Python files are in this project?',
+    'schema_name': 'file_stats',
+})
+if structured.exit_code != 0:
+    raise RuntimeError(structured.output)
+print('structured output:', json.loads(structured.output)['object'])
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+直接工具在 session 工作区下执行，应视为宿主侧的特权操作。大多数调用（`read`、`glob`、`grep`）是纯确定性的；`generate_object` 是个例外——它仍会调用模型来填充经过 schema 校验的 JSON 对象，但由你显式驱动，而非通过自由形式的智能体回合。
+
+可运行版本位于 `crates/code/sdk/node/examples/basic/test_generate_object.ts`（Python：`crates/code/sdk/python/examples/test_generate_object.py`）。

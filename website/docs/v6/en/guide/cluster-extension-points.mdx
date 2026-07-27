@@ -1,0 +1,192 @@
+---
+title: 'Cluster Extension Points'
+description: 'The seams a cluster host uses to run long-lived agent sessions across many nodes without forking the framework.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Cluster Extension Points
+
+A cluster host platform runs long-lived agent sessions across many nodes. The framework does not ship a scheduler or a placement engine. Instead it exposes a small set of seams: it defines the decision points, emits structured events, and lets the host supply the policy. Everything below is something you wire from outside the framework — you never fork it.
+
+This page is precise about which seams are available from both SDKs (shown with Node.js + Python code) and which are configured in the Rust core today (described in prose when no SDK option exists yet).
+
+## Identity labels
+
+Every session can carry four opaque identity labels. The framework never interprets them — it propagates them to hooks, traces, and `SessionData`, and restores them on resume. This is how a host attributes a session to a tenant, a principal, an agent template, and a wider correlation chain.
+
+Pair identity labels with a `sessionStore` / `session_store` so the labels survive a process restart. On resume, **caller-supplied options win**, so you can relabel a session as you move it between nodes.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+const session = agent.session('/path/to/project', {
+  tenantId: 'tenant-example',
+  principal: 'principal-example',
+  agentTemplateId: 'agent-template-example',
+  correlationId: 'trace-example',
+});
+
+// Getters return string | null
+console.log(session.tenantId); // 'tenant-example'
+console.log(session.principal); // 'principal-example'
+console.log(session.agentTemplateId); // 'agent-template-example'
+console.log(session.correlationId); // 'trace-example'
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+opts = SessionOptions()
+opts.tenant_id = 'tenant-example'
+opts.principal = 'principal-example'
+opts.agent_template_id = 'agent-template-example'
+opts.correlation_id = 'trace-example'
+session = agent.session('/path/to/project', opts)
+
+# Getters are properties, return str | None
+print(session.tenant_id)          # 'tenant-example'
+print(session.principal)          # 'principal-example'
+print(session.agent_template_id)  # 'agent-template-example'
+print(session.correlation_id)     # 'trace-example'
+```
+
+</Tab>
+</Tabs>
+
+## Budget / cost guard
+
+A budget guard lets the host gate every LLM call against a cost or token budget. The framework calls your guard _before_ each LLM request and _after_ it returns. The guard is policy you own; the framework only enforces the decision you hand back.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+session.setBudgetGuard({
+  checkBeforeLlm(ctx) {
+    if (overLimit(ctx.sessionId, ctx.estimatedTokens)) {
+      return {
+        decision: 'deny',
+        resource: 'tokens',
+        reason: 'monthly cap reached',
+      };
+    }
+    return { decision: 'allow' };
+  },
+  recordAfterLlm(ctx) {
+    meter(ctx.sessionId, ctx.usage);
+  },
+});
+
+// Clear the guard
+session.setBudgetGuard(null);
+```
+
+Node callbacks receive a single `ctx` object and **must not throw**. Wrap logic in `try/catch` and return an explicit decision. Hung or unreadable `check*` callbacks fail closed as `deny`.
+
+</Tab>
+<Tab label="Python">
+
+```python
+class MyGuard:
+    def check_before_llm(self, session_id, estimated_tokens):
+        if over_limit(session_id, estimated_tokens):
+            return {'decision': 'deny', 'resource': 'tokens', 'reason': 'monthly cap reached'}
+        return {'decision': 'allow'}
+
+    def record_after_llm(self, session_id, usage):
+        meter(session_id, usage)
+
+opts = SessionOptions()
+opts.budget_guard = MyGuard()
+session = agent.session('/path/to/project', opts)
+
+# To clear: set opts.budget_guard = None and re-create the session.
+```
+
+</Tab>
+</Tabs>
+
+The decision shape is identical across both SDKs:
+
+| Return value                                                | Effect                                                                                                               |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `None` / `null` / `{ decision: 'allow' }`                   | Proceed with the LLM call.                                                                                           |
+| `{ decision: 'soft', resource, consumed, limit, message? }` | Emits `BudgetThresholdHit` (kind `soft`) and proceeds.                                                               |
+| `{ decision: 'deny', resource, reason }`                    | Aborts the LLM call. Python raises `RuntimeError("Budget exhausted...")`; Node rejects with `"Budget exhausted..."`. |
+
+Robustness is intentional but SDK-specific: a **missing guard method** is treated as the permissive default. Python callback errors fall back to Allow. Node callbacks must not throw; timeouts and malformed `check*` returns fail closed as `deny`.
+
+## Cluster event vocabulary
+
+The host emits cluster-level decisions as structured `AgentEvent` variants through its hook executor. In-session hooks subscribe to them uniformly — the same way they observe any other event — so policy authored at the host shows up to the agent's own hooks without special casing.
+
+The cluster vocabulary is:
+
+- **`BudgetThresholdHit { resource, kind, consumed, limit, message? }`** — a budget guard returned a `soft` decision (or the host crossed a threshold it tracks itself). `kind` distinguishes soft warnings from harder limits.
+- **`PassivationRequested { reason, deadline_ms? }`** — the host is asking the session to reach a safe, persistable state so it can be evicted from this node. `deadline_ms`, when present, is the grace window before forced eviction.
+- **`PeerInvocation { from_session_id, from_tenant_id?, correlation_id? }`** — another session invoked this one. The labels let the receiver attribute the call back to its origin tenant and correlation chain.
+
+These are observed through the same verified hook API your in-session hooks already use — `session.registerHook` in Node, `session.register_hook` in Python (see [Hooks](/guide/hooks)). Treat the three variants above as the documented contract; the host is responsible for emitting them via its hook executor.
+
+## Deterministic IDs and time (replay)
+
+A cluster that wants **bit-identical replay** of a run on a different node must remove the two sources of nondeterminism in a normal run: random IDs and the wall clock. The Rust core models both behind a `HostEnv { id_generator, clock }`. The default pairs a UUID generator with the system clock; replay tooling swaps in a `SequentialIdGenerator` and a `FixedClock` so that re-executing the same inputs produces the same IDs and timestamps, and therefore the same output, on any node.
+
+This is configured in the **Rust core today**. It is not yet exposed on the JS/Python option surface, so there is no Node/Python code for it — SDK wiring may follow.
+
+## Loop checkpoints and run resumption
+
+With a `sessionStore` / `session_store` configured, the agent loop persists a checkpoint after **each completed tool round**, keyed by run id. Any node that shares the same store can rehydrate the run and continue it.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { FileSessionStore } from '@a3s-lab/code';
+
+const session = agent.session(workspace, {
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+  sessionId: 'session-from-node-a',
+});
+
+const result = await session.resumeRun('run-id-from-node-a');
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import FileSessionStore
+
+opts = SessionOptions()
+opts.session_store = FileSessionStore('./.a3s/sessions')
+opts.session_id = 'session-from-node-a'
+session = agent.session(workspace, opts)
+
+result = session.resume_run('run-id-from-node-a')
+```
+
+</Tab>
+</Tabs>
+
+A **new run id** is allocated for the resumed work — the original run is left intact in the store. Two error paths are worth handling:
+
+- **`resume_run requires a session_store`** — no store was configured; fall back to a fresh session.
+- **`no loop checkpoint found for run 'X'`** — the run never reached its first checkpoint, or it was pruned; retry later or treat the run as lost.
+
+Because checkpoints are taken only **between tool rounds, never mid-tool**, a resumed run never replays a half-executed tool. See [Persistence](/guide/persistence) for store details.
+
+## Retention caps for long-running sessions
+
+A session that runs for hours or days accumulates state in four in-memory stores: run records, per-run event buffers, trace events, and terminal subagent task snapshots. Left unbounded, these grow with session age — fine for short-lived sessions, a real leak for long-lived ones.
+
+`SessionRetentionLimits` caps each of the four stores. Every cap is optional: `None` means the unbounded default. Eviction is strict **FIFO**, and **running subagent tasks are never dropped** — only terminal (completed/failed) snapshots are evicted.
+
+Use `retentionLimits` in Node or `opts.retention_limits` in Python. Rust hosts use `SessionOptions::with_retention_limits(...)`. See [Limits](/guide/limits) for field names and examples.
+
+---
+
+**See also:** [Multi-machine](/guide/multi-machine) · [Persistence](/guide/persistence) · [Limits](/guide/limits) · [Hooks](/guide/hooks)

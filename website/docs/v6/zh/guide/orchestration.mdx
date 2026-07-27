@@ -1,0 +1,438 @@
+---
+title: '编排'
+description: '可编程、确定性的多 agent 编排：并行 fan-out、无屏障流水线与可恢复工作流'
+---
+
+# 编排
+
+编排是模型驱动委派的*可编程*姊妹能力。在 [Tasks](/guide/tasks) 与
+[Teams](/guide/teams) 中，由 LLM 在运行时决定是否调用 `task` /
+`parallel_task`——fan-out 的形状取决于模型的选择。编排把这个决策搬进你的代码：你
+用一套语法表达 fan-out、流水线与验证面板，因此形状是可复现、可测试、受预算约束
+且可恢复的——与模型的临场选择无关。
+
+当工作的*结构*是宿主提前已知的（并行跑这三个 reviewer；让每个候选项依次经过
+explore → verify → review；崩溃后恢复这一批），就用编排。当你希望由模型决定是否
+以及如何委派时，就用 Tasks/Teams。
+
+## 框架 / 宿主边界（接缝）
+
+本层的一切都围绕单一接缝 `AgentExecutor` 编写："运行这个 step，把结果给我。"这
+条接缝把职责切得很干净：
+
+- **框架**拥有*语法*——有哪些 step、如何组合、并发*提示*，以及可序列化契约
+  `AgentStepSpec` / `StepOutcome`。
+- **宿主**拥有*放置*——传输、调度，以及 step 实际在哪里运行。
+
+内置的默认 executor（`TaskExecutor`）在本地、进程内、基于 tokio 运行每个 step。
+宿主可以替换为自己的 `AgentExecutor`，把 step 放置到集群各处；组合子从不观察 step
+在哪里运行，因此同一套编排无需改动即可从单进程扩展到集群。
+
+`concurrency_hint()` 是**建议性**的，而非硬性本地上限——正是它让编排能扩展到单进
+程之外（由调度器支撑的宿主会返回其集群级目标，而不是本地上限）。
+
+SDK 已为你接好这一切：`AgentSession::agent_executor()` 返回由 session 支撑的
+executor（它把每个 step 作为子 agent 在本节点运行，继承 session 的 agent registry、
+LLM client、workspace 与 MCP 工具），`session_store()` 返回 session 的 store。
+`parallel` / `pipeline` / `parallelResumable` 方法会替你调用它们。
+
+## Step 契约
+
+一个 step 由 `AgentStepSpec` 描述，并解析为 `StepOutcome`。两者都刻意保持可序列
+化：宿主可以把 spec 发送到另一个节点，可恢复组合子也会把 outcome 持久化进
+checkpoint。
+
+`AgentStepSpec` 字段：
+
+- `task_id`——step 的稳定 id（由你指定）；会流入生命周期事件与 checkpoint。
+- `agent`——要运行的 agent 的 registry key（例如 `explore`、`review`）。
+- `description`——用于展示/追踪的简短人类标签。
+- `prompt`——交给子 agent 的指令。
+- `max_steps`_（可选）_——每个 step 的 tool-round 上限。
+- `parent_session_id`_（可选）_——用于事件关联的父 session id。
+- `output_schema`_（可选）_——设置后，step 必须返回符合此 JSON Schema 的值（见
+  [强制 schema 的 step 输出](#schema-forced-step-output)）。
+
+`StepOutcome` 字段：
+
+- `task_id`——产生该结果的 step id。
+- `session_id`——子运行的 session id（失败的 step 仍可寻址）。
+- `agent`——运行的 agent。
+- `output`——step 的文本输出。
+- `success`——失败或 panic 的 step 为 `false`（绝不会丢弃兄弟 step）。
+- `structured`_（可选）_——经 schema 校验的对象，仅当 spec 携带 `output_schema`
+  时存在。
+
+key 的大小写风格因 SDK 而异：
+
+| 概念            | Node（camelCase） | Python（snake_case） |
+| --------------- | ----------------- | -------------------- |
+| step id         | `taskId`          | `task_id`            |
+| tool-round 上限 | `maxSteps`        | `max_steps`          |
+| 父 session      | `parentSessionId` | `parent_session_id`  |
+| 强制 schema     | `outputSchema`    | `output_schema`      |
+
+`agent`、`description`、`prompt`、`output`、`success` 与 `structured` 在两个 SDK
+中拼写相同。
+
+## parallel —— 屏障式 fan-out [#parallel--barrier-fan-out]
+
+`session.parallel(specs)` 把每个 spec 作为 fan-out 运行，并按**输入顺序**解析出每
+个 spec 对应的一个 `StepOutcome`。它映射到核心组合子 `execute_steps_parallel`。它
+是一个**屏障**：在返回前会等待每个 step。
+
+每个分支彼此隔离——失败*或 panic* 的 step 会变成 `success: false`，绝不会丢弃兄弟
+step。并发受 executor 的并发提示约束（默认即 session 配置的并行度）。
+
+```ts
+const outcomes = await session.parallel([
+  {
+    taskId: 'explore',
+    agent: 'explore',
+    description: 'Risky changes',
+    prompt: 'Find risky changed files in this diff.',
+  },
+  {
+    taskId: 'verify',
+    agent: 'verification',
+    description: 'Test gaps',
+    prompt: 'Identify missing or weak verification.',
+  },
+  {
+    taskId: 'review',
+    agent: 'review',
+    description: 'Correctness',
+    prompt: 'Review the diff for correctness risks.',
+  },
+]);
+
+for (const outcome of outcomes) {
+  if (outcome.success) {
+    console.log(outcome.taskId, outcome.output);
+  } else {
+    console.warn('failed:', outcome.taskId, outcome.output);
+  }
+}
+```
+
+```python
+outcomes = session.parallel([
+    {"task_id": "explore", "agent": "explore", "description": "Risky changes",
+     "prompt": "Find risky changed files in this diff."},
+    {"task_id": "verify", "agent": "verification", "description": "Test gaps",
+     "prompt": "Identify missing or weak verification."},
+    {"task_id": "review", "agent": "review", "description": "Correctness",
+     "prompt": "Review the diff for correctness risks."},
+])
+
+for outcome in outcomes:
+    if outcome["success"]:
+        print(outcome["task_id"], outcome["output"])
+    else:
+        print("failed:", outcome["task_id"], outcome["output"])
+```
+
+## pipeline —— 阶段之间无屏障
+
+`session.pipeline(items, stages)` 让每个 item **独立地**流经一连串阶段——阶段之间
+没有屏障，因此 item A 可以处于 stage 3，而 item B 还在 stage 1。墙钟时间是最慢的
+_单条链_，而不是逐阶段屏障会带来的"每阶段最慢之和"。
+
+阶段是 spec 构造器，而非 spec：每个阶段接收上一个 outcome 和原始 item，返回要运行
+的下一个 step，或返回 `null` / `None` 提前停止该 item 的链。失败的 step 同样会停止
+链（后续阶段只会基于失败结果继续）。回调形状：
+
+- Node：`(ctx) => spec | null`，其中 `ctx = { previous: StepOutcome | null, item }`
+- Python：`stage(ctx) -> spec | None`，其中 `ctx = {"previous": <dict|None>, "item": <item>}`
+
+阶段可以基于上一个 outcome 分支——例如"验证 review 阶段产出的发现"。
+
+约束（来自源码）：
+
+- pipeline 阶段**不支持**逐阶段 `output_schema`——需要 schema 校验的 step 请用
+  [`parallel`](#parallel--barrier-fan-out)。
+- **Node：** 阶段回调**绝不能 throw**——一次 throw 会中止进程（与 `setBudgetGuard`
+  相同的约束）。请把逻辑包进 `try/catch`，出错时 `return null`。
+- **Node：** 超过 `timeoutMs`（第 3 个参数，默认 `30000`）仍挂起的阶段会 fail
+  closed——被当作 `null` 处理，仅停止该条链。
+- **Python：** 抛异常的阶段 callable 会被捕获并当作 `None`（仅停止该条链）。
+
+> Node pipeline 阶段回调**绝不能 throw。** 在当前 napi 版本中，返回值转换时的 JS
+> throw 会中止进程（与 `setBudgetGuard` 相同的 fail-closed 约束）。务必把阶段逻辑
+> 包进 `try/catch` 并在出错时 `return null`。
+
+```ts
+const outcomes = await session.pipeline(
+  ['src/auth.ts', 'src/payments.ts'],
+  [
+    (ctx) => ({
+      taskId: `explore-${ctx.item}`,
+      agent: 'explore',
+      description: 'Inspect file',
+      prompt: `Summarize the responsibilities and risks of ${ctx.item}.`,
+    }),
+    (ctx) => {
+      try {
+        if (!ctx.previous) return null;
+        return {
+          taskId: `review-${ctx.item}`,
+          agent: 'review',
+          description: 'Review of prior finding',
+          prompt: `Review this summary for correctness risks:\n${ctx.previous.output}`,
+        };
+      } catch {
+        return null; // stages must not throw
+      }
+    },
+  ],
+);
+```
+
+```python
+def explore_stage(ctx):
+    item = ctx["item"]
+    return {
+        "task_id": f"explore-{item}",
+        "agent": "explore",
+        "description": "Inspect file",
+        "prompt": f"Summarize the responsibilities and risks of {item}.",
+    }
+
+def review_stage(ctx):
+    prev = ctx["previous"]
+    if prev is None:
+        return None
+    item = ctx["item"]
+    return {
+        "task_id": f"review-{item}",
+        "agent": "review",
+        "description": "Review of prior finding",
+        "prompt": f"Review this summary for correctness risks:\n{prev['output']}",
+    }
+
+outcomes = session.pipeline(
+    ["src/auth.ts", "src/payments.ts"],
+    [explore_stage, review_stage],
+)
+```
+
+## 可恢复 / 可迁移工作流
+
+`session.parallelResumable(specs, workflowId)`（Node）/
+`session.parallel_resumable(specs, workflow_id)`（Python）是 `parallel` 加上一份
+日志。它映射到 `execute_steps_parallel_resumable`。
+
+它在每个 step 边界把一份 `WorkflowCheckpoint` 写入 session store。恢复时它跳过已完
+成的 step（复用其缓存的 outcome），只重新派发其余 step。它**只记录成功的 step**——
+失败的 step 不入日志，因此恢复时会重试。完全成功后 checkpoint 会被删除；只有崩溃才
+会留下一份供恢复。
+
+由于 checkpoint 可序列化、executor 是一个参数，宿主可以通过传入另一个节点的
+executor，在**另一个节点**上恢复被中断的工作流（迁移）。
+
+该组合子**要求已配置 session store**——两个 SDK 方法在缺少 store 时都会 reject/
+raise（Node 的错误信息是 `parallelResumable requires a sessionStore`）。
+
+`WorkflowCheckpoint` 的 schema 为 `schema_version` / `workflow_id` / `steps` /
+`checkpoint_ms`。由*未来的*、不兼容的 `schema_version` 写入的 checkpoint 在加载时
+会被拒绝（`ensure_loadable`）。该失败是 fail-safe 而非致命的：不可读的 checkpoint
+会记录一条 warning，工作流从头重跑，而不是从它无法解释的状态恢复。
+
+store 相关见 [Persistence](/guide/persistence)，迁移路径见
+[Multi-Machine](/guide/multi-machine)。
+
+```ts
+import { Agent, FileSessionStore } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+});
+
+// First attempt — may be interrupted partway through.
+let outcomes = await session.parallelResumable(specs, 'release-batch-42');
+
+// After a crash/restart: same workflowId resumes, skipping completed steps.
+outcomes = await session.parallelResumable(specs, 'release-batch-42');
+```
+
+```python
+from a3s_code import Agent, FileSessionStore, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.session_store = FileSessionStore("./.a3s/sessions")
+session = agent.session("/repo", opts)
+
+# First attempt — may be interrupted partway through.
+outcomes = session.parallel_resumable(specs, "release-batch-42")
+
+# After a crash/restart: same workflow_id resumes, skipping completed steps.
+outcomes = session.parallel_resumable(specs, "release-batch-42")
+```
+
+## 跨 fan-out 的共享预算 [#shared-budget]
+
+默认情况下，每个子代理各自统计自己的 LLM 成本。给 `parallel` 传入一个 token
+预算后，所有子代理改为汇入**同一个账本**——为整个 fan-out 设一个统一上限。它映射
+到核心的 `WorkflowBudget`：一个安装到每个子运行上的、聚合型 `BudgetGuard`。
+
+预算是一个**可选参数**，因此向后兼容：
+
+- 不传预算时，`parallel(specs)` 返回原来的结果数组，与之前完全一致。
+- 传入预算时，`parallel(specs, budgetTokens)` 解析为 `{ outcomes, budget }`，
+  其中 `budget` 是账本快照（`consumedTokens` / `limitTokens`）。
+
+一旦达到上限，之后*启动*的 step 会被拒绝——其结果为 `success: false`，并带有预算
+耗尽信息。它是一个**软上限**：由于用量是在每次 LLM 调用*之后*记账的，宽 fan-out
+可能在账本追上之前冲过上限几个在飞回合。框架**绝不**强杀在飞的 fan-out；预算耗尽
+只是拒绝*下一次* LLM 调用。
+
+```ts
+// 不传预算 → 原样返回结果数组（行为不变）。
+const outcomes = await session.parallel(specs);
+
+// 传入预算 → { outcomes, budget }。所有子代理共享一个账本。
+const { outcomes: out, budget } = await session.parallel(specs, 500_000);
+console.log(budget.consumedTokens, budget.limitTokens); // 例如 48213, 500000
+// TS 返回类型是联合类型：Array<StepOutcome> | { outcomes, budget }。
+```
+
+```python
+# 不传预算 → 原样返回列表（行为不变）。
+outcomes = session.parallel(specs)
+
+# 传入预算 → {"outcomes": [...], "budget": {"consumed_tokens", "limit_tokens"}}。
+res = session.parallel(specs, budget_tokens=500_000)
+print(res["budget"]["consumed_tokens"], res["budget"]["limit_tokens"])
+```
+
+## 循环直到完成（`execute_loop`）[#looping]
+
+对于长度未知、需要迭代至收敛的工作（loop-until-dry、反复打磨直到满意），核心语法
+提供了 `execute_loop`。每一轮都是一个屏障（`execute_steps_parallel`）；宿主提供的
+谓词看到本轮的结果，返回 `LoopDecision::Continue(next_specs)` 或
+`LoopDecision::Stop`。必填的 `max_iterations` 是一个**硬上限**——一旦达到，即使谓词
+还想继续也会停止，从而让 LLM 驱动的循环永远不会失控。
+
+```rust
+use a3s_code_core::orchestration::{execute_loop, AgentStepSpec, LoopDecision};
+
+let outcomes = execute_loop(executor, initial_specs, /* max_iterations */ 5, None, |round| {
+    // 本轮没有新发现就停止；否则扇出后续 step。
+    let follow_ups = derive_follow_ups(round);
+    if follow_ups.is_empty() {
+        LoopDecision::Stop
+    } else {
+        LoopDecision::Continue(follow_ups)
+    }
+})
+.await;
+```
+
+> 从宿主 SDK 你并不需要专门的 `loop` 动词——直接用你自己语言里的 `while`/`for`
+> 围绕 `parallel` 写循环，根据结果决定下一轮即可。`execute_loop` 是为 Rust 语法
+> 而存在，并为循环提供一个单一、强制的终止守卫。
+
+## Workflow facade（Rust / 嵌入）[#workflow-facade]
+
+`session.workflow()` 返回一个可廉价克隆的 `Workflow`，它预先接好了会话的
+executor、持久化 store、逐 step 事件流，以及一个稳定的、由会话派生的 root id。它是
+把以上能力打包起来的可编程句柄；控制流就是普通 Rust——`await` 一个动词、查看结果、
+决定下一步运行什么。
+
+- **动词**——`agent`（单步）、`parallel`（屏障式 fan-out）、`phase`（*命名*的、
+  可恢复的屏障，并发出里程碑）、`pipeline`（按条目的链），以及不会失败的 `log`。
+  每个动词都只委派给一个 combinator。
+- **Phase 与事件**——`phase(name, specs)` 派生确定性 checkpoint id
+  （`{root}/{index}:{name}`），在配置了 store 时走可恢复屏障，并在一个广播上发出
+  `WorkflowEvent::PhaseStart` / `PhaseEnd`，你可用 `subscribe()` 读取。`log()`
+  发出 `WorkflowEvent::Log`。
+- **预算**——`session.workflow_with_token_budget(Some(limit))` 安装一个共享的
+  `WorkflowBudget`；`budget_snapshot()` 读取账本，达到上限时会触发
+  `WorkflowEvent::BudgetExhausted`。
+
+```rust
+let wf = session.workflow(); // 或 session.workflow_with_token_budget(Some(500_000))
+let mut events = wf.subscribe();
+
+// 先跑一步，再根据其结果计算出一个*可变*数量的 fan-out——这正是“动态”所在：
+// 形状在运行时决定，而非提前声明。
+let plan = wf.agent(AgentStepSpec::new("plan", "plan", "plan", goal)).await;
+let specs = derive_specs(&plan);                 // 你的代码
+let done = wf.phase("implement", specs).await;   // 可恢复屏障 + 里程碑
+let reviews = wf.phase("review", to_review(&done)).await; // 预算在各 phase 间共享
+
+if let Some(b) = wf.budget_snapshot() {
+    println!("spent {} / {:?} tokens", b.consumed_tokens, b.limit_tokens);
+}
+```
+
+SDK 暴露的是扁平的 `parallel` / `pipeline` / `parallelResumable` 动词（以及上面
+`parallel` 的预算重载）；完整的 `Workflow` 句柄——phases、事件订阅、loop
+combinator——属于 Rust / 嵌入层 API。
+
+## 强制 schema 的 step 输出 [#schema-forced-step-output]
+
+携带 `output_schema`（Node 中为 `outputSchema`）的 spec 会强制 step 返回符合该 JSON
+Schema 的值；经校验的对象落在 `StepOutcome.structured` 中。这复用了与 A3S Code 其余
+部分相同的结构化输出强转 + 修复机制。强转失败会把该 step **降级为不成功**
+（`success: false`），因此调用方绝不会把未经校验的文本当作承诺的对象。
+
+强制 schema 仅适用于 `parallel` / `parallelResumable` 的 spec——**不**适用于
+pipeline 阶段。
+
+```ts
+const [outcome] = await session.parallel([
+  {
+    taskId: 'triage',
+    agent: 'review',
+    description: 'Structured triage',
+    prompt: 'Triage this diff.',
+    outputSchema: {
+      type: 'object',
+      properties: {
+        severity: { type: 'string', enum: ['low', 'medium', 'high'] },
+        summary: { type: 'string' },
+      },
+      required: ['severity', 'summary'],
+    },
+  },
+]);
+
+if (outcome.success) {
+  console.log(outcome.structured.severity, outcome.structured.summary);
+}
+```
+
+```python
+outcomes = session.parallel([
+    {
+        "task_id": "triage",
+        "agent": "review",
+        "description": "Structured triage",
+        "prompt": "Triage this diff.",
+        "output_schema": {
+            "type": "object",
+            "properties": {
+                "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+                "summary": {"type": "string"},
+            },
+            "required": ["severity", "summary"],
+        },
+    },
+])
+
+outcome = outcomes[0]
+if outcome["success"]:
+    print(outcome["structured"]["severity"], outcome["structured"]["summary"])
+```
+
+## 成本治理与生命周期
+
+编排 step 走的是同一个 session，因此 session 的各项控制对它们直接生效。
+`setBudgetGuard`（Node）/ `budget_guard`（Python）约束每个 step 的 LLM 成本；
+`close()` 会连同 session 的其余工作一起取消进行中的 step；宿主提供的身份标签
+（`tenant_id`、`principal`、`agent_template_id`、`correlation_id`）会贯穿每个 step，
+供宿主侧聚合与计费使用。这些控制的细节见 [Sessions](/guide/sessions) 与
+[Limits](/guide/limits)。
