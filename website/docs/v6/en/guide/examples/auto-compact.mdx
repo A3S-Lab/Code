@@ -1,0 +1,83 @@
+---
+title: 'Auto Compact'
+description: 'Let the runtime keep long sessions inside the context budget automatically'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Auto Compact
+
+A3S Code can keep long conversations inside the model's context budget for you.
+Enable `autoCompact` and the runtime watches context usage; once it crosses
+`autoCompactThreshold`, older turns are compacted into a running summary so the
+agent stays coherent across many steps without you managing tokens by hand.
+Continuation handles the other direction: when a single response is truncated by
+length, the runtime automatically continues generating to assemble the full reply.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session('/repo', {
+  // Compact older turns once context fills past the threshold.
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  // Auto-continue a single response that the model truncates by length.
+  continuationEnabled: true,
+  maxContinuationTurns: 3,
+});
+
+// Run a long, multi-step task. The runtime compacts older turns as needed;
+// you never touch the token math.
+for (let i = 0; i < 50; i++) {
+  await session.send(`Step ${i}: continue refactoring the parser`);
+}
+
+// Inspect what the session is currently carrying.
+console.log('history turns:', session.history().length);
+console.log('recent memory:', await session.memoryRecent(5));
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+# Compact older turns once context fills past the threshold.
+opts.auto_compact = True
+opts.auto_compact_threshold = 0.75
+# Auto-continue a single response that the model truncates by length.
+opts.continuation_enabled = True
+opts.max_continuation_turns = 3
+session = agent.session("/repo", opts)
+
+# Run a long, multi-step task. The runtime compacts older turns as needed;
+# you never touch the token math.
+for i in range(50):
+    session.send(f"Step {i}: continue refactoring the parser")
+
+# Inspect what the session is currently carrying.
+print("history turns:", len(session.history()))
+print("recent memory:", session.memory_recent(5))
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+Use auto-compaction for long sessions where you want the runtime to manage context
+pressure for you. `autoCompactThreshold` / `auto_compact_threshold` is a fraction of
+the context window (0.0–1.0, default 0.8) at which compaction kicks in; lower it to
+compact earlier. Inspect the live session with `history()` (synchronous) and
+`memoryRecent` / `memory_recent`.

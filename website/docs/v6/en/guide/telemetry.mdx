@@ -1,0 +1,43 @@
+---
+title: 'Telemetry'
+description: 'Trace events, verification summaries, and runtime observability'
+---
+
+# Telemetry
+
+A3S Code exposes runtime evidence through events, traces, verification reports, and result metadata.
+
+## Result Metadata
+
+```ts
+const result = await session.send('Run release checks');
+
+console.log(result.promptTokens);
+console.log(result.completionTokens);
+console.log(result.totalTokens);
+console.log(result.toolCallsCount);
+console.log(result.verificationStatus);
+console.log(result.verificationSummaryText);
+```
+
+## Trace And Verification
+
+```ts
+const trace = session.traceEvents();
+const reports = session.verificationReports();
+const summary = session.verificationSummary();
+const text = session.verificationSummaryText();
+```
+
+## Streaming Events
+
+Streaming returns versioned `AgentEvent` envelopes. `version`, `type`,
+`payload`, and optional `metadata` are the stable lossless fields; text, tool
+names, tool output, errors, token totals, and verification summaries are
+convenience projections. Unknown future `type` values and their payloads remain
+available to hosts.
+
+## Logging
+
+For product telemetry, prefer structured trace events and verification reports
+over scraping console output.

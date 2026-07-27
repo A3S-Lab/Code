@@ -1,0 +1,62 @@
+---
+title: 'Quick Start'
+description: 'Create an agent, open a session, run one turn, and read the result.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Quick Start
+
+The smallest useful program: create an agent from an ACL file, open a session on a
+project directory, run one turn with `send`, print the reply text, and inspect the
+verification summary the runtime produced for that turn.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+// Agent.create accepts an .acl file path or inline ACL string.
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.');
+
+const result = await session.send('List the files in this directory.');
+console.log(result.text);
+
+// What the runtime checked while producing that turn.
+console.log(result.verificationSummaryText);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent
+
+# Agent.create accepts an .acl file path or inline ACL string.
+agent = Agent.create('agent.acl')
+session = agent.session('.')
+
+result = session.send('List the files in this directory.')
+print(result.text)
+
+# What the runtime checked while producing that turn.
+print(result.verification_summary_text)
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+`Agent.create()` accepts either an `.acl` file path or inline ACL source text in both
+SDKs. Always `close()` the session when you are done so the runtime can flush state
+and release resources.
+
+## Next steps
+
+- [Streaming](/guide/examples/streaming) — read tokens as they arrive
+- [Sessions](/guide/sessions) — persist and resume conversations

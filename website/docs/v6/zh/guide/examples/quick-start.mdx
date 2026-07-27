@@ -1,0 +1,60 @@
+---
+title: '快速开始'
+description: '创建一个 agent、打开会话、运行一轮对话并读取结果。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 快速开始
+
+最小可用的程序：从 ACL 文件创建一个 agent，在项目目录上打开会话，使用 `send`
+运行一轮对话，打印回复文本，并查看运行时为该轮生成的验证摘要。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+// Agent.create accepts an .acl file path or inline ACL string.
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.');
+
+const result = await session.send('List the files in this directory.');
+console.log(result.text);
+
+// What the runtime checked while producing that turn.
+console.log(result.verificationSummaryText);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent
+
+# Agent.create accepts an .acl file path or inline ACL string.
+agent = Agent.create('agent.acl')
+session = agent.session('.')
+
+result = session.send('List the files in this directory.')
+print(result.text)
+
+# What the runtime checked while producing that turn.
+print(result.verification_summary_text)
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+在两个 SDK 中，`Agent.create()` 都接收 `.acl` 文件路径或内联 ACL 源文本。使用完毕后，
+请务必调用 `close()` 关闭会话，以便运行时刷新状态并释放资源。
+
+## 下一步
+
+- [流式输出](/guide/examples/streaming) — 在 token 到达时实时读取
+- [会话](/guide/sessions) — 持久化并恢复对话

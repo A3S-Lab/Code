@@ -1,0 +1,226 @@
+---
+title: '约定大于配置'
+description: '用文件系统优先 Agent、工具、连接、子 Agent、调度、持久化和 HITL 构建长期工作单元。'
+---
+
+# 约定大于配置
+
+A3S Code 的约定大于配置能力不是一个单独的 runner，而是一套长期 Agent
+组合：[文件系统优先](/guide/filesystem-first)约定、会话运行时、工具权限、
+多 Agent 委派、可恢复编排、HITL、run replay 和调度守护进程。它让一个 Agent
+从“能聊天的 SDK 会话”变成“有角色、有工具、有团队、有状态、有接管点的工作单元”。
+
+如果你在评估目录优先的 agent framework，可以把 A3S Code 看成更底层、更可嵌入的运行时。
+目录约定、工具、连接、子 Agent、调度、持久化和观测都存在，但不会强制绑定到某个前端渠道
+或部署平台；宿主可以把它接入托管 session、开放平台 API、MCP、A3S Box 或自己的任务系统。
+
+## 能力映射
+
+| Agent framework 概念  | A3S Code 对应能力                                          | 说明                                                                                                 |
+| --------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Agent 是一个目录      | [Agent 目录](/guide/agent-dir)                             | `instructions.md`、`agent.acl`、`skills/`、`tools/`、`schedules/` 合成一个可运行 Agent。             |
+| Markdown instructions | `instructions.md`、`AGENTS.md`、prompt slots               | 指令作为 slot 注入，不能覆盖 harness 的边界、响应契约和安全门。                                      |
+| Markdown skills       | [Skills](/guide/skills)                                    | 文件型 skill、inline skill 和显式 registry 使用同一套 discovery 语义。A3S Code 不再内置默认 skills。 |
+| TypeScript tools      | `program`、direct tools、MCP tools、AgentDir script tools  | A3S Code 更关注工具注册、权限门、typed errors 和验证证据；脚本工具运行在 QuickJS 受限环境。          |
+| Sandbox               | `program` 沙箱、权限策略、HITL、A3S Box                    | A3S Code 控制工具权限和脚本沙箱；需要进程、文件系统、网络级隔离时接 A3S Box。                        |
+| Channels              | 托管 session、开放平台 WebSocket/SSE、宿主自有 UI          | A3S Code 不把渠道写死，宿主通过 streaming events 和 run replay 接到任意前端。                        |
+| Connections           | MCP、provider 配置、宿主注入凭据                           | 连接由宿主配置和授权，不建议把 token 写进 Agent 目录。                                               |
+| Subagents             | [任务](/guide/tasks)、[团队](/guide/teams)、`workerAgents` | 支持手动 `task`、并行 `parallel_task`、自动委派和动态 worker agents。                                |
+| Schedules             | AgentDir `schedules/` + `serve_agent_dir`                  | 每个 schedule 有独立 session id，可配合 session store 在重启后恢复上下文。                           |
+| Durable execution     | `SessionStore`、run replay、`parallelResumable`            | 会话历史、run 事件和可恢复工作流能落盘；失败 step 可在恢复时重试。                                   |
+| Human-in-the-loop     | [安全](/guide/security)、确认继承、tool confirmation       | 高风险工具可请求确认；子运行可配置自动批准、遇 Ask 失败或继承父级策略。                              |
+| Evaluations           | [验证](/guide/verification)、报告、回归证据                | A3S Code 当前把“评测”产品化为验证命令、证据摘要、run replay 与发布门禁，而不是单独 eval suite。      |
+
+## 最小工作形态
+
+交互式团队 Agent 可以从一个普通 repo 开始：
+
+```text
+repo/
+├── agent.acl
+├── AGENTS.md
+├── .a3s/
+│   ├── agents/
+│   │   ├── release-reviewer.md
+│   │   ├── security-reviewer.md
+│   │   └── verification-runner.md
+│   └── skills/
+│       └── release-readiness.md
+└── src/
+```
+
+`agent.acl` 负责模型、provider、并行度和自动委派：
+
+```text
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+
+agent_dirs = ["./.a3s/agents"]
+
+auto_delegation {
+  enabled        = true
+  min_confidence = 0.72
+  max_tasks      = 4
+  auto_parallel  = false
+}
+```
+
+宿主启动一个 session，并把 skills、agent 目录、持久化和委派策略接进去：
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session('/repo', {
+  skillDirs: ['./.a3s/skills'],
+  agentDirs: ['./.a3s/agents'],
+  autoDelegation: { enabled: true, minConfidence: 0.72, maxTasks: 4 },
+  maxParallelTasks: 8,
+  autoParallel: false,
+  autoSave: true,
+});
+
+const result = await session.send(`
+准备一次发布就绪检查：
+1. 让探索角色找出高风险变更。
+2. 让安全角色检查权限、secret、外部副作用。
+3. 让验证角色给出必须跑的回归命令。
+4. 合并成一个按阻塞程度排序的报告。
+`);
+
+console.log(result.text);
+console.log(result.verificationSummaryText);
+```
+
+## Agent 目录形态
+
+需要长期运行、调度或目录级工具时，使用 filesystem-first agent：
+
+```text
+release-agent/
+├── instructions.md
+├── agent.acl
+├── skills/
+│   └── release-readiness.md
+├── schedules/
+│   └── daily.md
+└── tools/
+    ├── github.md
+    └── search-auth.md
+```
+
+`instructions.md` 是角色 slot：
+
+```md
+You are a release-readiness agent for this repository.
+Always separate blockers from follow-up work.
+Never invent versions or CI status. Read evidence from the workspace.
+```
+
+`schedules/daily.md` 是周期性 turn：
+
+```md
+---
+cron: '0 9 * * *'
+name: daily-release-check
+enabled: true
+---
+
+Summarize merged changes since the last run, inspect release risks,
+and report only blockers plus required verification.
+```
+
+`serve_agent_dir` 会为每个 schedule 创建独立 session。传入 `SessionStore` 后，重启只重新加载当前目录配置和工具，历史上下文从 store 恢复。
+
+## 工具与连接
+
+A3S Code 的工具面分三层：
+
+| 层                    | 用法                                                     | 适合场景                                                  |
+| --------------------- | -------------------------------------------------------- | --------------------------------------------------------- |
+| 内置与 direct tools   | `session.tool(...)`、文件、shell、git、`generate_object` | 宿主明确知道要跑什么，或需要确定性调用。                  |
+| MCP                   | MCP server                                               | 连接 GitHub、Linear、内部系统、远程宿主工具或跨进程能力。 |
+| AgentDir script tools | `tools/*.md` + QuickJS `program`                         | 把一段受限脚本包装成模型可见工具。                        |
+
+工具不是“文件存在就无限可用”。可见性、权限门、HITL、allow-list 和 sandbox 都由 harness 或 AgentDir loader 统一控制。高权限工具应只给可信目录，secret 应通过环境变量和宿主连接注入。
+
+## 子 Agent 与团队
+
+`subagents/` 在 A3S Code 中拆成三种入口：
+
+| 入口                                                                                 | 谁决定分工 | 适合场景                                   |
+| ------------------------------------------------------------------------------------ | ---------- | ------------------------------------------ |
+| `task` / `parallel_task`                                                             | 父 agent   | 模型自己判断要不要委派。                   |
+| `session.task(...)` / `session.tasks(...)`                                           | 宿主代码   | 宿主已经知道 lane，但仍想复用 Agent 能力。 |
+| `session.parallel(...)` / `session.pipeline(...)` / `session.parallelResumable(...)` | 宿主代码   | 需要可复现、可测试、可恢复的固定工作流。   |
+
+自动委派依赖 agent 描述和置信度评分。它适合“用户只描述目标，由运行时挑选 specialist”的场景；固定发布流程、批量审查、迁移任务更适合用编排显式表达。
+
+## 可观测与接管
+
+长期 Agent 必须能被观察和中止。A3S Code 的核心观察面包括：
+
+- `stream()` 输出增量事件。
+- `runs()`、`runSnapshot()`、`runEvents()` 查看当前和历史 run。
+- `toolNames()` / `toolDefinitions()` 查看可见工具表面。
+- `activeTools()` 查看当前正在运行的工具调用快照。
+- `cancelRun(runId)` 中止正在执行的回合。
+- `traceEvents()` 读取压缩、委派、工具和验证证据。
+- `verificationSummaryText` 给发布或审核流程使用。
+
+宿主平台可以把这些事件转成 WebSocket/SSE、审计记录、调试面板和工作流节点状态。
+
+## 与 A3S Box 的关系
+
+A3S Code 负责智能体循环、工具、委派、状态和验证。A3S Box 负责更强的运行隔离：MicroVM、OCI workload、网络和 TEE。需要“模型能跑 shell，但进程必须隔离”的场景，应把 A3S Code 的工具执行放进 A3S Box 或由宿主通过 MCP 暴露隔离后的能力。
+
+典型组合：
+
+```text
+A3S Code session
+  -> permission policy and HITL
+  -> MCP tool adapter
+  -> A3S Box isolated workload
+  -> typed result and verification evidence
+```
+
+## 什么时候用
+
+适合：
+
+- 发布巡检、依赖升级、代码库维护等长期工程 Agent。
+- 能拆成 explore / review / verify / implement 多角色协作的任务。
+- 需要自动委派，但仍要保留权限门、审计和验证证据的工作。
+- 需要 cron 调度和可恢复上下文的周期性报告。
+- 需要接入托管工作流、宿主 session 或外部协作渠道的 Agent。
+
+不适合：
+
+- 只需要一次确定性 API 调用的工具型资产，直接用 tool contract 更简单。
+- 需要完整 GUI 自动化但没有结构化工具接口的任务，应优先提供 MCP 工具或浏览器工具，再交给 A3S Code 调度。
+- 需要强 OS 级隔离却只启用本地 shell 的任务，应接入 A3S Box。
+
+## 阅读顺序
+
+1. [文件系统优先](/guide/filesystem-first)
+2. [Agent 目录](/guide/agent-dir)
+3. [agents/ 角色目录](/guide/filesystem-agents)
+4. [tools/ 工具目录](/guide/filesystem-tools)
+5. [schedules/ 调度目录](/guide/filesystem-schedules)
+6. [任务](/guide/tasks)
+7. [团队](/guide/teams)

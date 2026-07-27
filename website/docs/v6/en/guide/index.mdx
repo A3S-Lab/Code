@@ -1,0 +1,196 @@
+---
+title: 'Overview'
+description: 'Rust coding-agent runtime and the execution core behind the a3s code terminal workspace'
+---
+
+# A3S Code
+
+A3S Code is the Rust runtime behind `a3s code`. It keeps coding-agent sessions
+observable while one runtime kernel owns context assembly, governed provider
+and tool invocation, delegation, dynamic workflow execution, workspace access,
+memory, persistence, verification evidence, and run replay.
+
+`a3s-code-core` is the embeddable Rust runtime. `a3s code` is the ready terminal
+workspace shipped by the [`a3s` CLI](https://github.com/A3S-Lab/Cli); it drives
+A3S Code sessions and renders their event stream with the
+[`a3s-tui`](https://github.com/A3S-Lab/TUI) framework.
+
+Install the CLI when you want the interactive product. Install the Rust crate
+when you are building another host, runner, IDE bridge, or controlled product
+surface around the same runtime.
+
+## Surfaces
+
+| Name            | Use it for                                                                    | Repository                                      |
+| --------------- | ----------------------------------------------------------------------------- | ----------------------------------------------- |
+| `a3s-code-core` | Embedding coding-agent sessions through the Rust runtime API.                 | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) |
+| `a3s code` TUI  | Running the ready terminal coding-agent workspace.                            | [A3S-Lab/Cli](https://github.com/A3S-Lab/Cli)   |
+| `a3s-tui`       | Building terminal UI surfaces; it is the UI framework, not the agent runtime. | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)   |
+| A3S Flow        | Durable workflow engine used by `DynamicWorkflowRuntime`.                     | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow) |
+| A3S monorepo    | Product docs, release orchestration, submodule pins, and related crates.      | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   |
+
+## Capability Map
+
+| Area              | Current capability                                                                                                                                                                                                                                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Agent sessions    | Async-first `SessionBuilder` construction produces workspace-bound `AgentSession` values. Transcript operations are fail-fast single-flight and expose `send`, `stream`, run state, cancellation, persistence, memory, verification, and lifecycle cleanup.                                                  |
+| TUI               | [`a3s code`](/guide/tui) streams runtime events into a terminal workspace with tool activity, approvals, memory, files, sessions, local assets, effort profiles, DynamicWorkflowRuntime, and trusted view controls.                                                                                          |
+| Filesystem-first  | [Filesystem-first](/guide/filesystem-first) organizes `AGENTS.md`, ACL config, `.a3s/agents/`, `skills/`, `tools/`, and `schedules/` into a reviewable agent product interface.                                                                                                                              |
+| Tools             | Stable tool names cover files, search, shell, git, web fetch/search, structured output, QuickJS PTC programs, skills, MCP tools, child-task delegation, and native host-side `parallel_task`. Model, nested, delegated, and trusted host-direct calls use one invocation kernel with explicit origin policy. |
+| Dynamic workflows | `DynamicWorkflowRuntime` uses A3S Flow to record replayable per-turn workflow and step history for `ultracode` and DeepResearch. It is separate from `/flow`, which manages workflow asset files and optional host integrations.                                                                             |
+| Delegation        | Built-in roles and custom Markdown/YAML agents are available through `task`, `parallel_task`, and automatic delegation controls.                                                                                                                                                                             |
+| Memory            | Default file-backed memory, recall, LLM extraction, `/memory`, `/ctx`, `/ctx save`, and `/sleep` support cross-session facts without flooding every prompt.                                                                                                                                                  |
+| Safety            | One run invocation context propagates identity, cancellation, events, and governance. Permission policies, HITL confirmation, budgets, workspace path checks, tool timeouts, hooks, and output sanitization feed the same provider/tool boundaries.                                                          |
+| Workspaces        | [Workspace Backends](/guide/workspace-backends) let built-in tools target local files, host-provided workspaces, optional S3-compatible storage, and optional remote-git services.                                                                                                                           |
+| Events            | `EventEnvelopeV1` is a lossless Rust/Node/Python wire shape with an open event type and preserved payload/metadata for future events.                                                                                                                                                                        |
+| Persistence       | Atomic `SessionSnapshotV1` generations, memory/file stores, session IDs, auto-save, run snapshots/events, trace artifacts, loop/workflow checkpoints, memory recall, and retention caps support resumable sessions and replayable product state.                                                             |
+| Verification      | [Verification](/guide/verification) covers explicit verification commands, presets, structured reports, summaries, artifacts, trace events, and run replay evidence.                                                                                                                                         |
+
+The execution shape is:
+
+```text
+Agent / AgentSession
+  -> context assembly
+  -> optional planning and goal tracking
+  -> selected tools, delegated child tasks, or dynamic workflow steps
+  -> permission and confirmation policy
+  -> execution
+  -> trace, artifacts, memory, and verification evidence
+  -> compaction and persistence
+```
+
+## Install
+
+Install the CLI when you want the interactive terminal workspace:
+
+```bash
+brew install A3S-Lab/tap/a3s
+
+# or from crates.io
+cargo install a3s
+
+# or from the CLI repository
+cargo install --git https://github.com/A3S-Lab/Cli
+```
+
+Install the Rust runtime crate when embedding A3S Code:
+
+```bash
+cargo add a3s-code-core
+```
+
+## Configure
+
+A3S Code uses ACL. Keep real API keys, private model endpoints, local config
+paths, and tenant/user identifiers out of commits. Commit templates that resolve
+credentials from the environment.
+
+```text
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+
+storage_backend = "file"
+sessions_dir = ".a3s/sessions"
+```
+
+`auto_parallel = false` disables automatic parallel child-agent fan-out only.
+Manual `parallel_task` remains available unless manual delegation is disabled
+separately.
+
+## Use The TUI
+
+Run `a3s code` from the workspace you want the agent to inspect:
+
+```bash
+a3s code
+a3s code resume <session-id>
+a3s code update
+```
+
+The TUI discovers config from `A3S_CONFIG_FILE`, then `.a3s/config.acl` walking
+upward from the current directory, then `~/.a3s/config.acl`.
+
+Common first-run flow:
+
+```text
+/init          # inspect the repository and create or update AGENTS.md
+/model         # pick a configured provider or account-backed model
+/effort        # choose low, medium, high, xhigh, max, or ultracode
+/ide           # open the workspace tree and terminal editor
+/help          # open the full command and shortcut guide
+```
+
+## Rust Runtime Quick Start
+
+```rust
+use a3s_code_core::{Agent, AgentEvent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/path/to/workspace")
+        .options(
+            SessionOptions::new()
+                .with_planning(true)
+                .with_max_parallel_tasks(4)
+                .with_tool_timeout(120_000),
+        )
+        .build()
+        .await?;
+
+    let result = session
+        .send("Find the authentication entry points.", None)
+        .await?;
+    println!("{}", result.text);
+
+    let (mut rx, _handle) = session
+        .stream("Summarize the test strategy.", None)
+        .await?;
+    while let Some(event) = rx.recv().await {
+        match event {
+            AgentEvent::TextDelta { text } => print!("{text}"),
+            AgentEvent::End { .. } => break,
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+```
+
+Rust construction is async-first. The synchronous `Agent::session` method is a
+strict compatibility path for an explicitly pre-initialized memory store and
+other already-ready resources; async-only options return
+`CodeError::AsyncSessionBuildRequired`. A session-option MCP manager always uses
+the async path for capability discovery.
+
+Direct Rust host tool calls are privileged control-plane operations. Gate them
+in the embedding application before exposing them to users.
+
+## Entry Points
+
+- [A3S Code TUI](/guide/tui) explains install, config discovery, slash commands, effort profiles, dynamic workflows, optional runtime tools, and trusted views.
+- [A3S CLI Code TUI](https://a3s-lab.github.io/a3s/docs/cli/code-tui) covers CLI startup, resume, update, smoke mode, and terminal lifecycle boundaries.
+- [Filesystem-first](/guide/filesystem-first) covers reviewable project and AgentDir conventions.
+- [Sessions](/guide/sessions) covers lifecycle, streaming, run state, persistence, and cancellation.
+- [Commands](/guide/commands) distinguishes TUI commands from host command-registry handlers.
+- [Tools](/guide/tools) covers direct tools, typed tool errors, structured output, and QuickJS programs.
+- [Memory](/guide/memory) and [Persistence](/guide/persistence) cover reusable facts, session snapshots, and recovery paths.
+- [Security](/guide/security) covers permissions, confirmations, hooks, and verification gates.
+- [Verification](/guide/verification) covers command evidence, reports, and summaries.
+- [Tasks](/guide/tasks) covers model-driven child-task delegation.

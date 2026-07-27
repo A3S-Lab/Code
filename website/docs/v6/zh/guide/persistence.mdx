@@ -1,0 +1,142 @@
+---
+title: '持久化'
+description: '保存与恢复 session'
+---
+
+# 持久化
+
+持久化让 session 可以跨进程恢复，也让产品界面拥有稳定 session ID。
+
+A3S Code 会持久化三种相关但不同的对象：
+
+| 对象                | 写入方                               | 恢复入口                               | 用途                                                                                                                        |
+| ------------------- | ------------------------------------ | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `SessionSnapshotV1` | `session.save()` 或 `autoSave`       | `agent.resumeSession(id, options)`     | 恢复一个带版本的完整 generation，其中包含对话、artifact、trace、run record、verification report 与 subagent task snapshot。 |
+| Loop checkpoint     | run 执行中的 agent loop              | `session.resumeRun(runId)`             | 从上一个完成的 tool-round 边界继续一次被中断的 run。进程内正常完成的 run 会删除这个 checkpoint。                            |
+| Workflow checkpoint | `parallelResumable` / workflow phase | `parallelResumable(specs, workflowId)` | 进程重启后跳过已经完成的编排 step。                                                                                         |
+
+## File Session Store
+
+```ts
+import { FileSessionStore } from '@a3s-lab/code';
+
+const session = agent.session('/repo', {
+  sessionId: 'release-review',
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+  autoSave: true,
+});
+
+await session.send('检查发布就绪情况');
+await session.save();
+```
+
+## 原子 Snapshot Generation
+
+`session.save()` 会把当前持久化状态收集成一个 `SessionSnapshotV1`，并且只调用一次
+`SessionStore::save_snapshot`。Envelope 包含：
+
+- `schema_version` 与 `SessionData`
+- tool artifact
+- trace event 与 run record
+- verification report
+- delegated subagent task snapshot
+
+File store 会把完整 JSON envelope 写入并同步临时文件，然后 atomic replace
+`<session-id>.json`。因此 reader 看到的是上一代或下一代，不会读到“新 conversation
+搭配旧 run/trace fragment”的组合。Memory store 在同一把锁下发布同一个 aggregate。
+两者都报告 `SessionStoreCapabilities { atomic_session_snapshots: true }`。
+
+历史文件仍可读取。Bare `SessionData` 会在 load 时与旧 artifact/trace/run/
+verification/subagent fragment location 合并，再通过 v1 内存形状恢复。新 aggregate
+保存后，单个 envelope 成为 authoritative generation。已经具有 aggregate 外形、但
+schema 损坏或版本不支持的文档会直接被拒绝，不会重新解释成 legacy data。
+
+自定义 store 必须显式实现 `save_snapshot`。默认实现返回错误，不会把 aggregate
+拆成多次独立 write，也不会把 no-op 当成成功。默认 `load_snapshot` 只用于
+best-effort legacy assembly；宿主可以通过 `capabilities()` 区分这种行为与 atomic
+backend。
+
+## Resume
+
+```ts
+const resumed = agent.resumeSession('release-review', {
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+});
+```
+
+`resumeSession` 恢复的是已保存的 session snapshot。它不同于
+`resumeRun`：用户继续一个已保存对话时用 `resumeSession`；只有存在中断 run 的
+checkpoint 时，才用 `resumeRun(runId)`。Resume 会在恢复任何 history 或 runtime
+evidence 前先校验 snapshot schema。
+
+## Memory And Sessions
+
+Session 持久化保存对话和可回放证据；memory 保存可复用任务事实。当你需要既可
+恢复、又能从重复任务中学习的工作流时，两者一起使用。
+
+## Loop Checkpoints and Run Resumption
+
+配置了 `SessionStore` 后，agent loop 会在每个完成的 tool round 之后持久化一个
+`LoopCheckpoint`。边界策略很严格：checkpoint **只**在 tool round 之间产生，
+绝不在 tool 执行中途。如果进程在某个 tool 执行时崩溃，那一轮的工作会在 resume
+时丢失，由 LLM 从上一个 checkpoint 重新推演——在边界错误的一侧重跑一个非幂等
+tool（write、bash）比让 LLM 重新提问更糟。
+
+`session.resumeRun(runId)`（Node）/ `session.resume_run(run_id)`（Python）——
+对应 core 的 `AgentSession::resume_run(checkpoint_run_id)`——会加载该 run ID 下
+最新的 checkpoint，并从最后一个边界回放 loop。由于 checkpoint 存放在共享 store
+中，resume 可以发生在**任何**共享该 store 的节点上。累计计量会延续而不是从零
+重启：`total_usage` 和 `tool_calls_count` 从 checkpoint 继续累加。resume 出来的
+工作会分配一个新的 run ID；新旧 run 的关系是宿主元数据，框架不予解释。
+
+已正常完成的 run 不通过 `resumeRun` 恢复；它们的最终状态应通过 `runs()`、
+`runEvents(runId)`、artifacts、verification reports 和 session snapshot 查看。
+
+```ts
+const result = await session.resumeRun('run-abc123');
+console.log(result.totalTokens);
+```
+
+```python
+result = session.resume_run('run-abc123')
+print(result.total_tokens)
+```
+
+当 session 没有配置 `sessionStore`（或给定 ID 下不存在 checkpoint）时，
+`resume_run` 会拒绝。`SessionStore` 新增了 `save_loop_checkpoint` /
+`load_loop_checkpoint` / `delete_loop_checkpoint`；file store 的写入是
+crash-atomic 的。`LoopCheckpoint::ensure_loadable()` 在反序列化之后立即被调用，
+会拒绝来自未来的、不兼容 schema 版本的 checkpoint，因此 `resume_run` 和实时
+run 的 sink 都不会对一个无法读取的 checkpoint 采取行动。
+
+参见 CHANGELOG `[3.3.0]`——"Loop checkpoints + run resumption"——以及
+`[3.4.0]` 的 "LoopCheckpoint::ensure_loadable()"。
+
+## Workflow Checkpoints
+
+`WorkflowCheckpoint` 是 tool-round `LoopCheckpoint` 在上一层的 step 边界对应物：
+它把已完成的编排 step 记入日志，使被中断的工作流从最长的已完成前缀恢复。它的
+字段是 `schema_version`、`workflow_id`、`steps` 和 `checkpoint_ms`，schema 由
+`WORKFLOW_CHECKPOINT_SCHEMA_VERSION` 常量固定。恢复的 run 会跳过已记录的 step，
+只重新派发其余的。
+
+`SessionStore` 新增了 `save_workflow_checkpoint` / `load_workflow_checkpoint` /
+`delete_workflow_checkpoint`（默认 no-op；file store 以 crash-atomic 方式写入）。
+来自未来的、不兼容 schema 版本的加载会通过
+`WorkflowCheckpoint::ensure_loadable()` 被拒绝。
+
+这与编排语法配套使用——参见
+[Orchestration](/guide/orchestration) 和
+[Multi-Machine](/guide/multi-machine)。
+
+参见 CHANGELOG `[3.4.0]`——"WorkflowCheckpoint"。
+
+## Resuming on a Different Node
+
+两种 checkpoint 类型都是可序列化的。配合共享的 `SessionStore` 和可插拔的
+executor，宿主就能在与启动节点**不同**的节点上恢复被中断的 run 或工作流——
+框架持有可序列化的契约，宿主持有放置（placement）与传输（transport）。
+
+## Operational Notes
+
+包含私有 prompt、tool output 或路径的 store 不应公开提交。
