@@ -299,8 +299,8 @@ body {
   position: absolute;
   top: 0;
   left: 50%;
-  width: 30px;
-  height: 3px;
+  width: 42px;
+  height: 4px;
   border-radius: 999px;
   background: linear-gradient(
     90deg,
@@ -321,9 +321,9 @@ body {
 .a3s-button-comet::after {
   position: absolute;
   top: 0;
-  right: 17%;
-  width: 5px;
-  height: 3px;
+  right: 15%;
+  width: 7px;
+  height: 4px;
   border-radius: inherit;
   background: #fff;
   box-shadow: 0 0 5px #fff;
@@ -332,7 +332,7 @@ body {
 
 .a3s-button--primary:hover .a3s-button-comet,
 .a3s-button--primary:focus-visible .a3s-button-comet {
-  animation: a3s-button-comet-orbit 1.35s linear infinite;
+  animation: a3s-button-comet-orbit 2.2s linear infinite;
 }
 
 .a3s-button--primary:focus-visible {
