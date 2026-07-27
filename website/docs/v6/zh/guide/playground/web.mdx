@@ -1,0 +1,38 @@
+---
+title: 'A3S Web Playground'
+description: '在文档中体验 A3S Web 从任务输入到权限确认和结果交付的界面流程'
+---
+
+# A3S Web Playground
+
+输入框、执行记录、权限卡片和结果页都可以操作。点击“运行演示”，再进入确认步骤；
+允许后会看到交付摘要，拒绝则停在当前工具调用。
+
+<WebPlayground />
+
+## 一次任务会经过哪些界面
+
+| 阶段 | 主要组件                                                                     | 接收的数据                                |
+| ---- | ---------------------------------------------------------------------------- | ----------------------------------------- |
+| 准备 | `NewTaskPreparation`、`TaskComposer`、`NewTaskWorkspaceControl`              | 指令、文件、Skill、模型、模式和 Workspace |
+| 执行 | `ExecutionStream`、`ReasoningDisclosure`、`ToolCallTimeline`                 | 文本、推理、工具生命周期和输出            |
+| 确认 | `PermissionDecision`                                                         | 操作、原因、影响范围、风险和确认时限      |
+| 协作 | `TaskRuntimeFloatingPanel`、`TaskRuntimePlanList`、`TaskRuntimeSubagentList` | Plan、子任务及其结果                      |
+| 交付 | `DeliverySummary`、`ChangesInspector`、`WorkspaceEditor`                     | 最终回复、验证状态、Artifact 和文件改动   |
+
+这些组件不是另一套 Agent Runtime。A3S Web 把 A3S Code 的 Session、Event、
+Permission 和 Workspace 数据投影成桌面界面；同一个后端也可以换成 TUI、IDE
+扩展或自己的前端。
+
+## 接入时从哪里开始
+
+1. 用 [Session](/guide/sessions) 创建任务，并订阅事件流。
+2. 按 [工具](/guide/tools) 的生命周期更新 `ToolCallTimeline`。
+3. 遇到 Ask 决策时，用 [权限与安全](/guide/security) 对接确认按钮。
+4. 把 [Plan 与子任务](/guide/tasks) 显示在运行面板。
+5. 从 [验证](/guide/verification) 和 [持久化](/guide/persistence) 读取交付状态。
+
+完整的组件约定见
+[`COMPONENT_SPEC.md`](https://github.com/A3S-Lab/a3s/blob/main/apps/web/docs/COMPONENT_SPEC.md)，
+实现位于
+[`apps/web`](https://github.com/A3S-Lab/a3s/tree/main/apps/web)。

@@ -1,21 +1,21 @@
 ---
-title: APIs and packages
-description: Entry points for the A3S Code Rust, Node.js, and Python APIs and their shared runtime contract.
+title: SDKs and APIs
+description: Install the A3S Code Rust, Node.js, and Python SDKs and find their API documentation.
 ---
 
-# APIs and packages
+# SDKs and APIs
 
-The four A3S Code product surfaces share one runtime kernel while serving
-different integration needs. Treat each registry and
+A3S Code provides Rust, Node.js, and Python SDKs. Install the `a3s` CLI when you
+want the terminal application. Treat each registry and
 [GitHub Releases](https://github.com/A3S-Lab/Code/releases) as the source of
 truth for package versions and release status.
 
-| Surface  | Package or command | API entry                                          | Use it for                                    |
-| -------- | ------------------ | -------------------------------------------------- | --------------------------------------------- |
-| Terminal | `a3s code`         | [A3S CLI](https://github.com/A3S-Lab/CLI)          | Run the interactive coding product            |
-| Rust     | `a3s-code-core`    | [docs.rs](https://docs.rs/a3s-code-core)           | Complete runtime API and extension traits     |
-| Node.js  | `@a3s-lab/code`    | [npm](https://www.npmjs.com/package/@a3s-lab/code) | Native N-API bindings and async event streams |
-| Python   | `a3s-code`         | [PyPI](https://pypi.org/project/a3s-code/)         | Synchronous and asynchronous PyO3 APIs        |
+| Entry    | Package or command | Documentation                                      | Use it for                                         |
+| -------- | ------------------ | -------------------------------------------------- | -------------------------------------------------- |
+| Terminal | `a3s code`         | [A3S CLI](https://github.com/A3S-Lab/CLI)          | Run a coding agent directly in your terminal       |
+| Rust     | `a3s-code-core`    | [docs.rs](https://docs.rs/a3s-code-core)           | Use the complete runtime API or extension traits   |
+| Node.js  | `@a3s-lab/code`    | [npm](https://www.npmjs.com/package/@a3s-lab/code) | Subscribe to async events in a Node.js application |
+| Python   | `a3s-code`         | [PyPI](https://pypi.org/project/a3s-code/)         | Use synchronous or asynchronous Python APIs        |
 
 ## Install
 
@@ -30,15 +30,19 @@ npm install @a3s-lab/code
 python -m pip install a3s-code
 ```
 
-## Cross-language contract
+## What the SDKs share
 
-Versioned events, durable snapshots, and explicit lifecycle methods form the
-cross-language product boundary. Start with the
-[API contract](/guide/api-contract), then continue to
+All three SDKs use the same session lifecycle, event format, and snapshots. A UI
+can subscribe to the same `AgentEvent` / `EventEnvelopeV1` stream and resume
+saved work by session ID.
+
+Start with the [API contract](/guide/api-contract), then continue to
 [sessions](/guide/sessions), [tools](/guide/tools),
 [workspace backends](/guide/workspace-backends), and
 [persistence](/guide/persistence).
 
-Replaceable host extension boundaries include `LlmClient`, `ContextProvider`,
-`MemoryStore`, `SessionStore`, workspace services, tools, permissions,
-confirmations, hooks, security providers, MCP transports, and graph stores.
+When connecting your own infrastructure, you can replace `LlmClient`,
+`ContextProvider`, `MemoryStore`, `SessionStore`, Workspace services, tools,
+permission confirmation, hooks, MCP transports, and graph stores. To see how
+events reach a UI first, open the
+[A3S TUI and Web Playground](/guide/playground/).

@@ -7,6 +7,10 @@ description: 'Creating, streaming, resuming, and saving workspace-bound sessions
 
 `Agent` owns configuration and provider state. `Session` binds that agent to one workspace and one conversation lifecycle.
 
+This is where UI integration usually begins. The
+[A3S Web Playground](/guide/playground/web) shows how `ExecutionStream`
+presents session events as task progress.
+
 ```ts
 import { Agent } from '@a3s-lab/code';
 

@@ -3,6 +3,13 @@
   "tui",
   {
     "type": "dir",
+    "name": "playground",
+    "label": "Playground",
+    "collapsible": true,
+    "collapsed": false
+  },
+  {
+    "type": "dir",
     "name": "examples",
     "label": "Examples",
     "collapsible": true,

@@ -1,0 +1,47 @@
+---
+title: 'A3S TUI Playground'
+description: 'Switch A3S TUI themes, run scenes, and terminal components directly in the docs'
+---
+
+# A3S TUI Playground
+
+Use the scene tabs to inspect a coding run, code changes, the Workspace tree, and
+common terminal widgets. The four swatches select Dark, Light, Catppuccin, and
+Tokyo Night. The checklist and component menu are interactive too.
+
+<TuiPlayground />
+
+## Components represented in the preview
+
+| Scene      | `a3s-tui` components                                                     |
+| ---------- | ------------------------------------------------------------------------ |
+| Run        | `ActivityBlock`, `Checklist`, `TaskQueue`, `ToolStatusLine`, `StatusBar` |
+| Changes    | `DiffView`, `SectionHeader`, `GutterBlock`, `OutputBlock`                |
+| Workspace  | `SplitPane`, `Tree`, `Breadcrumb`, `PreviewPanel`, `Viewport`            |
+| Components | `MenuPanel`, `Tabs`, `DataTable`, `Progress`, `ChoicePrompt`, `Toast`    |
+
+`a3s-tui` also ships input, modal, log, metric, timeline, and subagent-status
+components. See
+[`src/components/mod.rs`](https://github.com/A3S-Lab/TUI/blob/main/src/components/mod.rs)
+for the current exports.
+
+## How it consumes A3S Code events
+
+`a3s code` subscribes to `AgentSession::stream()`. Text deltas feed the
+transcript, tool events update activity and tool logs, plans update checklists,
+permission requests open a confirmation, and verification results feed output
+and diff views.
+
+```text
+AgentSession::stream()
+  -> TextDelta        -> transcript
+  -> ToolCall*        -> ActivityBlock / ToolLogView
+  -> Plan*            -> Checklist / TaskQueue
+  -> PermissionAsk    -> Confirm
+  -> Verification*    -> OutputBlock / DiffView
+  -> End              -> SessionStatus / StatusBar
+```
+
+The preview is rearranged to fit a documentation page and is not a replacement
+for the terminal application. See [A3S Code TUI](/guide/tui) for installation
+and commands, and [`A3S-Lab/TUI`](https://github.com/A3S-Lab/TUI) for source.

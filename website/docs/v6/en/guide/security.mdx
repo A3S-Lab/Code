@@ -19,6 +19,10 @@ parent confirmation provider. Missing providers fail closed before a HITL
 request is emitted. Keep high-risk release or publish commands behind explicit
 policy.
 
+`PermissionDecision` should explain the operation, reason, scope, and risk—not
+just present two buttons. You can interact with it in the
+[Confirm step of the Web Playground](/guide/playground/web).
+
 ## Enforced Execution Boundary
 
 Permission policy decides whether an operation is allowed, denied, or needs

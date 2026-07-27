@@ -1,0 +1,41 @@
+---
+title: 'A3S Web Playground'
+description: 'Try the A3S Web flow from task input through approval and delivery'
+---
+
+# A3S Web Playground
+
+The composer, execution stream, permission card, and result view are
+interactive. Select “Run demo,” open the confirmation step, then allow the
+operation to see the delivery summary. Denying it keeps the task at the current
+tool call.
+
+<WebPlayground />
+
+## UI stages in a task
+
+| Stage      | Main components                                                              | Data consumed                                             |
+| ---------- | ---------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Prepare    | `NewTaskPreparation`, `TaskComposer`, `NewTaskWorkspaceControl`              | Instructions, files, Skills, model, mode, and Workspace   |
+| Run        | `ExecutionStream`, `ReasoningDisclosure`, `ToolCallTimeline`                 | Text, reasoning, tool lifecycle, and output               |
+| Confirm    | `PermissionDecision`                                                         | Operation, reason, scope, risk, and timeout               |
+| Coordinate | `TaskRuntimeFloatingPanel`, `TaskRuntimePlanList`, `TaskRuntimeSubagentList` | Plans, child tasks, and their results                     |
+| Deliver    | `DeliverySummary`, `ChangesInspector`, `WorkspaceEditor`                     | Final response, verification, artifacts, and file changes |
+
+These components do not implement a second agent runtime. A3S Web projects A3S
+Code session, event, permission, and Workspace data into a desktop UI. The same
+backend can drive the TUI, an IDE extension, or your own frontend.
+
+## Where to start when integrating
+
+1. Create the task and subscribe to events with [sessions](/guide/sessions).
+2. Update `ToolCallTimeline` from the lifecycle described under [tools](/guide/tools).
+3. Connect approval buttons to Ask decisions from [security](/guide/security).
+4. Present [plans and child tasks](/guide/tasks) in the runtime panel.
+5. Read delivery state from [verification](/guide/verification) and
+   [persistence](/guide/persistence).
+
+See
+[`COMPONENT_SPEC.md`](https://github.com/A3S-Lab/a3s/blob/main/apps/web/docs/COMPONENT_SPEC.md)
+for the component contract and
+[`apps/web`](https://github.com/A3S-Lab/a3s/tree/main/apps/web) for source.
