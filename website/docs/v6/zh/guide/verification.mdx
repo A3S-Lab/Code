@@ -11,8 +11,7 @@ import { Tab, Tabs } from '@rspress/core/theme';
 
 验证是会话级的。Rust 核心运行每条命令，记录其退出状态和输出，并将每份报告汇总为一份随回合结果一同返回的摘要。
 
-产品界面可以把摘要放进 `DeliverySummary`，把文件级结果放进
-`ChangesInspector`。[Web 结果组件](/guide/components/web/results) 展示了这种组合。
+产品界面可以先展示交付摘要，再列出支持结论的命令输出和文件级改动。
 
 ## 运行验证命令
 

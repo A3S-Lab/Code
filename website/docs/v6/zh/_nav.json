@@ -2,12 +2,7 @@
   {
     "text": "文档",
     "link": "/guide/",
-    "activeMatch": "^/guide/(?!examples/|components/)"
-  },
-  {
-    "text": "组件",
-    "link": "/guide/components/",
-    "activeMatch": "^/guide/components/"
+    "activeMatch": "^/guide/(?!examples/)"
   },
   {
     "text": "示例",

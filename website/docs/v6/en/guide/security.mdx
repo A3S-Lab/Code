@@ -19,9 +19,8 @@ parent confirmation provider. Missing providers fail closed before a HITL
 request is emitted. Keep high-risk release or publish commands behind explicit
 policy.
 
-`PermissionDecision` should explain the operation, reason, scope, and risk—not
-just present two buttons. You can interact with it in the
-[interactive PermissionDecision example](/guide/components/web/permissions).
+A permission prompt should explain the operation, reason, scope, and risk—not
+just present two buttons.
 
 ## Enforced Execution Boundary
 
@@ -167,8 +166,9 @@ in depth; they do not replace the deterministic per-process sandbox boundary.
 
 ## Permission Policy
 
-```ts
+```ts title=permissions.ts
 const session = agent.session('/repo', {
+  // !callout(1:7) Applied before execution
   permissionPolicy: {
     deny: ['bash(rm -rf*)', 'write(**/.env*)'],
     ask: ['bash(git push*)', 'bash(npm publish*)'],

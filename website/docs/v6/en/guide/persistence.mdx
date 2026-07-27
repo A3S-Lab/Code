@@ -7,9 +7,8 @@ description: 'Saving and resuming sessions'
 
 Persistence lets a session survive process restarts and gives product surfaces a stable session ID.
 
-A resumed session can repopulate task lists, execution history, and delivery
-summaries. The [result components](/guide/components/web/results) show how the
-Web client arranges that information.
+A resumed session can repopulate task lists, execution history, artifacts, and
+delivery summaries without replaying the completed run.
 
 A3S Code persists three related but different things:
 
@@ -21,10 +20,11 @@ A3S Code persists three related but different things:
 
 ## File Session Store
 
-```ts
+```ts title=persistence.ts
 import { FileSessionStore } from '@a3s-lab/code';
 
 const session = agent.session('/repo', {
+  // !mark(1:3) Snapshot config
   sessionId: 'release-review',
   sessionStore: new FileSessionStore('./.a3s/sessions'),
   autoSave: true,

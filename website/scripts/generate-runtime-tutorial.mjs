@@ -1,336 +1,307 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { highlight } from 'codehike/code';
 import { format } from 'prettier';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const websiteRoot = path.join(here, '..');
 const outputPath = path.join(
-  here,
-  '..',
+  websiteRoot,
   'theme',
   'generated',
   'runtime-tutorial.json',
 );
+const theme = JSON.parse(
+  await readFile(path.join(websiteRoot, 'codehike-theme.json'), 'utf8'),
+);
 
-const theme = {
-  name: 'a3s-runtime',
-  type: 'dark',
-  colors: {
-    'editor.background': '#0b0d11',
-    'editor.foreground': '#c9ced8',
-    'editorLineNumber.foreground': '#444b57',
-    'editorLineNumber.activeForeground': '#8c96a7',
-    'editor.selectionBackground': '#233653',
-  },
-  tokenColors: [
-    {
-      scope: ['comment', 'punctuation.definition.comment'],
-      settings: { foreground: '#626b78', fontStyle: 'italic' },
-    },
-    {
-      scope: [
-        'keyword',
-        'storage',
-        'storage.type',
-        'storage.modifier',
-        'keyword.control',
-      ],
-      settings: { foreground: '#91acd8' },
-    },
-    {
-      scope: ['entity.name.function', 'support.function', 'meta.function-call'],
-      settings: { foreground: '#dfbd7c' },
-    },
-    {
-      scope: [
-        'entity.name.type',
-        'entity.name.class',
-        'support.type',
-        'support.class',
-      ],
-      settings: { foreground: '#b5a4d2' },
-    },
-    {
-      scope: ['string', 'string.quoted', 'string.template'],
-      settings: { foreground: '#91c4a6' },
-    },
-    {
-      scope: ['constant.numeric', 'constant.language', 'constant.character'],
-      settings: { foreground: '#d79d77' },
-    },
-    {
-      scope: [
-        'variable.parameter',
-        'variable.other',
-        'meta.object-literal.key',
-      ],
-      settings: { foreground: '#cbd1da' },
-    },
-    {
-      scope: ['punctuation', 'meta.brace', 'meta.delimiter'],
-      settings: { foreground: '#7a8492' },
-    },
-    {
-      scope: ['keyword.operator', 'operator'],
-      settings: { foreground: '#7ea8b8' },
-    },
-  ],
-};
+function focusRange(code, firstLine, lastLine = firstLine) {
+  const lines = code.split('\n');
+  const from = lines.findIndex((line) => line.includes(firstLine));
+  const to = lines.findIndex((line, index) => {
+    return index >= from && line.includes(lastLine);
+  });
+
+  if (from < 0 || to < 0) {
+    throw new Error(`Could not find focus range: ${firstLine} → ${lastLine}`);
+  }
+
+  return [from + 1, to + 1];
+}
 
 const steps = [
   {
     id: 'surfaces',
     layer: 'L01 / SURFACES',
-    filename: 'src/main.rs',
+    filename: 'runtime.py',
+    language: 'Python',
     title: {
-      zh: '先选一个接入入口',
-      en: 'Choose an entry point',
+      zh: '选用 Python SDK',
+      en: 'Start with the Python SDK',
     },
     body: {
-      zh: '终端可以直接跑；要嵌进产品，就从 Rust、Node.js 或 Python SDK 开始。下面用 Rust 把完整路径走一遍。',
-      en: 'Run the terminal app directly, or embed the Rust, Node.js, or Python SDK. The walkthrough below follows the Rust path.',
+      zh: '下面只使用 `a3s_code` 已公开的同步 API。先取得当前项目路径，再从 ACL 配置创建 Agent。',
+      en: 'This walkthrough uses the public synchronous `a3s_code` API. Start with the current project path and create an Agent from its ACL config.',
     },
     note: {
-      zh: '同一个 Runtime，不同的产品外壳。',
-      en: 'One runtime behind different product surfaces.',
+      zh: '`closing` 会在退出代码块时调用 `agent.close()`。',
+      en: '`closing` calls `agent.close()` when the block exits.',
     },
-    tags: ['Terminal', 'Rust', 'Node.js', 'Python'],
-    focus: [1, 6],
-    code: `use a3s_code_core::{Agent, AgentEvent};
+    tags: ['Python', 'a3s_code', 'Agent'],
+    focusText: ['from a3s_code import Agent', 'with closing'],
+    code: `from contextlib import closing
+from pathlib import Path
 
-#[tokio::main]
-async fn main() -> a3s_code_core::Result<()> {
-    Ok(())
-}`,
+from a3s_code import Agent
+
+workspace = str(Path.cwd())
+
+with closing(Agent.create("agent.acl")) as agent:
+    pass`,
   },
   {
     id: 'session',
     layer: 'L02 / AGENT API',
-    filename: 'src/main.rs',
+    filename: 'runtime.py',
+    language: 'Python',
     title: {
-      zh: '把 Agent 绑到一个项目',
-      en: 'Bind the agent to a project',
+      zh: '创建项目会话',
+      en: 'Create a project session',
     },
     body: {
-      zh: 'Agent 读取 ACL 和共享能力；AgentSession 负责当前 Workspace 与这一段对话。异步 build 会在第一轮开始前准备好相关资源。',
-      en: 'Agent loads ACL and shared capabilities. AgentSession owns the current workspace and conversation, resolving resources before the first turn.',
+      zh: 'Session 把 Agent 绑定到一个项目目录。`LocalWorkspaceBackend` 明确告诉 Runtime，文件和搜索工具应该在哪个工作区运行。',
+      en: 'A Session binds the Agent to one project. `LocalWorkspaceBackend` tells the runtime exactly where file and search tools should operate.',
     },
     note: {
-      zh: 'Agent 可以复用，Session 与 Workspace 一一对应。',
-      en: 'Reuse the Agent; bind each Session to a workspace.',
+      zh: 'Agent 可以复用；Session 对应一次项目会话。',
+      en: 'Reuse the Agent; create a Session for each project conversation.',
     },
-    tags: ['Agent', 'AgentSession', 'Workspace'],
-    focus: [5, 8],
-    code: `use a3s_code_core::{Agent, AgentEvent};
+    tags: ['SessionOptions', 'LocalWorkspaceBackend'],
+    focusText: ['options = SessionOptions()', 'with closing(agent.session'],
+    code: `from contextlib import closing
+from pathlib import Path
 
-#[tokio::main]
-async fn main() -> a3s_code_core::Result<()> {
-    let agent = Agent::new("agent.acl").await?;
-    let session = agent
-        .session_builder(".")
-        .build()
-        .await?;
+from a3s_code import Agent, LocalWorkspaceBackend, SessionOptions
 
-    Ok(())
-}`,
+workspace = str(Path.cwd())
+options = SessionOptions()
+options.planning_mode = "disabled"
+options.workspace_backend = LocalWorkspaceBackend(workspace)
+
+with closing(Agent.create("agent.acl")) as agent:
+    with closing(agent.session(workspace, options)) as session:
+        pass`,
   },
   {
     id: 'context',
     layer: 'L03 / INTELLIGENCE',
-    filename: 'src/main.rs',
+    filename: 'runtime.py',
+    language: 'Python',
     title: {
-      zh: '给上下文设好边界',
-      en: 'Put a boundary around context',
+      zh: '限制上下文大小',
+      en: 'Bound the context window',
     },
     body: {
-      zh: '自动压缩、token 上限和触发阈值属于 Session 配置，不需要藏进界面层。ContextAssembler 与 Memory 会据此准备模型输入。',
-      en: 'Compaction, token limits, and thresholds belong to SessionOptions rather than UI code. ContextAssembler and memory use them when preparing model input.',
+      zh: '自动压缩阈值和 token 上限写在 SessionOptions 中。达到阈值后，Runtime 会整理历史，而不是继续把所有内容塞进模型输入。',
+      en: 'Compaction thresholds and token limits belong in SessionOptions. When the threshold is reached, the runtime compacts history instead of growing the prompt without a bound.',
     },
     note: {
-      zh: '大结果会变成 Artifact，模型只拿到受控预览。',
-      en: 'Large results become artifacts; the model receives a bounded preview.',
+      zh: '大工具输出会保存为 Artifact，模型只接收受控预览。',
+      en: 'Large tool output is stored as an artifact; the model receives a bounded preview.',
     },
-    tags: ['ContextAssembler', 'Memory', 'LlmClient'],
-    focus: [6, 10],
-    code: `use a3s_code_core::{Agent, AgentEvent, SessionOptions};
+    tags: ['auto_compact', 'tokens', 'Artifact'],
+    focusText: ['options.auto_compact = True', 'max_context_tokens'],
+    code: `from contextlib import closing
+from pathlib import Path
 
-#[tokio::main]
-async fn main() -> a3s_code_core::Result<()> {
-    let options = SessionOptions::new()
-        .with_auto_compact(true)
-        .with_max_context_tokens(200_000)
-        .with_auto_compact_threshold(0.8);
+from a3s_code import Agent, LocalWorkspaceBackend, SessionOptions
 
-    let agent = Agent::new("agent.acl").await?;
-    let session = agent
-        .session_builder(".")
-        .options(options)
-        .build()
-        .await?;
+workspace = str(Path.cwd())
+options = SessionOptions()
+options.planning_mode = "disabled"
+options.auto_compact = True
+options.auto_compact_threshold = 0.8
+options.max_context_tokens = 128_000
+options.workspace_backend = LocalWorkspaceBackend(workspace)
 
-    Ok(())
-}`,
+with closing(Agent.create("agent.acl")) as agent:
+    with closing(agent.session(workspace, options)) as session:
+        pass`,
   },
   {
     id: 'governance',
     layer: 'L04 / GOVERNANCE',
-    filename: 'src/main.rs',
+    filename: 'runtime.py',
+    language: 'Python',
     title: {
-      zh: '在工具执行前定规则',
-      en: 'Set policy before tools run',
+      zh: '明确哪些工具能执行',
+      en: 'Decide which tools may run',
     },
     body: {
-      zh: 'read 自动放行，write 每次询问，危险的 shell 命令直接拒绝。规则按 deny、allow、ask 的顺序求值。',
-      en: 'Allow reads, ask before writes, and deny a dangerous shell pattern. Rules evaluate in deny, allow, then ask order.',
+      zh: '这个示例只允许读取、列目录、搜索和代码导航；写文件、Shell 与 Git 一律拒绝。未命中的工具也按 `deny` 处理。',
+      en: 'This example allows reads, directory listing, search, and code navigation. File writes, shell, and Git are denied, and unmatched tools default to `deny`.',
     },
     note: {
-      zh: '权限、确认、预算与沙箱共用一条执行链。',
-      en: 'Permission, approval, budgets, and sandboxing share one path.',
+      zh: '示例不会触发待确认状态，因此事件循环不会停在无人处理的确认请求上。',
+      en: 'The policy does not create pending approvals, so the event loop cannot stall on an unhandled confirmation.',
     },
-    tags: ['validate', 'permission', 'confirm', 'sandbox'],
-    focus: [8, 12],
-    code: `use a3s_code_core::{
-    permissions::PermissionPolicy,
-    Agent, AgentEvent, SessionOptions,
-};
+    tags: ['PermissionPolicy', 'allow', 'deny'],
+    focusText: ['options.permission_policy', 'default_decision'],
+    code: `from contextlib import closing
+from pathlib import Path
 
-#[tokio::main]
-async fn main() -> a3s_code_core::Result<()> {
-    let policy = PermissionPolicy::new()
-        .allow("read(*)")
-        .ask("write(*)")
-        .deny("bash(rm:*)");
+from a3s_code import (
+    Agent,
+    LocalWorkspaceBackend,
+    PermissionPolicy,
+    SessionOptions,
+)
 
-    let options = SessionOptions::new()
-        .with_auto_compact(true)
-        .with_permission_policy(policy);
+workspace = str(Path.cwd())
+options = SessionOptions()
+options.planning_mode = "disabled"
+options.auto_compact = True
+options.auto_compact_threshold = 0.8
+options.max_context_tokens = 128_000
+options.permission_policy = PermissionPolicy(
+    allow=["read*", "ls*", "glob*", "grep*", "code_*"],
+    deny=["write*", "edit*", "patch*", "bash*", "git*"],
+    default_decision="deny",
+)
+options.workspace_backend = LocalWorkspaceBackend(workspace)
 
-    let agent = Agent::new("agent.acl").await?;
-    let session = agent
-        .session_builder(".")
-        .options(options)
-        .build()
-        .await?;
-
-    Ok(())
-}`,
+with closing(Agent.create("agent.acl")) as agent:
+    with closing(agent.session(workspace, options)) as session:
+        pass`,
   },
   {
     id: 'tools',
     layer: 'L05 / WORKSPACE',
-    filename: 'src/main.rs',
+    filename: 'runtime.py',
+    language: 'Python',
     title: {
-      zh: '让 Workspace 决定可用工具',
-      en: 'Let the workspace expose its tools',
+      zh: '消费执行事件',
+      en: 'Consume execution events',
     },
     body: {
-      zh: 'Session 只注册当前 Workspace 真正支持、且权限允许的工具。发起 stream 后，模型调用 read、search、shell 或 Git 都会经过同一条受控路径。',
-      en: 'A Session registers only tools the current workspace supports and policy permits. Every read, search, shell, or Git call follows the same governed path.',
+      zh: '`session.stream()` 返回 `AgentEvent`。代码直接区分文本、工具开始和错误，不需要解析终端输出。',
+      en: '`session.stream()` yields `AgentEvent` values. The code handles text, tool starts, and errors directly instead of parsing terminal output.',
     },
     note: {
-      zh: '对象存储后端不支持本地命令时，Bash 与 Git 不会出现。',
-      en: 'If a workspace cannot run local commands, Bash and Git stay hidden.',
+      zh: '工具能否出现，由 Workspace 能力和 PermissionPolicy 共同决定。',
+      en: 'Workspace capabilities and PermissionPolicy jointly decide which tools are visible.',
     },
-    tags: ['files', 'search', 'shell', 'git', 'MCP'],
-    focus: [23, 26],
-    code: `use a3s_code_core::{
-    permissions::PermissionPolicy,
-    Agent, AgentEvent, SessionOptions,
-};
+    tags: ['EventType', 'stream', 'tools'],
+    focusText: ['for event in session.stream', 'raise RuntimeError'],
+    code: `from contextlib import closing
+from pathlib import Path
 
-#[tokio::main]
-async fn main() -> a3s_code_core::Result<()> {
-    let policy = PermissionPolicy::new()
-        .allow("read(*)")
-        .ask("write(*)")
-        .deny("bash(rm:*)");
+from a3s_code import (
+    Agent,
+    EventType,
+    LocalWorkspaceBackend,
+    PermissionPolicy,
+    SessionOptions,
+)
 
-    let options = SessionOptions::new()
-        .with_auto_compact(true)
-        .with_permission_policy(policy);
+workspace = str(Path.cwd())
+options = SessionOptions()
+options.planning_mode = "disabled"
+options.auto_compact = True
+options.auto_compact_threshold = 0.8
+options.max_context_tokens = 128_000
+options.permission_policy = PermissionPolicy(
+    allow=["read*", "ls*", "glob*", "grep*", "code_*"],
+    deny=["write*", "edit*", "patch*", "bash*", "git*"],
+    default_decision="deny",
+)
+options.workspace_backend = LocalWorkspaceBackend(workspace)
 
-    let agent = Agent::new("agent.acl").await?;
-    let session = agent
-        .session_builder(".")
-        .options(options)
-        .build()
-        .await?;
-
-    let (mut events, lifecycle) = session
-        .stream("Find the authentication entry points.", None)
-        .await?;
-
-    Ok(())
-}`,
+with closing(Agent.create("agent.acl")) as agent:
+    with closing(agent.session(workspace, options)) as session:
+        for event in session.stream(
+            "Find the authentication entry points. Do not change files."
+        ):
+            if event.type == EventType.TEXT_DELTA and event.text:
+                print(event.text, end="", flush=True)
+            elif event.type == EventType.TOOL_START:
+                print(f"\\n→ {event.tool_name or 'tool'}")
+            elif event.type == EventType.ERROR:
+                raise RuntimeError(event.error or "A3S Code run failed")`,
   },
   {
     id: 'evidence',
     layer: 'L06 / DURABILITY',
-    filename: 'src/main.rs',
+    filename: 'runtime.py',
+    language: 'Python',
     title: {
-      zh: '把过程交给界面，把现场留给下一次',
-      en: 'Stream the run and keep the evidence',
+      zh: '保存运行记录',
+      en: 'Save the run record',
     },
     body: {
-      zh: '界面消费 AgentEvent；配置 SessionStore 后，save 会把会话、运行记录、Artifact、Trace 和验证结果作为同一代快照提交。',
-      en: 'The UI consumes AgentEvent. With a SessionStore configured, save commits the session, runs, artifacts, traces, and verification data as one snapshot generation.',
+      zh: '`FileSessionStore` 为 Session 提供持久化后端。事件流结束后读取最后一次 Run，并用 `save()` 提交当前快照。',
+      en: '`FileSessionStore` provides the persistence backend. After the stream ends, inspect the latest run and commit the current snapshot with `save()`.',
     },
     note: {
-      zh: '终端、Web 与 SDK 看到的是同一条事件协议。',
-      en: 'Terminal, Web, and SDK clients share the same event protocol.',
+      zh: '`SessionSnapshotV1` 会一起保存会话、Run、Artifact、Trace 和验证结果。',
+      en: '`SessionSnapshotV1` keeps the session, runs, artifacts, traces, and verification results together.',
     },
-    tags: ['AgentEvent', 'Run', 'Artifact', 'Snapshot'],
-    focus: [29, 39],
-    code: `use a3s_code_core::{
-    permissions::PermissionPolicy,
-    Agent, AgentEvent, SessionOptions,
-};
+    tags: ['FileSessionStore', 'Run', 'SessionSnapshotV1'],
+    focusText: ['options.session_store', 'session.save()'],
+    code: `from contextlib import closing
+from pathlib import Path
 
-#[tokio::main]
-async fn main() -> a3s_code_core::Result<()> {
-    let policy = PermissionPolicy::new()
-        .allow("read(*)")
-        .ask("write(*)")
-        .deny("bash(rm:*)");
+from a3s_code import (
+    Agent,
+    EventType,
+    FileSessionStore,
+    LocalWorkspaceBackend,
+    PermissionPolicy,
+    SessionOptions,
+)
 
-    let options = SessionOptions::new()
-        .with_auto_compact(true)
-        .with_permission_policy(policy)
-        .with_file_session_store(".a3s/sessions");
+workspace = str(Path.cwd())
+options = SessionOptions()
+options.planning_mode = "disabled"
+options.auto_compact = True
+options.auto_compact_threshold = 0.8
+options.max_context_tokens = 128_000
+options.permission_policy = PermissionPolicy(
+    allow=["read*", "ls*", "glob*", "grep*", "code_*"],
+    deny=["write*", "edit*", "patch*", "bash*", "git*"],
+    default_decision="deny",
+)
+options.workspace_backend = LocalWorkspaceBackend(workspace)
+options.session_store = FileSessionStore(".a3s/sessions")
 
-    let agent = Agent::new("agent.acl").await?;
-    let session = agent
-        .session_builder(".")
-        .options(options)
-        .build()
-        .await?;
+with closing(Agent.create("agent.acl")) as agent:
+    with closing(agent.session(workspace, options)) as session:
+        for event in session.stream(
+            "Find the authentication entry points. Do not change files."
+        ):
+            if event.type == EventType.TEXT_DELTA and event.text:
+                print(event.text, end="", flush=True)
+            elif event.type == EventType.TOOL_START:
+                print(f"\\n→ {event.tool_name or 'tool'}")
+            elif event.type == EventType.ERROR:
+                raise RuntimeError(event.error or "A3S Code run failed")
 
-    let (mut events, lifecycle) = session
-        .stream("Find the authentication entry points.", None)
-        .await?;
-
-    while let Some(event) = events.recv().await {
-        match event {
-            AgentEvent::TextDelta { text } => print!("{text}"),
-            AgentEvent::End { .. } => break,
-            _ => {}
-        }
-    }
-
-    let _ = lifecycle.await;
-    session.save().await?;
-    Ok(())
-}`,
+        runs = session.runs()
+        if runs:
+            current = runs[-1]
+            print(f"\\nrun={current['id']} status={current['status']}")
+        session.save()`,
   },
 ];
 
 const result = [];
 for (const step of steps) {
+  const focus = focusRange(step.code, ...step.focusText);
   const highlighted = await highlight(
     {
       value: step.code,
-      lang: 'rust',
+      lang: 'python',
       meta: step.filename,
     },
     theme,
@@ -339,12 +310,14 @@ for (const step of steps) {
     {
       name: 'focus',
       query: step.id,
-      fromLineNumber: step.focus[0],
-      toLineNumber: step.focus[1],
+      fromLineNumber: focus[0],
+      toLineNumber: focus[1],
     },
   ];
+  const { focusText: _focusText, ...publicStep } = step;
   result.push({
-    ...step,
+    ...publicStep,
+    focus,
     highlighted,
   });
 }

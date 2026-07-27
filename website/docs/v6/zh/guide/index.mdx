@@ -3,13 +3,15 @@ title: '概览'
 description: 'A3S Code 的安装方式、主要能力和 SDK 入口'
 ---
 
+import { Tab, Tabs } from '@rspress/core/theme';
+
 # A3S Code
 
 A3S Code 是 `a3s code` 终端应用背后的 Rust Runtime，也可以单独接入 IDE、
 Runner 或服务端。它负责 Agent Loop、上下文、工具调用、权限检查、子任务、
 Workspace 访问，以及任务的保存和恢复。
 
-想直接在终端里使用，安装 [`a3s` CLI](https://github.com/A3S-Lab/Cli)。
+想直接在终端里使用，安装 [`a3s` CLI](https://github.com/A3S-Lab/a3s)。
 想构建自己的产品，使用 Rust crate、Node.js 包或 Python 包。它们输出同一套事件，
 因此不同界面不需要各写一套 Agent Loop。
 
@@ -18,7 +20,7 @@ Workspace 访问，以及任务的保存和恢复。
 | 入口                        | 什么时候用                                       | 仓库                                                          |
 | --------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | Rust / Node.js / Python SDK | 把编码 Agent 接入 IDE、Runner、服务端或自己的 UI | [A3S-Lab/Code](https://github.com/A3S-Lab/Code)               |
-| `a3s code`                  | 直接在终端里运行编码 Agent                       | [A3S-Lab/Cli](https://github.com/A3S-Lab/Cli)                 |
+| `a3s code`                  | 直接在终端里运行编码 Agent                       | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)                 |
 | `a3s-tui`                   | 构建终端界面，不包含 Agent Runtime               | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)                 |
 | A3S Web                     | 查看桌面任务界面和组件实现                       | [apps/web](https://github.com/A3S-Lab/a3s/tree/main/apps/web) |
 | A3S Flow                    | 为 `DynamicWorkflowRuntime` 保存和恢复流程       | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow)               |
@@ -56,17 +58,29 @@ Agent / AgentSession
 
 ## 安装
 
-想使用交互式终端应用时安装 CLI：
+想使用交互式终端应用时，运行对应平台的一键安装脚本：
+
+<Tabs>
+<Tab label="macOS / Linux">
 
 ```bash
-brew install A3S-Lab/tap/a3s
-
-# 或从 crates.io 安装
-cargo install a3s
-
-# 或从 CLI 仓库安装
-cargo install --git https://github.com/A3S-Lab/Cli
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.sh | sh
 ```
+
+</Tab>
+<Tab label="Windows">
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
+```
+
+</Tab>
+</Tabs>
+
+脚本会选择当前系统与架构对应的发布包并校验 SHA-256。也可以使用
+`brew install a3s-lab/tap/a3s` 或 `cargo install a3s`。
 
 当你要把 A3S Code 嵌入自己的产品时，安装 SDK 包：
 
@@ -151,7 +165,6 @@ await agent.close();
 
 ## 接着看
 
-- [组件文档](/guide/components/) 可以逐个操作 A3S TUI 与 A3S Web 的核心组件。
 - [A3S Code TUI](/guide/tui) 说明安装、配置发现、斜杠命令和 Effort。
 - [文件系统优先](/guide/filesystem-first) 介绍 `AGENTS.md`、ACL、AgentDir、Skill、工具和定时任务。
 - [API 契约](/guide/api-contract) 列出经过集成测试的 Node.js API。

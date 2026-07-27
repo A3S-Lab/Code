@@ -3,13 +3,6 @@
   "tui",
   {
     "type": "dir",
-    "name": "components",
-    "label": "Components",
-    "collapsible": true,
-    "collapsed": false
-  },
-  {
-    "type": "dir",
     "name": "examples",
     "label": "Examples",
     "collapsible": true,

@@ -3,13 +3,6 @@
   "tui",
   {
     "type": "dir",
-    "name": "components",
-    "label": "组件",
-    "collapsible": true,
-    "collapsed": false
-  },
-  {
-    "type": "dir",
     "name": "examples",
     "label": "示例",
     "collapsible": true,

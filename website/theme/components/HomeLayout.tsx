@@ -1,4 +1,8 @@
-import { useState } from 'react';
+import {
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { useLang, useSite, useVersion, withBase } from '@rspress/core/runtime';
 import {
   InnerLine,
@@ -31,6 +35,7 @@ type RuntimeTutorialStep = {
   id: string;
   layer: string;
   filename: string;
+  language: string;
   title: Localized;
   body: Localized;
   note: Localized;
@@ -45,9 +50,16 @@ const runtimeTutorialSteps =
 
 const installCommands = [
   {
-    id: 'terminal',
-    label: 'Terminal',
-    command: 'brew install A3S-Lab/tap/a3s\ncd /path/to/project\na3s code',
+    id: 'unix',
+    label: 'macOS / Linux',
+    command:
+      "curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.sh | sh\n\na3s code",
+  },
+  {
+    id: 'windows',
+    label: 'Windows',
+    command:
+      '[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\nirm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex\n\na3s code',
   },
   {
     id: 'rust',
@@ -70,48 +82,48 @@ const governanceFeatures: Feature[] = [
   {
     index: '01',
     title: {
-      zh: '每次工具调用都先过检查',
-      en: 'Check every tool call',
+      zh: '统一检查文件、Shell、Git 与外部请求',
+      en: 'Check files, shell, Git, and external requests',
     },
     body: {
-      zh: '修改文件、运行命令、操作 Git 和访问外部服务都会走同一套流程：校验参数、检查能力和权限，必要时先询问用户，再执行。',
-      en: 'File changes, shell commands, Git operations, and external requests use one path: validate the arguments, check capabilities and permissions, ask the user when needed, then run.',
+      zh: '模型提交工具参数后，Runtime 依次检查参数、Workspace 能力和权限规则。需要用户确认的调用会先暂停，不会直接执行。',
+      en: 'After the model submits tool arguments, the runtime checks the arguments, workspace capability, and permission policy. Calls that need approval pause before execution.',
     },
     tags: ['policy', 'HITL', 'sandbox'],
   },
   {
     index: '02',
     title: {
-      zh: '大结果不会塞满上下文',
-      en: 'Keep large results out of the prompt',
+      zh: '大输出保存为 Artifact',
+      en: 'Store large output as artifacts',
     },
     body: {
-      zh: '文件读取、搜索、命令输出、Git 结果和网页内容都支持范围或游标。内容过大时会保存为 Artifact，模型只接收预览、大小和哈希。',
-      en: 'File reads, searches, command output, Git results, and web pages support ranges or cursors. Oversized results become artifacts, while the model gets a preview, size, and hash.',
+      zh: '文件、搜索、命令和网页结果都支持范围或游标。超过限制的内容会写入 Artifact，模型只收到预览、大小、哈希和取回地址。',
+      en: 'File, search, command, and web results support ranges or cursors. Oversized output is written to an artifact; the model receives a preview, size, hash, and retrieval URI.',
     },
     tags: ['cursor', 'artifact', 'hash'],
   },
   {
     index: '03',
     title: {
-      zh: '界面由你的产品来做',
-      en: 'Build the UI you want',
+      zh: '界面订阅 AgentEvent',
+      en: 'Render the AgentEvent stream',
     },
     body: {
-      zh: 'Core 在执行过程中持续发出 AgentEvent，SDK 和持久化 Run 使用 EventEnvelopeV1。终端、IDE 或网页都能复用同一个 Agent Loop。',
-      en: 'Core emits AgentEvent throughout a run. SDK streams and persisted runs use EventEnvelopeV1, so a terminal, IDE, or web UI can render the same loop.',
+      zh: '文本、工具调用、计划、确认和生命周期变化都有明确的事件类型。终端、IDE 和网页可以消费同一条事件流。',
+      en: 'Text, tool calls, plans, approvals, and lifecycle changes have explicit event types. A terminal, IDE, or web app can consume the same stream.',
     },
     tags: ['AgentEvent', 'EventEnvelopeV1'],
   },
   {
     index: '04',
     title: {
-      zh: '任务中断后可以接着跑',
-      en: 'Resume without guessing',
+      zh: 'SessionSnapshotV1 保存恢复数据',
+      en: 'Resume from SessionSnapshotV1',
     },
     body: {
-      zh: 'SessionSnapshotV1 会一起保存会话、Run、Artifact、Trace、验证结果和子任务记录，恢复时不用让模型猜之前做过什么。',
-      en: 'SessionSnapshotV1 saves the session, runs, artifacts, traces, verification results, and child-task records together, so interrupted work can continue from saved state.',
+      zh: '会话、Run、Artifact、Trace、验证结果和子任务记录按同一代快照提交。恢复时直接读取已保存状态。',
+      en: 'Sessions, runs, artifacts, traces, verification results, and child-task records are committed as one snapshot generation and loaded directly on resume.',
     },
     tags: ['snapshot', 'replay', 'verification'],
   },
@@ -122,12 +134,12 @@ const capabilityCards = [
     className: 'a3s-bento-card--wide a3s-bento-card--policy',
     eyebrow: { zh: '工具调用', en: 'TOOL CALLS' },
     title: {
-      zh: '哪些工具能用，由代码和配置决定',
-      en: 'Code and config decide which tools are available',
+      zh: '工具列表由 Workspace 和权限共同确定',
+      en: 'Workspace and policy determine the tool list',
     },
     body: {
-      zh: '文件、搜索、Shell、Git、Web、Batch、QuickJS、结构化输出和子任务，只有在 Workspace 支持且权限允许时才会开放给模型。',
-      en: 'Files, search, shell, Git, web, batch, QuickJS, structured output, and child tasks are exposed only when the workspace supports them and policy allows them.',
+      zh: '文件、搜索、Shell、Git、Web、Batch、QuickJS、结构化输出和子任务，只有在当前 Workspace 支持且规则允许时才会提供给模型。',
+      en: 'Files, search, shell, Git, web, batch, QuickJS, structured output, and child tasks are exposed only when the current workspace supports them and policy allows them.',
     },
     tags: ['files', 'shell', 'git', 'web', 'program', 'task'],
   },
@@ -135,8 +147,8 @@ const capabilityCards = [
     className: 'a3s-bento-card--models',
     eyebrow: { zh: '模型', en: 'MODELS' },
     title: {
-      zh: '换模型，不用重写 Agent Loop',
-      en: 'Switch models without rewriting the loop',
+      zh: '更换模型适配器，不改 Session API',
+      en: 'Change the model adapter, not the Session API',
     },
     body: {
       zh: '支持 Anthropic、智谱、OpenAI-compatible API，也可以注入自己的 LlmClient。',
@@ -148,12 +160,12 @@ const capabilityCards = [
     className: 'a3s-bento-card--state',
     eyebrow: { zh: '任务记录', en: 'RUN DATA' },
     title: {
-      zh: '保存运行记录，也能恢复现场',
-      en: 'Save the run and pick up where it stopped',
+      zh: 'Run、事件与快照使用稳定格式',
+      en: 'Runs, events, and snapshots use stable formats',
     },
     body: {
-      zh: '一次任务可以保存 Snapshot、事件、Trace、Artifact、验证结果和 Checkpoint；需要时再接 State Graph 或 Flow。',
-      en: 'Save snapshots, events, traces, artifacts, verification results, and checkpoints. Add State Graph or Flow only when you need them.',
+      zh: '一次任务可以保存 Snapshot、事件、Trace、Artifact、验证结果和 Checkpoint；应用可以据此查询、审计或恢复。',
+      en: 'A task can save snapshots, events, traces, artifacts, verification results, and checkpoints for queries, audit, or recovery.',
     },
     tags: ['atomic', 'replayable', 'auditable'],
   },
@@ -161,8 +173,8 @@ const capabilityCards = [
     className: 'a3s-bento-card--extend',
     eyebrow: { zh: '扩展', en: 'EXTENSIONS' },
     title: {
-      zh: '接入自己的工具和存储',
-      en: 'Bring your own tools and storage',
+      zh: '工具、上下文与存储都有扩展接口',
+      en: 'Extend tools, context, and storage',
     },
     body: {
       zh: 'MCP、Skills、ContextProvider、MemoryStore、SessionStore、Workspace 服务和自定义工具都可以替换或扩展。',
@@ -171,11 +183,11 @@ const capabilityCards = [
     tags: ['MCP', 'Skills', 'traits'],
   },
   {
-    className: 'a3s-bento-card--wide a3s-bento-card--workspace',
+    className: 'a3s-bento-card--workspace',
     eyebrow: { zh: '工作区', en: 'WORKSPACE' },
     title: {
-      zh: '模型只会看到当前 Workspace 能做的事',
-      en: 'The model sees only what the workspace can do',
+      zh: '本地、S3 与远程 Workspace 分开声明能力',
+      en: 'Local, S3, and remote workspaces declare capabilities',
     },
     body: {
       zh: '代码导航与文件工具都来自你选择的 Workspace。远程或对象存储后端不能运行本地命令时，Bash 和 Git 就不会暴露给模型。',
@@ -190,12 +202,12 @@ const surfaces = [
     key: 'terminal',
     name: 'Terminal',
     packageName: 'a3s code',
-    href: 'https://github.com/A3S-Lab/CLI',
+    href: 'https://github.com/A3S-Lab/a3s',
     description: {
       zh: '开箱即用的终端界面，可以查看推理、工具调用、确认提示、任务进度和 Diff。',
       en: 'A ready-to-run terminal UI for reasoning, tool calls, approval prompts, task progress, and diffs.',
     },
-    command: 'brew install A3S-Lab/tap/a3s',
+    command: 'a3s code',
   },
   {
     key: 'rust',
@@ -303,11 +315,11 @@ const runtimeLayers = [
 
 const copy = {
   zh: {
-    eyebrow: 'OPEN SOURCE · RUST AGENT RUNTIME',
-    titleLead: '把编码 Agent',
-    titleAccent: '接进你的产品',
+    eyebrow: 'OPEN SOURCE · EMBEDDABLE AGENT RUNTIME',
+    titleLead: '把 A3S Code',
+    titleAccent: '接进现有产品',
     subtitle:
-      'A3S Code 是一个用 Rust 写的 Agent 运行时。它负责 Agent Loop、工具调用、权限确认、事件流和任务恢复，并提供 Rust、Node.js、Python API。',
+      'A3S Code 提供 Agent 会话、工具调用、权限确认、事件流和任务恢复。你可以直接使用 a3s code，也可以通过 Rust、Node.js 或 Python SDK 嵌入现有应用。',
     docs: '开始使用',
     github: '查看 GitHub',
     copy: '复制',
@@ -323,32 +335,25 @@ const copy = {
     record: '执行记录',
     surfacesLabel: '四种接入方式，同一套 Runtime',
     whyEyebrow: 'WHY A3S CODE',
-    whyTitle: 'Agent 真正动手之前，先把规则定清楚。',
+    whyTitle: '工具执行之前，先检查参数、权限和确认状态',
     whyBody:
-      '模型可以读写文件、运行命令和操作 Git，但每次调用仍会先检查参数和权限。你的应用决定给它哪些工具，也能拿到完整的执行记录。',
+      '模型给出的工具调用不会直接落到文件系统或 Shell。Runtime 先完成检查，再把执行事件和结果交给应用。',
     architectureEyebrow: 'HOW IT RUNS',
-    architectureTitle: '用一段真实代码，走完 Runtime 的六层职责。',
+    architectureTitle: '用 Python 走完一次执行',
     architectureBody:
-      '向下滚动或点击步骤。代码会逐步补全，右侧分层图也会同步标出这一段由谁负责。',
+      '示例使用仓库中实际提供的 a3s_code API。滚动或点击步骤，代码会逐步加入 Session、上下文限制、权限、事件流和持久化。',
     architectureAlt:
       'A3S Code 运行时分层图，展示接入方式、AgentSession、上下文、权限检查、工具与运行记录。',
     capabilitiesEyebrow: 'WHAT YOU GET',
-    capabilitiesTitle: '需要什么，就打开什么。',
+    capabilitiesTitle: 'Runtime 提供的五类能力',
     capabilitiesBody:
-      'Core 默认只提供可嵌入的基础运行时。云存储、服务端、遥测、自动压缩、子任务、沙箱和持久化，都由你的应用按需启用。',
+      '工具、模型、任务记录、扩展接口和 Workspace 各自独立。应用可以只配置当前场景需要的部分。',
     surfacesEyebrow: 'USE IT YOUR WAY',
-    surfacesTitle: '想直接用，或接进自己的应用，都可以。',
+    surfacesTitle: '直接运行 CLI，或使用三种 SDK',
     surfacesBody:
-      '终端版可以立即运行；Rust crate、Node.js 和 Python 包提供同一套 Runtime，适合 IDE、Runner、服务端和自己的界面。',
-    componentsEyebrow: 'BUILD THE INTERFACE',
-    componentsTitle: '先看组件本身，再决定怎样组合。',
-    componentsBody:
-      'A3S TUI 与 A3S Web 的核心组件都有独立示例。可以切状态、改输入、做选择，不需要先跑完整任务。',
-    componentsLink: '打开组件文档',
-    componentsTui: '终端里的输入、执行、Diff 与反馈组件。',
-    componentsWeb: '网页里的任务、权限、结果与工作区组件。',
+      '终端版用于直接操作项目；Rust crate、Node.js 包和 Python 包用于 IDE、Runner、服务端或自有界面。',
     boundariesEyebrow: 'WHAT STAYS YOURS',
-    boundariesTitle: '执行交给 Runtime，账号和权限留在你的应用里。',
+    boundariesTitle: 'Runtime 负责执行；应用负责账号、凭据和界面',
     boundaryItems: [
       'A3S Code Core 提供 Agent Runtime，不提供托管服务，也不规定界面应该长什么样。',
       'a3s code 的终端界面由独立的 A3S CLI 提供。',
@@ -361,7 +366,7 @@ const copy = {
     boundaryHostLabel: '你的应用',
     boundaryHostRole: '账号、权限与界面',
     stackTitle: 'A3S CODE / 分层图',
-    stackHint: '滚动或点击切换',
+    stackHint: '移入、点击或使用键盘',
     stackTop: '产品',
     stackBottom: '记录',
     tutorialStep: '步骤',
@@ -369,19 +374,19 @@ const copy = {
     tutorialLayers: '当前负责的层',
     tutorialScroll: '继续向下',
     ctaEyebrow: 'TRY IT',
-    ctaTitle: '先在一个项目里跑起来。',
+    ctaTitle: '从一个只读任务开始',
     ctaBody:
-      '安装 a3s code 直接体验，或者选择 Rust、Node.js、Python 包接入自己的产品。',
+      '安装 a3s code 后，在已有仓库里执行一次检查；需要嵌入时再选择 Rust、Node.js 或 Python SDK。',
     ctaPrimary: '查看快速开始',
-    ctaSecondary: '查看组件',
+    ctaSecondary: '查看 API',
     footer: 'MIT 开源 · Rust 编写 · 支持 Terminal / Rust / Node.js / Python',
   },
   en: {
-    eyebrow: 'OPEN SOURCE · RUST AGENT RUNTIME',
-    titleLead: 'Add a coding agent',
-    titleAccent: 'to your product',
+    eyebrow: 'OPEN SOURCE · EMBEDDABLE AGENT RUNTIME',
+    titleLead: 'Add A3S Code',
+    titleAccent: 'to an existing product',
     subtitle:
-      'A3S Code is a Rust agent runtime. It handles the agent loop, tool calls, approval, event streaming, and recovery, with APIs for Rust, Node.js, and Python.',
+      'A3S Code provides agent sessions, tool execution, approvals, event streaming, and task recovery. Run a3s code directly or embed the Rust, Node.js, or Python SDK.',
     docs: 'Get started',
     github: 'View on GitHub',
     copy: 'Copy',
@@ -397,33 +402,25 @@ const copy = {
     record: 'run record',
     surfacesLabel: 'Four ways in, one runtime',
     whyEyebrow: 'WHY A3S CODE',
-    whyTitle: 'Set the rules before the agent changes anything.',
+    whyTitle: 'Check arguments, permissions, and approvals before execution',
     whyBody:
-      'The model can edit files, run commands, and operate Git, but every call is checked first. Your application decides which tools it gets and receives the full execution stream.',
+      'Model tool calls do not go straight to the filesystem or shell. The runtime completes its checks first, then sends execution events and results to the application.',
     architectureEyebrow: 'HOW IT RUNS',
-    architectureTitle: 'Walk through all six runtime layers in real code.',
+    architectureTitle: 'Follow one complete run in Python',
     architectureBody:
-      'Scroll or choose a step. The example grows with you, while the layer map marks the part responsible for each line.',
+      'The example uses the actual a3s_code API in this repository. Scroll or select a step to add the Session, context limits, policy, event stream, and persistence.',
     architectureAlt:
       'A3S Code runtime layers showing entry points, AgentSession, context, permission checks, tools, and run records.',
     capabilitiesEyebrow: 'WHAT YOU GET',
-    capabilitiesTitle: 'Turn on only what your product needs.',
+    capabilitiesTitle: 'Five parts of the runtime',
     capabilitiesBody:
-      'Core starts as an embeddable runtime. Cloud storage, serving, telemetry, compaction, child tasks, sandboxing, and persistence are enabled by your application when needed.',
+      'Tools, models, run data, extension interfaces, and workspaces are configured separately. An application can enable only the parts it needs.',
     surfacesEyebrow: 'USE IT YOUR WAY',
-    surfacesTitle: 'Run it in a terminal or embed it in your app.',
+    surfacesTitle: 'Run the CLI or use one of three SDKs',
     surfacesBody:
-      'The terminal app is ready to use. The Rust crate, Node.js package, and Python package bring the same runtime to an IDE, runner, server, or custom UI.',
-    componentsEyebrow: 'BUILD THE INTERFACE',
-    componentsTitle: 'Inspect each component before composing a screen.',
-    componentsBody:
-      'Core A3S TUI and A3S Web components have isolated examples. Change state, edit inputs, and make decisions without running a complete task.',
-    componentsLink: 'Open component docs',
-    componentsTui:
-      'Terminal input, execution, diff, navigation, and feedback components.',
-    componentsWeb: 'Web task, permission, result, and workspace components.',
+      'Use the terminal app directly in a repository. Use the Rust crate, Node.js package, or Python package in an IDE, runner, server, or custom interface.',
     boundariesEyebrow: 'WHAT STAYS YOURS',
-    boundariesTitle: 'The runtime executes. Your app controls access.',
+    boundariesTitle: 'The runtime executes; the app owns accounts and access',
     boundaryItems: [
       'A3S Code Core provides the agent runtime. It is not a hosted service and does not dictate your UI.',
       'The a3s code terminal interface comes from the separate A3S CLI.',
@@ -436,7 +433,7 @@ const copy = {
     boundaryHostLabel: 'YOUR APP',
     boundaryHostRole: 'OWNS UI + ACCESS',
     stackTitle: 'A3S CODE / RUNTIME LAYERS',
-    stackHint: 'SCROLL OR SELECT',
+    stackHint: 'HOVER, CLICK, OR USE THE KEYBOARD',
     stackTop: 'PRODUCT',
     stackBottom: 'RECORDS',
     tutorialStep: 'STEP',
@@ -444,11 +441,11 @@ const copy = {
     tutorialLayers: 'ACTIVE LAYER',
     tutorialScroll: 'KEEP SCROLLING',
     ctaEyebrow: 'TRY IT',
-    ctaTitle: 'Try it in a real repository.',
+    ctaTitle: 'Start with a read-only task',
     ctaBody:
-      'Install a3s code to start immediately, or choose the Rust, Node.js, or Python package for your own product.',
+      'Install a3s code and run one inspection in an existing repository. Choose the Rust, Node.js, or Python SDK when you are ready to embed it.',
     ctaPrimary: 'Open the quick start',
-    ctaSecondary: 'Browse components',
+    ctaSecondary: 'Open the API reference',
     footer: 'MIT licensed · Built in Rust · Terminal / Rust / Node.js / Python',
   },
 };
@@ -481,7 +478,7 @@ function InstallSwitcher({
   labels: (typeof copy)[Locale];
 }) {
   const [activeId, setActiveId] =
-    useState<(typeof installCommands)[number]['id']>('terminal');
+    useState<(typeof installCommands)[number]['id']>('unix');
   const [copied, setCopied] = useState(false);
   const active =
     installCommands.find((item) => item.id === activeId) ?? installCommands[0];
@@ -531,49 +528,95 @@ function InstallSwitcher({
   );
 }
 
-function RuntimeDiagram({ labels }: { labels: (typeof copy)[Locale] }) {
+function RuntimeStack3D({
+  labels,
+  locale,
+}: {
+  labels: (typeof copy)[Locale];
+  locale: Locale;
+}) {
+  const [activeId, setActiveId] = useState('governance');
+  const [tilt, setTilt] = useState({ x: 57, y: 0 });
+  const active =
+    runtimeLayers.find((layer) => layer.id === activeId) ?? runtimeLayers[3];
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.pointerType === 'touch') return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - bounds.left;
+    const y = event.clientY - bounds.top;
+    const normalizedX = x / bounds.width - 0.5;
+    const normalizedY = y / bounds.height - 0.5;
+    setTilt({
+      x: 57 - normalizedY * 6,
+      y: normalizedX * 7,
+    });
+  }
+
   return (
-    <div className="a3s-runtime-visual" aria-label={labels.turn}>
-      <div className="a3s-runtime-grid" aria-hidden="true" />
-      <div className="a3s-runtime-heading">
-        <span className="a3s-runtime-status" />
-        {labels.turn}
-        <span>EVENT 0001</span>
-      </div>
-      <div className="a3s-runtime-surfaces">
-        <span>Terminal</span>
-        <span>Rust</span>
-        <span>Node.js</span>
-        <span>Python</span>
-      </div>
-      <div className="a3s-runtime-connector" />
-      <div className="a3s-runtime-session">
-        <span>AgentSession</span>
-        <small>{labels.context}</small>
-      </div>
-      <div className="a3s-runtime-arrow">
-        <span>{labels.proposal}</span>
-      </div>
-      <div className="a3s-runtime-model">{labels.model}</div>
-      <div className="a3s-runtime-guard">
-        <span>{labels.governed}</span>
-        <code>{labels.guard}</code>
-      </div>
-      <div className="a3s-runtime-arrow a3s-runtime-arrow--result">
-        <span>{labels.result}</span>
-      </div>
-      <div className="a3s-runtime-events">
-        <div>
-          <strong>AgentEvent</strong>
-          <small>EventEnvelopeV1</small>
+    <div className="a3s-runtime-stack" aria-label={labels.architectureAlt}>
+      <header className="a3s-runtime-stack-header">
+        <span>
+          <i aria-hidden="true" />
+          {labels.stackTitle}
+        </span>
+        <small>{labels.stackHint}</small>
+      </header>
+      <div
+        className="a3s-runtime-stack-stage"
+        onPointerLeave={() => setTilt({ x: 57, y: 0 })}
+        onPointerMove={handlePointerMove}
+      >
+        <span className="a3s-runtime-stack-axis a3s-runtime-stack-axis--top">
+          {labels.stackTop}
+        </span>
+        <div
+          className="a3s-runtime-stack-scene"
+          style={{
+            transform: `rotateX(${tilt.x}deg) rotateZ(-28deg) rotateY(${tilt.y}deg) scale(var(--stack-scale, 1))`,
+          }}
+        >
+          {runtimeLayers.map((layer, index) => (
+            <button
+              aria-pressed={active.id === layer.id}
+              className={[
+                'a3s-runtime-stack-layer',
+                `a3s-runtime-stack-layer--${layer.id}`,
+                active.id === layer.id ? 'is-active' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              key={layer.id}
+              onClick={() => setActiveId(layer.id)}
+              onFocus={() => setActiveId(layer.id)}
+              onMouseEnter={() => setActiveId(layer.id)}
+              style={
+                {
+                  '--stack-depth': `${(runtimeLayers.length - index - 1) * 38}px`,
+                } as CSSProperties
+              }
+              type="button"
+            >
+              <small>{layer.code}</small>
+              <strong>{localeValue(layer.title, locale)}</strong>
+              <span>{layer.tags.slice(0, 2).join(' · ')}</span>
+            </button>
+          ))}
         </div>
+        <span className="a3s-runtime-stack-axis a3s-runtime-stack-axis--bottom">
+          {labels.stackBottom}
+        </span>
+      </div>
+      <div className="a3s-runtime-stack-detail" aria-live="polite">
+        <span>{active.code}</span>
+        <h2>{localeValue(active.title, locale)}</h2>
+        <p>{localeValue(active.body, locale)}</p>
         <div>
-          <strong>{labels.record}</strong>
-          <small>{labels.evidence}</small>
+          {active.tags.map((tag) => (
+            <small key={tag}>{tag}</small>
+          ))}
         </div>
       </div>
-      <span className="a3s-runtime-corner a3s-runtime-corner--top" />
-      <span className="a3s-runtime-corner a3s-runtime-corner--bottom" />
     </div>
   );
 }
@@ -620,7 +663,7 @@ function TutorialCode({
           <i aria-hidden="true" />
           {step.filename}
         </span>
-        <span>RUST</span>
+        <span>{step.language.toUpperCase()}</span>
         <button onClick={copyCode} type="button">
           {copied ? labels.copied : labels.copy}
         </button>
@@ -778,7 +821,10 @@ function RuntimeTutorial({
   locale: Locale;
 }) {
   return (
-    <SelectionProvider className="a3s-runtime-tutorial">
+    <SelectionProvider
+      className="a3s-runtime-tutorial"
+      rootMargin="-42% 0px -42% 0px"
+    >
       <RuntimeTutorialSteps labels={labels} locale={locale} />
       <aside className="a3s-tutorial-sticky">
         <RuntimeTutorialStage labels={labels} locale={locale} />
@@ -887,21 +933,8 @@ export function HomeLayout() {
           <InstallSwitcher labels={labels} locale={locale} />
         </div>
         <div className="a3s-hero-visual">
-          <RuntimeDiagram labels={labels} />
+          <RuntimeStack3D labels={labels} locale={locale} />
         </div>
-      </section>
-
-      <section className="a3s-surface-strip" aria-label={labels.surfacesLabel}>
-        <div className="a3s-surface-strip-label">
-          <span>{labels.surfacesLabel}</span>
-        </div>
-        {surfaces.map((surface) => (
-          <a href={surface.href} key={surface.key}>
-            <span>{surface.name}</span>
-            <strong>{surface.packageName}</strong>
-            <ArrowIcon />
-          </a>
-        ))}
       </section>
 
       <section className="a3s-section a3s-why" id="why-a3s-code">
@@ -976,55 +1009,6 @@ export function HomeLayout() {
         </div>
       </section>
 
-      <section className="a3s-section a3s-component-entry" id="components">
-        <div className="a3s-component-entry-copy">
-          <span className="a3s-section-eyebrow">
-            {labels.componentsEyebrow}
-          </span>
-          <h2>{labels.componentsTitle}</h2>
-          <p>{labels.componentsBody}</p>
-          <a href={route('/guide/components/')}>
-            {labels.componentsLink}
-            <ArrowIcon />
-          </a>
-        </div>
-        <div className="a3s-component-entry-list">
-          <a href={route('/guide/components/tui/')}>
-            <span>
-              <small>A3S TUI</small>
-              <strong>ActivityBlock</strong>
-            </span>
-            <div className="a3s-home-tui-sample" aria-hidden="true">
-              <p>
-                <i>✓</i> read <code>src/session.rs</code>
-              </p>
-              <p className="is-running">
-                <i>◌</i> cargo test auth::session
-              </p>
-              <span>■■■■■■□□ 75%</span>
-            </div>
-            <p>{labels.componentsTui}</p>
-            <ArrowIcon />
-          </a>
-          <a href={route('/guide/components/web/')}>
-            <span>
-              <small>A3S WEB</small>
-              <strong>PermissionDecision</strong>
-            </span>
-            <div className="a3s-home-web-sample" aria-hidden="true">
-              <span>Confirmation required</span>
-              <code>cargo test auth::session</code>
-              <div>
-                <i>Deny</i>
-                <i>Allow once</i>
-              </div>
-            </div>
-            <p>{labels.componentsWeb}</p>
-            <ArrowIcon />
-          </a>
-        </div>
-      </section>
-
       <section className="a3s-section a3s-surfaces" id="surfaces">
         <header className="a3s-section-header">
           <div>
@@ -1094,10 +1078,7 @@ export function HomeLayout() {
             {labels.ctaPrimary}
             <ArrowIcon />
           </a>
-          <a
-            className="a3s-button a3s-button--secondary"
-            href={route('/guide/components/')}
-          >
+          <a className="a3s-button a3s-button--secondary" href={route('/api/')}>
             {labels.ctaSecondary}
           </a>
         </div>

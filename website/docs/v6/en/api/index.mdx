@@ -12,7 +12,7 @@ truth for package versions and release status.
 
 | Entry    | Package or command | Documentation                                      | Use it for                                         |
 | -------- | ------------------ | -------------------------------------------------- | -------------------------------------------------- |
-| Terminal | `a3s code`         | [A3S CLI](https://github.com/A3S-Lab/CLI)          | Run a coding agent directly in your terminal       |
+| Terminal | `a3s code`         | [A3S CLI](https://github.com/A3S-Lab/a3s)          | Run a coding agent directly in your terminal       |
 | Rust     | `a3s-code-core`    | [docs.rs](https://docs.rs/a3s-code-core)           | Use the complete runtime API or extension traits   |
 | Node.js  | `@a3s-lab/code`    | [npm](https://www.npmjs.com/package/@a3s-lab/code) | Subscribe to async events in a Node.js application |
 | Python   | `a3s-code`         | [PyPI](https://pypi.org/project/a3s-code/)         | Use synchronous or asynchronous Python APIs        |
@@ -43,6 +43,5 @@ Start with the [API contract](/guide/api-contract), then continue to
 
 When connecting your own infrastructure, you can replace `LlmClient`,
 `ContextProvider`, `MemoryStore`, `SessionStore`, Workspace services, tools,
-permission confirmation, hooks, MCP transports, and graph stores. To see how
-events reach a UI first, open the
-[A3S TUI and A3S Web component docs](/guide/components/).
+permission confirmation, hooks, MCP transports, and graph stores. For UI
+integration, start with [sessions and event streams](/guide/sessions).

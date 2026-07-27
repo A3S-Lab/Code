@@ -1,5 +1,9 @@
 import * as path from 'node:path';
 import { defineConfig } from '@rspress/core';
+import type { Theme } from '@code-hike/lighter';
+import type { RawCode } from 'codehike/code';
+import { remarkCodeHike } from 'codehike/mdx';
+import codeHikeTheme from './codehike-theme.json';
 
 const base = process.env.DOCS_BASE ?? '/Code/';
 const siteOrigin = process.env.DOCS_ORIGIN ?? 'https://a3s-lab.github.io';
@@ -18,9 +22,21 @@ export default defineConfig({
   outDir: 'doc_build',
   llms: true,
   markdown: {
+    remarkPlugins: [
+      [
+        remarkCodeHike,
+        {
+          components: { code: 'A3SCodeBlock' },
+          ignoreCode: (codeblock: RawCode) => !codeblock.lang,
+          syntaxHighlighting: {
+            theme: codeHikeTheme as Theme,
+          },
+        },
+      ],
+    ],
     globalComponents: [
       path.join(__dirname, 'theme/components/AgentBuildingBlocks.tsx'),
-      path.join(__dirname, 'theme/components/A3SComponentDemo.tsx'),
+      path.join(__dirname, 'theme/components/A3SCodeBlock.tsx'),
     ],
   },
   multiVersion: {

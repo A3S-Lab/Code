@@ -12,9 +12,8 @@ when the runtime should proactively start specialist child agents for
 high-confidence work, and disable only automatic parallel fan-out with
 `autoParallel: false` when you want serial automatic delegation.
 
-Web clients can present these states with `TaskRuntimePlanList` and
-`TaskRuntimeSubagentList`. The
-[coordination components](/guide/components/web/coordination) show the matching plan and subagent layout.
+Web clients can present these states as a plan and a separate list of child-agent
+runs, keyed by task ID.
 
 ## Built-in Subagents
 

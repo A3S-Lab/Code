@@ -3,6 +3,8 @@ title: 'Overview'
 description: 'Install A3S Code, understand its main features, and choose an SDK'
 ---
 
+import { Tab, Tabs } from '@rspress/core/theme';
+
 # A3S Code
 
 A3S Code is the Rust runtime behind the `a3s code` terminal application. You can
@@ -10,7 +12,7 @@ also embed it in an IDE, runner, service, or desktop application. It handles the
 agent loop, context, tool calls, permission checks, child tasks, Workspace
 access, and session recovery.
 
-Install the [`a3s` CLI](https://github.com/A3S-Lab/Cli) when you want to work in
+Install the [`a3s` CLI](https://github.com/A3S-Lab/a3s) when you want to work in
 a terminal. Use the Rust crate, Node.js package, or Python package when you are
 building a product. They emit the same events, so every UI does not need its own
 agent loop.
@@ -20,7 +22,7 @@ agent loop.
 | Entry                        | Use it when                                                    | Repository                                                    |
 | ---------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- |
 | Rust / Node.js / Python SDKs | Adding a coding agent to an IDE, runner, service, or custom UI | [A3S-Lab/Code](https://github.com/A3S-Lab/Code)               |
-| `a3s code`                   | Running a coding agent directly in your terminal               | [A3S-Lab/Cli](https://github.com/A3S-Lab/Cli)                 |
+| `a3s code`                   | Running a coding agent directly in your terminal               | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)                 |
 | `a3s-tui`                    | Building a terminal UI; it does not include the agent runtime  | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)                 |
 | A3S Web                      | Studying the desktop task UI and its component implementation  | [apps/web](https://github.com/A3S-Lab/a3s/tree/main/apps/web) |
 | A3S Flow                     | Saving and resuming flows used by `DynamicWorkflowRuntime`     | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow)               |
@@ -30,7 +32,7 @@ agent loop.
 | Area            | What A3S Code provides                                                                                                                                                                               |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent sessions  | Create a Workspace-bound `AgentSession` with `SessionBuilder`; send, run, stream, cancel, save, resume, and close it. Concurrent transcript operations fail immediately instead of racing.           |
-| User interfaces | [`a3s code`](/guide/tui) renders the event stream in a terminal. The [component docs](/guide/components/) isolate the core A3S TUI and A3S Web controls.                                             |
+| User interfaces | [`a3s code`](/guide/tui) renders the event stream in a terminal. Applications can render the same `AgentEvent` stream in their own interface.                                                        |
 | Project files   | [Filesystem-first](/guide/filesystem-first) explains `AGENTS.md`, ACL config, `.a3s/agents/`, `skills/`, `tools/`, and `schedules/`.                                                                 |
 | Tools           | Built-in files, search, shell, Git, web, batch, structured output, QuickJS, Skills, MCP, and child-task tools. Model calls pass through argument, permission, confirmation, and cancellation checks. |
 | Commands        | [Commands](/guide/commands) covers TUI slash commands and custom `/command` handlers registered by an application.                                                                                   |
@@ -58,17 +60,30 @@ Agent / AgentSession
 
 ## Install
 
-Install the CLI when you want the interactive terminal workspace:
+For the interactive terminal workspace, run the installer for your platform:
+
+<Tabs>
+<Tab label="macOS / Linux">
 
 ```bash
-brew install A3S-Lab/tap/a3s
-
-# or from crates.io
-cargo install a3s
-
-# or from the CLI repository
-cargo install --git https://github.com/A3S-Lab/Cli
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.sh | sh
 ```
+
+</Tab>
+<Tab label="Windows">
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
+```
+
+</Tab>
+</Tabs>
+
+The scripts select the release archive for the current system and architecture
+and verify its SHA-256 digest. You can also use
+`brew install a3s-lab/tap/a3s` or `cargo install a3s`.
 
 Install an SDK when embedding A3S Code:
 
@@ -183,7 +198,6 @@ Check access in your application before exposing them to users.
 
 ## Continue reading
 
-- [Component docs](/guide/components/) provide isolated, interactive examples for A3S TUI and A3S Web.
 - [A3S Code TUI](/guide/tui) explains installation, config discovery, slash commands, and effort profiles.
 - [Filesystem-first](/guide/filesystem-first) covers `AGENTS.md`, ACL, AgentDir, Skills, tools, and schedules.
 - [API contract](/guide/api-contract) lists the Node.js API covered by integration tests.

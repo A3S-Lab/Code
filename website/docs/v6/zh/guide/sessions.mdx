@@ -7,13 +7,14 @@ description: '创建、流式输出、恢复和保存工作区绑定的 session'
 
 `Agent` 持有配置和 provider 状态。`Session` 把这个 agent 绑定到一个工作区和一次对话生命周期。
 
-界面通常从这里开始接入：[A3S Web 执行流组件](/guide/components/web/execution) 展示了
-`ExecutionStream` 如何把 Session 事件显示成任务进度。
+界面通常从这里开始接入：订阅 Session 产生的 `AgentEvent`，再把事件映射为进度、
+工具调用、权限确认和结果。
 
-```ts
+```ts title=session.ts
 import { Agent } from '@a3s-lab/code';
 
 const agent = await Agent.create('agent.acl');
+// !focus(1:7)
 const session = agent.session('/repo', {
   model: 'provider/model-id',
   planningMode: 'enabled',
