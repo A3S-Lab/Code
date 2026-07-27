@@ -1,8 +1,4 @@
-import {
-  useState,
-  type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
-} from 'react';
+import { useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useLang, useSite, useVersion, withBase } from '@rspress/core/runtime';
 import {
   InnerLine,
@@ -313,6 +309,8 @@ const runtimeLayers = [
   tags: string[];
 }>;
 
+type RuntimeLayer = (typeof runtimeLayers)[number];
+
 const copy = {
   zh: {
     eyebrow: 'OPEN SOURCE · EMBEDDABLE AGENT RUNTIME',
@@ -365,8 +363,9 @@ const copy = {
     boundaryContract: 'API 与事件',
     boundaryHostLabel: '你的应用',
     boundaryHostRole: '账号、权限与界面',
-    stackTitle: 'A3S CODE / 分层图',
-    stackHint: '移入、点击或使用键盘',
+    stackTitle: 'A3S CODE / 分层检查器',
+    stackHint: '悬停预览 · 点击固定',
+    stackHintMobile: '点击展开',
     stackTop: '产品',
     stackBottom: '记录',
     tutorialStep: '步骤',
@@ -432,8 +431,9 @@ const copy = {
     boundaryContract: 'APIs + EVENTS',
     boundaryHostLabel: 'YOUR APP',
     boundaryHostRole: 'OWNS UI + ACCESS',
-    stackTitle: 'A3S CODE / RUNTIME LAYERS',
-    stackHint: 'HOVER, CLICK, OR USE THE KEYBOARD',
+    stackTitle: 'A3S CODE / LAYER INSPECTOR',
+    stackHint: 'HOVER TO PREVIEW · CLICK TO PIN',
+    stackHintMobile: 'TAP TO EXPAND',
     stackTop: 'PRODUCT',
     stackBottom: 'RECORDS',
     tutorialStep: 'STEP',
@@ -528,93 +528,195 @@ function InstallSwitcher({
   );
 }
 
-function RuntimeStack3D({
+function RuntimeLayerDetail({
+  className,
+  layer,
+  locale,
+}: {
+  className: string;
+  layer: RuntimeLayer;
+  locale: Locale;
+}) {
+  return (
+    <article
+      className={`a3s-runtime-layer-detail ${className}`}
+      data-layer={layer.id}
+    >
+      <span>{layer.code}</span>
+      <h2>{localeValue(layer.title, locale)}</h2>
+      <p>{localeValue(layer.body, locale)}</p>
+      <div>
+        {layer.tags.map((tag) => (
+          <small key={tag}>{tag}</small>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function RuntimeLayerInspector({
   labels,
   locale,
 }: {
   labels: (typeof copy)[Locale];
   locale: Locale;
 }) {
-  const [activeId, setActiveId] = useState('governance');
-  const [tilt, setTilt] = useState({ x: 57, y: 0 });
-  const active =
-    runtimeLayers.find((layer) => layer.id === activeId) ?? runtimeLayers[3];
+  const [selectedIndex, setSelectedIndex] = useState(3);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const activeIndex = previewIndex ?? selectedIndex;
+  const active = runtimeLayers[activeIndex] ?? runtimeLayers[3];
 
-  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.pointerType === 'touch') return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - bounds.left;
-    const y = event.clientY - bounds.top;
-    const normalizedX = x / bounds.width - 0.5;
-    const normalizedY = y / bounds.height - 0.5;
-    setTilt({
-      x: 57 - normalizedY * 6,
-      y: normalizedX * 7,
-    });
+  function selectLayer(index: number) {
+    setPreviewIndex(null);
+    setSelectedIndex(index);
+  }
+
+  function handleLayerKeyDown(
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ) {
+    let nextIndex: number | undefined;
+
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+      nextIndex = (index + 1) % runtimeLayers.length;
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+      nextIndex = (index - 1 + runtimeLayers.length) % runtimeLayers.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = runtimeLayers.length - 1;
+    }
+
+    if (nextIndex === undefined) return;
+
+    event.preventDefault();
+    selectLayer(nextIndex);
+    const inspector = event.currentTarget.closest('.a3s-runtime-inspector');
+    inspector
+      ?.querySelectorAll<HTMLButtonElement>('.a3s-runtime-layer-control')
+      .item(nextIndex)
+      .focus();
   }
 
   return (
-    <div className="a3s-runtime-stack" aria-label={labels.architectureAlt}>
-      <header className="a3s-runtime-stack-header">
+    <div className="a3s-runtime-inspector" aria-label={labels.architectureAlt}>
+      <header className="a3s-runtime-inspector-header">
         <span>
           <i aria-hidden="true" />
           {labels.stackTitle}
         </span>
-        <small>{labels.stackHint}</small>
+        <small>
+          <span className="a3s-runtime-hint-desktop">{labels.stackHint}</span>
+          <span className="a3s-runtime-hint-mobile">
+            {labels.stackHintMobile}
+          </span>
+          <b>
+            {String(activeIndex + 1).padStart(2, '0')} /{' '}
+            {String(runtimeLayers.length).padStart(2, '0')}
+          </b>
+        </small>
       </header>
-      <div
-        className="a3s-runtime-stack-stage"
-        onPointerLeave={() => setTilt({ x: 57, y: 0 })}
-        onPointerMove={handlePointerMove}
-      >
-        <span className="a3s-runtime-stack-axis a3s-runtime-stack-axis--top">
-          {labels.stackTop}
-        </span>
+      <div className="a3s-runtime-inspector-body">
         <div
-          className="a3s-runtime-stack-scene"
-          style={{
-            transform: `rotateX(${tilt.x}deg) rotateZ(-28deg) rotateY(${tilt.y}deg) scale(var(--stack-scale, 1))`,
-          }}
+          className="a3s-runtime-inspector-visual"
+          onMouseLeave={() => setPreviewIndex(null)}
         >
-          {runtimeLayers.map((layer, index) => (
-            <button
-              aria-pressed={active.id === layer.id}
-              className={[
-                'a3s-runtime-stack-layer',
-                `a3s-runtime-stack-layer--${layer.id}`,
-                active.id === layer.id ? 'is-active' : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              key={layer.id}
-              onClick={() => setActiveId(layer.id)}
-              onFocus={() => setActiveId(layer.id)}
-              onMouseEnter={() => setActiveId(layer.id)}
-              style={
-                {
-                  '--stack-depth': `${(runtimeLayers.length - index - 1) * 38}px`,
-                } as CSSProperties
-              }
-              type="button"
-            >
-              <small>{layer.code}</small>
-              <strong>{localeValue(layer.title, locale)}</strong>
-              <span>{layer.tags.slice(0, 2).join(' · ')}</span>
-            </button>
-          ))}
+          <div className="a3s-runtime-model-scale" aria-hidden="true">
+            <span>{labels.stackTop}</span>
+            <i />
+            <span>{labels.stackBottom}</span>
+          </div>
+          <div className="a3s-runtime-layer-model">
+            {runtimeLayers.map((layer, index) => (
+              <button
+                aria-label={`${layer.code}: ${localeValue(layer.title, locale)}`}
+                aria-pressed={selectedIndex === index}
+                className={[
+                  'a3s-runtime-model-slab',
+                  `a3s-runtime-model-slab--${layer.id}`,
+                  activeIndex === index ? 'is-active' : '',
+                  selectedIndex === index ? 'is-selected' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                key={layer.id}
+                onClick={() => selectLayer(index)}
+                onMouseEnter={() => setPreviewIndex(index)}
+                style={{
+                  left: `${index * 3}px`,
+                  top: `${24 + index * 47}px`,
+                }}
+                tabIndex={-1}
+                type="button"
+              >
+                <span>
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              </button>
+            ))}
+          </div>
+          <div
+            className="a3s-runtime-model-caption"
+            data-layer={active.id}
+            aria-live="polite"
+          >
+            <span>
+              <i aria-hidden="true" />
+              {active.code}
+            </span>
+            <strong>{localeValue(active.title, locale)}</strong>
+          </div>
         </div>
-        <span className="a3s-runtime-stack-axis a3s-runtime-stack-axis--bottom">
-          {labels.stackBottom}
-        </span>
-      </div>
-      <div className="a3s-runtime-stack-detail" aria-live="polite">
-        <span>{active.code}</span>
-        <h2>{localeValue(active.title, locale)}</h2>
-        <p>{localeValue(active.body, locale)}</p>
-        <div>
-          {active.tags.map((tag) => (
-            <small key={tag}>{tag}</small>
-          ))}
+        <div
+          className="a3s-runtime-inspector-panel"
+          onMouseLeave={() => setPreviewIndex(null)}
+        >
+          <nav
+            aria-label={labels.architectureAlt}
+            className="a3s-runtime-layer-list"
+          >
+            {runtimeLayers.map((layer, index) => (
+              <div className="a3s-runtime-layer-row" key={layer.id}>
+                <button
+                  aria-pressed={selectedIndex === index}
+                  className={[
+                    'a3s-runtime-layer-control',
+                    `a3s-runtime-layer-control--${layer.id}`,
+                    activeIndex === index ? 'is-active' : '',
+                    selectedIndex === index ? 'is-selected' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                  onClick={() => selectLayer(index)}
+                  onFocus={() => selectLayer(index)}
+                  onKeyDown={(event) => handleLayerKeyDown(event, index)}
+                  onMouseEnter={() => setPreviewIndex(index)}
+                  type="button"
+                >
+                  <span>{String(index + 1).padStart(2, '0')}</span>
+                  <span>
+                    <small>{layer.code.replace(/^L\d+\s*\/\s*/, '')}</small>
+                    <strong>{localeValue(layer.title, locale)}</strong>
+                  </span>
+                  <i aria-hidden="true" />
+                </button>
+                {activeIndex === index ? (
+                  <RuntimeLayerDetail
+                    className="a3s-runtime-layer-detail--mobile"
+                    layer={active}
+                    locale={locale}
+                  />
+                ) : null}
+              </div>
+            ))}
+          </nav>
+          <RuntimeLayerDetail
+            className="a3s-runtime-layer-detail--desktop"
+            layer={active}
+            locale={locale}
+          />
         </div>
       </div>
     </div>
@@ -933,7 +1035,7 @@ export function HomeLayout() {
           <InstallSwitcher labels={labels} locale={locale} />
         </div>
         <div className="a3s-hero-visual">
-          <RuntimeStack3D labels={labels} locale={locale} />
+          <RuntimeLayerInspector labels={labels} locale={locale} />
         </div>
       </section>
 
