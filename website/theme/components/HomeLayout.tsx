@@ -674,6 +674,14 @@ function ArrowIcon() {
   );
 }
 
+function AnimatedButtonBorder() {
+  return (
+    <span aria-hidden="true" className="a3s-button-orbit">
+      <span className="a3s-button-comet" />
+    </span>
+  );
+}
+
 function GitHubIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
@@ -1270,6 +1278,7 @@ export function HomeLayout() {
               className="a3s-button a3s-button--primary"
               href={route('/guide/')}
             >
+              <AnimatedButtonBorder />
               {labels.docs}
               <ArrowIcon />
             </a>
@@ -1426,6 +1435,7 @@ export function HomeLayout() {
         </div>
         <div className="a3s-cta-actions">
           <a className="a3s-button a3s-button--primary" href={route('/guide/')}>
+            <AnimatedButtonBorder />
             {labels.ctaPrimary}
             <ArrowIcon />
           </a>
