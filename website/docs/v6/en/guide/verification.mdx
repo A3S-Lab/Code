@@ -17,6 +17,10 @@ Verification is session-scoped. The Rust core runs each command, records its
 exit status and output, and rolls every report up into a single summary that
 travels alongside the turn result.
 
+Product UIs can place the summary in `DeliverySummary` and file-level results in
+`ChangesInspector`. The [Web Playground result view](/guide/playground/web)
+shows that composition.
+
 ## Running Verification Commands
 
 A verification command is a small, named check: an `id`, a `kind`, a

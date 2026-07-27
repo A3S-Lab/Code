@@ -2,7 +2,12 @@
   {
     "text": "文档",
     "link": "/guide/",
-    "activeMatch": "^/guide/"
+    "activeMatch": "^/guide/(?!examples/|playground/)"
+  },
+  {
+    "text": "Playground",
+    "link": "/guide/playground/",
+    "activeMatch": "^/guide/playground/"
   },
   {
     "text": "示例",

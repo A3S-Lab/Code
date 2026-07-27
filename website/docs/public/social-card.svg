@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
-  <title id="title">A3S Code — governed coding-agent runtime</title>
-  <desc id="desc">A3S Code keeps tools, policy, events, and durable evidence explicit.</desc>
+  <title id="title">A3S Code — Rust runtime for coding agents</title>
+  <desc id="desc">Tool calls, approval, event streaming, and recovery for Rust, Node.js, and Python.</desc>
   <defs>
     <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
       <path d="M48 0H0V48" fill="none" stroke="#20232a" stroke-width="1"/>
@@ -27,12 +27,12 @@
 
   <g transform="translate(86 180)">
     <text fill="url(#headline)" font-family="Inter,Segoe UI,sans-serif" font-size="68" font-weight="700" letter-spacing="-3">
-      <tspan x="0" y="0">Build governed</tspan>
-      <tspan x="0" y="78">coding agents.</tspan>
+      <tspan x="0" y="0">Add a coding agent</tspan>
+      <tspan x="0" y="78">to your product.</tspan>
     </text>
     <text x="2" y="194" fill="#9ca2ad" font-family="Inter,Segoe UI,sans-serif" font-size="23">
-      <tspan x="2" dy="0">Tools, policy, events, and durable evidence</tspan>
-      <tspan x="2" dy="34">stay behind explicit runtime contracts.</tspan>
+      <tspan x="2" dy="0">Tool calls, approval, events, and recovery</tspan>
+      <tspan x="2" dy="34">for Rust, Node.js, and Python.</tspan>
     </text>
   </g>
 
@@ -40,7 +40,7 @@
     <ellipse cx="194" cy="460" rx="180" ry="38" fill="#000" opacity=".48"/>
     <g transform="translate(0 0)">
       <path d="m194 14 176 96-176 96L18 110 194 14Z" fill="url(#blueLayer)" stroke="#8bb6ff" stroke-width="2"/>
-      <text x="194" y="118" text-anchor="middle" fill="#eef4fb" font-family="SFMono-Regular,Consolas,monospace" font-size="17" font-weight="700">PRODUCT SURFACES</text>
+      <text x="194" y="118" text-anchor="middle" fill="#eef4fb" font-family="SFMono-Regular,Consolas,monospace" font-size="17" font-weight="700">TERMINAL + SDKs</text>
     </g>
     <g transform="translate(0 74)">
       <path d="m194 14 176 96-176 96L18 110 194 14Z" fill="#141923" stroke="#446da7" stroke-width="2"/>
@@ -48,17 +48,17 @@
     </g>
     <g transform="translate(0 148)">
       <path d="m194 14 176 96-176 96L18 110 194 14Z" fill="#1b170f" stroke="#f0b44d" stroke-width="2"/>
-      <text x="194" y="118" text-anchor="middle" fill="#f3ca81" font-family="SFMono-Regular,Consolas,monospace" font-size="17" font-weight="700">GOVERNANCE</text>
+      <text x="194" y="118" text-anchor="middle" fill="#f3ca81" font-family="SFMono-Regular,Consolas,monospace" font-size="17" font-weight="700">PERMISSIONS + TOOLS</text>
     </g>
     <g transform="translate(0 222)">
       <path d="m194 14 176 96-176 96L18 110 194 14Z" fill="#101814" stroke="#3ccf91" stroke-width="2"/>
-      <text x="194" y="118" text-anchor="middle" fill="#aee9cf" font-family="SFMono-Regular,Consolas,monospace" font-size="17" font-weight="700">EVENTS + EVIDENCE</text>
+      <text x="194" y="118" text-anchor="middle" fill="#aee9cf" font-family="SFMono-Regular,Consolas,monospace" font-size="17" font-weight="700">EVENTS + RECOVERY</text>
     </g>
   </g>
 
   <g transform="translate(88 552)" font-family="SFMono-Regular,Consolas,monospace" font-size="14" letter-spacing="1">
     <circle cx="7" cy="-5" r="6" fill="#3ccf91"/>
-    <text x="24" fill="#89909c">ASYNC RUST RUNTIME</text>
+    <text x="24" fill="#89909c">RUST AGENT RUNTIME</text>
     <text x="280" fill="#6ca3ff">TERMINAL</text>
     <text x="400" fill="#6ca3ff">RUST</text>
     <text x="480" fill="#6ca3ff">NODE.JS</text>

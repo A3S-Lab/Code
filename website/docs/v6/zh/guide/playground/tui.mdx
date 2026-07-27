@@ -1,0 +1,44 @@
+---
+title: 'A3S TUI Playground'
+description: '在文档中切换 A3S TUI 的主题、执行场景和终端组件'
+---
+
+# A3S TUI Playground
+
+切换上方场景可以查看一次编码任务的执行状态、代码 Diff、Workspace 文件树和常用
+终端组件；右上角四个色块分别对应 Dark、Light、Catppuccin 和 Tokyo Night。
+任务清单和组件菜单也可以点击。
+
+<TuiPlayground />
+
+## 预览里用了哪些组件
+
+| 场景      | 对应的 `a3s-tui` 组件                                                    |
+| --------- | ------------------------------------------------------------------------ |
+| 执行      | `ActivityBlock`、`Checklist`、`TaskQueue`、`ToolStatusLine`、`StatusBar` |
+| 代码改动  | `DiffView`、`SectionHeader`、`GutterBlock`、`OutputBlock`                |
+| Workspace | `SplitPane`、`Tree`、`Breadcrumb`、`PreviewPanel`、`Viewport`            |
+| 组件浏览  | `MenuPanel`、`Tabs`、`DataTable`、`Progress`、`ChoicePrompt`、`Toast`    |
+
+`a3s-tui` 还提供输入、弹窗、日志、指标、时间线和子 Agent 状态等组件。完整导出列表见
+[`src/components/mod.rs`](https://github.com/A3S-Lab/TUI/blob/main/src/components/mod.rs)。
+
+## 它怎样接收 A3S Code 事件
+
+`a3s code` 订阅 `AgentSession::stream()`。文本增量写入对话区，工具事件更新
+Activity 与 ToolLog，Plan 更新 Checklist，权限请求打开 Confirm，验证结果进入
+Output 和 Diff，Session 状态最终写入 StatusBar。
+
+```text
+AgentSession::stream()
+  -> TextDelta        -> transcript
+  -> ToolCall*        -> ActivityBlock / ToolLogView
+  -> Plan*            -> Checklist / TaskQueue
+  -> PermissionAsk    -> Confirm
+  -> Verification*    -> OutputBlock / DiffView
+  -> End              -> SessionStatus / StatusBar
+```
+
+预览采用文档尺寸重新排版，并不替代可运行的终端应用。安装和命令说明见
+[A3S Code TUI](/guide/tui)，组件源码见
+[`A3S-Lab/TUI`](https://github.com/A3S-Lab/TUI)。

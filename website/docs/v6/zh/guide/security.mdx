@@ -9,6 +9,9 @@ A3S Code 在创建 session 时暴露安全控制，并通过 session hook 暴露
 
 委派子运行会继承所选 subagent 或 worker spec 的有边界权限。使用 `confirmationInheritance` 控制子运行的 Ask 决策，并把高风险发布命令放在显式 policy 后面。
 
+`PermissionDecision` 应该向用户说明操作、原因、影响范围和风险，而不只是放两个按钮。
+[Web Playground 的“确认”步骤](/guide/playground/web) 可以直接操作这个组件。
+
 ```ts
 const session = agent.session('/repo', {
   permissionPolicy: {

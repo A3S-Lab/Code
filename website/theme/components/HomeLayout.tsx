@@ -43,48 +43,48 @@ const governanceFeatures: Feature[] = [
   {
     index: '01',
     title: {
-      zh: '治理每一次副作用',
-      en: 'Govern every side effect',
+      zh: '每次工具调用都先过检查',
+      en: 'Check every tool call',
     },
     body: {
-      zh: '参数校验、能力声明、权限、人工确认、Hook、预算、安全提供者与取消，共享同一条工具调用路径。',
-      en: 'Validation, capabilities, permissions, confirmation, hooks, budgets, security providers, and cancellation share one invocation path.',
+      zh: '修改文件、运行命令、操作 Git 和访问外部服务都会走同一套流程：校验参数、检查能力和权限，必要时先询问用户，再执行。',
+      en: 'File changes, shell commands, Git operations, and external requests use one path: validate the arguments, check capabilities and permissions, ask the user when needed, then run.',
     },
     tags: ['policy', 'HITL', 'sandbox'],
   },
   {
     index: '02',
     title: {
-      zh: '让上下文保持有界',
-      en: 'Keep context bounded',
+      zh: '大结果不会塞满上下文',
+      en: 'Keep large results out of the prompt',
     },
     body: {
-      zh: '读取、搜索、命令输出、Git 与网页证据使用范围或游标；大型结果进入带预览、大小与哈希的有界 Artifact。',
-      en: 'Reads, searches, command output, Git, and web evidence use ranges or cursors. Large results become bounded artifacts with previews, sizes, and hashes.',
+      zh: '文件读取、搜索、命令输出、Git 结果和网页内容都支持范围或游标。内容过大时会保存为 Artifact，模型只接收预览、大小和哈希。',
+      en: 'File reads, searches, command output, Git results, and web pages support ranges or cursors. Oversized results become artifacts, while the model gets a preview, size, and hash.',
     },
     tags: ['cursor', 'artifact', 'hash'],
   },
   {
     index: '03',
     title: {
-      zh: '拥有自己的 UI',
-      en: 'Own the UI',
+      zh: '界面由你的产品来做',
+      en: 'Build the UI you want',
     },
     body: {
-      zh: 'Core 发出 AgentEvent；SDK 流与持久化 Run 使用无损 EventEnvelopeV1。宿主可以选择呈现方式，而不必分叉 Agent Loop。',
-      en: 'Core emits AgentEvent while SDK streams and persisted runs use lossless EventEnvelopeV1. Hosts choose presentation without forking the agent loop.',
+      zh: 'Core 在执行过程中持续发出 AgentEvent，SDK 和持久化 Run 使用 EventEnvelopeV1。终端、IDE 或网页都能复用同一个 Agent Loop。',
+      en: 'Core emits AgentEvent throughout a run. SDK streams and persisted runs use EventEnvelopeV1, so a terminal, IDE, or web UI can render the same loop.',
     },
     tags: ['AgentEvent', 'EventEnvelopeV1'],
   },
   {
     index: '04',
     title: {
-      zh: '从证据恢复',
-      en: 'Resume from evidence',
+      zh: '任务中断后可以接着跑',
+      en: 'Resume without guessing',
     },
     body: {
-      zh: 'SessionSnapshotV1 可以把会话、Run、Artifact、Trace、验证报告与子任务记录原子提交为一个 Generation。',
-      en: 'SessionSnapshotV1 can atomically commit sessions, runs, artifacts, traces, verification reports, and child-task records as one generation.',
+      zh: 'SessionSnapshotV1 会一起保存会话、Run、Artifact、Trace、验证结果和子任务记录，恢复时不用让模型猜之前做过什么。',
+      en: 'SessionSnapshotV1 saves the session, runs, artifacts, traces, verification results, and child-task records together, so interrupted work can continue from saved state.',
     },
     tags: ['snapshot', 'replay', 'verification'],
   },
@@ -93,53 +93,53 @@ const governanceFeatures: Feature[] = [
 const capabilityCards = [
   {
     className: 'a3s-bento-card--wide a3s-bento-card--policy',
-    eyebrow: { zh: '调用内核', en: 'INVOCATION KERNEL' },
+    eyebrow: { zh: '工具调用', en: 'TOOL CALLS' },
     title: {
-      zh: '工具可用，不等于工具越权',
-      en: 'Available never means ungoverned',
+      zh: '哪些工具能用，由代码和配置决定',
+      en: 'Code and config decide which tools are available',
     },
     body: {
-      zh: '文件、搜索、Shell、Git、Web、Batch、QuickJS、结构化生成与委派，都在 Workspace 能力和宿主策略允许时才暴露。',
-      en: 'Files, search, shell, Git, web, batch, QuickJS, structured generation, and delegation are exposed only when workspace capability and host policy allow.',
+      zh: '文件、搜索、Shell、Git、Web、Batch、QuickJS、结构化输出和子任务，只有在 Workspace 支持且权限允许时才会开放给模型。',
+      en: 'Files, search, shell, Git, web, batch, QuickJS, structured output, and child tasks are exposed only when the workspace supports them and policy allows them.',
     },
     tags: ['files', 'shell', 'git', 'web', 'program', 'task'],
   },
   {
     className: 'a3s-bento-card--models',
-    eyebrow: { zh: '模型适配', en: 'MODEL ADAPTERS' },
+    eyebrow: { zh: '模型', en: 'MODELS' },
     title: {
-      zh: '统一生命周期，不锁定提供商',
-      en: 'One lifecycle, no provider lock-in',
+      zh: '换模型，不用重写 Agent Loop',
+      en: 'Switch models without rewriting the loop',
     },
     body: {
-      zh: 'Anthropic、智谱、OpenAI-compatible API，或宿主注入的 LlmClient。',
-      en: 'Anthropic, Zhipu, OpenAI-compatible APIs, or a host-injected LlmClient.',
+      zh: '支持 Anthropic、智谱、OpenAI-compatible API，也可以注入自己的 LlmClient。',
+      en: 'Use Anthropic, Zhipu, OpenAI-compatible APIs, or inject your own LlmClient.',
     },
     tags: ['streaming', 'tools', 'structured output'],
   },
   {
     className: 'a3s-bento-card--state',
-    eyebrow: { zh: '持久状态', en: 'DURABLE STATE' },
+    eyebrow: { zh: '任务记录', en: 'RUN DATA' },
     title: {
-      zh: 'Run、Trace、Artifact 与 Snapshot',
-      en: 'Runs, traces, artifacts, and snapshots',
+      zh: '保存运行记录，也能恢复现场',
+      en: 'Save the run and pick up where it stopped',
     },
     body: {
-      zh: '原子快照、事件回放、验证证据、Checkpoint，以及可选的 State Graph / Flow 投影。',
-      en: 'Atomic snapshots, event replay, verification evidence, checkpoints, and optional State Graph / Flow projection.',
+      zh: '一次任务可以保存 Snapshot、事件、Trace、Artifact、验证结果和 Checkpoint；需要时再接 State Graph 或 Flow。',
+      en: 'Save snapshots, events, traces, artifacts, verification results, and checkpoints. Add State Graph or Flow only when you need them.',
     },
     tags: ['atomic', 'replayable', 'auditable'],
   },
   {
     className: 'a3s-bento-card--extend',
-    eyebrow: { zh: '扩展边界', en: 'EXTENSION BOUNDARIES' },
+    eyebrow: { zh: '扩展', en: 'EXTENSIONS' },
     title: {
-      zh: '用显式契约扩展运行时',
-      en: 'Extend through explicit contracts',
+      zh: '接入自己的工具和存储',
+      en: 'Bring your own tools and storage',
     },
     body: {
-      zh: 'MCP、Skills、ContextProvider、MemoryStore、SessionStore、自定义工具与 Workspace 服务保持可替换。',
-      en: 'MCP, Skills, ContextProvider, MemoryStore, SessionStore, custom tools, and workspace services stay replaceable.',
+      zh: 'MCP、Skills、ContextProvider、MemoryStore、SessionStore、Workspace 服务和自定义工具都可以替换或扩展。',
+      en: 'Replace or extend MCP, Skills, ContextProvider, MemoryStore, SessionStore, workspace services, and custom tools.',
     },
     tags: ['MCP', 'Skills', 'traits'],
   },
@@ -147,12 +147,12 @@ const capabilityCards = [
     className: 'a3s-bento-card--wide a3s-bento-card--workspace',
     eyebrow: { zh: '工作区', en: 'WORKSPACE' },
     title: {
-      zh: '代码智能与工具遵守同一个 Workspace',
-      en: 'Code intelligence and tools share one workspace boundary',
+      zh: '模型只会看到当前 Workspace 能做的事',
+      en: 'The model sees only what the workspace can do',
     },
     body: {
-      zh: '符号、定义、引用、实现、诊断与修订信息由宿主选择的 Workspace 提供；不具备本地能力的后端不会向模型声明本地 Bash 或 Git。',
-      en: 'Symbols, definitions, references, implementations, diagnostics, and revisions come from the host-selected workspace. A backend without local capability never advertises local Bash or Git.',
+      zh: '代码导航与文件工具都来自你选择的 Workspace。远程或对象存储后端不能运行本地命令时，Bash 和 Git 就不会暴露给模型。',
+      en: 'Code navigation and file tools come from the workspace you select. If a remote or object-backed workspace cannot run local commands, Bash and Git are not shown to the model.',
     },
     tags: ['symbols', 'diagnostics', 'local / S3 / remote'],
   },
@@ -165,8 +165,8 @@ const surfaces = [
     packageName: 'a3s code',
     href: 'https://github.com/A3S-Lab/CLI',
     description: {
-      zh: '现成的交互式编码产品，渲染推理、工具、审批、任务进度与 Diff。',
-      en: 'The ready interactive coding product for reasoning, tools, approvals, task progress, and diffs.',
+      zh: '开箱即用的终端界面，可以查看推理、工具调用、确认提示、任务进度和 Diff。',
+      en: 'A ready-to-run terminal UI for reasoning, tool calls, approval prompts, task progress, and diffs.',
     },
     command: 'brew install A3S-Lab/tap/a3s',
   },
@@ -176,8 +176,8 @@ const surfaces = [
     packageName: 'a3s-code-core',
     href: 'https://crates.io/crates/a3s-code-core',
     description: {
-      zh: '完整的异步运行时 API 与公共扩展 Trait。',
-      en: 'The complete async runtime API and public extension traits.',
+      zh: '完整的异步 Runtime API，以及用于接入自定义能力的公共 Trait。',
+      en: 'The complete async runtime API, plus public traits for custom integrations.',
     },
     command: 'cargo add a3s-code-core',
   },
@@ -187,8 +187,8 @@ const surfaces = [
     packageName: '@a3s-lab/code',
     href: 'https://www.npmjs.com/package/@a3s-lab/code',
     description: {
-      zh: '基于 N-API 的原生绑定，覆盖生命周期、事件流、工具、Store、编排与 MCP。',
-      en: 'Native N-API bindings for lifecycle, streams, tools, stores, orchestration, and MCP.',
+      zh: '通过 N-API 提供原生绑定，覆盖会话、事件流、工具、存储、编排和 MCP。',
+      en: 'Native N-API bindings for sessions, event streams, tools, storage, orchestration, and MCP.',
     },
     command: 'npm install @a3s-lab/code',
   },
@@ -198,8 +198,8 @@ const surfaces = [
     packageName: 'a3s-code',
     href: 'https://pypi.org/project/a3s-code/',
     description: {
-      zh: '基于 PyO3 的原生包，提供同步与异步应用 API。',
-      en: 'A native PyO3 package with synchronous and asynchronous application APIs.',
+      zh: '通过 PyO3 提供原生包，同时支持同步和异步 API。',
+      en: 'A native PyO3 package with both synchronous and asynchronous APIs.',
     },
     command: 'python -m pip install a3s-code',
   },
@@ -209,10 +209,10 @@ const runtimeLayers = [
   {
     id: 'surfaces',
     code: 'L01 / SURFACES',
-    title: { zh: '产品入口', en: 'Product surfaces' },
+    title: { zh: '接入方式', en: 'Ways to use it' },
     body: {
-      zh: 'Terminal、Rust、Node.js 与 Python 进入同一套执行语义；呈现方式可以不同，Runtime Contract 保持一致。',
-      en: 'Terminal, Rust, Node.js, and Python enter the same execution semantics. Presentation varies while the runtime contract stays consistent.',
+      zh: '同一套 Runtime 可以直接跑在终端里，也可以通过 Rust、Node.js 或 Python 接进你的应用。接口不同，执行流程一致。',
+      en: 'Run the same runtime in a terminal or embed it through Rust, Node.js, or Python. The APIs differ; the execution flow stays the same.',
     },
     tags: ['a3s code', 'Rust', 'Node.js', 'Python'],
   },
@@ -221,8 +221,8 @@ const runtimeLayers = [
     code: 'L02 / AGENT API',
     title: { zh: 'Agent 与 Session', en: 'Agent and session' },
     body: {
-      zh: 'Agent 持有解析后的配置与共享能力；AgentSession 把它们绑定到一个 Workspace 和一段对话生命周期。',
-      en: 'Agent owns resolved configuration and shared capabilities. AgentSession binds them to one workspace and conversation lifecycle.',
+      zh: 'Agent 读取配置并准备共享能力；AgentSession 把这些能力连接到一个项目目录和一段对话。',
+      en: 'Agent loads configuration and shared capabilities. AgentSession connects them to one project workspace and one conversation.',
     },
     tags: ['Agent', 'AgentSession', 'lifecycle'],
   },
@@ -231,38 +231,38 @@ const runtimeLayers = [
     code: 'L03 / INTELLIGENCE',
     title: { zh: '上下文、记忆与模型', en: 'Context, memory, and models' },
     body: {
-      zh: 'ContextAssembler 排序并预算输入；Memory 保留可复用事实；模型适配器统一流、工具调用、结构化输出与取消。',
-      en: 'ContextAssembler ranks and budgets inputs, memory retains reusable facts, and model adapters normalize streaming, tool calls, structured output, and cancellation.',
+      zh: 'ContextAssembler 挑选输入并控制大小，Memory 保存可复用信息，模型适配器负责流式输出、工具调用、结构化结果和取消。',
+      en: 'ContextAssembler selects and sizes inputs, memory keeps reusable information, and model adapters handle streaming, tool calls, structured output, and cancellation.',
     },
     tags: ['ContextAssembler', 'Memory', 'LlmClient'],
   },
   {
     id: 'governance',
     code: 'L04 / GOVERNANCE',
-    title: { zh: '治理内核', en: 'Governance kernel' },
+    title: { zh: '权限与执行检查', en: 'Permission and execution checks' },
     body: {
-      zh: '每个副作用依次经过参数校验、能力检查、权限、人工确认、预算、安全提供者、沙箱与取消边界。',
-      en: 'Every side effect crosses argument validation, capability checks, permissions, human confirmation, budgets, security providers, sandboxing, and cancellation.',
+      zh: '工具真正执行前，Runtime 会校验参数并检查能力和权限；再按配置进行用户确认、预算限制、沙箱隔离或取消。',
+      en: 'Before a tool runs, the runtime validates its arguments and checks capabilities and permissions, then applies approval, budget, sandbox, and cancellation rules.',
     },
     tags: ['validate', 'permission', 'confirm', 'budget'],
   },
   {
     id: 'tools',
     code: 'L05 / WORKSPACE',
-    title: { zh: 'Workspace 与工具', en: 'Workspace and tools' },
+    title: { zh: '项目文件与工具', en: 'Project files and tools' },
     body: {
-      zh: '文件、搜索、Shell、Git、Web、代码智能、MCP、Skills 与委派只在 Workspace 能力和策略共同允许时注册。',
-      en: 'Files, search, shell, Git, web, code intelligence, MCP, Skills, and delegation register only when workspace capability and policy both allow.',
+      zh: '文件、搜索、Shell、Git、网页、代码导航、MCP、Skills 和子任务，会按当前 Workspace 的能力和权限开放。',
+      en: 'Files, search, shell, Git, web, code navigation, MCP, Skills, and child tasks are enabled according to the current workspace and its permissions.',
     },
     tags: ['files', 'git', 'web', 'MCP', 'Skills'],
   },
   {
     id: 'evidence',
     code: 'L06 / DURABILITY',
-    title: { zh: '事件与持久证据', en: 'Events and durable evidence' },
+    title: { zh: '事件、记录与恢复', en: 'Events, records, and recovery' },
     body: {
-      zh: 'AgentEvent 与 EventEnvelopeV1 向产品公开生命周期；Run、Trace、Artifact、验证报告和 SessionSnapshotV1 支持审计与恢复。',
-      en: 'AgentEvent and EventEnvelopeV1 expose lifecycle to products. Runs, traces, artifacts, verification reports, and SessionSnapshotV1 support audit and recovery.',
+      zh: 'AgentEvent 把执行过程交给界面；Run、Trace、Artifact、验证报告和 SessionSnapshotV1 用来排查问题、审计和恢复任务。',
+      en: 'AgentEvent feeds the execution stream to your UI. Runs, traces, artifacts, verification reports, and SessionSnapshotV1 support debugging, audit, and recovery.',
     },
     tags: ['EventEnvelopeV1', 'Run', 'Artifact', 'Snapshot'],
   },
@@ -276,110 +276,130 @@ const runtimeLayers = [
 
 const copy = {
   zh: {
-    eyebrow: 'OPEN SOURCE · ASYNC RUST RUNTIME',
-    titleLead: '构建可治理的',
-    titleAccent: '编码 Agent',
+    eyebrow: 'OPEN SOURCE · RUST AGENT RUNTIME',
+    titleLead: '把编码 Agent',
+    titleAccent: '接进你的产品',
     subtitle:
-      'A3S Code 把 Agent Loop、Workspace 工具、模型适配、策略决策、版本化事件与持久化证据放在显式契约之后。',
-    docs: '开始使用',
+      'A3S Code 是一个用 Rust 写的 Agent 运行时。它负责 Agent Loop、工具调用、权限确认、事件流和任务恢复，并提供 Rust、Node.js、Python API。',
+    docs: '查看文档',
     github: '查看 GitHub',
     copy: '复制',
     copied: '已复制',
-    turn: '一次受治理的 Turn',
-    proposal: '模型提出工具调用',
-    governed: '统一治理边界',
-    result: '结果成为事件与证据',
-    context: '上下文 + 记忆',
-    model: '模型适配器',
-    guard: '校验 → 权限 → 确认 → 预算 → 沙箱',
+    turn: '一次 Agent 执行会经过什么',
+    proposal: '模型请求调用工具',
+    governed: '执行前检查',
+    result: '执行结果写入事件记录',
+    context: '项目上下文 + 记忆',
+    model: '模型',
+    guard: '参数 → 权限 → 确认 → 预算 → 沙箱',
     evidence: 'Run · Trace · Artifact · Snapshot',
-    surfacesLabel: '一个运行时，四种产品表面',
+    record: '执行记录',
+    surfacesLabel: '四种接入方式，同一套 Runtime',
     whyEyebrow: 'WHY A3S CODE',
-    whyTitle: '可组合，也可问责。',
+    whyTitle: 'Agent 真正动手之前，先把规则定清楚。',
     whyBody:
-      '运行时把执行语义放在一个可观察、可替换、可持久化的边界里；UI、身份、凭据与部署策略仍由宿主拥有。',
-    architectureEyebrow: 'VISIBLE BY DESIGN',
-    architectureTitle: '责任链不是黑盒。',
+      '模型可以读写文件、运行命令和操作 Git，但每次调用仍会先检查参数和权限。你的应用决定给它哪些工具，也能拿到完整的执行记录。',
+    architectureEyebrow: 'HOW IT RUNS',
+    architectureTitle: '一层一层看清 Agent 在做什么。',
     architectureBody:
-      'AgentSession 绑定 Workspace 与会话；模型只提出调用。每个副作用经过同一条治理路径，再以版本化事件和耐久证据向宿主公开。',
+      '从产品入口到 AgentSession、模型、权限检查、Workspace 工具和运行记录，每一层只负责一件事。把鼠标移到分层图上，可以查看它们各自的作用。',
     architectureAlt:
-      'A3S Code 的受治理 Agent 运行时架构：模型、策略、工具、事件与持久化快照之间的显式流转。',
-    capabilitiesEyebrow: 'RUNTIME CAPABILITIES',
-    capabilitiesTitle: '能力丰富，授权明确。',
+      'A3S Code 运行时分层图，展示接入方式、AgentSession、上下文、权限检查、工具与运行记录。',
+    capabilitiesEyebrow: 'WHAT YOU GET',
+    capabilitiesTitle: '需要什么，就打开什么。',
     capabilitiesBody:
-      'Core 默认保持可嵌入。云存储、服务端和遥测是可选能力；自动压缩、目标、委派、沙箱、持久化与图投影都需要宿主显式配置。',
-    surfacesEyebrow: 'CHOOSE YOUR SURFACE',
-    surfacesTitle: '同一套执行语义，进入你的技术栈。',
+      'Core 默认只提供可嵌入的基础运行时。云存储、服务端、遥测、自动压缩、子任务、沙箱和持久化，都由你的应用按需启用。',
+    surfacesEyebrow: 'USE IT YOUR WAY',
+    surfacesTitle: '想直接用，或接进自己的应用，都可以。',
     surfacesBody:
-      '直接运行终端产品，或通过 Rust、Node.js、Python 把同一个 Runtime 嵌入自己的 IDE、Runner、服务与产品界面。',
-    boundariesEyebrow: 'EXPLICIT BOUNDARIES',
-    boundariesTitle: 'Core 管执行，宿主管信任。',
+      '终端版可以立即运行；Rust crate、Node.js 和 Python 包提供同一套 Runtime，适合 IDE、Runner、服务端和自己的界面。',
+    boundariesEyebrow: 'WHAT STAYS YOURS',
+    boundariesTitle: '执行交给 Runtime，账号和权限留在你的应用里。',
     boundaryItems: [
-      'Core 是可嵌入运行时，不是托管 Agent 服务，也不是终端组件库。',
-      '独立的 A3S CLI 负责交互式 TUI、账户适配与呈现策略。',
-      '身份、凭据、部署和直接宿主工具的信任决策始终属于宿主。',
+      'A3S Code Core 提供 Agent Runtime，不提供托管服务，也不规定界面应该长什么样。',
+      'a3s code 的终端界面由独立的 A3S CLI 提供。',
+      '账号、凭据、部署方式，以及哪些应用工具可以直接调用，仍由你的应用决定。',
     ],
-    boundaryLink: '阅读架构与边界',
-    ctaTitle: '从一个可观察的 Turn 开始。',
+    boundaryLink: '查看架构说明',
+    boundaryCoreLabel: 'A3S CODE',
+    boundaryCoreRole: '执行 Agent 与工具',
+    boundaryContract: 'API 与事件',
+    boundaryHostLabel: '你的应用',
+    boundaryHostRole: '账号、权限与界面',
+    stackTitle: 'A3S CODE / 分层图',
+    stackHint: '移入查看这一层',
+    stackTop: '产品',
+    stackBottom: '记录',
+    ctaEyebrow: 'TRY IT',
+    ctaTitle: '先在一个项目里跑起来。',
     ctaBody:
-      '运行 a3s code，或把 a3s-code-core 嵌入你的产品。工具、策略、事件和证据从第一天起就是显式的。',
-    ctaPrimary: '阅读快速开始',
-    ctaSecondary: '查看 API 契约',
-    footer:
-      'MIT licensed. Built in Rust. Designed for governed agent products.',
+      '安装 a3s code 直接体验，或者选择 Rust、Node.js、Python 包接入自己的产品。',
+    ctaPrimary: '查看快速开始',
+    ctaSecondary: '打开 Playground',
+    footer: 'MIT 开源 · Rust 编写 · 支持 Terminal / Rust / Node.js / Python',
   },
   en: {
-    eyebrow: 'OPEN SOURCE · ASYNC RUST RUNTIME',
-    titleLead: 'Build governed',
-    titleAccent: 'coding agents',
+    eyebrow: 'OPEN SOURCE · RUST AGENT RUNTIME',
+    titleLead: 'Add a coding agent',
+    titleAccent: 'to your product',
     subtitle:
-      'A3S Code keeps the agent loop, workspace tools, model adapters, policy decisions, versioned events, and durable evidence behind explicit contracts.',
-    docs: 'Get started',
+      'A3S Code is a Rust agent runtime. It handles the agent loop, tool calls, approval, event streaming, and recovery, with APIs for Rust, Node.js, and Python.',
+    docs: 'Read the docs',
     github: 'View on GitHub',
     copy: 'Copy',
     copied: 'Copied',
-    turn: 'One governed turn',
-    proposal: 'The model proposes a tool call',
-    governed: 'One governance boundary',
-    result: 'Results become events and evidence',
-    context: 'context + memory',
-    model: 'model adapter',
-    guard: 'validation → permission → confirmation → budget → sandbox',
+    turn: 'What happens during one agent turn',
+    proposal: 'The model requests a tool',
+    governed: 'Checks before execution',
+    result: 'The result enters the event stream',
+    context: 'project context + memory',
+    model: 'model',
+    guard: 'arguments → permission → approval → budget → sandbox',
     evidence: 'Run · Trace · Artifact · Snapshot',
-    surfacesLabel: 'One runtime, four product surfaces',
+    record: 'run record',
+    surfacesLabel: 'Four ways in, one runtime',
     whyEyebrow: 'WHY A3S CODE',
-    whyTitle: 'Composable and accountable.',
+    whyTitle: 'Set the rules before the agent changes anything.',
     whyBody:
-      'The runtime puts execution semantics behind one observable, replaceable, durable boundary. The host still owns UI, identity, credentials, and deployment policy.',
-    architectureEyebrow: 'VISIBLE BY DESIGN',
-    architectureTitle: 'The chain of responsibility is not a black box.',
+      'The model can edit files, run commands, and operate Git, but every call is checked first. Your application decides which tools it gets and receives the full execution stream.',
+    architectureEyebrow: 'HOW IT RUNS',
+    architectureTitle: 'See what each part of the runtime does.',
     architectureBody:
-      'AgentSession binds a workspace and conversation; the model only proposes calls. Every side effect crosses the same governance path, then returns as versioned events and durable evidence.',
+      'The stack runs from product entry points through AgentSession, models, permission checks, workspace tools, and run records. Hover a layer to inspect its job.',
     architectureAlt:
-      'A3S Code governed agent runtime architecture showing the explicit flow between model, policy, tools, events, and durable snapshots.',
-    capabilitiesEyebrow: 'RUNTIME CAPABILITIES',
-    capabilitiesTitle: 'Rich capability. Explicit authority.',
+      'A3S Code runtime layers showing entry points, AgentSession, context, permission checks, tools, and run records.',
+    capabilitiesEyebrow: 'WHAT YOU GET',
+    capabilitiesTitle: 'Turn on only what your product needs.',
     capabilitiesBody:
-      'Core stays embeddable by default. Cloud storage, serving, and telemetry are opt-in; compaction, goals, delegation, sandboxing, persistence, and graph projection require host configuration.',
-    surfacesEyebrow: 'CHOOSE YOUR SURFACE',
-    surfacesTitle: 'One execution model, in your stack.',
+      'Core starts as an embeddable runtime. Cloud storage, serving, telemetry, compaction, child tasks, sandboxing, and persistence are enabled by your application when needed.',
+    surfacesEyebrow: 'USE IT YOUR WAY',
+    surfacesTitle: 'Run it in a terminal or embed it in your app.',
     surfacesBody:
-      'Run the terminal product or embed the same runtime in an IDE, runner, service, or product UI through Rust, Node.js, and Python.',
-    boundariesEyebrow: 'EXPLICIT BOUNDARIES',
-    boundariesTitle: 'Core owns execution. The host owns trust.',
+      'The terminal app is ready to use. The Rust crate, Node.js package, and Python package bring the same runtime to an IDE, runner, server, or custom UI.',
+    boundariesEyebrow: 'WHAT STAYS YOURS',
+    boundariesTitle: 'The runtime executes. Your app controls access.',
     boundaryItems: [
-      'Core is an embeddable runtime, not a hosted agent service or terminal widget library.',
-      'The separate A3S CLI owns the interactive TUI, account adapters, and presentation policy.',
-      'Identity, credentials, deployment, and trust decisions for direct host tools remain host-owned.',
+      'A3S Code Core provides the agent runtime. It is not a hosted service and does not dictate your UI.',
+      'The a3s code terminal interface comes from the separate A3S CLI.',
+      'Accounts, credentials, deployment, and direct access to application tools remain under your control.',
     ],
-    boundaryLink: 'Read architecture and boundaries',
-    ctaTitle: 'Start with one observable turn.',
+    boundaryLink: 'Read the architecture guide',
+    boundaryCoreLabel: 'A3S CODE',
+    boundaryCoreRole: 'RUNS AGENTS + TOOLS',
+    boundaryContract: 'APIs + EVENTS',
+    boundaryHostLabel: 'YOUR APP',
+    boundaryHostRole: 'OWNS UI + ACCESS',
+    stackTitle: 'A3S CODE / RUNTIME LAYERS',
+    stackHint: 'HOVER A LAYER',
+    stackTop: 'PRODUCT',
+    stackBottom: 'RECORDS',
+    ctaEyebrow: 'TRY IT',
+    ctaTitle: 'Try it in a real repository.',
     ctaBody:
-      'Run a3s code or embed a3s-code-core. Tools, policy, events, and evidence are explicit from day one.',
-    ctaPrimary: 'Read the quick start',
-    ctaSecondary: 'Explore the API contract',
-    footer:
-      'MIT licensed. Built in Rust. Designed for governed agent products.',
+      'Install a3s code to start immediately, or choose the Rust, Node.js, or Python package for your own product.',
+    ctaPrimary: 'Open the quick start',
+    ctaSecondary: 'Open the playground',
+    footer: 'MIT licensed · Built in Rust · Terminal / Rust / Node.js / Python',
   },
 };
 
@@ -498,7 +518,7 @@ function RuntimeDiagram({ labels }: { labels: (typeof copy)[Locale] }) {
           <small>EventEnvelopeV1</small>
         </div>
         <div>
-          <strong>evidence</strong>
+          <strong>{labels.record}</strong>
           <small>{labels.evidence}</small>
         </div>
       </div>
@@ -512,7 +532,13 @@ type RuntimeLayerStyle = CSSProperties & {
   '--layer-index': number;
 };
 
-function LayeredRuntime({ locale }: { locale: Locale }) {
+function LayeredRuntime({
+  locale,
+  labels,
+}: {
+  locale: Locale;
+  labels: (typeof copy)[Locale];
+}) {
   const [activeId, setActiveId] = useState('governance');
   const activeLayer =
     runtimeLayers.find((layer) => layer.id === activeId) ?? runtimeLayers[3];
@@ -523,16 +549,16 @@ function LayeredRuntime({ locale }: { locale: Locale }) {
       onMouseLeave={() => setActiveId('governance')}
     >
       <div className="a3s-stack-toolbar">
-        <span>RUNTIME STACK / EXPLODED VIEW</span>
+        <span>{labels.stackTitle}</span>
         <span>
-          <i /> {locale === 'zh' ? '移入查看职责' : 'HOVER TO INSPECT'}
+          <i /> {labels.stackHint}
         </span>
       </div>
       <div className="a3s-stack-stage">
         <div className="a3s-stack-axis" aria-hidden="true">
-          <span>PRODUCT</span>
+          <span>{labels.stackTop}</span>
           <i />
-          <span>EVIDENCE</span>
+          <span>{labels.stackBottom}</span>
         </div>
         {runtimeLayers.map((layer, index) => (
           <button
@@ -746,7 +772,7 @@ export function HomeLayout() {
           </a>
         </div>
         <div className="a3s-architecture-frame">
-          <LayeredRuntime locale={locale} />
+          <LayeredRuntime labels={labels} locale={locale} />
         </div>
       </section>
 
@@ -809,15 +835,15 @@ export function HomeLayout() {
       <section className="a3s-section a3s-boundaries" id="boundaries">
         <div className="a3s-boundaries-art" aria-hidden="true">
           <div className="a3s-boundary-core">
-            <span>CORE</span>
-            <strong>EXECUTION</strong>
+            <span>{labels.boundaryCoreLabel}</span>
+            <strong>{labels.boundaryCoreRole}</strong>
           </div>
           <div className="a3s-boundary-line">
-            <span>explicit contract</span>
+            <span>{labels.boundaryContract}</span>
           </div>
           <div className="a3s-boundary-host">
-            <span>HOST</span>
-            <strong>TRUST</strong>
+            <span>{labels.boundaryHostLabel}</span>
+            <strong>{labels.boundaryHostRole}</strong>
           </div>
         </div>
         <div className="a3s-boundaries-copy">
@@ -839,7 +865,7 @@ export function HomeLayout() {
 
       <section className="a3s-cta">
         <div>
-          <span className="a3s-section-eyebrow">START BUILDING</span>
+          <span className="a3s-section-eyebrow">{labels.ctaEyebrow}</span>
           <h2>{labels.ctaTitle}</h2>
           <p>{labels.ctaBody}</p>
         </div>
@@ -850,7 +876,7 @@ export function HomeLayout() {
           </a>
           <a
             className="a3s-button a3s-button--secondary"
-            href={route('/guide/api-contract.html')}
+            href={route('/guide/playground/')}
           >
             {labels.ctaSecondary}
           </a>
