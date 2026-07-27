@@ -244,34 +244,15 @@ body {
   transform: translateY(-1px);
 }
 
-@property --a3s-cta-angle {
-  syntax: '<angle>';
-  inherits: true;
-  initial-value: 68deg;
-}
-
 .a3s-button--primary {
-  --a3s-cta-angle: 68deg;
-
   position: relative;
-  border: 2px solid transparent;
+  overflow: visible;
+  border: 2px solid #6335ff;
   border-radius: 10px;
-  background:
-    linear-gradient(180deg, #171a21, #101217) padding-box,
-    conic-gradient(
-        from var(--a3s-cta-angle),
-        #582cff 0deg 220deg,
-        #7b3fff 240deg,
-        #38d3ff 262deg,
-        #fbffff 292deg,
-        #72dcff 316deg,
-        #864aff 342deg,
-        #582cff 360deg
-      )
-      border-box;
+  background: linear-gradient(180deg, #171a21, #101217);
   color: #f7f8fb !important;
   box-shadow:
-    0 0 0 1px rgba(117, 74, 255, 0.3),
+    0 0 0 1px rgba(117, 74, 255, 0.26),
     0 10px 28px rgba(0, 0, 0, 0.28);
   isolation: isolate;
 }
@@ -280,18 +261,10 @@ body {
   position: absolute;
   z-index: -1;
   border-radius: 13px;
-  background: conic-gradient(
-    from var(--a3s-cta-angle),
-    transparent 0deg 238deg,
-    rgba(104, 219, 255, 0.22) 264deg,
-    rgba(255, 255, 255, 0.76) 292deg,
-    rgba(113, 65, 255, 0.22) 340deg,
-    transparent 360deg
-  );
+  border: 2px solid rgba(101, 55, 255, 0.42);
   content: '';
-  filter: blur(7px);
+  filter: blur(6px);
   inset: -4px;
-  opacity: 0.48;
   pointer-events: none;
 }
 
@@ -307,16 +280,59 @@ body {
 }
 
 .a3s-button--primary:hover {
-  border-color: transparent;
+  border-color: #6335ff;
   box-shadow:
     0 0 0 1px rgba(111, 76, 255, 0.38),
     0 0 22px rgba(99, 100, 255, 0.2),
     0 12px 32px rgba(0, 0, 0, 0.34);
 }
 
-.a3s-button--primary:hover,
-.a3s-button--primary:focus-visible {
-  animation: a3s-button-border-flow 1s linear infinite;
+.a3s-button-orbit {
+  position: absolute;
+  z-index: 2;
+  overflow: visible;
+  inset: -2px;
+  pointer-events: none;
+}
+
+.a3s-button-comet {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 30px;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(112, 56, 255, 0.72) 18%,
+    #45ddff 52%,
+    #fff 80%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  box-shadow:
+    0 0 4px rgba(69, 221, 255, 0.95),
+    0 0 10px rgba(104, 72, 255, 0.72);
+  transform: translate(-50%, -50%);
+  transform-origin: center;
+  will-change: top, left, transform;
+}
+
+.a3s-button-comet::after {
+  position: absolute;
+  top: 0;
+  right: 17%;
+  width: 5px;
+  height: 3px;
+  border-radius: inherit;
+  background: #fff;
+  box-shadow: 0 0 5px #fff;
+  content: '';
+}
+
+.a3s-button--primary:hover .a3s-button-comet,
+.a3s-button--primary:focus-visible .a3s-button-comet {
+  animation: a3s-button-comet-orbit 1.35s linear infinite;
 }
 
 .a3s-button--primary:focus-visible {
@@ -324,9 +340,65 @@ body {
   outline-offset: 4px;
 }
 
-@keyframes a3s-button-border-flow {
-  to {
-    --a3s-cta-angle: 428deg;
+@keyframes a3s-button-comet-orbit {
+  0% {
+    top: 0;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+
+  16% {
+    top: 0;
+    left: calc(100% - 11px);
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+
+  21% {
+    top: 11px;
+    left: 100%;
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+
+  31% {
+    top: calc(100% - 11px);
+    left: 100%;
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+
+  36% {
+    top: 100%;
+    left: calc(100% - 11px);
+    transform: translate(-50%, -50%) rotate(180deg);
+  }
+
+  66% {
+    top: 100%;
+    left: 11px;
+    transform: translate(-50%, -50%) rotate(180deg);
+  }
+
+  71% {
+    top: calc(100% - 11px);
+    left: 0;
+    transform: translate(-50%, -50%) rotate(270deg);
+  }
+
+  81% {
+    top: 11px;
+    left: 0;
+    transform: translate(-50%, -50%) rotate(270deg);
+  }
+
+  86% {
+    top: 0;
+    left: 11px;
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+
+  100% {
+    top: 0;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(360deg);
   }
 }
 
@@ -3306,11 +3378,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .a3s-button--primary:hover::before,
-  .a3s-button--primary:focus-visible::before {
-    animation: none;
-  }
-
   .a3s-tutorial-step::before,
   .a3s-code-line,
   .a3s-tutorial-layers button {
@@ -4735,11 +4802,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .a3s-button--primary:hover,
-  .a3s-button--primary:focus-visible {
-    animation: none;
-  }
-
   .a3s-runtime-model-slab,
   .a3s-runtime-layer-control,
   .a3s-runtime-flow-step,
