@@ -1,4 +1,8 @@
-import { useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import {
+  useEffect,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import { useLang, useSite, useVersion, withBase } from '@rspress/core/runtime';
 import {
   InnerLine,
@@ -309,7 +313,197 @@ const runtimeLayers = [
   tags: string[];
 }>;
 
-type RuntimeLayer = (typeof runtimeLayers)[number];
+const runtimeFlowSteps = [
+  {
+    id: 'admission',
+    code: '01',
+    stage: 'SESSION',
+    title: { zh: '开始一次 Run', en: 'Admit one run' },
+    path: 'prompt → run_id',
+    summary: {
+      zh: '同一个 Session 不会同时改写两份对话历史。请求先取得 single-flight 运行权，再生成这次执行的身份与取消信号。',
+      en: 'A session never mutates two conversation histories at once. The request first acquires its single-flight lease, then receives a run identity and cancellation signal.',
+    },
+    input: {
+      zh: 'session.stream(prompt)',
+      en: 'session.stream(prompt)',
+    },
+    action: {
+      zh: '检查 Session 状态并取得运行权',
+      en: 'Check session state and acquire the run lease',
+    },
+    output: {
+      zh: 'run_id + InvocationContext',
+      en: 'run_id + InvocationContext',
+    },
+    event: 'run_start',
+    trace: {
+      zh: 'Run 已准入，后续模型与工具共享同一个 run_id。',
+      en: 'The run is admitted; model and tool work now share one run_id.',
+    },
+    tags: ['AgentSession', 'RunAdmission', 'CancellationToken'],
+  },
+  {
+    id: 'context',
+    code: '02',
+    stage: 'CONTEXT',
+    title: { zh: '组装本轮上下文', en: 'Assemble turn context' },
+    path: 'history → messages',
+    summary: {
+      zh: '历史、项目指令、记忆和 Workspace 信息不会整包塞给模型。ContextAssembler 会在预算内挑选内容，并附上本轮可见的工具定义。',
+      en: 'History, project instructions, memory, and workspace data are not dumped into the model. ContextAssembler selects what fits and attaches the visible tool schemas.',
+    },
+    input: {
+      zh: 'history + instructions + memory',
+      en: 'history + instructions + memory',
+    },
+    action: {
+      zh: '按上下文预算筛选、排序并组装',
+      en: 'Select, rank, and assemble within the context budget',
+    },
+    output: {
+      zh: 'messages[] + tools[]',
+      en: 'messages[] + tools[]',
+    },
+    event: 'turn_start',
+    trace: {
+      zh: '模型只看到本轮需要的上下文和允许使用的工具。',
+      en: 'The model sees only the context and tools available to this turn.',
+    },
+    tags: ['ContextAssembler', 'Memory', 'ToolDefinition'],
+  },
+  {
+    id: 'model',
+    code: '03',
+    stage: 'MODEL',
+    title: { zh: '模型决定下一步', en: 'Let the model decide' },
+    path: 'messages → tool call',
+    summary: {
+      zh: '受约束的模型调用会检查预算与取消状态。这个示例里，模型没有直接操作文件，而是提出一次只读搜索。',
+      en: 'The scoped model call checks budget and cancellation. In this example the model does not touch files directly; it proposes a read-only search.',
+    },
+    input: {
+      zh: 'messages[] + tools[]',
+      en: 'messages[] + tools[]',
+    },
+    action: {
+      zh: '流式生成文本或结构化工具请求',
+      en: 'Stream text or produce a structured tool request',
+    },
+    output: {
+      zh: 'grep({ pattern: "TODO|FIXME" })',
+      en: 'grep({ pattern: "TODO|FIXME" })',
+    },
+    event: 'tool_start',
+    trace: {
+      zh: '模型提出 grep 调用，但此时工具还没有执行。',
+      en: 'The model proposes grep, but the tool has not executed yet.',
+    },
+    tags: ['ScopedLlmClient', 'BudgetGuard', 'ToolCall'],
+  },
+  {
+    id: 'governance',
+    code: '04',
+    stage: 'GOVERNANCE',
+    title: { zh: '工具调用先过检查', en: 'Govern the tool call' },
+    path: 'tool call → allowed call',
+    summary: {
+      zh: '所有模型工具、嵌套工具和委派工具都经过同一个 ToolInvoker；内部调用不能绕过权限、Hook、确认、预算或超时。',
+      en: 'Model, nested, and delegated tools all pass through one ToolInvoker. Internal calls cannot bypass permissions, hooks, approvals, budgets, or timeouts.',
+    },
+    input: {
+      zh: 'ToolInvocation: grep(...)',
+      en: 'ToolInvocation: grep(...)',
+    },
+    action: {
+      zh: '参数 → 权限 → Hook → 确认 → 预算 → 超时',
+      en: 'schema → permission → hook → approval → budget → timeout',
+    },
+    output: {
+      zh: '受控且带作用域的工具调用',
+      en: 'A governed, scoped invocation',
+    },
+    event: 'tool_execution_start',
+    trace: {
+      zh: '只读 grep 通过当前策略，Runtime 允许它进入 Workspace。',
+      en: 'Read-only grep passes the active policy and may enter the workspace.',
+    },
+    tags: ['ToolInvoker', 'PermissionPolicy', 'HookExecutor'],
+  },
+  {
+    id: 'execution',
+    code: '05',
+    stage: 'WORKSPACE',
+    title: { zh: '在 Workspace 执行', en: 'Execute in the workspace' },
+    path: 'allowed call → result',
+    summary: {
+      zh: '真正接触文件、Shell、Git、MCP 或子任务的是 Workspace 工具。结果会先清理和记录，再送回模型继续判断。',
+      en: 'Workspace tools are what actually reach files, shell, Git, MCP, or child tasks. Results are sanitized and recorded before returning to the model.',
+    },
+    input: {
+      zh: '受控 grep 调用',
+      en: 'Governed grep invocation',
+    },
+    action: {
+      zh: '执行搜索，清理输出并保存大结果',
+      en: 'Run the search, sanitize output, and store large results',
+    },
+    output: {
+      zh: '3 matches + Artifact 引用',
+      en: '3 matches + Artifact reference',
+    },
+    event: 'tool_end',
+    trace: {
+      zh: '结果回到本轮对话；如果模型还需要工具，会回到步骤 03。',
+      en: 'The result returns to the turn. If another tool is needed, the flow returns to step 03.',
+    },
+    tags: ['Workspace', 'ToolResult', 'Artifact'],
+  },
+  {
+    id: 'evidence',
+    code: '06',
+    stage: 'EVIDENCE',
+    title: { zh: '把过程交给界面和存储', en: 'Publish events and evidence' },
+    path: 'events → UI / snapshot',
+    summary: {
+      zh: '界面消费统一事件格式，不需要从文本里猜进度。启用 autoSave 或调用 save() 时，对话、Trace、Artifact 与验证结果会作为一个完整快照提交。',
+      en: 'The UI consumes a stable event format instead of guessing progress from text. With autoSave or save(), conversation, traces, artifacts, and verification are committed as one snapshot.',
+    },
+    input: {
+      zh: 'AgentEvent + AgentResult',
+      en: 'AgentEvent + AgentResult',
+    },
+    action: {
+      zh: '投影事件，并在保存时提交完整 generation',
+      en: 'Project events and commit a complete generation on save',
+    },
+    output: {
+      zh: 'EventEnvelopeV1 + SessionSnapshotV1',
+      en: 'EventEnvelopeV1 + SessionSnapshotV1',
+    },
+    event: 'end · snapshot',
+    trace: {
+      zh: '应用拿到可渲染的结果；Session 也具备排查、审计与恢复依据。',
+      en: 'The app receives renderable output, while the session keeps evidence for debugging, audit, and recovery.',
+    },
+    tags: ['EventEnvelopeV1', 'RunRecord', 'SessionSnapshotV1'],
+  },
+] satisfies Array<{
+  id: string;
+  code: string;
+  stage: string;
+  title: Localized;
+  path: string;
+  summary: Localized;
+  input: Localized;
+  action: Localized;
+  output: Localized;
+  event: string;
+  trace: Localized;
+  tags: string[];
+}>;
+
+type RuntimeFlowStep = (typeof runtimeFlowSteps)[number];
 
 const copy = {
   zh: {
@@ -341,7 +535,7 @@ const copy = {
     architectureBody:
       '示例使用仓库中实际提供的 a3s_code API。滚动或点击步骤，代码会逐步加入 Session、上下文限制、权限、事件流和持久化。',
     architectureAlt:
-      'A3S Code 运行时分层图，展示接入方式、AgentSession、上下文、权限检查、工具与运行记录。',
+      'A3S Code 一次执行的交互流程图，展示请求的输入、Runtime 的处理和每一步输出。',
     capabilitiesEyebrow: 'WHAT YOU GET',
     capabilitiesTitle: 'Runtime 提供的五类能力',
     capabilitiesBody:
@@ -363,11 +557,20 @@ const copy = {
     boundaryContract: 'API 与事件',
     boundaryHostLabel: '你的应用',
     boundaryHostRole: '账号、权限与界面',
-    stackTitle: 'A3S CODE / 分层检查器',
-    stackHint: '悬停预览 · 点击固定',
-    stackHintMobile: '点击展开',
+    stackTitle: 'A3S CODE / 一次执行',
+    stackHint: '点击步骤查看输入与输出',
+    stackHintMobile: '点击步骤展开',
     stackTop: '产品',
     stackBottom: '记录',
+    flowTaskLabel: '示例任务',
+    flowTask: '检查仓库并列出发布阻塞项',
+    flowPlay: '演示',
+    flowRunning: '运行中',
+    flowInput: '收到',
+    flowAction: 'A3S 处理',
+    flowOutput: '交给下一步',
+    flowEvent: '对应事件',
+    flowObjects: '相关对象',
     tutorialStep: '步骤',
     tutorialCode: '代码',
     tutorialLayers: '当前负责的层',
@@ -409,7 +612,7 @@ const copy = {
     architectureBody:
       'The example uses the actual a3s_code API in this repository. Scroll or select a step to add the Session, context limits, policy, event stream, and persistence.',
     architectureAlt:
-      'A3S Code runtime layers showing entry points, AgentSession, context, permission checks, tools, and run records.',
+      'An interactive A3S Code run showing the input, runtime work, and output of each step.',
     capabilitiesEyebrow: 'WHAT YOU GET',
     capabilitiesTitle: 'Five parts of the runtime',
     capabilitiesBody:
@@ -431,11 +634,20 @@ const copy = {
     boundaryContract: 'APIs + EVENTS',
     boundaryHostLabel: 'YOUR APP',
     boundaryHostRole: 'OWNS UI + ACCESS',
-    stackTitle: 'A3S CODE / LAYER INSPECTOR',
-    stackHint: 'HOVER TO PREVIEW · CLICK TO PIN',
-    stackHintMobile: 'TAP TO EXPAND',
+    stackTitle: 'A3S CODE / ONE RUN',
+    stackHint: 'SELECT A STEP TO SEE INPUT AND OUTPUT',
+    stackHintMobile: 'TAP A STEP TO EXPAND',
     stackTop: 'PRODUCT',
     stackBottom: 'RECORDS',
+    flowTaskLabel: 'SAMPLE REQUEST',
+    flowTask: 'Inspect the repository and list release blockers',
+    flowPlay: 'PLAY',
+    flowRunning: 'RUNNING',
+    flowInput: 'INPUT',
+    flowAction: 'A3S DOES',
+    flowOutput: 'OUTPUT',
+    flowEvent: 'EVENT',
+    flowObjects: 'OBJECTS',
     tutorialStep: 'STEP',
     tutorialCode: 'CODE',
     tutorialLayers: 'ACTIVE LAYER',
@@ -528,72 +740,135 @@ function InstallSwitcher({
   );
 }
 
-function RuntimeLayerDetail({
+function RuntimeFlowDetail({
   className,
-  layer,
+  step,
+  labels,
   locale,
 }: {
   className: string;
-  layer: RuntimeLayer;
+  step: RuntimeFlowStep;
+  labels: (typeof copy)[Locale];
   locale: Locale;
 }) {
   return (
     <article
-      className={`a3s-runtime-layer-detail ${className}`}
-      data-layer={layer.id}
+      className={`a3s-runtime-flow-detail ${className}`}
+      data-step={step.id}
     >
-      <span>{layer.code}</span>
-      <h2>{localeValue(layer.title, locale)}</h2>
-      <p>{localeValue(layer.body, locale)}</p>
-      <div>
-        {layer.tags.map((tag) => (
-          <small key={tag}>{tag}</small>
-        ))}
+      <header>
+        <span>
+          STEP {step.code} / {step.stage}
+        </span>
+        <h2>{localeValue(step.title, locale)}</h2>
+        <p>{localeValue(step.summary, locale)}</p>
+      </header>
+
+      <div className="a3s-runtime-flow-io">
+        <div>
+          <small>{labels.flowInput}</small>
+          <code>{localeValue(step.input, locale)}</code>
+        </div>
+        <div>
+          <small>{labels.flowAction}</small>
+          <code>{localeValue(step.action, locale)}</code>
+        </div>
+        <div>
+          <small>{labels.flowOutput}</small>
+          <code>{localeValue(step.output, locale)}</code>
+        </div>
       </div>
+
+      <footer>
+        <div className="a3s-runtime-flow-event">
+          <small>{labels.flowEvent}</small>
+          <code>
+            <i aria-hidden="true" />
+            {step.event}
+          </code>
+          <p>{localeValue(step.trace, locale)}</p>
+        </div>
+        <div className="a3s-runtime-flow-objects">
+          <small>{labels.flowObjects}</small>
+          <span>
+            {step.tags.map((tag) => (
+              <code key={tag}>{tag}</code>
+            ))}
+          </span>
+        </div>
+      </footer>
     </article>
   );
 }
 
-function RuntimeLayerInspector({
+function RuntimeExecutionFlow({
   labels,
   locale,
 }: {
   labels: (typeof copy)[Locale];
   locale: Locale;
 }) {
-  const [selectedIndex, setSelectedIndex] = useState(3);
-  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
-  const activeIndex = previewIndex ?? selectedIndex;
-  const active = runtimeLayers[activeIndex] ?? runtimeLayers[3];
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const active = runtimeFlowSteps[activeIndex] ?? runtimeFlowSteps[0];
 
-  function selectLayer(index: number) {
-    setPreviewIndex(null);
-    setSelectedIndex(index);
+  useEffect(() => {
+    if (!isPlaying) return undefined;
+
+    const delay = activeIndex === runtimeFlowSteps.length - 1 ? 720 : 920;
+    const timer = window.setTimeout(() => {
+      if (activeIndex === runtimeFlowSteps.length - 1) {
+        setIsPlaying(false);
+      } else {
+        setActiveIndex((index) =>
+          Math.min(index + 1, runtimeFlowSteps.length - 1),
+        );
+      }
+    }, delay);
+
+    return () => window.clearTimeout(timer);
+  }, [activeIndex, isPlaying]);
+
+  function selectStep(index: number) {
+    setIsPlaying(false);
+    setActiveIndex(index);
   }
 
-  function handleLayerKeyDown(
+  function playFlow() {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setActiveIndex(runtimeFlowSteps.length - 1);
+      setIsPlaying(false);
+      return;
+    }
+
+    setActiveIndex(0);
+    setIsPlaying(true);
+  }
+
+  function handleStepKeyDown(
     event: ReactKeyboardEvent<HTMLButtonElement>,
     index: number,
   ) {
     let nextIndex: number | undefined;
 
     if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
-      nextIndex = (index + 1) % runtimeLayers.length;
+      nextIndex = (index + 1) % runtimeFlowSteps.length;
     } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
-      nextIndex = (index - 1 + runtimeLayers.length) % runtimeLayers.length;
+      nextIndex =
+        (index - 1 + runtimeFlowSteps.length) % runtimeFlowSteps.length;
     } else if (event.key === 'Home') {
       nextIndex = 0;
     } else if (event.key === 'End') {
-      nextIndex = runtimeLayers.length - 1;
+      nextIndex = runtimeFlowSteps.length - 1;
     }
 
     if (nextIndex === undefined) return;
 
     event.preventDefault();
-    selectLayer(nextIndex);
+    selectStep(nextIndex);
     const inspector = event.currentTarget.closest('.a3s-runtime-inspector');
     inspector
-      ?.querySelectorAll<HTMLButtonElement>('.a3s-runtime-layer-control')
+      ?.querySelectorAll<HTMLButtonElement>('.a3s-runtime-flow-step')
       .item(nextIndex)
       .focus();
   }
@@ -605,119 +880,93 @@ function RuntimeLayerInspector({
           <i aria-hidden="true" />
           {labels.stackTitle}
         </span>
-        <small>
-          <span className="a3s-runtime-hint-desktop">{labels.stackHint}</span>
-          <span className="a3s-runtime-hint-mobile">
-            {labels.stackHintMobile}
-          </span>
+        <div>
+          <button
+            aria-pressed={isPlaying}
+            className={isPlaying ? 'is-playing' : ''}
+            onClick={playFlow}
+            type="button"
+          >
+            <i aria-hidden="true" />
+            {isPlaying ? labels.flowRunning : labels.flowPlay}
+          </button>
           <b>
             {String(activeIndex + 1).padStart(2, '0')} /{' '}
-            {String(runtimeLayers.length).padStart(2, '0')}
+            {String(runtimeFlowSteps.length).padStart(2, '0')}
           </b>
-        </small>
+        </div>
       </header>
+
+      <div className="a3s-runtime-flow-request">
+        <span>{labels.flowTaskLabel}</span>
+        <code>
+          <i aria-hidden="true">&gt;&gt;&gt;</i>
+          session.stream(&quot;{labels.flowTask}&quot;)
+        </code>
+      </div>
+
       <div className="a3s-runtime-inspector-body">
-        <div
-          className="a3s-runtime-inspector-visual"
-          onMouseLeave={() => setPreviewIndex(null)}
+        <nav
+          aria-label={labels.architectureAlt}
+          className="a3s-runtime-flow-nav"
         >
-          <div className="a3s-runtime-model-scale" aria-hidden="true">
-            <span>{labels.stackTop}</span>
-            <i />
-            <span>{labels.stackBottom}</span>
+          <div className="a3s-runtime-flow-track" aria-hidden="true">
+            <span
+              style={{
+                height: `${(activeIndex / (runtimeFlowSteps.length - 1)) * 100}%`,
+              }}
+            />
           </div>
-          <div className="a3s-runtime-layer-model">
-            {runtimeLayers.map((layer, index) => (
+
+          {runtimeFlowSteps.map((step, index) => (
+            <div className="a3s-runtime-flow-row" key={step.id}>
               <button
-                aria-label={`${layer.code}: ${localeValue(layer.title, locale)}`}
-                aria-pressed={selectedIndex === index}
+                aria-pressed={activeIndex === index}
                 className={[
-                  'a3s-runtime-model-slab',
-                  `a3s-runtime-model-slab--${layer.id}`,
+                  'a3s-runtime-flow-step',
+                  `a3s-runtime-flow-step--${step.id}`,
                   activeIndex === index ? 'is-active' : '',
-                  selectedIndex === index ? 'is-selected' : '',
+                  activeIndex > index ? 'is-complete' : '',
                 ]
                   .filter(Boolean)
                   .join(' ')}
-                key={layer.id}
-                onClick={() => selectLayer(index)}
-                onMouseEnter={() => setPreviewIndex(index)}
-                style={{
-                  left: `${index * 3}px`,
-                  top: `${24 + index * 47}px`,
+                onClick={() => selectStep(index)}
+                onFocus={() => selectStep(index)}
+                onKeyDown={(event) => handleStepKeyDown(event, index)}
+                onMouseEnter={() => {
+                  if (!isPlaying) setActiveIndex(index);
                 }}
-                tabIndex={-1}
                 type="button"
               >
+                <span>{step.code}</span>
                 <span>
-                  <i />
-                  <i />
-                  <i />
+                  <small>{step.stage}</small>
+                  <strong>{localeValue(step.title, locale)}</strong>
+                  <em>{step.path}</em>
                 </span>
+                <i aria-hidden="true" />
               </button>
-            ))}
-          </div>
-          <div
-            className="a3s-runtime-model-caption"
-            data-layer={active.id}
-            aria-live="polite"
-          >
-            <span>
-              <i aria-hidden="true" />
-              {active.code}
-            </span>
-            <strong>{localeValue(active.title, locale)}</strong>
-          </div>
-        </div>
-        <div
-          className="a3s-runtime-inspector-panel"
-          onMouseLeave={() => setPreviewIndex(null)}
-        >
-          <nav
-            aria-label={labels.architectureAlt}
-            className="a3s-runtime-layer-list"
-          >
-            {runtimeLayers.map((layer, index) => (
-              <div className="a3s-runtime-layer-row" key={layer.id}>
-                <button
-                  aria-pressed={selectedIndex === index}
-                  className={[
-                    'a3s-runtime-layer-control',
-                    `a3s-runtime-layer-control--${layer.id}`,
-                    activeIndex === index ? 'is-active' : '',
-                    selectedIndex === index ? 'is-selected' : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                  onClick={() => selectLayer(index)}
-                  onFocus={() => selectLayer(index)}
-                  onKeyDown={(event) => handleLayerKeyDown(event, index)}
-                  onMouseEnter={() => setPreviewIndex(index)}
-                  type="button"
-                >
-                  <span>{String(index + 1).padStart(2, '0')}</span>
-                  <span>
-                    <small>{layer.code.replace(/^L\d+\s*\/\s*/, '')}</small>
-                    <strong>{localeValue(layer.title, locale)}</strong>
-                  </span>
-                  <i aria-hidden="true" />
-                </button>
-                {activeIndex === index ? (
-                  <RuntimeLayerDetail
-                    className="a3s-runtime-layer-detail--mobile"
-                    layer={active}
-                    locale={locale}
-                  />
-                ) : null}
-              </div>
-            ))}
-          </nav>
-          <RuntimeLayerDetail
-            className="a3s-runtime-layer-detail--desktop"
-            layer={active}
-            locale={locale}
-          />
-        </div>
+
+              {activeIndex === index ? (
+                <RuntimeFlowDetail
+                  className="a3s-runtime-flow-detail--mobile"
+                  key={active.id}
+                  labels={labels}
+                  locale={locale}
+                  step={active}
+                />
+              ) : null}
+            </div>
+          ))}
+        </nav>
+
+        <RuntimeFlowDetail
+          className="a3s-runtime-flow-detail--desktop"
+          key={active.id}
+          labels={labels}
+          locale={locale}
+          step={active}
+        />
       </div>
     </div>
   );
@@ -1035,7 +1284,7 @@ export function HomeLayout() {
           <InstallSwitcher labels={labels} locale={locale} />
         </div>
         <div className="a3s-hero-visual">
-          <RuntimeLayerInspector labels={labels} locale={locale} />
+          <RuntimeExecutionFlow labels={labels} locale={locale} />
         </div>
       </section>
 
