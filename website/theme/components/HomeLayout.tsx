@@ -1,6 +1,17 @@
 import { useState } from 'react';
-import type { CSSProperties } from 'react';
 import { useLang, useSite, useVersion, withBase } from '@rspress/core/runtime';
+import {
+  InnerLine,
+  Pre,
+  type AnnotationHandler,
+  type HighlightedCode,
+} from 'codehike/code';
+import {
+  Selectable,
+  SelectionProvider,
+  useSelectedIndex,
+} from 'codehike/utils/selection';
+import runtimeTutorialData from '../generated/runtime-tutorial.json';
 
 type Locale = 'zh' | 'en';
 
@@ -15,6 +26,22 @@ type Feature = {
   body: Localized;
   tags: string[];
 };
+
+type RuntimeTutorialStep = {
+  id: string;
+  layer: string;
+  filename: string;
+  title: Localized;
+  body: Localized;
+  note: Localized;
+  tags: string[];
+  focus: [number, number];
+  code: string;
+  highlighted: HighlightedCode;
+};
+
+const runtimeTutorialSteps =
+  runtimeTutorialData as unknown as RuntimeTutorialStep[];
 
 const installCommands = [
   {
@@ -281,7 +308,7 @@ const copy = {
     titleAccent: '接进你的产品',
     subtitle:
       'A3S Code 是一个用 Rust 写的 Agent 运行时。它负责 Agent Loop、工具调用、权限确认、事件流和任务恢复，并提供 Rust、Node.js、Python API。',
-    docs: '查看文档',
+    docs: '开始使用',
     github: '查看 GitHub',
     copy: '复制',
     copied: '已复制',
@@ -300,9 +327,9 @@ const copy = {
     whyBody:
       '模型可以读写文件、运行命令和操作 Git，但每次调用仍会先检查参数和权限。你的应用决定给它哪些工具，也能拿到完整的执行记录。',
     architectureEyebrow: 'HOW IT RUNS',
-    architectureTitle: '一层一层看清 Agent 在做什么。',
+    architectureTitle: '用一段真实代码，走完 Runtime 的六层职责。',
     architectureBody:
-      '从产品入口到 AgentSession、模型、权限检查、Workspace 工具和运行记录，每一层只负责一件事。把鼠标移到分层图上，可以查看它们各自的作用。',
+      '向下滚动或点击步骤。代码会逐步补全，右侧分层图也会同步标出这一段由谁负责。',
     architectureAlt:
       'A3S Code 运行时分层图，展示接入方式、AgentSession、上下文、权限检查、工具与运行记录。',
     capabilitiesEyebrow: 'WHAT YOU GET',
@@ -313,6 +340,13 @@ const copy = {
     surfacesTitle: '想直接用，或接进自己的应用，都可以。',
     surfacesBody:
       '终端版可以立即运行；Rust crate、Node.js 和 Python 包提供同一套 Runtime，适合 IDE、Runner、服务端和自己的界面。',
+    componentsEyebrow: 'BUILD THE INTERFACE',
+    componentsTitle: '先看组件本身，再决定怎样组合。',
+    componentsBody:
+      'A3S TUI 与 A3S Web 的核心组件都有独立示例。可以切状态、改输入、做选择，不需要先跑完整任务。',
+    componentsLink: '打开组件文档',
+    componentsTui: '终端里的输入、执行、Diff 与反馈组件。',
+    componentsWeb: '网页里的任务、权限、结果与工作区组件。',
     boundariesEyebrow: 'WHAT STAYS YOURS',
     boundariesTitle: '执行交给 Runtime，账号和权限留在你的应用里。',
     boundaryItems: [
@@ -327,15 +361,19 @@ const copy = {
     boundaryHostLabel: '你的应用',
     boundaryHostRole: '账号、权限与界面',
     stackTitle: 'A3S CODE / 分层图',
-    stackHint: '移入查看这一层',
+    stackHint: '滚动或点击切换',
     stackTop: '产品',
     stackBottom: '记录',
+    tutorialStep: '步骤',
+    tutorialCode: '代码',
+    tutorialLayers: '当前负责的层',
+    tutorialScroll: '继续向下',
     ctaEyebrow: 'TRY IT',
     ctaTitle: '先在一个项目里跑起来。',
     ctaBody:
       '安装 a3s code 直接体验，或者选择 Rust、Node.js、Python 包接入自己的产品。',
     ctaPrimary: '查看快速开始',
-    ctaSecondary: '打开 Playground',
+    ctaSecondary: '查看组件',
     footer: 'MIT 开源 · Rust 编写 · 支持 Terminal / Rust / Node.js / Python',
   },
   en: {
@@ -344,7 +382,7 @@ const copy = {
     titleAccent: 'to your product',
     subtitle:
       'A3S Code is a Rust agent runtime. It handles the agent loop, tool calls, approval, event streaming, and recovery, with APIs for Rust, Node.js, and Python.',
-    docs: 'Read the docs',
+    docs: 'Get started',
     github: 'View on GitHub',
     copy: 'Copy',
     copied: 'Copied',
@@ -363,9 +401,9 @@ const copy = {
     whyBody:
       'The model can edit files, run commands, and operate Git, but every call is checked first. Your application decides which tools it gets and receives the full execution stream.',
     architectureEyebrow: 'HOW IT RUNS',
-    architectureTitle: 'See what each part of the runtime does.',
+    architectureTitle: 'Walk through all six runtime layers in real code.',
     architectureBody:
-      'The stack runs from product entry points through AgentSession, models, permission checks, workspace tools, and run records. Hover a layer to inspect its job.',
+      'Scroll or choose a step. The example grows with you, while the layer map marks the part responsible for each line.',
     architectureAlt:
       'A3S Code runtime layers showing entry points, AgentSession, context, permission checks, tools, and run records.',
     capabilitiesEyebrow: 'WHAT YOU GET',
@@ -376,6 +414,14 @@ const copy = {
     surfacesTitle: 'Run it in a terminal or embed it in your app.',
     surfacesBody:
       'The terminal app is ready to use. The Rust crate, Node.js package, and Python package bring the same runtime to an IDE, runner, server, or custom UI.',
+    componentsEyebrow: 'BUILD THE INTERFACE',
+    componentsTitle: 'Inspect each component before composing a screen.',
+    componentsBody:
+      'Core A3S TUI and A3S Web components have isolated examples. Change state, edit inputs, and make decisions without running a complete task.',
+    componentsLink: 'Open component docs',
+    componentsTui:
+      'Terminal input, execution, diff, navigation, and feedback components.',
+    componentsWeb: 'Web task, permission, result, and workspace components.',
     boundariesEyebrow: 'WHAT STAYS YOURS',
     boundariesTitle: 'The runtime executes. Your app controls access.',
     boundaryItems: [
@@ -390,15 +436,19 @@ const copy = {
     boundaryHostLabel: 'YOUR APP',
     boundaryHostRole: 'OWNS UI + ACCESS',
     stackTitle: 'A3S CODE / RUNTIME LAYERS',
-    stackHint: 'HOVER A LAYER',
+    stackHint: 'SCROLL OR SELECT',
     stackTop: 'PRODUCT',
     stackBottom: 'RECORDS',
+    tutorialStep: 'STEP',
+    tutorialCode: 'CODE',
+    tutorialLayers: 'ACTIVE LAYER',
+    tutorialScroll: 'KEEP SCROLLING',
     ctaEyebrow: 'TRY IT',
     ctaTitle: 'Try it in a real repository.',
     ctaBody:
       'Install a3s code to start immediately, or choose the Rust, Node.js, or Python package for your own product.',
     ctaPrimary: 'Open the quick start',
-    ctaSecondary: 'Open the playground',
+    ctaSecondary: 'Browse components',
     footer: 'MIT licensed · Built in Rust · Terminal / Rust / Node.js / Python',
   },
 };
@@ -528,93 +578,212 @@ function RuntimeDiagram({ labels }: { labels: (typeof copy)[Locale] }) {
   );
 }
 
-type RuntimeLayerStyle = CSSProperties & {
-  '--layer-index': number;
+const runtimeFocusHandler: AnnotationHandler = {
+  name: 'focus',
+  onlyIfAnnotated: true,
+  Line: (props) => (
+    <InnerLine
+      className="a3s-code-line"
+      data-line-number={props.lineNumber}
+      merge={props}
+    />
+  ),
+  AnnotatedLine: ({ annotation: _annotation, ...props }) => (
+    <InnerLine
+      className="a3s-code-line is-focused"
+      data-focus="true"
+      data-line-number={props.lineNumber}
+      merge={props}
+    />
+  ),
 };
 
-function LayeredRuntime({
+function TutorialCode({
+  labels,
+  step,
+}: {
+  labels: (typeof copy)[Locale];
+  step: RuntimeTutorialStep;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  async function copyCode() {
+    await navigator.clipboard.writeText(step.code);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  }
+
+  return (
+    <div className="a3s-tutorial-code">
+      <header>
+        <span>
+          <i aria-hidden="true" />
+          {step.filename}
+        </span>
+        <span>RUST</span>
+        <button onClick={copyCode} type="button">
+          {copied ? labels.copied : labels.copy}
+        </button>
+      </header>
+      <Pre
+        code={step.highlighted}
+        handlers={[runtimeFocusHandler]}
+        key={step.id}
+      />
+    </div>
+  );
+}
+
+function RuntimeLayerRail({
+  activeIndex,
+  labels,
+  locale,
+  setActiveIndex,
+}: {
+  activeIndex: number;
+  labels: (typeof copy)[Locale];
+  locale: Locale;
+  setActiveIndex: (index: number) => void;
+}) {
+  return (
+    <div className="a3s-tutorial-layers">
+      <header>
+        <span>{labels.tutorialLayers}</span>
+        <small>{labels.stackHint}</small>
+      </header>
+      <div>
+        {runtimeLayers.map((layer, index) => (
+          <button
+            aria-current={activeIndex === index ? 'step' : undefined}
+            className={[
+              activeIndex === index ? 'is-active' : '',
+              activeIndex > index ? 'is-complete' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            key={layer.id}
+            onClick={() => setActiveIndex(index)}
+            type="button"
+          >
+            <span>{String(index + 1).padStart(2, '0')}</span>
+            <span>
+              <small>{layer.code.replace(/^L\d+\s*\/\s*/, '')}</small>
+              <strong>{localeValue(layer.title, locale)}</strong>
+            </span>
+            <i aria-hidden="true" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RuntimeTutorialStage({
   locale,
   labels,
 }: {
   locale: Locale;
   labels: (typeof copy)[Locale];
 }) {
-  const [activeId, setActiveId] = useState('governance');
-  const activeLayer =
-    runtimeLayers.find((layer) => layer.id === activeId) ?? runtimeLayers[3];
+  const [selectedIndex, setSelectedIndex] = useSelectedIndex();
+  const activeIndex = Math.min(
+    Math.max(selectedIndex, 0),
+    runtimeTutorialSteps.length - 1,
+  );
+  const step = runtimeTutorialSteps[activeIndex];
 
   return (
-    <div
-      className="a3s-layered-runtime"
-      onMouseLeave={() => setActiveId('governance')}
-    >
-      <div className="a3s-stack-toolbar">
+    <div className="a3s-tutorial-stage">
+      <div className="a3s-tutorial-stage-toolbar">
         <span>{labels.stackTitle}</span>
-        <span>
-          <i /> {labels.stackHint}
+        <span aria-live="polite">
+          {labels.tutorialStep} {String(activeIndex + 1).padStart(2, '0')} /{' '}
+          {String(runtimeTutorialSteps.length).padStart(2, '0')}
         </span>
       </div>
-      <div className="a3s-stack-stage">
-        <div className="a3s-stack-axis" aria-hidden="true">
-          <span>{labels.stackTop}</span>
-          <i />
-          <span>{labels.stackBottom}</span>
-        </div>
-        {runtimeLayers.map((layer, index) => (
-          <button
-            aria-label={`${localeValue(layer.title, locale)}: ${localeValue(
-              layer.body,
-              locale,
-            )}`}
-            className={`a3s-stack-layer ${
-              activeLayer.id === layer.id ? 'is-active' : ''
-            }`}
-            key={layer.id}
-            onFocus={() => setActiveId(layer.id)}
-            onMouseEnter={() => setActiveId(layer.id)}
-            style={{ '--layer-index': index } as RuntimeLayerStyle}
-            type="button"
-          >
-            <span className="a3s-stack-layer-face">
-              <small>{layer.code}</small>
-              <strong>{localeValue(layer.title, locale)}</strong>
-              <i />
-            </span>
-          </button>
-        ))}
-        {runtimeLayers.map((layer, index) => (
-          <div
-            aria-hidden="true"
-            className={`a3s-stack-label ${
-              index % 2 === 0
-                ? 'a3s-stack-label--left'
-                : 'a3s-stack-label--right'
-            } ${activeLayer.id === layer.id ? 'is-active' : ''}`}
-            key={layer.code}
-            onMouseEnter={() => setActiveId(layer.id)}
-            style={{ '--layer-index': index } as RuntimeLayerStyle}
-          >
-            <span>{layer.code}</span>
-            <i />
+      <div className="a3s-tutorial-stage-grid">
+        <TutorialCode labels={labels} step={step} />
+        <div className="a3s-tutorial-stage-side">
+          <RuntimeLayerRail
+            activeIndex={activeIndex}
+            labels={labels}
+            locale={locale}
+            setActiveIndex={setSelectedIndex}
+          />
+          <div className="a3s-tutorial-note">
+            <span>{step.layer}</span>
+            <p>{localeValue(step.note, locale)}</p>
           </div>
-        ))}
-      </div>
-      <div className="a3s-stack-detail" aria-live="polite">
-        <div className="a3s-stack-detail-index">
-          {String(runtimeLayers.indexOf(activeLayer) + 1).padStart(2, '0')}
-        </div>
-        <div>
-          <span>{activeLayer.code}</span>
-          <h3>{localeValue(activeLayer.title, locale)}</h3>
-          <p>{localeValue(activeLayer.body, locale)}</p>
-        </div>
-        <div className="a3s-stack-detail-tags">
-          {activeLayer.tags.map((tag) => (
-            <span key={tag}>{tag}</span>
-          ))}
         </div>
       </div>
     </div>
+  );
+}
+
+function RuntimeTutorialSteps({
+  labels,
+  locale,
+}: {
+  labels: (typeof copy)[Locale];
+  locale: Locale;
+}) {
+  const [, setSelectedIndex] = useSelectedIndex();
+
+  return (
+    <div className="a3s-tutorial-steps">
+      {runtimeTutorialSteps.map((step, index) => (
+        <Selectable
+          className="a3s-tutorial-step"
+          index={index}
+          key={step.id}
+          selectOn={['scroll']}
+        >
+          <button
+            onClick={() => setSelectedIndex(index)}
+            onFocus={() => setSelectedIndex(index)}
+            onMouseEnter={() => setSelectedIndex(index)}
+            type="button"
+          >
+            <span className="a3s-tutorial-step-number">
+              {String(index + 1).padStart(2, '0')}
+            </span>
+            <span className="a3s-tutorial-step-layer">{step.layer}</span>
+            <h3>{localeValue(step.title, locale)}</h3>
+            <p>{localeValue(step.body, locale)}</p>
+            <span className="a3s-tutorial-step-tags">
+              {step.tags.map((tag) => (
+                <i key={tag}>{tag}</i>
+              ))}
+            </span>
+            <span className="a3s-tutorial-step-progress" aria-hidden="true" />
+          </button>
+          <div className="a3s-tutorial-mobile-preview">
+            <div>
+              <span>{labels.tutorialLayers}</span>
+              <strong>{localeValue(runtimeLayers[index].title, locale)}</strong>
+            </div>
+            <TutorialCode labels={labels} step={step} />
+          </div>
+        </Selectable>
+      ))}
+    </div>
+  );
+}
+
+function RuntimeTutorial({
+  labels,
+  locale,
+}: {
+  labels: (typeof copy)[Locale];
+  locale: Locale;
+}) {
+  return (
+    <SelectionProvider className="a3s-runtime-tutorial">
+      <RuntimeTutorialSteps labels={labels} locale={locale} />
+      <aside className="a3s-tutorial-sticky">
+        <RuntimeTutorialStage labels={labels} locale={locale} />
+      </aside>
+    </SelectionProvider>
   );
 }
 
@@ -759,21 +928,23 @@ export function HomeLayout() {
         </div>
       </section>
 
-      <section className="a3s-section a3s-architecture" id="runtime-stack">
-        <div className="a3s-architecture-copy">
-          <span className="a3s-section-eyebrow">
-            {labels.architectureEyebrow}
-          </span>
-          <h2>{labels.architectureTitle}</h2>
-          <p>{labels.architectureBody}</p>
-          <a href={route('/guide/architecture.html')}>
-            {labels.boundaryLink}
-            <ArrowIcon />
-          </a>
-        </div>
-        <div className="a3s-architecture-frame">
-          <LayeredRuntime labels={labels} locale={locale} />
-        </div>
+      <section className="a3s-section a3s-tutorial-section" id="runtime-stack">
+        <header className="a3s-section-header a3s-tutorial-header">
+          <div>
+            <span className="a3s-section-eyebrow">
+              {labels.architectureEyebrow}
+            </span>
+            <h2>{labels.architectureTitle}</h2>
+          </div>
+          <div>
+            <p>{labels.architectureBody}</p>
+            <a href={route('/guide/architecture.html')}>
+              {labels.boundaryLink}
+              <ArrowIcon />
+            </a>
+          </div>
+        </header>
+        <RuntimeTutorial labels={labels} locale={locale} />
       </section>
 
       <section className="a3s-section a3s-capabilities" id="capabilities">
@@ -802,6 +973,55 @@ export function HomeLayout() {
               </div>
             </article>
           ))}
+        </div>
+      </section>
+
+      <section className="a3s-section a3s-component-entry" id="components">
+        <div className="a3s-component-entry-copy">
+          <span className="a3s-section-eyebrow">
+            {labels.componentsEyebrow}
+          </span>
+          <h2>{labels.componentsTitle}</h2>
+          <p>{labels.componentsBody}</p>
+          <a href={route('/guide/components/')}>
+            {labels.componentsLink}
+            <ArrowIcon />
+          </a>
+        </div>
+        <div className="a3s-component-entry-list">
+          <a href={route('/guide/components/tui/')}>
+            <span>
+              <small>A3S TUI</small>
+              <strong>ActivityBlock</strong>
+            </span>
+            <div className="a3s-home-tui-sample" aria-hidden="true">
+              <p>
+                <i>✓</i> read <code>src/session.rs</code>
+              </p>
+              <p className="is-running">
+                <i>◌</i> cargo test auth::session
+              </p>
+              <span>■■■■■■□□ 75%</span>
+            </div>
+            <p>{labels.componentsTui}</p>
+            <ArrowIcon />
+          </a>
+          <a href={route('/guide/components/web/')}>
+            <span>
+              <small>A3S WEB</small>
+              <strong>PermissionDecision</strong>
+            </span>
+            <div className="a3s-home-web-sample" aria-hidden="true">
+              <span>Confirmation required</span>
+              <code>cargo test auth::session</code>
+              <div>
+                <i>Deny</i>
+                <i>Allow once</i>
+              </div>
+            </div>
+            <p>{labels.componentsWeb}</p>
+            <ArrowIcon />
+          </a>
         </div>
       </section>
 
@@ -876,7 +1096,7 @@ export function HomeLayout() {
           </a>
           <a
             className="a3s-button a3s-button--secondary"
-            href={route('/guide/playground/')}
+            href={route('/guide/components/')}
           >
             {labels.ctaSecondary}
           </a>

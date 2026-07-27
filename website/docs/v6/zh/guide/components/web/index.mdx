@@ -1,0 +1,21 @@
+---
+title: 'A3S Web 组件'
+description: 'A3S Web 的任务、执行、权限、协调、结果与工作区组件'
+---
+
+# A3S Web 组件
+
+A3S Web 使用 Runtime 的 Session、事件流、权限请求、Artifact 与 Memory 数据。这里按
+职责拆开查看，不再把所有组件塞进一条固定流程。
+
+| 分类                                            | 组件                                                         |
+| ----------------------------------------------- | ------------------------------------------------------------ |
+| [任务输入](/guide/components/web/tasks)         | `TaskComposer`、`TaskLibrary`                                |
+| [执行流](/guide/components/web/execution)       | `ExecutionStream`、`ReasoningDisclosure`、`ToolCallTimeline` |
+| [权限与恢复](/guide/components/web/permissions) | `PermissionDecision`、`RecoveryNotice`                       |
+| [任务协调](/guide/components/web/coordination)  | `TaskRuntimePlanList`、`TaskRuntimeSubagentList`             |
+| [结果](/guide/components/web/results)           | `DeliverySummary`、`ArtifactEntries`、`ChangesInspector`     |
+| [工作区](/guide/components/web/workspace)       | `WorkspaceEditor`、`MemoryGraph`                             |
+
+完整组件边界见
+[`apps/web/docs/COMPONENT_SPEC.md`](https://github.com/A3S-Lab/a3s/blob/main/apps/web/docs/COMPONENT_SPEC.md)。

@@ -259,10 +259,10 @@ const groups: BuildingBlockGroup[] = [
       {
         name: 'A3S TUI / Web',
         description: {
-          zh: '把同一套运行事件显示成终端或桌面界面。',
-          en: 'Render the same runtime events in terminal or desktop interfaces.',
+          zh: '逐个查看终端与网页组件怎样承接运行事件。',
+          en: 'Inspect how individual terminal and Web components render runtime events.',
         },
-        path: '/guide/playground/',
+        path: '/guide/components/',
       },
     ],
   },
