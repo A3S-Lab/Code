@@ -177,17 +177,17 @@ const { object } = JSON.parse(result.output);
 
 ### Parameters
 
-| Parameter             | Type    | Required | Description                                                                  |
-| --------------------- | ------- | -------- | ---------------------------------------------------------------------------- |
-| `schema`              | object  | yes      | JSON Schema used to validate the output value                                |
-| `prompt`              | string  | yes      | Non-whitespace generation or extraction instruction                          |
-| `schema_name`         | string  | no       | 1-59 ASCII letters, digits, `_`, or `-` (default: `result`)                   |
-| `schema_description`  | string  | no       | Synthetic-tool description, at most 4,096 bytes                              |
-| `system`              | string  | no       | Optional system prompt, at most 32,768 bytes                                  |
-| `mode`                | string  | no       | `"auto"` / `"strict"` / `"json"` / `"tool"` / `"prompt"` (default: auto)     |
-| `max_repair_attempts` | integer | no       | 0-5 (default: 2)                                                             |
+| Parameter             | Type    | Required | Description                                                                      |
+| --------------------- | ------- | -------- | -------------------------------------------------------------------------------- |
+| `schema`              | object  | yes      | JSON Schema used to validate the output value                                    |
+| `prompt`              | string  | yes      | Non-whitespace generation or extraction instruction                              |
+| `schema_name`         | string  | no       | 1-59 ASCII letters, digits, `_`, or `-` (default: `result`)                      |
+| `schema_description`  | string  | no       | Synthetic-tool description, at most 4,096 bytes                                  |
+| `system`              | string  | no       | Optional system prompt, at most 32,768 bytes                                     |
+| `mode`                | string  | no       | `"auto"` / `"strict"` / `"json"` / `"tool"` / `"prompt"` (default: auto)         |
+| `max_repair_attempts` | integer | no       | 0-5 (default: 2)                                                                 |
 | `include_raw_text`    | boolean | no       | Include the provider text or tool arguments used for extraction (default: false) |
-| `timeout_ms`          | integer | no       | Active generation deadline, 1,000-600,000 ms (default: 120,000)              |
+| `timeout_ms`          | integer | no       | Active generation deadline, 1,000-600,000 ms (default: 120,000)                  |
 
 ### Modes
 
