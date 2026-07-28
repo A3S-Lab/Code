@@ -134,6 +134,22 @@ results with engine errors are failures rather than successful empty searches.
 Timeout, cancellation, invalid-argument, partial-failure, and rate-limit errors
 carry structured error kinds.
 
+Without an explicit `engines` argument, `web_search` runs a lazy,
+quality-gated cascade: native APIs first, conventional HTTP/RSS engines only
+when the combined result set is insufficient, and headless engines only when
+the earlier tiers still miss the generic quality floor. The floor measures
+usable results, host diversity, provenance, and language-neutral query
+coverage; it contains no topic, publisher, domain, or language routing rules.
+An explicit engine list executes only the requested tiers.
+
+Search metadata includes `search_tiers`, `search_quality`, `engine_outcomes`,
+typed `engine_failures`, and bounded latency/error metrics. Circuit state is
+session-scoped, while per-engine concurrency limits and headless retry budgets
+are shared across sessions created by one `Agent` and inherited by delegated
+children. Chrome or Lightpanda discovery happens only if the headless tier is
+actually reached; browser installation and repair remain explicit host
+operations.
+
 ## Structured Output with `generate_object`
 
 The `generate_object` tool asks the configured LLM for a JSON object, validates

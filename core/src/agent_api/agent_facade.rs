@@ -11,6 +11,10 @@ use super::*;
 pub struct Agent {
     pub(super) code_config: CodeConfig,
     pub(super) config: AgentConfig,
+    /// Shared per-engine concurrency isolation for every session owned by this agent.
+    pub(super) search_bulkhead: a3s_search::Bulkhead,
+    /// Shared headless retry allowance for every session owned by this agent.
+    pub(super) search_retry_budget: a3s_search::RetryBudget,
     /// Global MCP manager loaded from config.mcp_servers
     pub(super) global_mcp: Option<Arc<crate::mcp::manager::McpManager>>,
     /// Pre-fetched MCP tool definitions from global_mcp (cached at creation time).

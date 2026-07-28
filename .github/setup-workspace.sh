@@ -15,6 +15,7 @@ sed -i.bak \
   -e 's|a3s-memory = { version = "0.1.1", path = "../../memory" }|a3s-memory = "0.1.1"|' \
   -e 's|a3s-lane = { version = "0.5", path = "../../lane" }|a3s-lane = "0.5"|' \
   -e 's|a3s-lane = { version = "0.4", path = "../../lane" }|a3s-lane = "0.4"|' \
+  -e 's|a3s-search = { version = "2.1.1", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "2.1.1", default-features = false, features = ["lightpanda"] }|' \
   -e 's|a3s-search = { version = "2.1.0", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "2.1.0", default-features = false, features = ["lightpanda"] }|' \
   -e 's|a3s-search = { version = "1.4.3", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.4.3", default-features = false, features = ["lightpanda"] }|' \
   -e 's|a3s-search = { version = "1.3.0", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.3.0", default-features = false, features = ["lightpanda"] }|' \

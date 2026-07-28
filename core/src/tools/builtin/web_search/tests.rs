@@ -32,6 +32,57 @@ async fn dropped_cleanup_guard_schedules_background_shutdown() {
 }
 
 #[test]
+fn managed_headless_discovery_uses_lightpanda_when_chrome_is_unavailable() {
+    use crate::search_runtime::{BrowserInstallSource, BrowserRuntimeStatus, ManagedBrowser};
+
+    let statuses = [
+        BrowserRuntimeStatus {
+            browser: ManagedBrowser::Chrome,
+            available: false,
+            source: BrowserInstallSource::Missing,
+            path: None,
+            version: None,
+            cache_dir: None,
+            detail: "not installed".to_string(),
+        },
+        BrowserRuntimeStatus {
+            browser: ManagedBrowser::Lightpanda,
+            available: true,
+            source: BrowserInstallSource::System,
+            path: Some(PathBuf::from("/diagnostic/lightpanda")),
+            version: None,
+            cache_dir: None,
+            detail: "ready".to_string(),
+        },
+    ];
+
+    let config = managed_headless_config_from_statuses(&statuses)
+        .expect("Lightpanda should satisfy automatic headless discovery");
+    assert_eq!(config.backend, BrowserBackend::Lightpanda);
+    assert_eq!(
+        config.browser_path.as_deref(),
+        Some("/diagnostic/lightpanda")
+    );
+}
+
+#[test]
+fn request_proxy_is_applied_to_the_headless_tier() {
+    let configured = HeadlessConfig {
+        proxy_url: Some("http://configured.example:8080".to_string()),
+        ..HeadlessConfig::default()
+    };
+
+    let effective =
+        effective_headless_config(Some(&configured), Some("socks5://request.example:1080"))
+            .expect("configured headless runtime");
+
+    assert_eq!(
+        effective.proxy_url.as_deref(),
+        Some("socks5://request.example:1080")
+    );
+}
+
+#[test]
 fn latest_search_metrics_are_exposed_as_stable_metadata() {
     let snapshot = MetricsSnapshot {
         successes: 3,
@@ -63,13 +114,12 @@ fn search_config(engines: HashMap<String, SearchEngineConfig>) -> SearchConfig {
 #[test]
 fn default_engine_selection_uses_builtin_defaults_without_engine_configuration() {
     let (engines, source) = default_engine_selection(None);
-    assert_eq!(engines, ["ddg", "wiki"]);
-    assert!(!engines.contains(&"anysearch"));
+    assert_eq!(engines, ["anysearch", "tavily", "ddg", "wiki"]);
     assert_eq!(source, "builtin_default");
 
     let config = search_config(HashMap::new());
     let (engines, source) = default_engine_selection(Some(&config));
-    assert_eq!(engines, ["ddg", "wiki"]);
+    assert_eq!(engines, ["anysearch", "tavily", "ddg", "wiki"]);
     assert_eq!(source, "builtin_default");
 }
 
@@ -114,27 +164,16 @@ search {
 }
 
 #[test]
-fn fallback_policy_uses_untried_http_engines_in_stable_order() {
-    assert_eq!(
-        fallback_engine_shortcuts(&["anysearch".to_string(), "ddg".to_string()], None),
-        ["brave", "bing", "wiki"]
-    );
-    assert_eq!(
-        fallback_engine_shortcuts(
-            &[
-                "wiki".to_string(),
-                "BING".to_string(),
-                "brave".to_string(),
-                "ddg".to_string(),
-            ],
-            None
-        ),
-        Vec::<&str>::new()
-    );
+fn automatic_tier_plan_is_stable_and_deduplicated() {
+    let plan = tiered_engine_plan(&["anysearch", "duckduckgo"], None, true);
+
+    assert_eq!(plan.api, ["anysearch"]);
+    assert_eq!(plan.http, ["ddg", "brave", "bing", "wiki"]);
+    assert_eq!(plan.headless, ["g", "baidu"]);
 }
 
 #[test]
-fn fallback_policy_normalizes_aliases_and_respects_disabled_configuration() {
+fn tier_plan_normalizes_aliases_and_respects_disabled_configuration() {
     let config = search_config(HashMap::from([
         (
             "duckduckgo".to_string(),
@@ -154,14 +193,15 @@ fn fallback_policy_normalizes_aliases_and_respects_disabled_configuration() {
         ),
     ]));
 
-    assert_eq!(
-        fallback_engine_shortcuts(&["AnySearch".to_string()], Some(&config)),
-        ["brave", "bing"]
-    );
-    assert_eq!(
-        fallback_engine_shortcuts(&["duckduckgo".to_string(), "wikipedia".to_string()], None,),
-        ["brave", "bing"]
-    );
+    let automatic = tiered_engine_plan(&["AnySearch"], Some(&config), true);
+    assert_eq!(automatic.api, ["anysearch"]);
+    assert_eq!(automatic.http, ["brave", "bing"]);
+    assert_eq!(automatic.headless, ["g", "baidu"]);
+
+    let explicit = tiered_engine_plan(&["duckduckgo", "wikipedia"], None, false);
+    assert!(explicit.api.is_empty());
+    assert_eq!(explicit.http, ["ddg", "wiki"]);
+    assert!(explicit.headless.is_empty());
 }
 
 #[test]
@@ -179,6 +219,21 @@ fn fallback_notice_uses_structured_failure_kinds_for_every_provider() {
     );
     assert_eq!(failure_metadata(&failures)[0]["kind"], "provider_quota");
     assert_eq!(failure_metadata(&failures)[1]["provider"], "tavily");
+}
+
+#[test]
+fn fallback_notice_classifies_local_and_response_failures() {
+    let failures = vec![
+        EngineFailure::new("DDG", "bulkhead_saturated", "opaque"),
+        EngineFailure::new("Google", "retry_budget_exhausted", "opaque"),
+        EngineFailure::new("Brave", "challenge", "opaque"),
+        EngineFailure::new("Bing", "invalid_response", "opaque"),
+    ];
+
+    assert_eq!(
+        failure_summary(&failures),
+        "DDG was rejected by the local concurrency limit; Google exhausted the shared retry budget; Brave returned an anti-bot challenge; Bing returned an invalid response"
+    );
 }
 
 #[test]
@@ -218,18 +273,22 @@ fn tool_error_kind_uses_structured_failure_kinds_instead_of_messages() {
 }
 
 #[test]
-fn primary_search_timeout_reserves_bounded_fallback_time() {
+fn tier_timeout_preserves_a_share_for_each_remaining_tier() {
     assert_eq!(
-        primary_search_timeout(Duration::from_secs(12), false),
+        tier_timeout(Duration::from_secs(12), 0),
         Duration::from_secs(12)
     );
     assert_eq!(
-        primary_search_timeout(Duration::from_secs(12), true),
-        Duration::from_secs(8)
+        tier_timeout(Duration::from_secs(12), 1),
+        Duration::from_secs(6)
     );
     assert_eq!(
-        primary_search_timeout(Duration::from_secs(1), true),
-        Duration::from_millis(500)
+        tier_timeout(Duration::from_secs(12), 2),
+        Duration::from_secs(4)
+    );
+    assert_eq!(
+        tier_timeout(Duration::from_millis(2), 2),
+        Duration::from_millis(1)
     );
 }
 
@@ -305,7 +364,7 @@ fn configured_engine_aliases_are_executable() {
 }
 
 #[test]
-fn provider_setup_failures_are_eligible_for_generic_fallback() {
+fn provider_setup_failures_remain_typed_for_the_cascade() {
     let error = a3s_search::SearchError::Other("provider setup failed".to_string());
     let failure = super::engines::provider_setup_failure(
         a3s_search::providers::BuiltinProvider::AnySearch,
@@ -316,9 +375,6 @@ fn provider_setup_failures_are_eligible_for_generic_fallback() {
     assert_eq!(failure.provider.as_deref(), Some("anysearch"));
     assert_eq!(failure.kind, "other");
     assert!(!failure.transient);
-    assert!(!should_reject_engine_selection(0, &[failure]));
-    assert!(should_reject_engine_selection(0, &[]));
-    assert!(!should_reject_engine_selection(1, &[]));
 }
 
 #[tokio::test]
@@ -397,111 +453,24 @@ async fn configured_engine_selection_is_identified_in_failure_metadata() {
     );
 }
 
-#[tokio::test]
-#[ignore = "requires external network"]
-async fn real_system_proxy_search_returns_traceable_results() {
-    let tool = WebSearchTool::new();
-    let ctx = ToolContext::new(PathBuf::from("/tmp"));
-    let result = tool
-        .execute(
-            &serde_json::json!({
-                "query": "Tokio Rust async runtime official documentation",
-                "engines": ["ddg", "brave", "wiki"],
-                "limit": 5,
-                "timeout": 15,
-                "format": "json"
-            }),
-            &ctx,
-        )
-        .await
-        .unwrap();
-    assert!(result.success, "{}", result.content);
-    eprintln!("{}", result.content);
-    let items: serde_json::Value = serde_json::from_str(&result.content)
-        .unwrap_or_else(|error| panic!("JSON search results ({error}): {}", result.content));
-    assert!(
-        items.as_array().is_some_and(|items| !items.is_empty()),
-        "{}",
-        result.content
-    );
-}
-
-#[tokio::test]
-#[ignore = "requires external network"]
-async fn real_bing_rss_search_works_without_headless_config() {
-    let tool = WebSearchTool::new();
-    let ctx = ToolContext::new(PathBuf::from("/tmp"));
-    let started = std::time::Instant::now();
-
-    let result = tool
-        .execute(
-            &serde_json::json!({
-                "query": "Typhoon Bavi 2020 NOAA -2026",
-                "engines": ["bing_cn"],
-                "limit": 5,
-                "timeout": 10,
-                "format": "json"
-            }),
-            &ctx,
-        )
-        .await
-        .unwrap();
-
-    assert!(result.success, "{}", result.content);
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(12),
-        "Bing RSS exceeded its convergence budget: {:?}",
-        started.elapsed()
-    );
-    let items: serde_json::Value = serde_json::from_str(&result.content)
-        .unwrap_or_else(|error| panic!("JSON Bing results ({error}): {}", result.content));
-    assert!(
-        items.as_array().is_some_and(|items| !items.is_empty()),
-        "{}",
-        result.content
-    );
-}
-
 #[test]
 fn bing_china_is_http_only() {
-    assert!(!requires_headless_browser(&["bing_cn"]));
-    assert!(!requires_headless_browser(&["ddg", "bing_cn"]));
-    assert!(requires_headless_browser(&["google"]));
-    assert!(requires_headless_browser(&["bing_cn", "baidu"]));
+    assert_eq!(
+        super::engines::engine_tier("bing_cn"),
+        Some(super::engines::EngineTier::Http)
+    );
+    assert_eq!(
+        super::engines::engine_tier("google"),
+        Some(super::engines::EngineTier::Headless)
+    );
 }
 
 #[test]
-fn unavailable_headless_engines_fall_back_only_when_safe() {
-    assert!(should_fallback_from_unavailable_headless(
-        0,
-        false,
-        &["baidu"],
-    ));
-    assert!(should_fallback_from_unavailable_headless(
-        0,
-        false,
-        &["google"],
-    ));
-    assert!(!should_fallback_from_unavailable_headless(
-        0,
-        false,
-        &["baidu", "bing_cn"],
-    ));
-    assert!(!should_fallback_from_unavailable_headless(
-        0,
-        true,
-        &["baidu"],
-    ));
-    assert!(!should_fallback_from_unavailable_headless(
-        1,
-        false,
-        &["baidu"],
-    ));
-    assert!(!should_fallback_from_unavailable_headless(
-        0,
-        false,
-        &["baidu", "nonexistent"],
-    ));
+fn explicit_headless_selection_does_not_invent_earlier_tiers() {
+    let plan = tiered_engine_plan(&["google"], None, false);
+    assert!(plan.api.is_empty());
+    assert!(plan.http.is_empty());
+    assert_eq!(plan.headless, ["g"]);
 }
 
 #[tokio::test]
@@ -663,13 +632,29 @@ fn test_add_headless_engine_valid() {
     let pool_config = BrowserPoolConfig::default();
     let pool = Arc::new(BrowserPool::new(pool_config));
 
-    assert!(add_headless_engine(&mut search, "google", &pool));
+    let retry_budget = a3s_search::RetryBudget::default();
+    assert!(add_headless_engine(
+        &mut search,
+        "google",
+        &pool,
+        &retry_budget
+    ));
     assert_eq!(search.engine_count(), 1);
 
-    assert!(add_headless_engine(&mut search, "baidu", &pool));
+    assert!(add_headless_engine(
+        &mut search,
+        "baidu",
+        &pool,
+        &retry_budget
+    ));
     assert_eq!(search.engine_count(), 2);
 
-    assert!(!add_headless_engine(&mut search, "bing_cn", &pool));
+    assert!(!add_headless_engine(
+        &mut search,
+        "bing_cn",
+        &pool,
+        &retry_budget
+    ));
     assert_eq!(search.engine_count(), 2);
 }
 
@@ -679,7 +664,8 @@ fn test_add_headless_engine_aliases() {
     let pool_config = BrowserPoolConfig::default();
     let pool = Arc::new(BrowserPool::new(pool_config));
 
-    assert!(add_headless_engine(&mut search, "g", &pool));
+    let retry_budget = a3s_search::RetryBudget::default();
+    assert!(add_headless_engine(&mut search, "g", &pool, &retry_budget));
     assert_eq!(search.engine_count(), 1);
 }
 
@@ -689,8 +675,19 @@ fn test_add_headless_engine_unknown() {
     let pool_config = BrowserPoolConfig::default();
     let pool = Arc::new(BrowserPool::new(pool_config));
 
-    assert!(!add_headless_engine(&mut search, "ddg", &pool));
-    assert!(!add_headless_engine(&mut search, "nonexistent", &pool));
+    let retry_budget = a3s_search::RetryBudget::default();
+    assert!(!add_headless_engine(
+        &mut search,
+        "ddg",
+        &pool,
+        &retry_budget
+    ));
+    assert!(!add_headless_engine(
+        &mut search,
+        "nonexistent",
+        &pool,
+        &retry_budget
+    ));
 }
 
 #[tokio::test]
@@ -731,7 +728,15 @@ fn test_web_search_schema_has_all_valid_fields() {
     let params = tool.parameters();
 
     // Verify all valid fields are documented
-    let valid_fields = ["query", "engines", "limit", "timeout", "proxy", "format"];
+    let valid_fields = [
+        "query",
+        "engines",
+        "limit",
+        "timeout",
+        "proxy",
+        "format",
+        "full_text_bytes",
+    ];
     for field in valid_fields {
         assert!(
             params["properties"]
@@ -758,7 +763,7 @@ fn json_search_result_preserves_published_date() {
         .with_engine("brave", 1)
         .with_published_date("2026-07-11");
 
-    let json = search_result_json(&result);
+    let json = search_result_json(&result, None);
 
     assert_eq!(json["published_date"], "2026-07-11");
     assert_eq!(json["url"], "https://example.com/release");
@@ -786,6 +791,64 @@ fn json_search_result_preserves_published_date() {
             "leaked {secret}: {serialized}"
         );
     }
+}
+
+#[test]
+fn json_search_result_includes_only_requested_bounded_sanitized_full_text() {
+    let mut result = SearchResult::new("https://example.com/source", "Source", "Summary");
+    result.full_text = Some(format!(
+        "Evidence at https://reader:password@example.com/private?token=secret#fragment {}",
+        "x".repeat(2_000)
+    ));
+
+    let omitted = search_result_json(&result, None);
+    assert!(omitted.get("full_text").is_none());
+
+    let included = search_result_json(&result, Some(MIN_FULL_TEXT_BYTES));
+    let full_text = included["full_text"].as_str().unwrap();
+    assert!(full_text.len() <= MIN_FULL_TEXT_BYTES);
+    assert!(full_text.contains("https://example.com/private"));
+    for secret in ["reader", "password", "token", "secret", "fragment"] {
+        assert!(!full_text.contains(secret), "leaked {secret}: {full_text}");
+    }
+}
+
+#[test]
+fn json_search_result_bounds_provider_title_and_summary_fields() {
+    let result = SearchResult::new(
+        "https://example.com/source",
+        "t".repeat(MAX_JSON_TITLE_BYTES * 2),
+        "c".repeat(MAX_JSON_CONTENT_BYTES * 2),
+    );
+
+    let json = search_result_json(&result, None);
+
+    assert!(json["title"].as_str().unwrap().len() <= MAX_JSON_TITLE_BYTES);
+    assert!(json["content"].as_str().unwrap().len() <= MAX_JSON_CONTENT_BYTES);
+}
+
+#[test]
+fn json_search_result_collection_stays_valid_below_tool_transport_limit() {
+    let results = (0..16)
+        .map(|index| {
+            let mut result = SearchResult::new(
+                format!("https://example.com/source-{index}"),
+                "title".repeat(600),
+                "summary".repeat(1_200),
+            );
+            result.full_text = Some("evidence".repeat(8_000));
+            result
+        })
+        .collect::<Vec<_>>();
+    let references = results.iter().collect::<Vec<_>>();
+
+    let bounded = bounded_json_search_results(&references, Some(MAX_FULL_TEXT_BYTES));
+    let encoded = serde_json::to_vec(&bounded).unwrap();
+
+    assert!(!bounded.is_empty());
+    assert!(bounded.len() < results.len());
+    assert!(encoded.len() <= MAX_JSON_OUTPUT_BYTES);
+    assert!(serde_json::from_slice::<serde_json::Value>(&encoded).is_ok());
 }
 
 #[test]

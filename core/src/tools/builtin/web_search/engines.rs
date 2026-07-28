@@ -7,11 +7,35 @@ use a3s_search::engines::{
 };
 use a3s_search::providers::BuiltinProvider;
 use a3s_search::{
-    BrowserFetcher, EngineFailure, HtmlEngine, HttpFetcher, Search, SearchError, WaitStrategy,
+    BrowserFetcher, EngineFailure, HtmlEngine, HttpFetcher, RetryBudget, Search, SearchError,
+    WaitStrategy,
 };
 use std::sync::Arc;
 
-const BUILTIN_DEFAULT_ENGINES: [&str; 2] = ["ddg", "wiki"];
+const PUBLIC_FALLBACK_ENGINES: [&str; 2] = ["ddg", "wiki"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EngineTier {
+    Api,
+    Http,
+    Headless,
+}
+
+fn builtin_default_engines() -> Vec<&'static str> {
+    let mut engines = BuiltinProvider::ALL
+        .iter()
+        .copied()
+        .filter_map(|provider| {
+            provider
+                .create_engine()
+                .ok()
+                .filter(|engine| engine.descriptor().capabilities.anonymous)
+                .map(|_| provider.id())
+        })
+        .collect::<Vec<_>>();
+    engines.extend(PUBLIC_FALLBACK_ENGINES);
+    engines
+}
 
 pub(super) fn canonical_engine_shortcut(shortcut: &str) -> &str {
     match shortcut.trim() {
@@ -23,26 +47,19 @@ pub(super) fn canonical_engine_shortcut(shortcut: &str) -> &str {
     }
 }
 
-pub(super) fn should_fallback_from_unavailable_headless(
-    engine_count: usize,
-    has_headless_config: bool,
-    engines: &[&str],
-) -> bool {
-    engine_count == 0
-        && !has_headless_config
-        && !engines.is_empty()
-        && engines
-            .iter()
-            .all(|engine| matches!(canonical_engine_shortcut(engine), "g" | "baidu"))
+pub(super) fn engine_tier(shortcut: &str) -> Option<EngineTier> {
+    let shortcut = canonical_engine_shortcut(shortcut);
+    if BuiltinProvider::from_id(shortcut).is_some() {
+        return Some(EngineTier::Api);
+    }
+    match shortcut {
+        "ddg" | "brave" | "bing" | "wiki" | "sogou" | "360" | "bing_cn" => Some(EngineTier::Http),
+        "g" | "baidu" => Some(EngineTier::Headless),
+        _ => None,
+    }
 }
 
-pub(super) fn requires_headless_browser(engines: &[&str]) -> bool {
-    engines
-        .iter()
-        .any(|engine| matches!(canonical_engine_shortcut(engine), "g" | "baidu"))
-}
-
-/// Add an HTTP engine by shortcut
+/// Adds a native API provider or conventional HTTP/RSS engine by shortcut.
 pub(super) fn provider_setup_failure(
     provider: BuiltinProvider,
     error: &SearchError,
@@ -111,13 +128,6 @@ pub(super) fn add_http_engine(
     }
 }
 
-pub(super) fn should_reject_engine_selection(
-    engine_count: usize,
-    setup_failures: &[EngineFailure],
-) -> bool {
-    engine_count == 0 && setup_failures.is_empty()
-}
-
 pub(super) fn default_engine_selection(
     config: Option<&crate::config::SearchConfig>,
 ) -> (Vec<&str>, &'static str) {
@@ -136,7 +146,7 @@ pub(super) fn default_engine_selection(
             });
             (engines, "config")
         }
-        _ => (BUILTIN_DEFAULT_ENGINES.to_vec(), "builtin_default"),
+        _ => (builtin_default_engines(), "builtin_default"),
     }
 }
 
@@ -145,21 +155,26 @@ pub(super) fn add_headless_engine(
     search: &mut Search,
     shortcut: &str,
     pool: &Arc<BrowserPool>,
+    retry_budget: &RetryBudget,
 ) -> bool {
     match canonical_engine_shortcut(shortcut) {
         "g" => {
-            let fetcher = BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
-                css: "div.g".to_string(),
-                timeout_ms: 5000,
-            });
+            let fetcher = BrowserFetcher::new(Arc::clone(pool))
+                .with_retry_budget(retry_budget.clone())
+                .with_wait(WaitStrategy::Selector {
+                    css: "div.g".to_string(),
+                    timeout_ms: 5000,
+                });
             search.add_engine(Google::new(Arc::new(fetcher)));
             true
         }
         "baidu" => {
-            let fetcher = BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
-                css: "div.c-container".to_string(),
-                timeout_ms: 5000,
-            });
+            let fetcher = BrowserFetcher::new(Arc::clone(pool))
+                .with_retry_budget(retry_budget.clone())
+                .with_wait(WaitStrategy::Selector {
+                    css: "div.c-container".to_string(),
+                    timeout_ms: 5000,
+                });
             search.add_engine(Baidu::new(Arc::new(fetcher)));
             true
         }

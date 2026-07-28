@@ -60,6 +60,81 @@ fn test_task_params_all_fields() {
     assert_eq!(params.max_steps, Some(20));
 }
 
+#[tokio::test]
+async fn delegated_context_inherits_search_limits_but_gets_a_fresh_circuit() {
+    let workspace = tempfile::tempdir().expect("temporary workspace");
+    let executor = Arc::new(TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        Arc::new(StaticLlmClient::new("done")),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let bulkhead = a3s_search::Bulkhead::new(a3s_search::BulkheadConfig {
+        max_concurrent: 1,
+        max_queued: 0,
+        max_queue_wait: std::time::Duration::ZERO,
+    });
+    let retry_budget = a3s_search::RetryBudget::new(a3s_search::RetryBudgetConfig {
+        capacity: 1,
+        retry_cost: 1,
+        success_credit: 0,
+    });
+    let search_config = crate::config::SearchConfig {
+        timeout: 17,
+        health: Some(crate::config::SearchHealthConfig {
+            max_failures: 1,
+            suspend_seconds: 60,
+        }),
+        engines: std::collections::HashMap::new(),
+        headless: None,
+    };
+    let parent = ToolContext::new(workspace.path().to_path_buf())
+        .with_session_id("parent-session")
+        .with_search_config(search_config)
+        .with_search_runtime(bulkhead, retry_budget);
+    let scoped = executor.scoped_for_invocation(&parent);
+    let child = scoped.child_tool_context("child-session".to_string(), CancellationToken::new());
+
+    assert_eq!(
+        child.search_config.as_ref().map(|config| config.timeout),
+        Some(17)
+    );
+
+    let _permit = parent
+        .search_bulkhead()
+        .acquire("shared-engine")
+        .await
+        .expect("parent should acquire shared capacity");
+    assert_eq!(
+        child
+            .search_bulkhead()
+            .acquire("shared-engine")
+            .await
+            .expect_err("child must observe parent capacity"),
+        a3s_search::BulkheadRejection::Saturated
+    );
+
+    assert!(parent.search_retry_budget().try_acquire_retry());
+    assert!(!child.search_retry_budget().try_acquire_retry());
+
+    parent
+        .search_circuit_breaker()
+        .acquire("failing-engine")
+        .expect("parent probe")
+        .record_failure(&a3s_search::EngineFailure::new(
+            "Failing Engine",
+            "provider_unavailable",
+            "synthetic failure",
+        ));
+    assert!(parent
+        .search_circuit_breaker()
+        .acquire("failing-engine")
+        .is_err());
+    assert!(child
+        .search_circuit_breaker()
+        .acquire("failing-engine")
+        .is_ok());
+}
+
 #[test]
 fn test_task_params_missing_required_field() {
     let json = r#"{

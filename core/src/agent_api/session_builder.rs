@@ -45,7 +45,8 @@ pub(super) async fn build_agent_session(
     let session_id = resolved_session_id(&resolved);
     let runtime = build_session_runtime(SessionRuntimeInput {
         code_config: &agent.code_config,
-        workspace: &canonical,
+        search_bulkhead: &agent.search_bulkhead,
+        search_retry_budget: &agent.search_retry_budget,
         session_id: &session_id,
         opts: &resolved.options,
         tool_executor: Arc::clone(&capabilities.tool_executor),
@@ -64,7 +65,8 @@ pub(super) fn build_agent_session_sync(
     let session_id = resolved_session_id(&resolved);
     let runtime = build_session_runtime_sync(SessionRuntimeInput {
         code_config: &agent.code_config,
-        workspace: &canonical,
+        search_bulkhead: &agent.search_bulkhead,
+        search_retry_budget: &agent.search_retry_budget,
         session_id: &session_id,
         opts: &resolved.options,
         tool_executor: Arc::clone(&capabilities.tool_executor),

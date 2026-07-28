@@ -62,6 +62,8 @@ pub(super) async fn build_agent_from_config(config: CodeConfig) -> Result<Agent>
     Ok(Agent {
         code_config: config,
         config: agent_config,
+        search_bulkhead: a3s_search::Bulkhead::default(),
+        search_retry_budget: a3s_search::RetryBudget::default(),
         global_mcp,
         global_mcp_tools: std::sync::Mutex::new(global_mcp_tools),
         sessions: Arc::new(std::sync::Mutex::new(

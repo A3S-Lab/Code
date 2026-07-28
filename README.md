@@ -210,7 +210,7 @@ the model.
 | Files and directories | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, order-selectable paginated `glob`, and mode-selectable `grep` |
 | Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination |
 | Code intelligence | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools |
-| Web evidence | Multi-engine `web_search` and bounded `web_fetch` with structured failures, fallback, source normalization, and SSRF protections |
+| Web evidence | Quality-gated API → HTTP/RSS → headless `web_search` plus bounded `web_fetch`, with lazy fallback, structured outcomes, source normalization, and SSRF protections |
 | Composition | Safe `batch`, sandboxed QuickJS `program`, structured `generate_object`, `task`, and `parallel_task` |
 | Extensibility | `Skill`, `search_skills`, namespaced `mcp__<server>__<tool>`, and explicit `dynamic_workflow` |
 
