@@ -1084,7 +1084,10 @@ function RuntimeExecutionFlow({
           <div>
             <small>{labels.flowTaskLabel}</small>
             <p>
-              {labels.flowTask.slice(0, typedCount)}
+              {labels.flowTask.slice(
+                0,
+                activeIndex === 0 ? typedCount : labels.flowTask.length,
+              )}
               <i aria-hidden="true" />
             </p>
           </div>
