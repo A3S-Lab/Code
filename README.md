@@ -207,7 +207,7 @@ the model.
 
 | Concern | Built-in surface |
 | --- | --- |
-| Files and directories | `read`, `write`, `edit`, `patch`, `ls`, `glob`, `grep` with ranged or resumable operations and compare-and-swap mutation |
+| Files and directories | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, order-selectable paginated `glob`, and mode-selectable `grep` |
 | Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination |
 | Code intelligence | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools |
 | Web evidence | Multi-engine `web_search` and bounded `web_fetch` with structured failures, fallback, source normalization, and SSRF protections |
@@ -218,6 +218,51 @@ Every invocation declares `ToolCapabilities`, including read-only,
 idempotent, resumable, cancellation-safe, paginated, output-kind, and parallel
 limits. `batch` parallelizes only calls that declare safe read-only behavior;
 mutations and unknown tools are serialized.
+
+### Context-efficient repository tools
+
+`read` can pack 1-32 known text files into one ordered response. The shared
+budget includes headers and the continuation itself, so the result reaches the
+model intact instead of relying on downstream truncation:
+
+```json
+{
+  "files": [
+    { "path": "src/lib.rs" },
+    { "path": "src/config.rs", "offset": 40, "limit": 80 }
+  ],
+  "max_output_bytes": 65536
+}
+```
+
+If the budget fills, copy `metadata.batch.continuation` back into `files`.
+Offsets and remaining per-file limits are advanced without repeating completed
+lines. One missing or unreadable member is reported in its own segment while
+the other files continue.
+
+`grep.output_mode` controls how much evidence enters the context:
+
+| Mode | Result |
+| --- | --- |
+| `content` | Matching lines with optional context (default) |
+| `files_with_matches` | Lexically cursor-paginated matching paths only |
+| `count` | Lexically cursor-paginated matching-line counts per file |
+| `summary` | Full-scan line and file totals without rendered matches |
+
+The non-content modes ask built-in workspace backends to count matches without
+constructing discarded match text. `glob` retains a backend's recency or
+relevance order by default; request `sort: "path"` when cursor pages require
+stable lexical ordering.
+
+Use `edit` with `dry_run: true` to receive the exact before/after diff without
+writing. The dry run is declared read-only and can be safely batched. Apply the
+result with `expected_replacements` and optionally `max_replacements` to reject
+stale or unexpectedly broad changes before the compare-and-swap write.
+
+These repository-context ergonomics were informed by
+[FastCtx](https://github.com/yc-duan/fastctx). Their implementation here stays
+inside A3S Code's workspace abstractions, capability declarations, permission
+path, remote-backend contracts, and structured metadata.
 
 ### Sandbox and credential boundaries
 

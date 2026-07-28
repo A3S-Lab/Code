@@ -40,6 +40,11 @@ impl Tool for GlobTool {
                 "cursor": {
                     "type": "string",
                     "description": "Optional. Omit on the first call. On a continuation, copy the exact opaque cursor returned by the previous glob call; never invent a placeholder."
+                },
+                "sort": {
+                    "type": "string",
+                    "enum": ["path", "backend"],
+                    "description": "Optional. 'backend' (default) preserves backend relevance or recency order. 'path' applies deterministic lexical ordering before pagination."
                 }
             },
             "required": ["pattern"],
@@ -49,7 +54,8 @@ impl Tool for GlobTool {
                 },
                 {
                     "pattern": "*.md",
-                    "path": "docs"
+                    "path": "docs",
+                    "sort": "path"
                 }
             ]
         })
@@ -67,6 +73,14 @@ impl Tool for GlobTool {
         let page_request = match PageRequest::parse(args, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT) {
             Ok(request) => request,
             Err(error) => return Ok(ToolOutput::error(error)),
+        };
+        let sort = match args
+            .get("sort")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("backend")
+        {
+            value @ ("path" | "backend") => value,
+            _ => return Ok(ToolOutput::error("sort must be 'path' or 'backend'")),
         };
 
         let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
@@ -98,11 +112,14 @@ impl Tool for GlobTool {
                 )))
             }
         };
-        let matches: Vec<String> = result
+        let mut matches: Vec<String> = result
             .matches
             .into_iter()
             .map(|path| path.as_str().to_string())
             .collect();
+        if sort == "path" {
+            matches.sort();
+        }
         let page = match page_request.page(matches) {
             Ok(page) => page,
             Err(error) => return Ok(ToolOutput::error(error)),
@@ -125,8 +142,12 @@ impl Tool for GlobTool {
                     "\nMore files available; continue with cursor={cursor}"
                 ));
             }
-            Ok(ToolOutput::success(output)
-                .with_metadata(serde_json::json!({ "page": page.metadata() })))
+            Ok(
+                ToolOutput::success(output).with_metadata(serde_json::json!({
+                    "page": page.metadata(),
+                    "sort": sort,
+                })),
+            )
         }
     }
 }
@@ -134,7 +155,40 @@ impl Tool for GlobTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::{
+        LocalWorkspaceBackend, WorkspaceFileSystem, WorkspaceGlobResult, WorkspaceGrepRequest,
+        WorkspaceGrepResult, WorkspaceRef, WorkspaceSearch, WorkspaceServices,
+    };
+    use async_trait::async_trait;
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    struct UnsortedSearch;
+
+    #[async_trait]
+    impl WorkspaceSearch for UnsortedSearch {
+        async fn glob(&self, _request: WorkspaceGlobRequest) -> Result<WorkspaceGlobResult> {
+            Ok(WorkspaceGlobResult {
+                matches: ["c.rs", "a.rs", "b.rs"]
+                    .into_iter()
+                    .map(crate::workspace::WorkspacePath::from_normalized)
+                    .collect(),
+            })
+        }
+
+        async fn grep(&self, _request: WorkspaceGrepRequest) -> Result<WorkspaceGrepResult> {
+            unreachable!("glob test backend does not implement grep")
+        }
+    }
+
+    fn unsorted_context(root: &std::path::Path) -> ToolContext {
+        let local = Arc::new(LocalWorkspaceBackend::new(root.to_path_buf()));
+        let fs: Arc<dyn WorkspaceFileSystem> = local;
+        let services = WorkspaceServices::builder(WorkspaceRef::new("test", "test://glob"), fs)
+            .search(Arc::new(UnsortedSearch))
+            .build();
+        ToolContext::new(root.to_path_buf()).with_workspace_services(services)
+    }
 
     #[tokio::test]
     async fn test_glob_find_files() {
@@ -226,6 +280,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_glob_supports_explicit_stable_path_sorting() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = unsorted_context(temp.path());
+
+        let first = GlobTool
+            .execute(
+                &serde_json::json!({
+                    "pattern": "*.rs",
+                    "limit": 2,
+                    "sort": "path"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(first.success, "{}", first.content);
+        assert!(first.content.find("a.rs") < first.content.find("b.rs"));
+        assert!(!first.content.contains("c.rs"));
+
+        let default_backend_order = GlobTool
+            .execute(
+                &serde_json::json!({
+                    "pattern": "*.rs",
+                    "limit": 2
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            default_backend_order.success,
+            "{}",
+            default_backend_order.content
+        );
+        assert!(
+            default_backend_order.content.find("c.rs") < default_backend_order.content.find("a.rs")
+        );
+        assert!(!default_backend_order.content.contains("b.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_glob_rejects_unknown_sort_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let result = GlobTool
+            .execute(
+                &serde_json::json!({"pattern": "*.rs", "sort": "newest"}),
+                &ToolContext::new(temp.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.content.contains("sort must be 'path' or 'backend'"));
+    }
+
+    #[tokio::test]
     async fn test_glob_missing_pattern() {
         let tool = GlobTool;
         let ctx = ToolContext::new(PathBuf::from("/tmp"));
@@ -243,5 +352,9 @@ mod tests {
         let examples = params["examples"].as_array().unwrap();
         assert_eq!(examples[0]["pattern"], "**/*.rs");
         assert!(examples[0].get("glob").is_none());
+        assert_eq!(
+            params["properties"]["sort"]["enum"],
+            serde_json::json!(["path", "backend"])
+        );
     }
 }

@@ -79,6 +79,49 @@ evade it. Timeout and cancellation terminate the complete Unix process group.
 Large file changes replace full before/after event payloads with bounded
 previews and unified diff text plus hashes, sizes, and artifact references.
 
+### Repository-context modes
+
+Use `read.files` when the relevant paths are already known and one bounded
+response is cheaper than several tool turns:
+
+```json
+{
+  "files": [
+    { "path": "src/lib.rs" },
+    { "path": "src/config.rs", "offset": 40, "limit": 80 }
+  ],
+  "max_output_bytes": 65536
+}
+```
+
+The shared byte budget includes headers and the continuation text. Results
+stay in request order, and one unreadable member does not discard successful
+members. When `metadata.batch.truncated` is true, copy
+`metadata.batch.continuation` into the next call's `files` value; its offsets
+and remaining limits resume without repeating completed lines.
+
+`grep.output_mode` selects the smallest useful result shape:
+
+| Mode                 | Result                                                        |
+| -------------------- | ------------------------------------------------------------- |
+| `content`            | Matching lines and optional context (default)                 |
+| `files_with_matches` | Lexically cursor-paginated matching paths                     |
+| `count`              | Lexically cursor-paginated matching-line counts per file      |
+| `summary`            | Full-scan line and file totals without rendered match content |
+
+Built-in workspace backends perform non-content scans without constructing
+discarded match text. S3 results set `metadata.search.truncated` and warn when
+the backend's object scan limit makes totals or paths incomplete.
+
+`glob` keeps backend relevance or recency order by default. Set `sort: "path"`
+before cursor pagination when stable lexical pages are required.
+
+For exact-string changes, call `edit` with `dry_run: true` to return the same
+before/after diff metadata without writing. Then apply the edit with
+`expected_replacements` set to the previewed count, and optionally add
+`max_replacements` as an independent upper bound. Dry runs advertise read-only
+capability and are safe for `batch` parallelization.
+
 `batch` accepts at most 32 calls and applies at most 16-way concurrency. It
 fans out only when every child declares safe read-only, idempotent behavior;
 mutating and unknown tools are serialized. A partial batch identifies failed

@@ -445,7 +445,7 @@ mod tests {
     ) -> StdioTransport {
         let args = vec![
             "-c".to_string(),
-            "touch \"$1\"; (sleep 0.30; touch \"$2\") & wait".to_string(),
+            "(sleep 0.30; : > \"$2\") & : > \"$1\"; wait".to_string(),
             "mcp-process-tree-test".to_string(),
             started.to_string_lossy().into_owned(),
             leaked.to_string_lossy().into_owned(),

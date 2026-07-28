@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.0] - 2026-07-28
+
+### Added
+
+- Added budget-bounded `read.files` calls for 1-32 text files with ordered
+  per-file results, isolated member failures, and lossless continuation
+  arguments that are included in the response budget.
+- Added `grep` output modes for content, paginated matching paths, paginated
+  per-file matching-line counts, and full-scan summaries without rendering
+  discarded match text.
+- Added read-only `edit` dry runs plus exact and maximum replacement-count
+  guards so mechanical edits can be previewed and bounded before CAS writes.
+
+### Changed
+
+- Added explicit `glob` ordering: `sort: "path"` provides deterministic lexical
+  order before cursor pagination, while the compatible `sort: "backend"`
+  default retains backend relevance or recency order.
+- Added explicit README attribution for the FastCtx repository-tool ergonomics
+  that informed these context-efficiency improvements.
+
 ## [6.4.3] - 2026-07-25
 
 ### Fixed
