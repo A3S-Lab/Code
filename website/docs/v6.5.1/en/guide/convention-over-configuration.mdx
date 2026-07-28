@@ -1,0 +1,233 @@
+---
+title: 'Convention Over Configuration'
+description: 'Build durable work units with filesystem-first agents, tools, connections, subagents, schedules, persistence, and HITL'
+---
+
+# Convention Over Configuration
+
+A3S Code's convention-over-configuration capability is not a separate runner.
+It is a durable-agent composition built from
+[filesystem-first](/guide/filesystem-first) conventions, the session
+runtime, tool permissions, multi-agent delegation, resumable orchestration,
+HITL, run replay, and the serve scheduler. It turns an agent from "a
+chat-capable SDK session" into a work unit with a role, tools, collaborators,
+state, and takeover points.
+
+If you are evaluating directory-first agent frameworks, treat A3S Code as a
+lower-level and more embeddable runtime. Directory conventions, tools,
+connections, child agents, schedules, persistence, and observability are all
+present, but they are not tied to one frontend channel or deployment platform.
+A host can connect them to managed sessions, open-platform APIs, MCP,
+A3S Box, or its own task system.
+
+## Capability Map
+
+| Framework concept     | A3S Code capability                                                      | Notes                                                                                                                                                    |
+| --------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent as a directory  | [Agent Directory](/guide/agent-dir)                                      | `instructions.md`, `agent.acl`, `skills/`, `tools/`, and `schedules/` synthesize a runnable agent.                                                       |
+| Markdown instructions | `instructions.md`, `AGENTS.md`, prompt slots                             | Instructions are injected as slots, so they cannot override harness boundaries, response contracts, or safety gates.                                     |
+| Markdown skills       | [Skills](/guide/skills)                                                  | File skills, inline skills, and explicit registries share discovery semantics. A3S Code ships no default embedded skills.                                |
+| TypeScript tools      | `program`, direct tools, MCP tools, AgentDir script tools                | A3S Code focuses on tool registration, permission gates, typed errors, and verification evidence; script tools run in a constrained QuickJS environment. |
+| Sandbox               | `program` sandbox, permission policy, HITL, A3S Box                      | A3S Code handles tool permissions and script sandboxing; process, filesystem, and network isolation belong in A3S Box.                                   |
+| Channels              | Managed sessions, open-platform WebSocket/SSE, host UI                   | A3S Code does not hard-code channels. Hosts connect streaming events and run replay to any frontend.                                                     |
+| Connections           | MCP, provider config, host-injected credentials                          | Connections are configured and authorized by the host. Do not put tokens in the agent directory.                                                         |
+| Subagents             | [Tasks](/guide/tasks), [Teams](/guide/teams), `workerAgents`             | Supports manual `task`, parallel `parallel_task`, automatic delegation, and dynamic worker agents.                                                       |
+| Schedules             | AgentDir `schedules/` + `serve_agent_dir`                                | Every schedule has an independent session id and can recover context after restart when a session store is configured.                                   |
+| Durable execution     | `SessionStore`, run replay, `parallelResumable`                          | Session history, run events, and resumable workflow checkpoints can be persisted; failed steps retry on resume.                                          |
+| Human-in-the-loop     | [Security](/guide/security), confirmation inheritance, tool confirmation | High-risk tools can request confirmation. Child runs can auto-approve, fail on Ask, or inherit the parent policy.                                        |
+| Evaluations           | [Verification](/guide/verification), reports, regression evidence        | A3S Code productizes evaluation as verification commands, evidence summaries, run replay, and release gates rather than a separate eval suite.           |
+
+## Minimal Shape
+
+An interactive team agent can start from a normal repository:
+
+```text
+repo/
+├── agent.acl
+├── AGENTS.md
+├── .a3s/
+│   ├── agents/
+│   │   ├── release-reviewer.md
+│   │   ├── security-reviewer.md
+│   │   └── verification-runner.md
+│   └── skills/
+│       └── release-readiness.md
+└── src/
+```
+
+`agent.acl` controls models, providers, parallelism, and automatic delegation:
+
+```text
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+
+agent_dirs = ["./.a3s/agents"]
+
+auto_delegation {
+  enabled        = true
+  min_confidence = 0.72
+  max_tasks      = 4
+  auto_parallel  = false
+}
+```
+
+The host starts a session and wires in skills, agent directories, persistence, and delegation policy:
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session('/repo', {
+  skillDirs: ['./.a3s/skills'],
+  agentDirs: ['./.a3s/agents'],
+  autoDelegation: { enabled: true, minConfidence: 0.72, maxTasks: 4 },
+  maxParallelTasks: 8,
+  autoParallel: false,
+  autoSave: true,
+});
+
+const result = await session.send(`
+Prepare a release-readiness check:
+1. Ask the exploration role to find high-risk changes.
+2. Ask the security role to inspect permissions, secrets, and external side effects.
+3. Ask the verification role to list required regression commands.
+4. Merge everything into a blocker-first report.
+`);
+
+console.log(result.text);
+console.log(result.verificationSummaryText);
+```
+
+## Agent Directory Shape
+
+Use a filesystem-first agent when you need long-running behavior, schedules, or directory-scoped tools:
+
+```text
+release-agent/
+├── instructions.md
+├── agent.acl
+├── skills/
+│   └── release-readiness.md
+├── schedules/
+│   └── daily.md
+└── tools/
+    ├── github.md
+    └── search-auth.md
+```
+
+`instructions.md` is the role slot:
+
+```md
+You are a release-readiness agent for this repository.
+Always separate blockers from follow-up work.
+Never invent versions or CI status. Read evidence from the workspace.
+```
+
+`schedules/daily.md` is a recurring turn:
+
+```md
+---
+cron: '0 9 * * *'
+name: daily-release-check
+enabled: true
+---
+
+Summarize merged changes since the last run, inspect release risks,
+and report only blockers plus required verification.
+```
+
+`serve_agent_dir` creates an independent session for every schedule. With a `SessionStore`, restart reloads the current directory config and tools while recovering prior context from the store.
+
+## Tools And Connections
+
+A3S Code exposes tools in three layers:
+
+| Layer                     | Usage                                                    | Good for                                                                            |
+| ------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Built-in and direct tools | `session.tool(...)`, file, shell, git, `generate_object` | The host knows exactly what to run or needs deterministic calls.                    |
+| MCP                       | MCP servers                                              | GitHub, Linear, internal systems, remote host tools, or cross-process capabilities. |
+| AgentDir script tools     | `tools/*.md` + QuickJS `program`                         | Wrapping constrained scripts as model-visible tools.                                |
+
+Tools are not unlimited just because a file exists. Visibility, permission gates, HITL, allow-lists, and sandboxing are controlled by the harness or the AgentDir loader. Give high-privilege tools only to trusted directories, and inject secrets through environment variables and host connections.
+
+## Subagents And Teams
+
+A convention-first `subagents/` concept maps to three A3S Code entry points:
+
+| Entry point                                                                          | Who decides the lanes | Use it when                                                 |
+| ------------------------------------------------------------------------------------ | --------------------- | ----------------------------------------------------------- |
+| `task` / `parallel_task`                                                             | Parent agent          | The model should decide whether and how to delegate.        |
+| `session.task(...)` / `session.tasks(...)`                                           | Host code             | The host knows the lanes but still wants agent execution.   |
+| `session.parallel(...)` / `session.pipeline(...)` / `session.parallelResumable(...)` | Host code             | The workflow must be reproducible, testable, and resumable. |
+
+Automatic delegation depends on agent descriptions and confidence scoring. It fits "the user describes the goal and the runtime chooses specialists." Fixed release flows, batch reviews, and migrations are better expressed explicitly with orchestration.
+
+## Observability And Takeover
+
+Long-running agents must be observable and interruptible. A3S Code's core observation surfaces are:
+
+- `stream()` for incremental events.
+- `runs()`, `runSnapshot()`, and `runEvents()` for active and historical runs.
+- `toolNames()` / `toolDefinitions()` for the visible tool surface.
+- `activeTools()` for currently running tool-call snapshots.
+- `cancelRun(runId)` to interrupt an active turn.
+- `traceEvents()` for compaction, delegation, tools, and verification evidence.
+- `verificationSummaryText` for release or review gates.
+
+A host platform can translate those events into WebSocket/SSE streams, audit
+records, debug panels, and workflow node states.
+
+## Relationship To A3S Box
+
+A3S Code owns the agent loop, tools, delegation, state, and verification. A3S Box owns stronger runtime isolation: MicroVMs, OCI workloads, networking, and TEE. If "the model may run shell, but the process must be isolated" is a requirement, run the tool execution through A3S Box or expose isolated capabilities through MCP.
+
+Typical composition:
+
+```text
+A3S Code session
+  -> permission policy and HITL
+  -> MCP tool adapter
+  -> A3S Box isolated workload
+  -> typed result and verification evidence
+```
+
+## When To Use It
+
+Use this shape for:
+
+- Long-running engineering agents for release checks, dependency upgrades, and repository maintenance.
+- Work that naturally splits into explore / review / verify / implement roles.
+- Automatic delegation with retained permission gates, auditability, and verification evidence.
+- Cron-based reports with recoverable context.
+- Agents that need to connect to managed workflows, hosted sessions, or external collaboration channels.
+
+Avoid it when:
+
+- A single deterministic API call is enough; use a tool contract instead.
+- The task requires full GUI automation but has no structured tool interface; provide MCP or browser tools first, then let A3S Code schedule them.
+- The task needs strong OS-level isolation but only has a local shell enabled; integrate A3S Box.
+
+## Reading Order
+
+1. [Filesystem-First](/guide/filesystem-first)
+2. [Agent Directory](/guide/agent-dir)
+3. [agents/ Role Directory](/guide/filesystem-agents)
+4. [tools/ Tool Directory](/guide/filesystem-tools)
+5. [schedules/ Schedule Directory](/guide/filesystem-schedules)
+6. [Tasks](/guide/tasks)
+7. [Teams](/guide/teams)

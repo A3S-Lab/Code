@@ -1,0 +1,231 @@
+---
+title: 'Direct Tools'
+description: 'Run deterministic host tools without spending an LLM turn'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Direct Tools
+
+`session.tool(name, args)` (and the typed helpers like `glob`, `grep`, `readFile`)
+run a host tool directly, with no model call in the loop. Use them for tests,
+migrations, and host-driven workflows where you want deterministic results
+instead of an agent turn.
+
+Direct calls are host control-plane calls. Apply your own product authorization
+before invoking them; `permissionPolicy` gates model-selected tool calls inside
+an agent turn, not whether your application code is allowed to call an SDK
+helper.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.');
+
+const allowedDirectTools = new Set(['glob', 'grep', 'read', 'generate_object']);
+function assertDirectToolAllowed(name: string) {
+  if (!allowedDirectTools.has(name)) {
+    throw new Error(`direct tool not allowed here: ${name}`);
+  }
+}
+
+// Glob: list files by pattern
+assertDirectToolAllowed('glob');
+const files = await session.glob('**/*.ts');
+console.log(`glob found ${files.length} TypeScript files`);
+
+// Grep: search file contents
+assertDirectToolAllowed('grep');
+const matches = await session.grep('Agent.create');
+const matchCount = matches.split('\n').filter(Boolean).length;
+console.log(`grep found ${matchCount} matching lines`);
+
+// Read a file
+assertDirectToolAllowed('read');
+const readme = await session.readFile('README.md');
+console.log(`README is ${readme.length} bytes`);
+
+// Direct tool call by name
+assertDirectToolAllowed('read');
+const raw = await session.tool('read', { file_path: 'package.json' });
+console.log(`package.json via tool(): ${raw.output.length} bytes`);
+
+// Inspect available tool schemas
+const schemas = session.toolDefinitions();
+console.log(`session exposes ${schemas.length} tools`);
+
+// Structured output: generate a schema-validated JSON object
+assertDirectToolAllowed('generate_object');
+const structured = await session.tool('generate_object', {
+  schema: {
+    type: 'object',
+    required: ['count', 'language'],
+    properties: {
+      count: { type: 'integer' },
+      language: { type: 'string' },
+    },
+  },
+  prompt: 'How many TypeScript files are in this project?',
+  schema_name: 'file_stats',
+});
+if (structured.exitCode !== 0) {
+  throw new Error(structured.output);
+}
+console.log('structured output:', JSON.parse(structured.output).object);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import json
+
+from a3s_code import Agent
+
+agent = Agent.create("agent.acl")
+session = agent.session('.')
+
+ALLOWED_DIRECT_TOOLS = {'glob', 'grep', 'read', 'generate_object'}
+
+
+def assert_direct_tool_allowed(name: str) -> None:
+    if name not in ALLOWED_DIRECT_TOOLS:
+        raise RuntimeError(f'direct tool not allowed here: {name}')
+
+# Glob: list files by pattern
+assert_direct_tool_allowed('glob')
+files = session.glob('**/*.py')
+print(f'glob found {len(files)} Python files')
+
+# Grep: search file contents
+assert_direct_tool_allowed('grep')
+matches = session.grep('Agent.create')
+match_count = len([line for line in matches.splitlines() if line])
+print(f'grep found {match_count} matching lines')
+
+# Read a file
+assert_direct_tool_allowed('read')
+readme = session.read_file('README.md')
+print(f'README is {len(readme)} bytes')
+
+# Direct tool call by name
+assert_direct_tool_allowed('read')
+raw = session.tool('read', {'file_path': 'pyproject.toml'})
+print(f'pyproject.toml via tool(): {len(raw.output)} bytes')
+
+# Inspect available tool schemas
+schemas = session.tool_definitions()
+print(f'session exposes {len(schemas)} tools')
+
+# Structured output: generate a schema-validated JSON object
+assert_direct_tool_allowed('generate_object')
+structured = session.tool('generate_object', {
+    'schema': {
+        'type': 'object',
+        'required': ['count', 'language'],
+        'properties': {
+            'count': {'type': 'integer'},
+            'language': {'type': 'string'},
+        },
+    },
+    'prompt': 'How many Python files are in this project?',
+    'schema_name': 'file_stats',
+})
+if structured.exit_code != 0:
+    raise RuntimeError(structured.output)
+print('structured output:', json.loads(structured.output)['object'])
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func must[T any](value T, err error) T {
+	if err != nil {
+		log.Fatal(err)
+	}
+	return value
+}
+
+func main() {
+	ctx := context.Background()
+	agent := must(code.Create(ctx, "agent.acl"))
+	defer agent.Close(context.Background())
+	session := must(agent.Session(ctx, ".", nil))
+	defer session.Close(context.Background())
+
+	files := must(session.Glob(ctx, "**/*.go"))
+	fmt.Printf("glob found %d Go files\n", len(files))
+
+	matches := must(session.Grep(ctx, "code.Create"))
+	fmt.Printf("grep found %d matching lines\n", len(strings.Split(matches, "\n")))
+
+	readme := must(session.ReadFile(ctx, "README.md", nil))
+	fmt.Printf("README is %d bytes\n", len(readme))
+
+	raw := must(session.Tool(ctx, "read", map[string]any{
+		"file_path": "go.mod",
+	}))
+	fmt.Printf("go.mod via Tool(): %d bytes\n", len(raw.Output))
+
+	schemas := must(session.ToolDefinitions(ctx))
+	fmt.Printf("session exposes %d tools\n", len(schemas))
+
+	structured := must(session.Tool(ctx, "generate_object", map[string]any{
+		"schema": map[string]any{
+			"type":     "object",
+			"required": []string{"count", "language"},
+			"properties": map[string]any{
+				"count":    map[string]any{"type": "integer"},
+				"language": map[string]any{"type": "string"},
+			},
+		},
+		"prompt":      "How many Go files are in this project?",
+		"schema_name": "file_stats",
+	}))
+	if structured.ExitCode != 0 {
+		log.Fatal(structured.Output)
+	}
+	var generated struct {
+		Object map[string]any `json:"object"`
+	}
+	if err := json.Unmarshal([]byte(structured.Output), &generated); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("structured output:", generated.Object)
+}
+```
+
+</Tab>
+</Tabs>
+
+Direct tools execute under the session workspace and should be treated as
+privileged host operations. Most calls (`read`, `glob`, `grep`) are purely
+deterministic; `generate_object` is the exception — it still calls the model
+to fill a schema-validated JSON object, but you drive it explicitly rather than
+through a free-form agent turn.
+
+A runnable version ships at
+`sdk/node/examples/basic/test_generate_object.ts` (Python:
+`sdk/python/examples/test_generate_object.py`). The Go direct-tool
+contract is covered by `sdk/go/session_test.go`.

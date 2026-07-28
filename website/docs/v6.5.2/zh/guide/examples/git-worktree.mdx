@@ -1,0 +1,105 @@
+---
+title: 'Git 工作树'
+description: '通过会话的 Git 工具操作仓库与工作树'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Git 工作树
+
+session 的 `git` 工具以宿主侧特权操作的方式运行 git。它接收一个结构化的命令对象
+（`command`，worktree 操作还可带 `subcommand`/`name`/`path`），并返回包含
+`output` 与 `exitCode` 的工具结果。本示例先检查仓库，然后直接通过工具表面创建、
+列出并移除一个 worktree。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+import * as path from 'path';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/path/to/repo');
+
+// 检查仓库
+const status = await session.git({ command: 'status' });
+console.log(status.output);
+
+// 在新分支上创建工作树
+const wtPath = path.join('/path/to/repo', 'wt-feature-auth');
+const created = await session.git({
+  command: 'worktree',
+  subcommand: 'create',
+  name: 'feature-auth',
+  path: wtPath,
+});
+if (created.exitCode !== 0) throw new Error(`create failed: ${created.output}`);
+
+// 列出工作树
+const list = await session.git({ command: 'worktree', subcommand: 'list' });
+console.log(list.output);
+
+// 完成后删除工作树
+const removed = await session.git({
+  command: 'worktree',
+  subcommand: 'remove',
+  path: wtPath,
+});
+if (removed.exitCode !== 0) throw new Error(`remove failed: ${removed.output}`);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import os
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session("/path/to/repo", SessionOptions())
+
+# 检查仓库
+status = session.git({"command": "status"})
+print(status.output)
+
+# 在新分支上创建工作树
+wt_path = os.path.join("/path/to/repo", "wt-feature-auth")
+created = session.git({
+    "command": "worktree",
+    "subcommand": "create",
+    "name": "feature-auth",
+    "path": wt_path,
+})
+if created.exit_code != 0:
+    raise RuntimeError(f"create failed: {created.output}")
+
+# 列出工作树
+listing = session.git({"command": "worktree", "subcommand": "list"})
+print(listing.output)
+
+# 完成后删除工作树
+removed = session.git({
+    "command": "worktree",
+    "subcommand": "remove",
+    "path": wt_path,
+})
+if removed.exit_code != 0:
+    raise RuntimeError(f"remove failed: {removed.output}")
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+请传入命令对象，而不是位置参数：`{ command: 'status' }`、`{ command: 'diff' }`
+或 `{ command: 'worktree', subcommand: 'list' }`。每次调用都会返回一个工具结果，
+因此在使用 output 之前，应先检查 `exitCode`（Node）/ `exit_code`（Python）。
+
+直接 git 调用是宿主侧特权操作。push、publish 和 release workflow 应放在应用级确认
+或自动化关卡后面。
+
+可运行版本位于 `sdk/node/examples/git/test_worktree_git.ts`。

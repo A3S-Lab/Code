@@ -1,0 +1,94 @@
+---
+title: 'Lifecycle Hooks'
+description: 'Register, count, and unregister lifecycle event callbacks that observe and gate agent activity.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Lifecycle Hooks
+
+Hooks let you observe and gate agent activity as it happens. You register a named
+callback against a lifecycle event, the runtime invokes it at that point, and the
+callback returns a decision such as `{ action: "continue" }`. Use hooks for
+auditing, redaction, logging, or enforcing policy without changing the agent's
+prompt.
+
+The lifecycle is symmetric: `registerHook` adds a callback by name, `hookCount`
+tells you how many are active, and `unregisterHook` removes one by its name.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session(process.cwd());
+
+// Register a named hook on a lifecycle event. The callback must NOT throw —
+// always return a decision such as { action: 'continue' }.
+session.registerHook(
+  'observe-env-read',
+  'pre_tool_use',
+  { pathPattern: '**/.env*' },
+  { priority: 100 },
+  () => ({ action: 'continue' }),
+);
+
+console.log('active hooks:', session.hookCount()); // 1
+
+await session.run('Read the project README and summarize it.');
+
+// Remove the hook by name when you no longer need it.
+session.unregisterHook('observe-env-read');
+console.log('active hooks:', session.hookCount()); // 0
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session('.', SessionOptions())
+
+# Register a named hook on a lifecycle event. The callback returns a decision.
+session.register_hook(
+    'observe-env-read',
+    'pre_tool_use',
+    {'pathPattern': '**/.env*'},
+    {'priority': 100},
+    lambda: {'action': 'continue'},
+)
+
+print("active hooks:", session.hook_count())  # 1
+
+session.run("Read the project README and summarize it.")
+
+# Remove the hook by name when you no longer need it.
+session.unregister_hook('observe-env-read')
+print("active hooks:", session.hook_count())  # 0
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+Notes:
+
+- A hook callback returns a decision. Return `{ action: "continue" }`
+  (Node) / `{"action": "continue"}` (Python) to let the agent proceed.
+- The matcher (`{ pathPattern: '**/.env*' }`) scopes the hook to events whose
+  path matches the pattern, and `{ priority: 100 }` orders hooks on the same
+  event (higher runs first).
+- Node hook callbacks must **not** throw — an uncaught throw can abort the
+  process. Keep the handler body total and always return a decision.
+- `hookCount` / `hook_count` reflects the number of currently registered hooks,
+  which is handy in tests to assert that registration and cleanup happened.
+- `unregisterHook` / `unregister_hook` takes the name you registered with.
+  Always tear down hooks you no longer need so they do not leak across runs.
+- Validate the event path you depend on before using a hook as a production gate.

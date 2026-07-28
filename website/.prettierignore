@@ -2,3 +2,7 @@
 package-lock.json
 pnpm-lock.yaml
 yarn.lock
+
+# Read-only release snapshots
+docs/v6.5.0/
+docs/v6.5.1/

@@ -1,0 +1,204 @@
+---
+title: 'Security'
+description: 'Gate privileged operations with a permission policy, a human-in-the-loop confirmation flow, and a security provider'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Security
+
+Every side effect an agent can produce — writing files, running `bash`, pushing
+git — flows through a permission policy. Start from an `ask` or `deny`
+fallback, then list the patterns that should be `allow`-ed, `deny`-ed, or sent
+to the `ask` path. To keep a human in the loop, add a confirmation policy:
+`ask` decisions pause on a `confirmation_required` event so your application
+(or a person) can approve or reject each call. Use this whenever an agent runs
+against a real repository.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session(process.cwd(), {
+  permissionPolicy: {
+    allow: ['read(*)', 'grep(*)', 'glob(*)', 'ls(*)', 'bash(git status:*)'],
+    deny: ['write(**/.env*)', 'bash(rm -rf*)'],
+    ask: [
+      'write(*)',
+      'edit(*)',
+      'bash(git push:*)',
+      'bash(npm publish:*)',
+      'bash(*)',
+    ],
+    defaultDecision: 'ask',
+  },
+  // Turn the `ask` patterns into a human-in-the-loop confirmation flow.
+  confirmationPolicy: {
+    enabled: true,
+    defaultTimeoutMs: 120000,
+    timeoutAction: 'reject',
+  },
+});
+
+// Stream execution and resolve confirmations as they arrive.
+const stream = await session.stream('Bump the version and push the release');
+while (true) {
+  const next = await stream.next();
+  if (next.done || !next.value) break;
+
+  const event = next.value;
+  if (event.type === 'confirmation_required') {
+    // Look up the pending request for richer display.
+    const [pending] = await session.pendingConfirmations();
+    const toolId = pending?.toolId ?? event.toolId;
+    console.log(`[confirm] ${pending?.toolName ?? event.toolName}`);
+    console.log(JSON.stringify(pending?.args ?? {}, null, 2));
+
+    // In a real app, prompt the user here.
+    const approved = false; // deny risky operations by default
+    if (toolId)
+      await session.confirmToolUse(toolId, approved, 'Reviewed by host');
+  }
+}
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, PermissionPolicy, ConfirmationPolicy
+
+
+def main() -> None:
+    agent = Agent.create("agent.acl")
+
+    opts = SessionOptions()
+    opts.permission_policy = PermissionPolicy(
+        allow=["read(*)", "grep(*)", "glob(*)", "ls(*)", "bash(git status:*)"],
+        deny=["write(**/.env*)", "bash(rm -rf*)"],
+        ask=["write(*)", "edit(*)", "bash(git push:*)", "bash(npm publish:*)", "bash(*)"],
+        default_decision="ask",
+    )
+    # Turn the `ask` patterns into a human-in-the-loop confirmation flow.
+    opts.confirmation_policy = ConfirmationPolicy(
+        enabled=True,
+        default_timeout_ms=120_000,
+        timeout_action="reject",
+    )
+
+    session = agent.session(".", opts)
+
+    # Stream execution and resolve confirmations as they arrive.
+    for event in session.stream("Bump the version and push the release"):
+        if event.event_type == "confirmation_required":
+            # Look up the pending request for richer display.
+            pending = session.pending_confirmations()
+            first = pending[0] if pending else {}
+            tool_id = first.get("tool_id") or event.tool_id
+            print(f"[confirm] {first.get('tool_name') or event.tool_name}")
+
+            # In a real app, prompt the user here.
+            approved = False  # deny risky operations by default
+            if tool_id:
+                session.confirm_tool_use(tool_id, approved, "Reviewed by host")
+
+    session.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+</Tab>
+</Tabs>
+
+## Add a security provider
+
+A `DefaultSecurityProvider` enables input taint tracking and output sanitisation,
+screening tool I/O independently of the permission policy. Pass one through
+`securityProvider` (Node) / `security_provider` (Python); omit it to disable
+security entirely.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent, DefaultSecurityProvider } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session(process.cwd(), {
+  securityProvider: new DefaultSecurityProvider(),
+  permissionPolicy: {
+    allow: ['bash(echo:*)'],
+    ask: ['bash(*)'],
+    defaultDecision: 'ask',
+  },
+});
+
+// Privileged host operations run through the provider + policy.
+const out = await session.bash('echo "screened by the security provider"');
+console.log(out);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, PermissionPolicy, DefaultSecurityProvider
+
+
+def main() -> None:
+    agent = Agent.create("agent.acl")
+
+    opts = SessionOptions()
+    opts.security_provider = DefaultSecurityProvider()
+    opts.permission_policy = PermissionPolicy(
+        allow=["bash(echo:*)"],
+        ask=["bash(*)"],
+        default_decision="ask",
+    )
+
+    session = agent.session(".", opts)
+
+    # Privileged host operations run through the provider + policy.
+    out = session.bash('echo "screened by the security provider"')
+    print(out)
+
+    session.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+</Tab>
+</Tabs>
+
+## Notes
+
+- `defaultDecision` is the fallback for any pattern not matched by `allow` / `deny`
+  / `ask` (one of `allow`, `deny`, or `ask`). Prefer `ask` for real repositories
+  and open up only what automation needs.
+- A `confirmationPolicy` with `enabled: true` is what turns `ask` decisions into a
+  pausing `confirmation_required` event. Resolve each one with
+  `session.confirmToolUse(toolId, approved, reason?)`; if no answer arrives within
+  `defaultTimeoutMs`, `timeoutAction` (`reject`) decides the outcome.
+- Keep release and publish actions (`bash(git push*)`, `bash(npm publish*)`) on the
+  `ask` or `deny` path unless automation owns the final step.
+- Direct host calls such as `session.tool()`, `session.bash()`, and `session.git()`
+  are privileged host operations initiated by your application code. Authorize
+  them in the host before calling the SDK; the permission policy above gates
+  model-selected tool calls inside `send`, `run`, and `stream`.
+
+A runnable confirmation loop ships at
+`sdk/node/examples/streaming/hitl_confirmation_loop.ts` and
+`sdk/python/examples/hitl_confirmation_loop.py`.

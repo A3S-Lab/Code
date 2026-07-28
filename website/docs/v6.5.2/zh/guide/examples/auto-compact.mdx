@@ -1,0 +1,81 @@
+---
+title: '自动压缩'
+description: '让运行时自动将长会话保持在上下文预算内'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 自动压缩
+
+A3S Code 可以替你将长对话保持在模型的上下文预算内。启用 `autoCompact` 后，
+runtime 会持续监测上下文用量；一旦超过 `autoCompactThreshold`，较早的轮次就会被
+压缩成一份持续更新的摘要，让 agent 在大量步骤中始终保持连贯，而无需你手动管理
+token。续写则处理另一个方向：当单条回复因长度被截断时，runtime 会自动继续生成，
+拼出完整回复。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session('/repo', {
+  // 上下文用量超过阈值后压缩较早的回合。
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  // 模型因长度截断单次响应时自动续写。
+  continuationEnabled: true,
+  maxContinuationTurns: 3,
+});
+
+// 运行较长的多步骤任务。运行时会按需压缩较早的回合，
+// 应用不需要自行计算令牌。
+for (let i = 0; i < 50; i++) {
+  await session.send(`Step ${i}: continue refactoring the parser`);
+}
+
+// 检查会话当前携带的内容。
+console.log('history turns:', session.history().length);
+console.log('recent memory:', await session.memoryRecent(5));
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+# 上下文用量超过阈值后压缩较早的回合。
+opts.auto_compact = True
+opts.auto_compact_threshold = 0.75
+# 模型因长度截断单次响应时自动续写。
+opts.continuation_enabled = True
+opts.max_continuation_turns = 3
+session = agent.session("/repo", opts)
+
+# 运行较长的多步骤任务。运行时会按需压缩较早的回合，
+# 应用不需要自行计算令牌。
+for i in range(50):
+    session.send(f"Step {i}: continue refactoring the parser")
+
+# 检查会话当前携带的内容。
+print("history turns:", len(session.history()))
+print("recent memory:", session.memory_recent(5))
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+长 session 若希望由 runtime 替你管理 context pressure，就使用自动压缩。
+`autoCompactThreshold` / `auto_compact_threshold` 是触发压缩的上下文窗口占比
+（0.0–1.0，默认 0.8）；调低它可以更早触发压缩。用 `history()`（同步）和
+`memoryRecent` / `memory_recent` 查看实时 session。

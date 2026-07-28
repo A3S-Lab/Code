@@ -1,0 +1,105 @@
+---
+title: 'Provider 配置'
+description: 'ACL provider 配置与环境变量注入'
+---
+
+# Provider 配置
+
+A3S Code 从 ACL 读取运行时配置。配置源可以是 `.acl` 文件路径，也可以是
+内联 ACL 字符串。JSON 和旧 HCL 配置不属于当前配置面。
+
+## 基本结构
+
+```text
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    name = "Human readable model name"
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+
+storage_backend = "file"
+sessions_dir = ".a3s/sessions"
+```
+
+`apiKey` 与 `api_key` 都可用，`baseUrl` 与 `base_url` 都可用。仓库里只提交模板
+和非敏感默认值；真实 API Key、私有端点和账号相关模型名应放在环境变量或密钥管理系统中。
+
+## Provider Families
+
+内置 factory 覆盖三条路径：
+
+| Provider name                | Client path                | 说明                                           |
+| ---------------------------- | -------------------------- | ---------------------------------------------- |
+| `anthropic` / `claude`       | Anthropic client           | 使用配置中的模型 id 和可选 provider base URL。 |
+| `openai` / `gpt`             | OpenAI-compatible client   | 用于兼容 OpenAI Chat Completions 的端点。      |
+| `glm` / `zhipu` / `bigmodel` | Zhipu-compatible client    | Key 和 base URL 仍应从环境变量注入。           |
+| 其它 provider name           | OpenAI-compatible fallback | 适合私有或自托管的 OpenAI-compatible 服务。    |
+
+运行时不硬编码模型名。`default_model` 和每个 session 的 `model` 都是
+`provider/model-id` 形式的标识符，必须能匹配你在 provider block 里声明的模型。
+
+## 委派控制
+
+```text
+agent_dirs = ["./.a3s/agents"]
+
+auto_delegation {
+  enabled                 = true
+  auto_parallel           = false
+  allow_manual_delegation = true
+  min_confidence          = 0.72
+  max_tasks               = 4
+}
+```
+
+`max_parallel_tasks` 限制有边界的 sibling fan-out。`auto_delegation.enabled`
+开启自动 subagent 委派。顶层 `auto_parallel = false` 会覆盖
+`auto_delegation.auto_parallel`，只关闭自动并行子 agent fan-out；手动
+`task` 与 `parallel_task` 仍可用。设置 `allow_manual_delegation = false` 时，
+这两个模型可见的子 agent 工具都会从 session 工具表面移除。
+
+## 存储
+
+```text
+storage_backend = "memory"
+storage_backend = "file"
+sessions_dir = ".a3s/sessions"
+```
+
+短测试使用 memory；通过 ACL 加载的可恢复本地 session 使用
+`storage_backend = "file"` 和 `sessions_dir`。`storage_url` 会被解析为自定义
+存储元数据，但它本身不会创建文件型 session store。SDK 宿主也可以直接传
+`sessionStore: new FileSessionStore(...)` /
+`opts.session_store = FileSessionStore(...)`。
+
+## 私有 Provider 检查
+
+真实 provider 冒烟测试应通过 `A3S_CONFIG_FILE` 指向本地、git-ignored 的 ACL 文件。
+不要把 provider 值复制进命令、日志、文档、PR 或已提交 fixture。
+
+```bash
+A3S_CONFIG_FILE=/path/to/local/config.acl \
+  scripts/real_config_env_integration.sh
+```
+
+SDK 对齐由单独的真实 provider 检查脚本覆盖：
+
+```bash
+A3S_CONFIG_FILE=/path/to/local/config.acl \
+  scripts/sdk_real_config_env_integration.sh
+```
+
+把 provider 证据保存在发布记录或 CI artifact 中，不写进公开文档。完整本地 API
+表面见 [API Contract](/guide/api-contract)。

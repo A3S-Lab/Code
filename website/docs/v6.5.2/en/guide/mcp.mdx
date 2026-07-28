@@ -1,0 +1,211 @@
+---
+title: 'MCP'
+description: 'Model Context Protocol server integration'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# MCP
+
+MCP connects A3S Code sessions to external tool servers. A stdio server can be
+added to a live session, inspected, called through its registered tools, and
+removed. Tools from a server are registered into the session and named
+`mcp__<server>__<tool>`.
+
+## Add A Server
+
+Use the object-shaped `addMcp(...)` API for new code. It maps directly to the
+core `McpServerConfig` shape and avoids the positional overload's argument
+ordering.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+const count = await session.addMcp({
+  name: 'echo',
+  transport: {
+    type: 'stdio',
+    command: process.execPath,
+    args: ['tools/mcp_echo_server.mjs', 'example-value'],
+  },
+  timeoutMs: 30000,
+});
+
+console.log('registered tools:', count);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+count = session.add_mcp({
+    'name': 'echo',
+    'transport': {
+        'type': 'stdio',
+        'command': 'python',
+        'args': ['tools/mcp_echo_server.py', 'example-value'],
+    },
+    'timeout_ms': 30000,
+})
+print('registered tools:', count)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+count, err := session.AddMCPServer(ctx, code.MCPServerConfig{
+	Name: "echo",
+	Transport: code.MCPTransport{
+		Type:    "stdio",
+		Command: "node",
+		Args:    []string{"tools/mcp_echo_server.mjs", "example-value"},
+	},
+	ToolTimeoutSecs: 30,
+})
+if err != nil {
+	return err
+}
+fmt.Println("registered tools:", count)
+```
+
+</Tab>
+</Tabs>
+
+Python exposes the object-shaped API as `session.add_mcp({...})`.
+`addMcpServer(...)` / `add_mcp_server(...)` and
+`addMcpServerConfig(...)` / `add_mcp_server_config(...)` remain compatibility
+aliases.
+
+For remote servers, use a nested transport object with `type: 'http'` or
+`type: 'streamable-http'`. Supply credentials from the host environment or a
+secret manager, and validate the server before relying on it in production docs
+or release notes.
+
+## Inspect And Remove
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+console.log(await session.mcpStatus());
+console.log(session.toolNames().filter((name) => name.startsWith('mcp__')));
+await session.tool('mcp__echo__echo', { message: 'docs mcp ok' });
+await session.removeMcpServer('echo');
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+print(session.mcp_status())
+print([name for name in session.tool_names() if name.startswith('mcp__')])
+session.tool('mcp__echo__echo', {'message': 'docs mcp ok'})
+session.remove_mcp_server('echo')
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+status, err := session.MCPStatus(ctx)
+if err != nil {
+	return err
+}
+names, err := session.ToolNames(ctx)
+if err != nil {
+	return err
+}
+result, err := session.Tool(ctx, "mcp__echo__echo", map[string]any{
+	"message": "docs mcp ok",
+})
+if err != nil {
+	return err
+}
+fmt.Println(status, names, result.Output)
+if err := session.RemoveMCPServer(ctx, "echo"); err != nil {
+	return err
+}
+```
+
+</Tab>
+</Tabs>
+
+## Ownership And Session Isolation
+
+MCP capability discovery and live mutation have different owners:
+
+- The agent-global manager owns servers loaded from global configuration.
+- A manager supplied through Rust `SessionOptions` is an inherited, read-only
+  capability source for that session.
+- Every built session owns a new private manager for live `addMcp` and
+  `removeMcpServer` operations.
+
+Session assembly reads tool definitions from inherited sources without merging
+session configuration back into those managers. A locally added server can
+shadow an inherited server with the same fully qualified tool names, but only
+inside that session. Removing the local server reveals the inherited tools
+again. It does not unregister, disconnect, or otherwise mutate the global or
+host-owned source, and sibling sessions remain unchanged.
+
+Delegated child agents receive the ordered capability sources so they can call
+the same MCP tools without taking ownership. `session.close()` disconnects only
+the private manager's servers. `agent.close()` and `disconnectIdleMcp(...)`
+remain responsible for the agent-global manager.
+
+For Rust, a host-supplied MCP source requires async session construction so
+discovery happens without blocking:
+
+```rust
+let session = agent
+    .session_builder("/repo")
+    .options(SessionOptions::new().with_mcp(manager))
+    .build()
+    .await?;
+```
+
+## Idle Disconnect
+
+A connected stdio MCP server holds resources — file descriptors and a
+background worker — even while it sits idle. In a long-lived cluster session
+those quiet servers accumulate. `disconnectIdleMcp` (CHANGELOG [3.3.0] "MCP idle
+disconnect") reaps them on demand: it disconnects every global MCP server whose
+last activity is older than the threshold, releasing the FDs and workers, **while
+keeping each server's registered config** so a later tool call reconnects on
+demand.
+
+This is an agent-level method (it operates only on the agent's global MCP manager,
+backed by `McpManager::disconnect_idle(threshold_ms)`). It returns the list of
+disconnected server names.
+
+```ts
+// Reap servers idle longer than 5 minutes. Returns disconnected names.
+const dropped = await agent.disconnectIdleMcp(5 * 60 * 1000);
+console.log('disconnected:', dropped);
+```
+
+```python
+# Reap servers idle longer than 5 minutes. Returns disconnected names.
+dropped = agent.disconnect_idle_mcp(5 * 60 * 1000)
+print('disconnected:', dropped)
+```
+
+The current Go bridge exposes session-local add, status, call, and remove plus
+agent-level `RefreshMCPTools`; it does not yet expose the global idle-disconnect
+sweeper.
+
+Hosts running thousands of long-lived sessions should call this periodically
+from a sweeper (e.g. every 60s with a 5-min threshold). A subsequent tool call
+on a disconnected server re-establishes the connection from its retained config
+— no re-registration needed.
+
+Disconnect also purges orphan timestamps: a `touch()`-without-connect entry
+(recorded for a server that was never actually connected) is swept on each
+`disconnect_idle` call so the activity map cannot grow unbounded over a
+long-running manager's lifetime (CHANGELOG [3.3.0] Fixed "MCP timestamp leak").
+
+## Security
+
+Treat external tool servers as privileged integrations and keep secrets in
+environment variables.

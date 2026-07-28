@@ -1,0 +1,226 @@
+---
+title: '工作区后端'
+description: '让 A3S Code 会话运行在本地文件、S3 兼容对象存储和远端 Git 服务之上。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 工作区后端
+
+Workspace backend 决定内置 workspace 工具从哪里读写文件。默认后端是以 session
+workspace 为根目录的本地文件系统。SDK 也暴露了显式本地后端、S3 兼容对象存储后端，
+以及可选的 HTTP/JSON remote git provider。
+
+当宿主负责 workspace 放置时使用这组能力：本地开发、浏览器或容器 workspace、对象存储
+workspace、托管 session 等。
+
+## 能力矩阵
+
+| Backend                            | 文件工具                               | 搜索工具                                            | Shell 与本地 Git                          |
+| ---------------------------------- | -------------------------------------- | --------------------------------------------------- | ----------------------------------------- |
+| 默认本地 workspace                 | `read`、`write`、`edit`、`patch`、`ls` | `grep`、`glob`                                      | `bash`、`git`                             |
+| `LocalWorkspaceBackend`            | 与默认本地 workspace 相同              | 与默认本地 workspace 相同                           | 与默认本地 workspace 相同                 |
+| `S3WorkspaceBackend`               | `read`、`write`、`edit`、`patch`、`ls` | 设置 `searchEnabled` 后可使用降级版 `grep` / `glob` | 不注册                                    |
+| `S3WorkspaceBackend` + `remoteGit` | S3 文件工具                            | 可选降级版 S3 搜索                                  | 通过 remote git 提供 `git`，不提供 `bash` |
+
+对象存储不能执行本地进程。不要承诺 S3 workspace 上可以直接跑 shell，除非宿主通过
+MCP 或 A3S Box 额外提供隔离后的执行能力。
+
+## 本地后端
+
+显式本地后端适合宿主希望本地与远程 session 都走同一个 option surface 的场景。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent, LocalWorkspaceBackend } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  workspaceBackend: new LocalWorkspaceBackend('/repo'),
+});
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, LocalWorkspaceBackend, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.workspace_backend = LocalWorkspaceBackend("/repo")
+session = agent.session("/repo", opts)
+```
+
+</Tab>
+</Tabs>
+
+## S3 后端
+
+`S3WorkspaceBackend` 会把内置文件工具指向任意 S3 兼容服务，包括 AWS S3、MinIO、
+RustFS、Cloudflare R2 和 Backblaze B2。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent, S3WorkspaceBackend } from '@a3s-lab/code';
+
+const backend = new S3WorkspaceBackend({
+  endpoint: process.env.WORKSPACE_S3_ENDPOINT,
+  region: process.env.WORKSPACE_S3_REGION ?? 'us-east-1',
+  accessKeyId: process.env.S3_ACCESS_KEY_ID!,
+  secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
+  bucket: process.env.WORKSPACE_S3_BUCKET!,
+  prefix: 'sessions/example',
+  forcePathStyle: true,
+  searchEnabled: false,
+});
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('s3://workspace-bucket/sessions/example', {
+  workspaceBackend: backend,
+});
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import os
+
+from a3s_code import Agent, S3WorkspaceBackend, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.workspace_backend = S3WorkspaceBackend(
+    bucket=os.environ["WORKSPACE_S3_BUCKET"],
+    prefix="sessions/example",
+    access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+    secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
+    endpoint=os.environ.get("WORKSPACE_S3_ENDPOINT"),
+    region=os.environ.get("WORKSPACE_S3_REGION", "us-east-1"),
+    force_path_style=True,
+    search_enabled=False,
+)
+session = agent.session("s3://workspace-bucket/sessions/example", opts)
+```
+
+</Tab>
+</Tabs>
+
+S3 搜索是显式 opt-in。启用后，`grep` / `glob` 会降级为对象列表和有上限的下载。
+当 bucket 较大或 endpoint 会限流时，应配置 `maxObjectsScanned`、
+`maxGrepBytesPerObject` 和 `searchConcurrency`。
+
+### S3 选项
+
+| Node.js 选项            | Python 选项                 | 必填 | 作用                                                     |
+| ----------------------- | --------------------------- | ---- | -------------------------------------------------------- |
+| `bucket`                | `bucket`                    | 是   | 存储 workspace 对象的 S3 bucket。                        |
+| `prefix`                | `prefix`                    | 是   | bucket 内的逻辑 workspace 根；使用 `""` 表示 bucket 根。 |
+| `accessKeyId`           | `access_key_id`             | 是   | Access key id，通常从宿主环境读取。                      |
+| `secretAccessKey`       | `secret_access_key`         | 是   | Secret access key，通常从宿主环境或密钥管理系统读取。    |
+| `endpoint`              | `endpoint`                  | 否   | 自定义 S3 兼容 endpoint；AWS S3 默认 endpoint 可省略。   |
+| `region`                | `region`                    | 否   | Region；省略时默认为 `us-east-1`。                       |
+| `sessionToken`          | `session_token`             | 否   | 使用临时凭据时的 STS session token。                     |
+| `forcePathStyle`        | `force_path_style`          | 否   | MinIO、RustFS 和多数非 AWS endpoint 通常设为 `true`。    |
+| `maxReadBytes`          | `max_read_bytes`            | 否   | 单次 read 的大小上限；默认 10 MiB。                      |
+| `searchEnabled`         | `search_enabled`            | 否   | 启用降级版 S3 `grep` / `glob`；默认 false。              |
+| `maxObjectsScanned`     | `max_objects_scanned`       | 否   | 单次 search 扫描对象数上限；仅 search 启用时使用。       |
+| `maxGrepBytesPerObject` | `max_grep_bytes_per_object` | 否   | `grep` 的单对象下载上限；仅 search 启用时使用。          |
+| `searchConcurrency`     | `search_concurrency`        | 否   | `grep` 时并发下载对象数；仅 search 启用时使用。          |
+
+## 远端 Git
+
+`remoteGit` 会在 `workspaceBackend` 之上挂载 HTTP/JSON git provider。它用于没有本地
+`.git` 目录的非本地 workspace。
+
+`remoteGit` 必须和 `workspaceBackend` 一起传；单独传入会被拒绝。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent, S3WorkspaceBackend } from '@a3s-lab/code';
+
+const backend = new S3WorkspaceBackend({
+  endpoint: process.env.WORKSPACE_S3_ENDPOINT,
+  region: process.env.WORKSPACE_S3_REGION ?? 'us-east-1',
+  accessKeyId: process.env.S3_ACCESS_KEY_ID!,
+  secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
+  bucket: process.env.WORKSPACE_S3_BUCKET!,
+  prefix: 'sessions/example',
+  forcePathStyle: true,
+});
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('s3://workspace-bucket/sessions/example', {
+  workspaceBackend: backend,
+  remoteGit: {
+    baseUrl: process.env.REMOTE_GIT_BASE_URL!,
+    repoId: 'sessions/example',
+    bearerToken: process.env.REMOTE_GIT_TOKEN,
+  },
+});
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import os
+
+from a3s_code import (
+    Agent,
+    RemoteGitBackendConfig,
+    S3WorkspaceBackend,
+    SessionOptions,
+)
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.workspace_backend = S3WorkspaceBackend(
+    bucket=os.environ["WORKSPACE_S3_BUCKET"],
+    prefix="sessions/example",
+    access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+    secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
+    endpoint=os.environ.get("WORKSPACE_S3_ENDPOINT"),
+    region=os.environ.get("WORKSPACE_S3_REGION", "us-east-1"),
+    force_path_style=True,
+)
+opts.remote_git = RemoteGitBackendConfig(
+    base_url=os.environ["REMOTE_GIT_BASE_URL"],
+    repo_id="sessions/example",
+    bearer_token=os.environ["REMOTE_GIT_TOKEN"],
+)
+session = agent.session("s3://workspace-bucket/sessions/example", opts)
+```
+
+</Tab>
+</Tabs>
+
+不要把 remote git 凭据写入 `agent.acl` 或 Agent 目录。应由宿主通过环境变量或密钥管理系统注入。
+
+### 远端 Git 选项
+
+| Node.js 选项       | Python 选项          | 必填     | 作用                                                        |
+| ------------------ | -------------------- | -------- | ----------------------------------------------------------- |
+| `baseUrl`          | `base_url`           | 是       | Remote git 服务 base URL，不带末尾斜杠。                    |
+| `repoId`           | `repo_id`            | 是       | 与 remote git 服务约定的不透明仓库 id。                     |
+| `bearerToken`      | `bearer_token`       | 生产环境 | Remote git 服务的 bearer 凭据；只应在受信任开发环境中省略。 |
+| `clientCertPem`    | `client_cert_pem`    | 否       | mTLS 客户端证书路径；必须与客户端 key 成对设置。            |
+| `clientKeyPem`     | `client_key_pem`     | 否       | mTLS 客户端 key 路径；必须与证书成对设置。                  |
+| `requestTimeoutMs` | `request_timeout_ms` | 否       | 单次 HTTP 调用超时，单位毫秒；默认 30000。                  |
+| `maxDiffBytes`     | `max_diff_bytes`     | 否       | `diff` 响应字节数客户端上限；默认 1 MiB。                   |
+| `maxLogEntries`    | `max_log_entries`    | 否       | `log` 条目数客户端上限；默认 200。                          |
+
+## 选择后端
+
+- 普通开发机和 CI checkout 使用默认本地 workspace。
+- 宿主希望总是传 typed backend object 时，使用 `LocalWorkspaceBackend`。
+- workspace 状态必须落在对象存储中时，使用 `S3WorkspaceBackend`。
+- 非本地 workspace 仍需要内置 `git` 工具时，追加 `remoteGit`。
+- 当前 backend 不能直接运行 shell 时，通过 MCP 或 A3S Box 提供执行能力。

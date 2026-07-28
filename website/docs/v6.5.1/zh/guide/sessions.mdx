@@ -1,0 +1,260 @@
+---
+title: '会话'
+description: '创建、流式输出、恢复和保存工作区绑定的 session'
+---
+
+# 会话
+
+`Agent` 持有配置和 provider 状态。`Session` 把这个 agent 绑定到一个工作区和一次对话生命周期。
+
+界面通常从这里开始接入：订阅 Session 产生的 `AgentEvent`，再把事件映射为进度、
+工具调用、权限确认和结果。
+
+```ts title=session.ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+// !focus(1:7)
+const session = agent.session('/repo', {
+  model: 'provider/model-id',
+  planningMode: 'enabled',
+  goalTracking: true,
+  autoDelegation: { enabled: true, maxTasks: 4 },
+  autoParallel: false,
+});
+```
+
+## Rust 构建路径
+
+Rust session 构建以异步为先，因为默认 memory、文件型 store、queue、trajectory
+recording 与 MCP discovery 都可能需要 I/O：
+
+```rust
+let session = agent
+    .session_builder("/repo")
+    .options(options)
+    .build()
+    .await?;
+```
+
+`session_async`、`resume_session_async`、`session_for_agent_async` 与
+`session_for_worker_async` 是直接的异步入口。Node 和 Python 保留现有 factory
+命名，由 native binding 内部委托给同一个异步构建内核。
+
+同步 Rust `Agent::session` 是严格兼容路径：只接受已经显式初始化好的资源，绝不
+启动或阻塞 async runtime。仍需初始化的默认/文件 memory store、文件 session
+store、queue、trajectory recorder，以及 `SessionOptions` 中的任何宿主 MCP
+manager 都会返回 `CodeError::AsyncSessionBuildRequired`；session-option MCP
+capability discovery 始终是异步的。应改用 builder，不要捕获错误后悄悄换 backend。
+同步路径只能继承 agent 初始化时已经缓存的 global MCP tools。
+
+`planningMode` 是显式三态：`'auto'` 使用默认结构化预分析，`'enabled'`
+强制 planning，`'disabled'` 在低延迟调用中关闭 planning。旧的布尔
+`planning` 选项仍保留兼容。
+
+Planning 会写入 run 级状态。宿主应用可以把这些状态渲染成 TaskList，并随着运行事件更新每一项，而不是从文本 token 里猜进度。
+
+## Single-Flight 操作
+
+同一个 session 同时只准入一个会影响 transcript 的操作。`send`、`stream`、它们
+的 attachment variant、slash command 与 `resumeRun` 共用 fail-fast admission
+gate。重叠调用会在读取历史或派发命令前返回 `CodeError::SessionBusy`，不会排队
+等待当前操作。
+
+开始下一次对话操作前，应等待 active result、把 stream 消费到结束，或先取消它。
+即使公开 stream handle 被丢弃或中止，runtime 也会在 producer 真正停止前继续
+持有 lease。直接宿主工具 helper 不改变 transcript，因此不占用这把 lease。
+
+Node 与 Python 的 stream iterator 会在 terminal boundary 等待这段 lifecycle
+清理。iterator 完整消费并报告结束后，立即开始下一次对话操作不会继承上一个
+stream 留下的过期 busy 状态。
+
+## Send
+
+```ts
+const result = await session.send('检查仓库并列出发布阻塞项');
+
+console.log(result.text);
+console.log(result.totalTokens);
+console.log(result.verificationStatus);
+```
+
+## Stream
+
+```ts
+const stream = await session.stream('运行聚焦测试并解释失败');
+
+while (true) {
+  const { value: event, done } = await stream.next();
+  if (done) break;
+  if (!event) continue;
+
+  if (event.text) process.stdout.write(event.text);
+  if (event.toolName) console.log('tool:', event.toolName);
+}
+```
+
+每个 SDK event 都是 `EventEnvelopeV1` 投影，包含 `version === 1`、开放的 `type`
+字符串、完整 `payload` 与可选 `metadata`。`text`、`toolName` 等 convenience field
+由 envelope 统一派生。消费端应保留 default branch，并为未来 event type 保存原始
+payload。
+
+## Side Questions
+
+SDK 没有专用的临时提问 helper。要提出临时问题，可以先快照当前历史，再把它
+显式传给 `send` 或 `stream`。显式 history 只服务这一次调用，不会把答案写回
+session 历史。
+
+```ts
+const snapshot = session.history();
+const answer = await session.send('这个 session 已经看过哪些文件？', snapshot);
+
+console.log(answer.text);
+console.log(session.history().length === snapshot.length);
+```
+
+## Resume
+
+```ts
+import { Agent, FileSessionStore } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.resumeSession('release-review', {
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+});
+```
+
+使用 session store 时设置 `autoSave: true`，或显式调用 `await session.save()`。
+这里恢复的是已保存的 session snapshot；中断 run 的 checkpoint 通过
+`session.resumeRun(runId)` 恢复。参见[持久化](/guide/persistence)。
+
+## Lifecycle and Close
+
+`session.close()` 是一次完整的优雅停止。首次调用会把 session 切换到
+**closed** 状态——之后的 `send`/`stream` 调用会以 `CodeError::SessionClosed`
+快速失败，而不会启动新 run——然后取消正在执行的 run、所有正在进行的委派子
+agent 任务，以及所有挂起的 human-in-the-loop 确认。后续调用是 no-op，且保证
+不会 panic。用 `session.isClosed()`（Node）/ `session.is_closed()`（Python）
+查询关闭状态。
+
+```ts
+session.close();
+if (session.isClosed()) {
+  // send/stream 现在会以 CodeError::SessionClosed 拒绝
+}
+```
+
+```python
+session.close()
+if session.is_closed():
+    # send/stream 现在会以 CodeError::SessionClosed 拒绝
+    pass
+```
+
+### Cancellation token
+
+每个 run 都通过 `child_token()` 从同一个 session 级父 token 派生出自己的
+逐操作取消 token，因此 `close()` 会一次性级联到所有正在进行的工作。需要原始
+token 的嵌入方——例如把它接入宿主侧的 `select!`，或者绕过 `close()` 的
+run-store 和 hook 副作用直接中止 session——可以通过
+`AgentSession::session_cancel_token()` 克隆它。
+
+### Agent-side registry
+
+所属的 `Agent` 通过 `Weak` 引用跟踪它的存活 session（惰性回收），这样控制面
+就能在不持有 session 句柄的情况下驱动生命周期：
+
+- `Agent::list_sessions()` 返回存活的 session ID（已排序，稳定）。
+- `Agent::close_session(id)` 按 ID 关闭单个 session——与
+  `AgentSession::close()` 相同的清理流程，从带外调用。
+- `Agent::close()` 关闭每个存活 session 并拆除 agent 持有的后台资源（同时
+  断开全局 MCP 连接）。返回后，新的 `session` / `resumeSession` 调用会以
+  `CodeError::SessionClosed` 快速失败。
+- `Agent::is_closed()` 报告 agent 自身是否已被关闭。
+
+```ts
+const ids = await agent.listSessions();
+await agent.closeSession(ids[0]);
+await agent.close(); // 关闭所有剩余 session + 全局 MCP
+console.log(agent.isClosed());
+```
+
+```python
+ids = agent.list_sessions()
+agent.close_session(ids[0])
+agent.close()  # 关闭所有剩余 session + 全局 MCP
+print(agent.is_closed())
+```
+
+参见 CHANGELOG `[3.3.0]`——"Session / Agent lifecycle control"。
+
+## Host Identity Labels
+
+`SessionOptions` 携带四个不透明的身份字段，宿主可以在创建 session 时附加。
+框架只负责传递它们——从不解释或强制执行。它们会被传播进 `SessionData`、
+hooks 和 traces，并在 resume 时恢复，因此宿主可以据此驱动多租户聚合、计费
+和分布式 tracing：
+
+| Node (camelCase)  | Python (snake_case) | 含义                                     |
+| ----------------- | ------------------- | ---------------------------------------- |
+| `tenantId`        | `tenant_id`         | 多租户标签                               |
+| `principal`       | `principal`         | 触发 session 的用户 / 服务               |
+| `agentTemplateId` | `agent_template_id` | session 实例化所基于的 agent 模板 / 定义 |
+| `correlationId`   | `correlation_id`    | 分布式 trace 关联 id                     |
+
+```ts
+const session = agent.session('/repo', {
+  tenantId: 'tenant-example',
+  principal: 'principal-example',
+  agentTemplateId: 'agent-template-example',
+  correlationId: 'trace-example',
+});
+```
+
+```python
+opts = SessionOptions()
+opts.tenant_id = 'tenant-example'
+opts.principal = 'principal-example'
+opts.agent_template_id = 'agent-template-example'
+opts.correlation_id = 'trace-example'
+session = agent.session('/repo', opts)
+print(session.tenant_id, session.principal)
+```
+
+参见 CHANGELOG `[3.3.0]`——"Host-provided identity labels"。
+
+## Run Replay
+
+每次 `send()` 或 `stream()` 都会创建 run 记录。应用可以用这些记录做 UI 状态、审计、回放、取消和测试断言：
+
+```ts
+const runs = await session.runs();
+const latest = runs.at(-1);
+
+if (latest) {
+  console.log(await session.runSnapshot(latest.id));
+  console.log(await session.runEvents(latest.id));
+}
+```
+
+`currentRun()` 用来读取调用当下的 current run。`send()` 或 `stream()` 仍在
+执行时，可以把它的 `id` 传给 `cancelRun(id)` 请求取消。空闲时，`currentRun()`
+可能返回 `null`，也可能保留一个 run snapshot；已完成历史应使用 `runs()`，
+取消前必须检查 `status`：
+
+```ts
+const current = await session.currentRun();
+if (current?.id && current.status === 'running') {
+  await session.cancelRun(current.id);
+}
+```
+
+## Agent Definitions
+
+`sessionForAgent()` 应用一个命名的 agent 定义，来源是内置 agents、`.a3s/agents` 或配置的 `agentDirs`。
+
+```ts
+const session = agent.sessionForAgent('/repo', 'explore', ['./agents'], {
+  planningMode: 'auto',
+});
+```

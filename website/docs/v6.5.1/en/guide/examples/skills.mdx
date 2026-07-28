@@ -1,0 +1,95 @@
+---
+title: 'Skills & Custom Agents'
+description: 'Load project skills and custom subagents from filesystem conventions.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Skills & Custom Agents
+
+A3S Code does not ship default embedded skills. Load your own skills and
+subagents from directories on disk. Use `skillDirs` for Markdown skills and
+`agentDirs` for worker/subagent definitions. `registerAgentDir` can add more
+agent definition directories after the session exists; skill directories are
+loaded when the session is created.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+// Add project skills and agents explicitly.
+const session = agent.session('/path/to/project', {
+  skillDirs: ['./.a3s/skills'],
+  agentDirs: ['./.a3s/agents'],
+});
+
+// You can register more agent definition directories after the session exists.
+session.registerAgentDir('./team/shared-agents');
+
+// Inspect what the session loaded.
+console.log('Tools:', session.toolNames());
+console.log('Commands:', session.listCommands());
+
+// The agent now has access to the project skills.
+const result = await session.run(
+  'Use the project conventions skill to scaffold a new module.',
+);
+console.log(result.text);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+# Add project skills and agents explicitly.
+opts = SessionOptions()
+opts.skill_dirs = ['./.a3s/skills']
+opts.agent_dirs = ['./.a3s/agents']
+
+session = agent.session('/path/to/project', opts)
+
+# You can register more agent definition directories after the session exists.
+session.register_agent_dir('./team/shared-agents')
+
+# Inspect what the session loaded.
+print('Tools:', session.tool_names())
+print('Commands:', session.list_commands())
+
+# The agent now has access to the project skills.
+result = session.run(
+    'Use the project conventions skill to scaffold a new module.',
+)
+print(result.text)
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+## Skill Registry Behavior
+
+The default effective skill registry contains no embedded skills.
+`builtinSkills: true` / `builtin_skills = True` is accepted for compatibility,
+but it currently adds nothing. Add skills with `skillDirs` / `skill_dirs`,
+inline skills, or an explicit custom `SkillRegistry`.
+
+For day-to-day projects, keep durable reusable behavior in `.a3s/skills` or a
+configured skill directory.
+
+Custom subagents loaded from `agentDirs` can be referenced by name in
+[`session.parallel(...)`](/guide/examples/orchestration) and
+[`session.pipeline(...)`](/guide/examples/orchestration) alongside the built-in
+registry agents (`explore`, `plan`, `general`, `verification`, `review`).
+
+A runnable version ships at `crates/code/sdk/node/examples/skills/test_custom_skills_agents.ts`.

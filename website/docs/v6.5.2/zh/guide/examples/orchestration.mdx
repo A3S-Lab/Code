@@ -1,0 +1,333 @@
+---
+title: '编排'
+description: '用 session.parallel 扇出独立任务，用 session.pipeline 构建按条目执行的多阶段链，用 session.parallelResumable 恢复带日志的运行。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 编排
+
+本页展示 A3S Code 中的可编程编排原语：用于扇出的 `session.parallel`、用于按条目执行多阶段链的 `session.pipeline`，以及用于在崩溃后仍可恢复的带日志运行的 `session.parallelResumable`。`parallel` 还接受一个可选的 token 预算，让整个扇出共享同一个账本。当你有多个相互独立的子代理任务时使用 parallel；当你需要让每个输入流经一组有序阶段时使用 pipeline。
+
+关于这些原语背后的概念模型，请参阅[编排](/guide/orchestration)。
+
+## 用 `session.parallel` 扇出
+
+`parallel` 接收一个 `AgentStepSpec` 数组并发执行它们，**按输入顺序**（而非完成顺序）为每个 spec 返回一个 `StepOutcome`。每个 spec 路由到一个具名子代理（`explore`、`plan`、`review`、`verification`、`general` 等）。在 spec 上设置 `outputSchema` / `output_schema` 即可拿到经过 schema 校验的 `structured` 结果。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.', {});
+
+// 各步骤互不依赖；结果按输入顺序返回，而不是按完成顺序返回。
+const outcomes = await session.parallel([
+  {
+    taskId: 'langs',
+    agent: 'general',
+    description: 'list',
+    prompt: 'Name three systems languages.',
+    maxSteps: 2,
+  },
+  {
+    taskId: 'safe',
+    agent: 'general',
+    description: 'classify',
+    prompt: 'Is Rust memory-safe without a GC? yes/no.',
+    maxSteps: 2,
+  },
+]);
+
+for (const o of outcomes) {
+  console.log(`[parallel] ${o.taskId}: success=${o.success}`);
+}
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session(".", SessionOptions())
+
+# 各步骤互不依赖；结果按输入顺序返回，而不是按完成顺序返回。
+outcomes = session.parallel([
+    {
+        "task_id": "langs",
+        "agent": "general",
+        "description": "list languages",
+        "prompt": "Name three systems programming languages, comma-separated.",
+        "max_steps": 2,
+    },
+    {
+        "task_id": "verdict",
+        "agent": "general",
+        "description": "classify",
+        "prompt": "Is Rust memory-safe without a GC? Answer yes or no.",
+        "max_steps": 2,
+        # 这个步骤会返回经过模式校验的结构化输出。
+        "output_schema": {
+            "type": "object",
+            "properties": {"memory_safe": {"type": "boolean"}},
+            "required": ["memory_safe"],
+        },
+    },
+])
+
+for o in outcomes:
+    print(f"[parallel] {o['task_id']}: success={o['success']} structured={o.get('structured')}")
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+结果在 Python 中是字典（`o['task_id']`、`o['success']`、`o.get('structured')`），在 Node 中是对象（`o.taskId`、`o.success`、`o.structured`）。会话选项 `maxParallelTasks` / `max_parallel_tasks` 限制并发量；多出的 spec 会排队，而返回的结果数组仍然是完整的，且保持顺序。
+
+## 用 `session.pipeline` 构建按条目执行的链
+
+`pipeline` 接收一个输入 `items` 列表和一个有序的 `stages` 列表。每个条目独立地流经各个阶段——阶段之间**没有屏障**，因此一个较快的条目可以在一个较慢的条目仍处于阶段 1 时就到达阶段 2。阶段回调接收一个 `ctx`：第一个阶段看到 `ctx.item`，后续阶段看到 `ctx.previous`（上一个 `StepOutcome`，你可以基于其 `.output` 继续构建）。返回下一个 spec 以继续，或返回 `null` / `None` 以提前停止该条目的链。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.', {});
+
+// 第二阶段使用第一阶段的输出。阶段回调不能抛出异常；
+// 返回 null 可停止当前条目的处理链。
+const results = await session.pipeline(
+  ['the Rust programming language'],
+  [
+    (ctx) => ({
+      taskId: 'sum',
+      agent: 'general',
+      description: 'summarize',
+      prompt: `In one sentence, what is ${ctx.item}?`,
+      maxSteps: 2,
+    }),
+    (ctx) => ({
+      taskId: 'cls',
+      agent: 'general',
+      description: 'classify',
+      prompt: `Reply YES or NO: does this describe a programming language?\n\n${ctx.previous.output}`,
+      maxSteps: 2,
+    }),
+  ],
+);
+
+for (const r of results) {
+  console.log(
+    `[pipeline] final=${r === null ? null : JSON.stringify(r.output.slice(0, 60))}`,
+  );
+}
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session(".", SessionOptions())
+
+# 每个条目依次经过各阶段，第二阶段使用第一阶段的输出。
+# 阶段返回 None（抛出的异常也会被视为 None）可停止当前条目的处理链。
+results = session.pipeline(
+    ["the Rust programming language"],
+    [
+        lambda ctx: {
+            "task_id": "summarize",
+            "agent": "general",
+            "description": "summarize",
+            "prompt": f"In one sentence, what is {ctx['item']}?",
+            "max_steps": 2,
+        },
+        lambda ctx: {
+            "task_id": "classify",
+            "agent": "general",
+            "description": "classify",
+            "prompt": "Reply with one word YES or NO: does this describe a "
+            f"programming language?\n\n{ctx['previous']['output']}",
+            "max_steps": 2,
+        },
+    ],
+)
+
+for r in results:
+    print(f"[pipeline] final={None if r is None else r['output'][:60]!r}")
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+与 `parallel` 的关键区别：阶段是有序且相互依赖的，但各条目在阶段之间**不会**彼此等待。Node 的阶段回调绝不能抛出异常——出错时返回 `null`；Python 的阶段可以抛出（抛出的阶段会被捕获并视为 `None`）。
+
+## 用 `session.parallelResumable` 恢复运行
+
+`parallelResumable` 就是带日志的 `parallel`。它的第一个参数是 `specs`，第二个参数是稳定的 `workflowId`；每个步骤的结果都会被记录到会话的 store，因此如果进程在运行中途崩溃，你可以用同一个 `workflowId` 再次调用它，已完成的步骤会从日志中重放而不会重新执行。它**需要一个会话 store**——在打开会话时传入 `sessionStore` / `session_store`，否则调用会抛错。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent, FileSessionStore } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+// parallelResumable 会把日志写入会话存储；没有存储时会抛出异常。
+const session = agent.session('.', {
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+});
+
+// 签名是 (specs, workflowId)：先传规格，再传稳定的工作流标识。
+const outcomes = await session.parallelResumable(
+  [
+    {
+      taskId: 'deps',
+      agent: 'general',
+      description: 'audit deps',
+      prompt: 'Check manifests for outdated dependencies.',
+      maxSteps: 2,
+    },
+    {
+      taskId: 'tests',
+      agent: 'verification',
+      description: 'run tests',
+      prompt: 'Run the test suite and summarize failures.',
+      maxSteps: 2,
+    },
+  ],
+  'nightly-audit',
+);
+
+// 使用同一个 workflowId 重跑时，会从日志中回放已完成的步骤。
+console.log(outcomes.map((o) => `${o.taskId}:${o.success}`).join(' '));
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, FileSessionStore
+
+agent = Agent.create("agent.acl")
+# parallel_resumable 会把日志写入会话存储；没有存储时会抛出异常。
+opts = SessionOptions()
+opts.session_store = FileSessionStore("./.a3s/sessions")
+session = agent.session(".", opts)
+
+# 签名是 (specs, workflow_id)：先传规格，再传稳定的工作流标识。
+outcomes = session.parallel_resumable(
+    [
+        {"task_id": "deps", "agent": "general", "description": "audit deps", "prompt": "Check manifests for outdated dependencies.", "max_steps": 2},
+        {"task_id": "tests", "agent": "verification", "description": "run tests", "prompt": "Run the test suite and summarize failures.", "max_steps": 2},
+    ],
+    "nightly-audit",
+)
+
+# 使用同一个 workflow_id 重跑时，会从日志中回放已完成的步骤。
+print(" ".join(f"{o['task_id']}:{o['success']}" for o in outcomes))
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+## 用 `session.parallel` 做预算受限的扇出
+
+把 token 预算作为第二个参数传入，所有子代理就会汇入**同一个账本**。传入预算时，
+`parallel` 解析为 `{ outcomes, budget }`（账本快照）而非原来的结果数组；一旦达到
+上限，之后启动的 step 会被拒绝（`success: false`）。它是软上限——宽扇出可能冲过
+上限几个在飞回合；在飞工作绝不会被强杀。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.', {});
+
+const specs = [
+  {
+    taskId: 'a',
+    agent: 'general',
+    description: 'q1',
+    prompt: 'Reply with one word: ready.',
+    maxSteps: 2,
+  },
+  {
+    taskId: 'b',
+    agent: 'general',
+    description: 'q2',
+    prompt: 'Reply with one word: go.',
+    maxSteps: 2,
+  },
+];
+
+// 传入预算时，parallel() 解析为 { outcomes, budget } —— 所有子代理共享一个账本。
+// （不传时，parallel(specs) 返回原来的数组。）
+const { outcomes, budget } = await session.parallel(specs, 50_000);
+for (const o of outcomes)
+  console.log(`[budget] ${o.taskId}: success=${o.success}`);
+console.log(`spent ${budget.consumedTokens} / ${budget.limitTokens} tokens`);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session(".", SessionOptions())
+
+specs = [
+    {"task_id": "a", "agent": "general", "description": "q1", "prompt": "Reply with one word: ready.", "max_steps": 2},
+    {"task_id": "b", "agent": "general", "description": "q2", "prompt": "Reply with one word: go.", "max_steps": 2},
+]
+
+# 传入预算时，parallel() 返回 {"outcomes", "budget"}（共享账本）。
+res = session.parallel(specs, budget_tokens=50_000)
+for o in res["outcomes"]:
+    print(f"[budget] {o['task_id']}: success={o['success']}")
+print(f"spent {res['budget']['consumed_tokens']} / {res['budget']['limit_tokens']} tokens")
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+说明：
+
+- 三个原语都返回按输入顺序对齐的结果：`{ taskId, success, output, error?, structured? }`（Node 对象）/ `{ "task_id", "success", "output", "error"?, "structured"? }`（Python 字典）。
+- 在 spec 上设置 `outputSchema` / `output_schema` 可在 `structured` 中拿到解析后的结果。
+- `maxSteps` / `max_steps` 限制每个子代理的步数；会话选项 `maxParallelTasks` / `max_parallel_tasks` 限制扇出并发量。
+- 给 `parallel` 传入 token 预算（第 2 个参数 `budgetTokens` / `budget_tokens=`）即可让整个扇出对同一个账本计数；此时返回形状变为 `{ outcomes, budget }`。它是软上限（用量在每次调用之后记账）。
+- Node 的 pipeline 阶段回调绝不能抛出异常——出错时返回 `null`。Python 的阶段可以抛出（抛出的阶段会被捕获并视为 `None`）。
+
+可运行版本见 `sdk/node/examples/orchestration/parallel-pipeline.mjs` 和 `sdk/python/examples/orchestration_workflow.py`。

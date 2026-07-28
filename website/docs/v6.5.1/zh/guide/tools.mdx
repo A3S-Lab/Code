@@ -1,0 +1,218 @@
+---
+title: '工具'
+description: '工具选择、直接工具调用与验证证据'
+---
+
+# 工具
+
+A3S Code 会保留工具注册表。`toolNames()` 返回当前 session 的工具表面。这个表面由
+workspace capability 与 session 级集成共同组装；因此非本地 workspace 可以有意隐藏它无法提供服务的工具。
+
+工具活动通过 Session 事件流传给客户端。界面可以直接展示开始、输出、错误和完成状态，
+不需要解析终端文本。
+
+## 工具表面
+
+| 层级                     | 工具                                                                  | 注册规则                                                                                                                                            |
+| ------------------------ | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace-gated builtins | `read`、`write`、`edit`、`patch`、`grep`、`glob`、`ls`、`bash`、`git` | 仅在 `WorkspaceServices` 声明具备所需 capability 时注册。例如 browser 或 S3 workspace 可以暴露文件工具，同时隐藏 `bash` 或本地 git。                |
+| Runtime builtins         | `web_fetch`、`web_search`、`batch`、`program`                         | 由 core tool executor 注册。`batch` 和 `program` 接收当前 scoped invoker，因此内部工具既受 session surface 限制，也继承调用方的 governance scope。  |
+| Session bootstrap tools  | `task`、`parallel_task`、`generate_object`、`search_skills`、`Skill`  | 构建 `AgentSession` 时加入。关闭 manual delegation 后会移除委派工具；`generate_object` 需要已配置的 LLM client；skill 工具使用有效 skill registry。 |
+| Dynamic integrations     | `mcp__<server>__<tool>` 与宿主注册工具                                | 从 MCP manager 或宿主代码发现后加入。                                                                                                               |
+
+当某个工作流依赖特定工具可见时，在测试或应用诊断中使用 `toolNames()` /
+`toolDefinitions()` 验证。工具可见性不是安全授权。`send`、`run`、`stream`
+中的模型选择工具调用会经过 active-skill restriction、permission policy、
+confirmation、hooks、budget、queue/timeout、cancellation、递归调用保护、output
+sanitization、artifact limit 与 workspace path check。`session.tool(...)` 这类
+direct SDK call 使用另一条显式 policy，见下文。
+`activeTools()` 回答的是另一个问题：当前 active operation 中哪些工具调用正在运行。
+
+## 统一 Invocation 内核
+
+Runtime 会为每次调用标记 origin：
+
+| Origin      | 示例                                                                                        | Permission / confirmation policy                                            |
+| ----------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Agent       | 模型在 `send` 或 `stream` 中发出 tool call                                                  | 应用完整的模型侧 policy 与 HITL。                                           |
+| Nested      | `batch`、`program` 或其他 orchestrator 的内部调用                                           | 继承调用方的 governed invoker 与 invocation stack。                         |
+| Host direct | `session.tool(...)`、typed read/write/git helper、`session.program(...)` 与直接 task helper | Trusted control plane：宿主已经选择该调用，因此跳过模型侧 permission/HITL。 |
+
+三种 origin 都经过同一个 invocation kernel。Pre-hook 可以阻止调用；budget check
+在 side effect 前执行；queue/timeout、cancellation、递归保护、post-hook 与
+security-provider output sanitization 仍然有效。安装 scoped invoker 后，nested call
+不能回退到 raw registry。
+
+Host-direct policy 不是面向终端用户的授权系统。Embedding application 必须先完成
+用户身份认证和授权，再把请求翻译成 direct SDK helper。关闭 session 会通过 session
+cancellation scope 中止正在执行的 host-direct tool。
+
+```ts
+const files = await session.glob('src/**/*.rs');
+const hits = await session.grep('PermissionPolicy');
+const status = await session.git('status');
+const output = await session.bash('cargo test -p a3s-code-core');
+const raw = await session.tool('read', { file_path: 'README.md' });
+const schemas = session.toolDefinitions();
+const hitLines = hits.split('\n').filter(Boolean).length;
+
+console.log(files.length, hitLines, output.length, schemas.length);
+console.log(status.output);
+console.log(raw.output);
+```
+
+直接工具调用在 session 工作区下执行，应视为宿主侧特权操作。它们不更新 transcript，
+因此不占用 session 的 single-flight conversation lease。`session.tool(...)`、
+`session.program(...)`、`session.git(...)`、`session.writeFile(...)`、
+`session.ls(...)`、`session.editFile(...)` 和 `session.patchFile(...)` 返回
+`ToolResult`，读取 `output`、`exitCode` 和可选的 `metadataJson`。类型化
+read/search/shell helper 返回更简单的值：`readFile`、`grep`、`bash` 返回字符串，
+`glob` 返回字符串数组。长输出应在进入 prompt 前先摘要。
+
+## 结构化输出：`generate_object`
+
+`generate_object` 工具会让配置的 LLM 生成 JSON 对象，对响应执行 JSON Schema
+校验，并且只在零退出码结果中返回校验后的对象。它有两种使用方式：
+
+1. **智能体自主调用**：LLM 在工具列表中看到 `generate_object`，在需要结构化输出时自行决定调用。
+2. **直接调用**：应用通过 `session.tool('generate_object', ...)` 绕过模型驱动的工具选择步骤；工具内部仍会调用配置的 LLM。
+
+```ts
+const result = await session.tool('generate_object', {
+  schema: {
+    type: 'object',
+    required: ['sentiment', 'confidence'],
+    properties: {
+      sentiment: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+    },
+  },
+  prompt: '分类: "这个产品太棒了！"',
+  schema_name: 'sentiment',
+  mode: 'tool',
+  max_repair_attempts: 2,
+});
+
+if (result.exitCode !== 0) {
+  throw new Error(result.output);
+}
+
+const { object } = JSON.parse(result.output);
+// object = { sentiment: "positive", confidence: 0.95 }
+```
+
+### 参数
+
+| 参数                  | 类型    | 必填 | 说明                                                                  |
+| --------------------- | ------- | ---- | --------------------------------------------------------------------- |
+| `schema`              | object  | 是   | 用于校验输出的 JSON Schema                                            |
+| `prompt`              | string  | 是   | 描述要生成或提取的内容                                                |
+| `schema_name`         | string  | 否   | 短名称（默认 "result"）                                               |
+| `schema_description`  | string  | 否   | 合成工具的描述                                                        |
+| `system`              | string  | 否   | 可选系统提示                                                          |
+| `mode`                | string  | 否   | `"auto"` / `"strict"` / `"json"` / `"tool"` / `"prompt"`（默认 auto） |
+| `max_repair_attempts` | integer | 否   | 0–5（默认 2）                                                         |
+
+### 模式
+
+- **tool**：注入一个合成工具，其参数就是 schema。这是当前跨 provider 的默认路径。
+- **prompt**：将 schema 指令追加到 prompt 中。它适合作为仅 prompt 的回退路径，但更依赖模型遵循指令。
+- **auto**：当前解析为 `tool`。
+- **strict** / **json**：API 接受这两个值，但当前运行路径会解析为 `tool`，因为 provider 级 `response_format` 尚未在这里启用。
+
+### 流式
+
+通过 `session.stream()` 调用时，部分对象以 `tool_output_delta` 事件发出：
+
+```ts
+const stream = await session.stream('提取所有发票...');
+
+while (true) {
+  const { value: ev, done } = await stream.next();
+  if (done) break;
+  if (!ev) continue;
+
+  if (ev.type === 'tool_output_delta' && ev.toolName === 'generate_object') {
+    const { object_partial } = JSON.parse(ev.text);
+    renderProgress(object_partial);
+  }
+}
+```
+
+### 修复重试
+
+如果 LLM 输出未通过 schema 校验，工具会自动将校验错误反馈给模型并重试。这能处理缺少必填字段、枚举值错误等边界情况，无需应用层重试逻辑。
+
+委派子任务可以直接使用 SDK helper，它们底层仍是同一组核心工具：
+
+```ts
+await session.task({
+  agent: 'explore',
+  description: '查找认证文件',
+  prompt: '检查认证相关文件，并返回紧凑证据列表。',
+});
+
+await session.tasks([
+  { agent: 'explore', description: '查找测试', prompt: '定位认证测试。' },
+  {
+    agent: 'verification',
+    description: '检查风险',
+    prompt: '审查认证边界情况。',
+  },
+]);
+```
+
+自动 subagent 委派也使用同一组核心工具。`autoParallel: false` 只关闭自动并行 fan-out，不会移除 `parallel_task` 或 `session.tasks(...)`。
+
+## Programmatic Tool Calling
+
+PTC 不是单次 direct tool call。`program` 工具会在内嵌 QuickJS VM 中运行一个受限 JavaScript 脚本；脚本定义 `async function run(ctx, inputs)`，用一个有边界的程序替代多轮模型工具调用。
+
+不要让模型反复消耗工具回合：
+
+```text
+grep -> read -> grep -> read -> summarize
+```
+
+可以让模型请求 `program` 运行一个脚本：
+
+```js
+// search-auth.js
+export default async function run(ctx, inputs) {
+  const hits = await ctx.grep(inputs.query, { glob: '*.rs' });
+  const files = await ctx.glob('crates/**/*.rs');
+  const snippets = [];
+
+  for (const file of files.slice(0, 20)) {
+    const content = await ctx.readFile(file);
+    if (content.includes(inputs.query)) {
+      snippets.push({ file, preview: content.slice(0, 1200) });
+    }
+  }
+
+  return {
+    summary: `找到 ${snippets.length} 个与 ${inputs.query} 相关的候选文件`,
+    evidence: snippets,
+    rawSearch: hits,
+  };
+}
+```
+
+SDK 的 `session.program(...)` 支持内联 `source`，也支持 workspace 相对路径 `.js` 或 `.mjs` 文件：
+
+```js
+await session.program({
+  path: 'scripts/ptc/search-auth.js',
+  inputs: { query: 'PermissionPolicy' },
+  allowedTools: ['grep', 'glob', 'read'],
+  limits: {
+    timeoutMs: 30000,
+    maxToolCalls: 30,
+    maxOutputBytes: 65536,
+  },
+});
+```
+
+`session.program(...)` 等价于 `session.tool('program', { type: 'script', language: 'javascript', ... })`，只是使用 SDK 原生命名。如果省略 `allowedTools` / `allowed_tools`，脚本可以调用除 `program` 之外的所有已注册工具。需要更小能力面时，再显式传入 allow-list。
+
+QuickJS VM 不获得文件系统、网络、子进程或环境变量权限。脚本唯一有用的能力来自 `ctx`，这些方法会回到 A3S Code 的受控工具执行路径。PTC 会返回可读的 `ToolResult.output`，结构化数据位于 `ToolResult.metadataJson`。原始大输出不应反复塞进 prompt；应先总结发现、证据引用、风险和建议下一步。

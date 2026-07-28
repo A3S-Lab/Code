@@ -1,0 +1,156 @@
+---
+title: 'Prompt Slots'
+description: '在不覆盖核心行为的前提下，定制智能体的角色设定、准则与回复风格。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Prompt Slots
+
+Prompt slots 是以声明式方式塑造智能体系统提示词的会话选项。请把它们用于宿主级行为——
+角色设定、编码规范、输出风格——这些内容不应写在每次的用户 prompt 里。这些槽位叠加在
+智能体内置指令之上，因此核心工具行为（读取、写入、运行命令）会被保留。
+
+共有四个槽位：
+
+| 槽位                               | 用途                         |
+| ---------------------------------- | ---------------------------- |
+| `role` / `role`                    | 智能体采用的角色设定。       |
+| `guidelines` / `guidelines`        | 智能体必须遵循的规范与规则。 |
+| `responseStyle` / `response_style` | 智能体回复的格式方式。       |
+| `extra` / `extra`                  | 逐字追加的自由格式指令。     |
+
+## 基本用法
+
+在打开会话时设置任意子集的槽位。它们会应用于该会话的每一轮对话。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+async function main() {
+  // create() accepts an .acl file path or inline ACL string.
+  const agent = await Agent.create('agent.acl');
+
+  const session = agent.session('/repo', {
+    role: 'release-readiness reviewer',
+    guidelines:
+      'Find blockers before improvements. Require command evidence for done claims.',
+    responseStyle: 'concise, findings first',
+  });
+
+  const result = await session.send('Is this repo ready to ship?');
+  console.log(result.text);
+
+  session.close();
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+def main():
+    # create() accepts an .acl file path or inline ACL string.
+    agent = Agent.create('agent.acl')
+
+    opts = SessionOptions()
+    opts.role = 'release-readiness reviewer'
+    opts.guidelines = 'Find blockers before improvements. Require command evidence for done claims.'
+    opts.response_style = 'concise, findings first'
+    session = agent.session('/repo', opts)
+
+    result = session.send('Is this repo ready to ship?')
+    print(result.text)
+
+    session.close()
+
+main()
+```
+
+</Tab>
+</Tabs>
+
+## 逐个槽位说明
+
+这四个槽位彼此独立组合。仅设置角色的会话、带有严格准则的评审者、以及追加自由格式指令的
+会话，使用的都是同一组选项。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+// 1. Custom role only.
+let session = agent.session(workspace, {
+  role: 'You are a senior Rust developer who specializes in async programming.',
+});
+
+// 2. Role + guidelines + response style.
+session = agent.session(workspace, {
+  role: 'You are a Python code reviewer.',
+  guidelines: 'Always check for type hints. Flag any use of `eval()`.',
+  responseStyle: 'Reply in bullet points. Be concise.',
+});
+
+// 3. Extra freeform instructions only.
+session = agent.session(workspace, {
+  extra: "Always end your response with '-- A3S'",
+});
+
+// Core tool behavior is preserved regardless of the slots.
+session = agent.session(workspace, {
+  role: 'You are a minimalist file manager.',
+  guidelines: 'Only create files when explicitly asked.',
+});
+const result = await session.send(
+  "Create a file called test.txt with the content 'prompt slots work'. Then read it back.",
+);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+# 1. Custom role only.
+opts = SessionOptions()
+opts.role = 'You are a senior Rust developer who specializes in async programming.'
+session = agent.session(workspace, opts)
+
+# 2. Role + guidelines + response style.
+opts = SessionOptions()
+opts.role = 'You are a Python code reviewer.'
+opts.guidelines = 'Always check for type hints. Flag any use of `eval()`.'
+opts.response_style = 'Reply in bullet points. Be concise.'
+session = agent.session(workspace, opts)
+
+# 3. Extra freeform instructions only.
+opts = SessionOptions()
+opts.extra = "Always end your response with '-- A3S'"
+session = agent.session(workspace, opts)
+
+# Core tool behavior is preserved regardless of the slots.
+opts = SessionOptions()
+opts.role = 'You are a minimalist file manager.'
+opts.guidelines = 'Only create files when explicitly asked.'
+session = agent.session(workspace, opts)
+result = session.send(
+    "Create a file called test.txt with the content 'prompt slots work'. Then read it back.",
+)
+```
+
+</Tab>
+</Tabs>
+
+槽位用于定制角色设定与行为规则；它们不会禁用工具，也不会改变智能体的核心循环。请把
+任务相关的请求保留在 `send` 消息中，而把应在会话每一轮都生效的行为交给这些槽位。
+
+可运行版本位于 `crates/code/sdk/node/examples/skills/test_prompt_slots.ts`。

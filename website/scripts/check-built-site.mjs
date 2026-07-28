@@ -1,4 +1,4 @@
-import { access, readdir, readFile } from 'node:fs/promises';
+import { access, readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -48,6 +48,38 @@ const brokenReferences = [];
 const htmlFiles = await collectHtmlFiles(outputRoot);
 const referencePattern = /(?:href|src)="([^"]+)"/g;
 
+async function resolvesToBuiltFile(relativeReference) {
+  const decodedReference = decodeURIComponent(relativeReference);
+  const candidates =
+    decodedReference === '' || decodedReference.endsWith('/')
+      ? [path.join(decodedReference, 'index.html')]
+      : [
+          decodedReference,
+          `${decodedReference}.html`,
+          path.join(decodedReference, 'index.html'),
+        ];
+
+  for (const candidate of candidates) {
+    const outputPath = path.resolve(outputRoot, candidate);
+    if (
+      outputPath !== outputRoot &&
+      !outputPath.startsWith(`${outputRoot}${path.sep}`)
+    ) {
+      continue;
+    }
+
+    try {
+      if ((await stat(outputPath)).isFile()) {
+        return true;
+      }
+    } catch {
+      // Try the next supported output form.
+    }
+  }
+
+  return false;
+}
+
 for (const htmlFile of htmlFiles) {
   const html = await readFile(htmlFile, 'utf8');
 
@@ -76,14 +108,7 @@ for (const htmlFile of htmlFiles) {
       .slice(base.length)
       .split(/[?#]/, 1)[0]
       .replace(/\/+/g, '/');
-    const outputPath =
-      withoutBase === '' || withoutBase.endsWith('/')
-        ? path.join(outputRoot, withoutBase, 'index.html')
-        : path.join(outputRoot, withoutBase);
-
-    try {
-      await access(outputPath);
-    } catch {
+    if (!(await resolvesToBuiltFile(withoutBase))) {
       brokenReferences.push(
         `${path.relative(outputRoot, htmlFile)} -> ${rawReference}`,
       );

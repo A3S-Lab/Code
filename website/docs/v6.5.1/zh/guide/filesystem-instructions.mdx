@@ -1,0 +1,50 @@
+---
+title: 'instructions.md'
+description: 'AgentDir 主 Agent 的角色 slot，以及它和 AGENTS.md 的边界。'
+---
+
+# instructions.md
+
+`instructions.md` 是 AgentDir 主 Agent 的角色文件。它是唯一必需文件，内容会作为 `SystemPromptSlots.role` 注入到每个调度 session 中。
+
+它和 `AGENTS.md` 的边界不同：
+
+| 文件              | 范围                   | 适合内容                                     |
+| ----------------- | ---------------------- | -------------------------------------------- |
+| `AGENTS.md`       | workspace 或子目录     | 项目规则、验证命令、代码风格、安全要求。     |
+| `instructions.md` | 一个 AgentDir 主 Agent | 角色身份、工作目标、输出偏好、长期任务边界。 |
+
+`instructions.md` 是纯 Markdown，不需要 frontmatter。它不会覆盖 harness 的 `BOUNDARIES`、响应格式、工具权限或验证要求。
+
+## 推荐写法
+
+```md
+You are a release-readiness agent for this repository.
+
+Responsibilities:
+
+- Track release blockers and risky changes.
+- Separate shipped changes from follow-up work.
+- Never invent CI status, versions, or owners.
+
+Output:
+
+- Start with blockers.
+- Include evidence paths.
+- End with required verification commands.
+```
+
+保持短、稳定、可审查。把项目级命令放进 `AGENTS.md`，把可复用流程放进 `skills/`，把周期触发目标放进 `schedules/*.md`。`instructions.md` 只回答“这个长期 Agent 是谁，以及它默认如何工作”。
+
+## 会被哪里使用
+
+`serve_agent_dir` 会在启动时读取 `instructions.md`，并把它应用到每个已启用 schedule 的 session。配合 `SessionStore` 恢复历史时，历史上下文来自 store，但当前的 `instructions.md` 会重新加载，因此修改角色文件会在下一次重启后生效。
+
+交互式 session 如果只需要临时角色，可以直接使用 SDK 的 prompt slots；当角色需要随仓库保存、接受 review 或被多个调度复用时，再把它固化到 `instructions.md`。
+
+## 不要放什么
+
+- 不要放密钥、token、私有 endpoint 凭据。
+- 不要写“忽略安全规则”或“自动批准所有高风险动作”。
+- 不要复制大型项目手册；用链接和 skills 组织细节。
+- 不要把 schedule prompt 写在这里；每个周期性任务应放在 `schedules/*.md`。

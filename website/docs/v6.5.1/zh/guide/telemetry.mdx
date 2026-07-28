@@ -1,0 +1,26 @@
+---
+title: 'Telemetry'
+description: '追踪事件、验证摘要与运行时可观测性'
+---
+
+# Telemetry
+
+A3S Code 通过事件、trace、验证报告和结果元数据暴露运行证据。
+
+```ts
+const result = await session.send('运行发布检查');
+
+console.log(result.promptTokens);
+console.log(result.completionTokens);
+console.log(result.totalTokens);
+console.log(result.toolCallsCount);
+console.log(result.verificationStatus);
+console.log(result.verificationSummaryText);
+
+console.log(session.traceEvents());
+console.log(session.verificationReports());
+```
+
+流式输出返回版本化 `AgentEvent` 信封。`version`、`type`、`payload` 和可选
+`metadata` 是稳定、无损的字段；文本、工具名、工具输出、错误、token 总数和验证摘要
+是便捷投影。未来未知的 `type` 及其 payload 仍会完整提供给宿主。

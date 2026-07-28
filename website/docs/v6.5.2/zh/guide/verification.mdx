@@ -1,0 +1,233 @@
+---
+title: '验证'
+description: '用验证命令和报告证明一个回合已完成，而不是轻信模型的声明'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 验证
+
+运行时将"完成"视为必须被**证明**的事实，而不仅仅是被声明的结果。当模型说某个任务已完成时，这句话本身毫无价值。验证把声明转化为证据：你声明一组*必须*成功的命令，运行时执行它们，结果会携带一份你可以检视、据以拦截或呈现给用户的报告。
+
+验证是会话级的。Rust 核心运行每条命令，记录其退出状态和输出，并将每份报告汇总为一份随回合结果一同返回的摘要。
+
+产品界面可以先展示交付摘要，再列出支持结论的命令输出和文件级改动。
+
+## 运行验证命令
+
+一条验证命令就是一个小而具名的检查：一个 `id`、一个 `kind`、一段可读的 `description`，以及要运行的 `command`。当某个失败应被视为硬失败而非警告时，将该检查标记为 `required`。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+const report = await session.verifyCommands('release-readiness', [
+  {
+    id: 'build',
+    kind: 'build',
+    description: 'Project compiles',
+    command: 'cargo build --all-features',
+    required: true,
+    timeoutMs: 120000,
+  },
+  {
+    id: 'tests',
+    kind: 'test',
+    description: 'Unit tests pass',
+    command: 'cargo test',
+    required: true,
+  },
+]);
+
+console.log(report);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+report = session.verify_commands('release-readiness', [
+    {
+        "id": "build",
+        "kind": "build",
+        "description": "Project compiles",
+        "command": "cargo build --all-features",
+        "required": True,
+        "timeout_ms": 120000,
+    },
+    {
+        "id": "tests",
+        "kind": "test",
+        "description": "Unit tests pass",
+        "command": "cargo test",
+        "required": True,
+    },
+])
+
+print(report)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+report, err := session.VerifyCommands(ctx, "release-readiness", []code.VerificationCommand{
+	{
+		ID:          "build",
+		Kind:        "build",
+		Description: "项目可以编译",
+		Command:     "cargo build --all-features",
+		Required:    true,
+		TimeoutMS:   code.Ptr(uint64(120000)),
+	},
+	{
+		ID:          "tests",
+		Kind:        "test",
+		Description: "单元测试通过",
+		Command:     "cargo test",
+		Required:    true,
+	},
+})
+if err != nil {
+	return err
+}
+fmt.Println(report)
+```
+
+</Tab>
+</Tabs>
+
+`subject`（此处为 `release-readiness`）为这一批检查命名，使同一会话内的多次验证在报告中保持彼此独立。
+
+## 读取回合结束后的摘要
+
+每个回合的 `send()` 结果同样携带只读的验证字段，因此你无需单独发起一次验证调用即可据结果拦截。用这些字段判断该回合是否真正完成了它所声称的工作。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+const result = await session.send('Apply the fix and run the checks');
+
+console.log(result.verificationStatus);
+console.log(result.pendingVerificationCount);
+console.log(result.failedVerificationCount);
+console.log(result.verificationReportCount);
+console.log(result.verificationSummaryText);
+
+if (result.failedVerificationCount > 0) {
+  throw new Error('Turn reported done but verification failed');
+}
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+result = session.send('Apply the fix and run the checks')
+
+print(result.verification_status)
+print(result.pending_verification_count)
+print(result.failed_verification_count)
+print(result.verification_report_count)
+print(result.verification_summary_text)
+
+if result.failed_verification_count > 0:
+    raise RuntimeError('Turn reported done but verification failed')
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Run(ctx, "应用修复并运行检查")
+if err != nil {
+	return err
+}
+
+summary := result.VerificationSummary
+fmt.Println(summary.Status)
+fmt.Println(summary.PendingRequiredCheckCount)
+fmt.Println(summary.FailedCheckCount)
+fmt.Println(summary.ReportCount)
+fmt.Println(result.VerificationSummaryText)
+
+if summary.FailedCheckCount > 0 {
+	return errors.New("回合声称完成，但验证失败")
+}
+```
+
+</Tab>
+</Tabs>
+
+## 检视报告与摘要
+
+除了逐回合的字段之外，会话还暴露完整的报告集合、一份结构化摘要、可用的预设，以及一份可读的概要。该概要是向人展示某回合*为何*通过或失败的最快方式。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { formatVerificationSummary } from '@a3s-lab/code';
+
+const reports = session.verificationReports();
+const summary = session.verificationSummary();
+const presets = session.verificationPresets();
+
+// 会话辅助方法和独立格式化函数都能生成可读文本。
+console.log(session.verificationSummaryText());
+console.log(formatVerificationSummary(summary));
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+reports = session.verification_reports()
+summary = session.verification_summary()
+presets = session.verification_presets()
+
+# 会话辅助方法返回可直接打印的可读摘要。
+print(session.verification_summary_text())
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+reports, err := session.VerificationReports(ctx)
+if err != nil {
+	return err
+}
+summary, err := session.VerificationSummary(ctx)
+if err != nil {
+	return err
+}
+presets, err := session.VerificationPresets(ctx)
+if err != nil {
+	return err
+}
+text, err := session.VerificationSummaryText(ctx)
+if err != nil {
+	return err
+}
+
+fmt.Println(len(reports), summary.Status, len(presets))
+fmt.Println(text)
+```
+
+</Tab>
+</Tabs>
+
+`verificationPresets()` 返回根据 workspace 文件推断出的检查模板，例如
+`Cargo.toml`、`package.json`、`pyproject.toml` 和 `go.mod`。请把它们当作起点：
+在用来拦截发布或用户可见自动化之前，应审查命令、超时和 required 标记是否适合该项目。
+
+## 为何重要
+
+没有验证，一次智能体运行止于模型的一面之词。有了验证，运行止于可观测的证据：编译通过的构建、跑通的测试套件、保持沉默的代码检查器。摘要文本提供审计轨迹；结果上的计数让你能在自动化中以失败为默认（fail closed）。
+
+## 相关
+
+- [遥测](/guide/telemetry) —— 将追踪事件和验证报告作为运行时证据进行检视。
+- [限制](/guide/limits) —— 在验证运行之前限定一个回合能完成多少工作量。

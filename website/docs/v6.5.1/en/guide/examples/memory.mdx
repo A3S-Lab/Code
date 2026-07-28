@@ -1,0 +1,95 @@
+---
+title: 'Memory'
+description: 'Remember task outcomes and recall them later by similarity, tags, or recency.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Memory
+
+Persistent memory lets a session record what worked (and what didn't) and pull
+those facts back later. SDK sessions have a default file-backed store at
+`<workspace>/.a3s/memory`; the TUI defaults to `~/.a3s/memory` so its `/memory`
+panel and live session browse the same durable store. Pass a `memoryStore` only
+when you want to override the path or backend. You can write outcomes explicitly
+with `rememberSuccess` / `rememberFailure`, then retrieve them with
+`recallSimilar`, `recallByTags`, or `memoryRecent`.
+
+LLM extraction is also enabled by default. It runs after significant completed
+turns to distill durable preferences, workflows, decisions, and failure lessons,
+while trivial turns are skipped.
+Default stores consolidate exact and conservative near-duplicate memories into a
+canonical item, while conflict-like memories remain separate for future recall.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent, FileMemoryStore } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  memoryStore: new FileMemoryStore('./.a3s/memory'),
+});
+
+// Record outcomes as the agent works.
+await session.rememberSuccess(
+  'refactored auth module',
+  ['read', 'edit', 'bash'],
+  'all tests passed after extracting AuthService',
+);
+await session.rememberFailure(
+  'migration attempt',
+  ['bash'],
+  'psql connection refused on port 5432',
+);
+
+// Recall later — by recency, by tool tags, or by semantic similarity.
+const recent = await session.memoryRecent(10);
+const byTags = await session.recallByTags(['read', 'edit'], 5);
+const similar = await session.recallSimilar('auth refactor', 5);
+
+console.log(recent.length, byTags.length, similar.length);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, FileMemoryStore
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.memory_store = FileMemoryStore("./.a3s/memory")
+session = agent.session("/repo", opts)
+
+# Record outcomes as the agent works. Python helpers are synchronous — no await.
+session.remember_success(
+    "refactored auth module",
+    ["read", "edit", "bash"],
+    "all tests passed after extracting AuthService",
+)
+session.remember_failure(
+    "migration attempt",
+    ["bash"],
+    "psql connection refused on port 5432",
+)
+
+# Recall later — by recency, by tool tags, or by semantic similarity.
+recent = session.memory_recent(10)
+by_tags = session.recall_by_tags(["read", "edit"], 5)
+similar = session.recall_similar("auth refactor", 5)
+
+print(len(recent), len(by_tags), len(similar))
+```
+
+</Tab>
+</Tabs>
+
+Both `rememberSuccess` and `rememberFailure` take a short task description, the
+list of tools involved (which double as searchable tags), and the outcome text.
+The three recall methods are complementary: `memoryRecent(limit)` returns the
+newest entries, `recallByTags(tags, limit)` filters by the tool tags you
+recorded, and `recallSimilar(query, limit)` ranks entries by semantic relevance
+to a query. If the default file store cannot be created, the session falls back
+to in-process memory and exposes an init warning.

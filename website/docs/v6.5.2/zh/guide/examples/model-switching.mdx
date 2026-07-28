@@ -1,0 +1,173 @@
+---
+title: '模型切换'
+description: '为每个会话选择模型，并可针对每个 worker 智能体单独覆盖，以平衡成本与能力。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 模型切换
+
+会话会使用你在 `model` 选项中传入的模型运行。先声明一次智能体可以访问的所有模型，
+然后为每个会话选择其一——用快速模型处理高频、低风险的工作，用能力更强的模型进行
+评审。当你希望在不改动任何提示词的前提下，于成本与能力之间取得平衡时，可以使用这
+种方式。
+
+## 声明模型
+
+模型在智能体文件中配置。每个 provider 列出它对外暴露的模型，当会话未设置 `model`
+时则使用 `default_model`。
+
+```text
+default_model = "provider/fast-model"
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "fast-model" { tool_call = true }
+  models "review-model" { tool_call = true }
+}
+```
+
+## 按会话设置模型
+
+`model` 选项在打开会话时设置。该会话运行的一切——`send`、`run`、`task`、
+`parallel`、`pipeline`——都会使用该模型。同一个智能体配置可以为不同会话驱动不同的
+模型选择。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+// 快速模型用于高频、低风险工作。
+const fast = agent.session('/repo', { model: 'provider/fast-model' });
+const draft = await fast.run('Draft a short README intro for this project.');
+console.log('draft:', draft);
+await fast.close();
+
+// 更强的模型用于审查或风险更高的推理。
+const review = agent.session('/repo', { model: 'provider/review-model' });
+const critique = await review.run(`Critique this README intro:\n${draft}`);
+console.log('critique:', critique);
+await review.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+# 快速模型用于高频、低风险工作。
+fast_opts = SessionOptions()
+fast_opts.model = 'provider/fast-model'
+fast = agent.session('/repo', fast_opts)
+draft = fast.run('Draft a short README intro for this project.')
+print('draft:', draft)
+fast.close()
+
+# 更强的模型用于审查或风险更高的推理。
+review_opts = SessionOptions()
+review_opts.model = 'provider/review-model'
+review = agent.session('/repo', review_opts)
+critique = review.run(f'Critique this README intro:\n{draft}')
+print('critique:', critique)
+review.close()
+```
+
+</Tab>
+</Tabs>
+
+## 按工作智能体覆盖模型
+
+worker 智能体通过各自的规格进行注册。为某个 worker 指定自己的 `model`，即可让它运行
+在与委派它的会话不同（通常更小、更廉价）的模型上。编排会话保留自己的 `model`，只有被
+委派出去的工作才会运行在该 worker 的模型上。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session('/repo', {
+  // 编排器继续使用更强的模型。
+  model: 'provider/review-model',
+  // 高频探索使用成本更低的模型。
+  workerAgents: [
+    {
+      name: 'scout',
+      description: 'Reads files and reports findings.',
+      model: 'provider/fast-model',
+    },
+  ],
+});
+
+// 把探索委派给低成本工作智能体，再由强模型完成推理。
+const findings = await session.task({
+  agent: 'scout',
+  description: 'List public APIs',
+  prompt: 'List every public API in src/.',
+});
+const plan = await session.run(
+  `Given these findings, propose a refactor:\n${findings.output}`,
+);
+console.log(plan);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, WorkerAgentSpec
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+# 编排器继续使用更强的模型。
+opts.model = 'provider/review-model'
+# 高频探索使用成本更低的模型。
+scout = WorkerAgentSpec(
+    name='scout',
+    description='Reads files and reports findings.',
+)
+scout.model = 'provider/fast-model'
+opts.worker_agents = [scout]
+session = agent.session('/repo', opts)
+
+# 把探索委派给低成本工作智能体，再由强模型完成推理。
+findings = session.task({
+    "agent": "scout",
+    "description": "List public APIs",
+    "prompt": "List every public API in src/.",
+})
+plan = session.run(f'Given these findings, propose a refactor:\n{findings.output}')
+print(plan)
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+说明：
+
+- `model` 的取值是一个标识符字符串，由你的运行时解析为智能体文件中声明的某个模型——
+  SDK 中没有任何硬编码的模型名称。
+- worker 智能体的 `model` 仅作用于该智能体被委派的工作。会话自身的
+  `send`/`run`/`task` 调用仍使用会话的 `model`。
+- 未设置 `model` 的 worker 会继承会话的 `model`，因此你只需为那些换用不同模型确有收益
+  的智能体进行覆盖即可。
+
+展示会话 `model` 选项的可运行版本位于
+`sdk/node/examples/basic/test_api_alignment.ts`。

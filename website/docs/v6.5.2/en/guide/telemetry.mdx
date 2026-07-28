@@ -1,0 +1,112 @@
+---
+title: 'Telemetry'
+description: 'Trace events, verification summaries, and runtime observability'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Telemetry
+
+A3S Code exposes runtime evidence through events, traces, verification reports,
+and result metadata.
+
+## Result metadata
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+const result = await session.send('Run release checks');
+
+console.log(result.promptTokens);
+console.log(result.completionTokens);
+console.log(result.totalTokens);
+console.log(result.toolCallsCount);
+console.log(result.verificationStatus);
+console.log(result.verificationSummaryText);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+result = session.send('Run release checks')
+
+print(result.prompt_tokens)
+print(result.completion_tokens)
+print(result.total_tokens)
+print(result.tool_calls_count)
+print(result.verification_status)
+print(result.verification_summary_text)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Run(ctx, "Run release checks")
+if err != nil {
+	return err
+}
+
+fmt.Println(result.Usage.PromptTokens)
+fmt.Println(result.Usage.CompletionTokens)
+fmt.Println(result.Usage.TotalTokens)
+fmt.Println(result.ToolCallsCount)
+fmt.Println(result.VerificationSummary.Status)
+fmt.Println(result.VerificationSummaryText)
+```
+
+</Tab>
+</Tabs>
+
+## Traces and verification
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+const trace = session.traceEvents();
+const reports = session.verificationReports();
+const summary = session.verificationSummary();
+const text = session.verificationSummaryText();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+trace = session.trace_events()
+reports = session.verification_reports()
+summary = session.verification_summary()
+text = session.verification_summary_text()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+trace, traceErr := session.TraceEvents(ctx)
+reports, reportsErr := session.VerificationReports(ctx)
+summary, summaryErr := session.VerificationSummary(ctx)
+text, textErr := session.VerificationSummaryText(ctx)
+```
+
+</Tab>
+</Tabs>
+
+The Go methods cross the native bridge and therefore return an `error`; Node.js
+and Python expose these in-process observation getters synchronously.
+
+## Streaming events
+
+Streaming returns versioned `AgentEvent` envelopes. `version`, `type`,
+`payload`, and optional `metadata` are the stable lossless fields; text, tool
+names, tool output, errors, token totals, and verification summaries are
+convenience projections. Unknown future `type` values and their payloads remain
+available to hosts.
+
+## Logging
+
+For product telemetry, prefer structured trace events and verification reports
+over scraping console output.

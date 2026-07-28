@@ -1,0 +1,91 @@
+---
+title: 'agent.acl'
+description: 'File-based runtime config for models, providers, queues, skill dirs, and worker agent dirs'
+---
+
+# agent.acl
+
+`agent.acl` is the runtime configuration entry point for filesystem-first agents. It turns model, provider, queue, storage, skill directory, and worker agent directory policy into versioned configuration.
+
+An SDK host may pass any `.acl` file explicitly with `Agent.create("agent.acl")`.
+The `a3s code` TUI discovers `.a3s/config.acl` from the workspace and then
+`~/.a3s/config.acl`; it does not require a root `agent.acl`. An AgentDir-local
+`agent.acl` serves that durable agent. The format is the same; discovery and
+scope are different.
+
+## Basic Config
+
+```text
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+```
+
+`apiKey` / `api_key` and `baseUrl` / `base_url` are accepted aliases. The
+runtime does not hard-code model names; `default_model` and session-level
+`model` overrides must match the `provider/model-id` values declared here.
+
+Inject tokens through environment variables. Do not commit credentials. Once `agent.acl` lives in the repo, it is product behavior and should be reviewed like code.
+
+## Directory Discovery
+
+```text
+skill_dirs = ["./.a3s/skills"]
+agent_dirs = ["./.a3s/agents"]
+
+auto_delegation {
+  enabled        = true
+  min_confidence = 0.72
+  max_tasks      = 4
+  auto_parallel  = false
+}
+```
+
+`skill_dirs` points at reusable skills. `agent_dirs` points at worker/subagent definitions. Automatic delegation decides whether the model may choose a worker; it does not remove parent-session permission policy, tool visibility, or verification requirements.
+
+## Session Storage
+
+```text
+storage_backend = "file"
+sessions_dir = ".a3s/sessions"
+```
+
+`sessions_dir` is the local file-session persistence path used when the session
+does not receive an explicit SDK `sessionStore`. `storage_backend = "memory"`
+keeps sessions ephemeral. `storage_url` is parsed as custom storage metadata,
+but it does not create a local `FileSessionStore` by itself.
+
+## Inside AgentDir
+
+AgentDir `agent.acl` is optional. When present, `AgentDir::load` parses it into `CodeConfig` and combines it with `instructions.md`, `skills/`, `tools/`, and `schedules/`.
+
+```text
+release-agent/
+├── instructions.md
+├── agent.acl
+├── skills/
+├── tools/
+└── schedules/
+```
+
+Good AgentDir config includes the agent's default model, providers, limits, queue policy, and private skill dirs. Keep environment differences outside the file; use env vars or host injection for development, staging, and production differences.
+
+## Boundaries
+
+- Config decides what can be connected and how the runtime starts; it does not bypass permission gates.
+- Prefer workspace-relative or AgentDir-relative paths.
+- Tune automatic delegation together with high-quality `agents/` descriptions.
+- High-risk tools should still go through HITL or allow-lists.

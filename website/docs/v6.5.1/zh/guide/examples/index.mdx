@@ -1,0 +1,22 @@
+---
+title: '示例'
+description: '当前 A3S Code runtime 和 SDK surface 示例'
+---
+
+# 示例
+
+这些示例使用当前 A3S Code runtime 的概念：ACL 配置、环境变量注入、session API、
+流式输出、结构化输出、基于 task 的委派与自动 subagent 委派、可编程编排
+（`parallel` / `pipeline` / `parallelResumable`）、`.a3s/agents`、技能、记忆、
+直接工具、workspace backend、验证、Git 工作流以及可选的 MCP/队列基础设施。
+
+建议从[快速开始](/guide/examples/quick-start)开始，然后按主题阅读：
+
+- **Session 与运行时** — [快速开始](/guide/examples/quick-start)、[流式输出](/guide/examples/streaming)、[模型切换](/guide/examples/model-switching)、[自动压缩](/guide/examples/auto-compact)
+- **结构化与可编程** — [结构化输出](/guide/examples/structured-output)、[编排](/guide/examples/orchestration)、[规划](/guide/examples/planning)、[批处理](/guide/examples/batch)
+- **工具与上下文** — [直接工具](/guide/examples/direct-tools)、[ripgrep 上下文](/guide/examples/ripgrep-context)、[Prompt 插槽](/guide/examples/prompt-slots)、[Git worktree](/guide/examples/git-worktree)
+- **技能与记忆** — [技能](/guide/examples/skills)、[技能工具](/guide/examples/skill-tool)、[记忆](/guide/examples/memory)、[Hooks](/guide/examples/hooks)
+- **安全与验证** — [安全](/guide/examples/security)
+- **MCP 与队列** — [Lane 队列](/guide/examples/lane-queue)、[外部任务](/guide/examples/external-tasks)
+
+参见[编排](/guide/examples/orchestration)示例，了解扇出（`parallel`）、分阶段（`pipeline`）和可恢复（`parallelResumable`）的多 agent 工作流。

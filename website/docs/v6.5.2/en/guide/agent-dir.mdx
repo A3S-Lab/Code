@@ -1,0 +1,106 @@
+---
+title: 'Agent Directory'
+description: 'AgentDir structure, loading map, serve daemon, and durability boundaries'
+---
+
+# Agent Directory
+
+AgentDir is a single directory that defines a durable agent by convention. One folder contains the main agent's role, runtime config, private skills, directory-scoped tools, and recurring schedules. `AgentDir::load` reads the directory and synthesizes existing A3S Code config objects; it does not introduce a new runtime or a new prompt system.
+
+The deliberate design choice: `instructions.md` is injected as a prompt **slot**, not as a system-prompt override. The harness keeps `BOUNDARIES`, response-format contracts, tool visibility, the safety gate, and verification authoritative. A scheduled run is always a full harness turn through `AgentSession::send`, never a raw model call.
+
+This feature is Rust-side and gated behind the `serve` Cargo feature. Library-only embedders that never enable `serve` pay no extra cost.
+
+## Structure
+
+```text
+my-agent/
+├── instructions.md   (required)  Role and guidelines. Injected as a prompt slot.
+├── agent.acl         (optional)  Model, providers, queue, and CodeConfig.
+├── skills/           (optional)  Private *.md skills.
+├── schedules/        (optional)  Cron jobs: frontmatter + body prompt.
+└── tools/            (optional)  Tool specs: kind: mcp or kind: script.
+```
+
+Only `instructions.md` is required. Everything else is optional; missing directories simply contribute no capability.
+
+`AgentDir::load` maps paths onto existing objects:
+
+| Path              | Becomes                  | Notes                                                                                                  |
+| ----------------- | ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `instructions.md` | `SystemPromptSlots.role` | Main-agent role slot; see [instructions.md](/guide/filesystem-instructions).                           |
+| `agent.acl`       | `CodeConfig`             | Model, provider, queue, and directory discovery; see [agent.acl](/guide/filesystem-config).            |
+| `skills/`         | `skill_dirs`             | AgentDir-private skills; see [skills/ Skill Directory](/guide/filesystem-skills).                      |
+| `schedules/*.md`  | `Vec<ScheduleSpec>`      | One recurring turn per file; see [schedules/ Schedule Directory](/guide/filesystem-schedules).         |
+| `tools/*.md`      | `Vec<ToolSpec>`          | One `kind: mcp` or `kind: script` tool per file; see [tools/ Tool Directory](/guide/filesystem-tools). |
+
+## Serve Daemon
+
+`serve_agent_dir` loads schedules into independent sessions and runs their cron loops until a cancellation token fires. Every fire routes the schedule prompt through `AgentSession::send`.
+
+```rust
+use a3s_code_core::config::AgentDir;
+use a3s_code_core::serve::serve_agent_dir;
+use a3s_code_core::Agent;
+use tokio_util::sync::CancellationToken;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let agent_dir = AgentDir::load("./my-agent")?;
+    let agent = Agent::from_config(agent_dir.config.clone()).await?;
+    let cancel = CancellationToken::new();
+
+    serve_agent_dir(&agent, &agent_dir, "./workspace", None, cancel).await?;
+    Ok(())
+}
+```
+
+Enable the feature in `Cargo.toml`:
+
+```toml
+[dependencies]
+a3s-code-core = { version = "...", features = ["serve"] }
+```
+
+## Overriding Session Options
+
+The fourth argument to `serve_agent_dir` is an optional `SessionOptions` that merges into every schedule session. Use it to pin the model, LLM client, session store, or prompt slots. The daemon always assigns each schedule a stable `session_id` of `schedule:<name>`; any `session_id` in the extra options is intentionally ignored so schedules do not collide in the same store. If `prompt_slots` is omitted, the AgentDir `instructions.md` slot is used.
+
+```rust
+use a3s_code_core::SessionOptions;
+
+let extra = SessionOptions::new(); // set model, session_store, etc.
+serve_agent_dir(&agent, &agent_dir, "./workspace", Some(extra), cancel).await?;
+```
+
+Graceful cancellation lets in-flight turns finish the current loop iteration. An AgentDir with no enabled schedules returns immediately.
+
+## Durability
+
+By default every daemon boot starts schedule sessions fresh. Pass a `SessionStore` in `SessionOptions` to resume existing `schedule:<name>` sessions from stored conversation history.
+
+```rust
+use a3s_code_core::SessionOptions;
+
+let extra = SessionOptions::new().with_file_session_store("./sessions");
+serve_agent_dir(&agent, &agent_dir, "./workspace", Some(extra), cancel).await?;
+```
+
+Recovery restores history only. The current `instructions.md`, `skills/`, and `tools/` are re-applied on every boot, so directory edits take effect after restart even for resumed sessions.
+
+## Status
+
+| Area                                      | State                                                                 |
+| ----------------------------------------- | --------------------------------------------------------------------- |
+| `instructions.md`, `agent.acl`, `skills/` | Loaded and used.                                                      |
+| `schedules/` + serve daemon               | Implemented (`serve` feature).                                        |
+| Rehydrate on boot                         | Implemented with `SessionStore`.                                      |
+| `tools/` (`kind: mcp`)                    | Implemented; declarative MCP servers register into schedule sessions. |
+| `tools/` (`kind: script`)                 | Implemented; sandboxed QuickJS tool over the `program` path.          |
+
+## Notes
+
+- `instructions.md` is a role slot, so harness boundaries, response contracts, and verification remain authoritative.
+- AgentDir is the main-agent directory. It is different from `agent_dirs` / `registerAgentDir`, which scan [agents/ Role Directory](/guide/filesystem-agents) for worker definitions.
+- Keep secrets in environment variables or host secret systems, not in the directory.
+- `tools/` is installed by the serve daemon per schedule session. Normal interactive sessions should use direct tools, MCP, or SDK registration.

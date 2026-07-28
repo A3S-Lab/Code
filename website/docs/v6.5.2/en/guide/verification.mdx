@@ -1,0 +1,251 @@
+---
+title: 'Verification'
+description: "Prove a turn is done with verification commands and reports instead of trusting the model's claim"
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Verification
+
+The harness treats "done" as something that must be **proven**, not merely
+claimed. When the model says a task is complete, that assertion is worth nothing
+on its own. Verification turns the claim into evidence: you declare commands
+that _must_ succeed, the runtime executes them, and the result carries a report
+you can inspect, gate on, or surface to a user.
+
+Verification is session-scoped. The Rust core runs each command, records its
+exit status and output, and rolls every report up into a single summary that
+travels alongside the turn result.
+
+Product UIs can present a delivery summary first, followed by the command output
+and file-level changes used to support it.
+
+## Running Verification Commands
+
+A verification command is a small, named check: an `id`, a `kind`, a
+human-readable `description`, and the `command` to run. Mark a check `required`
+when a failure should be treated as a hard failure rather than a warning.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+const report = await session.verifyCommands('release-readiness', [
+  {
+    id: 'build',
+    kind: 'build',
+    description: 'Project compiles',
+    command: 'cargo build --all-features',
+    required: true,
+    timeoutMs: 120000,
+  },
+  {
+    id: 'tests',
+    kind: 'test',
+    description: 'Unit tests pass',
+    command: 'cargo test',
+    required: true,
+  },
+]);
+
+console.log(report);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+report = session.verify_commands('release-readiness', [
+    {
+        "id": "build",
+        "kind": "build",
+        "description": "Project compiles",
+        "command": "cargo build --all-features",
+        "required": True,
+        "timeout_ms": 120000,
+    },
+    {
+        "id": "tests",
+        "kind": "test",
+        "description": "Unit tests pass",
+        "command": "cargo test",
+        "required": True,
+    },
+])
+
+print(report)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+report, err := session.VerifyCommands(ctx, "release-readiness", []code.VerificationCommand{
+	{
+		ID:          "build",
+		Kind:        "build",
+		Description: "Project compiles",
+		Command:     "cargo build --all-features",
+		Required:    true,
+		TimeoutMS:   code.Ptr(uint64(120000)),
+	},
+	{
+		ID:          "tests",
+		Kind:        "test",
+		Description: "Unit tests pass",
+		Command:     "cargo test",
+		Required:    true,
+	},
+})
+if err != nil {
+	return err
+}
+fmt.Println(report)
+```
+
+</Tab>
+</Tabs>
+
+The `subject` (here `release-readiness`) labels the batch so multiple
+verification passes within one session stay distinct in the reports.
+
+## Reading The Post-Turn Summary
+
+Every turn's `send()` result also carries read-only verification fields, so you
+can gate on the outcome without issuing a separate verification call. Use these
+to decide whether the turn actually accomplished what it claimed.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+const result = await session.send('Apply the fix and run the checks');
+
+console.log(result.verificationStatus);
+console.log(result.pendingVerificationCount);
+console.log(result.failedVerificationCount);
+console.log(result.verificationReportCount);
+console.log(result.verificationSummaryText);
+
+if (result.failedVerificationCount > 0) {
+  throw new Error('Turn reported done but verification failed');
+}
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+result = session.send('Apply the fix and run the checks')
+
+print(result.verification_status)
+print(result.pending_verification_count)
+print(result.failed_verification_count)
+print(result.verification_report_count)
+print(result.verification_summary_text)
+
+if result.failed_verification_count > 0:
+    raise RuntimeError('Turn reported done but verification failed')
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Run(ctx, "Apply the fix and run the checks")
+if err != nil {
+	return err
+}
+
+summary := result.VerificationSummary
+fmt.Println(summary.Status)
+fmt.Println(summary.PendingRequiredCheckCount)
+fmt.Println(summary.FailedCheckCount)
+fmt.Println(summary.ReportCount)
+fmt.Println(result.VerificationSummaryText)
+
+if summary.FailedCheckCount > 0 {
+	return errors.New("turn reported done but verification failed")
+}
+```
+
+</Tab>
+</Tabs>
+
+## Inspecting Reports And Summaries
+
+Beyond the per-turn fields, the session exposes the full set of reports, a
+structured summary, the available presets, and a human-readable digest. The
+digest is the quickest way to show a person _why_ a turn passed or failed.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { formatVerificationSummary } from '@a3s-lab/code';
+
+const reports = session.verificationReports();
+const summary = session.verificationSummary();
+const presets = session.verificationPresets();
+
+// Either the session helper or the standalone formatter yields readable text.
+console.log(session.verificationSummaryText());
+console.log(formatVerificationSummary(summary));
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+reports = session.verification_reports()
+summary = session.verification_summary()
+presets = session.verification_presets()
+
+# The session helper returns a ready-to-print human-readable digest.
+print(session.verification_summary_text())
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+reports, err := session.VerificationReports(ctx)
+if err != nil {
+	return err
+}
+summary, err := session.VerificationSummary(ctx)
+if err != nil {
+	return err
+}
+presets, err := session.VerificationPresets(ctx)
+if err != nil {
+	return err
+}
+text, err := session.VerificationSummaryText(ctx)
+if err != nil {
+	return err
+}
+
+fmt.Println(len(reports), summary.Status, len(presets))
+fmt.Println(text)
+```
+
+</Tab>
+</Tabs>
+
+`verificationPresets()` returns workspace-aware check templates inferred from
+files such as `Cargo.toml`, `package.json`, `pyproject.toml`, and `go.mod`.
+Treat them as starting points: review the commands, timeouts, and required
+flags for the project before gating releases or user-visible automation.
+
+## Why This Matters
+
+Without verification, an agent run ends on the model's word. With it, the run
+ends on observable evidence: a build that compiled, a test suite that passed, a
+linter that stayed quiet. The summary text gives you the audit trail; the
+counts on the result let you fail closed in automation.
+
+## Related
+
+- [Telemetry](/guide/telemetry) — inspect trace events and verification reports as runtime evidence.
+- [Limits](/guide/limits) — bound how much work a turn can do before verification runs.

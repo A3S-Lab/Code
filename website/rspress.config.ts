@@ -40,8 +40,8 @@ export default defineConfig({
     ],
   },
   multiVersion: {
-    default: 'v6',
-    versions: ['v6'],
+    default: 'v6.5.2',
+    versions: ['v6.5.2', 'v6.5.1', 'v6.5.0'],
   },
   locales: [
     {

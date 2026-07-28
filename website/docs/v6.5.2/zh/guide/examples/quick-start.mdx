@@ -1,0 +1,98 @@
+---
+title: '快速开始'
+description: '创建一个 agent、打开会话、运行一轮对话并读取结果。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 快速开始
+
+最小可用的程序：从 ACL 文件创建一个 agent，在项目目录上打开会话，使用 `send`
+运行一轮对话，打印回复文本，并查看运行时为该轮生成的验证摘要。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+// Agent.create 接受 .acl 文件路径或内联 ACL 字符串。
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.');
+
+const result = await session.send('List the files in this directory.');
+console.log(result.text);
+
+// 运行时在生成这个回合时执行的验证。
+console.log(result.verificationSummaryText);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent
+
+# Agent.create 接受 .acl 文件路径或内联 ACL 字符串。
+agent = Agent.create('agent.acl')
+session = agent.session('.')
+
+result = session.send('List the files in this directory.')
+print(result.text)
+
+# 运行时在生成这个回合时执行的验证。
+print(result.verification_summary_text)
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "列出当前目录中的文件。")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+	fmt.Println(result.VerificationSummaryText)
+}
+```
+
+</Tab>
+</Tabs>
+
+三个 SDK 的 Agent 工厂都接收 `.acl` 文件路径或内联 ACL 源文本。使用完毕后，
+请务必关闭 Session，让 Runtime 刷新状态并释放资源。Go 的关闭操作接收 Context，
+因为它还需要停止桥接程序持有的原生资源。
+
+## 下一步
+
+- [流式输出](/guide/examples/streaming) — 在 token 到达时实时读取
+- [会话](/guide/sessions) — 持久化并恢复对话

@@ -1,0 +1,93 @@
+---
+title: '技能与自定义智能体'
+description: '从文件系统约定加载项目技能和自定义子智能体。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 技能与自定义智能体
+
+A3S Code 不再内置默认 skills。请从磁盘上的目录加载自己的技能和子智能体来扩展会话。
+使用 `skillDirs` 加载 Markdown skills，使用 `agentDirs` 加载 worker/subagent 定义。
+`registerAgentDir` 可以在 session 创建后继续追加 agent 定义目录；skill 目录在
+session 创建时加载。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+// 显式加载项目 skills 和 agents。
+const session = agent.session('/path/to/project', {
+  skillDirs: ['./.a3s/skills'],
+  agentDirs: ['./.a3s/agents'],
+});
+
+// session 创建后可以继续注册 agent 定义目录。
+session.registerAgentDir('./team/shared-agents');
+
+// Inspect what the session loaded.
+console.log('Tools:', session.toolNames());
+console.log('Commands:', session.listCommands());
+
+// The agent now has access to project skills.
+const result = await session.run(
+  'Use the project conventions skill to scaffold a new module.',
+);
+console.log(result.text);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+# 显式加载项目 skills 和 agents。
+opts = SessionOptions()
+opts.skill_dirs = ['./.a3s/skills']
+opts.agent_dirs = ['./.a3s/agents']
+
+session = agent.session('/path/to/project', opts)
+
+# session 创建后可以继续注册 agent 定义目录。
+session.register_agent_dir('./team/shared-agents')
+
+# Inspect what the session loaded.
+print('Tools:', session.tool_names())
+print('Commands:', session.list_commands())
+
+# The agent now has access to project skills.
+result = session.run(
+    'Use the project conventions skill to scaffold a new module.',
+)
+print(result.text)
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+## Skill registry 行为
+
+A3S Code 不再内置默认 skills。默认 effective skill registry 为空。
+`builtinSkills: true` / `builtin_skills = True` 会被接受以保持兼容，但当前不会
+添加任何默认 skill。请通过 `skillDirs` / `skill_dirs`、inline skills 或显式
+`SkillRegistry` 加载需要的技能。
+
+日常项目里，把可复用行为放进 `.a3s/skills` 或配置的 skill 目录。
+
+从 `agentDirs` 加载的自定义子智能体可以在
+[`session.parallel(...)`](/guide/examples/orchestration) 和
+[`session.pipeline(...)`](/guide/examples/orchestration) 中按名称引用，
+与内置注册表中的智能体（`explore`、`plan`、`general`、`verification`、`review`）一起使用。
+
+可运行版本位于 `crates/code/sdk/node/examples/skills/test_custom_skills_agents.ts`。

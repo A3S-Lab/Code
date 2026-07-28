@@ -1,0 +1,74 @@
+---
+title: 'schedules/ 调度目录'
+description: '用 Markdown schedule 文件声明 cron turn、独立 session 与可恢复上下文。'
+---
+
+# schedules/ 调度目录
+
+`schedules/` 为 AgentDir 声明周期性 turn。每个 Markdown 文件是一条 schedule：frontmatter 描述 cron 元数据，正文是每次触发时发送给 Agent 的 prompt。
+
+```text
+release-agent/
+└── schedules/
+    ├── daily.md
+    └── weekly-risk-review.md
+```
+
+## Schedule 文件
+
+```md
+---
+cron: '0 9 * * *'
+name: daily-release-check
+enabled: true
+---
+
+Summarize merged changes since the last run, inspect release risks,
+and report only blockers plus required verification.
+```
+
+| 字段      | 必填 | 默认值      | 说明                                |
+| --------- | ---- | ----------- | ----------------------------------- |
+| `cron`    | 是   | -           | 5 字段或 6 字段 cron 表达式。       |
+| `name`    | 否   | 文件名 stem | 调度名称，也是 session id 后缀。    |
+| `enabled` | 否   | `true`      | 设为 `false` 可保留文件但暂停调度。 |
+
+5 字段 cron 会被归一化为 6 字段，前面补 `0` 秒。时间按 UTC 评估。
+
+## 独立 Session
+
+每条 schedule 使用稳定 session id：`schedule:<name>`。同一条 schedule 的多次触发会累积上下文；不同 schedule 彼此隔离。每个 session 都会注入 AgentDir 的 `instructions.md`、`agent.acl`、`skills/` 和 `tools/`。
+
+这意味着日报和周报可以共享同一个 AgentDir，但不共享会话历史。需要共享状态时，应使用外部存储、A3S Memory 或显式工具。
+
+## Serve 守护进程
+
+```rust
+use a3s_code_core::config::AgentDir;
+use a3s_code_core::serve::serve_agent_dir;
+use a3s_code_core::Agent;
+use tokio_util::sync::CancellationToken;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let agent_dir = AgentDir::load("./release-agent")?;
+    let agent = Agent::from_config(agent_dir.config.clone()).await?;
+    let cancel = CancellationToken::new();
+
+    serve_agent_dir(&agent, &agent_dir, "./workspace", None, cancel).await?;
+    Ok(())
+}
+```
+
+`serve_agent_dir` 会运行所有 enabled schedules，直到 cancellation token 触发。优雅取消会让进行中的 turn 完成当前迭代后停止。
+
+## 恢复与限制
+
+传入 `SessionStore` 后，守护进程重启会恢复已有 `schedule:<name>` session 的历史上下文。当前目录里的 `instructions.md`、`skills/` 和 `tools/` 会在每次启动时重新应用。
+
+需要注意：
+
+- 恢复只恢复对话历史，不追补停机期间错过的触发。
+- store 目录是信任边界，它决定恢复后的历史和 workspace。
+- 无效 cron 会在构建调度器时失败，并指出出问题的 schedule。
+- 没有 enabled schedules 的 AgentDir 会立即返回。

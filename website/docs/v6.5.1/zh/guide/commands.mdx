@@ -1,0 +1,59 @@
+---
+title: '命令'
+description: '命令表面与推荐控制流'
+---
+
+# 命令
+
+A3S Code 主要是 SDK 驱动。CLI 和 UI 通常把命令映射到 session API，而不是依赖
+一个庞大的公开命令协议。
+
+本页说明 SDK command registry。`a3s code` 终端应用中的内置命令见
+[A3S Code TUI](/guide/tui)。
+
+这两个 surface 刻意不同：
+
+| Surface                   | 所有者   | 用途                                                                                               |
+| ------------------------- | -------- | -------------------------------------------------------------------------------------------------- |
+| `a3s code` slash commands | CLI/TUI  | `/model`、`/flow`、`/memory`、`/kb`、`/update`、`/exit` 等终端控制。                               |
+| SDK command registry      | 宿主应用 | 用 `session.registerCommand(...)` 注册、再通过 `session.send("/name args")` 触发的产品自定义命令。 |
+
+SDK command 会在 LLM 看到输入之前执行。handler 接收原始参数字符串和 session
+元数据，并返回展示文本。命令适合薄薄的控制面动作；workflow、工具、验证和持久化
+应直接使用普通 SDK 方法。
+
+| 用户动作               | Session API                                                       |
+| ---------------------- | ----------------------------------------------------------------- |
+| 发送 prompt            | `session.send(prompt)`                                            |
+| 流式 prompt            | `session.stream(prompt)`                                          |
+| 临时问题               | 创建隔离 session，或用显式隔离的 history 调用 `send` / `stream`。 |
+| 直接工具               | `session.tool(name, args)`                                        |
+| 历史                   | `session.history()`                                               |
+| 保存                   | `session.save()`                                                  |
+| 恢复                   | `agent.resumeSession(id, options)`                                |
+| 工具列表               | `session.toolNames()` / `session.toolDefinitions()`               |
+| 验证                   | `session.verifyCommands(subject, commands)`                       |
+| 回放 run 状态          | `session.runs()` / `session.runEvents(runId)`                     |
+| 检查或取消 current run | `session.currentRun()` / `session.cancelRun(runId)`               |
+
+如果产品提供 slash command，请让它们薄薄地映射到这些 API。注册 handler、列出
+可用命令，并通过 `session.send()` 触发：
+
+```ts
+session.registerCommand(
+  'docs_status',
+  'Return docs command status',
+  (args, ctx) => {
+    return `status args=${args}; session=${ctx.sessionId}; workspace=${ctx.workspace}`;
+  },
+);
+
+console.log(session.listCommands());
+
+const result = await session.send('/docs_status check');
+console.log(result.text);
+```
+
+command handler 不应隐藏长时间运行的工作。如果一个命令需要运行工具、验证输出、
+fan out 到 subagent 或调度周期性自动化，让 handler 返回简短确认，再由明确的宿主
+代码执行这些工作。这样取消、审计和权限边界仍然可见。

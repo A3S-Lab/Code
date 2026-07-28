@@ -1,0 +1,70 @@
+---
+title: 'Planning'
+description: '使用 planningMode 让 agent 先规划再行动'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Planning
+
+Planning 模式让 session 在开始调用工具之前先生成一份结构化计划。它适合多步骤工作
+（重构、发布评审、审计），你希望 agent 先把目标拆解清楚，而不是直接动手修改。
+
+通过 session 选项 `planningMode`（Node）/ `planning_mode`（Python）进行设置。
+可接受的值为：
+
+| 值           | 行为                                      |
+| ------------ | ----------------------------------------- |
+| `"auto"`     | 由 runtime 根据消息内容判断何时值得规划。 |
+| `"enabled"`  | 对每个请求都强制规划，即使是简单请求。    |
+| `"disabled"` | 完全跳过规划，走最低延迟路径。            |
+
+`"auto"` 是默认的结构化预分析路径。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  planningMode: 'auto',
+});
+
+const result = await session.send(
+  'Plan and complete the release-readiness review.',
+);
+console.log(result.text);
+console.log(`${result.toolCallsCount} tool calls executed`);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.planning_mode = "auto"
+session = agent.session("/repo", opts)
+
+result = session.send("Plan and complete the release-readiness review.")
+print(result.text)
+print(f"{result.tool_calls_count} tool calls executed")
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+Planning 状态会挂到 run 上，因此宿主 UI 可以从 run events 渲染任务清单，并在 agent
+工作时更新完成情况。Planning 负责组织工作；完成证据仍然来自验证命令。
+
+可运行的 session 示例位于
+`crates/code/sdk/node/examples/orchestration/parallel-pipeline.mjs` 和
+`crates/code/sdk/python/examples/orchestration_workflow.py`。

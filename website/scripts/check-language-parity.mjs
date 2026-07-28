@@ -7,7 +7,7 @@ const websiteRoot = path.resolve(
   '..',
 );
 const docsRoot = path.join(websiteRoot, 'docs');
-const versions = ['v6'];
+const versions = ['v6.5.2', 'v6.5.1', 'v6.5.0'];
 const languages = ['zh', 'en'];
 
 async function collectMarkdownFiles(directory, prefix = '') {

@@ -486,6 +486,7 @@ const copy = {
     stackBottom: '记录',
     flowTask: '不联网检查这个仓库的发布风险，并生成报告',
     flowReplay: '重播',
+    flowPlayOnce: '播放一次',
     tuiWorkspace: '~/workspace/a3s',
     tuiMode: 'default',
     tuiTip: '输入消息 · / 打开命令 · Shift+Tab 切换模式 · Ctrl+C 两次退出',
@@ -597,6 +598,7 @@ const copy = {
     stackBottom: 'RECORDS',
     flowTask: 'Audit this repo for release risks offline; generate a report',
     flowReplay: 'REPLAY',
+    flowPlayOnce: 'PLAY ONCE',
     tuiWorkspace: '~/workspace/a3s',
     tuiMode: 'default',
     tuiTip:
@@ -742,9 +744,11 @@ function InstallSwitcher({
 function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
   const playerRef = useRef<HTMLDivElement>(null);
   const hasStartedRef = useRef(false);
+  const playOnceRef = useRef(false);
   const [activeIndex, setActiveIndex] = useState(tuiDemoPhases.length - 1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const [typedCount, setTypedCount] = useState(0);
   const active = tuiDemoPhases[activeIndex] ?? tuiDemoPhases[0];
   const composerDemos: Partial<
@@ -884,10 +888,10 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
     const player = playerRef.current;
     if (!player) return undefined;
 
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      setActiveIndex(tuiDemoPhases.length - 1);
-      return undefined;
-    }
+    const motionPreference = window.matchMedia(
+      '(prefers-reduced-motion: reduce)',
+    );
+    setPrefersReducedMotion(motionPreference.matches);
 
     const observer = new IntersectionObserver(
       ([entry]) => {
@@ -897,8 +901,13 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
         if (visible && !hasStartedRef.current) {
           hasStartedRef.current = true;
           setTypedCount(0);
-          setActiveIndex(0);
-          setIsPlaying(true);
+          if (motionPreference.matches) {
+            setActiveIndex(tuiDemoPhases.length - 1);
+            setIsPlaying(false);
+          } else {
+            setActiveIndex(0);
+            setIsPlaying(true);
+          }
         }
       },
       { threshold: 0.35 },
@@ -915,7 +924,12 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
     const timer = window.setTimeout(() => {
       setTypedCount(0);
       if (activeIndex >= tuiDemoPhases.length - 1) {
-        setActiveIndex(0);
+        if (playOnceRef.current) {
+          playOnceRef.current = false;
+          setIsPlaying(false);
+        } else {
+          setActiveIndex(0);
+        }
       } else {
         setActiveIndex((index) => index + 1);
       }
@@ -937,7 +951,7 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
   }, [active, composerText.length, isRunning, typedCount, typingInterval]);
 
   function playFlow() {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    playOnceRef.current = prefersReducedMotion;
     setTypedCount(0);
     setActiveIndex(0);
     setIsPlaying(true);
@@ -972,7 +986,9 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
           type="button"
         >
           <i aria-hidden="true" />
-          {labels.flowReplay}
+          {prefersReducedMotion && !isRunning
+            ? labels.flowPlayOnce
+            : labels.flowReplay}
         </button>
       </header>
 
@@ -984,7 +1000,7 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
           <TuiWordmark />
         </div>
         <p className="a3s-tui-meta">
-          <span>a3s-code v0.10.9</span>
+          <span>a3s-code v6.5.2</span>
           <i>·</i>
           <span>openai/gpt-5</span>
           <i>·</i>

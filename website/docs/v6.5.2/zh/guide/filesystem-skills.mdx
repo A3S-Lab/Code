@@ -1,0 +1,74 @@
+---
+title: 'skills/ 技能目录'
+description: '用工作区或智能体目录中的 skills/ 组织可复用技能、检查清单和领域流程。'
+---
+
+# skills/ 技能目录
+
+`skills/` 目录存放可复用技能。技能适合表达稳定流程、检查清单、领域术语和工具使用准则；它不是 worker agent，也不负责启动独立会话。
+
+A3S Code 有两类常见路径：
+
+```text
+repo/.a3s/skills/          # workspace 级技能
+release-agent/skills/      # AgentDir 私有技能
+```
+
+workspace 技能通过 `skillDirs` 或 `agent.acl` 的 `skill_dirs` 加载；agent 定义使用
+`agentDirs`，不要把 skill 目录放进 `agentDirs`。AgentDir 私有技能会在
+`serve_agent_dir` 为调度 session 创建上下文时注入。
+
+## 技能文件
+
+```md
+---
+name: release-readiness
+description: Check whether a repository is ready to release
+allowed-tools: read(*), grep(*), bash(pnpm test*), bash(cargo test*)
+---
+
+Always inspect:
+
+- package or crate version changes
+- migration compatibility
+- release notes
+- required verification commands
+
+Return blockers first, then risks, then follow-up work.
+```
+
+frontmatter 帮助发现和筛选，正文描述执行方式。`allowed-tools` 应保持最小集合。
+当 skill 通过 `Skill` 工具被调用时，省略 `allowed-tools` 不会授予任何工具，
+因此 invocation 默认 fail-secure。技能只是指导模型，不应该扩大权限。
+
+## 何时使用 `skills/`
+
+适合：
+
+- 反复出现的 review checklist。
+- 产品、协议、发布、迁移等领域流程。
+- 一组工具调用的推荐顺序。
+- 对多个 worker agents 都有用的共享背景。
+
+不适合：
+
+- 需要独立身份、独立上下文或被 `task` 调用的角色；放进 `agents/`。
+- 需要周期性触发的任务；放进 `schedules/`。
+- 需要连接外部系统的能力声明；放进 `tools/` 或宿主 MCP 配置。
+
+## 加载方式
+
+```ts
+const session = agent.session('/repo', {
+  skillDirs: ['./.a3s/skills'],
+});
+```
+
+模型可以通过 `search_skills` 查找相关技能。文件型 skills 和 inline skills 使用同一套 discovery 语义。目录越多，越要保证 `name` 和 `description` 可检索、无重名歧义。
+
+## 维护建议
+
+- 技能文件应该短而稳定，避免塞入整本文档。
+- 需要示例时给最小可执行片段，不要复制大量日志。
+- 当 skill 只对某个长期 Agent 有效，放在该 AgentDir 的 `skills/` 中。
+- 当 skill 是整个仓库规范，放在 `.a3s/skills/` 中，并在 `AGENTS.md` 中说明它的使用边界。

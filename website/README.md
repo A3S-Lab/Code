@@ -21,6 +21,9 @@ npm run lint
 npm run build
 ```
 
-The published documentation currently contains only the active `v6` line.
-When a new major line ships, add a version snapshot under `docs/<version>` and
-then list it in `multiVersion.versions` in `rspress.config.ts`.
+The published documentation uses exact release revisions. The active
+`v6.5.2` content lives under `docs/v6.5.2`; the `v6.5.1` and `v6.5.0`
+directories are read-only snapshots extracted from their matching Git tags.
+When a release changes the public API, snapshot its documentation under
+`docs/<release>` and list the exact revision in `multiVersion.versions` in
+`rspress.config.ts`.
