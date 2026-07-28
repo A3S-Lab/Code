@@ -310,6 +310,10 @@ const runtimeLayers = [
 }>;
 
 const tuiDemoPhases = [
+  'slash',
+  'mention',
+  'shell',
+  'research',
   'compose',
   'plan',
   'delegate',
@@ -318,7 +322,30 @@ const tuiDemoPhases = [
   'remoteui',
   'answer',
 ] as const;
-const tuiDemoDurations = [2400, 1900, 2600, 2300, 2100, 2600, 4200];
+type TuiDemoPhase = (typeof tuiDemoPhases)[number];
+const tuiDemoDurations = {
+  slash: 1900,
+  mention: 1900,
+  shell: 2200,
+  research: 2400,
+  compose: 2400,
+  plan: 1900,
+  delegate: 2600,
+  track: 2300,
+  artifact: 2100,
+  remoteui: 2600,
+  answer: 4200,
+} satisfies Record<TuiDemoPhase, number>;
+const tuiDemoIndex = {
+  compose: tuiDemoPhases.indexOf('compose'),
+  plan: tuiDemoPhases.indexOf('plan'),
+  delegate: tuiDemoPhases.indexOf('delegate'),
+  track: tuiDemoPhases.indexOf('track'),
+  artifact: tuiDemoPhases.indexOf('artifact'),
+  remoteui: tuiDemoPhases.indexOf('remoteui'),
+  answer: tuiDemoPhases.indexOf('answer'),
+} as const;
+type TuiComposerMode = 'default' | 'shell' | 'research';
 type TuiDemoStatus = 'pending' | 'active' | 'done';
 const tuiDemoStatusGlyph: Record<TuiDemoStatus, string> = {
   pending: '◻',
@@ -446,6 +473,17 @@ const copy = {
     tuiWorkspace: '~/workspace/a3s',
     tuiMode: 'default',
     tuiTip: '输入消息 · / 打开命令 · Shift+Tab 切换模式 · Ctrl+C 两次退出',
+    tuiSlashInput: '/effort',
+    tuiSlashEffort: '调整推理强度',
+    tuiSlashModel: '切换模型与 Provider',
+    tuiSlashTheme: '选择终端主题',
+    tuiMentionInput: '检查 @AGENTS.md',
+    tuiFilePicker: '@ file · ↑/↓ · →/← folder · Enter · Esc',
+    tuiFileInstructions: '项目指令',
+    tuiFileManifest: 'Rust workspace',
+    tuiFileWebsite: '文档应用',
+    tuiShellInput: 'cargo test -p a3s-code-core',
+    tuiResearchInput: '调研 A3S Code 最新发布与兼容性变化',
     tuiUser: 'You',
     tuiWorking: 'Working…',
     tuiPlan: 'Plan',
@@ -546,6 +584,17 @@ const copy = {
     tuiMode: 'default',
     tuiTip:
       'Type a message · / for commands · Shift+Tab cycles mode · Ctrl+C twice to exit',
+    tuiSlashInput: '/effort',
+    tuiSlashEffort: 'adjust model effort',
+    tuiSlashModel: 'switch model and provider',
+    tuiSlashTheme: 'select the terminal theme',
+    tuiMentionInput: 'Review @AGENTS.md',
+    tuiFilePicker: '@ file · ↑/↓ · →/← folder · Enter · Esc',
+    tuiFileInstructions: 'workspace instructions',
+    tuiFileManifest: 'Rust workspace',
+    tuiFileWebsite: 'documentation app',
+    tuiShellInput: 'cargo test -p a3s-code-core',
+    tuiResearchInput: 'Research the latest A3S Code releases and compatibility',
     tuiUser: 'You',
     tuiWorking: 'Working…',
     tuiPlan: 'Plan',
@@ -678,23 +727,91 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
   const [activeIndex, setActiveIndex] = useState(tuiDemoPhases.length - 1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
-  const [typedCount, setTypedCount] = useState(labels.flowTask.length);
+  const [typedCount, setTypedCount] = useState(0);
   const active = tuiDemoPhases[activeIndex] ?? tuiDemoPhases[0];
+  const composerDemos: Partial<
+    Record<
+      TuiDemoPhase,
+      { mode: TuiComposerMode; symbol: string; text: string }
+    >
+  > = {
+    slash: { mode: 'default', symbol: '❯', text: labels.tuiSlashInput },
+    mention: { mode: 'default', symbol: '❯', text: labels.tuiMentionInput },
+    shell: { mode: 'shell', symbol: '!', text: labels.tuiShellInput },
+    research: {
+      mode: 'research',
+      symbol: '?',
+      text: labels.tuiResearchInput,
+    },
+    compose: { mode: 'default', symbol: '❯', text: labels.flowTask },
+  };
+  const composerDemo = composerDemos[active];
+  const composerMode = composerDemo?.mode ?? 'default';
+  const composerText = composerDemo?.text ?? '';
+  const typedComposerText = composerText.slice(0, typedCount);
+  const composerSymbol = composerDemo?.symbol ?? '❯';
+  const composerStatus =
+    composerMode === 'research'
+      ? '◇ deep research · --web | --local-only'
+      : '◇ high';
+  const mentionStart = typedComposerText.lastIndexOf('@');
+  const mentionQuery =
+    mentionStart >= 0
+      ? typedComposerText.slice(mentionStart + 1).toLowerCase()
+      : '';
+  const inputMenuIsOpen =
+    (active === 'slash' && typedComposerText.startsWith('/')) ||
+    (active === 'mention' && mentionStart >= 0);
+  const slashMenuItems: Array<[string, string]> = [
+    ['/effort', labels.tuiSlashEffort],
+    ['/model', labels.tuiSlashModel],
+    ['/theme', labels.tuiSlashTheme],
+  ];
+  const fileMenuItems: Array<[string, string]> = [
+    ['AGENTS.md', labels.tuiFileInstructions],
+    ['Cargo.toml', labels.tuiFileManifest],
+    ['website/', labels.tuiFileWebsite],
+  ];
+  const inputMenuItems: Array<[string, string]> =
+    active === 'slash'
+      ? slashMenuItems.filter(([command]) =>
+          command.startsWith(typedComposerText || '/'),
+        )
+      : active === 'mention'
+        ? fileMenuItems.filter(([path]) =>
+            path.toLowerCase().includes(mentionQuery),
+          )
+        : [];
   const isRunning = isPlaying && isVisible;
-  const isWorking = activeIndex > 0 && activeIndex < tuiDemoPhases.length - 1;
+  const isWorking =
+    activeIndex > tuiDemoIndex.compose && activeIndex < tuiDemoIndex.answer;
   const planItems: Array<{ label: string; status: TuiDemoStatus }> = [
     {
       label: labels.tuiPlanInspect,
       status:
-        activeIndex < 1 ? 'pending' : activeIndex === 1 ? 'active' : 'done',
+        activeIndex < tuiDemoIndex.plan
+          ? 'pending'
+          : activeIndex === tuiDemoIndex.plan
+            ? 'active'
+            : 'done',
     },
     {
       label: labels.tuiPlanDelegate,
-      status: activeIndex < 2 ? 'pending' : activeIndex < 4 ? 'active' : 'done',
+      status:
+        activeIndex < tuiDemoIndex.delegate
+          ? 'pending'
+          : activeIndex < tuiDemoIndex.artifact
+            ? 'active'
+            : 'done',
     },
     {
       label: labels.tuiPlanPublish,
-      status: activeIndex < 4 ? 'pending' : activeIndex < 5 ? 'active' : 'done',
+      status:
+        activeIndex < tuiDemoIndex.artifact
+          ? 'pending'
+          : activeIndex < tuiDemoIndex.remoteui
+            ? 'active'
+            : 'done',
     },
   ];
   const subagents: Array<{
@@ -706,19 +823,19 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
     {
       name: 'explore',
       task: labels.tuiAgentExploreTask,
-      status: activeIndex >= 3 ? 'done' : 'active',
+      status: activeIndex >= tuiDemoIndex.track ? 'done' : 'active',
       tokens: '0.8k',
     },
     {
       name: 'test',
       task: labels.tuiAgentTestTask,
-      status: activeIndex >= 4 ? 'done' : 'active',
+      status: activeIndex >= tuiDemoIndex.artifact ? 'done' : 'active',
       tokens: '1.5k',
     },
     {
       name: 'review',
       task: labels.tuiAgentReviewTask,
-      status: activeIndex >= 3 ? 'done' : 'active',
+      status: activeIndex >= tuiDemoIndex.track ? 'done' : 'active',
       tokens: '0.9k',
     },
   ];
@@ -727,18 +844,22 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
   ).length;
   const runningSubagentCount = subagents.length - completedSubagentCount;
   const visibleSubagents =
-    activeIndex === 2
+    activeIndex === tuiDemoIndex.delegate
       ? subagents
-      : activeIndex === 3
+      : activeIndex === tuiDemoIndex.track
         ? subagents.filter((agent) => agent.status === 'active')
         : [];
   const subagentTokens =
-    activeIndex < 3 ? '1.8k' : activeIndex < 4 ? '2.7k' : '3.2k';
-  const artifactIsPublished = activeIndex >= 5;
-  const remoteUiIsReady = activeIndex >= 6;
+    activeIndex < tuiDemoIndex.track
+      ? '1.8k'
+      : activeIndex < tuiDemoIndex.artifact
+        ? '2.7k'
+        : '3.2k';
+  const artifactIsPublished = activeIndex >= tuiDemoIndex.remoteui;
+  const remoteUiIsReady = activeIndex >= tuiDemoIndex.answer;
   const typingInterval = Math.max(
-    18,
-    Math.floor(1550 / Math.max(labels.flowTask.length, 1)),
+    16,
+    Math.floor(1200 / Math.max(composerText.length, 1)),
   );
 
   useEffect(() => {
@@ -772,10 +893,10 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
   useEffect(() => {
     if (!isRunning) return undefined;
 
-    const delay = tuiDemoDurations[activeIndex] ?? 1600;
+    const delay = tuiDemoDurations[active] ?? 1600;
     const timer = window.setTimeout(() => {
+      setTypedCount(0);
       if (activeIndex >= tuiDemoPhases.length - 1) {
-        setTypedCount(0);
         setActiveIndex(0);
       } else {
         setActiveIndex((index) => index + 1);
@@ -783,11 +904,11 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
     }, delay);
 
     return () => window.clearTimeout(timer);
-  }, [activeIndex, isRunning]);
+  }, [active, activeIndex, isRunning]);
 
   useEffect(() => {
-    if (!isRunning || activeIndex !== 0) return undefined;
-    if (typedCount >= labels.flowTask.length) return undefined;
+    if (!isRunning || composerText.length === 0) return undefined;
+    if (typedCount >= composerText.length) return undefined;
 
     const timer = window.setTimeout(
       () => setTypedCount((count) => count + 1),
@@ -795,13 +916,7 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
     );
 
     return () => window.clearTimeout(timer);
-  }, [
-    activeIndex,
-    isRunning,
-    labels.flowTask.length,
-    typedCount,
-    typingInterval,
-  ]);
+  }, [active, composerText.length, isRunning, typedCount, typingInterval]);
 
   function playFlow() {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -862,7 +977,7 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
         <p className="a3s-tui-tip">{labels.tuiTip}</p>
 
         <div className="a3s-tui-transcript" aria-live="off">
-          {activeIndex > 0 ? (
+          {activeIndex > tuiDemoIndex.compose ? (
             <article className="a3s-tui-entry a3s-tui-entry--user">
               <span aria-hidden="true">›</span>
               <div>
@@ -872,7 +987,7 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
             </article>
           ) : null}
 
-          {activeIndex >= 4 ? (
+          {activeIndex >= tuiDemoIndex.artifact ? (
             <article
               className={[
                 'a3s-tui-artifact',
@@ -896,7 +1011,7 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
                 <span
                   className={[
                     'a3s-tui-open-view',
-                    activeIndex === 5 ? 'is-opening' : '',
+                    activeIndex === tuiDemoIndex.remoteui ? 'is-opening' : '',
                   ]
                     .filter(Boolean)
                     .join(' ')}
@@ -944,7 +1059,7 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
             </article>
           ) : null}
 
-          {activeIndex >= 6 ? (
+          {activeIndex >= tuiDemoIndex.answer ? (
             <article className="a3s-tui-entry a3s-tui-entry--assistant">
               <span aria-hidden="true">•</span>
               <div>
@@ -953,10 +1068,29 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
               </div>
             </article>
           ) : null}
+
+          {inputMenuIsOpen ? (
+            <div
+              aria-hidden="true"
+              className={`a3s-tui-input-menu is-${active}`}
+            >
+              {active === 'mention' ? (
+                <strong>{labels.tuiFilePicker}</strong>
+              ) : null}
+              <ul>
+                {inputMenuItems.map(([label, detail], index) => (
+                  <li className={index === 0 ? 'is-selected' : ''} key={label}>
+                    <code>{label}</code>
+                    <span>{detail}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       </section>
 
-      <section className="a3s-tui-composer">
+      <section className="a3s-tui-composer" data-input-mode={composerMode}>
         <div className="a3s-tui-activity" aria-live="polite">
           {isWorking ? (
             <>
@@ -966,7 +1100,7 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
             </>
           ) : null}
         </div>
-        {activeIndex >= 1 ? (
+        {activeIndex >= tuiDemoIndex.plan ? (
           <section className="a3s-tui-plan" aria-label={labels.tuiPlan}>
             <ol>
               {planItems.map((item, index) => (
@@ -980,12 +1114,12 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
           </section>
         ) : null}
         <div className="a3s-tui-effort-rule">
-          <span>◇ high</span>
+          <span>{composerStatus}</span>
         </div>
         <div className="a3s-tui-input">
-          <span aria-hidden="true">❯</span>
+          <span aria-hidden="true">{composerSymbol}</span>
           <p>
-            {activeIndex === 0 ? labels.flowTask.slice(0, typedCount) : ''}
+            {typedComposerText}
             <i aria-hidden="true" />
           </p>
         </div>

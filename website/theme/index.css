@@ -5637,6 +5637,69 @@ body {
   color: #8c949e;
 }
 
+.a3s-tui-input-menu {
+  display: grid;
+  overflow: hidden;
+  margin-top: auto;
+  border: 1px solid #3a424c;
+  border-radius: 4px;
+  background: #11161c;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+  font-family: var(--a3s-mono);
+  animation: a3s-tui-entry-in 160ms ease-out both;
+}
+
+.a3s-tui-input-menu > strong {
+  padding: 6px 9px 5px;
+  border-bottom: 1px solid #2d353e;
+  color: #7db6ff;
+  font-size: 9.5px;
+  font-weight: 560;
+}
+
+.a3s-tui-input-menu ul {
+  display: grid;
+  margin: 0;
+  padding: 3px;
+  gap: 1px;
+  list-style: none;
+}
+
+.a3s-tui-input-menu li {
+  display: grid;
+  min-width: 0;
+  min-height: 23px;
+  padding: 0 7px;
+  color: #737c87;
+  align-items: center;
+  gap: 10px;
+  grid-template-columns: 88px minmax(0, 1fr);
+}
+
+.a3s-tui-input-menu li.is-selected {
+  border-radius: 2px;
+  background: #2a3038;
+  color: #d8dde3;
+}
+
+.a3s-tui-input-menu li code,
+.a3s-tui-input-menu li span {
+  overflow: hidden;
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-tui-input-menu li code {
+  color: #a9cfff;
+}
+
+.a3s-tui-input-menu.is-mention li code::before {
+  margin-right: 6px;
+  color: #6ec6d9;
+  content: '◇';
+}
+
 .a3s-tui-plan,
 .a3s-tui-agents,
 .a3s-tui-artifact {
@@ -6015,10 +6078,27 @@ body {
 }
 
 .a3s-tui-composer {
+  --a3s-tui-input-border: #454d57;
+  --a3s-tui-input-symbol: #7db6ff;
+  --a3s-tui-input-text: #dcdcdc;
+
+  position: relative;
   min-height: 0;
   padding: 0 18px 9px;
   background: #15191f;
   font-family: var(--a3s-mono);
+}
+
+.a3s-tui-composer[data-input-mode='shell'] {
+  --a3s-tui-input-border: #e06c75;
+  --a3s-tui-input-symbol: #e06c75;
+  --a3s-tui-input-text: #e06c75;
+}
+
+.a3s-tui-composer[data-input-mode='research'] {
+  --a3s-tui-input-border: #6ec6d9;
+  --a3s-tui-input-symbol: #6ec6d9;
+  --a3s-tui-input-text: #6ec6d9;
 }
 
 .a3s-tui-activity {
@@ -6052,8 +6132,9 @@ body {
 .a3s-tui-effort-rule::before,
 .a3s-tui-effort-rule::after {
   height: 1px;
-  background: #454d57;
+  background: var(--a3s-tui-input-border);
   content: '';
+  transition: background-color 160ms ease-out;
 }
 
 .a3s-tui-effort-rule::before {
@@ -6078,18 +6159,20 @@ body {
 }
 
 .a3s-tui-input > span {
-  color: #7db6ff;
+  color: var(--a3s-tui-input-symbol);
   font-size: 14px;
   line-height: 1.45;
+  transition: color 160ms ease-out;
 }
 
 .a3s-tui-input p {
   min-width: 0;
   min-height: 16px;
   margin: 0;
-  color: #dcdcdc;
+  color: var(--a3s-tui-input-text);
   font-size: 11.5px;
   line-height: 1.5;
+  transition: color 160ms ease-out;
 }
 
 .a3s-tui-input p > i {
@@ -6097,14 +6180,16 @@ body {
   width: 5px;
   height: 14px;
   margin-left: 2px;
-  background: #dcdcdc;
+  background: var(--a3s-tui-input-text);
   vertical-align: -1px;
   animation: a3s-tui-cursor 680ms steps(1, end) infinite;
+  transition: background-color 160ms ease-out;
 }
 
 .a3s-tui-input-rule {
   height: 1px;
-  background: #454d57;
+  background: var(--a3s-tui-input-border);
+  transition: background-color 160ms ease-out;
 }
 
 .a3s-tui-footer {
