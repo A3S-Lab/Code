@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added an opt-in real-LLM integration suite for batch-read continuation,
+  every grep output mode, guarded edit previews and writes, and stable glob
+  pagination.
+
+### Fixed
+
+- Accepted structured providers' neutral pagination defaults (`limit = 200`
+  and an empty cursor) in non-paginated grep modes while continuing to reject
+  effective pagination controls there.
+
 ## [6.5.0] - 2026-07-28
 
 ### Added
