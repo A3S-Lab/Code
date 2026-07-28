@@ -309,356 +309,23 @@ const runtimeLayers = [
   tags: string[];
 }>;
 
-const runtimeFlowSteps = [
-  {
-    id: 'admission',
-    code: '01',
-    stage: 'SESSION',
-    title: { zh: '开始一次 Run', en: 'Admit one run' },
-    path: 'prompt → run_id',
-    summary: {
-      zh: '同一个 Session 不会同时改写两份对话历史。请求先取得 single-flight 运行权，再生成这次执行的身份与取消信号。',
-      en: 'A session never mutates two conversation histories at once. The request first acquires its single-flight lease, then receives a run identity and cancellation signal.',
-    },
-    input: {
-      zh: 'session.stream(prompt)',
-      en: 'session.stream(prompt)',
-    },
-    action: {
-      zh: '检查 Session 状态并取得运行权',
-      en: 'Check session state and acquire the run lease',
-    },
-    output: {
-      zh: 'run_id + InvocationContext',
-      en: 'run_id + InvocationContext',
-    },
-    event: 'run_start',
-    trace: {
-      zh: 'Run 已准入，后续模型与工具共享同一个 run_id。',
-      en: 'The run is admitted; model and tool work now share one run_id.',
-    },
-    tags: ['AgentSession', 'RunAdmission', 'CancellationToken'],
-  },
-  {
-    id: 'context',
-    code: '02',
-    stage: 'CONTEXT',
-    title: { zh: '组装本轮上下文', en: 'Assemble turn context' },
-    path: 'history → messages',
-    summary: {
-      zh: '历史、项目指令、记忆和 Workspace 信息不会整包塞给模型。ContextAssembler 会在预算内挑选内容，并附上本轮可见的工具定义。',
-      en: 'History, project instructions, memory, and workspace data are not dumped into the model. ContextAssembler selects what fits and attaches the visible tool schemas.',
-    },
-    input: {
-      zh: 'history + instructions + memory',
-      en: 'history + instructions + memory',
-    },
-    action: {
-      zh: '按上下文预算筛选、排序并组装',
-      en: 'Select, rank, and assemble within the context budget',
-    },
-    output: {
-      zh: 'messages[] + tools[]',
-      en: 'messages[] + tools[]',
-    },
-    event: 'turn_start',
-    trace: {
-      zh: '模型只看到本轮需要的上下文和允许使用的工具。',
-      en: 'The model sees only the context and tools available to this turn.',
-    },
-    tags: ['ContextAssembler', 'Memory', 'ToolDefinition'],
-  },
-  {
-    id: 'model',
-    code: '03',
-    stage: 'MODEL',
-    title: { zh: '模型决定下一步', en: 'Let the model decide' },
-    path: 'messages → tool call',
-    summary: {
-      zh: '受约束的模型调用会检查预算与取消状态。这个示例里，模型没有直接操作文件，而是提出一次只读搜索。',
-      en: 'The scoped model call checks budget and cancellation. In this example the model does not touch files directly; it proposes a read-only search.',
-    },
-    input: {
-      zh: 'messages[] + tools[]',
-      en: 'messages[] + tools[]',
-    },
-    action: {
-      zh: '流式生成文本或结构化工具请求',
-      en: 'Stream text or produce a structured tool request',
-    },
-    output: {
-      zh: 'grep({ pattern: "TODO|FIXME" })',
-      en: 'grep({ pattern: "TODO|FIXME" })',
-    },
-    event: 'tool_start',
-    trace: {
-      zh: '模型提出 grep 调用，但此时工具还没有执行。',
-      en: 'The model proposes grep, but the tool has not executed yet.',
-    },
-    tags: ['ScopedLlmClient', 'BudgetGuard', 'ToolCall'],
-  },
-  {
-    id: 'governance',
-    code: '04',
-    stage: 'GOVERNANCE',
-    title: { zh: '工具调用先过检查', en: 'Govern the tool call' },
-    path: 'tool call → allowed call',
-    summary: {
-      zh: '所有模型工具、嵌套工具和委派工具都经过同一个 ToolInvoker；内部调用不能绕过权限、Hook、确认、预算或超时。',
-      en: 'Model, nested, and delegated tools all pass through one ToolInvoker. Internal calls cannot bypass permissions, hooks, approvals, budgets, or timeouts.',
-    },
-    input: {
-      zh: 'ToolInvocation: grep(...)',
-      en: 'ToolInvocation: grep(...)',
-    },
-    action: {
-      zh: '参数 → 权限 → Hook → 确认 → 预算 → 超时',
-      en: 'schema → permission → hook → approval → budget → timeout',
-    },
-    output: {
-      zh: '受控且带作用域的工具调用',
-      en: 'A governed, scoped invocation',
-    },
-    event: 'tool_execution_start',
-    trace: {
-      zh: '只读 grep 通过当前策略，Runtime 允许它进入 Workspace。',
-      en: 'Read-only grep passes the active policy and may enter the workspace.',
-    },
-    tags: ['ToolInvoker', 'PermissionPolicy', 'HookExecutor'],
-  },
-  {
-    id: 'execution',
-    code: '05',
-    stage: 'WORKSPACE',
-    title: { zh: '在 Workspace 执行', en: 'Execute in the workspace' },
-    path: 'allowed call → result',
-    summary: {
-      zh: '真正接触文件、Shell、Git、MCP 或子任务的是 Workspace 工具。结果会先清理和记录，再送回模型继续判断。',
-      en: 'Workspace tools are what actually reach files, shell, Git, MCP, or child tasks. Results are sanitized and recorded before returning to the model.',
-    },
-    input: {
-      zh: '受控 grep 调用',
-      en: 'Governed grep invocation',
-    },
-    action: {
-      zh: '执行搜索，清理输出并保存大结果',
-      en: 'Run the search, sanitize output, and store large results',
-    },
-    output: {
-      zh: '3 matches + Artifact 引用',
-      en: '3 matches + Artifact reference',
-    },
-    event: 'tool_end',
-    trace: {
-      zh: '结果回到本轮对话；如果模型还需要工具，会回到步骤 03。',
-      en: 'The result returns to the turn. If another tool is needed, the flow returns to step 03.',
-    },
-    tags: ['Workspace', 'ToolResult', 'Artifact'],
-  },
-  {
-    id: 'evidence',
-    code: '06',
-    stage: 'EVIDENCE',
-    title: { zh: '把过程交给界面和存储', en: 'Publish events and evidence' },
-    path: 'events → UI / snapshot',
-    summary: {
-      zh: '界面消费统一事件格式，不需要从文本里猜进度。启用 autoSave 或调用 save() 时，对话、Trace、Artifact 与验证结果会作为一个完整快照提交。',
-      en: 'The UI consumes a stable event format instead of guessing progress from text. With autoSave or save(), conversation, traces, artifacts, and verification are committed as one snapshot.',
-    },
-    input: {
-      zh: 'AgentEvent + AgentResult',
-      en: 'AgentEvent + AgentResult',
-    },
-    action: {
-      zh: '投影事件，并在保存时提交完整 generation',
-      en: 'Project events and commit a complete generation on save',
-    },
-    output: {
-      zh: 'EventEnvelopeV1 + SessionSnapshotV1',
-      en: 'EventEnvelopeV1 + SessionSnapshotV1',
-    },
-    event: 'end · snapshot',
-    trace: {
-      zh: '应用拿到可渲染的结果；Session 也具备排查、审计与恢复依据。',
-      en: 'The app receives renderable output, while the session keeps evidence for debugging, audit, and recovery.',
-    },
-    tags: ['EventEnvelopeV1', 'RunRecord', 'SessionSnapshotV1'],
-  },
-] satisfies Array<{
-  id: string;
-  code: string;
-  stage: string;
-  title: Localized;
-  path: string;
-  summary: Localized;
-  input: Localized;
-  action: Localized;
-  output: Localized;
-  event: string;
-  trace: Localized;
-  tags: string[];
-}>;
-
-const runtimePlayerPhases = [
-  {
-    id: 'input',
-    code: '01',
-    stage: { zh: '输入', en: 'INPUT' },
-    navTitle: { zh: '提交任务', en: 'Submit task' },
-    title: { zh: '输入任务', en: 'Enter a task' },
-    summary: {
-      zh: '通过 ? 启动一次本地 DeepResearch 任务。',
-      en: 'Start a local DeepResearch task with ?.',
-    },
-    action: {
-      zh: '提交终端输入',
-      en: 'Submit terminal input',
-    },
-    result: {
-      zh: '任务进入 Session',
-      en: 'Task enters the Session',
-    },
-    command: 'AgentSession::stream()',
-    event: runtimeFlowSteps[0].event,
-    tags: ['A3S TUI', 'AgentSession'],
-  },
-  {
-    id: 'prepare',
-    code: '02',
-    stage: { zh: '会话', en: 'SESSION' },
-    navTitle: { zh: '载入工作区', en: 'Load workspace' },
-    title: { zh: '载入工作区与本地策略', en: 'Load workspace and policy' },
-    summary: {
-      zh: 'AGENTS.md · .a3s/config.acl',
-      en: 'AGENTS.md · .a3s/config.acl',
-    },
-    action: {
-      zh: '取得运行权，组装 messages[] 与 tools[]',
-      en: 'Acquire the run lease and assemble messages[] and tools[]',
-    },
-    result: {
-      zh: 'run_id 已创建，上下文已就绪',
-      en: 'run_id created; context is ready',
-    },
-    command: 'session.stream(prompt)',
-    event: `${runtimeFlowSteps[0].event} · ${runtimeFlowSteps[1].event}`,
-    tags: ['AgentSession', 'ContextAssembler'],
-  },
-  {
-    id: 'decide',
-    code: '03',
-    stage: { zh: '计划', en: 'PLAN' },
-    navTitle: { zh: '拆分检查项', en: 'Plan checks' },
-    title: {
-      zh: '规划本地证据检查',
-      en: 'Plan local evidence checks',
-    },
-    summary: {
-      zh: 'CHANGELOG · CI workflow · release checks',
-      en: 'CHANGELOG · CI workflow · release checks',
-    },
-    action: {
-      zh: '生成 grep({ pattern: "TODO|FIXME" })',
-      en: 'Produce grep({ pattern: "TODO|FIXME" })',
-    },
-    result: {
-      zh: '工具请求已生成，等待执行前检查',
-      en: 'Tool request created; waiting for checks',
-    },
-    command: 'grep({ pattern: "TODO|FIXME" })',
-    event: runtimeFlowSteps[2].event,
-    tags: ['ScopedLlmClient', 'ToolCall'],
-  },
-  {
-    id: 'execute',
-    code: '04',
-    stage: { zh: '执行', en: 'RUN' },
-    navTitle: { zh: '执行检查', en: 'Run checks' },
-    title: {
-      zh: '执行只读工具与检查命令',
-      en: 'Run read-only tools and checks',
-    },
-    summary: {
-      zh: 'read → glob → bash',
-      en: 'read → glob → bash',
-    },
-    action: {
-      zh: '参数 → 权限 → Workspace.grep()',
-      en: 'schema → permission → Workspace.grep()',
-    },
-    result: {
-      zh: '找到 3 条匹配，完整输出写入 Artifact',
-      en: '3 matches found; full output stored as an Artifact',
-    },
-    command: 'ToolInvoker → Workspace.grep()',
-    event: `${runtimeFlowSteps[3].event} · ${runtimeFlowSteps[4].event}`,
-    tags: ['ToolInvoker', 'Workspace', 'Artifact'],
-  },
-  {
-    id: 'verify',
-    code: '05',
-    stage: { zh: '验证', en: 'VERIFY' },
-    navTitle: { zh: '验证结论', en: 'Verify result' },
-    title: {
-      zh: '汇总证据并通过质量门',
-      en: 'Synthesize evidence and pass quality gates',
-    },
-    summary: {
-      zh: 'workspace evidence · quality gate passed',
-      en: 'workspace evidence · quality gate passed',
-    },
-    action: {
-      zh: '检查来源覆盖与验证结果',
-      en: 'Check source coverage and verification',
-    },
-    result: {
-      zh: '报告可以发布',
-      en: 'Report is publishable',
-    },
-    command: 'verify → synthesize',
-    event: 'verification_end',
-    tags: ['VerificationReport', 'Trace'],
-  },
-  {
-    id: 'record',
-    code: '06',
-    stage: { zh: '制品', en: 'ARTIFACTS' },
-    navTitle: { zh: '发布制品', en: 'Publish artifacts' },
-    title: {
-      zh: '报告制品已生成',
-      en: 'Report artifacts are ready',
-    },
-    summary: {
-      zh: 'report.md · index.html',
-      en: 'report.md · index.html',
-    },
-    action: {
-      zh: '发布事件并提交本次 generation',
-      en: 'Publish events and commit this generation',
-    },
-    result: {
-      zh: '检查完成，结果可查看、追踪和恢复',
-      en: 'Inspection complete; the result is traceable and recoverable',
-    },
-    command: 'session.save()',
-    event: runtimeFlowSteps[5].event,
-    tags: ['EventEnvelopeV1', 'SessionSnapshotV1'],
-  },
-] satisfies Array<{
-  id: string;
-  code: string;
-  stage: Localized;
-  navTitle: Localized;
-  title: Localized;
-  summary: Localized;
-  action: Localized;
-  result: Localized;
-  command: string;
-  event: string;
-  tags: string[];
-}>;
-
-const tuiLifecycleDurations = [2200, 1100, 1350, 1800, 1350, 3000];
+const tuiDemoPhases = ['compose', 'explore', 'command', 'answer'] as const;
+const tuiDemoDurations = [2400, 1750, 1850, 4200];
+const tuiMascot = [
+  '     .-^-.',
+  '    /_____\\',
+  '    ( o o )',
+  '  |  /|_|\\  _',
+  ' -+- |   | |#|',
+  '  |  |___| \\#/',
+  '     /   \\',
+].join('\n');
+const tuiWordmark = String.raw` █████╗ ██████╗ ███████╗     ██████╗ ██████╗ ██████╗ ███████╗
+██╔══██╗╚════██╗██╔════╝    ██╔════╝██╔═══██╗██╔══██╗██╔════╝
+███████║ █████╔╝███████╗    ██║     ██║   ██║██║  ██║█████╗
+██╔══██║ ╚═══██╗╚════██║    ██║     ██║   ██║██║  ██║██╔══╝
+██║  ██║██████╔╝███████║    ╚██████╗╚██████╔╝██████╔╝███████╗
+╚═╝  ╚═╝╚═════╝ ╚══════╝     ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝`;
 
 const copy = {
   zh: {
@@ -717,21 +384,21 @@ const copy = {
     stackHintMobile: '点击步骤展开',
     stackTop: '产品',
     stackBottom: '记录',
-    flowTaskLabel: '输入',
     flowTask: '? 不联网检查这个仓库的发布风险，并生成报告',
     flowReplay: '重播',
-    flowRunning: '运行中',
-    flowStage: '阶段',
-    flowSaved: '制品已发布',
-    flowReplayable: '过程可回放',
-    flowRecoverable: 'Session 可恢复',
     tuiWorkspace: '~/workspace/a3s',
-    tuiMode: 'LOCAL ONLY',
-    tuiWaiting: '等待任务完成',
-    tuiArtifacts: '制品',
-    tuiReady: '2 个文件',
-    tuiOpenView: '打开预览',
-    tuiArtifactPath: '.a3s/research/release-risk/',
+    tuiMode: 'default',
+    tuiTip: '输入消息 · / 打开命令 · Shift+Tab 切换模式 · Ctrl+C 两次退出',
+    tuiUser: 'You',
+    tuiWorking: 'Working…',
+    tuiExplore: 'Explored',
+    tuiExploreSummary: '读取 AGENTS.md、Cargo.toml 与发布工作流',
+    tuiCommand: 'Ran command',
+    tuiCommandSummary: 'git diff --check && cargo test -p a3s-code-core',
+    tuiCommandResult: '测试通过 · 0 warnings',
+    tuiAssistant: 'A3S Code',
+    tuiResponse: '检查完成。发现 2 个发布风险，并给出了对应文件与验证依据。',
+    tuiContext: 'ctx:12%',
     tutorialStep: '步骤',
     tutorialCode: '代码',
     tutorialLayers: '当前负责的层',
@@ -800,21 +467,23 @@ const copy = {
     stackHintMobile: 'TAP A STEP TO EXPAND',
     stackTop: 'PRODUCT',
     stackBottom: 'RECORDS',
-    flowTaskLabel: 'INPUT',
     flowTask: '? Audit this repo for release risks offline; generate a report',
     flowReplay: 'REPLAY',
-    flowRunning: 'RUNNING',
-    flowStage: 'PHASE',
-    flowSaved: 'ARTIFACTS PUBLISHED',
-    flowReplayable: 'REPLAYABLE',
-    flowRecoverable: 'SESSION RECOVERABLE',
     tuiWorkspace: '~/workspace/a3s',
-    tuiMode: 'LOCAL ONLY',
-    tuiWaiting: 'WAITING FOR TASK',
-    tuiArtifacts: 'ARTIFACTS',
-    tuiReady: '2 FILES',
-    tuiOpenView: 'OPEN VIEW',
-    tuiArtifactPath: '.a3s/research/release-risk/',
+    tuiMode: 'default',
+    tuiTip:
+      'Type a message · / for commands · Shift+Tab cycles mode · Ctrl+C twice to exit',
+    tuiUser: 'You',
+    tuiWorking: 'Working…',
+    tuiExplore: 'Explored',
+    tuiExploreSummary: 'Read AGENTS.md, Cargo.toml, and release workflows',
+    tuiCommand: 'Ran command',
+    tuiCommandSummary: 'git diff --check && cargo test -p a3s-code-core',
+    tuiCommandResult: 'tests passed · 0 warnings',
+    tuiAssistant: 'A3S Code',
+    tuiResponse:
+      'Review complete. I found two release risks and linked each one to its file and verification evidence.',
+    tuiContext: 'ctx:12%',
     tutorialStep: 'STEP',
     tutorialCode: 'CODE',
     tutorialLayers: 'ACTIVE LAYER',
@@ -915,71 +584,27 @@ function InstallSwitcher({
   );
 }
 
-function TuiLifecycleRows({
-  activeIndex,
-  locale,
-}: {
-  activeIndex: number;
-  locale: Locale;
-}) {
-  return (
-    <div className="a3s-tui-lifecycle">
-      {runtimePlayerPhases.slice(1, -1).map((phase, rowIndex) => {
-        const phaseIndex = rowIndex + 1;
-        const isActive = activeIndex === phaseIndex;
-        const isComplete = activeIndex > phaseIndex;
-
-        return (
-          <div
-            className={[
-              'a3s-tui-lifecycle-row',
-              isActive ? 'is-active' : '',
-              isComplete ? 'is-complete' : '',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            key={phase.id}
-          >
-            <span aria-hidden="true">
-              {isComplete ? '✓' : phase.code}
-              <i />
-            </span>
-            <div>
-              <strong>{localeValue(phase.title, locale)}</strong>
-              <small>{localeValue(phase.summary, locale)}</small>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function RuntimeExecutionFlow({
-  labels,
-  locale,
-}: {
-  labels: (typeof copy)[Locale];
-  locale: Locale;
-}) {
+function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
   const playerRef = useRef<HTMLDivElement>(null);
   const hasStartedRef = useRef(false);
-  const [activeIndex, setActiveIndex] = useState(
-    runtimePlayerPhases.length - 1,
-  );
+  const [activeIndex, setActiveIndex] = useState(tuiDemoPhases.length - 1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
   const [typedCount, setTypedCount] = useState(labels.flowTask.length);
-  const active = runtimePlayerPhases[activeIndex] ?? runtimePlayerPhases[0];
+  const active = tuiDemoPhases[activeIndex] ?? tuiDemoPhases[0];
   const isRunning = isPlaying && isVisible;
-  const isArtifactsReady = activeIndex === runtimePlayerPhases.length - 1;
+  const isWorking = activeIndex > 0 && activeIndex < tuiDemoPhases.length - 1;
+  const typingInterval = Math.max(
+    18,
+    Math.floor(1550 / Math.max(labels.flowTask.length, 1)),
+  );
 
   useEffect(() => {
     const player = playerRef.current;
     if (!player) return undefined;
 
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      setActiveIndex(runtimePlayerPhases.length - 1);
+      setActiveIndex(tuiDemoPhases.length - 1);
       return undefined;
     }
 
@@ -1005,9 +630,9 @@ function RuntimeExecutionFlow({
   useEffect(() => {
     if (!isRunning) return undefined;
 
-    const delay = tuiLifecycleDurations[activeIndex] ?? 1200;
+    const delay = tuiDemoDurations[activeIndex] ?? 1600;
     const timer = window.setTimeout(() => {
-      if (activeIndex >= runtimePlayerPhases.length - 1) {
+      if (activeIndex >= tuiDemoPhases.length - 1) {
         setTypedCount(0);
         setActiveIndex(0);
       } else {
@@ -1022,17 +647,19 @@ function RuntimeExecutionFlow({
     if (!isRunning || activeIndex !== 0) return undefined;
     if (typedCount >= labels.flowTask.length) return undefined;
 
-    const interval = Math.max(
-      18,
-      Math.floor(1550 / Math.max(labels.flowTask.length, 1)),
-    );
     const timer = window.setTimeout(
       () => setTypedCount((count) => count + 1),
-      interval,
+      typingInterval,
     );
 
     return () => window.clearTimeout(timer);
-  }, [activeIndex, isRunning, labels.flowTask.length, typedCount]);
+  }, [
+    activeIndex,
+    isRunning,
+    labels.flowTask.length,
+    typedCount,
+    typingInterval,
+  ]);
 
   function playFlow() {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -1050,106 +677,145 @@ function RuntimeExecutionFlow({
       ]
         .filter(Boolean)
         .join(' ')}
-      data-phase={active.id}
+      data-phase={active}
       aria-label={labels.architectureAlt}
       ref={playerRef}
     >
-      <header className="a3s-runtime-inspector-header a3s-tui-player-header">
-        <span>
-          <i aria-hidden="true" />
-          <b>A3S CODE TUI</b>
-          <em>{labels.tuiWorkspace}</em>
+      <header className="a3s-tui-titlebar">
+        <span className="a3s-tui-window-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
         </span>
-        <div>
-          <code>{labels.tuiMode}</code>
-          <button
-            className={isRunning ? 'is-playing' : ''}
-            onClick={playFlow}
-            type="button"
-          >
-            <i aria-hidden="true" />
-            {labels.flowReplay}
-          </button>
+        <div className="a3s-tui-title">
+          <b>a3s code</b>
+          <em>{labels.tuiWorkspace}</em>
         </div>
+        <button
+          className={isRunning ? 'is-playing' : ''}
+          onClick={playFlow}
+          type="button"
+        >
+          <i aria-hidden="true" />
+          {labels.flowReplay}
+        </button>
       </header>
 
-      <section className="a3s-tui-screen">
-        <div
-          className={[
-            'a3s-tui-prompt',
-            activeIndex === 0 ? 'is-active' : 'is-complete',
-          ].join(' ')}
-        >
-          <span aria-hidden="true">›</span>
-          <div>
-            <small>{labels.flowTaskLabel}</small>
-            <p>
-              {labels.flowTask.slice(
-                0,
-                activeIndex === 0 ? typedCount : labels.flowTask.length,
-              )}
-              <i aria-hidden="true" />
-            </p>
-          </div>
+      <section className="a3s-tui-terminal">
+        <div className="a3s-tui-welcome" aria-label="A3S Code">
+          <pre aria-hidden="true" className="a3s-tui-mascot">
+            {tuiMascot}
+          </pre>
+          <pre aria-hidden="true" className="a3s-tui-wordmark">
+            {tuiWordmark}
+          </pre>
         </div>
+        <p className="a3s-tui-meta">
+          <span>a3s-code v0.10.9</span>
+          <i>·</i>
+          <span>openai/gpt-5</span>
+          <i>·</i>
+          <span>12 skills</span>
+          <i>·</i>
+          <span>{labels.tuiWorkspace}</span>
+        </p>
+        <p className="a3s-tui-tip">{labels.tuiTip}</p>
 
-        <TuiLifecycleRows activeIndex={activeIndex} locale={locale} />
+        <div className="a3s-tui-transcript" aria-live="off">
+          {activeIndex > 0 ? (
+            <article className="a3s-tui-entry a3s-tui-entry--user">
+              <span aria-hidden="true">›</span>
+              <div>
+                <small>{labels.tuiUser}</small>
+                <p>{labels.flowTask}</p>
+              </div>
+            </article>
+          ) : null}
+
+          {activeIndex >= 1 ? (
+            <article
+              className={[
+                'a3s-tui-entry',
+                'a3s-tui-entry--tool',
+                activeIndex === 1 ? 'is-active' : 'is-complete',
+              ].join(' ')}
+            >
+              <span aria-hidden="true">•</span>
+              <div>
+                <strong>{labels.tuiExplore}</strong>
+                <small>└ {labels.tuiExploreSummary}</small>
+              </div>
+            </article>
+          ) : null}
+
+          {activeIndex >= 2 ? (
+            <article
+              className={[
+                'a3s-tui-entry',
+                'a3s-tui-entry--tool',
+                activeIndex === 2 ? 'is-active' : 'is-complete',
+              ].join(' ')}
+            >
+              <span aria-hidden="true">•</span>
+              <div>
+                <strong>{labels.tuiCommand}</strong>
+                <code>│ {labels.tuiCommandSummary}</code>
+                <small>└ {labels.tuiCommandResult}</small>
+              </div>
+            </article>
+          ) : null}
+
+          {activeIndex >= 3 ? (
+            <article className="a3s-tui-entry a3s-tui-entry--assistant">
+              <span aria-hidden="true">•</span>
+              <div>
+                <strong>{labels.tuiAssistant}</strong>
+                <p>{labels.tuiResponse}</p>
+              </div>
+            </article>
+          ) : null}
+        </div>
       </section>
 
-      <section
-        className={['a3s-tui-artifacts', isArtifactsReady ? 'is-ready' : '']
-          .filter(Boolean)
-          .join(' ')}
-      >
-        <header>
-          <div>
-            <span>{labels.tuiArtifacts}</span>
-            <strong>
-              {isArtifactsReady ? labels.tuiReady : labels.tuiWaiting}
-            </strong>
-          </div>
-          {isArtifactsReady ? <code>{labels.tuiArtifactPath}</code> : null}
-        </header>
-
-        {isArtifactsReady ? (
-          <div className="a3s-tui-artifact-files">
-            <article>
-              <span aria-hidden="true">M↓</span>
-              <strong>report.md</strong>
-              <em>MARKDOWN</em>
-            </article>
-            <article>
-              <span aria-hidden="true">H↗</span>
-              <strong>index.html</strong>
-              <em>{labels.tuiOpenView}</em>
-            </article>
-          </div>
-        ) : (
-          <div className="a3s-tui-artifact-pending">
+      <section className="a3s-tui-composer">
+        <div className="a3s-tui-activity" aria-live="polite">
+          {isWorking ? (
+            <>
+              <i aria-hidden="true">✶</i>
+              <span>{labels.tuiWorking}</span>
+              <small>(00:04 · ↓ 1.2k tokens)</small>
+            </>
+          ) : null}
+        </div>
+        <div className="a3s-tui-effort-rule">
+          <span>◇ high</span>
+        </div>
+        <div className="a3s-tui-input">
+          <span aria-hidden="true">❯</span>
+          <p>
+            {activeIndex === 0 ? labels.flowTask.slice(0, typedCount) : ''}
             <i aria-hidden="true" />
-            <span>{localeValue(active.title, locale)}</span>
-          </div>
-        )}
-      </section>
-
-      <footer className="a3s-tui-statusbar">
-        <span>
-          <i aria-hidden="true" />
-          {isArtifactsReady
-            ? labels.flowSaved
-            : localeValue(active.stage, locale)}
-        </span>
-        <div aria-hidden="true">
-          <span
-            style={{
-              width: `${(activeIndex / (runtimePlayerPhases.length - 1)) * 100}%`,
-            }}
-          />
+          </p>
         </div>
-        <b>
-          {active.code} / {String(runtimePlayerPhases.length).padStart(2, '0')}
-        </b>
-      </footer>
+        <div className="a3s-tui-input-rule" />
+        <footer className="a3s-tui-footer">
+          <span className="a3s-tui-mode">
+            <i aria-hidden="true">●</i>
+            {labels.tuiMode}
+          </span>
+          <span className="a3s-tui-context">
+            {labels.tuiContext}
+            <i aria-hidden="true">
+              <b />
+            </i>
+          </span>
+          <span className="a3s-tui-identity">
+            <b>a3s</b>
+            <em>git:(main)</em>
+            <em>gpt-5 (128k context)</em>
+          </span>
+        </footer>
+      </section>
     </div>
   );
 }
@@ -1467,7 +1133,7 @@ export function HomeLayout() {
           <InstallSwitcher labels={labels} locale={locale} />
         </div>
         <div className="a3s-hero-visual">
-          <RuntimeExecutionFlow labels={labels} locale={locale} />
+          <RuntimeExecutionFlow labels={labels} />
         </div>
       </section>
 
