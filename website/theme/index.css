@@ -290,49 +290,48 @@ body {
 .a3s-button-orbit {
   position: absolute;
   z-index: 2;
-  overflow: visible;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 2px;
+  border-radius: 10px;
+  filter: drop-shadow(0 0 3px rgba(69, 221, 255, 0.72))
+    drop-shadow(0 0 6px rgba(104, 72, 255, 0.58));
   inset: -2px;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
   pointer-events: none;
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
 }
 
-.a3s-button-comet {
+.a3s-button-orbit-gradient {
   position: absolute;
-  top: 0;
+  top: 50%;
   left: 50%;
-  width: 42px;
-  height: 4px;
-  border-radius: 999px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(112, 56, 255, 0.72) 18%,
-    #45ddff 52%,
-    #fff 80%,
-    rgba(255, 255, 255, 0) 100%
+  width: 220%;
+  aspect-ratio: 1;
+  background: conic-gradient(
+    from 0deg,
+    #fff 0deg,
+    #45ddff 20deg,
+    #7244ff 64deg,
+    #5d2cff 150deg,
+    #8745ff 246deg,
+    #45ddff 334deg,
+    #fff 360deg
   );
-  box-shadow:
-    0 0 4px rgba(69, 221, 255, 0.95),
-    0 0 10px rgba(104, 72, 255, 0.72);
   transform: translate(-50%, -50%);
   transform-origin: center;
-  will-change: top, left, transform;
+  will-change: transform;
 }
 
-.a3s-button-comet::after {
-  position: absolute;
-  top: 0;
-  right: 15%;
-  width: 7px;
-  height: 4px;
-  border-radius: inherit;
-  background: #fff;
-  box-shadow: 0 0 5px #fff;
-  content: '';
-}
-
-.a3s-button--primary:hover .a3s-button-comet,
-.a3s-button--primary:focus-visible .a3s-button-comet {
-  animation: a3s-button-comet-orbit 2.2s linear infinite;
+.a3s-button--primary:hover .a3s-button-orbit-gradient,
+.a3s-button--primary:focus-visible .a3s-button-orbit-gradient {
+  animation: a3s-button-full-border-orbit 2.2s linear infinite;
 }
 
 .a3s-button--primary:focus-visible {
@@ -340,64 +339,8 @@ body {
   outline-offset: 4px;
 }
 
-@keyframes a3s-button-comet-orbit {
-  0% {
-    top: 0;
-    left: 50%;
-    transform: translate(-50%, -50%) rotate(0deg);
-  }
-
-  16% {
-    top: 0;
-    left: calc(100% - 11px);
-    transform: translate(-50%, -50%) rotate(0deg);
-  }
-
-  21% {
-    top: 11px;
-    left: 100%;
-    transform: translate(-50%, -50%) rotate(90deg);
-  }
-
-  31% {
-    top: calc(100% - 11px);
-    left: 100%;
-    transform: translate(-50%, -50%) rotate(90deg);
-  }
-
-  36% {
-    top: 100%;
-    left: calc(100% - 11px);
-    transform: translate(-50%, -50%) rotate(180deg);
-  }
-
-  66% {
-    top: 100%;
-    left: 11px;
-    transform: translate(-50%, -50%) rotate(180deg);
-  }
-
-  71% {
-    top: calc(100% - 11px);
-    left: 0;
-    transform: translate(-50%, -50%) rotate(270deg);
-  }
-
-  81% {
-    top: 11px;
-    left: 0;
-    transform: translate(-50%, -50%) rotate(270deg);
-  }
-
-  86% {
-    top: 0;
-    left: 11px;
-    transform: translate(-50%, -50%) rotate(360deg);
-  }
-
-  100% {
-    top: 0;
-    left: 50%;
+@keyframes a3s-button-full-border-orbit {
+  to {
     transform: translate(-50%, -50%) rotate(360deg);
   }
 }
