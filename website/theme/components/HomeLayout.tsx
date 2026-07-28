@@ -697,9 +697,6 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
       status: activeIndex < 4 ? 'pending' : activeIndex < 5 ? 'active' : 'done',
     },
   ];
-  const completedPlanCount = planItems.filter(
-    (item) => item.status === 'done',
-  ).length;
   const subagents: Array<{
     name: string;
     task: string;
@@ -875,54 +872,6 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
             </article>
           ) : null}
 
-          {activeIndex >= 1 ? (
-            <section className="a3s-tui-plan" aria-label={labels.tuiPlan}>
-              <header>
-                <span aria-hidden="true">•</span>
-                <strong>{labels.tuiPlan}</strong>
-                <small>{completedPlanCount}/3 done</small>
-              </header>
-              <ol>
-                {planItems.map((item, index) => (
-                  <li className={`is-${item.status}`} key={item.label}>
-                    <span aria-hidden="true">{index === 0 ? '⎿' : ''}</span>
-                    <i aria-hidden="true">{tuiDemoStatusGlyph[item.status]}</i>
-                    <p>{item.label}</p>
-                  </li>
-                ))}
-              </ol>
-            </section>
-          ) : null}
-
-          {activeIndex >= 2 ? (
-            <section
-              className="a3s-tui-agents"
-              aria-label={labels.tuiSubagents}
-            >
-              <header>
-                <span aria-hidden="true">•</span>
-                <strong>{labels.tuiSubagents}</strong>
-                <em>{labels.tuiParallelTask}</em>
-                <small>
-                  {runningSubagentCount} running · {completedSubagentCount}/3
-                  done · ↓ {subagentTokens}
-                </small>
-              </header>
-              {visibleSubagents.length > 0 ? (
-                <div>
-                  {visibleSubagents.map((agent) => (
-                    <p className={`is-${agent.status}`} key={agent.name}>
-                      <i aria-hidden="true">•</i>
-                      <b>{agent.name}</b>
-                      <span>{agent.task}</span>
-                      <small>↓ {agent.tokens}</small>
-                    </p>
-                  ))}
-                </div>
-              ) : null}
-            </section>
-          ) : null}
-
           {activeIndex >= 4 ? (
             <article
               className={[
@@ -1017,6 +966,19 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
             </>
           ) : null}
         </div>
+        {activeIndex >= 1 ? (
+          <section className="a3s-tui-plan" aria-label={labels.tuiPlan}>
+            <ol>
+              {planItems.map((item, index) => (
+                <li className={`is-${item.status}`} key={item.label}>
+                  <span aria-hidden="true">{index === 0 ? '⎿' : ''}</span>
+                  <i aria-hidden="true">{tuiDemoStatusGlyph[item.status]}</i>
+                  <p>{item.label}</p>
+                </li>
+              ))}
+            </ol>
+          </section>
+        ) : null}
         <div className="a3s-tui-effort-rule">
           <span>◇ high</span>
         </div>
@@ -1045,6 +1007,28 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
             <em>gpt-5 (128k context)</em>
           </span>
         </footer>
+        {visibleSubagents.length > 0 ? (
+          <section className="a3s-tui-agents" aria-label={labels.tuiSubagents}>
+            <header>
+              <span aria-hidden="true">•</span>
+              <strong>{labels.tuiParallelTask}</strong>
+              <small>
+                {runningSubagentCount} running · {completedSubagentCount}/3 done
+                · 00:04 · ↓ {subagentTokens} tokens
+              </small>
+            </header>
+            <div>
+              {visibleSubagents.map((agent) => (
+                <p className={`is-${agent.status}`} key={agent.name}>
+                  <i aria-hidden="true">•</i>
+                  <b>{agent.name}</b>
+                  <span>{agent.task}</span>
+                  <small>00:03 · ↓ {agent.tokens}</small>
+                </p>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </section>
     </div>
   );

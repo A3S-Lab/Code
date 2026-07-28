@@ -489,28 +489,6 @@ body {
   justify-content: center;
 }
 
-.a3s-hero-visual::before,
-.a3s-hero-visual::after {
-  position: absolute;
-  width: 140px;
-  height: 140px;
-  border-color: rgba(108, 163, 255, 0.22);
-  border-style: solid;
-  content: '';
-}
-
-.a3s-hero-visual::before {
-  top: 20px;
-  right: 20px;
-  border-width: 1px 1px 0 0;
-}
-
-.a3s-hero-visual::after {
-  bottom: 20px;
-  left: 20px;
-  border-width: 0 0 1px 1px;
-}
-
 .a3s-runtime-visual {
   position: relative;
   width: min(100%, 520px);
@@ -5669,28 +5647,24 @@ body {
 
 .a3s-tui-plan {
   display: grid;
-  padding: 5px 8px;
-  gap: 3px;
+  padding: 1px 0 6px;
 }
 
-.a3s-tui-plan > header,
 .a3s-tui-agents > header {
   display: grid;
   min-width: 0;
   color: #cfd3d8;
   align-items: center;
   gap: 7px;
-  grid-template-columns: 13px auto minmax(0, 1fr) auto;
+  grid-template-columns: 13px minmax(0, 1fr) auto;
 }
 
-.a3s-tui-plan > header > span,
 .a3s-tui-agents > header > span {
   color: #77808b;
   font-size: 12px;
   text-align: center;
 }
 
-.a3s-tui-plan > header > strong,
 .a3s-tui-agents > header > strong {
   color: #dcdcdc;
   font-size: 11.5px;
@@ -5698,7 +5672,6 @@ body {
   line-height: 1.4;
 }
 
-.a3s-tui-plan > header > small,
 .a3s-tui-agents > header > small {
   overflow: hidden;
   color: #77808b;
@@ -5706,10 +5679,6 @@ body {
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.a3s-tui-plan > header > small {
-  grid-column: 4;
 }
 
 .a3s-tui-plan ol {
@@ -5727,14 +5696,15 @@ body {
   min-height: 15px;
   color: #8a929d;
   align-items: center;
-  gap: 4px;
-  grid-template-columns: 13px 13px minmax(0, 1fr);
+  gap: 3px;
+  grid-template-columns: 20px 13px minmax(0, 1fr);
 }
 
 .a3s-tui-plan li > span {
   color: #606872;
   font-size: 11px;
-  text-align: center;
+  text-align: left;
+  white-space: pre;
 }
 
 .a3s-tui-plan li > i {
@@ -5773,17 +5743,8 @@ body {
 
 .a3s-tui-agents {
   display: grid;
-  padding: 4px 8px;
+  padding: 3px 0 0;
   gap: 3px;
-}
-
-.a3s-tui-agents > header > em {
-  overflow: hidden;
-  color: #8d96a1;
-  font-size: 10px;
-  font-style: normal;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .a3s-tui-agents > div {
@@ -5801,6 +5762,7 @@ body {
   align-items: center;
   gap: 7px;
   grid-template-columns: 13px auto minmax(0, 1fr) auto;
+  padding-left: 20px;
 }
 
 .a3s-tui-agents > div > p > i {
@@ -6055,7 +6017,6 @@ body {
 .a3s-tui-composer {
   min-height: 0;
   padding: 0 18px 9px;
-  border-top: 1px solid #242a31;
   background: #15191f;
   font-family: var(--a3s-mono);
 }
@@ -6323,8 +6284,8 @@ body {
 
   .a3s-tui-plan,
   .a3s-tui-agents {
-    padding-right: 3px;
-    padding-left: 3px;
+    padding-right: 0;
+    padding-left: 0;
   }
 
   .a3s-tui-artifact {
@@ -6345,25 +6306,20 @@ body {
 }
 
 @media (max-width: 390px) {
-  .a3s-tui-plan > header,
   .a3s-tui-agents > header {
     gap: 3px 6px;
     grid-template-columns: 13px auto minmax(0, 1fr);
   }
 
-  .a3s-tui-plan > header > small,
   .a3s-tui-agents > header > small {
     grid-column: 2 / -1;
     text-align: left;
   }
 
-  .a3s-tui-agents > header > em {
-    text-align: right;
-  }
-
   .a3s-tui-agents > div > p {
     gap: 5px;
     grid-template-columns: 13px auto minmax(0, 1fr) auto;
+    padding-left: 12px;
   }
 
   .a3s-tui-artifact {
