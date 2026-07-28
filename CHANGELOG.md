@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.2] - 2026-07-28
+
 ### Added
 
 - Added strict `generate_object` argument validation, root JSON Schema support
