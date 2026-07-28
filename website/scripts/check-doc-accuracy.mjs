@@ -51,7 +51,12 @@ async function directoryDigest(directory) {
   for (const file of files) {
     hash.update(file);
     hash.update('\0');
-    hash.update(await readFile(path.join(directory, file)));
+    const content = await readFile(path.join(directory, file));
+    hash.update(
+      content.includes(0)
+        ? content
+        : Buffer.from(content.toString('utf8').replaceAll('\r\n', '\n')),
+    );
     hash.update('\0');
   }
 
