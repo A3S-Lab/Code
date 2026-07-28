@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.1] - 2026-07-28
+
 ### Added
 
 - Added an opt-in real-LLM integration suite for batch-read continuation,
