@@ -124,6 +124,29 @@ async fn manifest_search_matches_glob_and_grep() {
     assert_eq!(grep.match_count, 1);
     assert_eq!(grep.file_count, 1);
     assert!(grep.output.contains("src/main.rs:2"));
+
+    let metadata_only = backend
+        .grep_with_sources(WorkspaceGrepRequest {
+            base: WorkspacePath::root(),
+            pattern: "hello".to_string(),
+            glob: None,
+            context_lines: 0,
+            case_insensitive: false,
+            max_output_size: 0,
+        })
+        .await
+        .unwrap();
+    assert_eq!(metadata_only.result.match_count, 2);
+    assert_eq!(metadata_only.result.file_count, 2);
+    assert!(metadata_only.result.output.is_empty());
+    assert!(!metadata_only.result.truncated);
+    assert_eq!(
+        metadata_only.matched_paths.unwrap(),
+        vec![
+            WorkspacePath::from_normalized("README.md"),
+            WorkspacePath::from_normalized("src/main.rs")
+        ]
+    );
 }
 
 #[tokio::test]

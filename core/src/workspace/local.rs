@@ -489,6 +489,7 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
         let mut file_count = 0;
         let mut total_size = 0;
         let mut matched_paths = Vec::new();
+        let metadata_only = request.max_output_size == 0;
 
         for entry in builder.build().flatten() {
             if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
@@ -520,7 +521,7 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
             let mut path_recorded = false;
 
             for &match_idx in &file_matches {
-                if total_size > request.max_output_size {
+                if !metadata_only && total_size > request.max_output_size {
                     return Ok(WorkspaceGrepOutcome {
                         result: WorkspaceGrepResult {
                             output,
@@ -537,6 +538,9 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
                     path_recorded = true;
                 }
                 match_count += 1;
+                if metadata_only {
+                    continue;
+                }
 
                 let start = match_idx.saturating_sub(request.context_lines);
                 let end = (match_idx + request.context_lines + 1).min(lines.len());

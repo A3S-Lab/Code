@@ -27,12 +27,11 @@ pub use manifest::{
     LocalWorkspaceManifestSnapshot, ManifestWorkspaceBackend, RecentWorkspaceFile,
     WorkspaceFileChange, WorkspaceFileChangeKind,
 };
-pub(crate) use path::validate_relative_pattern;
 pub use path::VirtualPathResolver;
 use path::{
-    default_path_input, escape_control_chars_for_display, has_windows_path_prefix,
-    normalize_relative_path, pathbuf_to_workspace_path,
+    default_path_input, has_windows_path_prefix, normalize_relative_path, pathbuf_to_workspace_path,
 };
+pub(crate) use path::{escape_control_chars_for_display, validate_relative_pattern};
 pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict};
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};
@@ -196,6 +195,9 @@ pub struct WorkspaceGrepRequest {
     pub glob: Option<String>,
     pub context_lines: usize,
     pub case_insensitive: bool,
+    /// Maximum rendered match bytes. Zero requests a metadata-only scan:
+    /// backends count every matching line and collect distinct source paths
+    /// without constructing match text.
     pub max_output_size: usize,
 }
 

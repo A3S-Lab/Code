@@ -207,18 +207,53 @@ session = agent.session(".", opts)
 
 | Tool | Description | Example |
 |------|-------------|---------|
-| `read` | Read file content | `read: /path/to/file.py` |
+| `read` | Read one file range or 1-32 ordered file ranges under one shared output budget | `read: /path/to/file.py` |
 | `write` | Write file | `write: /path/to/file.py` |
-| `edit` | Edit file | `edit: /path/to/file.py` |
+| `edit` | Preview or apply a CAS-protected exact-string edit with replacement-count guards | `edit: /path/to/file.py` |
 | `patch` | Apply patch | `patch: /path/to/file.py` |
 
 #### Search Tools
 
 | Tool | Description | Example |
 |------|-------------|---------|
-| `grep` | Text search | `grep: "function name"` |
-| `glob` | File matching | `glob: "**/*.py"` |
+| `grep` | Content, matching-file, per-file-count, or summary regex search | `grep: "function name"` |
+| `glob` | Cursor-paginated file matching with backend or stable path ordering | `glob: "**/*.py"` |
 | `ls` | Directory listing | `ls: /path/to/dir` |
+
+#### Bounded repository context
+
+Use `read.files` when the relevant paths are already known:
+
+```json
+{
+  "files": [
+    { "path": "src/lib.rs" },
+    { "path": "src/config.rs", "offset": 20, "limit": 60 }
+  ],
+  "max_output_bytes": 65536
+}
+```
+
+The response preserves request order and isolates member errors. When
+`metadata.batch.truncated` is true, pass `metadata.batch.continuation` back as
+the next `files` value. The continuation text is already included in the byte
+budget.
+
+Choose a grep result shape with `output_mode`:
+
+- `content` returns matching lines and optional context.
+- `files_with_matches` returns lexically cursor-paginated paths.
+- `count` returns lexically cursor-paginated matching-line counts per file.
+- `summary` completes the scan and returns totals without match text.
+
+`glob` defaults to `sort: "backend"` to retain backend recency or relevance
+order. Use `sort: "path"` when deterministic lexical cursor pages are more
+important.
+
+For mechanical changes, first call `edit` with `dry_run: true`. Then apply the
+same edit with `expected_replacements` set to the previewed count; add
+`max_replacements` when an independent upper bound is required. A dry run is a
+read-only tool invocation and never writes the workspace.
 
 #### Other Tools
 
