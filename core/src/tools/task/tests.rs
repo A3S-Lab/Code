@@ -1,5 +1,30 @@
 use super::*;
 
+struct DelegatedCoalescingEngine {
+    config: a3s_search::EngineConfig,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl a3s_search::Engine for DelegatedCoalescingEngine {
+    fn config(&self) -> &a3s_search::EngineConfig {
+        &self.config
+    }
+
+    async fn search(
+        &self,
+        query: &a3s_search::SearchQuery,
+    ) -> a3s_search::Result<Vec<a3s_search::SearchResult>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        Ok(vec![a3s_search::SearchResult::new(
+            "https://example.test/delegated",
+            query.query.clone(),
+            "shared delegated result",
+        )])
+    }
+}
+
 #[test]
 fn test_task_params_deserialize() {
     let json = r#"{
@@ -61,7 +86,7 @@ fn test_task_params_all_fields() {
 }
 
 #[tokio::test]
-async fn delegated_context_inherits_search_limits_but_gets_a_fresh_circuit() {
+async fn delegated_context_inherits_search_limits_and_flights_but_gets_a_fresh_circuit() {
     let workspace = tempfile::tempdir().expect("temporary workspace");
     let executor = Arc::new(TaskExecutor::new(
         Arc::new(AgentRegistry::new()),
@@ -133,6 +158,32 @@ async fn delegated_context_inherits_search_limits_but_gets_a_fresh_circuit() {
         .search_circuit_breaker()
         .acquire("failing-engine")
         .is_ok());
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut parent_search =
+        a3s_search::Search::new().with_request_coalescer(parent.search_request_coalescer());
+    let mut child_search =
+        a3s_search::Search::new().with_request_coalescer(child.search_request_coalescer());
+    for search in [&mut parent_search, &mut child_search] {
+        search.add_engine(DelegatedCoalescingEngine {
+            config: a3s_search::EngineConfig {
+                name: "Delegated Coalescing".to_string(),
+                shortcut: "delegated_coalescing".to_string(),
+                ..a3s_search::EngineConfig::default()
+            },
+            calls: Arc::clone(&calls),
+        });
+    }
+    let query = a3s_search::SearchQuery::new("same delegated request");
+
+    let (parent_result, child_result) = tokio::join!(
+        parent_search.search(query.clone()),
+        child_search.search(query),
+    );
+
+    assert!(parent_result.is_ok());
+    assert!(child_result.is_ok());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[test]

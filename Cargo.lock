@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-search"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "a3s-acl 0.2.1",
  "a3s-updater",

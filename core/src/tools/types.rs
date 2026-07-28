@@ -224,6 +224,8 @@ pub struct ToolContext {
     search_bulkhead: a3s_search::Bulkhead,
     /// Agent-scoped retry allowance shared across headless requests.
     search_retry_budget: a3s_search::RetryBudget,
+    /// Session-scoped identical-request flights shared by cloned tool contexts.
+    search_request_coalescer: a3s_search::SearchCoalescer,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
     /// Optional command environment overrides for subprocess-based tools.
@@ -369,6 +371,7 @@ impl ToolContext {
             search_circuit_scope: None,
             search_bulkhead: a3s_search::Bulkhead::default(),
             search_retry_budget: a3s_search::RetryBudget::default(),
+            search_request_coalescer: a3s_search::SearchCoalescer::default(),
             sandbox: None,
             command_env: None,
             workspace_services: crate::workspace::WorkspaceServices::local(workspace),
@@ -391,6 +394,7 @@ impl ToolContext {
         let session_id = session_id.into();
         if self.search_circuit_scope.as_deref() != Some(session_id.as_str()) {
             self.search_circuit_breaker = search_circuit_breaker(self.search_config.as_deref());
+            self.search_request_coalescer = a3s_search::SearchCoalescer::default();
             self.search_circuit_scope = Some(session_id.clone());
         }
         self.session_id = Some(session_id);
@@ -428,6 +432,7 @@ impl ToolContext {
     /// Set the search configuration
     pub fn with_search_config(mut self, config: crate::config::SearchConfig) -> Self {
         self.search_circuit_breaker = search_circuit_breaker(Some(&config));
+        self.search_request_coalescer = a3s_search::SearchCoalescer::default();
         self.search_config = Some(Arc::new(config));
         self
     }
@@ -452,6 +457,18 @@ impl ToolContext {
 
     pub(crate) fn search_retry_budget(&self) -> a3s_search::RetryBudget {
         self.search_retry_budget.clone()
+    }
+
+    pub(crate) fn with_search_request_coalescer(
+        mut self,
+        coalescer: a3s_search::SearchCoalescer,
+    ) -> Self {
+        self.search_request_coalescer = coalescer;
+        self
+    }
+
+    pub(crate) fn search_request_coalescer(&self) -> a3s_search::SearchCoalescer {
+        self.search_request_coalescer.clone()
     }
 
     /// Set a sandbox executor for the `bash` tool.

@@ -8,8 +8,8 @@ use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider};
 use a3s_search::proxy::ProxyConfig;
 use a3s_search::{
-    EngineFailure, Metrics, MetricsSnapshot, Search, SearchCascade, SearchQualityFloor,
-    SearchQuery, SearchResult, SearchResults,
+    EngineFailure, Metrics, MetricsSnapshot, Search, SearchCascade, SearchCoalescerSnapshot,
+    SearchQualityFloor, SearchQuery, SearchResult, SearchResults,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -310,11 +310,23 @@ fn search_metrics_json(snapshot: &MetricsSnapshot) -> serde_json::Value {
     })
 }
 
+fn search_coalescer_json(snapshot: &SearchCoalescerSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "max_in_flight": snapshot.max_in_flight,
+        "in_flight": snapshot.in_flight,
+        "leader_requests": snapshot.leader_requests,
+        "shared_requests": snapshot.shared_requests,
+        "bypassed_requests": snapshot.bypassed_requests,
+        "abandoned_requests": snapshot.abandoned_requests,
+    })
+}
+
 fn tier_search(ctx: &ToolContext, metrics: Arc<Metrics>) -> Search {
     Search::new()
         .with_metrics(metrics)
         .with_circuit_breaker(ctx.search_circuit_breaker())
         .with_bulkhead(ctx.search_bulkhead())
+        .with_request_coalescer(ctx.search_request_coalescer())
 }
 
 fn search_error_failure(engine: &str, error: &a3s_search::SearchError) -> EngineFailure {
@@ -771,6 +783,7 @@ impl Tool for WebSearchTool {
         });
         let metrics = search_metrics.snapshot().await;
         let metrics_json = search_metrics_json(&metrics);
+        let coalescer_json = search_coalescer_json(&ctx.search_request_coalescer().snapshot());
 
         let items = search_results.items();
         let results: Vec<_> = items
@@ -818,6 +831,7 @@ impl Tool for WebSearchTool {
                 "search_tiers": &tier_reports,
                 "engine_outcomes": outcome_metadata(search_results.outcomes()),
                 "search_metrics": metrics_json,
+                "search_coalescing": coalescer_json,
                 "engine_errors": engine_errors,
                 "engine_failures": engine_failures,
             });
@@ -905,6 +919,7 @@ impl Tool for WebSearchTool {
                 "search_tiers": &tier_reports,
                 "engine_outcomes": outcome_metadata(search_results.outcomes()),
                 "search_metrics": metrics_json,
+                "search_coalescing": coalescer_json,
                 "engine_errors": engine_errors,
                 "engine_failures": engine_failures,
                 "available_result_count": results.len(),

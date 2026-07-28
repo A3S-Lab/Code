@@ -146,9 +146,12 @@ Search metadata includes `search_tiers`, `search_quality`, `engine_outcomes`,
 typed `engine_failures`, and bounded latency/error metrics. Circuit state is
 session-scoped, while per-engine concurrency limits and headless retry budgets
 are shared across sessions created by one `Agent` and inherited by delegated
-children. Chrome or Lightpanda discovery happens only if the headless tier is
-actually reached; browser installation and repair remain explicit host
-operations.
+children. Identical overlapping requests are coalesced within a session and
+its delegated children; completed flights are removed immediately rather than
+cached. `search_coalescing` metadata exposes current capacity plus leader,
+shared, bypassed, and abandoned request counts. Chrome or Lightpanda discovery
+happens only if the headless tier is actually reached; browser installation
+and repair remain explicit host operations.
 
 If every available tier is exhausted without meeting the quality floor,
 `web_search` returns a tool failure instead of presenting weak candidates as a

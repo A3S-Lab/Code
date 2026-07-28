@@ -114,6 +114,8 @@ pub struct TaskExecutor {
     search_bulkhead: Option<a3s_search::Bulkhead>,
     /// Agent-scoped headless retry allowance shared with delegated child runs.
     search_retry_budget: Option<a3s_search::RetryBudget>,
+    /// Parent-session request flights shared with delegated child runs.
+    search_request_coalescer: Option<a3s_search::SearchCoalescer>,
     /// Optional lifetime boundary inherited from the session that created this
     /// executor. Keeping it on the executor prevents cached workflow/executor
     /// handles from starting new child runs after their session is closed.
@@ -144,6 +146,7 @@ impl TaskExecutor {
             search_config: None,
             search_bulkhead: None,
             search_retry_budget: None,
+            search_request_coalescer: None,
             parent_cancellation: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
             parallel_permits: Arc::new(tokio::sync::Semaphore::new(
@@ -179,6 +182,7 @@ impl TaskExecutor {
             search_config: None,
             search_bulkhead: None,
             search_retry_budget: None,
+            search_request_coalescer: None,
             parent_cancellation: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
             parallel_permits: Arc::new(tokio::sync::Semaphore::new(
@@ -204,6 +208,7 @@ impl TaskExecutor {
         scoped.search_config = ctx.search_config.clone();
         scoped.search_bulkhead = Some(ctx.search_bulkhead());
         scoped.search_retry_budget = Some(ctx.search_retry_budget());
+        scoped.search_request_coalescer = Some(ctx.search_request_coalescer());
         if ctx.has_run_governance() {
             scoped.parent_context = scoped.parent_context.take().map(|parent| {
                 parent.with_run_governance(
@@ -230,6 +235,9 @@ impl TaskExecutor {
         }
         if let Some(search_config) = &self.search_config {
             context = context.with_search_config(search_config.as_ref().clone());
+        }
+        if let Some(coalescer) = &self.search_request_coalescer {
+            context = context.with_search_request_coalescer(coalescer.clone());
         }
         context
     }

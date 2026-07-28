@@ -102,6 +102,77 @@ fn latest_search_metrics_are_exposed_as_stable_metadata() {
     assert_eq!(metadata["latency_p99_ms"], 30);
 }
 
+#[test]
+fn latest_request_coalescing_state_is_exposed_as_stable_metadata() {
+    let mut snapshot = a3s_search::SearchCoalescerSnapshot::default();
+    snapshot.max_in_flight = 128;
+    snapshot.in_flight = 2;
+    snapshot.leader_requests = 7;
+    snapshot.shared_requests = 5;
+    snapshot.bypassed_requests = 1;
+    snapshot.abandoned_requests = 1;
+
+    let metadata = search_coalescer_json(&snapshot);
+
+    assert_eq!(metadata["max_in_flight"], 128);
+    assert_eq!(metadata["in_flight"], 2);
+    assert_eq!(metadata["leader_requests"], 7);
+    assert_eq!(metadata["shared_requests"], 5);
+    assert_eq!(metadata["bypassed_requests"], 1);
+    assert_eq!(metadata["abandoned_requests"], 1);
+}
+
+struct CoalescingProbeEngine {
+    config: a3s_search::EngineConfig,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl a3s_search::Engine for CoalescingProbeEngine {
+    fn config(&self) -> &a3s_search::EngineConfig {
+        &self.config
+    }
+
+    async fn search(
+        &self,
+        query: &a3s_search::SearchQuery,
+    ) -> a3s_search::Result<Vec<a3s_search::SearchResult>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        Ok(vec![a3s_search::SearchResult::new(
+            "https://example.test/coalesced",
+            query.query.clone(),
+            "shared result",
+        )])
+    }
+}
+
+#[tokio::test]
+async fn tier_searches_share_the_session_request_coalescer() {
+    let context = ToolContext::new(PathBuf::from("."));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut first = tier_search(&context, Arc::new(Metrics::new()));
+    let mut second = tier_search(&context, Arc::new(Metrics::new()));
+    for search in [&mut first, &mut second] {
+        search.add_engine(CoalescingProbeEngine {
+            config: a3s_search::EngineConfig {
+                name: "Coalescing Probe".to_string(),
+                shortcut: "coalescing_probe".to_string(),
+                ..a3s_search::EngineConfig::default()
+            },
+            calls: Arc::clone(&calls),
+        });
+    }
+    let query = SearchQuery::new("same concurrent request");
+
+    let (first_result, second_result) =
+        tokio::join!(first.search(query.clone()), second.search(query));
+
+    assert!(first_result.is_ok());
+    assert!(second_result.is_ok());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 fn search_config(engines: HashMap<String, SearchEngineConfig>) -> SearchConfig {
     SearchConfig {
         timeout: 10,
