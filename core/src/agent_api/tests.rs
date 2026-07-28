@@ -5767,6 +5767,7 @@ async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
             serde_json::json!({"file_path": "note.txt"}),
         ),
         scripted_text_response("child read complete"),
+        scripted_text_response("control child complete"),
     ]));
     let worker = crate::subagent::WorkerAgentSpec::custom(
         "needs-parent-hitl",
@@ -5777,6 +5778,7 @@ async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
     let opts = SessionOptions::new()
         .with_llm_client(client)
         .with_worker_agent(worker)
+        .with_max_parallel_tasks(1)
         .with_confirmation_policy(crate::hitl::ConfirmationPolicy::enabled());
     let session = agent
         .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
@@ -5786,12 +5788,20 @@ async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
     let (_rx, join) = session.tool_with_events(
         "parallel_task",
         serde_json::json!({
-            "tasks": [{
-                "agent": "needs-parent-hitl",
-                "description": "Read a note",
-                "prompt": "Read note.txt",
-                "max_steps": 3
-            }]
+            "tasks": [
+                {
+                    "agent": "needs-parent-hitl",
+                    "description": "Read a note",
+                    "prompt": "Read note.txt",
+                    "max_steps": 3
+                },
+                {
+                    "agent": "needs-parent-hitl",
+                    "description": "Independent control",
+                    "prompt": "Return a short control result.",
+                    "max_steps": 1
+                }
+            ]
         }),
     );
 
@@ -5840,10 +5850,11 @@ async fn test_dynamic_workflow_parallel_explore_can_use_readonly_web_tools() {
             serde_json::json!({"url": "not-a-url"}),
         ),
         scripted_text_response("explore web fetch completed"),
+        scripted_text_response("independent web review completed"),
     ]));
     let opts = SessionOptions::new()
         .with_llm_client(client)
-        .with_max_parallel_tasks(2)
+        .with_max_parallel_tasks(1)
         .with_manual_delegation_enabled(true);
     let session = agent
         .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
@@ -5863,12 +5874,20 @@ async function run(ctx, inputs) {
       step_id: "web_research",
       step_name: "parallel_task",
       input: {
-        tasks: [{
-          agent: "explore",
-          description: "Fetch web evidence",
-          prompt: "Use web_fetch on the requested URL and summarize the result.",
-          max_steps: 3,
-        }],
+        tasks: [
+          {
+            agent: "explore",
+            description: "Fetch web evidence",
+            prompt: "Use web_fetch on the requested URL and summarize the result.",
+            max_steps: 3,
+          },
+          {
+            agent: "explore",
+            description: "Review web evidence",
+            prompt: "Return a short independent review.",
+            max_steps: 1,
+          },
+        ],
       },
       retry: { max_attempts: 1, delay_ms: 0 },
     };
@@ -5934,13 +5953,14 @@ async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_permission
             serde_json::json!({"command": "echo inherited-dynamic-workflow-deep-research"}),
         ),
         scripted_text_response("deep-research child bash completed"),
+        scripted_text_response("deep-research control child completed"),
     ]));
     let policy = crate::permissions::PermissionPolicy::new().allow("bash(*)");
     let opts = SessionOptions::new()
         .with_llm_client(client)
         .with_permission_policy(policy)
         .with_workspace_backend(services)
-        .with_max_parallel_tasks(2)
+        .with_max_parallel_tasks(1)
         .with_manual_delegation_enabled(true);
     let session = agent
         .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
@@ -5960,12 +5980,20 @@ async function run(ctx, inputs) {
       step_id: "deep_research",
       step_name: "parallel_task",
       input: {
-        tasks: [{
-          agent: "deep-research",
-          description: "Use inherited parent tool policy",
-          prompt: "Run the harmless bash command requested by this regression test.",
-          max_steps: 3,
-        }],
+        tasks: [
+          {
+            agent: "deep-research",
+            description: "Use inherited parent tool policy",
+            prompt: "Run the harmless bash command requested by this regression test.",
+            max_steps: 3,
+          },
+          {
+            agent: "deep-research",
+            description: "Verify inherited policy independently",
+            prompt: "Return a short control result.",
+            max_steps: 1,
+          },
+        ],
       },
       retry: { max_attempts: 1, delay_ms: 0 },
     };
@@ -6032,12 +6060,13 @@ async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_write_perm
             }),
         ),
         scripted_text_response("deep-research child write completed"),
+        scripted_text_response("deep-research write control completed"),
     ]));
     let policy = crate::permissions::PermissionPolicy::new().allow("write(*)");
     let opts = SessionOptions::new()
         .with_llm_client(client)
         .with_permission_policy(policy)
-        .with_max_parallel_tasks(2)
+        .with_max_parallel_tasks(1)
         .with_manual_delegation_enabled(true);
     let session = agent
         .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
@@ -6057,12 +6086,20 @@ async function run(ctx, inputs) {
       step_id: "deep_research",
       step_name: "parallel_task",
       input: {
-        tasks: [{
-          agent: "deep-research",
-          description: "Use inherited parent write policy",
-          prompt: "Write the requested child evidence file.",
-          max_steps: 3,
-        }],
+        tasks: [
+          {
+            agent: "deep-research",
+            description: "Use inherited parent write policy",
+            prompt: "Write the requested child evidence file.",
+            max_steps: 3,
+          },
+          {
+            agent: "deep-research",
+            description: "Verify inherited write policy independently",
+            prompt: "Return a short control result.",
+            max_steps: 1,
+          },
+        ],
       },
       retry: { max_attempts: 1, delay_ms: 0 },
     };

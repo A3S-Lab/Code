@@ -96,6 +96,9 @@ pub fn sanitize_agent_event(
                 op: text(provider, op),
                 duration_ms: *duration_ms,
             },
+            ToolErrorKind::Transport { op } => ToolErrorKind::Transport {
+                op: text(provider, op),
+            },
             ToolErrorKind::Cancelled { op } => ToolErrorKind::Cancelled {
                 op: text(provider, op),
             },
@@ -620,6 +623,14 @@ mod tests {
                 ToolErrorKind::Timeout {
                     op: format!("operation: {redacted}"),
                     duration_ms: 42,
+                },
+            ),
+            (
+                ToolErrorKind::Transport {
+                    op: format!("operation: {secret}"),
+                },
+                ToolErrorKind::Transport {
+                    op: format!("operation: {redacted}"),
                 },
             ),
         ];

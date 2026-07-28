@@ -9,6 +9,55 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+/// Typed failures emitted before an HTTP response exists.
+///
+/// Retry and tool policies inspect this enum rather than rendered diagnostics.
+#[derive(Debug, thiserror::Error)]
+pub enum HttpClientError {
+    #[error("{operation} was cancelled")]
+    Cancelled { operation: String },
+    #[error("{operation} transport failed: {message}")]
+    Transport { operation: String, message: String },
+    #[error("{operation} request was invalid: {message}")]
+    InvalidRequest { operation: String, message: String },
+}
+
+impl HttpClientError {
+    pub fn cancelled(operation: impl Into<String>) -> Self {
+        Self::Cancelled {
+            operation: operation.into(),
+        }
+    }
+
+    pub fn transport(operation: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Transport {
+            operation: operation.into(),
+            message: message.into(),
+        }
+    }
+
+    fn from_reqwest(operation: &str, error: reqwest::Error) -> Self {
+        if error.is_builder() {
+            Self::InvalidRequest {
+                operation: operation.to_string(),
+                message: error.to_string(),
+            }
+        } else {
+            Self::transport(operation, error.to_string())
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::Transport { .. })
+    }
+}
+
+pub(crate) fn is_retryable_http_failure(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<HttpClientError>()
+        .is_some_and(HttpClientError::is_retryable)
+}
+
 /// HTTP response from a non-streaming POST request
 pub struct HttpResponse {
     pub status: u16,
@@ -150,15 +199,19 @@ impl HttpClient for ReqwestHttpClient {
 
         let response = tokio::select! {
             _ = cancel_token.cancelled() => {
-                anyhow::bail!("HTTP request cancelled");
+                return Err(anyhow::Error::new(HttpClientError::cancelled("HTTP request")));
             }
             result = request.send() => {
-                result.context(format!("Failed to send request to {}", url))?
+                result.map_err(|error| {
+                    anyhow::Error::new(HttpClientError::from_reqwest("HTTP request", error))
+                })?
             }
         };
 
         let status = response.status().as_u16();
-        let response_body = response.text().await?;
+        let response_body = response.text().await.map_err(|error| {
+            anyhow::Error::new(HttpClientError::from_reqwest("HTTP response body", error))
+        })?;
         let response_bytes = response_body.len() as u64;
         let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -197,10 +250,17 @@ impl HttpClient for ReqwestHttpClient {
 
         let response = tokio::select! {
             _ = cancel_token.cancelled() => {
-                anyhow::bail!("HTTP streaming request cancelled");
+                return Err(anyhow::Error::new(HttpClientError::cancelled(
+                    "HTTP streaming request",
+                )));
             }
             result = request.send() => {
-                result.context(format!("Failed to send streaming request to {}", url))?
+                result.map_err(|error| {
+                    anyhow::Error::new(HttpClientError::from_reqwest(
+                        "HTTP streaming request",
+                        error,
+                    ))
+                })?
             }
         };
 
@@ -225,9 +285,11 @@ impl HttpClient for ReqwestHttpClient {
         });
 
         if (200..300).contains(&status) {
-            let byte_stream = response
-                .bytes_stream()
-                .map(|r| r.map_err(|e| anyhow::anyhow!("Stream error: {}", e)));
+            let byte_stream = response.bytes_stream().map(|result| {
+                result.map_err(|error| {
+                    anyhow::Error::new(HttpClientError::from_reqwest("HTTP response stream", error))
+                })
+            });
             Ok(StreamingHttpResponse {
                 status,
                 retry_after,
@@ -326,6 +388,23 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn retryable_http_failure_requires_a_typed_transport_error() {
+        let prose = anyhow::anyhow!(
+            "Human-readable text says timeout, connection reset, and TLS handshake."
+        );
+        assert!(!is_retryable_http_failure(&prose));
+
+        let transport = anyhow::Error::new(HttpClientError::transport(
+            "stream request",
+            "opaque diagnostic",
+        ));
+        assert!(is_retryable_http_failure(&transport));
+
+        let cancelled = anyhow::Error::new(HttpClientError::cancelled("stream request"));
+        assert!(!is_retryable_http_failure(&cancelled));
+    }
 
     fn proxy_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

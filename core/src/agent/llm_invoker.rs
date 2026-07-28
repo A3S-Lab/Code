@@ -15,6 +15,7 @@ use crate::llm::{
 use async_trait::async_trait;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -169,6 +170,18 @@ impl LlmInvoker {
 impl LlmClient for LlmInvoker {
     fn model_generation_concurrency(&self) -> ModelGenerationConcurrency {
         self.inner.model_generation_concurrency()
+    }
+
+    fn fork_for_session(&self, session_id: &str) -> Option<Arc<dyn LlmClient>> {
+        self.inner
+            .fork_for_session(session_id)
+            .map(|inner| Arc::new(Self::new(inner, self.invocation.clone())) as Arc<dyn LlmClient>)
+    }
+
+    fn with_active_generation_timeout(&self, timeout: Duration) -> Option<Arc<dyn LlmClient>> {
+        self.inner
+            .with_active_generation_timeout(timeout)
+            .map(|inner| Arc::new(Self::new(inner, self.invocation.clone())) as Arc<dyn LlmClient>)
     }
 
     async fn complete(
@@ -508,6 +521,36 @@ mod tests {
         assert_eq!(
             *observed_sessions.lock().unwrap(),
             vec!["child-session".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn governed_client_keeps_provider_session_forking_available() {
+        let observed_sessions = Arc::new(Mutex::new(Vec::new()));
+        let client: Arc<dyn LlmClient> = Arc::new(SessionBindingClient {
+            bound_session: None,
+            observed_sessions: Arc::clone(&observed_sessions),
+        });
+        let invocation = InvocationContext::new(
+            Arc::<str>::from("parent-run"),
+            Arc::<str>::from("parent-session"),
+            CancellationToken::new(),
+            None,
+            InvocationGovernance::default(),
+        );
+        let governed: Arc<dyn LlmClient> = Arc::new(LlmInvoker::new(client, invocation));
+        let forked = governed
+            .fork_for_session("nested-child-session")
+            .expect("governed client must preserve provider session forking");
+
+        forked
+            .complete(&[Message::user("hello")], None, &[])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *observed_sessions.lock().unwrap(),
+            vec!["nested-child-session".to_string()]
         );
     }
 }

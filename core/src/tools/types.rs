@@ -683,6 +683,8 @@ pub enum ToolErrorKind {
     Unsupported { message: String },
     /// The operation's outer timeout fired before the backend responded.
     Timeout { op: String, duration_ms: u64 },
+    /// A typed network or upstream HTTP transport failure.
+    Transport { op: String },
     /// The caller or owning session cancelled the operation.
     Cancelled { op: String },
     /// A collection operation completed but one or more children failed.

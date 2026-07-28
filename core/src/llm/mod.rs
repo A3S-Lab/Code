@@ -25,7 +25,7 @@ pub use error::NonRetryableLlmError;
 pub use factory::{create_client_with_config, LlmConfig};
 pub use http::{
     clear_http_metrics_callback, default_http_client, set_http_metrics_callback, HttpClient,
-    HttpMetricsCallback, HttpMetricsRecord, HttpResponse, StreamingHttpResponse,
+    HttpClientError, HttpMetricsCallback, HttpMetricsRecord, HttpResponse, StreamingHttpResponse,
 };
 pub use openai::OpenAiClient;
 pub(crate) use token_estimation::{estimate_message_tokens, estimate_prompt_tokens};
@@ -34,6 +34,7 @@ pub use zhipu::ZhipuClient;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -57,6 +58,19 @@ pub trait LlmClient: Send + Sync {
     /// should return an independent client so parallel child agents do not
     /// contend for the parent's active operation.
     fn fork_for_session(&self, _session_id: &str) -> Option<std::sync::Arc<dyn LlmClient>> {
+        None
+    }
+
+    /// Return a view of this client configured for one active generation
+    /// deadline. The caller still owns and enforces the outer deadline.
+    ///
+    /// Composite and account-backed clients can use this budget to configure
+    /// their underlying transport without inferring timeout intent from error
+    /// text. Stateless clients may keep the default.
+    fn with_active_generation_timeout(
+        &self,
+        _timeout: Duration,
+    ) -> Option<std::sync::Arc<dyn LlmClient>> {
         None
     }
 

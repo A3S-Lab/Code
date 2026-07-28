@@ -209,7 +209,17 @@ impl AnthropicClient {
                                 ))
                             }
                         }
-                        Err(e) => AttemptOutcome::Fatal(e),
+                        Err(e) => {
+                            if crate::llm::http::is_retryable_http_failure(&e) {
+                                AttemptOutcome::Retryable {
+                                    status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                                    body: format!("network error: {e}"),
+                                    retry_after: None,
+                                }
+                            } else {
+                                AttemptOutcome::Fatal(e)
+                            }
+                        }
                     }
                 }
             })
@@ -351,28 +361,24 @@ impl AnthropicClient {
                 async move {
                     let resp = tokio::select! {
                         _ = cancel_token.cancelled() => {
-                            return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request cancelled"));
+                            return AttemptOutcome::Fatal(anyhow::Error::new(
+                                crate::llm::HttpClientError::cancelled(
+                                    "Anthropic streaming HTTP request",
+                                ),
+                            ));
                         }
                         result = http.post_streaming(url, headers, request_body, cancel_token.clone()) => {
                             match result {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    // A transient network error (timeout, reset,
-                                    // mid-flight drop — common on throttled
-                                    // endpoints) carries no HTTP status. Retry it
-                                    // with backoff like 429/5xx instead of failing
-                                    // the turn; a real fatal error still bails.
-                                    return if crate::retry::is_transient_error(&e) {
+                                    return if crate::llm::http::is_retryable_http_failure(&e) {
                                         AttemptOutcome::Retryable {
                                             status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
                                             body: format!("network error: {e}"),
                                             retry_after: None,
                                         }
                                     } else {
-                                        AttemptOutcome::Fatal(anyhow::anyhow!(
-                                            "HTTP request failed: {}",
-                                            e
-                                        ))
+                                        AttemptOutcome::Fatal(e.context("HTTP request failed"))
                                     };
                                 }
                             }

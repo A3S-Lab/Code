@@ -129,6 +129,13 @@ indices while treating the orchestration as completed, so callers retry only
 failed items. `parallel_task` has the same 32-task bound and settles cancelled
 children before publishing terminal state.
 
+`parallel_task` requires 2-32 independent foreground branches. Each branch
+accepts `agent`, `description`, `prompt`, optional `max_steps`, and optional
+`output_schema`; `background` is not a parallel-branch parameter. The optional
+`min_success_count` is valid only with `allow_partial_failure: true` and must be
+between 1 and the submitted task count. Provider and child runtimes own typed
+retry policy; the fan-out layer never replays a branch based on error text.
+
 `web_search` reports `complete`, `partial`, or `failed` in metadata. Empty
 results with engine errors are failures rather than successful empty searches.
 Timeout, cancellation, invalid-argument, partial-failure, and rate-limit errors
@@ -136,9 +143,10 @@ carry structured error kinds.
 
 ## Structured Output with `generate_object`
 
-The `generate_object` tool asks the configured LLM for a JSON object, validates
-the response against a JSON Schema, and returns the validated object only on a
-zero-exit result. It works in two ways:
+The `generate_object` tool asks the configured LLM for a JSON value, validates
+the response against a JSON Schema, and returns the validated value only on a
+zero-exit result. Root objects, arrays, enums, constants, composition keywords,
+and local `$ref` definitions are supported. It works in two ways:
 
 1. **Agent-driven**: The LLM sees `generate_object` in its tool list and calls it autonomously when structured output is needed.
 2. **Direct call**: Your application calls `session.tool('generate_object', ...)` to bypass model-driven tool selection. The tool itself still calls the configured LLM.
@@ -169,23 +177,25 @@ const { object } = JSON.parse(result.output);
 
 ### Parameters
 
-| Parameter             | Type    | Required | Description                                                              |
-| --------------------- | ------- | -------- | ------------------------------------------------------------------------ |
-| `schema`              | object  | yes      | JSON Schema used to validate the output                                  |
-| `prompt`              | string  | yes      | What to generate or extract                                              |
-| `schema_name`         | string  | no       | Short name (default: "result")                                           |
-| `schema_description`  | string  | no       | Description for the synthetic tool                                       |
-| `system`              | string  | no       | Optional system prompt                                                   |
-| `mode`                | string  | no       | `"auto"` / `"strict"` / `"json"` / `"tool"` / `"prompt"` (default: auto) |
-| `max_repair_attempts` | integer | no       | 0–5 (default: 2)                                                         |
-| `timeout_ms`          | integer | no       | Independent generation deadline, 1,000–600,000 ms (default: 120,000)     |
+| Parameter             | Type    | Required | Description                                                                      |
+| --------------------- | ------- | -------- | -------------------------------------------------------------------------------- |
+| `schema`              | object  | yes      | JSON Schema used to validate the output value                                    |
+| `prompt`              | string  | yes      | Non-whitespace generation or extraction instruction                              |
+| `schema_name`         | string  | no       | 1-59 ASCII letters, digits, `_`, or `-` (default: `result`)                      |
+| `schema_description`  | string  | no       | Synthetic-tool description, at most 4,096 bytes                                  |
+| `system`              | string  | no       | Optional system prompt, at most 32,768 bytes                                     |
+| `mode`                | string  | no       | `"auto"` / `"strict"` / `"json"` / `"tool"` / `"prompt"` (default: auto)         |
+| `max_repair_attempts` | integer | no       | 0-5 (default: 2)                                                                 |
+| `include_raw_text`    | boolean | no       | Include the provider text or tool arguments used for extraction (default: false) |
+| `timeout_ms`          | integer | no       | Active generation deadline, 1,000-600,000 ms (default: 120,000)                  |
 
 ### Modes
 
-- **tool**: Injects a synthetic tool whose parameters are the schema. This is the current cross-provider default.
+- **tool**: Forces a synthetic tool whose parameters are the schema when the provider supports forced tool calls.
 - **prompt**: Appends schema instructions to the prompt. It is useful as a prompt-only fallback, but depends more on model compliance.
-- **auto**: Currently resolves to `tool`.
-- **strict** / **json**: Accepted by the API, but currently resolve to `tool` because provider-level `response_format` wiring is not enabled in this runtime path.
+- **auto**: Selects forced-tool mode when available, otherwise prompt mode.
+- **strict**: Uses provider-native strict JSON Schema when supported, otherwise safely falls back to forced-tool or prompt mode.
+- **json**: Uses provider-native JSON-object mode when supported, otherwise safely falls back to forced-tool or prompt mode.
 
 ### Streaming
 
