@@ -1,8 +1,4 @@
-import {
-  useEffect,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-} from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLang, useSite, useVersion, withBase } from '@rspress/core/runtime';
 import {
   InnerLine,
@@ -505,14 +501,36 @@ const runtimeFlowSteps = [
 
 const runtimePlayerPhases = [
   {
-    id: 'prepare',
+    id: 'input',
     code: '01',
-    stage: { zh: '准备', en: 'PREPARE' },
-    navTitle: { zh: '准备上下文', en: 'Prepare context' },
-    title: { zh: '正在准备上下文', en: 'Preparing context' },
+    stage: { zh: '输入', en: 'INPUT' },
+    navTitle: { zh: '提交任务', en: 'Submit task' },
+    title: { zh: '输入任务', en: 'Enter a task' },
     summary: {
-      zh: '已创建本次运行，并准备好项目指令、历史和可用工具。',
-      en: 'The run is created with the project instructions, history, and available tools it needs.',
+      zh: '通过 ? 启动一次本地 DeepResearch 任务。',
+      en: 'Start a local DeepResearch task with ?.',
+    },
+    action: {
+      zh: '提交终端输入',
+      en: 'Submit terminal input',
+    },
+    result: {
+      zh: '任务进入 Session',
+      en: 'Task enters the Session',
+    },
+    command: 'AgentSession::stream()',
+    event: runtimeFlowSteps[0].event,
+    tags: ['A3S TUI', 'AgentSession'],
+  },
+  {
+    id: 'prepare',
+    code: '02',
+    stage: { zh: '会话', en: 'SESSION' },
+    navTitle: { zh: '载入工作区', en: 'Load workspace' },
+    title: { zh: '载入工作区与本地策略', en: 'Load workspace and policy' },
+    summary: {
+      zh: 'AGENTS.md · .a3s/config.acl',
+      en: 'AGENTS.md · .a3s/config.acl',
     },
     action: {
       zh: '取得运行权，组装 messages[] 与 tools[]',
@@ -528,16 +546,16 @@ const runtimePlayerPhases = [
   },
   {
     id: 'decide',
-    code: '02',
-    stage: { zh: '判断', en: 'DECIDE' },
-    navTitle: { zh: '决定下一步', en: 'Choose next step' },
+    code: '03',
+    stage: { zh: '计划', en: 'PLAN' },
+    navTitle: { zh: '拆分检查项', en: 'Plan checks' },
     title: {
-      zh: '模型选择只读搜索',
-      en: 'The model chooses a read-only search',
+      zh: '规划本地证据检查',
+      en: 'Plan local evidence checks',
     },
     summary: {
-      zh: '模型选择 grep 搜索 TODO 和 FIXME；此时还没有改动仓库。',
-      en: 'The model chooses grep for TODO and FIXME. The repository has not been changed.',
+      zh: 'CHANGELOG · CI workflow · release checks',
+      en: 'CHANGELOG · CI workflow · release checks',
     },
     action: {
       zh: '生成 grep({ pattern: "TODO|FIXME" })',
@@ -553,16 +571,16 @@ const runtimePlayerPhases = [
   },
   {
     id: 'execute',
-    code: '03',
-    stage: { zh: '执行', en: 'EXECUTE' },
-    navTitle: { zh: '执行工具', en: 'Run the tool' },
+    code: '04',
+    stage: { zh: '执行', en: 'RUN' },
+    navTitle: { zh: '执行检查', en: 'Run checks' },
     title: {
-      zh: '正在工作区执行',
-      en: 'Running in the workspace',
+      zh: '执行只读工具与检查命令',
+      en: 'Run read-only tools and checks',
     },
     summary: {
-      zh: '参数与权限检查通过，A3S 完成只读搜索并找到 3 条匹配。',
-      en: 'Argument and permission checks pass. A3S completes the read-only search and finds 3 matches.',
+      zh: 'read → glob → bash',
+      en: 'read → glob → bash',
     },
     action: {
       zh: '参数 → 权限 → Workspace.grep()',
@@ -577,17 +595,42 @@ const runtimePlayerPhases = [
     tags: ['ToolInvoker', 'Workspace', 'Artifact'],
   },
   {
-    id: 'record',
-    code: '04',
-    stage: { zh: '完成', en: 'DONE' },
-    navTitle: { zh: '保存记录', en: 'Save the record' },
+    id: 'verify',
+    code: '05',
+    stage: { zh: '验证', en: 'VERIFY' },
+    navTitle: { zh: '验证结论', en: 'Verify result' },
     title: {
-      zh: '检查完成',
-      en: 'Inspection complete',
+      zh: '汇总证据并通过质量门',
+      en: 'Synthesize evidence and pass quality gates',
     },
     summary: {
-      zh: '结果、运行记录和快照已经保存，之后可以随时查看或恢复。',
-      en: 'The result, run record, and snapshot are saved for later inspection or recovery.',
+      zh: 'workspace evidence · quality gate passed',
+      en: 'workspace evidence · quality gate passed',
+    },
+    action: {
+      zh: '检查来源覆盖与验证结果',
+      en: 'Check source coverage and verification',
+    },
+    result: {
+      zh: '报告可以发布',
+      en: 'Report is publishable',
+    },
+    command: 'verify → synthesize',
+    event: 'verification_end',
+    tags: ['VerificationReport', 'Trace'],
+  },
+  {
+    id: 'record',
+    code: '06',
+    stage: { zh: '制品', en: 'ARTIFACTS' },
+    navTitle: { zh: '发布制品', en: 'Publish artifacts' },
+    title: {
+      zh: '报告制品已生成',
+      en: 'Report artifacts are ready',
+    },
+    summary: {
+      zh: 'report.md · index.html',
+      en: 'report.md · index.html',
     },
     action: {
       zh: '发布事件并提交本次 generation',
@@ -615,7 +658,7 @@ const runtimePlayerPhases = [
   tags: string[];
 }>;
 
-type RuntimePlayerPhase = (typeof runtimePlayerPhases)[number];
+const tuiLifecycleDurations = [2200, 1100, 1350, 1800, 1350, 3000];
 
 const copy = {
   zh: {
@@ -669,19 +712,26 @@ const copy = {
     boundaryContract: 'API 与事件',
     boundaryHostLabel: '你的应用',
     boundaryHostRole: '账号、权限与界面',
-    stackTitle: '一次执行',
+    stackTitle: 'TUI 生命周期',
     stackHint: '点击阶段查看过程',
     stackHintMobile: '点击步骤展开',
     stackTop: '产品',
     stackBottom: '记录',
-    flowTaskLabel: '任务',
-    flowTask: '检查仓库并列出发布阻塞项',
+    flowTaskLabel: '输入',
+    flowTask: '? 不联网检查这个仓库的发布风险，并生成报告',
     flowReplay: '重播',
-    flowRunning: '回放中',
+    flowRunning: '运行中',
     flowStage: '阶段',
-    flowSaved: '运行记录已保存',
+    flowSaved: '制品已发布',
     flowReplayable: '过程可回放',
-    flowRecoverable: '结果可恢复',
+    flowRecoverable: 'Session 可恢复',
+    tuiWorkspace: '~/workspace/a3s',
+    tuiMode: 'LOCAL ONLY',
+    tuiWaiting: '等待任务完成',
+    tuiArtifacts: '制品',
+    tuiReady: '2 个文件',
+    tuiOpenView: '打开预览',
+    tuiArtifactPath: '.a3s/research/release-risk/',
     tutorialStep: '步骤',
     tutorialCode: '代码',
     tutorialLayers: '当前负责的层',
@@ -745,19 +795,26 @@ const copy = {
     boundaryContract: 'APIs + EVENTS',
     boundaryHostLabel: 'YOUR APP',
     boundaryHostRole: 'OWNS UI + ACCESS',
-    stackTitle: 'One run',
+    stackTitle: 'TUI lifecycle',
     stackHint: 'SELECT A PHASE TO INSPECT IT',
     stackHintMobile: 'TAP A STEP TO EXPAND',
     stackTop: 'PRODUCT',
     stackBottom: 'RECORDS',
-    flowTaskLabel: 'TASK',
-    flowTask: 'Inspect the repository and list release blockers',
+    flowTaskLabel: 'INPUT',
+    flowTask: '? Audit this repo for release risks offline; generate a report',
     flowReplay: 'REPLAY',
-    flowRunning: 'REPLAYING',
+    flowRunning: 'RUNNING',
     flowStage: 'PHASE',
-    flowSaved: 'RUN RECORD SAVED',
+    flowSaved: 'ARTIFACTS PUBLISHED',
     flowReplayable: 'REPLAYABLE',
-    flowRecoverable: 'RECOVERABLE',
+    flowRecoverable: 'SESSION RECOVERABLE',
+    tuiWorkspace: '~/workspace/a3s',
+    tuiMode: 'LOCAL ONLY',
+    tuiWaiting: 'WAITING FOR TASK',
+    tuiArtifacts: 'ARTIFACTS',
+    tuiReady: '2 FILES',
+    tuiOpenView: 'OPEN VIEW',
+    tuiArtifactPath: '.a3s/research/release-risk/',
     tutorialStep: 'STEP',
     tutorialCode: 'CODE',
     tutorialLayers: 'ACTIVE LAYER',
@@ -858,32 +915,43 @@ function InstallSwitcher({
   );
 }
 
-function RuntimePlayerStage({
-  phase,
-  labels,
+function TuiLifecycleRows({
+  activeIndex,
   locale,
 }: {
-  phase: RuntimePlayerPhase;
-  labels: (typeof copy)[Locale];
+  activeIndex: number;
   locale: Locale;
 }) {
   return (
-    <article
-      className="a3s-run-player-stage"
-      data-phase={phase.id}
-      key={phase.id}
-    >
-      <span className="a3s-run-player-stage-icon" aria-hidden="true">
-        {phase.id === 'record' ? '✓' : phase.code}
-      </span>
-      <div className="a3s-run-player-stage-copy">
-        <span>
-          {labels.flowStage} {phase.code} / {localeValue(phase.stage, locale)}
-        </span>
-        <h2>{localeValue(phase.title, locale)}</h2>
-        <p>{localeValue(phase.summary, locale)}</p>
-      </div>
-    </article>
+    <div className="a3s-tui-lifecycle">
+      {runtimePlayerPhases.slice(1, -1).map((phase, rowIndex) => {
+        const phaseIndex = rowIndex + 1;
+        const isActive = activeIndex === phaseIndex;
+        const isComplete = activeIndex > phaseIndex;
+
+        return (
+          <div
+            className={[
+              'a3s-tui-lifecycle-row',
+              isActive ? 'is-active' : '',
+              isComplete ? 'is-complete' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            key={phase.id}
+          >
+            <span aria-hidden="true">
+              {isComplete ? '✓' : phase.code}
+              <i />
+            </span>
+            <div>
+              <strong>{localeValue(phase.title, locale)}</strong>
+              <small>{localeValue(phase.summary, locale)}</small>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -894,156 +962,190 @@ function RuntimeExecutionFlow({
   labels: (typeof copy)[Locale];
   locale: Locale;
 }) {
+  const playerRef = useRef<HTMLDivElement>(null);
+  const hasStartedRef = useRef(false);
   const [activeIndex, setActiveIndex] = useState(
     runtimePlayerPhases.length - 1,
   );
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isVisible, setIsVisible] = useState(false);
+  const [typedCount, setTypedCount] = useState(labels.flowTask.length);
   const active = runtimePlayerPhases[activeIndex] ?? runtimePlayerPhases[0];
+  const isRunning = isPlaying && isVisible;
+  const isArtifactsReady = activeIndex === runtimePlayerPhases.length - 1;
 
   useEffect(() => {
-    if (!isPlaying) return undefined;
+    const player = playerRef.current;
+    if (!player) return undefined;
 
-    const delay = activeIndex === runtimePlayerPhases.length - 1 ? 780 : 1280;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setActiveIndex(runtimePlayerPhases.length - 1);
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const visible = entry?.isIntersecting ?? false;
+        setIsVisible(visible);
+
+        if (visible && !hasStartedRef.current) {
+          hasStartedRef.current = true;
+          setTypedCount(0);
+          setActiveIndex(0);
+          setIsPlaying(true);
+        }
+      },
+      { threshold: 0.35 },
+    );
+
+    observer.observe(player);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!isRunning) return undefined;
+
+    const delay = tuiLifecycleDurations[activeIndex] ?? 1200;
     const timer = window.setTimeout(() => {
-      if (activeIndex === runtimePlayerPhases.length - 1) {
-        setIsPlaying(false);
+      if (activeIndex >= runtimePlayerPhases.length - 1) {
+        setTypedCount(0);
+        setActiveIndex(0);
       } else {
-        setActiveIndex((index) =>
-          Math.min(index + 1, runtimePlayerPhases.length - 1),
-        );
+        setActiveIndex((index) => index + 1);
       }
     }, delay);
 
     return () => window.clearTimeout(timer);
-  }, [activeIndex, isPlaying]);
+  }, [activeIndex, isRunning]);
 
-  function selectStep(index: number) {
-    setIsPlaying(false);
-    setActiveIndex(index);
-  }
+  useEffect(() => {
+    if (!isRunning || activeIndex !== 0) return undefined;
+    if (typedCount >= labels.flowTask.length) return undefined;
+
+    const interval = Math.max(
+      18,
+      Math.floor(1550 / Math.max(labels.flowTask.length, 1)),
+    );
+    const timer = window.setTimeout(
+      () => setTypedCount((count) => count + 1),
+      interval,
+    );
+
+    return () => window.clearTimeout(timer);
+  }, [activeIndex, isRunning, labels.flowTask.length, typedCount]);
 
   function playFlow() {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      setActiveIndex(runtimePlayerPhases.length - 1);
-      setIsPlaying(false);
-      return;
-    }
-
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    setTypedCount(0);
     setActiveIndex(0);
     setIsPlaying(true);
   }
 
-  function handleStepKeyDown(
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-    index: number,
-  ) {
-    let nextIndex: number | undefined;
-
-    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
-      nextIndex = (index + 1) % runtimePlayerPhases.length;
-    } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
-      nextIndex =
-        (index - 1 + runtimePlayerPhases.length) % runtimePlayerPhases.length;
-    } else if (event.key === 'Home') {
-      nextIndex = 0;
-    } else if (event.key === 'End') {
-      nextIndex = runtimePlayerPhases.length - 1;
-    }
-
-    if (nextIndex === undefined) return;
-
-    event.preventDefault();
-    selectStep(nextIndex);
-    const inspector = event.currentTarget.closest('.a3s-runtime-inspector');
-    inspector
-      ?.querySelectorAll<HTMLButtonElement>('.a3s-run-player-phase')
-      .item(nextIndex)
-      .focus();
-  }
-
   return (
     <div
-      className="a3s-runtime-inspector a3s-runtime-inspector--player"
+      className={[
+        'a3s-runtime-inspector',
+        'a3s-tui-player',
+        isRunning ? 'is-running' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      data-phase={active.id}
       aria-label={labels.architectureAlt}
+      ref={playerRef}
     >
-      <header className="a3s-runtime-inspector-header a3s-run-player-header">
+      <header className="a3s-runtime-inspector-header a3s-tui-player-header">
         <span>
           <i aria-hidden="true" />
-          <b>A3S CODE</b>
-          <em>/</em>
-          {labels.stackTitle}
+          <b>A3S CODE TUI</b>
+          <em>{labels.tuiWorkspace}</em>
         </span>
         <div>
+          <code>{labels.tuiMode}</code>
           <button
-            aria-pressed={isPlaying}
-            className={isPlaying ? 'is-playing' : ''}
+            className={isRunning ? 'is-playing' : ''}
             onClick={playFlow}
             type="button"
           >
             <i aria-hidden="true" />
-            {isPlaying ? labels.flowRunning : labels.flowReplay}
+            {labels.flowReplay}
           </button>
         </div>
       </header>
 
-      <section className="a3s-run-player-task">
-        <span aria-hidden="true">&gt;_</span>
-        <div>
-          <small>{labels.flowTaskLabel}</small>
-          <strong>{labels.flowTask}</strong>
+      <section className="a3s-tui-screen">
+        <div
+          className={[
+            'a3s-tui-prompt',
+            activeIndex === 0 ? 'is-active' : 'is-complete',
+          ].join(' ')}
+        >
+          <span aria-hidden="true">›</span>
+          <div>
+            <small>{labels.flowTaskLabel}</small>
+            <p>
+              {labels.flowTask.slice(0, typedCount)}
+              <i aria-hidden="true" />
+            </p>
+          </div>
         </div>
+
+        <TuiLifecycleRows activeIndex={activeIndex} locale={locale} />
       </section>
 
-      <nav aria-label={labels.stackHint} className="a3s-run-player-progress">
-        <div className="a3s-run-player-rail" aria-hidden="true">
+      <section
+        className={['a3s-tui-artifacts', isArtifactsReady ? 'is-ready' : '']
+          .filter(Boolean)
+          .join(' ')}
+      >
+        <header>
+          <div>
+            <span>{labels.tuiArtifacts}</span>
+            <strong>
+              {isArtifactsReady ? labels.tuiReady : labels.tuiWaiting}
+            </strong>
+          </div>
+          {isArtifactsReady ? <code>{labels.tuiArtifactPath}</code> : null}
+        </header>
+
+        {isArtifactsReady ? (
+          <div className="a3s-tui-artifact-files">
+            <article>
+              <span aria-hidden="true">M↓</span>
+              <strong>report.md</strong>
+              <em>MARKDOWN</em>
+            </article>
+            <article>
+              <span aria-hidden="true">H↗</span>
+              <strong>index.html</strong>
+              <em>{labels.tuiOpenView}</em>
+            </article>
+          </div>
+        ) : (
+          <div className="a3s-tui-artifact-pending">
+            <i aria-hidden="true" />
+            <span>{localeValue(active.title, locale)}</span>
+          </div>
+        )}
+      </section>
+
+      <footer className="a3s-tui-statusbar">
+        <span>
+          <i aria-hidden="true" />
+          {isArtifactsReady
+            ? labels.flowSaved
+            : localeValue(active.stage, locale)}
+        </span>
+        <div aria-hidden="true">
           <span
             style={{
               width: `${(activeIndex / (runtimePlayerPhases.length - 1)) * 100}%`,
             }}
           />
         </div>
-
-        {runtimePlayerPhases.map((phase, index) => (
-          <button
-            aria-current={activeIndex === index ? 'step' : undefined}
-            aria-pressed={activeIndex === index}
-            className={[
-              'a3s-run-player-phase',
-              activeIndex === index ? 'is-active' : '',
-              activeIndex > index ? 'is-complete' : '',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            key={phase.id}
-            onClick={() => selectStep(index)}
-            onFocus={() => selectStep(index)}
-            onKeyDown={(event) => handleStepKeyDown(event, index)}
-            type="button"
-          >
-            <span>{phase.code}</span>
-            <span>
-              <strong>{localeValue(phase.stage, locale)}</strong>
-            </span>
-          </button>
-        ))}
-      </nav>
-
-      <RuntimePlayerStage
-        key={active.id}
-        labels={labels}
-        locale={locale}
-        phase={active}
-      />
-
-      <footer className="a3s-run-player-evidence">
-        <strong>
-          <i aria-hidden="true" />
-          {labels.flowSaved}
-        </strong>
-        <span>
-          <em>{labels.flowReplayable}</em>
-          <em>{labels.flowRecoverable}</em>
-        </span>
+        <b>
+          {active.code} / {String(runtimePlayerPhases.length).padStart(2, '0')}
+        </b>
       </footer>
     </div>
   );
