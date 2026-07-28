@@ -677,7 +677,7 @@ function ArrowIcon() {
 function AnimatedButtonBorder() {
   return (
     <span aria-hidden="true" className="a3s-button-orbit">
-      <span className="a3s-button-comet" />
+      <span className="a3s-button-orbit-gradient" />
     </span>
   );
 }
