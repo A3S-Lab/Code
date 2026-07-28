@@ -509,10 +509,10 @@ const runtimePlayerPhases = [
     code: '01',
     stage: { zh: '准备', en: 'PREPARE' },
     navTitle: { zh: '准备上下文', en: 'Prepare context' },
-    title: { zh: '任务已进入 Session', en: 'The task is in the Session' },
+    title: { zh: '正在准备上下文', en: 'Preparing context' },
     summary: {
-      zh: 'A3S 创建本次 Run，并从历史、项目指令和记忆中选出模型需要的上下文。',
-      en: 'A3S creates the run and selects the history, project instructions, and memory needed by the model.',
+      zh: '已创建本次运行，并准备好项目指令、历史和可用工具。',
+      en: 'The run is created with the project instructions, history, and available tools it needs.',
     },
     action: {
       zh: '取得运行权，组装 messages[] 与 tools[]',
@@ -532,12 +532,12 @@ const runtimePlayerPhases = [
     stage: { zh: '判断', en: 'DECIDE' },
     navTitle: { zh: '决定下一步', en: 'Choose next step' },
     title: {
-      zh: '模型提出一次只读搜索',
-      en: 'The model proposes a read-only search',
+      zh: '模型选择只读搜索',
+      en: 'The model chooses a read-only search',
     },
     summary: {
-      zh: '模型根据任务选择 grep，只生成结构化调用；此时还没有读取或改动仓库。',
-      en: 'The model selects grep and emits a structured call. It has not read or changed the repository yet.',
+      zh: '模型选择 grep 搜索 TODO 和 FIXME；此时还没有改动仓库。',
+      en: 'The model chooses grep for TODO and FIXME. The repository has not been changed.',
     },
     action: {
       zh: '生成 grep({ pattern: "TODO|FIXME" })',
@@ -557,12 +557,12 @@ const runtimePlayerPhases = [
     stage: { zh: '执行', en: 'EXECUTE' },
     navTitle: { zh: '执行工具', en: 'Run the tool' },
     title: {
-      zh: '检查通过，Workspace 开始搜索',
-      en: 'Checks pass and the workspace runs the search',
+      zh: '正在工作区执行',
+      en: 'Running in the workspace',
     },
     summary: {
-      zh: 'ToolInvoker 校验参数和权限后，Workspace 执行 grep；模型调用不能绕过这一步。',
-      en: 'ToolInvoker validates arguments and permissions before the workspace runs grep. Model calls cannot bypass this step.',
+      zh: '参数与权限检查通过，A3S 完成只读搜索并找到 3 条匹配。',
+      en: 'Argument and permission checks pass. A3S completes the read-only search and finds 3 matches.',
     },
     action: {
       zh: '参数 → 权限 → Workspace.grep()',
@@ -579,15 +579,15 @@ const runtimePlayerPhases = [
   {
     id: 'record',
     code: '04',
-    stage: { zh: '留痕', en: 'RECORD' },
+    stage: { zh: '完成', en: 'DONE' },
     navTitle: { zh: '保存记录', en: 'Save the record' },
     title: {
-      zh: '结果和执行记录已保存',
-      en: 'The result and run record are saved',
+      zh: '检查完成',
+      en: 'Inspection complete',
     },
     summary: {
-      zh: '应用收到可以直接展示的结果；事件、Trace 和快照同时保留，后续可以排查或恢复。',
-      en: 'The app receives a renderable result while events, traces, and the snapshot remain available for inspection or recovery.',
+      zh: '结果、运行记录和快照已经保存，之后可以随时查看或恢复。',
+      en: 'The result, run record, and snapshot are saved for later inspection or recovery.',
     },
     action: {
       zh: '发布事件并提交本次 generation',
@@ -669,7 +669,7 @@ const copy = {
     boundaryContract: 'API 与事件',
     boundaryHostLabel: '你的应用',
     boundaryHostRole: '账号、权限与界面',
-    stackTitle: '一次真实运行',
+    stackTitle: '一次执行',
     stackHint: '点击阶段查看过程',
     stackHintMobile: '点击步骤展开',
     stackTop: '产品',
@@ -678,12 +678,10 @@ const copy = {
     flowTask: '检查仓库并列出发布阻塞项',
     flowReplay: '重播',
     flowRunning: '回放中',
-    flowComplete: '已完成 · 1.8s',
-    flowStage: '当前阶段',
-    flowAction: 'A3S 正在做',
-    flowOutput: '本步结果',
-    flowEvidence: '本次运行留下',
-    flowEventCount: '7 个事件',
+    flowStage: '阶段',
+    flowSaved: '运行记录已保存',
+    flowReplayable: '过程可回放',
+    flowRecoverable: '结果可恢复',
     tutorialStep: '步骤',
     tutorialCode: '代码',
     tutorialLayers: '当前负责的层',
@@ -747,7 +745,7 @@ const copy = {
     boundaryContract: 'APIs + EVENTS',
     boundaryHostLabel: 'YOUR APP',
     boundaryHostRole: 'OWNS UI + ACCESS',
-    stackTitle: 'One real run',
+    stackTitle: 'One run',
     stackHint: 'SELECT A PHASE TO INSPECT IT',
     stackHintMobile: 'TAP A STEP TO EXPAND',
     stackTop: 'PRODUCT',
@@ -756,12 +754,10 @@ const copy = {
     flowTask: 'Inspect the repository and list release blockers',
     flowReplay: 'REPLAY',
     flowRunning: 'REPLAYING',
-    flowComplete: 'DONE · 1.8s',
-    flowStage: 'CURRENT PHASE',
-    flowAction: 'A3S DOES',
-    flowOutput: 'RESULT',
-    flowEvidence: 'SAVED WITH THIS RUN',
-    flowEventCount: '7 EVENTS',
+    flowStage: 'PHASE',
+    flowSaved: 'RUN RECORD SAVED',
+    flowReplayable: 'REPLAYABLE',
+    flowRecoverable: 'RECOVERABLE',
     tutorialStep: 'STEP',
     tutorialCode: 'CODE',
     tutorialLayers: 'ACTIVE LAYER',
@@ -877,37 +873,15 @@ function RuntimePlayerStage({
       data-phase={phase.id}
       key={phase.id}
     >
+      <span className="a3s-run-player-stage-icon" aria-hidden="true">
+        {phase.id === 'record' ? '✓' : phase.code}
+      </span>
       <div className="a3s-run-player-stage-copy">
         <span>
           {labels.flowStage} {phase.code} / {localeValue(phase.stage, locale)}
         </span>
         <h2>{localeValue(phase.title, locale)}</h2>
         <p>{localeValue(phase.summary, locale)}</p>
-      </div>
-
-      <div className="a3s-run-player-exchange">
-        <div className="a3s-run-player-action">
-          <small>{labels.flowAction}</small>
-          <code>{localeValue(phase.action, locale)}</code>
-        </div>
-        <i aria-hidden="true" />
-        <div className="a3s-run-player-result">
-          <small>{labels.flowOutput}</small>
-          <strong>{localeValue(phase.result, locale)}</strong>
-        </div>
-      </div>
-
-      <div className="a3s-run-player-stage-meta">
-        <code className="a3s-run-player-command">{phase.command}</code>
-        <code className="a3s-run-player-event">
-          <i aria-hidden="true" />
-          {phase.event}
-        </code>
-        <span>
-          {phase.tags.map((tag) => (
-            <code key={tag}>{tag}</code>
-          ))}
-        </span>
       </div>
     </article>
   );
@@ -987,8 +961,6 @@ function RuntimeExecutionFlow({
       .focus();
   }
 
-  const statusLabel = isPlaying ? labels.flowRunning : labels.flowComplete;
-
   return (
     <div
       className="a3s-runtime-inspector a3s-runtime-inspector--player"
@@ -1002,14 +974,6 @@ function RuntimeExecutionFlow({
           {labels.stackTitle}
         </span>
         <div>
-          <span
-            className={['a3s-run-player-status', isPlaying ? 'is-running' : '']
-              .filter(Boolean)
-              .join(' ')}
-          >
-            <i aria-hidden="true" />
-            {statusLabel}
-          </span>
           <button
             aria-pressed={isPlaying}
             className={isPlaying ? 'is-playing' : ''}
@@ -1017,7 +981,7 @@ function RuntimeExecutionFlow({
             type="button"
           >
             <i aria-hidden="true" />
-            {labels.flowReplay}
+            {isPlaying ? labels.flowRunning : labels.flowReplay}
           </button>
         </div>
       </header>
@@ -1028,7 +992,6 @@ function RuntimeExecutionFlow({
           <small>{labels.flowTaskLabel}</small>
           <strong>{labels.flowTask}</strong>
         </div>
-        <code>session.stream()</code>
       </section>
 
       <nav aria-label={labels.stackHint} className="a3s-run-player-progress">
@@ -1059,8 +1022,7 @@ function RuntimeExecutionFlow({
           >
             <span>{phase.code}</span>
             <span>
-              <small>{localeValue(phase.stage, locale)}</small>
-              <strong>{localeValue(phase.navTitle, locale)}</strong>
+              <strong>{localeValue(phase.stage, locale)}</strong>
             </span>
           </button>
         ))}
@@ -1074,17 +1036,13 @@ function RuntimeExecutionFlow({
       />
 
       <footer className="a3s-run-player-evidence">
-        <div>
-          <small>{labels.flowEvidence}</small>
-          <strong>
-            <i aria-hidden="true" />
-            {labels.flowEventCount}
-          </strong>
-        </div>
+        <strong>
+          <i aria-hidden="true" />
+          {labels.flowSaved}
+        </strong>
         <span>
-          {['RunRecord', 'Trace', 'Artifact', 'Snapshot'].map((item) => (
-            <code key={item}>{item}</code>
-          ))}
+          <em>{labels.flowReplayable}</em>
+          <em>{labels.flowRecoverable}</em>
         </span>
       </footer>
     </div>

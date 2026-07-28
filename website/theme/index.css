@@ -4404,7 +4404,7 @@ body {
 
 .a3s-runtime-inspector--player {
   display: flex;
-  min-height: 574px;
+  min-height: 520px;
   background:
     radial-gradient(
       circle at 78% 18%,
@@ -4416,7 +4416,7 @@ body {
 }
 
 .a3s-run-player-header {
-  min-height: 54px;
+  min-height: 52px;
   padding: 0 20px;
   background: rgba(10, 13, 18, 0.94);
 }
@@ -4475,13 +4475,13 @@ body {
 
 .a3s-run-player-task {
   display: grid;
-  min-height: 76px;
+  min-height: 72px;
   padding: 13px 20px;
   border-bottom: 1px solid #252c35;
   background: rgba(13, 17, 23, 0.78);
   align-items: center;
   gap: 13px;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
+  grid-template-columns: 34px minmax(0, 1fr);
 }
 
 .a3s-run-player-task > span {
@@ -4506,8 +4506,7 @@ body {
 
 .a3s-run-player-task small,
 .a3s-run-player-stage-copy > span,
-.a3s-run-player-exchange small,
-.a3s-run-player-evidence small {
+.a3s-run-player-exchange small {
   color: #5e6a78;
   font-family: var(--a3s-mono);
   font-size: 7px;
@@ -4537,8 +4536,8 @@ body {
 .a3s-run-player-progress {
   position: relative;
   display: grid;
-  min-height: 92px;
-  padding: 15px 18px 13px;
+  min-height: 80px;
+  padding: 13px 18px 11px;
   border-bottom: 1px solid #252c35;
   background: rgba(9, 12, 17, 0.76);
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -4547,7 +4546,7 @@ body {
 .a3s-run-player-rail {
   position: absolute;
   z-index: 0;
-  top: 28px;
+  top: 26px;
   right: 12.5%;
   left: 12.5%;
   height: 2px;
@@ -4657,12 +4656,16 @@ body {
   --player-tint: rgba(92, 88, 190, 0.08);
 
   display: grid;
-  min-height: 282px;
-  padding: 22px 26px 18px;
+  min-height: 250px;
+  padding: 30px 48px;
   background:
     radial-gradient(circle at 86% 14%, var(--player-tint), transparent 42%),
     rgba(10, 13, 18, 0.5);
-  align-content: start;
+  place-content: center;
+  justify-items: center;
+  flex: 1;
+  gap: 15px;
+  text-align: center;
   animation: a3s-run-player-stage-in 180ms ease-out;
 }
 
@@ -4681,24 +4684,38 @@ body {
   --player-tint: rgba(52, 155, 108, 0.09);
 }
 
+.a3s-run-player-stage-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  border: 1px solid color-mix(in srgb, var(--player-accent) 62%, #34404c);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--player-tint) 72%, #0d1218);
+  color: var(--player-accent);
+  place-items: center;
+  font-family: var(--a3s-mono);
+  font-size: 10px;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--player-accent) 18%, transparent);
+}
+
 .a3s-run-player-stage-copy > span {
   color: var(--player-accent);
 }
 
 .a3s-run-player-stage-copy h2 {
-  margin: 7px 0 6px;
+  margin: 8px 0 7px;
   color: #f0f3f7;
-  font-size: 21px;
+  font-size: 24px;
   font-weight: 630;
   letter-spacing: -0.025em;
 }
 
 .a3s-run-player-stage-copy p {
-  max-width: 620px;
+  max-width: 520px;
   margin: 0;
   color: #8f99a6;
-  font-size: 11px;
-  line-height: 1.62;
+  font-size: 12px;
+  line-height: 1.68;
 }
 
 .a3s-run-player-exchange {
@@ -4815,18 +4832,13 @@ body {
 
 .a3s-run-player-evidence {
   display: flex;
-  min-height: 70px;
+  min-height: 62px;
   padding: 12px 20px;
   border-top: 1px solid #252c35;
   background: rgba(8, 11, 15, 0.88);
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-}
-
-.a3s-run-player-evidence > div {
-  display: grid;
-  gap: 5px;
 }
 
 .a3s-run-player-evidence strong {
@@ -4854,13 +4866,18 @@ body {
   gap: 5px;
 }
 
-.a3s-run-player-evidence > span code {
-  padding: 4px 6px;
-  border: 1px solid #303a45;
-  border-radius: 3px;
-  color: #718091;
+.a3s-run-player-evidence > span em {
+  color: #758293;
   font-family: var(--a3s-mono);
   font-size: 7px;
+  font-style: normal;
+  letter-spacing: 0.06em;
+}
+
+.a3s-run-player-evidence > span em + em::before {
+  margin-right: 5px;
+  color: #35404c;
+  content: '·';
 }
 
 @keyframes a3s-run-player-stage-in {
@@ -5242,15 +5259,15 @@ body {
 
   .a3s-run-player-stage {
     min-height: 0;
-    padding: 20px 16px 18px;
+    padding: 28px 18px;
   }
 
   .a3s-run-player-stage-copy h2 {
-    font-size: 19px;
+    font-size: 21px;
   }
 
   .a3s-run-player-stage-copy p {
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .a3s-run-player-exchange {
@@ -5273,13 +5290,13 @@ body {
 
   .a3s-run-player-evidence {
     padding: 13px 16px;
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 10px;
+    align-items: center;
+    flex-direction: row;
+    gap: 12px;
   }
 
   .a3s-run-player-evidence > span {
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .a3s-feature-grid {
