@@ -150,6 +150,12 @@ children. Chrome or Lightpanda discovery happens only if the headless tier is
 actually reached; browser installation and repair remain explicit host
 operations.
 
+If every available tier is exhausted without meeting the quality floor,
+`web_search` returns a tool failure instead of presenting weak candidates as a
+successful evidence set. JSON mode uses a `quality_not_met` diagnostic envelope
+containing the observed quality, the floor, and bounded candidates so an agent
+can reformulate the query without silently citing them.
+
 ## Structured Output with `generate_object`
 
 The `generate_object` tool asks the configured LLM for a JSON object, validates

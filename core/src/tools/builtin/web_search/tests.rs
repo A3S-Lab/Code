@@ -794,6 +794,76 @@ fn json_search_result_preserves_published_date() {
 }
 
 #[test]
+fn json_search_result_preserves_query_alignment() {
+    let mut result = SearchResult::new("https://example.com/source", "Source", "Summary");
+    result.query_match_score = Some(0.75);
+
+    let json = search_result_json(&result, None);
+
+    assert_eq!(json["query_match_score"], 0.75);
+}
+
+#[test]
+fn json_quality_failure_is_an_explicit_diagnostic_envelope() {
+    let floor = a3s_search::SearchQualityFloor::for_limit(5);
+    let mut search_results = a3s_search::SearchResults::new();
+    search_results.add_result(
+        SearchResult::new(
+            "https://example.com",
+            "Unrelated candidate",
+            "General introduction",
+        )
+        .with_engine("api", 1),
+    );
+    let quality = a3s_search::SearchQuality::evaluate(
+        "distributed tracing specification",
+        &search_results,
+        floor.min_query_match,
+    );
+    let candidate = serde_json::json!({
+        "title": "Unrelated candidate",
+        "url": "https://example.com",
+    });
+
+    let payload = json_search_payload(vec![candidate], false, &quality, &floor);
+
+    assert_eq!(payload["status"], "quality_not_met");
+    assert!(payload["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("reformulate")));
+    assert_eq!(payload["search_quality"]["aligned_result_count"], 0);
+    assert_eq!(payload["results"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn successful_json_payload_keeps_the_array_contract() {
+    let floor = a3s_search::SearchQualityFloor::for_limit(1);
+    let mut search_results = a3s_search::SearchResults::new();
+    search_results.add_result(
+        SearchResult::new(
+            "https://example.com/distributed-tracing",
+            "Distributed tracing specification",
+            "Distributed tracing specification",
+        )
+        .with_engine("api", 1),
+    );
+    let quality = a3s_search::SearchQuality::evaluate(
+        "distributed tracing specification",
+        &search_results,
+        floor.min_query_match,
+    );
+
+    let payload = json_search_payload(
+        vec![serde_json::json!({"url": "https://example.com"})],
+        true,
+        &quality,
+        &floor,
+    );
+
+    assert!(payload.is_array());
+}
+
+#[test]
 fn json_search_result_includes_only_requested_bounded_sanitized_full_text() {
     let mut result = SearchResult::new("https://example.com/source", "Source", "Summary");
     result.full_text = Some(format!(

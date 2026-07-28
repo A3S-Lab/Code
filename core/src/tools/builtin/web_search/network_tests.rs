@@ -24,22 +24,23 @@ async fn real_builtin_default_search_uses_external_probe_query() {
         .await
         .unwrap();
 
-    assert!(result.success, "{}", result.content);
-    let items: serde_json::Value = serde_json::from_str(&result.content)
+    let payload: serde_json::Value = serde_json::from_str(&result.content)
         .unwrap_or_else(|error| panic!("JSON search results ({error}): {}", result.content));
-    assert!(
-        items.as_array().is_some_and(|items| !items.is_empty()),
-        "{}",
-        result.content
-    );
     let metadata = result.metadata.expect("default search metadata");
+    let quality_met = metadata["search_fallback"]["successful"]
+        .as_bool()
+        .expect("quality outcome");
+    assert_eq!(result.success, quality_met, "{}", result.content);
+    let items = payload
+        .as_array()
+        .or_else(|| payload.get("results").and_then(serde_json::Value::as_array))
+        .expect("search result array or quality diagnostic envelope");
+    assert!(!items.is_empty(), "{}", result.content);
     assert_eq!(metadata["engine_selection_source"], "builtin_default");
     assert!(metadata["selected_engines"]
         .as_array()
         .is_some_and(|engines| !engines.is_empty()));
     let summaries = items
-        .as_array()
-        .expect("search result array")
         .iter()
         .map(|item| {
             let full_text = item
@@ -54,6 +55,7 @@ async fn real_builtin_default_search_uses_external_probe_query() {
                 "title": item.get("title"),
                 "url": item.get("url"),
                 "engines": item.get("engines"),
+                "query_match_score": item.get("query_match_score"),
                 "published_date": item.get("published_date"),
                 "content_preview": crate::text::truncate_utf8(content, 480),
                 "full_text_bytes": full_text.len(),
