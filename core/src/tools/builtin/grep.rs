@@ -53,6 +53,19 @@ impl GrepOutputMode {
     }
 }
 
+fn has_non_neutral_page_controls(args: &serde_json::Value) -> bool {
+    let limit_is_non_neutral = match args.get("limit") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(value) => value.as_u64() != Some(DEFAULT_PAGE_LIMIT as u64),
+    };
+    let cursor_is_non_neutral = match args.get("cursor") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::String(value)) => !value.trim().is_empty(),
+        Some(_) => true,
+    };
+    limit_is_non_neutral || cursor_is_non_neutral
+}
+
 pub struct GrepTool;
 
 #[async_trait]
@@ -150,9 +163,13 @@ impl Tool for GrepTool {
                 Err(error) => return Ok(ToolOutput::error(error)),
             }
         } else {
-            if args.get("limit").is_some() || args.get("cursor").is_some() {
+            // Structured-output providers can materialize omitted optional
+            // fields with their neutral schema defaults. Do not reject a
+            // content/summary call merely because it carries limit=200 and an
+            // empty cursor; neither value changes the non-paginated result.
+            if has_non_neutral_page_controls(args) {
                 return Ok(ToolOutput::error(
-                    "limit and cursor are supported only with output_mode='files_with_matches' or 'count'",
+                    "non-default limit and non-empty cursor are supported only with output_mode='files_with_matches' or 'count'",
                 ));
             }
             None
@@ -733,6 +750,49 @@ mod tests {
         assert!(result.content.contains("80 matching line(s) in 1 file(s)"));
         assert!(!result.content.contains("needle-0"));
         assert_eq!(result.metadata.unwrap()["search"]["truncated"], false);
+    }
+
+    #[tokio::test]
+    async fn test_grep_non_paginated_mode_accepts_materialized_neutral_page_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("a.txt"), "needle\n").unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = GrepTool
+            .execute(
+                &serde_json::json!({
+                    "pattern": "needle",
+                    "output_mode": "content",
+                    "limit": DEFAULT_PAGE_LIMIT,
+                    "cursor": ""
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert!(result.content.contains("needle"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_non_paginated_mode_rejects_effective_page_controls() {
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+        for controls in [
+            serde_json::json!({"limit": 2}),
+            serde_json::json!({"cursor": "2"}),
+        ] {
+            let mut args = serde_json::json!({
+                "pattern": "needle",
+                "output_mode": "summary"
+            });
+            args.as_object_mut()
+                .unwrap()
+                .extend(controls.as_object().unwrap().clone());
+            let result = GrepTool.execute(&args, &ctx).await.unwrap();
+            assert!(!result.success);
+            assert!(result.content.contains("supported only"));
+        }
     }
 
     #[cfg(unix)]

@@ -467,6 +467,15 @@ node scripts/sdk_api_alignment_check.mjs
 Real-provider, browser-runtime, and S3 tests are ignored unless their external
 prerequisites are configured. The normal test suite is hermetic.
 
+Run the context-tool real-LLM suite through a local Codex login:
+
+```bash
+A3S_CONTEXT_TOOLS_USE_CODEX_LOGIN=1 scripts/context_tools_real_llm.sh
+```
+
+Alternatively, point `A3S_CONFIG_FILE` at an ACL provider configuration and
+run the same script without `A3S_CONTEXT_TOOLS_USE_CODEX_LOGIN`.
+
 ## License
 
 [MIT](LICENSE)
