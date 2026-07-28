@@ -6054,7 +6054,14 @@ body {
   height: 1px;
   background: #454d57;
   content: '';
+}
+
+.a3s-tui-effort-rule::before {
   flex: 1;
+}
+
+.a3s-tui-effort-rule::after {
+  flex: 0 0 12px;
 }
 
 .a3s-tui-effort-rule span {
