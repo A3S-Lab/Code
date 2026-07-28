@@ -77,6 +77,22 @@ pub fn register_builtins(
     registry.register_builtin(Arc::new(web_search::WebSearchTool::new()));
 }
 
+#[cfg(test)]
+pub(crate) fn repository_tool_parameter_schemas() -> Vec<(String, serde_json::Value)> {
+    use crate::tools::Tool;
+
+    let read = read::ReadTool;
+    let grep = grep::GrepTool;
+    let glob = glob_tool::GlobTool;
+    let edit = edit::EditTool;
+    vec![
+        (read.name().to_string(), read.parameters()),
+        (grep.name().to_string(), grep.parameters()),
+        (glob.name().to_string(), glob.parameters()),
+        (edit.name().to_string(), edit.parameters()),
+    ]
+}
+
 /// Register the batch tool. Must be called after the registry is wrapped in Arc.
 pub fn register_batch(registry: &Arc<ToolRegistry>) {
     registry.register_builtin(Arc::new(batch::BatchTool::new(Arc::clone(registry))));

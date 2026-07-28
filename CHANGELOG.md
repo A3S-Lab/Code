@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an opt-in real-LLM integration suite for batch-read continuation,
   every grep output mode, guarded edit previews and writes, and stable glob
   pagination.
+- Added a shared repository-tool contract to every built-in agent prompt with
+  canonical `read`, `grep`, `glob`, and `edit` arguments, pagination rules, and
+  guarded mechanical-edit guidance.
 
 ### Fixed
 
