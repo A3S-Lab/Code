@@ -309,8 +309,22 @@ const runtimeLayers = [
   tags: string[];
 }>;
 
-const tuiDemoPhases = ['compose', 'explore', 'command', 'answer'] as const;
-const tuiDemoDurations = [2400, 1750, 1850, 4200];
+const tuiDemoPhases = [
+  'compose',
+  'plan',
+  'delegate',
+  'track',
+  'artifact',
+  'remoteui',
+  'answer',
+] as const;
+const tuiDemoDurations = [2400, 1900, 2600, 2300, 2100, 2600, 4200];
+type TuiDemoStatus = 'pending' | 'active' | 'done';
+const tuiDemoStatusGlyph: Record<TuiDemoStatus, string> = {
+  pending: '◻',
+  active: '◼',
+  done: '✔',
+};
 const tuiMascot = [
   '     .-^-.',
   '    /_____\\',
@@ -400,7 +414,7 @@ const copy = {
     architectureBody:
       '示例使用仓库中实际提供的 a3s_code API。滚动或点击步骤，代码会逐步加入 Session、上下文限制、权限、事件流和持久化。',
     architectureAlt:
-      'A3S Code 一次执行的交互流程图，展示请求的输入、Runtime 的处理和每一步输出。',
+      'A3S Code 一次执行的交互流程图，展示任务规划、进度追踪、并行子智能体、报告制品和 RemoteUI 渐进式界面。',
     capabilitiesEyebrow: 'WHAT YOU GET',
     capabilitiesTitle: 'Runtime 提供的五类能力',
     capabilitiesBody:
@@ -434,13 +448,29 @@ const copy = {
     tuiTip: '输入消息 · / 打开命令 · Shift+Tab 切换模式 · Ctrl+C 两次退出',
     tuiUser: 'You',
     tuiWorking: 'Working…',
-    tuiExplore: 'Explored',
-    tuiExploreSummary: '读取 AGENTS.md、Cargo.toml 与发布工作流',
-    tuiCommand: 'Ran command',
-    tuiCommandSummary: 'git diff --check && cargo test -p a3s-code-core',
-    tuiCommandResult: '测试通过 · 0 warnings',
+    tuiPlan: 'Plan',
+    tuiPlanInspect: '读取项目约束与发布配置',
+    tuiPlanDelegate: '并行检查代码、测试与文档',
+    tuiPlanPublish: '生成报告制品并打开 RemoteUI',
+    tuiSubagents: 'Subagents',
+    tuiParallelTask: '并行检查发布风险',
+    tuiAgentExploreTask: '扫描约束与发布工作流',
+    tuiAgentTestTask: '运行核心回归测试',
+    tuiAgentReviewTask: '核对文档与包元数据',
+    tuiArtifact: 'Artifact',
+    tuiArtifactPath: 'release-risk-report/index.html',
+    tuiArtifactWriting: 'publishing…',
+    tuiArtifactReady: 'HTML · 18.4 KB',
+    tuiOpenView: 'Open view',
+    tuiRemoteUi: 'RemoteUI',
+    tuiRemotePreparing: 'preparing',
+    tuiRemoteStreaming: 'streaming',
+    tuiRemoteReady: 'ready',
+    tuiReportTitle: '发布风险报告',
+    tuiReportSummary: '2 risks · 12 checks',
     tuiAssistant: 'A3S Code',
-    tuiResponse: '检查完成。发现 2 个发布风险，并给出了对应文件与验证依据。',
+    tuiResponse:
+      '检查完成。3 个子智能体并行完成；报告制品已生成，可通过 RemoteUI 打开。',
     tuiContext: 'ctx:12%',
     tutorialStep: '步骤',
     tutorialCode: '代码',
@@ -483,7 +513,7 @@ const copy = {
     architectureBody:
       'The example uses the actual a3s_code API in this repository. Scroll or select a step to add the Session, context limits, policy, event stream, and persistence.',
     architectureAlt:
-      'An interactive A3S Code run showing the input, runtime work, and output of each step.',
+      'An interactive A3S Code run showing task planning, progress tracking, parallel subagents, report artifacts, and a progressive RemoteUI view.',
     capabilitiesEyebrow: 'WHAT YOU GET',
     capabilitiesTitle: 'Five parts of the runtime',
     capabilitiesBody:
@@ -518,14 +548,29 @@ const copy = {
       'Type a message · / for commands · Shift+Tab cycles mode · Ctrl+C twice to exit',
     tuiUser: 'You',
     tuiWorking: 'Working…',
-    tuiExplore: 'Explored',
-    tuiExploreSummary: 'Read AGENTS.md, Cargo.toml, and release workflows',
-    tuiCommand: 'Ran command',
-    tuiCommandSummary: 'git diff --check && cargo test -p a3s-code-core',
-    tuiCommandResult: 'tests passed · 0 warnings',
+    tuiPlan: 'Plan',
+    tuiPlanInspect: 'Read repo constraints and release config',
+    tuiPlanDelegate: 'Check code, tests, and docs in parallel',
+    tuiPlanPublish: 'Publish report artifact and open RemoteUI',
+    tuiSubagents: 'Subagents',
+    tuiParallelTask: 'Audit release risks in parallel',
+    tuiAgentExploreTask: 'Scan constraints and release workflows',
+    tuiAgentTestTask: 'Run the core regression suite',
+    tuiAgentReviewTask: 'Review docs and package metadata',
+    tuiArtifact: 'Artifact',
+    tuiArtifactPath: 'release-risk-report/index.html',
+    tuiArtifactWriting: 'publishing…',
+    tuiArtifactReady: 'HTML · 18.4 KB',
+    tuiOpenView: 'Open view',
+    tuiRemoteUi: 'RemoteUI',
+    tuiRemotePreparing: 'preparing',
+    tuiRemoteStreaming: 'streaming',
+    tuiRemoteReady: 'ready',
+    tuiReportTitle: 'Release risk report',
+    tuiReportSummary: '2 risks · 12 checks',
     tuiAssistant: 'A3S Code',
     tuiResponse:
-      'Review complete. I found two release risks and linked each one to its file and verification evidence.',
+      'Review complete. Three subagents finished in parallel; the report artifact is ready to open in RemoteUI.',
     tuiContext: 'ctx:12%',
     tutorialStep: 'STEP',
     tutorialCode: 'CODE',
@@ -637,6 +682,63 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
   const active = tuiDemoPhases[activeIndex] ?? tuiDemoPhases[0];
   const isRunning = isPlaying && isVisible;
   const isWorking = activeIndex > 0 && activeIndex < tuiDemoPhases.length - 1;
+  const planItems: Array<{ label: string; status: TuiDemoStatus }> = [
+    {
+      label: labels.tuiPlanInspect,
+      status:
+        activeIndex < 1 ? 'pending' : activeIndex === 1 ? 'active' : 'done',
+    },
+    {
+      label: labels.tuiPlanDelegate,
+      status: activeIndex < 2 ? 'pending' : activeIndex < 4 ? 'active' : 'done',
+    },
+    {
+      label: labels.tuiPlanPublish,
+      status: activeIndex < 4 ? 'pending' : activeIndex < 5 ? 'active' : 'done',
+    },
+  ];
+  const completedPlanCount = planItems.filter(
+    (item) => item.status === 'done',
+  ).length;
+  const subagents: Array<{
+    name: string;
+    task: string;
+    status: TuiDemoStatus;
+    tokens: string;
+  }> = [
+    {
+      name: 'explore',
+      task: labels.tuiAgentExploreTask,
+      status: activeIndex >= 3 ? 'done' : 'active',
+      tokens: '0.8k',
+    },
+    {
+      name: 'test',
+      task: labels.tuiAgentTestTask,
+      status: activeIndex >= 4 ? 'done' : 'active',
+      tokens: '1.5k',
+    },
+    {
+      name: 'review',
+      task: labels.tuiAgentReviewTask,
+      status: activeIndex >= 3 ? 'done' : 'active',
+      tokens: '0.9k',
+    },
+  ];
+  const completedSubagentCount = subagents.filter(
+    (agent) => agent.status === 'done',
+  ).length;
+  const runningSubagentCount = subagents.length - completedSubagentCount;
+  const visibleSubagents =
+    activeIndex === 2
+      ? subagents
+      : activeIndex === 3
+        ? subagents.filter((agent) => agent.status === 'active')
+        : [];
+  const subagentTokens =
+    activeIndex < 3 ? '1.8k' : activeIndex < 4 ? '2.7k' : '3.2k';
+  const artifactIsPublished = activeIndex >= 5;
+  const remoteUiIsReady = activeIndex >= 6;
   const typingInterval = Math.max(
     18,
     Math.floor(1550 / Math.max(labels.flowTask.length, 1)),
@@ -774,39 +876,126 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
           ) : null}
 
           {activeIndex >= 1 ? (
-            <article
-              className={[
-                'a3s-tui-entry',
-                'a3s-tui-entry--tool',
-                activeIndex === 1 ? 'is-active' : 'is-complete',
-              ].join(' ')}
-            >
-              <span aria-hidden="true">•</span>
-              <div>
-                <strong>{labels.tuiExplore}</strong>
-                <small>└ {labels.tuiExploreSummary}</small>
-              </div>
-            </article>
+            <section className="a3s-tui-plan" aria-label={labels.tuiPlan}>
+              <header>
+                <span aria-hidden="true">•</span>
+                <strong>{labels.tuiPlan}</strong>
+                <small>{completedPlanCount}/3 done</small>
+              </header>
+              <ol>
+                {planItems.map((item, index) => (
+                  <li className={`is-${item.status}`} key={item.label}>
+                    <span aria-hidden="true">{index === 0 ? '⎿' : ''}</span>
+                    <i aria-hidden="true">{tuiDemoStatusGlyph[item.status]}</i>
+                    <p>{item.label}</p>
+                  </li>
+                ))}
+              </ol>
+            </section>
           ) : null}
 
           {activeIndex >= 2 ? (
+            <section
+              className="a3s-tui-agents"
+              aria-label={labels.tuiSubagents}
+            >
+              <header>
+                <span aria-hidden="true">•</span>
+                <strong>{labels.tuiSubagents}</strong>
+                <em>{labels.tuiParallelTask}</em>
+                <small>
+                  {runningSubagentCount} running · {completedSubagentCount}/3
+                  done · ↓ {subagentTokens}
+                </small>
+              </header>
+              {visibleSubagents.length > 0 ? (
+                <div>
+                  {visibleSubagents.map((agent) => (
+                    <p className={`is-${agent.status}`} key={agent.name}>
+                      <i aria-hidden="true">•</i>
+                      <b>{agent.name}</b>
+                      <span>{agent.task}</span>
+                      <small>↓ {agent.tokens}</small>
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {activeIndex >= 4 ? (
             <article
               className={[
-                'a3s-tui-entry',
-                'a3s-tui-entry--tool',
-                activeIndex === 2 ? 'is-active' : 'is-complete',
-              ].join(' ')}
+                'a3s-tui-artifact',
+                artifactIsPublished ? 'is-published' : 'is-publishing',
+                remoteUiIsReady ? 'is-ready' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
             >
-              <span aria-hidden="true">•</span>
-              <div>
-                <strong>{labels.tuiCommand}</strong>
-                <code>│ {labels.tuiCommandSummary}</code>
-                <small>└ {labels.tuiCommandResult}</small>
+              <div className="a3s-tui-artifact-meta">
+                <header>
+                  <span aria-hidden="true">◇</span>
+                  <strong>{labels.tuiArtifact}</strong>
+                  <small>
+                    {artifactIsPublished
+                      ? labels.tuiArtifactReady
+                      : labels.tuiArtifactWriting}
+                  </small>
+                </header>
+                <code>{labels.tuiArtifactPath}</code>
+                <span
+                  className={[
+                    'a3s-tui-open-view',
+                    activeIndex === 5 ? 'is-opening' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                >
+                  <i aria-hidden="true">↗</i>
+                  {artifactIsPublished
+                    ? labels.tuiOpenView
+                    : labels.tuiArtifactWriting}
+                  {artifactIsPublished ? <b>{labels.tuiRemoteUi}</b> : null}
+                </span>
+              </div>
+              <div
+                className={[
+                  'a3s-tui-remote-view',
+                  !artifactIsPublished
+                    ? 'is-preparing'
+                    : remoteUiIsReady
+                      ? 'is-ready'
+                      : 'is-streaming',
+                ].join(' ')}
+              >
+                <header>
+                  <span aria-hidden="true">●</span>
+                  <b>{labels.tuiRemoteUi}</b>
+                  <small>
+                    {!artifactIsPublished
+                      ? labels.tuiRemotePreparing
+                      : remoteUiIsReady
+                        ? labels.tuiRemoteReady
+                        : labels.tuiRemoteStreaming}
+                  </small>
+                </header>
+                <div>
+                  <strong>{labels.tuiReportTitle}</strong>
+                  <small>
+                    {remoteUiIsReady ? labels.tuiReportSummary : '···'}
+                  </small>
+                  <span aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                </div>
               </div>
             </article>
           ) : null}
 
-          {activeIndex >= 3 ? (
+          {activeIndex >= 6 ? (
             <article className="a3s-tui-entry a3s-tui-entry--assistant">
               <span aria-hidden="true">•</span>
               <div>
