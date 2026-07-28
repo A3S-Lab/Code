@@ -48,7 +48,7 @@ let session = agent
 store、queue、trajectory recorder，以及 `SessionOptions` 中的任何宿主 MCP
 manager 都会返回 `CodeError::AsyncSessionBuildRequired`；session-option MCP
 capability discovery 始终是异步的。应改用 builder，不要捕获错误后悄悄换 backend。
-同步路径只能继承 agent 初始化时已经缓存的 global MCP tools。
+同步路径只能继承智能体初始化时已经缓存的全局 MCP 工具。
 
 `planningMode` 是显式三态：`'auto'` 使用默认结构化预分析，`'enabled'`
 强制 planning，`'disabled'` 在低延迟调用中关闭 planning。旧的布尔

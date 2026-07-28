@@ -71,7 +71,7 @@ cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge
 `code.Create` 会对传输协议、事件协议和完整操作清单执行 fail-closed 握手。
 Go 错误使用稳定的 `*code.Error` 错误码，Context 取消和 Deadline 仍可通过
 `errors.Is` 判断。自定义 `LlmClient`、Workspace Backend、Hook Executor 或
-Memory 实现等 Rust Trait Object 注入仍只属于 Rust API；存在可序列化配置时，
+记忆实现等 Rust trait 对象注入仍只属于 Rust API；存在可序列化配置时，
 桥接程序会接受对应的值类型配置。
 
 ## 四种 SDK 的共用能力

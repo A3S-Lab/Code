@@ -623,7 +623,7 @@ result = session.resume_run('run-id-from-node-a')
 resume 出来的会**分配一个全新的 run id** — 框架不假装旧 run 还在继续,新旧 run 的关系是 host 的元数据。两个可区分的错误路径方便 host 端调度分支:
 
 - `"resume_run requires a session_store"` — host 应该回退到新建 session。
-- `"no loop checkpoint found for run 'X'"` — host 可以稍等重试(checkpoint 写入竞态),或当 run 已丢失。
+- `"no loop checkpoint found for run 'X'"`：宿主可以稍后重试（可能正好遇到检查点写入竞态），也可以把该运行视为已丢失。
 
 **边界策略**:checkpoint 只在 tool round **之间**取,不在工具执行中途取。进程在工具执行中途死掉时,这一轮的工作会丢失,LLM 从前一个边界重新思考。这是用"重试成本"换"正确性" — 把非幂等工具(write、bash)在边界两侧重跑比让 LLM 重想要糟得多。
 

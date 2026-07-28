@@ -51,7 +51,9 @@ limits:
 Find authentication-related files and return an evidence list.
 ```
 
-`kind: script` 把一个预先参数化的 QuickJS `program` 调用暴露成模型可见工具。脚本源码必须定义 `async function run(ctx, inputs)`。它没有文件系统、网络、进程或环境变量权限，只能通过 `ctx.tool(...)` 调用 allow-list 中的工具。
+`kind: script` 把一个预先参数化的 QuickJS `program` 调用暴露成模型可见工具。脚本源码
+必须定义 `async function run(ctx, inputs)`。它没有文件系统、网络、进程或环境变量权限，
+只能通过 `ctx.tool(...)` 调用允许列表中的工具。
 
 ## 安全边界
 

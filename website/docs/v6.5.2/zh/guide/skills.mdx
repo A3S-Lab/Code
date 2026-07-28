@@ -37,7 +37,8 @@ await session.tool('search_skills', {
 });
 ```
 
-带 `allowed-tools` frontmatter 的 Markdown skill file 和 inline skill 都能被发现。skill 管理现在由 SDK 或文件系统完成，不再作为模型可见的管理工具暴露。
+带 `allowed-tools` 前置元数据的 Markdown 技能文件和内联技能都能被发现。技能管理
+现在由 SDK 或文件系统完成，不再作为模型可见的管理工具暴露。
 
 当 skill 通过 `Skill` 工具被调用时，`allowed-tools` 是 fail-secure 的：省略
 frontmatter 不会授予任何工具。请显式声明最小可用工具集。普通 session 的工具调用

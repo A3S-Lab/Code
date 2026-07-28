@@ -28,7 +28,7 @@ const session = agent.session('/repo', {
 这些 option 的意图：
 
 - `maxToolRounds` 是单个 turn 的 tool iteration 预算。
-- `maxParseRetries` 是 malformed tool-call recovery 预算。
+- `maxParseRetries` 是格式错误工具调用的恢复预算。
 - `toolTimeoutMs` 是每个 tool 的超时时间，单位毫秒。
 - `circuitBreakerThreshold` 是连续 provider 失败阈值。
 - `autoCompact` 和 `autoCompactThreshold` 控制 context compaction 行为。
@@ -119,7 +119,9 @@ session.setBudgetGuard({
 });
 ```
 
-Node bridge **fail-closed（失败即拒绝）**：`check_*` 回调若未在 `timeoutMs` 内返回，或返回了无法解析的值，都会被当作 **deny** 处理——预算控制绝不能在 guard 卡住时悄悄自我失效（CHANGELOG [3.3.0] Fixed "Node BudgetGuard fail-open"）。
+Node.js 桥接层采用**失败即拒绝**策略：`check_*` 回调若未在 `timeoutMs` 内返回，
+或返回无法解析的值，都会被当作**拒绝**处理。预算控制绝不能在预算守卫卡住时悄悄
+自我失效（参见更新日志 `[3.3.0]` 的 “Node BudgetGuard fail-open” 修复）。
 
 回调**绝不能 throw。** 受 napi-rs 约束，回调抛出的异常会在返回值转换阶段中止 host 进程。请用 try/catch 包裹逻辑并返回一个决策（例如 deny），而不是抛异常。卡住（hang）的情况由 fail-closed 超时安全处理（CHANGELOG [3.3.0] Known limitations）。
 
