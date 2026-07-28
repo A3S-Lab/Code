@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.5.1] - 2026-07-28
+
+### Changed
+
+- Updated the bundled Core with the shared repository-tool prompt contract,
+  neutral grep pagination compatibility, and real-model context-tool coverage.
+
 ## [6.5.0] - 2026-07-28
 
 ### Changed
