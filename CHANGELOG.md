@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added strict `generate_object` argument validation, root JSON Schema support
+  for references, composition, constants, arrays, and scalars, and active
+  generation-timeout propagation through governed LLM clients.
+- Added typed HTTP cancellation, transport, and retry-exhaustion status errors,
+  including the SDK-visible `transport` tool error kind.
+
+### Changed
+
+- Required `parallel_task` calls to contain 2-32 independent foreground
+  branches and reject invalid timeout and partial-success thresholds.
+- Kept branch retry ownership inside provider and child runtimes; the parallel
+  fan-out layer no longer replays failures based on rendered error messages.
+- Synchronized the Node `ToolErrorKind` declarations with every Rust wire
+  variant, including cancellation, partial failure, rate limiting, and
+  transport failures.
+
+### Fixed
+
+- Preserved local `$defs` and `definitions` references when provider-facing
+  structured-output schemas wrap root arrays or scalar values.
+- Preserved typed transport and cancellation failures across OpenAI-compatible
+  and Anthropic blocking and streaming request paths.
+
 ## [6.5.1] - 2026-07-28
 
 ### Added

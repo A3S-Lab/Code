@@ -1,8 +1,8 @@
 //! Built-in `generate_object` tool for structured JSON output.
 //!
 //! This tool allows the agent (or users via `session.tool()`) to generate a
-//! JSON object that conforms to a given JSON Schema. It supports streaming
-//! partial objects via `ToolStreamEvent::OutputDelta`.
+//! JSON value that conforms to a given JSON Schema. It supports streaming
+//! partial values via `ToolStreamEvent::OutputDelta`.
 
 use crate::llm::structured::{self, PartialObjectCallback, StructuredMode, StructuredRequest};
 use crate::llm::{
@@ -12,6 +12,7 @@ use crate::llm::{
 use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput, ToolStreamEvent};
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::Deserialize;
 use serde_json::Value;
 use std::future::Future;
 use std::sync::Arc;
@@ -19,12 +20,35 @@ use std::time::{Duration, Instant};
 
 const MAX_SCHEMA_BYTES: usize = 64 * 1024;
 const MAX_SCHEMA_DEPTH: usize = 32;
+const MAX_SCHEMA_NAME_BYTES: usize = 59;
+const MAX_SCHEMA_DESCRIPTION_BYTES: usize = 4 * 1024;
 const MAX_PROMPT_BYTES: usize = 128 * 1024;
 const MAX_SYSTEM_BYTES: usize = 32 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
 const PARTIAL_EVENT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const MAX_PARTIAL_EVENT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenerateObjectParams {
+    schema: Value,
+    #[serde(default)]
+    schema_name: Option<String>,
+    #[serde(default)]
+    schema_description: Option<String>,
+    prompt: String,
+    #[serde(default)]
+    system: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    max_repair_attempts: Option<u64>,
+    #[serde(default)]
+    include_raw_text: bool,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
 
 pub struct GenerateObjectTool {
     llm_client: Arc<dyn LlmClient>,
@@ -48,10 +72,11 @@ impl Tool for GenerateObjectTool {
     }
 
     fn description(&self) -> &str {
-        "Generate a JSON object that strictly conforms to a provided JSON Schema. \
+        "Generate a JSON value that strictly conforms to a provided JSON Schema. \
          Use when you need structured output: extracting fields from text, classifying \
          data, converting natural language to typed records, or producing machine-readable \
-         results. Returns the validated object on success."
+         results. The root value may be an object, array, or scalar. Returns the validated \
+         value on success."
     }
 
     fn parameters(&self) -> Value {
@@ -62,24 +87,31 @@ impl Tool for GenerateObjectTool {
             "properties": {
                 "schema": {
                     "type": "object",
-                    "description": "JSON Schema that the output object must conform to"
+                    "description": "JSON Schema that the output value must conform to"
                 },
                 "schema_name": {
                     "type": "string",
                     "description": "Short name for the schema (used internally for tool naming)",
+                    "minLength": 1,
+                    "maxLength": MAX_SCHEMA_NAME_BYTES,
+                    "pattern": "^[A-Za-z0-9_-]+$",
                     "default": "result"
                 },
                 "schema_description": {
                     "type": "string",
-                    "description": "Optional description of what the schema represents"
+                    "description": "Optional description of what the schema represents",
+                    "maxLength": MAX_SCHEMA_DESCRIPTION_BYTES
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "The prompt describing what object to generate or extract"
+                    "description": "The prompt describing what value to generate or extract",
+                    "minLength": 1,
+                    "maxLength": MAX_PROMPT_BYTES
                 },
                 "system": {
                     "type": "string",
-                    "description": "Optional system prompt to guide generation"
+                    "description": "Optional system prompt to guide generation",
+                    "maxLength": MAX_SYSTEM_BYTES
                 },
                 "mode": {
                     "type": "string",
@@ -103,24 +135,38 @@ impl Tool for GenerateObjectTool {
                     "type": "integer",
                     "minimum": 1000,
                     "maximum": MAX_TIMEOUT_MS,
-                    "description": "Active generation deadline in milliseconds. Admission queue wait is excluded. Default 120000; maximum 600000."
+                    "description": "Active generation deadline in milliseconds. Admission queue wait is excluded. Default 120000; maximum 600000.",
+                    "default": DEFAULT_TIMEOUT_MS
                 }
             }
         })
     }
 
     async fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<ToolOutput> {
-        let schema = match args.get("schema") {
-            Some(s) if s.is_object() => s.clone(),
-            Some(_) => {
-                return Ok(ToolOutput::error(
-                    "'schema' must be a JSON object (a valid JSON Schema)",
-                ));
-            }
-            None => {
-                return Ok(ToolOutput::error("'schema' parameter is required"));
+        let params: GenerateObjectParams = match serde_json::from_value(args.clone()) {
+            Ok(params) => params,
+            Err(error) => {
+                return Ok(invalid_argument(format!(
+                    "Invalid generate_object parameters: {error}"
+                )));
             }
         };
+        let GenerateObjectParams {
+            schema,
+            schema_name,
+            schema_description,
+            prompt,
+            system,
+            mode,
+            max_repair_attempts,
+            include_raw_text,
+            timeout_ms,
+        } = params;
+        if !schema.is_object() {
+            return Ok(invalid_argument(
+                "'schema' must be a JSON object (a valid JSON Schema)".to_string(),
+            ));
+        }
         let schema_bytes = serde_json::to_vec(&schema)?.len();
         if schema_bytes > MAX_SCHEMA_BYTES {
             return Ok(invalid_argument(format!(
@@ -138,55 +184,36 @@ impl Tool for GenerateObjectTool {
             )));
         }
 
-        let prompt = match args.get("prompt").and_then(|v| v.as_str()) {
-            Some(p) if !p.is_empty() => p.to_string(),
-            _ => {
-                return Ok(ToolOutput::error(
-                    "'prompt' parameter is required and must be non-empty",
-                ));
-            }
-        };
+        if prompt.trim().is_empty() {
+            return Ok(invalid_argument(
+                "'prompt' parameter is required and must contain non-whitespace text".to_string(),
+            ));
+        }
         if prompt.len() > MAX_PROMPT_BYTES {
             return Ok(invalid_argument(format!(
                 "'prompt' exceeds the {MAX_PROMPT_BYTES} byte limit"
             )));
         }
 
-        // Validate schema has at minimum a "type" or "properties" or "anyOf" field
-        if schema.get("type").is_none()
-            && schema.get("properties").is_none()
-            && schema.get("anyOf").is_none()
-            && schema.get("oneOf").is_none()
-            && schema.get("enum").is_none()
+        let schema_name = schema_name.unwrap_or_else(|| "result".to_string());
+        if schema_name.is_empty()
+            || schema_name.len() > MAX_SCHEMA_NAME_BYTES
+            || !schema_name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
         {
-            return Ok(ToolOutput::error(
-                "'schema' should contain at least one of: type, properties, anyOf, oneOf, or enum",
-            ));
+            return Ok(invalid_argument(format!(
+                "'schema_name' must match ^[A-Za-z0-9_-]+$ and contain at most {MAX_SCHEMA_NAME_BYTES} bytes"
+            )));
         }
-
-        let schema_name: String = args
-            .get("schema_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("result")
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-            .take(64)
-            .collect();
-        let schema_name = if schema_name.is_empty() {
-            "result".to_string()
-        } else {
-            schema_name
-        };
-
-        let schema_description = args
-            .get("schema_description")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let system = args
-            .get("system")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        if schema_description
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_SCHEMA_DESCRIPTION_BYTES)
+        {
+            return Ok(invalid_argument(format!(
+                "'schema_description' exceeds the {MAX_SCHEMA_DESCRIPTION_BYTES} byte limit"
+            )));
+        }
         if system
             .as_ref()
             .is_some_and(|value| value.len() > MAX_SYSTEM_BYTES)
@@ -196,15 +223,15 @@ impl Tool for GenerateObjectTool {
             )));
         }
 
-        let requested_mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("auto");
-        let mode = match requested_mode {
+        let requested_mode = mode.unwrap_or_else(|| "auto".to_string());
+        let structured_mode = match requested_mode.as_str() {
             "strict" => StructuredMode::Strict,
             "json" => StructuredMode::Json,
             "tool" => StructuredMode::Tool,
             "prompt" => StructuredMode::Prompt,
             "auto" => StructuredMode::Auto,
             other => {
-                return Ok(ToolOutput::error(format!(
+                return Ok(invalid_argument(format!(
                     "'mode' must be one of auto, strict, json, tool, or prompt; got '{other}'"
                 )));
             }
@@ -214,20 +241,19 @@ impl Tool for GenerateObjectTool {
         // the client's native capability. Unsupported native modes safely fall
         // back to prompt+schema parsing instead of sending provider parameters
         // that some OpenAI-compatible endpoints hang on.
-        let max_repair_attempts = args
-            .get("max_repair_attempts")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2)
-            .min(5) as u8;
-        let include_raw_text = args
-            .get("include_raw_text")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let timeout_ms = args
-            .get("timeout_ms")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(DEFAULT_TIMEOUT_MS)
-            .clamp(1_000, MAX_TIMEOUT_MS);
+        let max_repair_attempts = max_repair_attempts.unwrap_or(2);
+        if max_repair_attempts > 5 {
+            return Ok(invalid_argument(
+                "'max_repair_attempts' must be between 0 and 5".to_string(),
+            ));
+        }
+        let max_repair_attempts = max_repair_attempts as u8;
+        let timeout_ms = timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
+        if !(1_000..=MAX_TIMEOUT_MS).contains(&timeout_ms) {
+            return Ok(invalid_argument(format!(
+                "'timeout_ms' must be between 1000 and {MAX_TIMEOUT_MS}"
+            )));
+        }
 
         let req = StructuredRequest {
             prompt,
@@ -235,13 +261,17 @@ impl Tool for GenerateObjectTool {
             schema,
             schema_name: schema_name.clone(),
             schema_description,
-            mode,
+            mode: structured_mode,
             max_repair_attempts,
         };
 
         let llm_client = ctx
             .llm_client()
             .unwrap_or_else(|| Arc::clone(&self.llm_client));
+        let active_timeout = Duration::from_millis(timeout_ms);
+        let llm_client = llm_client
+            .with_active_generation_timeout(active_timeout)
+            .unwrap_or(llm_client);
         let admission = ctx
             .model_generation_admission()
             .unwrap_or_else(|| self.admission.clone());
@@ -285,7 +315,7 @@ impl Tool for GenerateObjectTool {
             &admission,
             preadmitted,
             &cancellation,
-            Duration::from_millis(timeout_ms),
+            active_timeout,
             generation,
         )
         .await;
@@ -363,20 +393,15 @@ impl Tool for GenerateObjectTool {
                         }),
                     ),
                     GenerationStop::Failed(error) => {
-                        let message = error.to_string();
-                        let lower = message.to_ascii_lowercase();
-                        let kind = (lower.contains("rate limit")
-                            || lower.contains("too many requests"))
-                        .then_some(ToolErrorKind::RateLimited {
-                            retry_after_ms: None,
-                        });
+                        let message = format!("{error:#}");
+                        let kind = generation_failure_kind(&error);
                         (format!("generate_object failed: {message}"), kind)
                     }
                 };
                 let output = ToolOutput::error(message).with_metadata(serde_json::json!({
                     "schema_name": schema_name,
                     "requested_mode": requested_mode,
-                    "mode_requested": mode,
+                    "mode_requested": structured_mode,
                     "timeout_ms": timeout_ms,
                     "generation_admission": admission_metadata,
                 }));
@@ -393,6 +418,33 @@ enum GenerationStop {
     Cancelled,
     TimedOut,
     Failed(anyhow::Error),
+}
+
+fn generation_failure_kind(error: &anyhow::Error) -> Option<ToolErrorKind> {
+    if let Some(exhausted) = error.downcast_ref::<crate::retry::RetryExhaustedError>() {
+        let status = exhausted.status();
+        return if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            Some(ToolErrorKind::RateLimited {
+                retry_after_ms: None,
+            })
+        } else if status == reqwest::StatusCode::REQUEST_TIMEOUT || status.is_server_error() {
+            Some(ToolErrorKind::Transport {
+                op: "generate_object".to_string(),
+            })
+        } else {
+            None
+        };
+    }
+
+    match error.downcast_ref::<crate::llm::HttpClientError>() {
+        Some(crate::llm::HttpClientError::Cancelled { .. }) => Some(ToolErrorKind::Cancelled {
+            op: "generate_object".to_string(),
+        }),
+        Some(crate::llm::HttpClientError::Transport { .. }) => Some(ToolErrorKind::Transport {
+            op: "generate_object".to_string(),
+        }),
+        Some(crate::llm::HttpClientError::InvalidRequest { .. }) | None => None,
+    }
 }
 
 struct GenerationExecution<T> {
@@ -877,3 +929,7 @@ mod tests {
         drop(replacement);
     }
 }
+
+#[cfg(test)]
+#[path = "generate_object_contract_tests.rs"]
+mod contract_tests;

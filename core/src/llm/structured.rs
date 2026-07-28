@@ -121,34 +121,18 @@ enum SchemaEnvelope {
 
 impl SchemaEnvelope {
     fn for_schema(schema: &Value) -> Self {
-        if schema_is_object_like(schema) {
-            Self::Direct
-        } else if schema.get("type").and_then(Value::as_str) == Some("array") {
-            Self::Elements
-        } else {
-            Self::Value
+        match schema_root_kind(schema, schema, &mut Vec::new(), 0) {
+            Some(SchemaRootKind::Object) => Self::Direct,
+            Some(SchemaRootKind::Array) => Self::Elements,
+            Some(SchemaRootKind::Other) | None => Self::Value,
         }
     }
 
     fn response_schema(self, schema: &Value) -> Value {
         match self {
             Self::Direct => schema.clone(),
-            Self::Elements => serde_json::json!({
-                "type": "object",
-                "required": ["elements"],
-                "additionalProperties": false,
-                "properties": {
-                    "elements": schema
-                }
-            }),
-            Self::Value => serde_json::json!({
-                "type": "object",
-                "required": ["value"],
-                "additionalProperties": false,
-                "properties": {
-                    "value": schema
-                }
-            }),
+            Self::Elements => wrap_response_schema("elements", schema),
+            Self::Value => wrap_response_schema("value", schema),
         }
     }
 
@@ -190,11 +174,137 @@ impl SchemaEnvelope {
     }
 }
 
-fn schema_is_object_like(schema: &Value) -> bool {
-    schema.get("type").and_then(Value::as_str) == Some("object")
-        || schema.get("properties").is_some()
-        || schema.get("required").is_some()
-        || schema.get("additionalProperties").is_some()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemaRootKind {
+    Object,
+    Array,
+    Other,
+}
+
+fn schema_root_kind(
+    schema: &Value,
+    root: &Value,
+    active_refs: &mut Vec<String>,
+    depth: usize,
+) -> Option<SchemaRootKind> {
+    if depth > 64 {
+        return None;
+    }
+    let object = schema.as_object()?;
+
+    if let Some(kind) = object.get("type").and_then(schema_type_kind) {
+        return Some(kind);
+    }
+    if let Some(value) = object.get("const") {
+        return Some(value_kind(value));
+    }
+    if let Some(values) = object.get("enum").and_then(Value::as_array) {
+        if let Some(kind) = common_value_kind(values) {
+            return Some(kind);
+        }
+    }
+    if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+        if let Some(pointer) = reference.strip_prefix('#') {
+            if !active_refs.iter().any(|active| active == reference) {
+                if let Some(target) = root.pointer(pointer) {
+                    active_refs.push(reference.to_string());
+                    let kind = schema_root_kind(target, root, active_refs, depth + 1);
+                    active_refs.pop();
+                    if kind.is_some() {
+                        return kind;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(all_of) = object.get("allOf").and_then(Value::as_array) {
+        if let Some(kind) = all_of
+            .iter()
+            .find_map(|branch| schema_root_kind(branch, root, active_refs, depth + 1))
+        {
+            return Some(kind);
+        }
+    }
+    for keyword in ["anyOf", "oneOf"] {
+        if let Some(branches) = object.get(keyword).and_then(Value::as_array) {
+            let kinds = branches
+                .iter()
+                .map(|branch| schema_root_kind(branch, root, active_refs, depth + 1))
+                .collect::<Option<Vec<_>>>();
+            if let Some(kinds) = kinds {
+                if let Some(first) = kinds.first().copied() {
+                    if kinds.iter().all(|kind| *kind == first) {
+                        return Some(first);
+                    }
+                }
+            }
+        }
+    }
+
+    // Preserve the established object-schema behavior for schemas that rely
+    // on object-only keywords without an explicit `type`.
+    if ["properties", "required", "additionalProperties"]
+        .iter()
+        .any(|keyword| object.contains_key(*keyword))
+    {
+        return Some(SchemaRootKind::Object);
+    }
+    None
+}
+
+fn schema_type_kind(value: &Value) -> Option<SchemaRootKind> {
+    match value {
+        Value::String(value) => Some(type_name_kind(value)),
+        Value::Array(values) if values.len() == 1 => values[0].as_str().map(type_name_kind),
+        _ => None,
+    }
+}
+
+fn type_name_kind(value: &str) -> SchemaRootKind {
+    match value {
+        "object" => SchemaRootKind::Object,
+        "array" => SchemaRootKind::Array,
+        _ => SchemaRootKind::Other,
+    }
+}
+
+fn value_kind(value: &Value) -> SchemaRootKind {
+    match value {
+        Value::Object(_) => SchemaRootKind::Object,
+        Value::Array(_) => SchemaRootKind::Array,
+        _ => SchemaRootKind::Other,
+    }
+}
+
+fn common_value_kind(values: &[Value]) -> Option<SchemaRootKind> {
+    let first = values.first().map(value_kind)?;
+    values
+        .iter()
+        .all(|value| value_kind(value) == first)
+        .then_some(first)
+}
+
+fn wrap_response_schema(field: &str, schema: &Value) -> Value {
+    let mut embedded = schema.clone();
+    let mut wrapper = serde_json::json!({
+        "type": "object",
+        "required": [field],
+        "additionalProperties": false,
+        "properties": {}
+    });
+
+    // A local reference such as `#/$defs/item` resolves from the provider-
+    // facing document root. Hoist root definitions when the requested schema
+    // must be wrapped so those references retain their original meaning.
+    if let Some(embedded_object) = embedded.as_object_mut() {
+        for keyword in ["$defs", "definitions"] {
+            if let Some(definitions) = embedded_object.remove(keyword) {
+                wrapper[keyword] = definitions;
+            }
+        }
+    }
+    wrapper["properties"][field] = embedded;
+    wrapper
 }
 
 // ---------------------------------------------------------------------------

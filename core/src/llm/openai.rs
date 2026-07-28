@@ -426,7 +426,15 @@ impl OpenAiClient {
                         }
                         Err(e) => {
                             tracing::error!("HTTP error: {e:?}");
-                            AttemptOutcome::Fatal(e)
+                            if crate::llm::http::is_retryable_http_failure(&e) {
+                                AttemptOutcome::Retryable {
+                                    status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                                    body: format!("network error: {e}"),
+                                    retry_after: None,
+                                }
+                            } else {
+                                AttemptOutcome::Fatal(e)
+                            }
                         }
                     }
                 }

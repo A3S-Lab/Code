@@ -28,28 +28,24 @@ impl OpenAiClient {
                     // Wrap in tokio::select! so cancellation aborts the HTTP request mid-flight
                     let resp = tokio::select! {
                         _ = cancel_token.cancelled() => {
-                            return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request cancelled"));
+                            return AttemptOutcome::Fatal(anyhow::Error::new(
+                                crate::llm::HttpClientError::cancelled(
+                                    "OpenAI streaming HTTP request",
+                                ),
+                            ));
                         }
                         result = http.post_streaming(url, headers, request, cancel_token.clone()) => {
                             match result {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    // Transient network error (timeout, reset,
-                                    // mid-flight drop — common on throttled
-                                    // endpoints): retry with backoff like 429/5xx
-                                    // instead of failing the turn. GLM and other
-                                    // OpenAI-compatible endpoints hit this most.
-                                    return if crate::retry::is_transient_error(&e) {
+                                    return if crate::llm::http::is_retryable_http_failure(&e) {
                                         AttemptOutcome::Retryable {
                                             status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
                                             body: format!("network error: {e}"),
                                             retry_after: None,
                                         }
                                     } else {
-                                        AttemptOutcome::Fatal(anyhow::anyhow!(
-                                            "HTTP request failed: {}",
-                                            e
-                                        ))
+                                        AttemptOutcome::Fatal(e.context("HTTP request failed"))
                                     };
                                 }
                             }

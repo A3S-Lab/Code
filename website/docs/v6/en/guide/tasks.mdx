@@ -88,6 +88,13 @@ if (batch.exitCode !== 0) throw new Error(batch.output);
 console.log(batch.output);
 ```
 
+Each `parallel_task` call requires at least two independent foreground tasks
+and accepts at most 32. A branch cannot request `background`; the parent call
+already owns concurrent execution and result collection. By default every
+branch must succeed. Set `allow_partial_failure` only for evidence-gathering
+work that can use incomplete results; `min_success_count` is available only in
+that mode and must not exceed the submitted task count.
+
 `session.task(...)` and `session.tasks(...)` return `ToolResult` values from the
 `task` and `parallel_task` tools. Read `output` for the compact child summary
 and check `exitCode` before treating the result as successful. `maxParallelTasks`

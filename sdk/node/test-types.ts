@@ -138,5 +138,12 @@ function _describe(err: ToolErrorKind): string {
       return err.message
     case 'timeout':
       return `${err.op} after ${err.duration_ms}ms`
+    case 'transport':
+    case 'cancelled':
+      return err.op
+    case 'partial_failure':
+      return `${err.failed}/${err.total} failed`
+    case 'rate_limited':
+      return err.retry_after_ms === null ? 'rate limited' : `retry after ${err.retry_after_ms}ms`
   }
 }
