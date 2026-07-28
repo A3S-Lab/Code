@@ -4,6 +4,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.5.0] - 2026-07-28
+
+### Changed
+
+- Updated the bundled Core with budgeted multi-file reads, compact grep result
+  modes, explicit glob ordering, and previewable replacement-count-guarded
+  edits.
+
 ## [6.4.3] - 2026-07-25
 
 ### Fixed
