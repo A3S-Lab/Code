@@ -259,11 +259,6 @@ writing. The dry run is declared read-only and can be safely batched. Apply the
 result with `expected_replacements` and optionally `max_replacements` to reject
 stale or unexpectedly broad changes before the compare-and-swap write.
 
-These repository-context ergonomics were informed by
-[FastCtx](https://github.com/yc-duan/fastctx). Their implementation here stays
-inside A3S Code's workspace abstractions, capability declarations, permission
-path, remote-backend contracts, and structured metadata.
-
 ### Sandbox and credential boundaries
 
 Hosts can attach a `BashSandbox`. The fail-closed local `SrtBashSandbox` limits

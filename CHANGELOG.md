@@ -37,8 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added explicit `glob` ordering: `sort: "path"` provides deterministic lexical
   order before cursor pagination, while the compatible `sort: "backend"`
   default retains backend relevance or recency order.
-- Added explicit README attribution for the FastCtx repository-tool ergonomics
-  that informed these context-efficiency improvements.
 
 ## [6.4.3] - 2026-07-25
 
