@@ -4,6 +4,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.5.2] - 2026-07-28
+
+### Changed
+
+- Updated the bundled Core with strict built-in tool contracts, root JSON
+  Schema value support, governed generation timeouts, and typed transport
+  failures.
+
 ## [6.5.1] - 2026-07-28
 
 ### Changed
