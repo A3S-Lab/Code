@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
   <title id="title">A3S Code — Rust runtime for coding agents</title>
-  <desc id="desc">Tool calls, approval, event streaming, and recovery for Rust, Node.js, and Python.</desc>
+  <desc id="desc">Tool calls, approval, event streaming, and recovery for Rust, Node.js, Python, and Go.</desc>
   <defs>
     <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
       <path d="M48 0H0V48" fill="none" stroke="#20232a" stroke-width="1"/>
@@ -32,7 +32,7 @@
     </text>
     <text x="2" y="194" fill="#9ca2ad" font-family="Inter,Segoe UI,sans-serif" font-size="23">
       <tspan x="2" dy="0">Tool calls, approval, events, and recovery</tspan>
-      <tspan x="2" dy="34">for Rust, Node.js, and Python.</tspan>
+      <tspan x="2" dy="34">for Rust, Node.js, Python, and Go.</tspan>
     </text>
   </g>
 
@@ -63,6 +63,7 @@
     <text x="400" fill="#6ca3ff">RUST</text>
     <text x="480" fill="#6ca3ff">NODE.JS</text>
     <text x="590" fill="#6ca3ff">PYTHON</text>
+    <text x="690" fill="#6ca3ff">GO</text>
     <text x="1018" fill="#89909c">MIT</text>
   </g>
 </svg>

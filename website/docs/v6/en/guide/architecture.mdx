@@ -18,7 +18,7 @@ CodeConfig + SessionOptions
        -> InvocationContext
             ├─ LLM invoker  -> provider calls
             ├─ tool invoker -> model, nested, delegated, and host-direct calls
-            └─ events       -> EventEnvelopeV1 -> Rust / Node / Python consumers
+            └─ events       -> EventEnvelopeV1 -> Rust / Node / Python / Go consumers
        -> SessionSnapshotV1 -> atomic store generation
 ```
 

@@ -14,7 +14,7 @@ export default defineConfig({
   siteOrigin,
   title: 'A3S Code',
   description:
-    'A Rust runtime for coding agents with tool calls, approval, event streaming, and recovery. Available for Rust, Node.js, and Python.',
+    'A Rust runtime for coding agents with tool calls, approval, event streaming, and recovery. Available for Rust, Node.js, Python, and Go.',
   lang: 'zh',
   icon: '/favicon.svg',
   logo: '/a3s-code-mark.svg',
@@ -49,14 +49,14 @@ export default defineConfig({
       label: '简体中文',
       title: 'A3S Code',
       description:
-        '用 Rust 构建的编码 Agent 运行时，支持工具调用、权限确认、事件流和任务恢复，并提供 Rust、Node.js、Python API。',
+        '用 Rust 构建的编码 Agent 运行时，支持工具调用、权限确认、事件流和任务恢复，并提供 Rust、Node.js、Python、Go API。',
     },
     {
       lang: 'en',
       label: 'English',
       title: 'A3S Code',
       description:
-        'A Rust runtime for coding agents with tool calls, approval, event streaming, and recovery. Available for Rust, Node.js, and Python.',
+        'A Rust runtime for coding agents with tool calls, approval, event streaming, and recovery. Available for Rust, Node.js, Python, and Go.',
     },
   ],
   head: [

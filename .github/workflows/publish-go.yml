@@ -1,0 +1,131 @@
+name: Publish Go SDK
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-bridge:
+    name: Build Go bridge (${{ matrix.settings.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            executable: a3s-code-go-bridge
+            suffix: ""
+          - host: macos-15-intel
+            target: x86_64-apple-darwin
+            executable: a3s-code-go-bridge
+            suffix: ""
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            executable: a3s-code-go-bridge.exe
+            suffix: .exe
+    runs-on: ${{ matrix.settings.host }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup workspace context
+        shell: bash
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.settings.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install protobuf compiler
+        uses: arduino/setup-protoc@v3
+
+      - name: Build bridge
+        run: >-
+          cargo build
+          --release
+          --package a3s-code-go-bridge
+          --bin a3s-code-go-bridge
+          --target ${{ matrix.settings.target }}
+
+      - name: Package bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          SOURCE="target/${{ matrix.settings.target }}/release/${{ matrix.settings.executable }}"
+          ASSET="a3s-code-go-bridge-v${VERSION}-${{ matrix.settings.target }}${{ matrix.settings.suffix }}"
+          mkdir -p dist
+          cp "$SOURCE" "dist/$ASSET"
+          (
+            cd dist
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$ASSET" > "$ASSET.sha256"
+            else
+              shasum -a 256 "$ASSET" > "$ASSET.sha256"
+            fi
+          )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-bridge-${{ matrix.settings.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish Go module tag and bridge assets
+    needs: [build-bridge]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: go-bridge-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create path-prefixed Go module tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          MAJOR="${VERSION%%.*}"
+          grep -qx "module github.com/A3S-Lab/Code/sdk/go/v${MAJOR}" sdk/go/go.mod
+          GO_TAG="sdk/go/v${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${GO_TAG}" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "refs/tags/$GO_TAG")" = "$GITHUB_SHA"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$GO_TAG" "$GITHUB_SHA" -m "A3S Code Go SDK v${VERSION}"
+            git push origin "$GO_TAG"
+          fi
+
+      - name: Upload bridge assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cat dist/*.sha256 > dist/a3s-code-go-bridge-SHA256SUMS
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes "Release assets are being published." || true
+          fi
+          for attempt in 1 2 3 4 5; do
+            gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && break
+            sleep 2
+          done
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/a3s-code-go-bridge-* \
+            --clobber

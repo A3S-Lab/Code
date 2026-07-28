@@ -27,6 +27,7 @@
     "label": "Runtime core"
   },
   "api-contract",
+  "go-sdk",
   "sessions",
   "commands",
   "tools",

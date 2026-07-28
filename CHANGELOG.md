@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a pure-Go v6 SDK backed by a long-lived, capability-checked Rust bridge,
+  covering sessions, lossless events, direct tools, run observation,
+  verification, persistence, Skills, and MCP without requiring CGO.
+- Added version-matched x86-64 Linux, macOS, and Windows bridge release assets
+  with SHA-256 checksums, Go protocol-alignment checks, CI integration, and
+  bilingual website documentation.
+
 ## [6.5.2] - 2026-07-28
 
 ### Added

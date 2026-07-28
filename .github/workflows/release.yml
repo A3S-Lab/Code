@@ -71,6 +71,18 @@ jobs:
       - name: Check Python SDK
         run: cargo check --manifest-path sdk/python/Cargo.toml
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: sdk/go/go.mod
+
+      - name: Check Go SDK
+        run: |
+          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+          A3S_CODE_GO_BRIDGE_TEST_BINARY="$PWD/../../target/debug/a3s-code-go-bridge" \
+            go test -race ./...
+        working-directory: sdk/go
+
       - name: Reclaim build space before tests
         run: |
           cargo clean --manifest-path sdk/node/Cargo.toml
@@ -177,12 +189,18 @@ jobs:
     uses: ./.github/workflows/publish-python-bootstrap.yml
     secrets: inherit
 
+  publish-go:
+    name: Go SDK
+    needs: [publish-crate, publish-python]
+    uses: ./.github/workflows/publish-go.yml
+    secrets: inherit
+
   # ───────────────────────────────────────────────
   # Create GitHub Release
   # ───────────────────────────────────────────────
   github-release:
     name: GitHub Release
-    needs: [publish-crate, publish-node, publish-python, publish-python-bootstrap]
+    needs: [publish-crate, publish-node, publish-python, publish-python-bootstrap, publish-go]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -1,0 +1,255 @@
+---
+title: 'Go SDK'
+description: '安装纯 Go SDK 与原生桥接程序，并使用会话、事件、工具、持久化和 MCP'
+---
+
+# Go SDK
+
+Go SDK 可以在 Go 1.23 及以上版本中嵌入 A3S Code，不需要 CGO。公开 API 是纯
+Go 实现；一个长驻的 `a3s-code-go-bridge` 进程持有原生 Rust Runtime，并通过
+带版本号的 JSONL 协议与 Go module 通信。
+
+```text
+Go 应用
+  -> github.com/A3S-Lab/Code/sdk/go/v6
+  -> 多路复用请求 + EventEnvelopeV1
+  -> a3s-code-go-bridge
+  -> a3s-code-core
+```
+
+这个边界让 Go 构建保持可移植，同时复用其他 SDK 的 Session、权限、工具、事件、
+验证与恢复语义。
+
+## 安装 Module 与桥接程序
+
+添加带主版本号的 module：
+
+```bash
+go get github.com/A3S-Lab/Code/sdk/go/v6
+```
+
+从 [GitHub Releases](https://github.com/A3S-Lab/Code/releases) 下载同版本的
+桥接程序和 `a3s-code-go-bridge-SHA256SUMS`。当前 Release 为以下 x86-64
+目标构建资产：
+
+| 系统    | 资产目标                     |
+| ------- | ---------------------------- |
+| Linux   | `x86_64-unknown-linux-gnu`   |
+| macOS   | `x86_64-apple-darwin`        |
+| Windows | `x86_64-pc-windows-msvc.exe` |
+
+Go module 与桥接程序必须使用同一个 A3S Code 版本。对于名为 `vX.Y.Z` 的仓库
+Release，对应的 Go module Tag 是 `sdk/go/vX.Y.Z`。请将以下命令中的 `X.Y.Z`
+替换为下载的 Release 版本。
+
+在 Unix 系统上，安装前先校验下载的资产：
+
+```bash
+ASSET=a3s-code-go-bridge-vX.Y.Z-x86_64-unknown-linux-gnu
+grep "  ${ASSET}$" a3s-code-go-bridge-SHA256SUMS | sha256sum --check
+chmod +x "$ASSET"
+sudo install "$ASSET" /usr/local/bin/a3s-code-go-bridge
+```
+
+macOS 使用 `shasum -a 256 --check` 代替 `sha256sum --check`。
+
+Windows 上先比对发布的摘要，再选择可执行文件：
+
+```powershell
+$asset = 'a3s-code-go-bridge-vX.Y.Z-x86_64-pc-windows-msvc.exe'
+$line = Get-Content .\a3s-code-go-bridge-SHA256SUMS |
+  Where-Object { $_ -match [regex]::Escape($asset) }
+$expected = ($line -split '\s+')[0].ToLowerInvariant()
+$actual = (Get-FileHash ".\$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw 'A3S Code bridge checksum mismatch' }
+Unblock-File ".\$asset"
+$env:A3S_CODE_GO_BRIDGE = (Resolve-Path ".\$asset").Path
+```
+
+可以把程序放进 `PATH`，设置 `A3S_CODE_GO_BRIDGE`，或通过
+`code.WithBridgePath` 显式选择。没有预编译资产的目标可以按文末说明从源码构建。
+
+## 创建 Session
+
+`Create` 可以接收 ACL 文件路径，也可以接收内联 ACL。凭据应由 ACL 从环境变量
+解析，不要写进 Go 源码。
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		PlanningMode:     code.PlanningAuto,
+		MaxToolRounds:    code.Ptr(uint(24)),
+		MaxParallelTasks: code.Ptr(uint(4)),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "找出认证功能的入口。")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+`Agent` 与它的本地 Runtime 可以安全地并发使用。同一个 `Session` 的对话 Turn
+是 single-flight；`Runs`、`ActiveTools`、`TraceEvents` 等只读观察方法可以并发
+调用。
+
+## 订阅无损事件流
+
+实时事件与回放事件都使用共用的 `EventEnvelopeV1`。`Type` 是开放字符串，
+`Payload` 与 `Metadata` 是原始 JSON，因此兼容的新 Runtime 增加事件时，Go SDK
+仍会保留完整内容。
+
+```go
+stream, err := session.Stream(ctx, "总结测试策略。", nil)
+if err != nil {
+	return err
+}
+for event := range stream.Events {
+	switch event.Type {
+	case code.EventTextDelta:
+		var payload struct {
+			Text string `json:"text"`
+		}
+		if err := event.DecodePayload(&payload); err != nil {
+			return err
+		}
+		fmt.Print(payload.Text)
+	default:
+		// 按需保留或转发 event.Payload 与 event.Metadata。
+	}
+}
+if err := <-stream.Done; err != nil {
+	return err
+}
+```
+
+应持续读取 `Events`，等它关闭后再读取 `Done`。取消 Stream 的 Context 也会请求
+Rust Session 取消当前 Run。控制面代码也可以显式调用 `Cancel`、`CancelRun` 或
+`CancelAndSettle`。
+
+## 直接调用工具并观察 Run
+
+直接工具方法会绕过模型，但仍经过当前 Session 的 Workspace、权限、确认、Trace、
+Artifact、超时和取消路径。
+
+```go
+content, err := session.ReadFile(ctx, "go.mod", nil)
+status, err := session.Git(ctx, code.GitOptions{Command: "status"})
+matches, err := session.Glob(ctx, "**/*.go")
+report, err := session.VerifyCommands(ctx, "release", []code.VerificationCommand{
+	{
+		ID:          "go:test",
+		Kind:        "test",
+		Description: "运行 Go 测试",
+		Command:     "go test ./...",
+		Required:    true,
+	},
+})
+_, _, _, _ = content, status, matches, report
+```
+
+任意已注册工具都可以通过通用 `Tool` 调用；文件、Bash、Git、Glob、Grep、网页
+搜索、QuickJS Program 和委派任务另有类型化便捷方法。观察 API 可读取工具定义、
+待确认操作、Run、分页回放事件、活跃工具、Trace、Artifact 和验证报告。
+
+## 保存、恢复与 MCP
+
+需要跨进程恢复工作时，配置文件型 Session Store：
+
+```go
+options := &code.SessionOptions{
+	FileSessionStoreDir: ".a3s/sessions",
+	AutoSave:            code.Ptr(true),
+}
+session, err := agent.Session(ctx, ".", options)
+if err != nil {
+	return err
+}
+persistedID := session.ID()
+if err := session.Save(ctx); err != nil {
+	return err
+}
+if err := session.Close(ctx); err != nil {
+	return err
+}
+resumed, err := agent.ResumeSession(ctx, persistedID, options)
+```
+
+也可以给正在运行的 Session 添加 MCP Server：
+
+```go
+count, err := session.AddMCPServer(ctx, code.MCPServerConfig{
+	Name: "workspace-tools",
+	Transport: code.MCPTransport{
+		Type:    "stdio",
+		Command: "workspace-mcp",
+		Args:    []string{"--stdio"},
+	},
+})
+```
+
+SDK 还提供 AgentDir 注册、Skill 名称、MCP 状态与移除、Session 列表，以及
+Agent 级 MCP 工具刷新。
+
+## 处理错误与兼容性
+
+错误是带稳定错误码的 `*code.Error`。通过 `errors.Is` 仍可以识别 Context 取消和
+Deadline。
+
+```go
+result, err := session.Run(ctx, "继续任务。")
+switch {
+case errors.Is(err, code.ErrSessionBusy):
+	return fmt.Errorf("另一个 Turn 正在执行：%w", err)
+case errors.Is(err, context.DeadlineExceeded):
+	return fmt.Errorf("执行超时：%w", err)
+case err != nil:
+	return err
+}
+_ = result
+```
+
+`Create` 会对传输协议版本、事件协议版本和完整操作清单执行 fail-closed 握手。
+桥接程序缺失、版本不兼容、协议损坏和普通 Runtime 错误分别使用不同错误类型。
+
+自定义 `LlmClient`、Workspace Backend、Hook Executor 或 Memory 实现等 Rust
+Trait Object 注入仍只属于 Rust API；存在可序列化配置时，Go 桥接层会接受对应的
+值类型配置。
+
+## 从源码构建与测试
+
+在 A3S Code 源码目录执行：
+
+```bash
+bash .github/setup-workspace.sh
+cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge
+cd sdk/go
+go vet ./...
+go test -race ./...
+```
+
+把构建出的程序路径写入 `A3S_CODE_GO_BRIDGE_TEST_BINARY`，即可同时运行真实的
+Go 到 Rust 集成测试。仓库 CI 会在 Linux 和 Windows 上运行 Go 测试，并校验生成
+的事件常量与 Rust 协议一致。

@@ -27,6 +27,7 @@
     "label": "运行时核心"
   },
   "api-contract",
+  "go-sdk",
   "sessions",
   "commands",
   "tools",

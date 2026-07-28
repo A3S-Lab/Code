@@ -12,18 +12,18 @@ Runner 或服务端。它负责 Agent Loop、上下文、工具调用、权限�
 Workspace 访问，以及任务的保存和恢复。
 
 想直接在终端里使用，安装 [`a3s` CLI](https://github.com/A3S-Lab/a3s)。
-想构建自己的产品，使用 Rust crate、Node.js 包或 Python 包。它们输出同一套事件，
-因此不同界面不需要各写一套 Agent Loop。
+想构建自己的产品，使用 Rust crate、Node.js 包、Python 包，或配合原生桥接程序
+使用 Go module。它们输出同一套事件，因此不同界面不需要各写一套 Agent Loop。
 
 ## 先选使用方式
 
-| 入口                        | 什么时候用                                       | 仓库                                                          |
-| --------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| Rust / Node.js / Python SDK | 把编码 Agent 接入 IDE、Runner、服务端或自己的 UI | [A3S-Lab/Code](https://github.com/A3S-Lab/Code)               |
-| `a3s code`                  | 直接在终端里运行编码 Agent                       | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)                 |
-| `a3s-tui`                   | 构建终端界面，不包含 Agent Runtime               | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)                 |
-| A3S Web                     | 查看桌面任务界面和组件实现                       | [apps/web](https://github.com/A3S-Lab/a3s/tree/main/apps/web) |
-| A3S Flow                    | 为 `DynamicWorkflowRuntime` 保存和恢复流程       | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow)               |
+| 入口                             | 什么时候用                                       | 仓库                                                          |
+| -------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| Rust / Node.js / Python / Go SDK | 把编码 Agent 接入 IDE、Runner、服务端或自己的 UI | [A3S-Lab/Code](https://github.com/A3S-Lab/Code)               |
+| `a3s code`                       | 直接在终端里运行编码 Agent                       | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)                 |
+| `a3s-tui`                        | 构建终端界面，不包含 Agent Runtime               | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)                 |
+| A3S Web                          | 查看桌面任务界面和组件实现                       | [apps/web](https://github.com/A3S-Lab/a3s/tree/main/apps/web) |
+| A3S Flow                         | 为 `DynamicWorkflowRuntime` 保存和恢复流程       | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow)               |
 
 ## 主要能力
 
@@ -39,7 +39,7 @@ Workspace 访问，以及任务的保存和恢复。
 | 定时任务   | [AgentDir](/guide/agent-dir) 可以通过 `serveAgentDir` / `serve_agent_dir` 运行定时 Turn；每个 Schedule 使用稳定的 `schedule:<name>` Session。              |
 | 安全       | 权限策略、用户确认、预算、Workspace 路径检查、工具超时、Hook 和输出清理都会在执行过程中生效。                                                              |
 | Workspace  | [Workspace 后端](/guide/workspace-backends) 支持本地文件、应用提供的 Workspace、可选的 S3 兼容存储和 remote-git 服务。                                     |
-| 事件       | `EventEnvelopeV1` 是 Rust、Node.js、Python 共用的事件格式；未知事件的 Payload 和 Metadata 也会保留。                                                       |
+| 事件       | `EventEnvelopeV1` 是 Rust、Node.js、Python、Go 共用的事件格式；未知事件的 Payload 和 Metadata 也会保留。                                                   |
 | 保存与恢复 | `SessionSnapshotV1`、Session ID、Auto-save、Run Event、Trace、Artifact、Loop / Workflow Checkpoint 和 Memory Store 用来恢复会话和回放运行过程。            |
 | 验证       | [验证](/guide/verification) 支持验证命令、预设、结构化报告、摘要、Artifact、Trace Event 和 Run Replay。                                                    |
 
@@ -88,6 +88,7 @@ irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
 npm install @a3s-lab/code
 pip install a3s-code
 cargo add a3s-code-core
+go get github.com/A3S-Lab/Code/sdk/go/v6
 ```
 
 ## 配置
@@ -166,6 +167,7 @@ await agent.close();
 ## 接着看
 
 - [A3S Code TUI](/guide/tui) 说明安装、配置发现、斜杠命令和 Effort。
+- [Go SDK](/guide/go-sdk) 说明纯 Go API、配套原生桥接程序、事件流、取消、直接工具与发布方式。
 - [文件系统优先](/guide/filesystem-first) 介绍 `AGENTS.md`、ACL、AgentDir、Skill、工具和定时任务。
 - [API 契约](/guide/api-contract) 列出经过集成测试的 Node.js API。
 - [会话](/guide/sessions) 介绍创建、流式输出、运行状态、保存、恢复和取消。

@@ -1455,7 +1455,7 @@ body {
 
 .a3s-surface-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .a3s-surface-card {
@@ -1791,7 +1791,7 @@ body {
   }
 
   .a3s-feature-card:nth-child(n + 3),
-  .a3s-surface-card:nth-child(n + 3) {
+  .a3s-surface-card:nth-child(n + 5) {
     border-bottom: 0;
   }
 
@@ -2992,7 +2992,7 @@ body {
 }
 
 .a3s-surface-grid {
-  grid-template-columns: minmax(0, 1.35fr) repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.35fr) repeat(4, minmax(0, 1fr));
 }
 
 .a3s-surface-card:first-child {

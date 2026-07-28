@@ -1,0 +1,259 @@
+---
+title: 'Go SDK'
+description: 'Install the pure-Go SDK and native bridge, then use sessions, events, tools, persistence, and MCP'
+---
+
+# Go SDK
+
+The Go SDK embeds A3S Code in Go 1.23 or later without CGO. Its public API is
+pure Go; one long-lived `a3s-code-go-bridge` process owns the native Rust
+runtime and communicates with the module over a versioned JSONL protocol.
+
+```text
+Go application
+  -> github.com/A3S-Lab/Code/sdk/go/v6
+  -> multiplexed requests + EventEnvelopeV1
+  -> a3s-code-go-bridge
+  -> a3s-code-core
+```
+
+This boundary keeps Go builds portable while preserving the same session,
+permission, tool, event, verification, and recovery behavior as the other
+SDKs.
+
+## Install the module and bridge
+
+Add the versioned module:
+
+```bash
+go get github.com/A3S-Lab/Code/sdk/go/v6
+```
+
+Download the matching bridge and `a3s-code-go-bridge-SHA256SUMS` from
+[GitHub Releases](https://github.com/A3S-Lab/Code/releases). Release assets are
+currently built for these x86-64 targets:
+
+| System  | Asset target                 |
+| ------- | ---------------------------- |
+| Linux   | `x86_64-unknown-linux-gnu`   |
+| macOS   | `x86_64-apple-darwin`        |
+| Windows | `x86_64-pc-windows-msvc.exe` |
+
+The module and bridge must have the same A3S Code version. For a repository
+release named `vX.Y.Z`, the matching Go module tag is `sdk/go/vX.Y.Z`. Replace
+`X.Y.Z` in the commands below with the release you downloaded.
+
+Verify a downloaded Unix asset before installing it:
+
+```bash
+ASSET=a3s-code-go-bridge-vX.Y.Z-x86_64-unknown-linux-gnu
+grep "  ${ASSET}$" a3s-code-go-bridge-SHA256SUMS | sha256sum --check
+chmod +x "$ASSET"
+sudo install "$ASSET" /usr/local/bin/a3s-code-go-bridge
+```
+
+On macOS, use `shasum -a 256 --check` in place of `sha256sum --check`.
+
+On Windows, compare the published digest before selecting the executable:
+
+```powershell
+$asset = 'a3s-code-go-bridge-vX.Y.Z-x86_64-pc-windows-msvc.exe'
+$line = Get-Content .\a3s-code-go-bridge-SHA256SUMS |
+  Where-Object { $_ -match [regex]::Escape($asset) }
+$expected = ($line -split '\s+')[0].ToLowerInvariant()
+$actual = (Get-FileHash ".\$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw 'A3S Code bridge checksum mismatch' }
+Unblock-File ".\$asset"
+$env:A3S_CODE_GO_BRIDGE = (Resolve-Path ".\$asset").Path
+```
+
+Put the executable on `PATH`, set `A3S_CODE_GO_BRIDGE`, or select it explicitly
+with `code.WithBridgePath`. For targets without a published asset, build the
+bridge from source as described below.
+
+## Create a session
+
+`Create` accepts either an ACL file path or inline ACL source. Keep credentials
+in environment-backed ACL values rather than Go source.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		PlanningMode:     code.PlanningAuto,
+		MaxToolRounds:    code.Ptr(uint(24)),
+		MaxParallelTasks: code.Ptr(uint(4)),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "Find the authentication entry points.")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+An `Agent` and its local runtime are safe for concurrent use. Conversation
+turns on one `Session` are single-flight; observation calls such as `Runs`,
+`ActiveTools`, and `TraceEvents` can run concurrently.
+
+## Stream lossless events
+
+Every live and replayed event has the shared `EventEnvelopeV1` shape. `Type` is
+an open string and `Payload` and `Metadata` are raw JSON, so events added by a
+newer compatible runtime are preserved.
+
+```go
+stream, err := session.Stream(ctx, "Summarize the test strategy.", nil)
+if err != nil {
+	return err
+}
+for event := range stream.Events {
+	switch event.Type {
+	case code.EventTextDelta:
+		var payload struct {
+			Text string `json:"text"`
+		}
+		if err := event.DecodePayload(&payload); err != nil {
+			return err
+		}
+		fmt.Print(payload.Text)
+	default:
+		// Preserve or forward event.Payload and event.Metadata as needed.
+	}
+}
+if err := <-stream.Done; err != nil {
+	return err
+}
+```
+
+Continuously drain `Events` before reading `Done`. Canceling the stream context
+also requests cancellation of the active Rust session. Control-plane code can
+instead call `Cancel`, `CancelRun`, or `CancelAndSettle`.
+
+## Call tools and inspect runs
+
+Direct tool methods bypass the model, but they still use the session workspace,
+permissions, confirmation, tracing, artifact, timeout, and cancellation path.
+
+```go
+content, err := session.ReadFile(ctx, "go.mod", nil)
+status, err := session.Git(ctx, code.GitOptions{Command: "status"})
+matches, err := session.Glob(ctx, "**/*.go")
+report, err := session.VerifyCommands(ctx, "release", []code.VerificationCommand{
+	{
+		ID:          "go:test",
+		Kind:        "test",
+		Description: "Run Go tests",
+		Command:     "go test ./...",
+		Required:    true,
+	},
+})
+_, _, _, _ = content, status, matches, report
+```
+
+Use generic `Tool` for any registered tool, or the typed conveniences for
+files, Bash, Git, glob, grep, web search, QuickJS programs, and delegated
+tasks. Observation APIs expose tool definitions, pending confirmations, runs,
+paged replay events, active tools, traces, artifacts, and verification reports.
+
+## Save, resume, and add MCP
+
+Configure a file-backed session store when work must survive process restarts:
+
+```go
+options := &code.SessionOptions{
+	FileSessionStoreDir: ".a3s/sessions",
+	AutoSave:            code.Ptr(true),
+}
+session, err := agent.Session(ctx, ".", options)
+if err != nil {
+	return err
+}
+persistedID := session.ID()
+if err := session.Save(ctx); err != nil {
+	return err
+}
+if err := session.Close(ctx); err != nil {
+	return err
+}
+resumed, err := agent.ResumeSession(ctx, persistedID, options)
+```
+
+MCP servers can be attached to a live session:
+
+```go
+count, err := session.AddMCPServer(ctx, code.MCPServerConfig{
+	Name: "workspace-tools",
+	Transport: code.MCPTransport{
+		Type:    "stdio",
+		Command: "workspace-mcp",
+		Args:    []string{"--stdio"},
+	},
+})
+```
+
+The SDK also exposes agent directories, skill names, MCP status and removal,
+session listing, and agent-level MCP refresh.
+
+## Handle errors and compatibility
+
+Failures are `*code.Error` values with stable error codes. Context cancellation
+and deadlines remain discoverable through `errors.Is`.
+
+```go
+result, err := session.Run(ctx, "Continue the task.")
+switch {
+case errors.Is(err, code.ErrSessionBusy):
+	return fmt.Errorf("another turn is active: %w", err)
+case errors.Is(err, context.DeadlineExceeded):
+	return fmt.Errorf("deadline exceeded: %w", err)
+case err != nil:
+	return err
+}
+_ = result
+```
+
+`Create` performs a fail-closed handshake for the transport protocol, event
+protocol, and full operation inventory. A missing bridge, incompatible bridge,
+protocol corruption, and normal runtime errors have separate error categories.
+
+Rust trait-object injections such as a custom `LlmClient`, Workspace backend,
+hook executor, or memory implementation remain Rust-only. The Go bridge accepts
+their serializable configuration counterparts where one exists.
+
+## Build and test from source
+
+From an A3S Code source checkout:
+
+```bash
+bash .github/setup-workspace.sh
+cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge
+cd sdk/go
+go vet ./...
+go test -race ./...
+```
+
+Set `A3S_CODE_GO_BRIDGE_TEST_BINARY` to the built executable to include the real
+Go-to-Rust integration test. The repository CI runs Go tests on Linux and
+Windows and validates generated event constants against the Rust protocol.

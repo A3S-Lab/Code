@@ -81,6 +81,18 @@ jobs:
       - name: Check Python SDK
         run: cargo check --manifest-path sdk/python/Cargo.toml
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: sdk/go/go.mod
+
+      - name: Check Go SDK
+        run: |
+          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+          A3S_CODE_GO_BRIDGE_TEST_BINARY="$PWD/../../target/debug/a3s-code-go-bridge" \
+            go test -race ./...
+        working-directory: sdk/go
+
   windows-check:
     name: Windows check
     runs-on: windows-latest
@@ -103,3 +115,16 @@ jobs:
 
       - name: Library tests
         run: cargo test --workspace --lib
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: sdk/go/go.mod
+
+      - name: Go SDK integration
+        shell: pwsh
+        working-directory: sdk/go
+        run: |
+          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+          $env:A3S_CODE_GO_BRIDGE_TEST_BINARY = (Resolve-Path "..\..\target\debug\a3s-code-go-bridge.exe").Path
+          go test ./...

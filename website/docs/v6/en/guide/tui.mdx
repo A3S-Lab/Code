@@ -12,20 +12,20 @@ the [`a3s` CLI](https://github.com/A3S-Lab/a3s), drives the Rust
 `a3s-code-core` runtime, and renders the runtime event stream with
 [`a3s-tui`](https://github.com/A3S-Lab/TUI).
 
-Use the TUI when you want the ready coding-agent product in a terminal. Use
-`a3s-code-core` when you are embedding the same runtime in another Rust host,
-runner, IDE bridge, or controlled product surface.
+Use the TUI when you want the ready coding-agent product in a terminal. Use an
+A3S Code SDK when you are embedding the same runtime in another host, runner,
+IDE bridge, or controlled product surface.
 
 ## Surface Map
 
-| Surface         | Repository                                      | Responsibility                                                                                                                                                                                |
-| --------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `a3s-code-core` | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) | Rust runtime crate for sessions, tools, memory, permissions, delegation, persistence, verification, and event replay.                                                                         |
-| `a3s code`      | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   | Terminal coding-agent application that drives `a3s-code-core` sessions.                                                                                                                       |
-| A3S Use         | [A3S-Lab/Use](https://github.com/A3S-Lab/Use)   | Independently released Browser, native Office, built-in OCR, optional Office compatibility, and signed external application capabilities projected into Code through standard MCP and Skills. |
-| `a3s-tui`       | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)   | Terminal UI framework used by the CLI. It is the renderer and component library, not the agent runtime.                                                                                       |
-| A3S Flow        | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow) | Durable workflow engine used by `DynamicWorkflowRuntime` for replayable per-turn dynamic workflows.                                                                                           |
-| A3S monorepo    | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   | Product docs, release orchestration, submodule pins, and related crates.                                                                                                                      |
+| Surface       | Repository                                      | Responsibility                                                                                                                                                                                |
+| ------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A3S Code SDKs | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) | Rust runtime crate plus Node.js, Python, and Go SDKs for sessions, tools, permissions, persistence, verification, and event replay.                                                           |
+| `a3s code`    | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   | Terminal coding-agent application that drives `a3s-code-core` sessions.                                                                                                                       |
+| A3S Use       | [A3S-Lab/Use](https://github.com/A3S-Lab/Use)   | Independently released Browser, native Office, built-in OCR, optional Office compatibility, and signed external application capabilities projected into Code through standard MCP and Skills. |
+| `a3s-tui`     | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)   | Terminal UI framework used by the CLI. It is the renderer and component library, not the agent runtime.                                                                                       |
+| A3S Flow      | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow) | Durable workflow engine used by `DynamicWorkflowRuntime` for replayable per-turn dynamic workflows.                                                                                           |
+| A3S monorepo  | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   | Product docs, release orchestration, submodule pins, and related crates.                                                                                                                      |
 
 ## Install And Start
 

@@ -72,6 +72,11 @@ const installCommands = [
     label: 'Python',
     command: 'python -m pip install a3s-code',
   },
+  {
+    id: 'go',
+    label: 'Go',
+    command: 'go get github.com/A3S-Lab/Code/sdk/go/v6',
+  },
 ] as const;
 
 const governanceFeatures: Feature[] = [
@@ -238,6 +243,17 @@ const surfaces = [
     },
     command: 'python -m pip install a3s-code',
   },
+  {
+    key: 'go',
+    name: 'Go',
+    packageName: 'sdk/go/v6',
+    href: 'https://pkg.go.dev/github.com/A3S-Lab/Code/sdk/go/v6',
+    description: {
+      zh: '纯 Go API 通过长驻桥接进程提供会话、事件流、工具、验证和 MCP，无需 CGO。',
+      en: 'A pure-Go API for sessions, event streams, tools, verification, and MCP through a long-lived bridge, without CGO.',
+    },
+    command: 'go get github.com/A3S-Lab/Code/sdk/go/v6',
+  },
 ];
 
 const runtimeLayers = [
@@ -246,10 +262,10 @@ const runtimeLayers = [
     code: 'L01 / SURFACES',
     title: { zh: '接入方式', en: 'Ways to use it' },
     body: {
-      zh: '同一套 Runtime 可以直接跑在终端里，也可以通过 Rust、Node.js 或 Python 接进你的应用。接口不同，执行流程一致。',
-      en: 'Run the same runtime in a terminal or embed it through Rust, Node.js, or Python. The APIs differ; the execution flow stays the same.',
+      zh: '同一套 Runtime 可以直接跑在终端里，也可以通过 Rust、Node.js、Python 或 Go 接进你的应用。接口不同，执行流程一致。',
+      en: 'Run the same runtime in a terminal or embed it through Rust, Node.js, Python, or Go. The APIs differ; the execution flow stays the same.',
     },
-    tags: ['a3s code', 'Rust', 'Node.js', 'Python'],
+    tags: ['a3s code', 'Rust', 'Node.js', 'Python', 'Go'],
   },
   {
     id: 'session',
@@ -417,7 +433,7 @@ const copy = {
     titleLead: '把 A3S Code',
     titleAccent: '接进现有产品',
     subtitle:
-      'A3S Code 提供 Agent 会话、工具调用、权限确认、事件流和任务恢复。你可以直接使用 a3s code，也可以通过 Rust、Node.js 或 Python SDK 嵌入现有应用。',
+      'A3S Code 提供 Agent 会话、工具调用、权限确认、事件流和任务恢复。你可以直接使用 a3s code，也可以通过 Rust、Node.js、Python 或 Go SDK 嵌入现有应用。',
     docs: '开始使用',
     github: '查看 GitHub',
     copy: '复制',
@@ -431,7 +447,7 @@ const copy = {
     guard: '参数 → 权限 → 确认 → 预算 → 沙箱',
     evidence: 'Run · Trace · Artifact · Snapshot',
     record: '执行记录',
-    surfacesLabel: '四种接入方式，同一套 Runtime',
+    surfacesLabel: '五种接入方式，同一套 Runtime',
     whyEyebrow: 'WHY A3S CODE',
     whyTitle: '工具执行之前，先检查参数、权限和确认状态',
     whyBody:
@@ -447,9 +463,9 @@ const copy = {
     capabilitiesBody:
       '工具、模型、任务记录、扩展接口和 Workspace 各自独立。应用可以只配置当前场景需要的部分。',
     surfacesEyebrow: 'USE IT YOUR WAY',
-    surfacesTitle: '直接运行 CLI，或使用三种 SDK',
+    surfacesTitle: '直接运行 CLI，或使用四种 SDK',
     surfacesBody:
-      '终端版用于直接操作项目；Rust crate、Node.js 包和 Python 包用于 IDE、Runner、服务端或自有界面。',
+      '终端版用于直接操作项目；Rust crate、Node.js 包、Python 包和 Go module 用于 IDE、Runner、服务端或自有界面。',
     boundariesEyebrow: 'WHAT STAYS YOURS',
     boundariesTitle: 'Runtime 负责执行；应用负责账号、凭据和界面',
     boundaryItems: [
@@ -517,17 +533,18 @@ const copy = {
     ctaEyebrow: 'TRY IT',
     ctaTitle: '从一个只读任务开始',
     ctaBody:
-      '安装 a3s code 后，在已有仓库里执行一次检查；需要嵌入时再选择 Rust、Node.js 或 Python SDK。',
+      '安装 a3s code 后，在已有仓库里执行一次检查；需要嵌入时再选择 Rust、Node.js、Python 或 Go SDK。',
     ctaPrimary: '查看快速开始',
     ctaSecondary: '查看 API',
-    footer: 'MIT 开源 · Rust 编写 · 支持 Terminal / Rust / Node.js / Python',
+    footer:
+      'MIT 开源 · Rust 编写 · 支持 Terminal / Rust / Node.js / Python / Go',
   },
   en: {
     eyebrow: 'OPEN SOURCE · EMBEDDABLE AGENT RUNTIME',
     titleLead: 'Add A3S Code',
     titleAccent: 'to an existing product',
     subtitle:
-      'A3S Code provides agent sessions, tool execution, approvals, event streaming, and task recovery. Run a3s code directly or embed the Rust, Node.js, or Python SDK.',
+      'A3S Code provides agent sessions, tool execution, approvals, event streaming, and task recovery. Run a3s code directly or embed the Rust, Node.js, Python, or Go SDK.',
     docs: 'Get started',
     github: 'View on GitHub',
     copy: 'Copy',
@@ -541,7 +558,7 @@ const copy = {
     guard: 'arguments → permission → approval → budget → sandbox',
     evidence: 'Run · Trace · Artifact · Snapshot',
     record: 'run record',
-    surfacesLabel: 'Four ways in, one runtime',
+    surfacesLabel: 'Five ways in, one runtime',
     whyEyebrow: 'WHY A3S CODE',
     whyTitle: 'Check arguments, permissions, and approvals before execution',
     whyBody:
@@ -557,9 +574,9 @@ const copy = {
     capabilitiesBody:
       'Tools, models, run data, extension interfaces, and workspaces are configured separately. An application can enable only the parts it needs.',
     surfacesEyebrow: 'USE IT YOUR WAY',
-    surfacesTitle: 'Run the CLI or use one of three SDKs',
+    surfacesTitle: 'Run the CLI or use one of four SDKs',
     surfacesBody:
-      'Use the terminal app directly in a repository. Use the Rust crate, Node.js package, or Python package in an IDE, runner, server, or custom interface.',
+      'Use the terminal app directly in a repository. Use the Rust crate, Node.js package, Python package, or Go module in an IDE, runner, server, or custom interface.',
     boundariesEyebrow: 'WHAT STAYS YOURS',
     boundariesTitle: 'The runtime executes; the app owns accounts and access',
     boundaryItems: [
@@ -628,10 +645,11 @@ const copy = {
     ctaEyebrow: 'TRY IT',
     ctaTitle: 'Start with a read-only task',
     ctaBody:
-      'Install a3s code and run one inspection in an existing repository. Choose the Rust, Node.js, or Python SDK when you are ready to embed it.',
+      'Install a3s code and run one inspection in an existing repository. Choose the Rust, Node.js, Python, or Go SDK when you are ready to embed it.',
     ctaPrimary: 'Open the quick start',
     ctaSecondary: 'Open the API reference',
-    footer: 'MIT licensed · Built in Rust · Terminal / Rust / Node.js / Python',
+    footer:
+      'MIT licensed · Built in Rust · Terminal / Rust / Node.js / Python / Go',
   },
 };
 

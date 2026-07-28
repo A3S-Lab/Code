@@ -14,7 +14,7 @@
 **A3S Code** is an async Rust runtime for building governed coding agents. It
 keeps the agent loop, workspace tools, model adapters, policy decisions,
 versioned events, and durable evidence behind explicit contracts. Use it from
-Rust, Node.js, Python, or through the `a3s code` terminal application.
+Rust, Node.js, Python, Go, or through the `a3s code` terminal application.
 
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
@@ -352,6 +352,7 @@ multiple agents or behaviors need one auditable shared model.
 | Rust | [`a3s-code-core`](https://crates.io/crates/a3s-code-core) | Complete runtime API and extension traits |
 | Node.js | [`@a3s-lab/code`](https://www.npmjs.com/package/@a3s-lab/code) | Native N-API bindings for async lifecycle, streams, tools, stores, orchestration, MCP, and state graph |
 | Python | [`a3s-code`](https://pypi.org/project/a3s-code/) | Native PyO3/bootstrap package with sync and async application APIs |
+| Go | [`github.com/A3S-Lab/Code/sdk/go/v6`](sdk/go/README.md) | Pure-Go client with a versioned local bridge for sessions, streams, tools, runs, verification, and MCP |
 
 ```bash
 # Node.js
@@ -359,16 +360,21 @@ npm install @a3s-lab/code
 
 # Python
 python -m pip install a3s-code
+
+# Go
+go get github.com/A3S-Lab/Code/sdk/go/v6
 ```
 
-The native SDK crates enable the Core `s3` and `serve` features. See their
-[Node.js](sdk/node/README.md) and [Python](sdk/python/README.md) guides for
-surface-specific examples and intentional API differences.
+The native SDK crates enable the Core `s3` and `serve` features. The pure-Go
+package uses the matching `a3s-code-go-bridge` release asset and requires no
+CGO. See the [Node.js](sdk/node/README.md), [Python](sdk/python/README.md), and
+[Go](sdk/go/README.md) guides for surface-specific examples and intentional API
+differences.
 
 ## Architecture
 
 ```text
-Rust host / Node SDK / Python SDK / a3s code
+Rust host / Node SDK / Python SDK / Go SDK / a3s code
                          │
                        Agent
                          │
@@ -392,6 +398,8 @@ hooks, security, MCP transports, and graph stores.
 Source is grouped by concern under `agent_api/`, `tools/`, `workspace/`,
 `context/`, `llm/`, `mcp/`, `orchestration/`, `store/`, and `state_graph/`.
 Node.js and Python bindings remain separate native crates over the same Core.
+The Go SDK reaches that Core through a long-lived, capability-checked local
+bridge process.
 
 ## Filesystem-first agents and releases
 
@@ -442,6 +450,7 @@ the v1 schema.
 | [User Guide](manual/USER_GUIDE.md) · [Chinese](manual/USER_GUIDE_CN.md) | Installation, configuration, sessions, tools, and common workflows |
 | [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) | Extension contracts, security, lifecycle, and production integration |
 | [SDK API Design](manual/SDK_API_DESIGN.md) | Cross-language API conventions and alignment |
+| [Go SDK](sdk/go/README.md) | Bridge installation, sessions, event streaming, direct tools, errors, and release compatibility |
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) | Language runtime, capability boundary, lifecycle, and verification |
 | [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md) | Filesystem-first tool and agent definitions |
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) | Admission schema, identity, compatibility, and security boundary |
@@ -457,6 +466,8 @@ cargo test -p a3s-code-core
 cargo test -p a3s-code-core --all-features
 cargo clippy -p a3s-code-core --all-targets --all-features -- -D warnings
 node scripts/sdk_api_alignment_check.mjs
+cargo test -p a3s-code-go-bridge
+go -C sdk/go test ./...
 ```
 
 Real-provider, browser-runtime, and S3 tests are ignored unless their external

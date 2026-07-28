@@ -13,19 +13,19 @@ agent loop, context, tool calls, permission checks, child tasks, Workspace
 access, and session recovery.
 
 Install the [`a3s` CLI](https://github.com/A3S-Lab/a3s) when you want to work in
-a terminal. Use the Rust crate, Node.js package, or Python package when you are
-building a product. They emit the same events, so every UI does not need its own
-agent loop.
+a terminal. When building a product, use the Rust crate, Node.js package,
+Python package, or Go module with its matching native bridge. They emit the
+same events, so every UI does not need its own agent loop.
 
 ## Choose an entry point
 
-| Entry                        | Use it when                                                    | Repository                                                    |
-| ---------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- |
-| Rust / Node.js / Python SDKs | Adding a coding agent to an IDE, runner, service, or custom UI | [A3S-Lab/Code](https://github.com/A3S-Lab/Code)               |
-| `a3s code`                   | Running a coding agent directly in your terminal               | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)                 |
-| `a3s-tui`                    | Building a terminal UI; it does not include the agent runtime  | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)                 |
-| A3S Web                      | Studying the desktop task UI and its component implementation  | [apps/web](https://github.com/A3S-Lab/a3s/tree/main/apps/web) |
-| A3S Flow                     | Saving and resuming flows used by `DynamicWorkflowRuntime`     | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow)               |
+| Entry                             | Use it when                                                    | Repository                                                    |
+| --------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- |
+| Rust / Node.js / Python / Go SDKs | Adding a coding agent to an IDE, runner, service, or custom UI | [A3S-Lab/Code](https://github.com/A3S-Lab/Code)               |
+| `a3s code`                        | Running a coding agent directly in your terminal               | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)                 |
+| `a3s-tui`                         | Building a terminal UI; it does not include the agent runtime  | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)                 |
+| A3S Web                           | Studying the desktop task UI and its component implementation  | [apps/web](https://github.com/A3S-Lab/a3s/tree/main/apps/web) |
+| A3S Flow                          | Saving and resuming flows used by `DynamicWorkflowRuntime`     | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow)               |
 
 ## What it includes
 
@@ -41,7 +41,7 @@ agent loop.
 | Scheduled work  | Run scheduled AgentDir turns through `serveAgentDir` / `serve_agent_dir`; each schedule keeps a stable `schedule:<name>` session.                                                                    |
 | Access control  | Apply permission rules, user confirmation, budgets, Workspace path checks, tool timeouts, hooks, and output cleanup during execution.                                                                |
 | Workspaces      | [Workspace backends](/guide/workspace-backends) support local files, application-provided workspaces, optional S3-compatible storage, and remote Git services.                                       |
-| Events          | `EventEnvelopeV1` is shared by Rust, Node.js, and Python. Unknown event payloads and metadata are preserved.                                                                                         |
+| Events          | `EventEnvelopeV1` is shared by Rust, Node.js, Python, and Go. Unknown event payloads and metadata are preserved.                                                                                     |
 | Save and resume | Session snapshots, run events, traces, artifacts, loop/workflow checkpoints, and memory stores make sessions recoverable.                                                                            |
 | Verification    | [Verification](/guide/verification) runs named checks and returns reports, summaries, artifacts, traces, and replay data.                                                                            |
 
@@ -91,6 +91,7 @@ Install an SDK when embedding A3S Code:
 npm install @a3s-lab/code
 pip install a3s-code
 cargo add a3s-code-core
+go get github.com/A3S-Lab/Code/sdk/go/v6
 ```
 
 ## Configure
@@ -199,6 +200,7 @@ Check access in your application before exposing them to users.
 ## Continue reading
 
 - [A3S Code TUI](/guide/tui) explains installation, config discovery, slash commands, and effort profiles.
+- [Go SDK](/guide/go-sdk) covers the pure-Go API, matching native bridge, streaming, cancellation, direct tools, and releases.
 - [Filesystem-first](/guide/filesystem-first) covers `AGENTS.md`, ACL, AgentDir, Skills, tools, and schedules.
 - [API contract](/guide/api-contract) lists the Node.js API covered by integration tests.
 - [Sessions](/guide/sessions) covers creation, streaming, run state, saving, resuming, and cancellation.

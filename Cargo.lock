@@ -87,6 +87,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "a3s-code-go-bridge"
+version = "6.5.2"
+dependencies = [
+ "a3s-code-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "a3s-common"
 version = "0.1.1"
 dependencies = [
