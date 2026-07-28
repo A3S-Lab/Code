@@ -3352,7 +3352,7 @@ body {
 
 .a3s-hero-visual {
   min-width: 0;
-  padding: 30px;
+  padding: 16px;
 }
 
 .a3s-runtime-inspector {
@@ -5002,7 +5002,7 @@ body {
   }
 
   .a3s-hero-visual {
-    padding: 24px;
+    padding: 14px;
   }
 
   .a3s-runtime-inspector-body {
@@ -5040,7 +5040,7 @@ body {
 
   .a3s-hero-visual {
     min-height: 0;
-    padding: 36px;
+    padding: 12px;
   }
 
   .a3s-runtime-inspector {
@@ -5079,7 +5079,7 @@ body {
   }
 
   .a3s-hero-visual {
-    padding: 18px 12px;
+    padding: 8px;
   }
 
   .a3s-runtime-inspector {
@@ -5398,7 +5398,8 @@ body {
 .a3s-tui-player {
   position: relative;
   display: flex;
-  min-height: 574px;
+  min-height: 0;
+  width: 100%;
   border-color: #343a40;
   background: #15191f;
   color: #dcdcdc;
@@ -5412,8 +5413,8 @@ body {
 
 .a3s-tui-titlebar {
   display: grid;
-  min-height: 38px;
-  padding: 0 13px;
+  min-height: 44px;
+  padding: 0 15px;
   border-bottom: 1px solid #343a40;
   background: #11151a;
   align-items: center;
@@ -5429,8 +5430,8 @@ body {
 }
 
 .a3s-tui-window-dots i {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: #ff5f57;
 }
@@ -5459,14 +5460,14 @@ body {
 
 .a3s-tui-title b {
   color: #cdd2d8;
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
 }
 
 .a3s-tui-title em {
   color: #5f6772;
-  font-size: 7px;
+  font-size: 10.5px;
   font-style: normal;
 }
 
@@ -5480,7 +5481,7 @@ body {
   align-items: center;
   gap: 5px;
   font-family: var(--a3s-mono);
-  font-size: 6px;
+  font-size: 10px;
   letter-spacing: 0.06em;
 }
 
@@ -5489,8 +5490,8 @@ body {
 }
 
 .a3s-tui-titlebar > button > i {
-  width: 7px;
-  height: 7px;
+  width: 9px;
+  height: 9px;
   border: 1px solid currentColor;
   border-left-color: transparent;
   border-radius: 50%;
@@ -5503,20 +5504,20 @@ body {
 .a3s-tui-terminal {
   position: relative;
   display: flex;
-  min-height: 392px;
-  padding: 13px 17px 9px;
+  min-height: 0;
+  padding: 16px 18px 10px;
   background: #15191f;
-  flex: 1;
+  flex: 0 0 auto;
   flex-direction: column;
   font-family: var(--a3s-mono);
 }
 
 .a3s-tui-welcome {
   display: grid;
-  min-height: 59px;
+  min-height: 68px;
   align-items: center;
-  gap: 12px;
-  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 14px;
+  grid-template-columns: 64px minmax(0, 1fr);
 }
 
 .a3s-tui-welcome pre {
@@ -5529,16 +5530,23 @@ body {
 
 .a3s-tui-mascot {
   color: #787b7d;
-  font-size: 5.7px;
+  font-size: 6.2px;
   line-height: 1.05;
 }
 
-.a3s-tui-wordmark {
+.a3s-home .a3s-tui-wordmark {
+  display: block;
+  width: min(100%, 360px);
+  height: auto;
+  overflow: visible;
   color: #7db6ff;
-  font-size: 4.75px;
-  font-weight: 700;
-  line-height: 1.08;
-  text-shadow: 0 0 13px rgba(125, 182, 255, 0.1);
+  filter: drop-shadow(0 0 7px rgba(125, 182, 255, 0.1));
+  shape-rendering: crispEdges;
+}
+
+.a3s-tui-wordmark path {
+  fill: currentcolor;
+  stroke: none;
 }
 
 .a3s-tui-meta,
@@ -5549,7 +5557,7 @@ body {
   color: #787b7d;
   align-items: center;
   gap: 6px;
-  font-size: 6.5px;
+  font-size: 10px;
   line-height: 1.45;
   white-space: nowrap;
 }
@@ -5573,29 +5581,29 @@ body {
 
 .a3s-tui-transcript {
   display: flex;
-  min-height: 226px;
-  margin-top: 11px;
-  padding-top: 8px;
+  min-height: 220px;
+  margin-top: 13px;
+  padding-top: 10px;
   border-top: 1px solid #292f36;
-  flex: 1;
+  flex: 0 0 auto;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
 
 .a3s-tui-entry {
   display: grid;
   min-width: 0;
-  padding: 5px 7px;
+  padding: 7px 8px;
   color: #cfd3d8;
   align-items: start;
-  gap: 7px;
-  grid-template-columns: 11px minmax(0, 1fr);
+  gap: 9px;
+  grid-template-columns: 13px minmax(0, 1fr);
   animation: a3s-tui-entry-in 180ms ease-out both;
 }
 
 .a3s-tui-entry > span {
   color: #7db6ff;
-  font-size: 9px;
+  font-size: 13px;
   line-height: 1.35;
   text-align: center;
 }
@@ -5618,7 +5626,7 @@ body {
 .a3s-tui-entry strong,
 .a3s-tui-entry p {
   color: #dcdcdc;
-  font-size: 7.4px;
+  font-size: 11.5px;
   font-weight: 520;
   line-height: 1.45;
 }
@@ -5627,7 +5635,7 @@ body {
 .a3s-tui-entry code {
   color: #787f89;
   font-family: var(--a3s-mono);
-  font-size: 6.5px;
+  font-size: 10px;
   font-weight: 400;
   line-height: 1.45;
   white-space: nowrap;
@@ -5638,8 +5646,8 @@ body {
 }
 
 .a3s-tui-entry--user {
-  padding: 7px 9px;
-  border-radius: 4px;
+  padding: 9px 11px;
+  border-radius: 5px;
   background: #31353a;
 }
 
@@ -5673,8 +5681,8 @@ body {
 }
 
 .a3s-tui-composer {
-  min-height: 116px;
-  padding: 0 14px 7px;
+  min-height: 0;
+  padding: 0 18px 9px;
   border-top: 1px solid #242a31;
   background: #15191f;
   font-family: var(--a3s-mono);
@@ -5682,11 +5690,11 @@ body {
 
 .a3s-tui-activity {
   display: flex;
-  min-height: 22px;
+  min-height: 28px;
   color: #9ea6b0;
   align-items: center;
   gap: 5px;
-  font-size: 6.8px;
+  font-size: 10.5px;
 }
 
 .a3s-tui-activity > i {
@@ -5697,7 +5705,7 @@ body {
 
 .a3s-tui-activity > small {
   color: #686f79;
-  font-size: 6px;
+  font-size: 9.5px;
 }
 
 .a3s-tui-effort-rule {
@@ -5705,7 +5713,7 @@ body {
   color: #8993a0;
   align-items: center;
   gap: 7px;
-  font-size: 6.2px;
+  font-size: 9.5px;
 }
 
 .a3s-tui-effort-rule::before,
@@ -5722,32 +5730,32 @@ body {
 
 .a3s-tui-input {
   display: grid;
-  min-height: 32px;
-  padding: 5px 2px 4px;
+  min-height: 40px;
+  padding: 7px 2px 6px;
   align-items: start;
-  gap: 6px;
-  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 8px;
+  grid-template-columns: 12px minmax(0, 1fr);
 }
 
 .a3s-tui-input > span {
   color: #7db6ff;
-  font-size: 10px;
+  font-size: 14px;
   line-height: 1.45;
 }
 
 .a3s-tui-input p {
   min-width: 0;
-  min-height: 14px;
+  min-height: 16px;
   margin: 0;
   color: #dcdcdc;
-  font-size: 7px;
+  font-size: 11.5px;
   line-height: 1.5;
 }
 
 .a3s-tui-input p > i {
   display: inline-block;
-  width: 4px;
-  height: 10px;
+  width: 5px;
+  height: 14px;
   margin-left: 2px;
   background: #dcdcdc;
   vertical-align: -1px;
@@ -5761,12 +5769,12 @@ body {
 
 .a3s-tui-footer {
   display: flex;
-  min-height: 27px;
+  min-height: 32px;
   overflow: hidden;
   color: #7b838e;
   align-items: center;
   gap: 10px;
-  font-size: 6.2px;
+  font-size: 9.5px;
   white-space: nowrap;
 }
 
@@ -5779,7 +5787,7 @@ body {
 
 .a3s-tui-mode i {
   color: #7e9fc7;
-  font-size: 5px;
+  font-size: 6px;
   font-style: normal;
 }
 
@@ -5793,8 +5801,8 @@ body {
 .a3s-tui-context > i {
   position: relative;
   display: block;
-  width: 28px;
-  height: 3px;
+  width: 32px;
+  height: 4px;
   overflow: hidden;
   border-radius: 999px;
   background: #343a42;
@@ -5863,10 +5871,11 @@ body {
 
 @media (max-width: 640px) {
   .a3s-tui-player {
-    min-height: 510px;
+    min-height: 0;
   }
 
   .a3s-tui-titlebar {
+    min-height: 42px;
     padding: 0 10px;
   }
 
@@ -5875,7 +5884,7 @@ body {
   }
 
   .a3s-tui-terminal {
-    min-height: 342px;
+    min-height: 0;
     padding: 12px 11px 8px;
   }
 
@@ -5886,11 +5895,11 @@ body {
   }
 
   .a3s-tui-mascot {
-    font-size: 4.6px;
+    font-size: 5px;
   }
 
-  .a3s-tui-wordmark {
-    font-size: 3.45px;
+  .a3s-home .a3s-tui-wordmark {
+    width: min(100%, 240px);
   }
 
   .a3s-tui-meta span:nth-of-type(3),
@@ -5900,7 +5909,7 @@ body {
   }
 
   .a3s-tui-transcript {
-    min-height: 203px;
+    min-height: 232px;
   }
 
   .a3s-tui-entry {
@@ -5915,10 +5924,11 @@ body {
 
   .a3s-tui-entry small,
   .a3s-tui-entry code {
-    font-size: 5.8px;
+    font-size: 8px;
   }
 
   .a3s-tui-composer {
+    padding-bottom: 8px;
     padding-right: 10px;
     padding-left: 10px;
   }
