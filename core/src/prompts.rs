@@ -35,6 +35,13 @@ pub const CONTINUATION: &str = include_str!("../prompts/common/continuation.md")
 /// agent styles and delegated subagents (which build through the same path).
 pub const BOUNDARIES: &str = include_str!("../prompts/common/boundaries.md");
 
+/// Canonical repository-tool arguments and context-efficient usage strategy.
+///
+/// Appended to every assembled system prompt so general, planning, exploration,
+/// review, and verification styles share one tool contract.
+pub const REPOSITORY_TOOL_CONTRACT: &str =
+    include_str!("../prompts/common/repository_tool_contract.md");
+
 // ============================================================================
 // Delegated Run Prompts
 // ============================================================================
@@ -446,7 +453,8 @@ impl SystemPromptSlots {
     /// Build the final system prompt by assembling slots around the core prompt.
     ///
     /// The core agentic behavior (Core Behaviour, Tool Usage Strategy, Completion
-    /// Criteria) is always preserved. Users can only customize the edges.
+    /// Criteria), shared repository-tool contract, and safety boundaries are always
+    /// preserved. Users can only customize the edges.
     ///
     /// Note: This uses `AgentStyle::GeneralPurpose` as the base. Use
     /// `build_with_message()` to enable automatic intent-based style detection.
@@ -504,7 +512,16 @@ impl SystemPromptSlots {
 
         parts.push(core);
 
-        // 2b. Safety boundaries — single source of truth, appended uniformly so
+        // 2b. Repository-tool contract — shared by every style so parameter and
+        // pagination guidance cannot drift between built-in agents.
+        parts.push(
+            REPOSITORY_TOOL_CONTRACT
+                .replace('\r', "")
+                .trim_end()
+                .to_string(),
+        );
+
+        // 2c. Safety boundaries — single source of truth, appended uniformly so
         // every style and delegated subagent (which build through this path)
         // carries injection-hygiene, secret-handling, and malware-refusal rules.
         parts.push(BOUNDARIES.replace('\r', "").trim_end().to_string());
