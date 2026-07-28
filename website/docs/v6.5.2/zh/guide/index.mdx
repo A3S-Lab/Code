@@ -120,7 +120,7 @@ storage_backend = "file"
 sessions_dir = ".a3s/sessions"
 ```
 
-`auto_parallel = false` 只关闭自动并行子 agent fan-out。手动
+`auto_parallel = false` 只关闭自动并行子智能体扇出。手动
 `parallel_task` 和 SDK `session.tasks(...)` 仍然可用，除非你单独关闭手动委派。
 本地 session 持久化需要把 `storage_backend = "file"` 和 `sessions_dir` 配对；
 SDK embedding 场景也可以直接传 typed `FileSessionStore`。

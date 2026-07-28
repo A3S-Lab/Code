@@ -11,7 +11,7 @@
     "format": "prettier --write .",
     "generate:tutorial": "node scripts/generate-runtime-tutorial.mjs",
     "format:check": "prettier --check .",
-    "lint": "rslint && tsc --noEmit && node scripts/check-language-parity.mjs",
+    "lint": "rslint && tsc --noEmit && node scripts/check-language-parity.mjs && node scripts/check-doc-accuracy.mjs",
     "normalize:docs": "node scripts/normalize-imported-docs.mjs",
     "prebuild": "npm run generate:tutorial",
     "preview": "rspress preview"

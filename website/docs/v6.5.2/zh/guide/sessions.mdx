@@ -7,7 +7,8 @@ import { Tab, Tabs } from '@rspress/core/theme';
 
 # 会话
 
-`Agent` 持有配置和 provider 状态。`Session` 把这个 agent 绑定到一个工作区和一次对话生命周期。
+`Agent` 持有配置和服务提供商状态。`Session` 把这个智能体绑定到一个工作区和一次
+对话生命周期。
 
 界面通常从这里开始接入：订阅 Session 产生的 `AgentEvent`，再把事件映射为进度、
 工具调用、权限确认和结果。
@@ -28,8 +29,8 @@ const session = agent.session('/repo', {
 
 ## Rust 构建路径
 
-Rust session 构建以异步为先，因为默认 memory、文件型 store、queue、trajectory
-recording 与 MCP discovery 都可能需要 I/O：
+Rust 会话构建以异步为先，因为默认内存存储、文件型存储、队列、轨迹记录与
+MCP 发现都可能需要 I/O：
 
 ```rust
 let session = agent
@@ -40,36 +41,35 @@ let session = agent
 ```
 
 `session_async`、`resume_session_async`、`session_for_agent_async` 与
-`session_for_worker_async` 是直接的异步入口。Node 和 Python 保留现有 factory
-命名，由 native binding 内部委托给同一个异步构建内核。
+`session_for_worker_async` 是直接的异步入口。Node 和 Python 保留现有工厂
+命名，由原生绑定在内部委托给同一个异步构建内核。
 
 同步 Rust `Agent::session` 是严格兼容路径：只接受已经显式初始化好的资源，绝不
-启动或阻塞 async runtime。仍需初始化的默认/文件 memory store、文件 session
-store、queue、trajectory recorder，以及 `SessionOptions` 中的任何宿主 MCP
-manager 都会返回 `CodeError::AsyncSessionBuildRequired`；session-option MCP
-capability discovery 始终是异步的。应改用 builder，不要捕获错误后悄悄换 backend。
+启动或阻塞异步运行时。仍需初始化的默认或文件型内存存储、文件会话存储、队列、
+轨迹记录器，以及 `SessionOptions` 中的任何宿主 MCP 管理器都会返回
+`CodeError::AsyncSessionBuildRequired`；会话选项中的 MCP 能力发现始终是异步的。
+应改用构建器，不要捕获错误后悄悄更换后端。
 同步路径只能继承智能体初始化时已经缓存的全局 MCP 工具。
 
 `planningMode` 是显式三态：`'auto'` 使用默认结构化预分析，`'enabled'`
-强制 planning，`'disabled'` 在低延迟调用中关闭 planning。旧的布尔
-`planning` 选项仍保留兼容。
+强制规划，`'disabled'` 在低延迟调用中关闭规划。旧的布尔 `planning` 选项仍保留兼容。
 
-Planning 会写入 run 级状态。宿主应用可以把这些状态渲染成 TaskList，并随着运行事件更新每一项，而不是从文本 token 里猜进度。
+规划会写入运行级状态。宿主应用可以把这些状态渲染成任务列表，并随着运行事件更新
+每一项，而不是从文本令牌中猜测进度。
 
 ## 单任务操作约束
 
-同一个 session 同时只准入一个会影响 transcript 的操作。`send`、`stream`、它们
-的 attachment variant、slash command 与 `resumeRun` 共用 fail-fast admission
-gate。重叠调用会在读取历史或派发命令前返回 `CodeError::SessionBusy`，不会排队
+同一个会话同时只准入一个会影响对话记录的操作。`send`、`stream`、它们的附件变体、
+斜杠命令与 `resumeRun` 共用快速失败准入门。重叠调用会在读取历史或派发命令前返回
+`CodeError::SessionBusy`，不会排队
 等待当前操作。
 
-开始下一次对话操作前，应等待 active result、把 stream 消费到结束，或先取消它。
-即使公开 stream handle 被丢弃或中止，runtime 也会在 producer 真正停止前继续
-持有 lease。直接宿主工具 helper 不改变 transcript，因此不占用这把 lease。
+开始下一次对话操作前，应等待活动结果、把事件流消费到结束，或先取消它。
+即使公开的事件流句柄被丢弃或中止，运行时也会在生产者真正停止前继续
+持有租约。直接调用宿主工具的辅助方法不改变对话记录，因此不占用这把租约。
 
-Node 与 Python 的 stream iterator 会在 terminal boundary 等待这段 lifecycle
-清理。iterator 完整消费并报告结束后，立即开始下一次对话操作不会继承上一个
-stream 留下的过期 busy 状态。
+Node 与 Python 的事件流迭代器会在终止边界等待这段生命周期清理。迭代器完整消费
+并报告结束后，立即开始下一次对话操作不会继承上一个事件流留下的过期忙碌状态。
 
 ## 发送消息
 
@@ -148,16 +148,15 @@ if err := <-stream.Done; err != nil {
 </Tab>
 </Tabs>
 
-每个 SDK event 都是 `EventEnvelopeV1` 投影，包含 `version === 1`、开放的 `type`
-字符串、完整 `payload` 与可选 `metadata`。`text`、`toolName` 等 convenience field
-由 envelope 统一派生。消费端应保留 default branch，并为未来 event type 保存原始
-payload。
+每个 SDK 事件都是 `EventEnvelopeV1` 投影，包含 `version === 1`、开放的 `type`
+字符串、完整 `payload` 与可选 `metadata`。`text`、`toolName` 等便捷字段
+由信封统一派生。消费端应保留默认分支，并为未来的事件类型保存原始载荷。
 
 ## 临时提问
 
-SDK 没有专用的临时提问 helper。要提出临时问题，可以先快照当前历史，再把它
-显式传给 `send` 或 `stream`。显式 history 只服务这一次调用，不会把答案写回
-session 历史。
+SDK 没有专用的临时提问辅助方法。要提出临时问题，可以先快照当前历史，再把它
+显式传给 `send` 或 `stream`。显式历史只服务这一次调用，不会把答案写回
+会话历史。
 
 ```ts
 const snapshot = session.history();
@@ -194,19 +193,19 @@ session, err := agent.ResumeSession(ctx, "release-review", options)
 </Tab>
 </Tabs>
 
-使用 session store 时设置 `autoSave: true`，或显式调用 `await session.save()`。
-这里恢复的是已保存的 session snapshot；中断 run 的 checkpoint 通过
+使用会话存储时设置 `autoSave: true`，或显式调用 `await session.save()`。
+这里恢复的是已保存的会话快照；中断运行的检查点通过
 `session.resumeRun(runId)` 恢复。Go 桥接层支持快照级的 `Save` 和
 `ResumeSession`，但没有暴露中断运行级的 `resumeRun`。参见
 [持久化](/guide/persistence)。
 
 ## 生命周期与关闭
 
-`session.close()` 是一次完整的优雅停止。首次调用会把 session 切换到
-**closed** 状态——之后的 `send`/`stream` 调用会以 `CodeError::SessionClosed`
-快速失败，而不会启动新 run——然后取消正在执行的 run、所有正在进行的委派子
-agent 任务，以及所有挂起的 human-in-the-loop 确认。后续调用是 no-op，且保证
-不会 panic。用 `session.isClosed()`（Node）、`session.is_closed()`（Python）
+`session.close()` 是一次完整的优雅停止。首次调用会把会话切换到
+**已关闭**状态——之后的 `send`/`stream` 调用会以 `CodeError::SessionClosed`
+快速失败，而不会启动新运行——然后取消正在执行的运行、所有正在进行的委派子
+智能体任务，以及所有挂起的人工确认。后续调用不会重复操作，且保证
+不会触发 panic。用 `session.isClosed()`（Node）、`session.is_closed()`（Python）
 或 `session.IsClosed(ctx)`（Go）查询关闭状态。
 
 ```ts
@@ -232,36 +231,36 @@ closed, err := session.IsClosed(ctx)
 
 ### 取消令牌
 
-每个 run 都通过 `child_token()` 从同一个 session 级父 token 派生出自己的
-逐操作取消 token，因此 `close()` 会一次性级联到所有正在进行的工作。需要原始
-token 的嵌入方——例如把它接入宿主侧的 `select!`，或者绕过 `close()` 的
-run-store 和 hook 副作用直接中止 session——可以通过
+每个运行都通过 `child_token()` 从同一个会话级父令牌派生出自己的
+逐操作取消令牌，因此 `close()` 会一次性级联到所有正在进行的工作。需要原始
+令牌的嵌入方——例如把它接入宿主侧的 `select!`，或者绕过 `close()` 的
+运行存储和钩子副作用直接中止会话——可以通过
 `AgentSession::session_cancel_token()` 克隆它。
 
 ### 智能体侧会话注册表
 
-所属的 `Agent` 通过 `Weak` 引用跟踪它的存活 session（惰性回收），这样控制面
-就能在不持有 session 句柄的情况下驱动生命周期：
+所属的 `Agent` 通过 `Weak` 引用跟踪它的存活会话（惰性回收），这样控制面
+就能在不持有会话句柄的情况下驱动生命周期：
 
-- `Agent::list_sessions()` 返回存活的 session ID（已排序，稳定）。
-- `Agent::close_session(id)` 按 ID 关闭单个 session——与
+- `Agent::list_sessions()` 返回存活的会话 ID（已排序，稳定）。
+- `Agent::close_session(id)` 按 ID 关闭单个会话——与
   `AgentSession::close()` 相同的清理流程，从带外调用。
-- `Agent::close()` 关闭每个存活 session 并拆除 agent 持有的后台资源（同时
+- `Agent::close()` 关闭每个存活会话并拆除智能体持有的后台资源（同时
   断开全局 MCP 连接）。返回后，新的 `session` / `resumeSession` 调用会以
   `CodeError::SessionClosed` 快速失败。
-- `Agent::is_closed()` 报告 agent 自身是否已被关闭。
+- `Agent::is_closed()` 报告智能体自身是否已被关闭。
 
 ```ts
 const ids = await agent.listSessions();
 await agent.closeSession(ids[0]);
-await agent.close(); // 关闭所有剩余 session + 全局 MCP
+await agent.close(); // 关闭所有剩余会话和全局 MCP
 console.log(agent.isClosed());
 ```
 
 ```python
 ids = agent.list_sessions()
 agent.close_session(ids[0])
-agent.close()  # 关闭所有剩余 session + 全局 MCP
+agent.close()  # 关闭所有剩余会话和全局 MCP
 print(agent.is_closed())
 ```
 
@@ -273,14 +272,14 @@ if err == nil && len(ids) > 0 {
 err = agent.Close(ctx)
 ```
 
-参见 CHANGELOG `[3.3.0]`——"Session / Agent lifecycle control"。
+参见更新日志 `[3.3.0]` 中的“会话与智能体生命周期控制”。
 
 ## 宿主身份标签
 
-`SessionOptions` 携带四个不透明的身份字段，宿主可以在创建 session 时附加。
+`SessionOptions` 携带四个不透明的身份字段，宿主可以在创建会话时附加。
 框架只负责传递它们——从不解释或强制执行。它们会被传播进 `SessionData`、
-hooks 和 traces，并在 resume 时恢复，因此宿主可以据此驱动多租户聚合、计费
-和分布式 tracing：
+钩子和追踪，并在恢复时还原，因此宿主可以据此驱动多租户聚合、计费
+和分布式追踪：
 
 | Node（驼峰命名）  | Python（蛇形命名）  | Go                | 含义                               |
 | ----------------- | ------------------- | ----------------- | ---------------------------------- |
@@ -317,11 +316,12 @@ session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
 })
 ```
 
-参见 CHANGELOG `[3.3.0]`——"Host-provided identity labels"。
+参见更新日志 `[3.3.0]` 中的“宿主提供的身份标签”。
 
 ## 运行记录与回放
 
-每次 `send()` 或 `stream()` 都会创建 run 记录。应用可以用这些记录做 UI 状态、审计、回放、取消和测试断言：
+每次 `send()` 或 `stream()` 都会创建运行记录。应用可以用这些记录实现界面状态、
+审计、回放、取消和测试断言：
 
 ```ts
 const runs = await session.runs();
@@ -344,9 +344,9 @@ if err == nil && len(runs) > 0 {
 }
 ```
 
-`currentRun()` 用来读取调用当下的 current run。`send()` 或 `stream()` 仍在
+`currentRun()` 用来读取调用当下的当前运行。`send()` 或 `stream()` 仍在
 执行时，可以把它的 `id` 传给 `cancelRun(id)` 请求取消。空闲时，`currentRun()`
-可能返回 `null`，也可能保留一个 run snapshot；已完成历史应使用 `runs()`，
+可能返回 `null`，也可能保留一个运行快照；已完成历史应使用 `runs()`，
 取消前必须检查 `status`：
 
 ```ts
@@ -358,7 +358,8 @@ if (current?.id && current.status === 'running') {
 
 ## 智能体定义
 
-`sessionForAgent()` 应用一个命名的 agent 定义，来源是内置 agents、`.a3s/agents` 或配置的 `agentDirs`。
+`sessionForAgent()` 应用一个命名的智能体定义，来源是内置智能体、
+`.a3s/agents` 或配置的 `agentDirs`。
 
 ```ts
 const session = agent.sessionForAgent('/repo', 'explore', ['./agents'], {

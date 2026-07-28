@@ -97,7 +97,7 @@ POST /v1/repos/{repo_id}/git/<operation>
 `repo_id` 是宿主与 gitserver 运维方协商的、不透明的、URL 安全字符串。
 典型值有：
 
-- `users/{user_id}/sessions/{session_id}`（与 S3 workspace prefix 1:1）
+- `users/{user_id}/sessions/{session_id}`（与 S3 工作区前缀一一对应）
 - UUID
 - 服务端的工作区路径
 
@@ -108,7 +108,7 @@ POST /v1/repos/{repo_id}/git/<operation>
 全部 `POST`，全部 `application/json` 收发。字段命名 `snake_case`，匹配
 Rust serde 默认值。
 
-### 5.1 Status — `WorkspaceGit::status`
+### 5.1 状态 — `WorkspaceGit::status`
 
 ```
 POST /v1/repos/{repo_id}/git/status
@@ -122,7 +122,7 @@ POST /v1/repos/{repo_id}/git/status
 → 404 {"error":{"code":"REPO_NOT_FOUND", ...}}
 ```
 
-### 5.2 Log — `WorkspaceGit::log`
+### 5.2 日志 — `WorkspaceGit::log`
 
 ```
 POST /v1/repos/{repo_id}/git/log
@@ -134,14 +134,14 @@ POST /v1/repos/{repo_id}/git/log
   }
 ```
 
-### 5.3 List Branches — `WorkspaceGit::list_branches`
+### 5.3 列出分支 — `WorkspaceGit::list_branches`
 
 ```
 POST /v1/repos/{repo_id}/git/branches
 → 200 {"branches":[{"name":"main", "is_current":true}, ...]}
 ```
 
-### 5.4 Create Branch — `WorkspaceGit::create_branch`
+### 5.4 创建分支 — `WorkspaceGit::create_branch`
 
 ```
 POST /v1/repos/{repo_id}/git/branches/create
@@ -151,7 +151,7 @@ POST /v1/repos/{repo_id}/git/branches/create
 → 404 {"error":{"code":"BASE_NOT_FOUND", ...}}
 ```
 
-### 5.5 Checkout — `WorkspaceGit::checkout`
+### 5.5 检出 — `WorkspaceGit::checkout`
 
 ```
 POST /v1/repos/{repo_id}/git/checkout
@@ -160,43 +160,43 @@ POST /v1/repos/{repo_id}/git/checkout
 → 409 {"error":{"code":"WORKING_TREE_DIRTY", ...}}
 ```
 
-### 5.6 Diff — `WorkspaceGit::diff`
+### 5.6 差异 — `WorkspaceGit::diff`
 
 ```
 POST /v1/repos/{repo_id}/git/diff
-{"target": null}             // null 表示工作区 vs index
-{"target": "main"}            // 对指定 ref diff
-→ 200 {"diff":"<unified diff text>", "truncated": false}
+{"target": null}             // null 表示工作区与暂存区的差异
+{"target": "main"}           // 与指定引用比较
+→ 200 {"diff":"<统一差异文本>", "truncated": false}
 ```
 
-`truncated` 为 `true` 表示服务端截断了 body — 见 §9。客户端会在
+`truncated` 为 `true` 表示服务端截断了响应正文——见 §9。客户端会在
 `git diff` 工具结果里把这个信号透出去。
 
-### 5.7 List Remotes — `WorkspaceGit::list_remotes`
+### 5.7 列出远端 — `WorkspaceGit::list_remotes`
 
 ```
 POST /v1/repos/{repo_id}/git/remotes
 → 200 {"remotes":[{"name":"origin", "url":"git@github.com:...", "direction":"fetch"}]}
 ```
 
-### 5.8 Is Repository — `WorkspaceGit::is_repository`
+### 5.8 是否为仓库 — `WorkspaceGit::is_repository`
 
 ```
 POST /v1/repos/{repo_id}/git/exists
 → 200 {"is_repository": true}
 ```
 
-与"仓库不存在"（404）有别：服务端可能允许 `repo_id` 映射到非 git
+与“仓库不存在”（404）有别：服务端可能允许 `repo_id` 映射到非 Git
 目录。`is_repository` 让客户端不依赖 404 就能探测意图。
 
-### 5.9 List Stashes — `WorkspaceGitStashProvider::list_stashes`
+### 5.9 列出贮藏 — `WorkspaceGitStashProvider::list_stashes`
 
 ```
 POST /v1/repos/{repo_id}/git/stashes
 → 200 {"stashes":[{"index":0, "message":"WIP on main: ..."}]}
 ```
 
-### 5.10 Stash — `WorkspaceGitStashProvider::stash`
+### 5.10 创建贮藏 — `WorkspaceGitStashProvider::stash`
 
 ```
 POST /v1/repos/{repo_id}/git/stashes/create

@@ -26,4 +26,8 @@ The published documentation uses exact release revisions. The active
 directories are read-only snapshots extracted from their matching Git tags.
 When a release changes the public API, snapshot its documentation under
 `docs/<release>` and list the exact revision in `multiVersion.versions` in
-`rspress.config.ts`.
+`rspress.config.ts`. Record the tag, tree, file count, and canonical SHA-256 in
+`version-snapshots.json`; `npm run lint` verifies both the active SDK revision
+and the immutable archive contents. It also checks repository paths and the
+Node.js, Python, and Go methods used by current code examples against the
+exported SDK source.

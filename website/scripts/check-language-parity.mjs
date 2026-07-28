@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -7,7 +7,13 @@ const websiteRoot = path.resolve(
   '..',
 );
 const docsRoot = path.join(websiteRoot, 'docs');
-const versions = ['v6.5.2', 'v6.5.1', 'v6.5.0'];
+const versionManifest = JSON.parse(
+  await readFile(path.join(websiteRoot, 'version-snapshots.json'), 'utf8'),
+);
+const versions = [
+  versionManifest.current,
+  ...versionManifest.archives.map(({ version }) => version),
+];
 const languages = ['zh', 'en'];
 
 async function collectMarkdownFiles(directory, prefix = '') {

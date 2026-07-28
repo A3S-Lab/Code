@@ -38,17 +38,17 @@ sessions_dir = ".a3s/sessions"
 
 ## 服务提供商类型
 
-内置 factory 覆盖三条路径：
+内置工厂覆盖三条路径：
 
-| Provider name                | Client path                | 说明                                           |
-| ---------------------------- | -------------------------- | ---------------------------------------------- |
-| `anthropic` / `claude`       | Anthropic 客户端           | 使用配置中的模型标识和可选服务提供商基础 URL。 |
-| `openai` / `gpt`             | OpenAI 兼容客户端          | 用于兼容 OpenAI Chat Completions 的端点。      |
-| `glm` / `zhipu` / `bigmodel` | Zhipu-compatible client    | Key 和 base URL 仍应从环境变量注入。           |
-| 其它 provider name           | OpenAI-compatible fallback | 适合私有或自托管的 OpenAI-compatible 服务。    |
+| 服务提供商名称               | 客户端路径          | 说明                                           |
+| ---------------------------- | ------------------- | ---------------------------------------------- |
+| `anthropic` / `claude`       | Anthropic 客户端    | 使用配置中的模型标识和可选服务提供商基础 URL。 |
+| `openai` / `gpt`             | OpenAI 兼容客户端   | 用于兼容 OpenAI Chat Completions 的端点。      |
+| `glm` / `zhipu` / `bigmodel` | 智谱兼容客户端      | 密钥和基础 URL 仍应从环境变量注入。            |
+| 其它服务提供商名称           | OpenAI 兼容兜底路径 | 适合私有或自托管的 OpenAI 兼容服务。           |
 
-运行时不硬编码模型名。`default_model` 和每个 session 的 `model` 都是
-`provider/model-id` 形式的标识符，必须能匹配你在 provider block 里声明的模型。
+运行时不硬编码模型名。`default_model` 和每个会话的 `model` 都是
+`provider/model-id` 形式的标识符，必须能匹配你在服务提供商配置块里声明的模型。
 
 ## 委派控制
 
@@ -64,11 +64,11 @@ auto_delegation {
 }
 ```
 
-`max_parallel_tasks` 限制有边界的 sibling fan-out。`auto_delegation.enabled`
-开启自动 subagent 委派。顶层 `auto_parallel = false` 会覆盖
-`auto_delegation.auto_parallel`，只关闭自动并行子 agent fan-out；手动
+`max_parallel_tasks` 限制有边界的同级任务扇出。`auto_delegation.enabled`
+开启自动子智能体委派。顶层 `auto_parallel = false` 会覆盖
+`auto_delegation.auto_parallel`，只关闭自动并行子智能体扇出；手动
 `task` 与 `parallel_task` 仍可用。设置 `allow_manual_delegation = false` 时，
-这两个模型可见的子 agent 工具都会从 session 工具表面移除。
+这两个模型可见的子智能体工具都会从会话工具列表移除。
 
 ## 存储
 
@@ -78,15 +78,15 @@ storage_backend = "file"
 sessions_dir = ".a3s/sessions"
 ```
 
-短测试使用 memory；通过 ACL 加载的可恢复本地 session 使用
+短测试使用内存；通过 ACL 加载的可恢复本地会话使用
 `storage_backend = "file"` 和 `sessions_dir`。`storage_url` 会被解析为自定义
-存储元数据，但它本身不会创建文件型 session store。SDK 宿主也可以直接传
+存储元数据，但它本身不会创建文件型会话存储。SDK 宿主也可以直接传
 `sessionStore: new FileSessionStore(...)` /
 `opts.session_store = FileSessionStore(...)`。
 
 ## 私有服务提供商检查
 
-真实 provider 冒烟测试应通过 `A3S_CONFIG_FILE` 指向本地、git-ignored 的 ACL 文件。
+真实服务提供商的冒烟测试应通过 `A3S_CONFIG_FILE` 指向本地且被 Git 忽略的 ACL 文件。
 不要把 provider 值复制进命令、日志、文档、PR 或已提交 fixture。
 
 ```bash

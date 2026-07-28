@@ -5,7 +5,7 @@ description: '生命周期拦截与策略回调'
 
 # 钩子
 
-Hooks 用于在 session 内注册生命周期回调。管理路径是 `registerHook()`、
+钩子用于在会话内注册生命周期回调。管理入口是 `registerHook()`、
 `hookCount()` 和 `unregisterHook()`。
 
 事件包括 `pre_tool_use`、`post_tool_use`、`generate_start`、`generate_end`、`session_start`、`session_end`、`skill_load`、`skill_unload`、`pre_prompt`、`post_response` 和 `on_error`。
@@ -20,6 +20,6 @@ session.registerHook(
 );
 ```
 
-handler 可返回 `continue`、`skip`、`block`，或者返回空表示继续。委派和自动
-subagent fan-out 都会走 `task` / `parallel_task` 路径；把 hook 当作生产关卡前，
-应对产品实际依赖的 event path 做集成测试。
+处理函数可返回 `continue`、`skip`、`block`，或者返回空表示继续。委派和自动
+子智能体扇出都会走 `task` / `parallel_task` 路径；把钩子当作生产关卡前，
+应对产品实际依赖的事件路径做集成测试。

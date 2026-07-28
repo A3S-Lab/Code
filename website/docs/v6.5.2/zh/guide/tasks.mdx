@@ -90,12 +90,13 @@ console.log(batch.output);
 
 `session.task(...)` 和 `session.tasks(...)` 返回来自 `task` / `parallel_task`
 工具的 `ToolResult`。读取 `output` 获取紧凑的子任务摘要，并在信任结果前检查
-`exitCode`。session options 中的 `maxParallelTasks` 与 ACL 中的
-`max_parallel_tasks` 会限制 sibling fan-out。
+`exitCode`。会话选项中的 `maxParallelTasks` 与 ACL 中的
+`max_parallel_tasks` 会限制同级任务扇出。
 
 ## 自动委派
 
-自动委派默认需要显式启用。运行时会把当前请求与内置/自定义 agent 描述进行评分，并在置信度足够时启动最多 `maxTasks` 个子运行。
+自动委派默认需要显式启用。运行时会把当前请求与内置或自定义智能体描述进行评分，
+并在置信度足够时启动最多 `maxTasks` 个子运行。
 
 ```ts
 const session = agent.session('/repo', {
@@ -114,11 +115,12 @@ auto_delegation {
 }
 ```
 
-`autoParallel: false` / `auto_parallel = false` 是自动并行子 agent fan-out 的全局开关。手动 `parallel_task` 和 `session.tasks(...)` 仍然可用。
+`autoParallel: false` / `auto_parallel = false` 是自动并行子智能体扇出的全局开关。
+手动 `parallel_task` 和 `session.tasks(...)` 仍然可用。
 
 ## 智能体目录
 
-通过 `agentDirs`、`agent_dirs` 或 A3S 内置目录加载自定义 agent 定义：
+通过 `agentDirs`、`agent_dirs` 或 A3S 内置目录加载自定义智能体定义：
 
 ```ts
 const session = agent.session('/repo', { agentDirs: ['./.a3s/agents'] });
@@ -175,4 +177,8 @@ const session = agent.session('/repo', {
 
 ## 可编程编排
 
-本页的所有内容都是模型驱动的：`task` / `parallel_task`、`session.task(...)` / `session.tasks(...)` 以及自动委派让 LLM 决定何时以及如何 fan-out。当宿主已经知道工作的形态、并希望它确定可复现时，改用 `session.parallel(...)`、`session.pipeline(...)` 和 `session.parallelResumable(...)` 以编程方式表达。开发者表达的 fan-out、无屏障 pipeline 以及可恢复/可迁移工作流见 [编排](/guide/orchestration)。
+本页的所有内容都是模型驱动的：`task` / `parallel_task`、`session.task(...)` /
+`session.tasks(...)` 以及自动委派让 LLM 决定何时以及如何扇出。当宿主已经知道工作的
+形态并希望它确定可复现时，改用 `session.parallel(...)`、`session.pipeline(...)` 和
+`session.parallelResumable(...)` 以编程方式表达。开发者定义的扇出、无屏障流水线以及
+可恢复或可迁移工作流见[编排](/guide/orchestration)。

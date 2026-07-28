@@ -7,8 +7,8 @@ description: '可编程、确定性的多智能体编排：并行扇出、无屏
 
 编排是模型驱动委派的*可编程*姊妹能力。在 [Tasks](/guide/tasks) 与
 [Teams](/guide/teams) 中，由 LLM 在运行时决定是否调用 `task` /
-`parallel_task`——fan-out 的形状取决于模型的选择。编排把这个决策搬进你的代码：你
-用一套语法表达 fan-out、流水线与验证面板，因此形状是可复现、可测试、受预算约束
+`parallel_task`——扇出的形状取决于模型的选择。编排把这个决策搬进你的代码：你
+用一套语法表达扇出、流水线与验证面板，因此形状是可复现、可测试、受预算约束
 且可恢复的——与模型的临场选择无关。
 
 当工作的*结构*是宿主提前已知的（并行跑这三个 reviewer；让每个候选项依次经过
@@ -50,8 +50,8 @@ checkpoint。
 - `prompt`——交给子 agent 的指令。
 - `max_steps`_（可选）_——每个 step 的 tool-round 上限。
 - `parent_session_id`_（可选）_——用于事件关联的父 session id。
-- `output_schema`_（可选）_——设置后，step 必须返回符合此 JSON Schema 的值（见
-  [强制 schema 的 step 输出](#schema-forced-step-output)）。
+- `output_schema`_（可选）_——设置后，步骤必须返回符合此 JSON Schema 的值（见
+  [强制模式约束的步骤输出](#schema-forced-step-output)）。
 
 `StepOutcome` 字段：
 
@@ -60,7 +60,7 @@ checkpoint。
 - `agent`——运行的 agent。
 - `output`——step 的文本输出。
 - `success`——失败或 panic 的 step 为 `false`（绝不会丢弃兄弟 step）。
-- `structured`_（可选）_——经 schema 校验的对象，仅当 spec 携带 `output_schema`
+- `structured`_（可选）_——经模式校验的对象，仅当任务规格携带 `output_schema`
   时存在。
 
 key 的大小写风格因 SDK 而异：
@@ -70,14 +70,14 @@ key 的大小写风格因 SDK 而异：
 | step id         | `taskId`          | `task_id`            |
 | tool-round 上限 | `maxSteps`        | `max_steps`          |
 | 父 session      | `parentSessionId` | `parent_session_id`  |
-| 强制 schema     | `outputSchema`    | `output_schema`      |
+| 强制模式约束    | `outputSchema`    | `output_schema`      |
 
 `agent`、`description`、`prompt`、`output`、`success` 与 `structured` 在两个 SDK
 中拼写相同。
 
 ## `parallel`：带屏障的扇出 [#parallel--barrier-fan-out]
 
-`session.parallel(specs)` 把每个 spec 作为 fan-out 运行，并按**输入顺序**解析出每
+`session.parallel(specs)` 把每个任务规格作为扇出分支运行，并按**输入顺序**解析出每
 个 spec 对应的一个 `StepOutcome`。它映射到核心组合子 `execute_steps_parallel`。它
 是一个**屏障**：在返回前会等待每个 step。
 
@@ -149,7 +149,7 @@ _单条链_，而不是逐阶段屏障会带来的"每阶段最慢之和"。
 
 约束（来自源码）：
 
-- pipeline 阶段**不支持**逐阶段 `output_schema`——需要 schema 校验的 step 请用
+- 流水线阶段**不支持**逐阶段 `output_schema`——需要模式校验的步骤请用
   [`parallel`](#parallel--barrier-fan-out)。
 - **Node：** 阶段回调**绝不能 throw**——一次 throw 会中止进程（与 `setBudgetGuard`
   相同的约束）。请把逻辑包进 `try/catch`，出错时 `return null`。
@@ -233,8 +233,8 @@ executor，在**另一个节点**上恢复被中断的工作流（迁移）。
 该组合子**要求已配置 session store**——两个 SDK 方法在缺少 store 时都会 reject/
 raise（Node 的错误信息是 `parallelResumable requires a sessionStore`）。
 
-`WorkflowCheckpoint` 的 schema 为 `schema_version` / `workflow_id` / `steps` /
-`checkpoint_ms`。由*未来的*、不兼容的 `schema_version` 写入的 checkpoint 在加载时
+`WorkflowCheckpoint` 的模式字段为 `schema_version` / `workflow_id` / `steps` /
+`checkpoint_ms`。由*未来的*、不兼容的 `schema_version` 写入的检查点在加载时
 会被拒绝（`ensure_loadable`）。该失败是 fail-safe 而非致命的：不可读的 checkpoint
 会记录一条 warning，工作流从头重跑，而不是从它无法解释的状态恢复。
 
@@ -274,7 +274,7 @@ outcomes = session.parallel_resumable(specs, "release-batch-42")
 ## 跨扇出任务的共享预算 [#shared-budget]
 
 默认情况下，每个子代理各自统计自己的 LLM 成本。给 `parallel` 传入一个 token
-预算后，所有子代理改为汇入**同一个账本**——为整个 fan-out 设一个统一上限。它映射
+预算后，所有子智能体改为汇入**同一个账本**——为整个扇出设一个统一上限。它映射
 到核心的 `WorkflowBudget`：一个安装到每个子运行上的、聚合型 `BudgetGuard`。
 
 预算是一个**可选参数**，因此向后兼容：
@@ -284,8 +284,8 @@ outcomes = session.parallel_resumable(specs, "release-batch-42")
   其中 `budget` 是账本快照（`consumedTokens` / `limitTokens`）。
 
 一旦达到上限，之后*启动*的 step 会被拒绝——其结果为 `success: false`，并带有预算
-耗尽信息。它是一个**软上限**：由于用量是在每次 LLM 调用*之后*记账的，宽 fan-out
-可能在账本追上之前冲过上限几个在飞回合。框架**绝不**强杀在飞的 fan-out；预算耗尽
+耗尽信息。它是一个**软上限**：由于用量是在每次 LLM 调用*之后*记账的，宽扇出
+可能在账本追上之前冲过上限几个在飞回合。框架**绝不**强杀进行中的扇出；预算耗尽
 只是拒绝*下一次* LLM 调用。
 
 ```ts
@@ -309,7 +309,7 @@ print(res["budget"]["consumed_tokens"], res["budget"]["limit_tokens"])
 
 ## 循环直到完成（`execute_loop`）[#looping]
 
-对于长度未知、需要迭代至收敛的工作（loop-until-dry、反复打磨直到满意），核心语法
+对于长度未知、需要迭代至收敛的工作（循环直至没有剩余项、反复打磨直到满意），核心语法
 提供了 `execute_loop`。每一轮都是一个屏障（`execute_steps_parallel`）；宿主提供的
 谓词看到本轮的结果，返回 `LoopDecision::Continue(next_specs)` 或
 `LoopDecision::Stop`。必填的 `max_iterations` 是一个**硬上限**——一旦达到，即使谓词
@@ -341,7 +341,7 @@ executor、持久化 store、逐 step 事件流，以及一个稳定的、由会
 把以上能力打包起来的可编程句柄；控制流就是普通 Rust——`await` 一个动词、查看结果、
 决定下一步运行什么。
 
-- **动词**——`agent`（单步）、`parallel`（屏障式 fan-out）、`phase`（*命名*的、
+- **动词**——`agent`（单步）、`parallel`（屏障式扇出）、`phase`（*命名*的、
   可恢复的屏障，并发出里程碑）、`pipeline`（按条目的链），以及不会失败的 `log`。
   每个动词都只委派给一个 combinator。
 - **Phase 与事件**——`phase(name, specs)` 派生确定性 checkpoint id
@@ -356,7 +356,7 @@ executor、持久化 store、逐 step 事件流，以及一个稳定的、由会
 let wf = session.workflow(); // 或 session.workflow_with_token_budget(Some(500_000))
 let mut events = wf.subscribe();
 
-// 先跑一步，再根据其结果计算出一个*可变*数量的 fan-out——这正是“动态”所在：
+// 先跑一步，再根据其结果计算出一个*可变*数量的扇出——这正是“动态”所在：
 // 形状在运行时决定，而非提前声明。
 let plan = wf.agent(AgentStepSpec::new("plan", "plan", "plan", goal)).await;
 let specs = derive_specs(&plan);                 // 你的代码
@@ -374,12 +374,12 @@ combinator——属于 Rust / 嵌入层 API。
 
 ## 受模式约束的步骤输出 [#schema-forced-step-output]
 
-携带 `output_schema`（Node 中为 `outputSchema`）的 spec 会强制 step 返回符合该 JSON
+携带 `output_schema`（Node 中为 `outputSchema`）的任务规格会强制步骤返回符合该 JSON
 Schema 的值；经校验的对象落在 `StepOutcome.structured` 中。这复用了与 A3S Code 其余
 部分相同的结构化输出强转 + 修复机制。强转失败会把该 step **降级为不成功**
 （`success: false`），因此调用方绝不会把未经校验的文本当作承诺的对象。
 
-强制 schema 仅适用于 `parallel` / `parallelResumable` 的 spec——**不**适用于
+强制模式约束仅适用于 `parallel` / `parallelResumable` 的任务规格——**不**适用于
 pipeline 阶段。
 
 ```ts

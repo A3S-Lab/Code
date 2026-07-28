@@ -370,17 +370,17 @@ console.log(session.traceEvents());
 ```
 
 `currentRun()` 用于读取当前操作。空闲时，它可能返回 `null`，也可能
-因前序控制流保留一个 snapshot。已完成历史请使用 `runs()`。
+因前序控制流保留一个快照。已完成历史请使用 `runs()`。
 
-同一个 session 的 transcript-affecting operation 使用 single-flight。重叠的 send、
-stream、attachment call、slash command 或 `resumeRun` 会立即返回 `SessionBusy`，
-不会排队。即使公开 handle 被丢弃，stream 也会持有 admission，直到 producer 停止。
+同一个会话中影响对话记录的操作采用单任务准入。重叠的发送、事件流、附件调用、
+斜杠命令或 `resumeRun` 会立即返回 `SessionBusy`，不会排队。即使公开句柄被丢弃，
+事件流也会保留准入状态，直到生产者停止。
 
 ## 持久化
 
 > 完整指南：[持久化](/guide/persistence)与[会话](/guide/sessions)。
 
-文件型 session persistence 已验证稳定 `sessionId`、`autoSave`、显式
+文件型会话持久化已验证稳定的 `sessionId`、`autoSave`、显式
 `save()` 和 `resumeSession()`：
 
 ```ts
@@ -402,23 +402,28 @@ console.log(resumed.history());
 带版本号的 `SessionSnapshotV1`。文件或内存存储会原子发布这个聚合快照。旧式分片
 记录仍可加载；自定义存储必须显式实现聚合保存。
 
-Node 进程需要及时释放 session 级后台资源时，调用 `session.close()`。`close()` 是完整的优雅停止入口：把 `session.isClosed` 翻成 `true`（之后 `send` / `stream` 会以 `Session closed` 错误立即返回），fire session 级 `CancellationToken` 让所有 in-flight run、委派子代理任务和 HITL 待确认全部中止。重复调用 `close()` 是 no-op。
+Node 进程需要及时释放会话级后台资源时，调用 `session.close()`。`close()` 是完整的
+优雅停止入口：把 `session.isClosed` 设为 `true`（之后 `send` / `stream` 会以
+`Session closed` 错误立即返回），触发会话级 `CancellationToken`，让所有进行中的运行、
+委派子智能体任务和待人工确认项全部中止。重复调用 `close()` 不会重复操作。
 
-控制面只持有 session ID 时，可以从 Agent 侧触发同样的清理：
+控制面只持有会话 ID 时，可以从智能体侧触发同样的清理：
 
 ```ts
 await agent.listSessions(); // ['session-a', 'session-b']
-await agent.closeSession('session-a'); // 若原本是 open，返回 true
-await agent.close(); // 关闭所有活 session + 断开全局 MCP
+await agent.closeSession('session-a'); // 若原本处于打开状态，返回 true
+await agent.close(); // 关闭所有活动会话并断开全局 MCP
 ```
 
-`agent.close()` 之后，再调 `agent.session(...)` / `agent.resumeSession(...)` 会立即抛 `Session closed`。幂等。建议在进程退出 handler 中调用,保证没有 session 级 worker 比 agent 活得更久。
+`agent.close()` 之后，再调用 `agent.session(...)` / `agent.resumeSession(...)` 会立即
+抛出 `Session closed`。该操作幂等。建议在进程退出处理函数中调用，保证没有会话级
+工作进程比智能体存活更久。
 
 ## 委派
 
 > 完整指南：[任务](/guide/tasks)与[编排](/guide/orchestration)。
 
-已验证核心委派工具的直接 helper：
+已验证核心委派工具的直接辅助方法：
 
 ```ts
 await session.task({
@@ -448,9 +453,9 @@ await session.tasks([
 
 ## 钩子
 
-> 完整指南：[Hooks](/guide/hooks)。
+> 完整指南：[钩子](/guide/hooks)。
 
-已验证的 hook 管理面：
+已验证的钩子管理入口：
 
 ```ts
 session.registerHook(
@@ -465,13 +470,13 @@ console.log(session.hookCount());
 session.unregisterHook('docs-observer');
 ```
 
-把 hook 行为作为生产关卡前，需要对你依赖的具体 event path 做集成测试。
+把钩子行为作为生产关卡前，需要对你依赖的具体事件路径做集成测试。
 
 ## 斜杠命令
 
 > 完整指南：[命令](/guide/commands)。
 
-自定义 slash command 通过 `session.send()` 触发：
+自定义斜杠命令通过 `session.send()` 触发：
 
 ```ts
 session.registerCommand(
@@ -489,9 +494,9 @@ console.log(result.text);
 
 ## 执行通道队列
 
-> 完整指南：[Lane 队列](/guide/lane-queue)。
+> 完整指南：[执行通道队列](/guide/lane-queue)。
 
-Queue infrastructure 是显式 opt-in：
+队列基础设施需要显式启用：
 
 ```ts
 const queued = agent.session(workspace, {
@@ -510,7 +515,7 @@ await queued.queueMetrics();
 await queued.deadLetters();
 ```
 
-没有传入 `queueConfig` 的普通 session 不会启用 queue。
+没有传入 `queueConfig` 的普通会话不会启用队列。
 
 ## MCP
 
@@ -539,22 +544,23 @@ await session.tool('mcp__echo__echo', { message: 'docs mcp ok' });
 await session.removeMcpServer('echo');
 ```
 
-server 注册出的 tool 名称格式是 `mcp__<server>__<tool>`。
-`addMcpServer(...)` 和 `addMcpServerConfig(...)` 仍是兼容别名；新示例使用更紧凑的 object-shaped `addMcp(...)` API。
+服务器注册出的工具名称格式是 `mcp__<server>__<tool>`。
+`addMcpServer(...)` 和 `addMcpServerConfig(...)` 仍是兼容别名；新示例使用参数对象
+更紧凑的 `addMcp(...)` API。
 
-Live add/remove 只作用于当前 session 私有 manager。Agent-global 和 host-supplied
-manager 是继承的只读 capability source，因此一个 session 不能修改 sibling 或
-global MCP 配置。
+运行时添加或移除只作用于当前会话的私有管理器。智能体全局和宿主提供的管理器是
+继承的只读能力来源，因此一个会话不能修改同级会话或全局 MCP 配置。
 
 ## 集群级扩展点
 
-> 完整指南：[集群扩展点](/guide/cluster-extension-points)（身份标签、预算守卫、集群事件、确定性 ID/回放、loop checkpoint、保留上限）。
+> 完整指南：[集群扩展点](/guide/cluster-extension-points)（身份标签、预算守卫、集群事件、确定性 ID/回放、循环检查点、保留上限）。
 
-这些契约让集群控制面在**不 fork 框架**的前提下接入多租户、成本管控和容错运行。框架定义"决策点"和"结构化事件",**策略实现由 host 提供**。
+这些契约让集群控制面在**不派生框架分支**的前提下接入多租户、成本管控和容错运行。
+框架定义“决策点”和“结构化事件”，**策略实现由宿主提供**。
 
 ### 身份标签
 
-`SessionOptions` 上四个可选 slot,会透传到 hooks / traces / `SessionData`,框架本身不解释:
+`SessionOptions` 上四个可选字段会透传到钩子、追踪与 `SessionData`，框架本身不解释：
 
 ```ts
 const session = agent.session(workspace, {
@@ -568,7 +574,8 @@ session.tenantId; // -> 'tenant-example'
 session.correlationId; // -> 'trace-example'
 ```
 
-resume 时 `apply_persisted_runtime_options` 会从持久化快照里还原标签;但**调用方在 resume_session 时传的 opts 优先**,可以借此 relabel。
+恢复时，`apply_persisted_runtime_options` 会从持久化快照中还原标签；但**调用方在
+`resume_session` 时传入的选项优先**，可以借此重新设置标签。
 
 ### 预算 / 成本守卫
 

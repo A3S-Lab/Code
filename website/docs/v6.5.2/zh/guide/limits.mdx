@@ -77,21 +77,28 @@ session = agent.session('/repo', opts)
 
 ## 预算守卫
 
-`BudgetGuard`（CHANGELOG [3.3.0] "BudgetGuard"）是一套由 host 提供的成本 / 配额契约。框架本身不强制执行预算——它只定义决策点，并咨询 host 注入的 guard。在 LLM / tool 调用处接入三个 hook：
+`BudgetGuard`（见更新日志 [3.3.0]）是一套由宿主提供的成本与配额契约。框架本身
+不强制执行预算——它只定义决策点，并咨询宿主注入的守卫。在 LLM 与工具调用处接入
+三个钩子：
 
 - `check_before_llm` —— 在每次 LLM 调用之前。
-- `record_after_llm` —— 在每次成功的 LLM 调用之后，带上 provider 的实际 usage，以便 host 保持累计消费的准确。
-- `check_before_tool` —— 在每次 tool 调用之前。
+- `record_after_llm` —— 在每次成功的 LLM 调用之后，带上服务提供商的实际用量，
+  以便宿主准确累计消费。
+- `check_before_tool` —— 在每次工具调用之前。
 
 每个 `check_*` 返回三种决策之一：
 
-- `Allow` —— 正常继续，不发出 event。
-- `SoftLimit { resource, consumed, limit, message }` —— 发出 `AgentEvent::BudgetThresholdHit { kind: "soft" }` 并**继续执行**。session 内的 hook 可以据此反应（auto-compact、下一轮换用更便宜的 model）。
-- `Deny { resource, reason }` —— 以 `CodeError::BudgetExhausted` 中止本次调用。**session 仍然保持打开**——调用方可以稍后重试，或在 host 重新分配预算后重试。
+- `Allow` —— 正常继续，不发出事件。
+- `SoftLimit { resource, consumed, limit, message }` —— 发出
+  `AgentEvent::BudgetThresholdHit { kind: "soft" }` 并**继续执行**。会话内的钩子
+  可以据此采取动作，例如自动压缩或下一轮换用更便宜的模型。
+- `Deny { resource, reason }` —— 以 `CodeError::BudgetExhausted` 中止本次调用。
+  **会话仍然保持打开**——调用方可以稍后重试，或在宿主重新分配预算后重试。
 
 ### Node.js：`session.setBudgetGuard({...})`
 
-每个回调接收**单个 `ctx` 对象**（不是位置参数），并返回一个决策 dict（或 `null` / `{ decision: 'allow' }` 表示放行）：
+每个回调接收**单个 `ctx` 对象**（不是位置参数），并返回一个决策对象（或 `null` /
+`{ decision: 'allow' }` 表示放行）：
 
 ```ts
 session.setBudgetGuard({
@@ -121,13 +128,17 @@ session.setBudgetGuard({
 
 Node.js 桥接层采用**失败即拒绝**策略：`check_*` 回调若未在 `timeoutMs` 内返回，
 或返回无法解析的值，都会被当作**拒绝**处理。预算控制绝不能在预算守卫卡住时悄悄
-自我失效（参见更新日志 `[3.3.0]` 的 “Node BudgetGuard fail-open” 修复）。
+自我失效（参见更新日志 `[3.3.0]` 中 Node.js 预算守卫的“失败时放行”修复）。
 
-回调**绝不能 throw。** 受 napi-rs 约束，回调抛出的异常会在返回值转换阶段中止 host 进程。请用 try/catch 包裹逻辑并返回一个决策（例如 deny），而不是抛异常。卡住（hang）的情况由 fail-closed 超时安全处理（CHANGELOG [3.3.0] Known limitations）。
+回调**绝不能抛出异常。** 受 napi-rs 约束，回调抛出的异常会在返回值转换阶段中止宿主
+进程。请用 `try/catch` 包裹逻辑并返回一个决策（例如拒绝），而不是抛异常。卡住的情况
+由“失败即拒绝”的超时机制安全处理，详见更新日志 [3.3.0] 的已知限制。
 
 ### Python：会话选项 `budget_guard`
 
-Python 在 `budget_guard` 这个 `SessionOptions` 字段上提供一个 `BudgetGuard` 形态的对象。未定义的方法表现为 Allow / no-op。Python 回调使用**位置参数**，框架会捕获它们抛出的任何异常（抛异常的 `check_*` 默认视为 Allow）：
+Python 在 `budget_guard` 这个 `SessionOptions` 字段上提供一个 `BudgetGuard` 形态的
+对象。未定义的方法视为放行且不执行操作。Python 回调使用**位置参数**，框架会捕获
+它们抛出的任何异常（抛异常的 `check_*` 默认视为放行）：
 
 ```python
 class MyBudgetGuard:
@@ -149,4 +160,5 @@ opts.budget_guard = MyBudgetGuard()
 session = agent.session('/repo', opts)
 ```
 
-决策返回 dict `{"decision": "deny", "resource": ..., "reason": ...}`（以及 `"soft"` / `"allow"`）在两个 SDK 上是相同的形状。
+决策返回字典 `{"decision": "deny", "resource": ..., "reason": ...}`（以及
+`"soft"` / `"allow"`）在两个 SDK 上具有相同结构。
