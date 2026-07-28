@@ -503,7 +503,119 @@ const runtimeFlowSteps = [
   tags: string[];
 }>;
 
-type RuntimeFlowStep = (typeof runtimeFlowSteps)[number];
+const runtimePlayerPhases = [
+  {
+    id: 'prepare',
+    code: '01',
+    stage: { zh: '准备', en: 'PREPARE' },
+    navTitle: { zh: '准备上下文', en: 'Prepare context' },
+    title: { zh: '任务已进入 Session', en: 'The task is in the Session' },
+    summary: {
+      zh: 'A3S 创建本次 Run，并从历史、项目指令和记忆中选出模型需要的上下文。',
+      en: 'A3S creates the run and selects the history, project instructions, and memory needed by the model.',
+    },
+    action: {
+      zh: '取得运行权，组装 messages[] 与 tools[]',
+      en: 'Acquire the run lease and assemble messages[] and tools[]',
+    },
+    result: {
+      zh: 'run_id 已创建，上下文已就绪',
+      en: 'run_id created; context is ready',
+    },
+    command: 'session.stream(prompt)',
+    event: `${runtimeFlowSteps[0].event} · ${runtimeFlowSteps[1].event}`,
+    tags: ['AgentSession', 'ContextAssembler'],
+  },
+  {
+    id: 'decide',
+    code: '02',
+    stage: { zh: '判断', en: 'DECIDE' },
+    navTitle: { zh: '决定下一步', en: 'Choose next step' },
+    title: {
+      zh: '模型提出一次只读搜索',
+      en: 'The model proposes a read-only search',
+    },
+    summary: {
+      zh: '模型根据任务选择 grep，只生成结构化调用；此时还没有读取或改动仓库。',
+      en: 'The model selects grep and emits a structured call. It has not read or changed the repository yet.',
+    },
+    action: {
+      zh: '生成 grep({ pattern: "TODO|FIXME" })',
+      en: 'Produce grep({ pattern: "TODO|FIXME" })',
+    },
+    result: {
+      zh: '工具请求已生成，等待执行前检查',
+      en: 'Tool request created; waiting for checks',
+    },
+    command: 'grep({ pattern: "TODO|FIXME" })',
+    event: runtimeFlowSteps[2].event,
+    tags: ['ScopedLlmClient', 'ToolCall'],
+  },
+  {
+    id: 'execute',
+    code: '03',
+    stage: { zh: '执行', en: 'EXECUTE' },
+    navTitle: { zh: '执行工具', en: 'Run the tool' },
+    title: {
+      zh: '检查通过，Workspace 开始搜索',
+      en: 'Checks pass and the workspace runs the search',
+    },
+    summary: {
+      zh: 'ToolInvoker 校验参数和权限后，Workspace 执行 grep；模型调用不能绕过这一步。',
+      en: 'ToolInvoker validates arguments and permissions before the workspace runs grep. Model calls cannot bypass this step.',
+    },
+    action: {
+      zh: '参数 → 权限 → Workspace.grep()',
+      en: 'schema → permission → Workspace.grep()',
+    },
+    result: {
+      zh: '找到 3 条匹配，完整输出写入 Artifact',
+      en: '3 matches found; full output stored as an Artifact',
+    },
+    command: 'ToolInvoker → Workspace.grep()',
+    event: `${runtimeFlowSteps[3].event} · ${runtimeFlowSteps[4].event}`,
+    tags: ['ToolInvoker', 'Workspace', 'Artifact'],
+  },
+  {
+    id: 'record',
+    code: '04',
+    stage: { zh: '留痕', en: 'RECORD' },
+    navTitle: { zh: '保存记录', en: 'Save the record' },
+    title: {
+      zh: '结果和执行记录已保存',
+      en: 'The result and run record are saved',
+    },
+    summary: {
+      zh: '应用收到可以直接展示的结果；事件、Trace 和快照同时保留，后续可以排查或恢复。',
+      en: 'The app receives a renderable result while events, traces, and the snapshot remain available for inspection or recovery.',
+    },
+    action: {
+      zh: '发布事件并提交本次 generation',
+      en: 'Publish events and commit this generation',
+    },
+    result: {
+      zh: '检查完成，结果可查看、追踪和恢复',
+      en: 'Inspection complete; the result is traceable and recoverable',
+    },
+    command: 'session.save()',
+    event: runtimeFlowSteps[5].event,
+    tags: ['EventEnvelopeV1', 'SessionSnapshotV1'],
+  },
+] satisfies Array<{
+  id: string;
+  code: string;
+  stage: Localized;
+  navTitle: Localized;
+  title: Localized;
+  summary: Localized;
+  action: Localized;
+  result: Localized;
+  command: string;
+  event: string;
+  tags: string[];
+}>;
+
+type RuntimePlayerPhase = (typeof runtimePlayerPhases)[number];
 
 const copy = {
   zh: {
@@ -557,20 +669,21 @@ const copy = {
     boundaryContract: 'API 与事件',
     boundaryHostLabel: '你的应用',
     boundaryHostRole: '账号、权限与界面',
-    stackTitle: 'A3S CODE / 一次执行',
-    stackHint: '点击步骤查看输入与输出',
+    stackTitle: '一次真实运行',
+    stackHint: '点击阶段查看过程',
     stackHintMobile: '点击步骤展开',
     stackTop: '产品',
     stackBottom: '记录',
-    flowTaskLabel: '示例任务',
+    flowTaskLabel: '任务',
     flowTask: '检查仓库并列出发布阻塞项',
-    flowPlay: '演示',
-    flowRunning: '运行中',
-    flowInput: '收到',
-    flowAction: 'A3S 处理',
-    flowOutput: '交给下一步',
-    flowEvent: '对应事件',
-    flowObjects: '相关对象',
+    flowReplay: '重播',
+    flowRunning: '回放中',
+    flowComplete: '已完成 · 1.8s',
+    flowStage: '当前阶段',
+    flowAction: 'A3S 正在做',
+    flowOutput: '本步结果',
+    flowEvidence: '本次运行留下',
+    flowEventCount: '7 个事件',
     tutorialStep: '步骤',
     tutorialCode: '代码',
     tutorialLayers: '当前负责的层',
@@ -634,20 +747,21 @@ const copy = {
     boundaryContract: 'APIs + EVENTS',
     boundaryHostLabel: 'YOUR APP',
     boundaryHostRole: 'OWNS UI + ACCESS',
-    stackTitle: 'A3S CODE / ONE RUN',
-    stackHint: 'SELECT A STEP TO SEE INPUT AND OUTPUT',
+    stackTitle: 'One real run',
+    stackHint: 'SELECT A PHASE TO INSPECT IT',
     stackHintMobile: 'TAP A STEP TO EXPAND',
     stackTop: 'PRODUCT',
     stackBottom: 'RECORDS',
-    flowTaskLabel: 'SAMPLE REQUEST',
+    flowTaskLabel: 'TASK',
     flowTask: 'Inspect the repository and list release blockers',
-    flowPlay: 'PLAY',
-    flowRunning: 'RUNNING',
-    flowInput: 'INPUT',
+    flowReplay: 'REPLAY',
+    flowRunning: 'REPLAYING',
+    flowComplete: 'DONE · 1.8s',
+    flowStage: 'CURRENT PHASE',
     flowAction: 'A3S DOES',
-    flowOutput: 'OUTPUT',
-    flowEvent: 'EVENT',
-    flowObjects: 'OBJECTS',
+    flowOutput: 'RESULT',
+    flowEvidence: 'SAVED WITH THIS RUN',
+    flowEventCount: '7 EVENTS',
     tutorialStep: 'STEP',
     tutorialCode: 'CODE',
     tutorialLayers: 'ACTIVE LAYER',
@@ -748,63 +862,53 @@ function InstallSwitcher({
   );
 }
 
-function RuntimeFlowDetail({
-  className,
-  step,
+function RuntimePlayerStage({
+  phase,
   labels,
   locale,
 }: {
-  className: string;
-  step: RuntimeFlowStep;
+  phase: RuntimePlayerPhase;
   labels: (typeof copy)[Locale];
   locale: Locale;
 }) {
   return (
     <article
-      className={`a3s-runtime-flow-detail ${className}`}
-      data-step={step.id}
+      className="a3s-run-player-stage"
+      data-phase={phase.id}
+      key={phase.id}
     >
-      <header>
+      <div className="a3s-run-player-stage-copy">
         <span>
-          STEP {step.code} / {step.stage}
+          {labels.flowStage} {phase.code} / {localeValue(phase.stage, locale)}
         </span>
-        <h2>{localeValue(step.title, locale)}</h2>
-        <p>{localeValue(step.summary, locale)}</p>
-      </header>
+        <h2>{localeValue(phase.title, locale)}</h2>
+        <p>{localeValue(phase.summary, locale)}</p>
+      </div>
 
-      <div className="a3s-runtime-flow-io">
-        <div>
-          <small>{labels.flowInput}</small>
-          <code>{localeValue(step.input, locale)}</code>
-        </div>
-        <div>
+      <div className="a3s-run-player-exchange">
+        <div className="a3s-run-player-action">
           <small>{labels.flowAction}</small>
-          <code>{localeValue(step.action, locale)}</code>
+          <code>{localeValue(phase.action, locale)}</code>
         </div>
-        <div>
+        <i aria-hidden="true" />
+        <div className="a3s-run-player-result">
           <small>{labels.flowOutput}</small>
-          <code>{localeValue(step.output, locale)}</code>
+          <strong>{localeValue(phase.result, locale)}</strong>
         </div>
       </div>
 
-      <footer>
-        <div className="a3s-runtime-flow-event">
-          <small>{labels.flowEvent}</small>
-          <code>
-            <i aria-hidden="true" />
-            {step.event}
-          </code>
-          <p>{localeValue(step.trace, locale)}</p>
-        </div>
-        <div className="a3s-runtime-flow-objects">
-          <small>{labels.flowObjects}</small>
-          <span>
-            {step.tags.map((tag) => (
-              <code key={tag}>{tag}</code>
-            ))}
-          </span>
-        </div>
-      </footer>
+      <div className="a3s-run-player-stage-meta">
+        <code className="a3s-run-player-command">{phase.command}</code>
+        <code className="a3s-run-player-event">
+          <i aria-hidden="true" />
+          {phase.event}
+        </code>
+        <span>
+          {phase.tags.map((tag) => (
+            <code key={tag}>{tag}</code>
+          ))}
+        </span>
+      </div>
     </article>
   );
 }
@@ -816,20 +920,22 @@ function RuntimeExecutionFlow({
   labels: (typeof copy)[Locale];
   locale: Locale;
 }) {
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [activeIndex, setActiveIndex] = useState(
+    runtimePlayerPhases.length - 1,
+  );
   const [isPlaying, setIsPlaying] = useState(false);
-  const active = runtimeFlowSteps[activeIndex] ?? runtimeFlowSteps[0];
+  const active = runtimePlayerPhases[activeIndex] ?? runtimePlayerPhases[0];
 
   useEffect(() => {
     if (!isPlaying) return undefined;
 
-    const delay = activeIndex === runtimeFlowSteps.length - 1 ? 720 : 920;
+    const delay = activeIndex === runtimePlayerPhases.length - 1 ? 780 : 1280;
     const timer = window.setTimeout(() => {
-      if (activeIndex === runtimeFlowSteps.length - 1) {
+      if (activeIndex === runtimePlayerPhases.length - 1) {
         setIsPlaying(false);
       } else {
         setActiveIndex((index) =>
-          Math.min(index + 1, runtimeFlowSteps.length - 1),
+          Math.min(index + 1, runtimePlayerPhases.length - 1),
         );
       }
     }, delay);
@@ -844,7 +950,7 @@ function RuntimeExecutionFlow({
 
   function playFlow() {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      setActiveIndex(runtimeFlowSteps.length - 1);
+      setActiveIndex(runtimePlayerPhases.length - 1);
       setIsPlaying(false);
       return;
     }
@@ -860,14 +966,14 @@ function RuntimeExecutionFlow({
     let nextIndex: number | undefined;
 
     if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
-      nextIndex = (index + 1) % runtimeFlowSteps.length;
+      nextIndex = (index + 1) % runtimePlayerPhases.length;
     } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
       nextIndex =
-        (index - 1 + runtimeFlowSteps.length) % runtimeFlowSteps.length;
+        (index - 1 + runtimePlayerPhases.length) % runtimePlayerPhases.length;
     } else if (event.key === 'Home') {
       nextIndex = 0;
     } else if (event.key === 'End') {
-      nextIndex = runtimeFlowSteps.length - 1;
+      nextIndex = runtimePlayerPhases.length - 1;
     }
 
     if (nextIndex === undefined) return;
@@ -876,19 +982,34 @@ function RuntimeExecutionFlow({
     selectStep(nextIndex);
     const inspector = event.currentTarget.closest('.a3s-runtime-inspector');
     inspector
-      ?.querySelectorAll<HTMLButtonElement>('.a3s-runtime-flow-step')
+      ?.querySelectorAll<HTMLButtonElement>('.a3s-run-player-phase')
       .item(nextIndex)
       .focus();
   }
 
+  const statusLabel = isPlaying ? labels.flowRunning : labels.flowComplete;
+
   return (
-    <div className="a3s-runtime-inspector" aria-label={labels.architectureAlt}>
-      <header className="a3s-runtime-inspector-header">
+    <div
+      className="a3s-runtime-inspector a3s-runtime-inspector--player"
+      aria-label={labels.architectureAlt}
+    >
+      <header className="a3s-runtime-inspector-header a3s-run-player-header">
         <span>
           <i aria-hidden="true" />
+          <b>A3S CODE</b>
+          <em>/</em>
           {labels.stackTitle}
         </span>
         <div>
+          <span
+            className={['a3s-run-player-status', isPlaying ? 'is-running' : '']
+              .filter(Boolean)
+              .join(' ')}
+          >
+            <i aria-hidden="true" />
+            {statusLabel}
+          </span>
           <button
             aria-pressed={isPlaying}
             className={isPlaying ? 'is-playing' : ''}
@@ -896,86 +1017,76 @@ function RuntimeExecutionFlow({
             type="button"
           >
             <i aria-hidden="true" />
-            {isPlaying ? labels.flowRunning : labels.flowPlay}
+            {labels.flowReplay}
           </button>
-          <b>
-            {String(activeIndex + 1).padStart(2, '0')} /{' '}
-            {String(runtimeFlowSteps.length).padStart(2, '0')}
-          </b>
         </div>
       </header>
 
-      <div className="a3s-runtime-flow-request">
-        <span>{labels.flowTaskLabel}</span>
-        <code>
-          <i aria-hidden="true">&gt;&gt;&gt;</i>
-          session.stream(&quot;{labels.flowTask}&quot;)
-        </code>
-      </div>
+      <section className="a3s-run-player-task">
+        <span aria-hidden="true">&gt;_</span>
+        <div>
+          <small>{labels.flowTaskLabel}</small>
+          <strong>{labels.flowTask}</strong>
+        </div>
+        <code>session.stream()</code>
+      </section>
 
-      <div className="a3s-runtime-inspector-body">
-        <nav
-          aria-label={labels.architectureAlt}
-          className="a3s-runtime-flow-nav"
-        >
-          <div className="a3s-runtime-flow-track" aria-hidden="true">
-            <span
-              style={{
-                height: `${(activeIndex / (runtimeFlowSteps.length - 1)) * 100}%`,
-              }}
-            />
-          </div>
+      <nav aria-label={labels.stackHint} className="a3s-run-player-progress">
+        <div className="a3s-run-player-rail" aria-hidden="true">
+          <span
+            style={{
+              width: `${(activeIndex / (runtimePlayerPhases.length - 1)) * 100}%`,
+            }}
+          />
+        </div>
 
-          {runtimeFlowSteps.map((step, index) => (
-            <div className="a3s-runtime-flow-row" key={step.id}>
-              <button
-                aria-pressed={activeIndex === index}
-                className={[
-                  'a3s-runtime-flow-step',
-                  `a3s-runtime-flow-step--${step.id}`,
-                  activeIndex === index ? 'is-active' : '',
-                  activeIndex > index ? 'is-complete' : '',
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
-                onClick={() => selectStep(index)}
-                onFocus={() => selectStep(index)}
-                onKeyDown={(event) => handleStepKeyDown(event, index)}
-                onMouseEnter={() => {
-                  if (!isPlaying) setActiveIndex(index);
-                }}
-                type="button"
-              >
-                <span>{step.code}</span>
-                <span>
-                  <small>{step.stage}</small>
-                  <strong>{localeValue(step.title, locale)}</strong>
-                  <em>{step.path}</em>
-                </span>
-                <i aria-hidden="true" />
-              </button>
+        {runtimePlayerPhases.map((phase, index) => (
+          <button
+            aria-current={activeIndex === index ? 'step' : undefined}
+            aria-pressed={activeIndex === index}
+            className={[
+              'a3s-run-player-phase',
+              activeIndex === index ? 'is-active' : '',
+              activeIndex > index ? 'is-complete' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            key={phase.id}
+            onClick={() => selectStep(index)}
+            onFocus={() => selectStep(index)}
+            onKeyDown={(event) => handleStepKeyDown(event, index)}
+            type="button"
+          >
+            <span>{phase.code}</span>
+            <span>
+              <small>{localeValue(phase.stage, locale)}</small>
+              <strong>{localeValue(phase.navTitle, locale)}</strong>
+            </span>
+          </button>
+        ))}
+      </nav>
 
-              {activeIndex === index ? (
-                <RuntimeFlowDetail
-                  className="a3s-runtime-flow-detail--mobile"
-                  key={active.id}
-                  labels={labels}
-                  locale={locale}
-                  step={active}
-                />
-              ) : null}
-            </div>
+      <RuntimePlayerStage
+        key={active.id}
+        labels={labels}
+        locale={locale}
+        phase={active}
+      />
+
+      <footer className="a3s-run-player-evidence">
+        <div>
+          <small>{labels.flowEvidence}</small>
+          <strong>
+            <i aria-hidden="true" />
+            {labels.flowEventCount}
+          </strong>
+        </div>
+        <span>
+          {['RunRecord', 'Trace', 'Artifact', 'Snapshot'].map((item) => (
+            <code key={item}>{item}</code>
           ))}
-        </nav>
-
-        <RuntimeFlowDetail
-          className="a3s-runtime-flow-detail--desktop"
-          key={active.id}
-          labels={labels}
-          locale={locale}
-          step={active}
-        />
-      </div>
+        </span>
+      </footer>
     </div>
   );
 }
