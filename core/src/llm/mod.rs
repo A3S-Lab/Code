@@ -101,6 +101,18 @@ pub trait LlmClient: Send + Sync {
         structured::NativeStructuredSupport::None
     }
 
+    /// Report whether [`LlmClient::complete_structured`] uses a transport that
+    /// is independent from the streaming implementation.
+    ///
+    /// The conservative default is false because several account-backed
+    /// clients implement `complete` by opening a stream and waiting for its
+    /// terminal event. Composite reliability layers use this capability to
+    /// avoid presenting the same streaming failure mode as a non-streaming
+    /// fallback.
+    fn has_distinct_non_streaming_transport(&self) -> bool {
+        false
+    }
+
     /// Complete a conversation while honoring a structured-output directive
     /// (forced `tool_choice` and/or native `response_format`).
     ///

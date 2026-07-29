@@ -180,15 +180,32 @@ impl ScopedToolInvoker {
             .ok();
         }
 
-        let llm_client = self.agent.scoped_llm_client_for_parts(
-            (!self.session_id.is_empty()).then_some(self.session_id.as_str()),
-            &self.event_tx,
-            &ctx.cancellation_token(),
-        );
+        let preadmitted = ctx.has_model_generation_permit();
+        let llm_client = if preadmitted {
+            ctx.llm_client().unwrap_or_else(|| {
+                self.agent.scoped_llm_client_for_parts(
+                    (!self.session_id.is_empty()).then_some(self.session_id.as_str()),
+                    &self.event_tx,
+                    &ctx.cancellation_token(),
+                )
+            })
+        } else {
+            self.agent.scoped_llm_client_for_parts(
+                (!self.session_id.is_empty()).then_some(self.session_id.as_str()),
+                &self.event_tx,
+                &ctx.cancellation_token(),
+            )
+        };
+        let model_generation_admission = if preadmitted {
+            ctx.model_generation_admission()
+                .unwrap_or_else(|| self.agent.model_generation_admission.clone())
+        } else {
+            self.agent.model_generation_admission.clone()
+        };
         let governed_ctx = ctx
             .clone()
             .with_llm_client(llm_client)
-            .with_model_generation_admission(self.agent.model_generation_admission.clone());
+            .with_model_generation_admission(model_generation_admission);
         let stream_ctx = self.agent.streaming_tool_context(
             &governed_ctx,
             &self.event_tx,

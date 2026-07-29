@@ -92,15 +92,20 @@ pub enum ResponseFormat {
 ///
 /// Carries the union of intents; each provider honors what it supports and
 /// ignores the rest (e.g. Anthropic has no `response_format`, so it only acts
-/// on `force_tool`). The default (`force_tool: None, response_format: None`)
-/// reproduces an ordinary completion, which is why the trait's default
-/// `complete_structured` impl is behavior-preserving.
+/// on `force_tool`). [`Self::validation_schema`] is host-only metadata and must
+/// never be serialized into a provider request. The default reproduces an
+/// ordinary completion, which is why the trait's default `complete_structured`
+/// implementation is behavior-preserving.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StructuredDirective {
     /// Force the model to call exactly this tool (provider `tool_choice`).
     pub force_tool: Option<String>,
     /// Request a provider-native `response_format` (OpenAI-compatible only).
     pub response_format: Option<ResponseFormat>,
+    /// Provider-facing response schema retained for composite-client stream
+    /// validation, including prompt fallback and JSON-object modes where the
+    /// provider directive itself does not carry a schema.
+    pub validation_schema: Option<Value>,
 }
 
 /// Callback for streaming partial object snapshots.
@@ -837,6 +842,21 @@ fn validate_against_schema(value: &Value, schema: &Value) -> Result<(), Vec<Stri
     }
 }
 
+/// Return whether a streamed provider payload is already one complete JSON
+/// value that conforms to the provider-facing response schema.
+///
+/// Composite clients can use this to keep candidate streams isolated until a
+/// response is safe to replay, while still accepting a schema-complete object
+/// from endpoints that omit their terminal stream event. The strict direct
+/// parse deliberately rejects prose, code fences, and trailing data; the main
+/// structured engine remains responsible for its broader post-response repair
+/// behavior.
+pub fn is_complete_streamed_value(raw: &str, response_schema: &Value) -> bool {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .is_some_and(|value| validate_against_schema(&value, response_schema).is_ok())
+}
+
 // ---------------------------------------------------------------------------
 // Message/prompt construction helpers
 // ---------------------------------------------------------------------------
@@ -874,24 +894,30 @@ fn resolve_mode(requested: StructuredMode, support: NativeStructuredSupport) -> 
 
 /// Build the provider directive for an already-resolved mode.
 fn build_directive(req: &StructuredRequest, mode: StructuredMode) -> StructuredDirective {
-    match mode {
+    let response_schema = SchemaEnvelope::for_schema(&req.schema).response_schema(&req.schema);
+    let mut directive = match mode {
         StructuredMode::Tool => StructuredDirective {
             force_tool: Some(format!("emit_{}", req.schema_name)),
             response_format: None,
+            validation_schema: None,
         },
         StructuredMode::Strict => StructuredDirective {
             force_tool: None,
             response_format: Some(ResponseFormat::JsonSchema {
                 name: req.schema_name.clone(),
-                schema: SchemaEnvelope::for_schema(&req.schema).response_schema(&req.schema),
+                schema: response_schema.clone(),
             }),
+            validation_schema: None,
         },
         StructuredMode::Json => StructuredDirective {
             force_tool: None,
             response_format: Some(ResponseFormat::JsonObject),
+            validation_schema: None,
         },
         StructuredMode::Auto | StructuredMode::Prompt => StructuredDirective::default(),
-    }
+    };
+    directive.validation_schema = Some(response_schema);
+    directive
 }
 
 fn build_initial_messages(req: &StructuredRequest, mode: StructuredMode) -> Vec<Message> {

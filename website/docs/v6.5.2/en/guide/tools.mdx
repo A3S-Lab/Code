@@ -136,17 +136,36 @@ accepts `agent`, `description`, `prompt`, optional `max_steps`, and optional
 between 1 and the submitted task count. Provider and child runtimes own typed
 retry policy; the fan-out layer never replays a branch based on error text.
 
-`web_search` reports `complete`, `partial`, or `failed` in metadata. Empty
-results with engine errors are failures rather than successful empty searches.
-Timeout, cancellation, invalid-argument, partial-failure, and rate-limit errors
-carry structured error kinds.
+`web_search` reports `complete`, `partial`, or `failed` in metadata. Its default
+path executes native APIs first, conventional HTTP/RSS engines only when the
+combined generic quality floor is not met, and headless engines only when both
+earlier tiers remain insufficient. Browser discovery and pool creation are
+therefore lazy. Session-scoped closed/open/half-open circuit state skips known
+quota, permission, rate-limit, transport, repeated-empty, and timeout failures
+without retrying them on every request; `Retry-After` is retained. An explicit
+`engines` argument runs only the requested tiers. Empty results with engine
+errors are failures rather than successful empty searches. Timeout,
+cancellation, invalid-argument, partial-failure, and rate-limit errors carry
+structured error kinds, while tier decisions, quality signals, engine outcome,
+attempt duration, and retry context remain available in metadata.
+
+`web_fetch` also preserves failure semantics instead of deriving retry advice
+from rendered messages. Request and response-body I/O failures, HTTP 408, and
+HTTP 5xx responses use the typed `transport` kind. HTTP 429 uses
+`rate_limited` and carries a parsed `Retry-After` delay when the server supplies
+one; the outer tool deadline uses `timeout`. Other HTTP status failures remain
+ordinary status errors unless the runtime has typed evidence that retrying is
+safe.
 
 ## Structured Output with `generate_object`
 
 The `generate_object` tool asks the configured LLM for a JSON value, validates
 the response against a JSON Schema, and returns the validated value only on a
 zero-exit result. Root objects, arrays, enums, constants, composition keywords,
-and local `$ref` definitions are supported. It works in two ways:
+and local `$ref` definitions are supported. The active timeout starts after
+model-generation admission, is forwarded to clients that accept an active
+transport budget, and remains in force across bounded schema repairs. It works
+in two ways:
 
 1. **Agent-driven**: The LLM sees `generate_object` in its tool list and calls it autonomously when structured output is needed.
 2. **Direct call**: Your application calls `session.tool('generate_object', ...)` to bypass model-driven tool selection. The tool itself still calls the configured LLM.
@@ -196,6 +215,16 @@ const { object } = JSON.parse(result.output);
 - **auto**: Selects forced-tool mode when available, otherwise prompt mode.
 - **strict**: Uses provider-native strict JSON Schema when supported, otherwise safely falls back to forced-tool or prompt mode.
 - **json**: Uses provider-native JSON-object mode when supported, otherwise safely falls back to forced-tool or prompt mode.
+
+Every resolved mode retains the provider-facing response schema as host-only
+validation metadata; that metadata is never serialized as an extra provider
+request field. Rust composite clients can use
+`structured::is_complete_streamed_value(...)` to accept only a complete JSON
+value that validates against this schema, including endpoints that omit a
+terminal stream event. They can also inspect
+`LlmClient::has_distinct_non_streaming_transport()` before treating a blocking
+call as an independent fallback instead of replaying the same streaming
+failure mode under another method name.
 
 ### Streaming
 
@@ -330,6 +359,16 @@ subagents, it schedules a Flow step named `parallel_task`; the TUI host runs
 the native `parallel_task` implementation outside QuickJS. After `/login`,
 dynamic workflow PTC steps may call `ctx.tool("runtime", ...)` when a host
 runtime tool is registered in the session.
+
+Dynamic workflows default structured generation to single-flight. Set
+`limits.maxConcurrentGenerations` to 2-4 only when independent
+`generate_object` steps should fan out; each admitted step receives a client
+fork bound to its exact run and step identity. Providers that cannot fork a
+session remain single-flight. The Rust helper
+`dynamic_workflow::recover_dynamic_workflow_step_output(...)` can recover a
+completed durable step only when the run id, original query, and step id all
+match. It does not act as a cross-run query cache and never promotes an
+incomplete step.
 
 ## Tool Results
 

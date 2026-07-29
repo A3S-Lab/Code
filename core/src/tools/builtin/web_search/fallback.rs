@@ -1,71 +1,98 @@
 //! Provider-agnostic fallback policy for web search.
 
-use super::engines::canonical_engine_shortcut;
+use super::engines::{canonical_engine_shortcut, engine_tier, EngineTier};
 use super::{safe_search_result_url, sanitize_http_urls};
 use crate::tools::types::ToolErrorKind;
-use a3s_search::{EngineFailure, SearchResults};
+use a3s_search::{EngineFailure, EngineOutcome, SearchResults};
 use std::time::Duration;
 
-const FALLBACK_ENGINE_ORDER: [&str; 4] = ["ddg", "brave", "bing", "wiki"];
+const DEFAULT_HTTP_TIER: [&str; 4] = ["ddg", "brave", "bing", "wiki"];
+const DEFAULT_HEADLESS_TIER: [&str; 2] = ["g", "baidu"];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct EngineTierPlan {
+    pub api: Vec<String>,
+    pub http: Vec<String>,
+    pub headless: Vec<String>,
+}
+
+impl EngineTierPlan {
+    pub fn is_empty(&self) -> bool {
+        self.api.is_empty() && self.http.is_empty() && self.headless.is_empty()
+    }
+}
 
 pub(super) fn configured_engine<'a>(
     config: &'a crate::config::SearchConfig,
     shortcut: &str,
 ) -> Option<&'a crate::config::SearchEngineConfig> {
+    let normalized = shortcut.trim().to_ascii_lowercase();
     config.engines.get(shortcut).or_else(|| {
-        let canonical = canonical_engine_shortcut(shortcut);
+        let canonical = canonical_engine_shortcut(&normalized);
         config.engines.iter().find_map(|(name, engine)| {
-            canonical_engine_shortcut(name)
+            let normalized_name = name.trim().to_ascii_lowercase();
+            canonical_engine_shortcut(&normalized_name)
                 .eq_ignore_ascii_case(canonical)
                 .then_some(engine)
         })
     })
 }
 
-pub(super) fn fallback_engine_shortcuts(
-    attempted_engines: &[String],
+pub(super) fn tiered_engine_plan(
+    selected_engines: &[&str],
     config: Option<&crate::config::SearchConfig>,
-) -> Vec<&'static str> {
-    FALLBACK_ENGINE_ORDER
-        .iter()
-        .copied()
-        .filter(|candidate| {
-            let candidate = canonical_engine_shortcut(candidate);
-            !attempted_engines.iter().any(|attempted| {
-                canonical_engine_shortcut(attempted).eq_ignore_ascii_case(candidate)
-            }) && config
-                .and_then(|config| configured_engine(config, candidate))
-                .is_none_or(|engine| engine.enabled)
-        })
-        .collect()
+    automatic_fallback: bool,
+) -> EngineTierPlan {
+    let mut plan = EngineTierPlan::default();
+    for shortcut in selected_engines {
+        add_planned_engine(&mut plan, shortcut, config);
+    }
+
+    if automatic_fallback && (!plan.api.is_empty() || !plan.http.is_empty()) {
+        for shortcut in DEFAULT_HTTP_TIER {
+            add_planned_engine(&mut plan, shortcut, config);
+        }
+        for shortcut in DEFAULT_HEADLESS_TIER {
+            add_planned_engine(&mut plan, shortcut, config);
+        }
+    }
+
+    plan
 }
 
-pub(super) fn fallback_engine_names(engines: &[&str]) -> String {
-    let names = engines
-        .iter()
-        .map(|engine| match *engine {
-            "ddg" => "DuckDuckGo",
-            "brave" => "Brave",
-            "bing" => "Bing",
-            "wiki" => "Wikipedia",
-            other => other,
-        })
-        .collect::<Vec<_>>();
-    match names.as_slice() {
-        [] => String::new(),
-        [name] => (*name).to_string(),
-        [first, second] => format!("{first} and {second}"),
-        _ => names.join(", "),
+fn add_planned_engine(
+    plan: &mut EngineTierPlan,
+    shortcut: &str,
+    config: Option<&crate::config::SearchConfig>,
+) {
+    let normalized = shortcut.trim().to_ascii_lowercase();
+    let canonical = canonical_engine_shortcut(&normalized);
+    if config
+        .and_then(|config| configured_engine(config, canonical))
+        .is_some_and(|engine| !engine.enabled)
+    {
+        return;
+    }
+    let target = match engine_tier(canonical) {
+        Some(EngineTier::Api) => &mut plan.api,
+        Some(EngineTier::Http) => &mut plan.http,
+        Some(EngineTier::Headless) => &mut plan.headless,
+        None => return,
+    };
+    if !target.iter().any(|current| current == canonical) {
+        target.push(canonical.to_string());
     }
 }
 
-pub(super) fn primary_search_timeout(total: Duration, has_fallback: bool) -> Duration {
-    if !has_fallback {
-        return total;
+pub(super) fn tier_timeout(remaining: Duration, remaining_tiers: usize) -> Duration {
+    if remaining_tiers == 0 || remaining.is_zero() {
+        return remaining;
     }
-    let total_ms = u64::try_from(total.as_millis()).unwrap_or(u64::MAX);
-    let reserve_ms = (total_ms / 3).clamp(500, 5_000).min(total_ms / 2);
-    Duration::from_millis(total_ms.saturating_sub(reserve_ms).max(1))
+    let divisor = u128::try_from(remaining_tiers)
+        .unwrap_or(u128::MAX)
+        .saturating_add(1);
+    let milliseconds = (remaining.as_millis() / divisor).max(1);
+    Duration::from_millis(u64::try_from(milliseconds).unwrap_or(u64::MAX)).min(remaining)
 }
 
 pub(super) fn failure_reason(kind: &str) -> &'static str {
@@ -74,7 +101,7 @@ pub(super) fn failure_reason(kind: &str) -> &'static str {
         "provider_rate_limited" | "rate_limited" => "was rate limited",
         "provider_authentication" => "authentication failed",
         "provider_permission" | "permission_denied" => "denied access",
-        "provider_unavailable" | "engine_suspended" => "is unavailable",
+        "provider_unavailable" | "engine_suspended" | "circuit_open" => "is unavailable",
         "timeout" | "http_timeout" => "timed out",
         "provider_transport" | "network" | "http_connect" => "could not be reached",
         "provider_invalid_response" | "parse" | "http_decode" => "returned an invalid response",
@@ -111,6 +138,31 @@ pub(super) fn failure_metadata(failures: &[EngineFailure]) -> Vec<serde_json::Va
                 "provider": failure.provider.as_deref(),
                 "kind": &failure.kind,
                 "transient": failure.transient,
+                "retry_after_seconds": failure.retry_after_seconds,
+            })
+        })
+        .collect()
+}
+
+pub(super) fn outcome_metadata(outcomes: &[EngineOutcome]) -> Vec<serde_json::Value> {
+    outcomes
+        .iter()
+        .map(|outcome| {
+            serde_json::json!({
+                "engine": crate::text::truncate_utf8(
+                    &sanitize_http_urls(&outcome.engine),
+                    96,
+                ),
+                "shortcut": crate::text::truncate_utf8(&outcome.shortcut, 32),
+                "provider": outcome.provider.as_deref(),
+                "kind": outcome.kind,
+                "result_count": outcome.result_count,
+                "duration_ms": outcome.duration_ms,
+                "failure_kind": outcome.failure.as_ref().map(|failure| failure.kind.as_str()),
+                "retry_after_seconds": outcome
+                    .failure
+                    .as_ref()
+                    .and_then(|failure| failure.retry_after_seconds),
             })
         })
         .collect()
@@ -144,43 +196,12 @@ pub(super) fn tool_error_kind_for_failures(
         })
 }
 
-pub(super) fn usable_result_engines(results: &SearchResults) -> Vec<String> {
-    let mut engines = results
+pub(super) fn usable_result_count(results: &SearchResults) -> usize {
+    results
         .items()
         .iter()
         .filter(|result| !safe_search_result_url(result).is_empty())
-        .flat_map(|result| result.engines.iter().cloned())
-        .collect::<Vec<_>>();
-    engines.sort_unstable();
-    engines.dedup();
-    engines
-}
-
-pub(super) fn merge_search_results(target: &mut SearchResults, source: &SearchResults) {
-    for result in source.items() {
-        target.add_result(result.clone());
-    }
-    for suggestion in source.suggestions() {
-        target.add_suggestion(suggestion.clone());
-    }
-    for answer in source.answers() {
-        target.add_answer(answer.clone());
-    }
-    for image in source.images() {
-        target.add_image(image.clone());
-    }
-    for report in source.reports() {
-        target.add_report(report.clone());
-    }
-    if source.failures().is_empty() {
-        for (engine, error) in source.errors() {
-            target.add_error(engine.clone(), error.clone());
-        }
-    } else {
-        for failure in source.failures() {
-            target.add_failure(failure.clone());
-        }
-    }
+        .count()
 }
 
 pub(super) fn text_notice_note(notices: &[String]) -> String {

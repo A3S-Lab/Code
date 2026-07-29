@@ -393,7 +393,7 @@ impl Tool for GenerateObjectTool {
                         }),
                     ),
                     GenerationStop::Failed(error) => {
-                        let message = format!("{error:#}");
+                        let message = generation_failure_message(&error);
                         let kind = generation_failure_kind(&error);
                         (format!("generate_object failed: {message}"), kind)
                     }
@@ -418,6 +418,10 @@ enum GenerationStop {
     Cancelled,
     TimedOut,
     Failed(anyhow::Error),
+}
+
+fn generation_failure_message(error: &anyhow::Error) -> String {
+    format!("{error:#}")
 }
 
 fn generation_failure_kind(error: &anyhow::Error) -> Option<ToolErrorKind> {
@@ -527,11 +531,51 @@ mod tests {
     use crate::llm::{ContentBlock, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition};
     use crate::tools::ToolExecutor;
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::time::Duration;
     use tokio::sync::{mpsc, Notify};
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn generation_failure_kind_uses_typed_status_not_error_prose() {
+        let prose = anyhow::anyhow!("Human-readable text says rate limit and too many requests.");
+        assert_eq!(generation_failure_kind(&prose), None);
+
+        let rate_limited = anyhow::Error::new(crate::retry::RetryExhaustedError::new(
+            1,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "opaque",
+        ));
+        assert_eq!(
+            generation_failure_kind(&rate_limited),
+            Some(ToolErrorKind::RateLimited {
+                retry_after_ms: None,
+            })
+        );
+
+        let unavailable = anyhow::Error::new(crate::retry::RetryExhaustedError::new(
+            1,
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            "opaque",
+        ));
+        assert_eq!(
+            generation_failure_kind(&unavailable),
+            Some(ToolErrorKind::Transport {
+                op: "generate_object".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn generation_failure_message_preserves_context_chain() {
+        let error = anyhow::anyhow!("provider detail").context("structured generation failed");
+
+        assert_eq!(
+            generation_failure_message(&error),
+            "structured generation failed: provider detail"
+        );
+    }
 
     struct MockObjectClient {
         response: Mutex<Option<LlmResponse>>,
@@ -566,6 +610,50 @@ mod tests {
                 token_logprobs: Vec::new(),
                 meta: None,
             }
+        }
+    }
+
+    #[derive(Clone)]
+    struct TimeoutAwareObjectClient {
+        observed_timeout_ms: Arc<AtomicU64>,
+        response: Arc<Mutex<Option<LlmResponse>>>,
+    }
+
+    #[async_trait]
+    impl LlmClient for TimeoutAwareObjectClient {
+        fn with_active_generation_timeout(&self, timeout: Duration) -> Option<Arc<dyn LlmClient>> {
+            self.observed_timeout_ms.store(
+                u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+                Ordering::SeqCst,
+            );
+            Some(Arc::new(self.clone()))
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<LlmResponse> {
+            self.response
+                .lock()
+                .expect("timeout-aware response")
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("response already used"))
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming is not used in this test")
+        }
+
+        fn native_structured_support(&self) -> NativeStructuredSupport {
+            NativeStructuredSupport::ForcedTool
         }
     }
 
@@ -813,6 +901,56 @@ mod tests {
         assert_eq!(
             metadata["generation_admission"]["active_timeout_ms"],
             serde_json::json!(DEFAULT_TIMEOUT_MS)
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_object_propagates_its_active_timeout_through_the_invocation_gateway() {
+        let temp = tempfile::tempdir().unwrap();
+        let observed_timeout_ms = Arc::new(AtomicU64::new(0));
+        let raw_client: Arc<dyn LlmClient> = Arc::new(TimeoutAwareObjectClient {
+            observed_timeout_ms: Arc::clone(&observed_timeout_ms),
+            response: Arc::new(Mutex::new(Some(object_tool_response(
+                serde_json::json!({"value": "ok"}),
+            )))),
+        });
+        let agent = AgentLoop::new(
+            Arc::clone(&raw_client),
+            Arc::new(ToolExecutor::new(temp.path().to_string_lossy().to_string())),
+            ToolContext::new(temp.path().to_path_buf()),
+            AgentConfig::default(),
+        );
+        let cancellation = CancellationToken::new();
+        let governed =
+            agent.scoped_llm_client_for_parts(Some("timeout-session"), &None, &cancellation);
+        let ctx = ToolContext::new(temp.path().to_path_buf())
+            .with_session_id("timeout-session")
+            .with_cancellation(cancellation)
+            .with_llm_client(governed);
+        let tool = GenerateObjectTool::new(raw_client);
+        let requested_timeout_ms = DEFAULT_TIMEOUT_MS / 2;
+
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "schema": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                        "required": ["value"]
+                    },
+                    "prompt": "Return a value",
+                    "mode": "tool",
+                    "timeout_ms": requested_timeout_ms
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(output.success, "{}", output.content);
+        assert_eq!(
+            observed_timeout_ms.load(Ordering::SeqCst),
+            requested_timeout_ms
         );
     }
 

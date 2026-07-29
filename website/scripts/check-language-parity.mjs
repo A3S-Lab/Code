@@ -15,6 +15,21 @@ const versions = [
   ...versionManifest.archives.map(({ version }) => version),
 ];
 const languages = ['zh', 'en'];
+const currentPageMarkers = new Map([
+  [
+    'guide/tools.mdx',
+    [
+      'read.files',
+      'metadata.batch.continuation',
+      'files_with_matches',
+      'expected_replacements',
+      'Retry-After',
+      'has_distinct_non_streaming_transport',
+      'maxConcurrentGenerations',
+      'recover_dynamic_workflow_step_output',
+    ],
+  ],
+]);
 
 async function collectMarkdownFiles(directory, prefix = '') {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -64,6 +79,25 @@ for (const version of versions) {
         .map((file) => `  - ${file}`)
         .join('\n')}`,
     );
+  }
+
+  if (version === versionManifest.current) {
+    for (const [file, markers] of currentPageMarkers) {
+      for (const language of languages) {
+        const content = await readFile(
+          path.join(docsRoot, version, language, file),
+          'utf8',
+        );
+        const missingMarkers = markers.filter(
+          (marker) => !content.includes(marker),
+        );
+        if (missingMarkers.length > 0) {
+          throw new Error(
+            `Semantic parity check failed for ${version}/${language}/${file}. Missing markers: ${missingMarkers.join(', ')}.`,
+          );
+        }
+      }
+    }
   }
 
   console.log(

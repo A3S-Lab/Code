@@ -7,6 +7,27 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+#[test]
+fn streamed_value_completion_requires_exact_schema_valid_json() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "required": ["answer"],
+        "additionalProperties": false,
+        "properties": {
+            "answer": { "type": "string", "minLength": 1 }
+        }
+    });
+
+    assert!(is_complete_streamed_value(r#"{"answer":"ready"}"#, &schema));
+    assert!(!is_complete_streamed_value(
+        r#"{"answer":"ready"} trailing"#,
+        &schema
+    ));
+    assert!(!is_complete_streamed_value(r#"{"answer":""}"#, &schema));
+    assert!(!is_complete_streamed_value(r#"{"other":"ready"}"#, &schema));
+    assert!(!is_complete_streamed_value(r#"{"answer":"ready""#, &schema));
+}
+
 struct MockStructuredClient {
     responses: Mutex<Vec<LlmResponse>>,
 }
@@ -2033,6 +2054,23 @@ async fn test_routing_unknown_support_falls_back_to_prompt() {
     assert!(directive.force_tool.is_none());
     assert!(directive.response_format.is_none());
     assert!(client.last_tool_names.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_prompt_mode_retains_the_host_validation_schema() {
+    let request = person_request(StructuredMode::Prompt);
+    let client = RecordingClient::new(
+        NativeStructuredSupport::None,
+        vec![MockStructuredClient::text_response(r#"{"name":"Bob"}"#)],
+    );
+
+    let result = generate_blocking(&client, &request).await.unwrap();
+
+    assert_eq!(result.object["name"], "Bob");
+    let directive = client.last_directive.lock().unwrap().clone().unwrap();
+    assert!(directive.force_tool.is_none());
+    assert!(directive.response_format.is_none());
+    assert_eq!(directive.validation_schema, Some(request.schema));
 }
 
 #[tokio::test]

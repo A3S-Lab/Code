@@ -71,6 +71,41 @@ async fn test_web_fetch_missing_url() {
     assert!(!result.success);
 }
 
+#[test]
+fn web_fetch_failure_classification_uses_typed_transport_state_only() {
+    let untyped = FetchFailure::untyped(
+        "A human-readable page says HTTP 429, rate limit, and too many requests.",
+    )
+    .into_tool_output();
+    assert_eq!(untyped.error_kind, None);
+
+    let rate_limited = FetchFailure::http_status(
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        Some(2_500),
+        "typed HTTP failure",
+    )
+    .into_tool_output();
+    assert_eq!(
+        rate_limited.error_kind,
+        Some(ToolErrorKind::RateLimited {
+            retry_after_ms: Some(2_500),
+        })
+    );
+
+    let unavailable = FetchFailure::http_status(
+        reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        None,
+        "typed HTTP failure",
+    )
+    .into_tool_output();
+    assert_eq!(
+        unavailable.error_kind,
+        Some(ToolErrorKind::Transport {
+            op: "web_fetch".to_string(),
+        })
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires external network"]
 async fn real_system_proxy_fetches_official_https_source() {

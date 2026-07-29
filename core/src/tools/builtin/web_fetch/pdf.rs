@@ -11,14 +11,39 @@ pub(super) fn response_is_pdf(content_type: &str, bytes: &[u8]) -> bool {
 
 /// Extract PDF text away from Tokio's async worker threads.
 pub(super) async fn extract_text(bytes: Vec<u8>) -> Result<String, String> {
-    let text = tokio::task::spawn_blocking(move || pdf_extract::extract_text_from_mem(&bytes))
+    let text = tokio::task::spawn_blocking(move || extract_text_with_lopdf(&bytes))
         .await
-        .map_err(|error| format!("PDF text extraction worker failed: {error}"))?
-        .map_err(|error| format!("Could not parse or extract text from PDF: {error}"))?;
+        .map_err(|error| format!("PDF text extraction worker failed: {error}"))??;
     if text.trim().is_empty() {
         return Err(
             "PDF contains no extractable text; it may be image-only or scanned".to_string(),
         );
+    }
+    Ok(text)
+}
+
+fn extract_text_with_lopdf(bytes: &[u8]) -> Result<String, String> {
+    let document = lopdf::Document::load_mem(bytes)
+        .map_err(|error| format!("Could not parse or extract text from PDF: {error}"))?;
+    let page_numbers = document.get_pages().keys().copied().collect::<Vec<_>>();
+    let mut text = String::new();
+    let mut extraction_errors = Vec::new();
+    for chunk in document.extract_text_chunks(&page_numbers) {
+        match chunk {
+            Ok(chunk) => {
+                text.push_str(&chunk);
+                if !text.ends_with('\n') {
+                    text.push('\n');
+                }
+            }
+            Err(error) => extraction_errors.push(error.to_string()),
+        }
+    }
+    if text.trim().is_empty() && !extraction_errors.is_empty() {
+        return Err(format!(
+            "Could not parse or extract text from PDF: {}",
+            extraction_errors.join("; ")
+        ));
     }
     Ok(text)
 }
@@ -164,6 +189,28 @@ mod tests {
         assert!(
             !result.content.contains("Taylor Hawkins"),
             "extracted PDF text included unrelated page content"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires external network"]
+    async fn extracts_type3_font_researcherbench_pdf_without_panicking() {
+        let result = super::super::WebFetchTool
+            .execute(
+                &serde_json::json!({
+                    "url": "https://arxiv.org/pdf/2507.16280",
+                    "format": "text",
+                    "timeout": 30
+                }),
+                &ToolContext::new(std::env::temp_dir()),
+            )
+            .await
+            .expect("web_fetch must execute");
+
+        assert!(result.success, "{}", result.content);
+        assert!(
+            result.content.contains("ResearcherBench"),
+            "extracted text omitted the paper title"
         );
     }
 }

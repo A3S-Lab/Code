@@ -4,7 +4,11 @@ use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
-use reqwest::{header::LOCATION, redirect::Policy, Url};
+use reqwest::{
+    header::{LOCATION, RETRY_AFTER},
+    redirect::Policy,
+    StatusCode, Url,
+};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
@@ -149,16 +153,7 @@ impl Tool for WebFetchTool {
         .await
         {
             Ok(Ok(page)) => page,
-            Ok(Err(error)) => {
-                let output = ToolOutput::error(&error);
-                return Ok(if looks_rate_limited(&error) {
-                    output.with_error_kind(ToolErrorKind::RateLimited {
-                        retry_after_ms: None,
-                    })
-                } else {
-                    output
-                });
-            }
+            Ok(Err(error)) => return Ok(error.into_tool_output()),
             Err(_) => {
                 return Ok(ToolOutput::error(format!(
                     "Web fetch timed out after {} seconds",
@@ -287,13 +282,71 @@ struct FetchedPage {
     content_type: String,
 }
 
+#[derive(Debug)]
+struct FetchFailure {
+    message: String,
+    error_kind: Option<ToolErrorKind>,
+}
+
+impl FetchFailure {
+    fn untyped(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            error_kind: None,
+        }
+    }
+
+    fn transport(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            error_kind: Some(ToolErrorKind::Transport {
+                op: "web_fetch".to_string(),
+            }),
+        }
+    }
+
+    fn http_status(
+        status: StatusCode,
+        retry_after_ms: Option<u64>,
+        message: impl Into<String>,
+    ) -> Self {
+        let error_kind = if status == StatusCode::TOO_MANY_REQUESTS {
+            Some(ToolErrorKind::RateLimited { retry_after_ms })
+        } else if status == StatusCode::REQUEST_TIMEOUT || status.is_server_error() {
+            Some(ToolErrorKind::Transport {
+                op: "web_fetch".to_string(),
+            })
+        } else {
+            None
+        };
+        Self {
+            message: message.into(),
+            error_kind,
+        }
+    }
+
+    fn into_tool_output(self) -> ToolOutput {
+        let output = ToolOutput::error(self.message);
+        match self.error_kind {
+            Some(error_kind) => output.with_error_kind(error_kind),
+            None => output,
+        }
+    }
+}
+
+impl From<String> for FetchFailure {
+    fn from(message: String) -> Self {
+        Self::untyped(message)
+    }
+}
+
 /// Fetch a URL while validating and pinning DNS results for every redirect hop.
 async fn fetch_url(
     mut url: Url,
     format: &str,
     body_only: bool,
     proxy_url: Option<&str>,
-) -> std::result::Result<FetchedPage, String> {
+) -> std::result::Result<FetchedPage, FetchFailure> {
     for redirect_count in 0..=MAX_REDIRECTS {
         validate_url_target(&url)?;
         let client = match proxy_url {
@@ -304,20 +357,20 @@ async fn fetch_url(
             }
         };
         let response = client.get(url.clone()).send().await.map_err(|error| {
-            format!(
+            FetchFailure::transport(format!(
                 "Failed to fetch URL {}: {}",
                 safe_url_for_diagnostic(&url),
                 error
-            )
+            ))
         })?;
 
         let status = response.status();
         if matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
             if redirect_count == MAX_REDIRECTS {
-                return Err(format!(
+                return Err(FetchFailure::untyped(format!(
                     "Too many redirects while fetching URL (max: {})",
                     MAX_REDIRECTS
-                ));
+                )));
             }
 
             let location = response
@@ -331,10 +384,15 @@ async fn fetch_url(
         }
 
         if !status.is_success() {
-            return Err(format!(
-                "HTTP {} for URL: {}",
+            let retry_after_ms = response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_retry_after_ms);
+            return Err(FetchFailure::http_status(
                 status,
-                safe_url_for_diagnostic(&url)
+                retry_after_ms,
+                format!("HTTP {} for URL: {}", status, safe_url_for_diagnostic(&url)),
             ));
         }
 
@@ -348,21 +406,22 @@ async fn fetch_url(
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_SIZE as u64)
         {
-            return Err(format!(
+            return Err(FetchFailure::untyped(format!(
                 "Response too large (max: {} bytes)",
                 MAX_RESPONSE_SIZE
-            ));
+            )));
         }
         let mut bytes = Vec::new();
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk =
-                chunk.map_err(|error| format!("Failed to read response body: {}", error))?;
+            let chunk = chunk.map_err(|error| {
+                FetchFailure::transport(format!("Failed to read response body: {error}"))
+            })?;
             if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_SIZE {
-                return Err(format!(
+                return Err(FetchFailure::untyped(format!(
                     "Response too large (max: {} bytes)",
                     MAX_RESPONSE_SIZE
-                ));
+                )));
             }
             bytes.extend_from_slice(&chunk);
         }
@@ -384,10 +443,10 @@ async fn fetch_url(
         if let Some(body) = html_body.as_deref() {
             if let Some(location) = html_refresh_location(body) {
                 if redirect_count == MAX_REDIRECTS {
-                    return Err(format!(
+                    return Err(FetchFailure::untyped(format!(
                         "Too many redirects while fetching URL (max: {})",
                         MAX_REDIRECTS
-                    ));
+                    )));
                 }
                 url = redirect_target(&url, &location)?;
                 continue;
@@ -543,11 +602,12 @@ fn invalid_fetch_argument(message: &str) -> ToolOutput {
     })
 }
 
-fn looks_rate_limited(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("429")
-        || message.contains("rate limit")
-        || message.contains("too many requests")
+fn parse_retry_after_ms(value: &str) -> Option<u64> {
+    value
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1_000))
 }
 
 #[derive(Debug)]

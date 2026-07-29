@@ -554,6 +554,10 @@ impl LlmClient for OpenAiClient {
         self.native_structured_support
     }
 
+    fn has_distinct_non_streaming_transport(&self) -> bool {
+        true
+    }
+
     async fn complete_streaming(
         &self,
         messages: &[Message],

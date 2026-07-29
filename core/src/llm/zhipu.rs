@@ -93,6 +93,10 @@ impl LlmClient for ZhipuClient {
         self.0.native_structured_support()
     }
 
+    fn has_distinct_non_streaming_transport(&self) -> bool {
+        self.0.has_distinct_non_streaming_transport()
+    }
+
     async fn complete_structured(
         &self,
         messages: &[Message],

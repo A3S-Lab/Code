@@ -217,6 +217,9 @@ pub struct ToolContext {
     agent_event_barrier: Option<AgentEventBarrier>,
     /// Optional search configuration for web_search tool
     pub search_config: Option<Arc<crate::config::SearchConfig>>,
+    /// Session-scoped search circuit state shared by cloned tool contexts.
+    pub(crate) search_circuit_breaker: a3s_search::CircuitBreaker,
+    search_circuit_scope: Option<String>,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
     /// Optional command environment overrides for subprocess-based tools.
@@ -334,6 +337,18 @@ impl std::fmt::Debug for ToolContext {
     }
 }
 
+fn search_circuit_breaker(
+    config: Option<&crate::config::SearchConfig>,
+) -> a3s_search::CircuitBreaker {
+    let mut policy = a3s_search::CircuitBreakerConfig::default();
+    if let Some(health) = config.and_then(|config| config.health.as_ref()) {
+        policy.failure_threshold = health.max_failures.max(1);
+        policy.empty_threshold = health.max_failures.max(1);
+        policy.transient_open_duration = std::time::Duration::from_secs(health.suspend_seconds);
+    }
+    a3s_search::CircuitBreaker::new(policy)
+}
+
 impl ToolContext {
     pub fn new(workspace: PathBuf) -> Self {
         let canonical_workspace = workspace
@@ -346,6 +361,8 @@ impl ToolContext {
             agent_event_tx: None,
             agent_event_barrier: None,
             search_config: None,
+            search_circuit_breaker: search_circuit_breaker(None),
+            search_circuit_scope: None,
             sandbox: None,
             command_env: None,
             workspace_services: crate::workspace::WorkspaceServices::local(workspace),
@@ -365,7 +382,12 @@ impl ToolContext {
 
     /// Set the session ID for this context
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
-        self.session_id = Some(session_id.into());
+        let session_id = session_id.into();
+        if self.search_circuit_scope.as_deref() != Some(session_id.as_str()) {
+            self.search_circuit_breaker = search_circuit_breaker(self.search_config.as_deref());
+            self.search_circuit_scope = Some(session_id.clone());
+        }
+        self.session_id = Some(session_id);
         self
     }
 
@@ -399,8 +421,13 @@ impl ToolContext {
 
     /// Set the search configuration
     pub fn with_search_config(mut self, config: crate::config::SearchConfig) -> Self {
+        self.search_circuit_breaker = search_circuit_breaker(Some(&config));
         self.search_config = Some(Arc::new(config));
         self
+    }
+
+    pub(crate) fn search_circuit_breaker(&self) -> a3s_search::CircuitBreaker {
+        self.search_circuit_breaker.clone()
     }
 
     /// Set a sandbox executor for the `bash` tool.
@@ -544,6 +571,10 @@ impl ToolContext {
         self.model_generation_permit
             .as_ref()
             .and_then(|reservation| reservation.claim(admission))
+    }
+
+    pub(crate) fn has_model_generation_permit(&self) -> bool {
+        self.model_generation_permit.is_some()
     }
 
     pub(crate) fn with_host_direct_policy(
@@ -845,6 +876,32 @@ pub trait Tool: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_circuit_state_is_shared_by_context_clones_but_isolated_by_session() {
+        let first = ToolContext::new(PathBuf::from("/tmp")).with_session_id("session-a");
+        first
+            .search_circuit_breaker()
+            .acquire("quota-api")
+            .unwrap()
+            .record_failure(&a3s_search::EngineFailure::new(
+                "Quota API",
+                "provider_quota",
+                "quota exhausted",
+            ));
+
+        let same_session = first.clone();
+        assert!(same_session
+            .search_circuit_breaker()
+            .acquire("quota-api")
+            .is_err());
+
+        let other_session = first.with_session_id("session-b");
+        assert!(other_session
+            .search_circuit_breaker()
+            .acquire("quota-api")
+            .is_ok());
+    }
 
     struct RecordingInvoker {
         origin: Arc<std::sync::Mutex<Option<super::super::invocation::InvocationOrigin>>>,

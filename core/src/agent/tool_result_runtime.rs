@@ -77,14 +77,8 @@ impl NormalizedToolResult {
     }
 
     fn tool_error(message: String) -> Self {
-        let hint = if AgentLoop::is_transient_tool_error(&message) {
-            " [transient - you may retry this tool call]"
-        } else {
-            " [permanent - do not retry without changing the arguments]"
-        };
-
         Self {
-            output: format!("Tool execution error: {}{}", message, hint),
+            output: format!("Tool execution error: {message}"),
             exit_code: 1,
             is_error: true,
             metadata: None,
@@ -114,24 +108,6 @@ impl AgentLoop {
             ),
         }
     }
-
-    /// Returns `true` for errors that are likely transient (network, timeout, I/O contention).
-    pub(super) fn is_transient_tool_error(message: &str) -> bool {
-        let lower = message.to_lowercase();
-        lower.contains("timeout")
-            || lower.contains("timed out")
-            || lower.contains("connection refused")
-            || lower.contains("connection reset")
-            || lower.contains("broken pipe")
-            || lower.contains("temporarily unavailable")
-            || lower.contains("resource temporarily unavailable")
-            || lower.contains("os error 11")
-            || lower.contains("os error 35")
-            || lower.contains("rate limit")
-            || lower.contains("too many requests")
-            || lower.contains("service unavailable")
-            || lower.contains("network unreachable")
-    }
 }
 
 pub(super) fn push_tool_result_message(
@@ -157,18 +133,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transient_tool_error_detection_marks_retryable_failures() {
-        assert!(AgentLoop::is_transient_tool_error("request timed out"));
-        assert!(AgentLoop::is_transient_tool_error("rate limit exceeded"));
-        assert!(!AgentLoop::is_transient_tool_error("unknown argument path"));
-    }
+    fn untyped_execution_error_prose_cannot_create_retry_guidance() {
+        let result = NormalizedToolResult::from_execution(Err(anyhow::anyhow!(
+            "timeout, connection reset, rate limit, and too many requests"
+        )));
 
-    #[test]
-    fn execution_error_includes_retry_hint() {
-        let transient = NormalizedToolResult::from_execution(Err(anyhow::anyhow!("timed out")));
-        assert!(transient.output.contains("transient"));
-
-        let permanent = NormalizedToolResult::from_execution(Err(anyhow::anyhow!("bad path")));
-        assert!(permanent.output.contains("permanent"));
+        assert!(!result.output.contains("[transient"));
+        assert!(!result.output.contains("[permanent"));
+        assert_eq!(result.error_kind, None);
     }
 }

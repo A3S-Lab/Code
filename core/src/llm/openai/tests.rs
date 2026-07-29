@@ -485,11 +485,13 @@ fn test_apply_directive_forced_function_tool_choice() {
         &structured::StructuredDirective {
             force_tool: Some("emit_person".to_string()),
             response_format: None,
+            validation_schema: Some(serde_json::json!({ "type": "object" })),
         },
     );
     assert_eq!(req["tool_choice"]["type"], "function");
     assert_eq!(req["tool_choice"]["function"]["name"], "emit_person");
     assert!(req.get("response_format").is_none());
+    assert!(req.get("validation_schema").is_none());
 }
 
 #[test]
@@ -503,6 +505,7 @@ fn test_apply_directive_json_schema_strict() {
                 name: "person".to_string(),
                 schema: serde_json::json!({ "type": "object" }),
             }),
+            validation_schema: None,
         },
     );
     assert_eq!(req["response_format"]["type"], "json_schema");
@@ -519,6 +522,7 @@ fn test_apply_directive_json_object() {
         &structured::StructuredDirective {
             force_tool: None,
             response_format: Some(structured::ResponseFormat::JsonObject),
+            validation_schema: None,
         },
     );
     assert_eq!(req["response_format"]["type"], "json_object");
@@ -537,6 +541,7 @@ fn test_build_chat_request_applies_directive_and_system() {
         Some(&structured::StructuredDirective {
             force_tool: Some("emit_x".to_string()),
             response_format: None,
+            validation_schema: None,
         }),
     );
     assert_eq!(req["messages"][0]["role"], "system");

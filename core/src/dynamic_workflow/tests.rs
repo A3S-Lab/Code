@@ -52,6 +52,64 @@ impl LlmClient for DelayedObjectClient {
     }
 }
 
+#[derive(Clone)]
+struct ForkingDelayedObjectClient {
+    delay: Duration,
+    bound_session: Option<String>,
+    active: Arc<AtomicUsize>,
+    maximum_active: Arc<AtomicUsize>,
+    observed_sessions: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl LlmClient for ForkingDelayedObjectClient {
+    fn fork_for_session(&self, session_id: &str) -> Option<Arc<dyn LlmClient>> {
+        Some(Arc::new(Self {
+            bound_session: Some(session_id.to_string()),
+            ..self.clone()
+        }))
+    }
+
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum_active.fetch_max(active, Ordering::SeqCst);
+        tokio::time::sleep(self.delay).await;
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        self.observed_sessions
+            .lock()
+            .unwrap()
+            .push(self.bound_session.clone().unwrap_or_default());
+        Ok(LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: r#"{"ok":true}"#.to_string(),
+                }],
+                reasoning_content: None,
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some("end_turn".to_string()),
+            token_logprobs: Vec::new(),
+            meta: None,
+        })
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming is not used by this test")
+    }
+}
+
 struct FakeParallelTaskTool;
 
 #[async_trait]
@@ -205,6 +263,7 @@ async function run(ctx, inputs) {
             timeout_ms: Some(PROGRAM_TIMEOUT.as_millis() as u64),
             max_tool_calls: Some(1),
             max_output_bytes: None,
+            max_concurrent_generations: None,
         });
     let run = tokio::spawn(async move {
         runtime
@@ -247,6 +306,135 @@ async function run(ctx, inputs) {
             .is_some_and(|value| value.contains(r#""ok":true"#)),
         "{output}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workflow_generation_fanout_uses_bounded_independent_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum_active = Arc::new(AtomicUsize::new(0));
+    let observed_sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let client = Arc::new(ForkingDelayedObjectClient {
+        delay: Duration::from_millis(150),
+        bound_session: None,
+        active: Arc::clone(&active),
+        maximum_active: Arc::clone(&maximum_active),
+        observed_sessions: Arc::clone(&observed_sessions),
+    });
+    register_generate_object(executor.registry(), client.clone());
+    let context = executor
+        .registry()
+        .context()
+        .with_llm_client(client as Arc<dyn LlmClient>);
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind !== "step" || inputs.step_name !== "generate_object") {
+    throw new Error("unexpected invocation");
+  }
+  return await ctx.tool("generate_object", {
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { ok: { type: "boolean" } },
+      required: ["ok"],
+    },
+    schema_name: "parallel_admission_result",
+    prompt: "Return an object whose ok field is true.",
+    mode: "prompt",
+    max_repair_attempts: 0,
+    timeout_ms: 2000,
+  });
+}
+
+"#;
+    let runtime = Arc::new(
+        DynamicWorkflowRuntime::new(Arc::clone(executor.registry()), context, source)
+            .with_allowed_tools([GENERATE_OBJECT_TOOL.to_string()])
+            .with_limits(DynamicWorkflowScriptLimits {
+                timeout_ms: Some(2_000),
+                max_tool_calls: Some(1),
+                max_output_bytes: None,
+                max_concurrent_generations: Some(2),
+            }),
+    );
+    let invocation = |step_id: &str| StepInvocation {
+        run_id: "bounded-generation-fanout".to_string(),
+        step_id: step_id.to_string(),
+        step_name: GENERATE_OBJECT_TOOL.to_string(),
+        input: json!({}),
+        history: Vec::new(),
+    };
+    let (first, second) = tokio::join!(
+        runtime.run_step(invocation("first")),
+        runtime.run_step(invocation("second")),
+    );
+    assert!(first.is_ok(), "{first:?}");
+    assert!(second.is_ok(), "{second:?}");
+    assert_eq!(maximum_active.load(Ordering::SeqCst), 2);
+    let sessions = observed_sessions.lock().unwrap().clone();
+    assert_eq!(sessions.len(), 2);
+    assert!(sessions.iter().any(|session| session.ends_with(":first")));
+    assert!(sessions.iter().any(|session| session.ends_with(":second")));
+}
+
+#[tokio::test]
+async fn completed_step_recovery_is_bound_to_exact_run_query_and_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_root = dynamic_workflow_store_path(dir.path());
+    tokio::fs::create_dir_all(&store_root).await.unwrap();
+    let store = LocalFileEventStore::new(&store_root);
+    let run_id = "checkpoint-recovery";
+    store
+        .append(
+            run_id,
+            FlowEvent::RunCreated {
+                spec: WorkflowSpec::rust_embedded("test", "v1", "ptc", "run"),
+                input: json!({ "query": "exact inquiry" }),
+            },
+        )
+        .await
+        .unwrap();
+    store.append(run_id, FlowEvent::RunStarted).await.unwrap();
+    store
+        .append(
+            run_id,
+            FlowEvent::StepCompleted {
+                step_id: "checkpoint_initial_retrieval".to_string(),
+                output: json!({ "mode": "inquiry_collection", "evidence": [1] }),
+            },
+        )
+        .await
+        .unwrap();
+
+    let recovered = recover_dynamic_workflow_step_output(
+        dir.path(),
+        run_id,
+        "exact inquiry",
+        "checkpoint_initial_retrieval",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(recovered["mode"], "inquiry_collection");
+    assert!(recover_dynamic_workflow_step_output(
+        dir.path(),
+        run_id,
+        "different inquiry",
+        "checkpoint_initial_retrieval",
+    )
+    .await
+    .unwrap()
+    .is_none());
+    assert!(recover_dynamic_workflow_step_output(
+        dir.path(),
+        run_id,
+        "exact inquiry",
+        "different_step",
+    )
+    .await
+    .unwrap()
+    .is_none());
 }
 
 #[tokio::test]

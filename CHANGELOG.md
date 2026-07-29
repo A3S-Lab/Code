@@ -9,12 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a quality-gated `web_search` cascade that runs native APIs first,
+  conventional HTTP/RSS engines only when needed, and lazily initializes
+  headless engines as the final tier. Search metadata now retains tier quality,
+  engine outcomes, attempt duration, retry context, and session-scoped circuit
+  state.
+- Added exact durable dynamic-workflow step recovery bound to the run id,
+  original query, and completed step id, plus an optional
+  `maxConcurrentGenerations` limit of 1-4 for independently session-forked
+  `generate_object` steps.
+- Added host-only structured-response validation schemas and an explicit LLM
+  client capability for distinct non-streaming transports, allowing composite
+  clients to validate complete streamed JSON without presenting the same
+  streaming path as an independent fallback.
 - Added a pure-Go v6 SDK backed by a long-lived, capability-checked Rust bridge,
   covering sessions, lossless events, direct tools, run observation,
   verification, persistence, Skills, and MCP without requiring CGO.
 - Added version-matched x86-64 Linux, macOS, and Windows bridge release assets
   with SHA-256 checksums, Go protocol-alignment checks, CI integration, and
   bilingual website documentation.
+
+### Changed
+
+- `web_fetch` now preserves typed transport, timeout, HTTP 429, and
+  `Retry-After` evidence instead of deriving retry guidance from rendered error
+  messages.
+- `generate_object` forwards its governed active-generation timeout through
+  the invocation gateway and holds that deadline across bounded schema repair.
 
 ## [6.5.2] - 2026-07-28
 

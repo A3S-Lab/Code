@@ -17,7 +17,7 @@ a3s-common = { version = "0.1.1", path = "../../common" }
 a3s-memory = { version = "0.1.2", path = "../../memory" }
 a3s-lane = { version = "0.5", path = "../../lane" }
 a3s-search = { version = "2.1.0", path = "../../search", default-features = false, features = ["lightpanda"] }
-a3s-flow = { version = "0.4.3", path = "../../flow" }
+a3s-flow = "0.4.3"
 
 # Async runtime
 tokio = { version = "1.35", features = [
@@ -86,7 +86,7 @@ shell-words = "1.1"
 # HTML to text/markdown conversion
 html2text = "0.16"
 htmd = "0.5"
-pdf-extract = "0.12"
+lopdf = "0.42"
 roxmltree = "0.20"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 cfb = "0.14"
@@ -149,8 +149,6 @@ s3 = [
 serve = ["dep:cron"]
 
 [dev-dependencies]
-# Build deterministic PDF fixtures for web_fetch extraction tests.
-lopdf = "0.42"
 # Deterministically advance the exponential stream-retry backoff in async tests.
 tokio = { version = "1.35", features = ["test-util"] }
 # HTTP mocking for the RemoteGitBackend (and any future HTTP-backed workspace

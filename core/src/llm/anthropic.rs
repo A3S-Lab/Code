@@ -308,6 +308,10 @@ impl LlmClient for AnthropicClient {
         structured::NativeStructuredSupport::ForcedTool
     }
 
+    fn has_distinct_non_streaming_transport(&self) -> bool {
+        true
+    }
+
     async fn complete_streaming(
         &self,
         messages: &[Message],
@@ -850,6 +854,7 @@ mod tests {
         let directive = structured::StructuredDirective {
             force_tool: Some("emit_person".to_string()),
             response_format: None,
+            validation_schema: None,
         };
         AnthropicClient::apply_directive(&mut req, &directive);
         assert_eq!(req["tool_choice"]["type"], "tool");
@@ -866,6 +871,7 @@ mod tests {
             &structured::StructuredDirective {
                 force_tool: None,
                 response_format: Some(structured::ResponseFormat::JsonObject),
+                validation_schema: None,
             },
         );
         assert!(req.get("response_format").is_none());

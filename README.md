@@ -210,7 +210,7 @@ the model.
 | Files and directories | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, order-selectable paginated `glob`, and mode-selectable `grep` |
 | Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination |
 | Code intelligence | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools |
-| Web evidence | Multi-engine `web_search` and bounded `web_fetch` with structured failures, fallback, source normalization, and SSRF protections |
+| Web evidence | Quality-gated API → HTTP/RSS → lazy-headless `web_search` with session circuits, plus bounded `web_fetch`, source normalization, and SSRF protections |
 | Composition | Safe `batch`, sandboxed QuickJS `program`, structured `generate_object`, `task`, and `parallel_task` |
 | Extensibility | `Skill`, `search_skills`, namespaced `mcp__<server>__<tool>`, and explicit `dynamic_workflow` |
 
@@ -259,6 +259,12 @@ writing. The dry run is declared read-only and can be safely batched. Apply the
 result with `expected_replacements` and optionally `max_replacements` to reject
 stale or unexpectedly broad changes before the compare-and-swap write.
 
+Web evidence keeps retry decisions typed. `web_search` records tier quality,
+engine outcomes, durations, circuit state, and retry context; `web_fetch`
+classifies transport failures and HTTP 429 separately and preserves a
+parseable `Retry-After` delay. Neither path infers retryability from rendered
+error prose.
+
 ### Sandbox and credential boundaries
 
 Hosts can attach a `BashSandbox`. The fail-closed local `SrtBashSandbox` limits
@@ -290,8 +296,11 @@ result or conversation turn.
 Model adapters normalize text, reasoning, images, tool calls, token usage,
 streaming, cancellation, and retries. Structured generation uses native
 provider response formats when available and schema validation plus repair
-otherwise. MCP supports stdio, SSE, streamable HTTP, OAuth client credentials,
-refresh, and live session-scoped add/remove operations.
+otherwise. Provider-facing schemas remain available as host-only validation
+metadata for composite streaming clients, and clients explicitly declare
+whether a blocking structured call uses a transport independent from their
+streaming path. MCP supports stdio, SSE, streamable HTTP, OAuth client
+credentials, refresh, and live session-scoped add/remove operations.
 
 ## Orchestration without hidden authority
 
@@ -306,6 +315,11 @@ refresh, and live session-scoped add/remove operations.
   recursion, call-count, and output limits.
 - `dynamic_workflow` is absent from a plain session until the host registers an
   A3S Flow-backed runtime.
+
+Dynamic workflows can bound independently session-forked structured generation
+with `maxConcurrentGenerations` (1-4); providers without session forking remain
+single-flight. Durable completed-step recovery is bound to the exact run id,
+original query, and step id rather than acting as a cross-run query cache.
 
 Delegated tasks, workflows, and Skill child runs retain the parent sandbox and
 intersect local permission policy with the parent checker. A child auto-approve
