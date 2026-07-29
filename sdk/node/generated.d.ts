@@ -882,7 +882,10 @@ export interface RetentionLimitsObject {
    * snapshot's cumulative `eventCount` is not decremented.
    */
   maxEventsPerRun?: number
-  /** Cap on serialized event bytes retained per run. */
+  /**
+   * Cap on serialized event bytes retained per run. Oldest records are
+   * dropped until both the count and byte caps are satisfied.
+   */
   maxEventBytesPerRun?: number
   /** Cap on events retained in InMemoryTraceSink. */
   maxTraceEvents?: number

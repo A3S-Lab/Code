@@ -1,0 +1,32 @@
+---
+title: '上下文'
+description: '可靠编程智能体的预算化上下文组装'
+---
+
+# 上下文
+
+A3S Code 把上下文当作有预算的资源。
+
+上下文来源包括用户 prompt、历史、AGENTS.md、skills、memory、文件搜索、直接工具结果、MCP、委派子运行摘要和 trace event。AGENTS.md 注入、skills discovery、memory API、直接工具结果、委派 helper 和 `traceEvents()` 属于 Node SDK 文档表面；MCP context 行为应针对你的 live integration 单独验证。
+
+```text
+sources -> ContextItem -> rank -> dedupe -> budget -> render
+```
+
+长 grep 输出、日志和委派子运行 transcript 不应直接塞进 prompt；应保存在 prompt 之外，再总结成适合 prompt 的证据。紧凑运行证据可通过 `session.traceEvents()` 获取。
+
+## 上下文压缩
+
+长会话可启用自动压缩：
+
+```ts
+const session = agent.session('/repo', {
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  maxContextTokens: 128_000,
+});
+```
+
+未设置 `maxContextTokens` 时，Core 会优先使用当前模型声明的上下文窗口。每次模型请求前，Core 会统计 system prompt、会话消息、工具调用与结果以及暴露给模型的工具 schema；达到阈值后，它会限制过大的工具输出、总结较早且边界安全的消息、保留近期消息，并继续当前任务。压缩摘要还会参与后续压缩，因此长会话可以持续滚动压缩；这不会扩大模型单次请求的物理上下文窗口。压缩成功时，`context_compacted` 事件会携带累计摘要，使用外部历史的宿主可以把同一压缩代持久化到后续轮次。
+
+Python SDK 中对应的字段是 `max_context_tokens`。

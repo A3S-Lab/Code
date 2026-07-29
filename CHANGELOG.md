@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.6.0] - 2026-07-29
+
 ### Added
 
 - Added a quality-gated `web_search` cascade that runs native APIs first,

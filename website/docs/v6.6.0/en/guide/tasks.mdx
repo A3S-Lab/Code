@@ -1,0 +1,185 @@
+---
+title: 'Tasks'
+description: 'Manual and automatic delegation with task, parallel_task, and subagents'
+---
+
+# Tasks
+
+The routine multi-agent path is the `task` and `parallel_task` tool pair. They keep child context isolated from the parent conversation and return compact results instead of full transcripts.
+
+The same delegation core also powers automatic subagent delegation. Enable it
+when the runtime should proactively start specialist child agents for
+high-confidence work, and disable only automatic parallel fan-out with
+`autoParallel: false` when you want serial automatic delegation.
+
+Web clients can present these states as a plan and a separate list of child-agent
+runs, keyed by task ID.
+
+## Built-in Subagents
+
+| Agent                         | Use it for                                                                              |
+| ----------------------------- | --------------------------------------------------------------------------------------- |
+| `explore`                     | Read-only codebase search, file inspection, and structure discovery.                    |
+| `plan`                        | Read-only implementation plans and architecture analysis.                               |
+| `general` / `general-purpose` | Multi-step implementation work with read/write/command access.                          |
+| `verification`                | Focused checks, reproductions, regression validation, and adversarial testing.          |
+| `review`                      | Findings-first code review for correctness, regressions, security, and maintainability. |
+
+You can mention them explicitly, for example `@review`, `@agent-plan`, `use the verification subagent`, or `delegate to general-purpose`.
+
+## Manual Delegation
+
+Ask the parent agent to delegate a bounded job:
+
+```text
+Use task to ask an explore agent to inspect the auth module.
+Return files inspected, findings, risks, and confidence.
+```
+
+If the host already knows the task boundary, call the same core tool directly:
+
+```ts
+const task = await session.task({
+  agent: 'explore',
+  description: 'Inspect auth module',
+  prompt: 'Return files inspected, findings, risks, and confidence.',
+});
+if (task.exitCode !== 0) throw new Error(task.output);
+console.log(task.output);
+```
+
+A child agent should return a compact contract:
+
+- summary
+- files inspected or changed
+- evidence references
+- risks and unknowns
+- confidence
+
+The parent should not ingest the full child transcript.
+
+## Parallel Delegation
+
+Use `parallel_task` or `session.tasks(...)` when independent work can run concurrently:
+
+```text
+Run parallel_task with three lanes:
+1. inspect provider config parsing
+2. inspect Node SDK declarations
+3. inspect release scripts
+
+Merge the results into one release-readiness report.
+```
+
+```ts
+const batch = await session.tasks([
+  {
+    agent: 'explore',
+    description: 'Inspect config',
+    prompt: 'Check provider parsing.',
+  },
+  {
+    agent: 'verification',
+    description: 'Verify SDK',
+    prompt: 'Check SDK declarations.',
+  },
+]);
+if (batch.exitCode !== 0) throw new Error(batch.output);
+console.log(batch.output);
+```
+
+Each `parallel_task` call requires at least two independent foreground tasks
+and accepts at most 32. A branch cannot request `background`; the parent call
+already owns concurrent execution and result collection. By default every
+branch must succeed. Set `allow_partial_failure` only for evidence-gathering
+work that can use incomplete results; `min_success_count` is available only in
+that mode and must not exceed the submitted task count.
+
+`session.task(...)` and `session.tasks(...)` return `ToolResult` values from the
+`task` and `parallel_task` tools. Read `output` for the compact child summary
+and check `exitCode` before treating the result as successful. `maxParallelTasks`
+in session options and `max_parallel_tasks` in ACL bound sibling fan-out.
+
+## Automatic Delegation
+
+Automatic delegation is opt-in. The runtime scores the current request against built-in and custom agent descriptions, then launches up to `maxTasks` child runs when confidence is high enough.
+
+```ts
+const session = agent.session('/repo', {
+  autoDelegation: { enabled: true, minConfidence: 0.72, maxTasks: 4 },
+  maxParallelTasks: 8,
+  autoParallel: false,
+});
+```
+
+```acl
+auto_delegation {
+  enabled        = true
+  auto_parallel  = false
+  min_confidence = 0.72
+  max_tasks      = 4
+}
+```
+
+`autoParallel: false` / `auto_parallel = false` is the global kill switch for automatic parallel child-agent fan-out. Manual `parallel_task` and `session.tasks(...)` remain available.
+
+## Agent Directories
+
+Load custom agent definitions through `agentDirs`, `agent_dirs`, or the built-in A3S directories:
+
+```ts
+const session = agent.session('/repo', { agentDirs: ['./.a3s/agents'] });
+const loaded = session.registerAgentDir('./more-agents');
+```
+
+A3S scans configured `agent_dirs`, project/user `.a3s/agents`, and Claude-compatible `.claude/agents` migration paths. Prefer `.a3s/agents` for new projects.
+
+Markdown agent files support frontmatter:
+
+```markdown
+---
+name: docs-auditor
+description: Use proactively after documentation changes
+tools: Read, Grep, Glob
+disallowedTools:
+  - Write
+  - Bash(rm:*)
+---
+
+Audit docs for drift, broken examples, and unclear migration notes.
+```
+
+The `tools` field is an allowlist. `disallowedTools` is a denylist and wins over allowed tools. Model routing fields are intentionally outside this compatibility layer.
+
+## Worker Agents
+
+Register disposable worker agents with `workerAgents` or `registerWorkerAgent()`:
+
+```ts
+const session = agent.session('/repo', {
+  workerAgents: [
+    {
+      name: 'frontend-worker',
+      description: 'Small verified frontend fixes',
+      kind: 'implementer',
+      model: 'provider/model-id',
+      maxSteps: 24,
+      confirmationInheritance: 'auto_approve',
+    },
+  ],
+});
+```
+
+### Confirmation Inheritance
+
+Control how child runs resolve Ask decisions with `confirmationInheritance`:
+
+- `'auto_approve'` (default): child runs auto-approve all Ask decisions
+- `'deny_on_ask'`: child runs fail immediately when encountering an Ask
+- `'inherit_parent'`: child runs inherit the parent's confirmation policy
+
+Legacy lifecycle control-plane APIs are removed. Applications that need UI state should consume streaming events, run replay, and Node `cancelRun(runId)`.
+
+## Programmable orchestration
+
+Everything on this page is model-driven: `task` / `parallel_task`, `session.task(...)` / `session.tasks(...)`, and auto-delegation let the LLM decide when and how to fan out. When the host already knows the shape of the work and wants it to be deterministic and reproducible, express it programmatically instead with `session.parallel(...)`, `session.pipeline(...)`, and `session.parallelResumable(...)`. See [Orchestration](/guide/orchestration) for developer-expressed fan-out, barrier-free pipelines, and resumable/migratable workflows.

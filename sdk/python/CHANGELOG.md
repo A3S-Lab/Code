@@ -4,10 +4,18 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.6.0] - 2026-07-29
+
 ### Added
 
 - Added `HostEnvConfig` and `SessionOptions.host_env` for deterministic ID and
   clock replay parity with Rust, Node.js, and Go.
+
+### Changed
+
+- Updated the bundled Core with quality-gated search tiers, typed web-fetch
+  failures, bounded session-forked workflow generation, exact durable step
+  recovery, and structured transport validation contracts.
 
 ## [6.5.2] - 2026-07-28
 

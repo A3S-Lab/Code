@@ -1000,7 +1000,7 @@ function RuntimeExecutionFlow({ labels }: { labels: (typeof copy)[Locale] }) {
           <TuiWordmark />
         </div>
         <p className="a3s-tui-meta">
-          <span>a3s-code v6.5.2</span>
+          <span>a3s-code v6.6.0</span>
           <i>·</i>
           <span>openai/gpt-5</span>
           <i>·</i>
