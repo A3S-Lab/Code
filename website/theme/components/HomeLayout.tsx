@@ -13,6 +13,7 @@ import {
 } from 'codehike/utils/selection';
 import { CanvasGridEffect } from './CanvasGridEffect';
 import { InstallSwitcher } from './InstallSwitcher';
+import { PremiumInteractions } from './PremiumInteractions';
 import runtimeTutorialData from '../generated/runtime-tutorial.json';
 
 type Locale = 'zh' | 'en';
@@ -1395,6 +1396,7 @@ export function HomeLayout() {
 
   return (
     <main className="a3s-home">
+      <PremiumInteractions />
       <section className="a3s-hero">
         <div className="a3s-hero-copy">
           <div className="a3s-eyebrow">
@@ -1429,7 +1431,7 @@ export function HomeLayout() {
           <CanvasGridEffect
             cellSize={42}
             className="a3s-hero-canvas"
-            intensity={0.72}
+            intensity={0.9}
           />
           <RuntimeExecutionFlow labels={labels} />
         </div>

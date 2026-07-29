@@ -8,12 +8,14 @@ type CanvasGridEffectProps = {
 
 type GridWave = {
   bornAt: number;
+  strength: number;
   x: number;
   y: number;
 };
 
 const GRID_TINT = [125, 182, 255] as const;
-const WAVE_LIFETIME = 1_250;
+const WAVE_LIFETIME = 1_650;
+const AMBIENT_WAVE_INTERVAL = 3_800;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
@@ -51,6 +53,7 @@ export function CanvasGridEffect({
     let previousPointer = { x: -cellSize, y: -cellSize };
     let pointer = { x: -cellSize * 4, y: -cellSize * 4 };
     let waves: GridWave[] = [];
+    let ambientWaveIndex = 0;
     let width = 1;
     let height = 1;
     let pixelRatio = 1;
@@ -98,47 +101,75 @@ export function CanvasGridEffect({
 
           for (const wave of activeWaves) {
             const progress = clamp((now - wave.bornAt) / WAVE_LIFETIME, 0, 1);
-            const radius = progress * maxDimension * 0.72;
+            const radius = progress * maxDimension * 0.78;
             const distance = Math.hypot(centerX - wave.x, centerY - wave.y);
             const ring = Math.exp(
-              -Math.pow((distance - radius) / (cellSize * 1.35), 2),
+              -Math.pow((distance - radius) / (cellSize * 1.5), 2),
             );
-            waveLift = Math.max(waveLift, ring * (1 - progress));
+            waveLift = Math.max(
+              waveLift,
+              ring * (1 - progress) * wave.strength,
+            );
           }
 
-          const lift = clamp(pointerLift * 0.58 + waveLift, 0, 1);
-          const inset = 4 - lift * 2.2;
-          const offsetY = -lift * 4;
-          const alpha = intensity * (0.018 + lift * 0.16);
-          const fillAlpha = intensity * lift * 0.025;
+          const lift = clamp(pointerLift * 0.66 + waveLift, 0, 1);
+          const inset = 4 - lift * 2.35;
+          const offsetY = -lift * 7;
+          const alpha = intensity * (0.035 + lift * 0.22);
+          const fillAlpha = intensity * (0.004 + lift * 0.045);
+          const tileX = column * cellSize + inset;
+          const tileY = row * cellSize + inset + offsetY;
+          const tileWidth = cellSize - inset * 2;
+          const depth = lift * 5;
+
+          if (depth > 0.25) {
+            drawingContext.fillStyle = `rgba(${GRID_TINT.join(', ')}, ${intensity * lift * 0.055})`;
+            drawingContext.beginPath();
+            drawingContext.moveTo(tileX, tileY + tileWidth);
+            drawingContext.lineTo(tileX + tileWidth, tileY + tileWidth);
+            drawingContext.lineTo(tileX + tileWidth, tileY + tileWidth + depth);
+            drawingContext.lineTo(tileX, tileY + tileWidth + depth);
+            drawingContext.closePath();
+            drawingContext.fill();
+
+            drawingContext.fillStyle = `rgba(${GRID_TINT.join(', ')}, ${intensity * lift * 0.035})`;
+            drawingContext.beginPath();
+            drawingContext.moveTo(tileX + tileWidth, tileY);
+            drawingContext.lineTo(tileX + tileWidth, tileY + tileWidth);
+            drawingContext.lineTo(tileX + tileWidth, tileY + tileWidth + depth);
+            drawingContext.lineTo(tileX + tileWidth + depth, tileY + depth);
+            drawingContext.closePath();
+            drawingContext.fill();
+          }
+
+          drawingContext.fillStyle = `rgba(${GRID_TINT.join(', ')}, ${fillAlpha})`;
+          drawingContext.fillRect(tileX, tileY, tileWidth, tileWidth);
 
           drawingContext.strokeStyle = `rgba(${GRID_TINT.join(', ')}, ${alpha})`;
           drawingContext.lineWidth = 1;
-          drawingContext.strokeRect(
-            column * cellSize + inset,
-            row * cellSize + inset + offsetY,
-            cellSize - inset * 2,
-            cellSize - inset * 2,
-          );
-
-          if (fillAlpha > 0.002) {
-            drawingContext.fillStyle = `rgba(${GRID_TINT.join(', ')}, ${fillAlpha})`;
-            drawingContext.fillRect(
-              column * cellSize + inset,
-              row * cellSize + inset + offsetY,
-              cellSize - inset * 2,
-              cellSize - inset * 2,
-            );
-          }
+          drawingContext.strokeRect(tileX, tileY, tileWidth, tileWidth);
         }
       }
 
       if (activeWaves.length > 0) scheduleDraw();
     }
 
-    const addWave = (x: number, y: number, now: number) => {
-      waves = [...waves.slice(-3), { bornAt: now, x, y }];
+    const addWave = (x: number, y: number, now: number, strength = 1) => {
+      waves = [...waves.slice(-4), { bornAt: now, strength, x, y }];
       lastWaveAt = now;
+      scheduleDraw();
+    };
+
+    const addAmbientWave = () => {
+      if (reducedMotion || !isVisible || isPointerInside) return;
+      const positions = [
+        [0.72, 0.3],
+        [0.28, 0.62],
+        [0.58, 0.78],
+      ] as const;
+      const [xRatio, yRatio] = positions[ambientWaveIndex % positions.length];
+      ambientWaveIndex += 1;
+      addWave(width * xRatio, height * yRatio, performance.now(), 0.58);
     };
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -152,7 +183,7 @@ export function CanvasGridEffect({
       pointer = { x, y };
       isPointerInside = true;
       if (distance > cellSize * 1.25 && now - lastWaveAt > 90) {
-        addWave(x, y, now);
+        addWave(x, y, now, 1);
         previousPointer = { x, y };
       }
       scheduleDraw();
@@ -181,9 +212,17 @@ export function CanvasGridEffect({
     host.addEventListener('pointermove', handlePointerMove);
     host.addEventListener('pointerleave', handlePointerLeave);
     resize();
+    if (!reducedMotion) {
+      addWave(width * 0.72, height * 0.32, performance.now(), 0.62);
+    }
+    const ambientWaveTimer = window.setInterval(
+      addAmbientWave,
+      AMBIENT_WAVE_INTERVAL,
+    );
 
     return () => {
       window.cancelAnimationFrame(frame);
+      window.clearInterval(ambientWaveTimer);
       resizeObserver.disconnect();
       intersectionObserver.disconnect();
       motionPreference.removeEventListener('change', handleMotionChange);
