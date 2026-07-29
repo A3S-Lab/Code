@@ -18,7 +18,8 @@
   },
   "dependencies": {
     "@rspress/core": "^2.0.17",
-    "codehike": "^1.1.0"
+    "codehike": "^1.1.0",
+    "simple-icons": "^16.27.1"
   },
   "devDependencies": {
     "@rslint/core": "^0.5.3",

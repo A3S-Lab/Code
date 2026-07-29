@@ -371,105 +371,245 @@ body {
   padding-top: 44px;
 }
 
-.a3s-install-tabs {
-  display: flex;
+.a3s-install-console {
+  overflow: hidden;
+  border: 1px solid #313844;
+  border-radius: 10px;
+  background: #0d1015;
+  box-shadow:
+    0 18px 50px rgba(0, 0, 0, 0.28),
+    inset 0 1px rgba(255, 255, 255, 0.035);
+}
+
+.a3s-install-platforms {
+  display: grid;
   overflow-x: auto;
-  max-width: 100%;
-  width: fit-content;
-  border: 1px solid var(--a3s-line);
-  border-bottom: 0;
-  background: rgba(11, 11, 13, 0.85);
+  overflow-y: hidden;
+  border-bottom: 1px solid #29313b;
+  background: #0c1016;
+  grid-template-columns: repeat(6, minmax(72px, 1fr));
+  scrollbar-color: #3c4755 transparent;
   scrollbar-width: thin;
 }
 
-.a3s-install-tabs button {
-  flex: 0 0 auto;
-  min-height: 36px;
-  padding: 0 15px;
-  border: 0;
-  border-right: 1px solid var(--a3s-line);
-  background: transparent;
-  color: var(--a3s-faint);
-  cursor: pointer;
-  font-family: var(--a3s-mono);
-  font-size: 11px;
-  letter-spacing: 0.035em;
+.a3s-install-code::-webkit-scrollbar {
+  display: none;
 }
 
-.a3s-install-tabs button:last-child {
+.a3s-install-platforms button {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 58px;
+  padding: 8px 6px 7px;
+  border: 0;
+  border-right: 1px solid #29313b;
+  background: transparent;
+  color: #67717e;
+  cursor: pointer;
+  justify-items: center;
+  gap: 5px;
+  font-family: var(--a3s-mono);
+}
+
+.a3s-install-platforms button:last-child {
   border-right: 0;
 }
 
-.a3s-install-tabs button:hover,
-.a3s-install-tabs button.is-active {
-  background: #17191e;
-  color: var(--a3s-text);
-}
-
-.a3s-command {
-  position: relative;
-  display: flex;
-  min-height: 92px;
-  padding: 18px 118px 18px 20px;
-  border: 1px solid var(--a3s-line);
-  background:
-    linear-gradient(90deg, rgba(108, 163, 255, 0.045), transparent 45%), #101115;
-  align-items: center;
-}
-
-.a3s-command::before {
-  margin-right: 12px;
-  color: var(--a3s-green);
-  content: '$';
-  font-family: var(--a3s-mono);
-  font-size: 13px;
-}
-
-.a3s-command pre {
-  overflow: auto;
-  min-width: 0;
-  max-width: 100%;
-  margin: 0;
-  color: #dce2ec;
-  font-family: var(--a3s-mono);
-  font-size: 12px;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-.a3s-copy-button {
+.a3s-install-platforms button::after {
   position: absolute;
-  top: 50%;
-  right: 15px;
+  right: 10px;
+  bottom: -1px;
+  left: 10px;
+  height: 2px;
+  background: linear-gradient(90deg, #7668e8, #72b9e9);
+  content: '';
+  opacity: 0;
+  transform: scaleX(0.3);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.a3s-install-target-icons {
   display: flex;
-  min-width: 84px;
-  min-height: 34px;
-  border: 1px solid var(--a3s-line);
-  background: #17191e;
-  color: var(--a3s-muted);
+  height: 23px;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.a3s-home .a3s-install-target-icons svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: none;
+}
+
+.a3s-home .a3s-install-target-icons:has(svg + svg) svg {
+  width: 17px;
+  height: 17px;
+}
+
+.a3s-home .a3s-install-platforms button:last-child svg {
+  width: 27px;
+}
+
+.a3s-home .a3s-install-target-icons path {
+  stroke: none;
+}
+
+.a3s-install-platforms button > strong {
+  overflow: hidden;
+  max-width: 100%;
+  font-size: 8px;
+  font-weight: 520;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-install-platforms button:hover {
+  background: rgba(125, 182, 255, 0.045);
+  color: #b5c0cd;
+}
+
+.a3s-install-platforms button.is-active {
+  background: linear-gradient(
+    180deg,
+    rgba(125, 182, 255, 0.095),
+    rgba(71, 100, 144, 0.025)
+  );
+  color: #edf2f8;
+}
+
+.a3s-install-platforms button.is-active::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.a3s-install-platforms button:focus-visible,
+.a3s-install-copy:focus-visible,
+.a3s-install-code:focus-visible {
+  z-index: 3;
+  outline: 2px solid rgba(125, 182, 255, 0.75);
+  outline-offset: -2px;
+}
+
+.a3s-install-panel {
+  background: rgba(9, 12, 17, 0.84);
+}
+
+.a3s-install-panel-meta {
+  display: flex;
+  min-height: 46px;
+  padding: 7px 9px 7px 13px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.a3s-install-panel-meta > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.a3s-install-panel-meta > span strong {
+  overflow: hidden;
+  color: #c4ced9;
+  font-family: var(--a3s-mono);
+  font-size: 9.5px;
+  font-weight: 540;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-install-panel-meta > span small {
+  color: #596676;
+  font-family: var(--a3s-mono);
+  font-size: 7px;
+  letter-spacing: 0.08em;
+}
+
+.a3s-install-copy {
+  display: inline-flex;
+  min-width: 70px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid #35404d;
+  border-radius: 6px;
+  background: #151a21;
+  color: #9da8b5;
   cursor: pointer;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  font-family: inherit;
-  font-size: 12px;
-  transform: translateY(-50%);
-}
-
-.a3s-copy-button:hover {
-  border-color: var(--a3s-line-strong);
-  color: var(--a3s-text);
-}
-
-.a3s-install-locale {
-  position: absolute;
-  right: 8px;
-  bottom: -26px;
-  color: #454a54;
+  gap: 6px;
   font-family: var(--a3s-mono);
   font-size: 9px;
-  letter-spacing: 0.18em;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.a3s-install-copy:hover {
+  border-color: #56687b;
+  background: #1b222b;
+  color: #e0e7ef;
+  transform: translateY(-1px);
+}
+
+.a3s-install-copy.is-copied {
+  border-color: rgba(85, 197, 143, 0.42);
+  color: #75d9aa;
+}
+
+.a3s-install-code {
+  display: grid;
+  height: 78px;
+  overflow: auto;
+  padding: 8px 12px;
+  border-top: 1px solid #252c35;
+  background:
+    linear-gradient(90deg, rgba(125, 182, 255, 0.035), transparent 44%),
+    rgba(5, 8, 12, 0.8);
+  align-content: center;
+  scrollbar-width: none;
+}
+
+.a3s-install-code > div {
+  display: grid;
+  min-width: max-content;
+  min-height: 20px;
+  align-items: baseline;
+  gap: 10px;
+  grid-template-columns: 24px max-content;
+}
+
+.a3s-install-code > div > span {
+  color: #55c58f;
+  font-family: var(--a3s-mono);
+  font-size: 9.5px;
+  text-align: right;
+}
+
+.a3s-install-code code {
+  color: #d6dde6;
+  font-family: var(--a3s-mono);
+  font-size: 9.5px;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.a3s-hero-canvas {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  inset: 0;
+  pointer-events: none;
 }
 
 .a3s-hero-visual {
@@ -487,6 +627,17 @@ body {
     rgba(7, 8, 10, 0.58);
   align-items: center;
   justify-content: center;
+}
+
+.a3s-hero-canvas {
+  z-index: 2;
+  opacity: 0.52;
+  mix-blend-mode: screen;
+}
+
+.a3s-hero-visual > .a3s-runtime-inspector {
+  position: relative;
+  z-index: 1;
 }
 
 .a3s-runtime-visual {
@@ -1952,30 +2103,35 @@ body {
     padding-top: 34px;
   }
 
-  .a3s-install-tabs {
-    width: 100%;
+  .a3s-install-console {
+    border-radius: 8px;
   }
 
-  .a3s-install-tabs button {
-    min-width: 0;
-    padding: 0 11px;
-    font-size: 9.5px;
+  .a3s-install-platforms {
+    display: grid;
+    overflow: visible;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .a3s-command {
-    min-height: 112px;
-    padding: 16px 54px 16px 14px;
+  .a3s-install-platforms button {
+    min-height: 56px;
   }
 
-  .a3s-copy-button {
-    right: 10px;
-    min-width: 34px;
-    padding: 0;
-    font-size: 0;
+  .a3s-install-platforms button:nth-child(-n + 3) {
+    border-bottom: 1px solid #29313b;
   }
 
-  .a3s-copy-button span {
-    font-size: 14px;
+  .a3s-install-platforms button:nth-child(3) {
+    border-right: 0;
+  }
+
+  .a3s-install-panel-meta {
+    padding-left: 11px;
+  }
+
+  .a3s-install-code {
+    padding-right: 11px;
+    padding-left: 11px;
   }
 
   .a3s-hero-visual {

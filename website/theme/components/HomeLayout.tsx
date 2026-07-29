@@ -11,6 +11,8 @@ import {
   SelectionProvider,
   useSelectedIndex,
 } from 'codehike/utils/selection';
+import { CanvasGridEffect } from './CanvasGridEffect';
+import { InstallSwitcher } from './InstallSwitcher';
 import runtimeTutorialData from '../generated/runtime-tutorial.json';
 
 type Locale = 'zh' | 'en';
@@ -43,41 +45,6 @@ type RuntimeTutorialStep = {
 
 const runtimeTutorialSteps =
   runtimeTutorialData as unknown as RuntimeTutorialStep[];
-
-const installCommands = [
-  {
-    id: 'unix',
-    label: 'macOS / Linux',
-    command:
-      "curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.sh | sh\n\na3s code",
-  },
-  {
-    id: 'windows',
-    label: 'Windows',
-    command:
-      '[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\nirm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex\n\na3s code',
-  },
-  {
-    id: 'rust',
-    label: 'Rust',
-    command: 'cargo add a3s-code-core',
-  },
-  {
-    id: 'node',
-    label: 'Node.js',
-    command: 'npm install @a3s-lab/code',
-  },
-  {
-    id: 'python',
-    label: 'Python',
-    command: 'python -m pip install a3s-code',
-  },
-  {
-    id: 'go',
-    label: 'Go',
-    command: 'go get github.com/A3S-Lab/Code/sdk/go/v6',
-  },
-] as const;
 
 const governanceFeatures: Feature[] = [
   {
@@ -438,6 +405,7 @@ const copy = {
     github: '查看 GitHub',
     copy: '复制',
     copied: '已复制',
+    installTabs: '选择安装平台',
     turn: '一次 Agent 执行会经过什么',
     proposal: '模型请求调用工具',
     governed: '执行前检查',
@@ -550,6 +518,7 @@ const copy = {
     github: 'View on GitHub',
     copy: 'Copy',
     copied: 'Copied',
+    installTabs: 'Choose an install target',
     turn: 'What happens during one agent turn',
     proposal: 'The model requests a tool',
     governed: 'Checks before execution',
@@ -680,64 +649,6 @@ function GitHubIcon() {
     <svg aria-hidden="true" viewBox="0 0 24 24">
       <path d="M12 .8A11.5 11.5 0 0 0 8.36 23.2c.58.1.79-.25.79-.56v-2.2c-3.22.7-3.9-1.36-3.9-1.36-.52-1.34-1.28-1.7-1.28-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.78 2.71 1.27 3.37.97.1-.75.4-1.27.73-1.56-2.57-.3-5.28-1.3-5.28-5.7 0-1.27.45-2.3 1.19-3.11-.12-.3-.52-1.48.11-3.07 0 0 .97-.31 3.16 1.19a10.86 10.86 0 0 1 5.76 0c2.2-1.5 3.16-1.19 3.16-1.19.63 1.6.23 2.77.11 3.07.74.81 1.19 1.84 1.19 3.1 0 4.43-2.71 5.4-5.29 5.69.42.36.79 1.07.79 2.16v3.2c0 .31.21.67.8.55A11.5 11.5 0 0 0 12 .8Z" />
     </svg>
-  );
-}
-
-function InstallSwitcher({
-  locale,
-  labels,
-}: {
-  locale: Locale;
-  labels: (typeof copy)[Locale];
-}) {
-  const [activeId, setActiveId] =
-    useState<(typeof installCommands)[number]['id']>('unix');
-  const [copied, setCopied] = useState(false);
-  const active =
-    installCommands.find((item) => item.id === activeId) ?? installCommands[0];
-
-  async function copyActiveCommand() {
-    await navigator.clipboard.writeText(active.command);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
-  }
-
-  return (
-    <div className="a3s-install">
-      <div className="a3s-install-tabs" role="tablist" aria-label="Install">
-        {installCommands.map((item) => (
-          <button
-            aria-selected={active.id === item.id}
-            className={active.id === item.id ? 'is-active' : undefined}
-            key={item.id}
-            onClick={() => {
-              setActiveId(item.id);
-              setCopied(false);
-            }}
-            role="tab"
-            type="button"
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-      <div className="a3s-command" role="tabpanel">
-        <pre>
-          <code>{active.command}</code>
-        </pre>
-        <button
-          className="a3s-copy-button"
-          onClick={copyActiveCommand}
-          type="button"
-        >
-          <span aria-hidden="true">{copied ? '✓' : '⧉'}</span>
-          {copied ? labels.copied : labels.copy}
-        </button>
-      </div>
-      <span className="a3s-install-locale" aria-hidden="true">
-        {locale === 'zh' ? 'ZH' : 'EN'}
-      </span>
-    </div>
   );
 }
 
@@ -1512,9 +1423,14 @@ export function HomeLayout() {
               {labels.github}
             </a>
           </div>
-          <InstallSwitcher labels={labels} locale={locale} />
+          <InstallSwitcher labels={labels} />
         </div>
         <div className="a3s-hero-visual">
+          <CanvasGridEffect
+            cellSize={42}
+            className="a3s-hero-canvas"
+            intensity={0.72}
+          />
           <RuntimeExecutionFlow labels={labels} />
         </div>
       </section>
