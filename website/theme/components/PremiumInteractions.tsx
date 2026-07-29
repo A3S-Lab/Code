@@ -70,7 +70,7 @@ export function PremiumInteractions() {
         clearActiveSurface();
       }
 
-      if (hero) {
+      if (hero && target && hero.contains(target)) {
         const bounds = hero.getBoundingClientRect();
         const x = ((pointer.clientX - bounds.left) / bounds.width) * 100;
         const y = ((pointer.clientY - bounds.top) / bounds.height) * 100;
@@ -82,6 +82,9 @@ export function PremiumInteractions() {
           '--a3s-hero-y',
           `${Math.max(0, Math.min(y, 100))}%`,
         );
+      } else {
+        hero?.style.removeProperty('--a3s-hero-x');
+        hero?.style.removeProperty('--a3s-hero-y');
       }
     };
 

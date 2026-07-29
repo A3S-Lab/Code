@@ -26,17 +26,34 @@
     rgba(91, 212, 195, 0.2) 68%,
     transparent 100%
   );
-  background-size: 220% 100%;
   content: '';
-  opacity: 0.7;
+  opacity: 0.58;
   pointer-events: none;
-  animation: a3s-premium-nav-line 12s ease-in-out infinite;
 }
 
 .a3s-home {
   --a3s-premium-blue: 108, 163, 255;
   --a3s-premium-violet: 124, 108, 255;
+  background: var(--a3s-canvas);
   isolation: isolate;
+}
+
+.a3s-global-grid {
+  position: fixed;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  inset: var(--rp-nav-height, 64px) 0 0;
+}
+
+.a3s-global-grid-canvas {
+  position: absolute;
+  display: block;
+  width: 100%;
+  height: 100%;
+  inset: 0;
+  mix-blend-mode: screen;
+  opacity: 0.72;
 }
 
 .a3s-home::after {
@@ -98,30 +115,6 @@
   inset: -16%;
   opacity: 0.82;
   pointer-events: none;
-  animation: a3s-premium-aurora 14s ease-in-out infinite alternate;
-}
-
-.a3s-hero::after {
-  position: absolute;
-  z-index: 4;
-  top: -190px;
-  left: 58%;
-  width: 1px;
-  height: 190px;
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    rgba(148, 202, 255, 0.9) 44%,
-    rgba(118, 103, 255, 0.72) 58%,
-    transparent
-  );
-  box-shadow:
-    0 0 12px rgba(112, 177, 255, 0.62),
-    0 0 32px rgba(108, 125, 255, 0.24);
-  content: '';
-  opacity: 0;
-  pointer-events: none;
-  animation: a3s-premium-hero-rail 7.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 .a3s-hero-copy,
@@ -136,22 +129,20 @@
 
 .a3s-hero h1 > span {
   background: linear-gradient(
-    100deg,
+    105deg,
     #f6f8fb 4%,
-    #8bbcff 32%,
-    #b4a8ff 49%,
-    #f2c66d 65%,
-    #8bbcff 84%,
-    #f6f8fb 100%
+    #8bbcff 38%,
+    #b4a8ff 67%,
+    #f2c66d 100%
   );
   background-clip: text;
-  background-size: 230% auto;
   filter: drop-shadow(0 12px 28px rgba(92, 139, 222, 0.16));
-  animation: a3s-premium-title-shimmer 9s ease-in-out infinite;
 }
 
 .a3s-eyebrow > span {
-  animation: a3s-premium-status-pulse 2.8s ease-in-out infinite;
+  box-shadow:
+    0 0 12px rgba(60, 207, 145, 0.58),
+    0 0 24px rgba(60, 207, 145, 0.12);
 }
 
 .a3s-button--primary {
@@ -165,18 +156,6 @@
     0 16px 44px rgba(91, 74, 232, 0.24),
     0 0 0 1px rgba(139, 182, 255, 0.12),
     inset 0 1px rgba(255, 255, 255, 0.12);
-}
-
-.a3s-hero-canvas {
-  z-index: 2;
-  opacity: 0.68;
-  mask-image: radial-gradient(
-    ellipse 82% 76% at 50% 48%,
-    #000 12%,
-    rgba(0, 0, 0, 0.92) 58%,
-    transparent 100%
-  );
-  mix-blend-mode: screen;
 }
 
 .a3s-install-console,
@@ -245,8 +224,8 @@
   position: absolute;
   z-index: 3;
   top: 0;
-  left: -34%;
-  width: 32%;
+  left: 14%;
+  width: 72%;
   height: 1px;
   background: linear-gradient(
     90deg,
@@ -257,8 +236,18 @@
   );
   box-shadow: 0 0 14px rgba(114, 179, 255, 0.48);
   content: '';
+  opacity: 0.42;
   pointer-events: none;
-  animation: a3s-premium-edge-pass 6.4s ease-in-out infinite;
+  transform: scaleX(0.7);
+  transition:
+    opacity 220ms ease,
+    transform 280ms ease;
+}
+
+.a3s-install-console:hover::after,
+.a3s-install-console:focus-within::after {
+  opacity: 0.86;
+  transform: scaleX(1);
 }
 
 .a3s-install-platforms button.is-active .a3s-install-target-icons {
@@ -290,26 +279,32 @@
 .a3s-runtime-inspector::after {
   position: absolute;
   z-index: 9;
-  top: -110px;
-  right: 0;
-  left: 0;
-  height: 92px;
+  top: 0;
+  right: 14%;
+  left: 14%;
+  height: 1px;
   background: linear-gradient(
-    to bottom,
-    transparent 0%,
-    rgba(102, 184, 255, 0.012) 38%,
-    rgba(113, 198, 255, 0.09) 48%,
-    rgba(166, 219, 255, 0.72) 50%,
-    rgba(111, 123, 255, 0.12) 52%,
-    transparent 68%
+    90deg,
+    transparent,
+    rgba(114, 195, 255, 0.82) 34%,
+    rgba(143, 124, 255, 0.94) 64%,
+    transparent
   );
-  box-shadow: 0 13px 38px rgba(76, 150, 241, 0.04);
+  box-shadow:
+    0 0 14px rgba(89, 169, 255, 0.58),
+    0 4px 22px rgba(89, 127, 255, 0.12);
   content: '';
-  mix-blend-mode: screen;
   opacity: 0;
   pointer-events: none;
-  animation: a3s-premium-terminal-scan 8.6s cubic-bezier(0.4, 0, 0.2, 1)
-    infinite;
+  transform: scaleX(0.2);
+  transition:
+    opacity 180ms ease,
+    transform 320ms ease;
+}
+
+.a3s-runtime-inspector.is-running::after {
+  opacity: 0.72;
+  transform: scaleX(1);
 }
 
 .a3s-section {
@@ -405,7 +400,6 @@
     border-color 300ms ease,
     box-shadow 300ms ease,
     transform 500ms ease;
-  animation: a3s-premium-ring-drift 18s ease-in-out infinite alternate;
 }
 
 .a3s-bento-card:hover::after {
@@ -446,7 +440,11 @@
   background-size:
     16% 2px,
     100% 1px;
-  animation: a3s-premium-contract-pulse 5.2s ease-in-out infinite;
+}
+
+.a3s-boundaries:hover .a3s-boundary-line,
+.a3s-boundaries:focus-within .a3s-boundary-line {
+  animation: a3s-premium-contract-pulse 1.8s ease-out both;
 }
 
 .a3s-cta {
@@ -485,145 +483,17 @@
   inset: -120px -130px auto auto;
   opacity: 0.72;
   pointer-events: none;
-  animation: a3s-premium-cta-aurora 13s ease-in-out infinite alternate;
+  transform: rotate(2deg);
 }
 
 .a3s-cta::after {
   z-index: 0;
-  animation: a3s-premium-cta-rings 9s ease-in-out infinite alternate;
+  opacity: 0.76;
+  transform: scale(1.01);
 }
 
 .a3s-cta > * {
   z-index: 2;
-}
-
-@keyframes a3s-premium-nav-line {
-  0%,
-  100% {
-    background-position: 100% 0;
-    opacity: 0.48;
-  }
-
-  50% {
-    background-position: 0 0;
-    opacity: 0.82;
-  }
-}
-
-@keyframes a3s-premium-aurora {
-  from {
-    opacity: 0.68;
-    transform: translate3d(-1.5%, -1%, 0) scale(0.98);
-  }
-
-  to {
-    opacity: 0.9;
-    transform: translate3d(1.5%, 1%, 0) scale(1.04);
-  }
-}
-
-@keyframes a3s-premium-hero-rail {
-  0%,
-  14% {
-    opacity: 0;
-    transform: translateY(0);
-  }
-
-  20% {
-    opacity: 0.85;
-  }
-
-  64% {
-    opacity: 0.55;
-  }
-
-  72%,
-  100% {
-    opacity: 0;
-    transform: translateY(900px);
-  }
-}
-
-@keyframes a3s-premium-title-shimmer {
-  0%,
-  18%,
-  100% {
-    background-position: 0% 50%;
-  }
-
-  58%,
-  74% {
-    background-position: 100% 50%;
-  }
-}
-
-@keyframes a3s-premium-status-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 12px rgba(60, 207, 145, 0.5);
-    transform: scale(0.92);
-  }
-
-  50% {
-    box-shadow:
-      0 0 18px rgba(60, 207, 145, 0.88),
-      0 0 34px rgba(60, 207, 145, 0.24);
-    transform: scale(1.08);
-  }
-}
-
-@keyframes a3s-premium-edge-pass {
-  0%,
-  16% {
-    left: -34%;
-    opacity: 0;
-  }
-
-  24% {
-    opacity: 0.9;
-  }
-
-  56% {
-    opacity: 0.72;
-  }
-
-  66%,
-  100% {
-    left: 108%;
-    opacity: 0;
-  }
-}
-
-@keyframes a3s-premium-terminal-scan {
-  0%,
-  18% {
-    opacity: 0;
-    transform: translateY(0);
-  }
-
-  24% {
-    opacity: 0.68;
-  }
-
-  68% {
-    opacity: 0.4;
-  }
-
-  76%,
-  100% {
-    opacity: 0;
-    transform: translateY(720px);
-  }
-}
-
-@keyframes a3s-premium-ring-drift {
-  from {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-
-  to {
-    transform: translate3d(-10px, -7px, 0) scale(1.035);
-  }
 }
 
 @keyframes a3s-premium-contract-pulse {
@@ -652,35 +522,7 @@
   }
 }
 
-@keyframes a3s-premium-cta-aurora {
-  from {
-    opacity: 0.58;
-    transform: rotate(-5deg) scale(0.94);
-  }
-
-  to {
-    opacity: 0.82;
-    transform: rotate(10deg) scale(1.08);
-  }
-}
-
-@keyframes a3s-premium-cta-rings {
-  from {
-    opacity: 0.58;
-    transform: scale(0.96);
-  }
-
-  to {
-    opacity: 0.9;
-    transform: scale(1.035);
-  }
-}
-
 @media (max-width: 920px) {
-  .a3s-hero::after {
-    display: none;
-  }
-
   .a3s-hero::before {
     inset: -8%;
   }
@@ -700,12 +542,8 @@
     filter: blur(18px);
   }
 
-  .a3s-hero-canvas {
-    opacity: 0.52;
-  }
-
-  .a3s-runtime-inspector::after {
-    animation-duration: 10s;
+  .a3s-global-grid-canvas {
+    opacity: 0.58;
   }
 
   .a3s-section-header::after {
@@ -723,17 +561,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rp-nav::after,
-  .a3s-hero::before,
-  .a3s-hero::after,
-  .a3s-hero h1 > span,
-  .a3s-eyebrow > span,
   .a3s-install-console::after,
   .a3s-runtime-inspector::after,
-  .a3s-bento-card::after,
-  .a3s-boundary-line,
-  .a3s-cta::before,
-  .a3s-cta::after {
+  .a3s-bento-card::after {
+    transition: none;
+  }
+
+  .a3s-boundaries:hover .a3s-boundary-line,
+  .a3s-boundaries:focus-within .a3s-boundary-line {
     animation: none;
   }
 
@@ -743,6 +578,10 @@
   .a3s-surface-card.is-pointer-active::before {
     opacity: 0;
   }
+
+  .a3s-global-grid-canvas {
+    opacity: 0.52;
+  }
 }
 
 @media (prefers-contrast: more) {
@@ -750,7 +589,7 @@
     display: none;
   }
 
-  .a3s-hero-canvas {
-    opacity: 0.34;
+  .a3s-global-grid-canvas {
+    opacity: 0.4;
   }
 }

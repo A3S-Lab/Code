@@ -4,6 +4,7 @@ type CanvasGridEffectProps = {
   cellSize?: number;
   className?: string;
   intensity?: number;
+  interactionScope?: 'host' | 'page';
 };
 
 type GridWave = {
@@ -15,7 +16,6 @@ type GridWave = {
 
 const GRID_TINT = [125, 182, 255] as const;
 const WAVE_LIFETIME = 1_650;
-const AMBIENT_WAVE_INTERVAL = 3_800;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
@@ -32,6 +32,7 @@ export function CanvasGridEffect({
   cellSize = 34,
   className,
   intensity = 1,
+  interactionScope = 'host',
 }: CanvasGridEffectProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -41,6 +42,10 @@ export function CanvasGridEffect({
     const context = canvas?.getContext('2d');
     if (!canvas || !host || !context) return undefined;
     const drawingContext = context;
+    const interactionTarget =
+      interactionScope === 'page'
+        ? (canvas.closest<HTMLElement>('.a3s-home') ?? host)
+        : host;
 
     const motionPreference = window.matchMedia(
       '(prefers-reduced-motion: reduce)',
@@ -53,7 +58,6 @@ export function CanvasGridEffect({
     let previousPointer = { x: -cellSize, y: -cellSize };
     let pointer = { x: -cellSize * 4, y: -cellSize * 4 };
     let waves: GridWave[] = [];
-    let ambientWaveIndex = 0;
     let width = 1;
     let height = 1;
     let pixelRatio = 1;
@@ -160,20 +164,8 @@ export function CanvasGridEffect({
       scheduleDraw();
     };
 
-    const addAmbientWave = () => {
-      if (reducedMotion || !isVisible || isPointerInside) return;
-      const positions = [
-        [0.72, 0.3],
-        [0.28, 0.62],
-        [0.58, 0.78],
-      ] as const;
-      const [xRatio, yRatio] = positions[ambientWaveIndex % positions.length];
-      ambientWaveIndex += 1;
-      addWave(width * xRatio, height * yRatio, performance.now(), 0.58);
-    };
-
     const handlePointerMove = (event: PointerEvent) => {
-      if (reducedMotion) return;
+      if (reducedMotion || event.pointerType === 'touch') return;
       const bounds = host.getBoundingClientRect();
       const x = event.clientX - bounds.left;
       const y = event.clientY - bounds.top;
@@ -209,27 +201,22 @@ export function CanvasGridEffect({
     });
     intersectionObserver.observe(host);
     motionPreference.addEventListener('change', handleMotionChange);
-    host.addEventListener('pointermove', handlePointerMove);
-    host.addEventListener('pointerleave', handlePointerLeave);
+    interactionTarget.addEventListener('pointermove', handlePointerMove);
+    interactionTarget.addEventListener('pointerleave', handlePointerLeave);
     resize();
     if (!reducedMotion) {
       addWave(width * 0.72, height * 0.32, performance.now(), 0.62);
     }
-    const ambientWaveTimer = window.setInterval(
-      addAmbientWave,
-      AMBIENT_WAVE_INTERVAL,
-    );
 
     return () => {
       window.cancelAnimationFrame(frame);
-      window.clearInterval(ambientWaveTimer);
       resizeObserver.disconnect();
       intersectionObserver.disconnect();
       motionPreference.removeEventListener('change', handleMotionChange);
-      host.removeEventListener('pointermove', handlePointerMove);
-      host.removeEventListener('pointerleave', handlePointerLeave);
+      interactionTarget.removeEventListener('pointermove', handlePointerMove);
+      interactionTarget.removeEventListener('pointerleave', handlePointerLeave);
     };
-  }, [cellSize, intensity]);
+  }, [cellSize, intensity, interactionScope]);
 
   return <canvas aria-hidden="true" className={className} ref={canvasRef} />;
 }

@@ -1397,6 +1397,14 @@ export function HomeLayout() {
   return (
     <main className="a3s-home">
       <PremiumInteractions />
+      <div className="a3s-global-grid" aria-hidden="true">
+        <CanvasGridEffect
+          cellSize={54}
+          className="a3s-global-grid-canvas"
+          intensity={0.68}
+          interactionScope="page"
+        />
+      </div>
       <section className="a3s-hero">
         <div className="a3s-hero-copy">
           <div className="a3s-eyebrow">
@@ -1428,11 +1436,6 @@ export function HomeLayout() {
           <InstallSwitcher labels={labels} />
         </div>
         <div className="a3s-hero-visual">
-          <CanvasGridEffect
-            cellSize={42}
-            className="a3s-hero-canvas"
-            intensity={0.9}
-          />
           <RuntimeExecutionFlow labels={labels} />
         </div>
       </section>
