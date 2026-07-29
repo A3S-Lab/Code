@@ -87,6 +87,7 @@ const [
   pythonProject,
   rspressConfig,
   homeLayout,
+  tuiRuntimeDemo,
 ] = await Promise.all([
   readFile(path.join(repositoryRoot, 'core', 'Cargo.toml'), 'utf8'),
   readFile(path.join(repositoryRoot, 'sdk', 'node', 'package.json'), 'utf8'),
@@ -98,6 +99,10 @@ const [
   readFile(path.join(websiteRoot, 'rspress.config.ts'), 'utf8'),
   readFile(
     path.join(websiteRoot, 'theme', 'components', 'HomeLayout.tsx'),
+    'utf8',
+  ),
+  readFile(
+    path.join(websiteRoot, 'theme', 'components', 'TuiRuntimeDemo.tsx'),
     'utf8',
   ),
 ]);
@@ -160,7 +165,11 @@ if (JSON.stringify(versions) !== JSON.stringify(configuredVersions)) {
     `Rspress revisions are [${versions.join(', ')}], expected [${configuredVersions.join(', ')}].`,
   );
 }
-if (!homeLayout.includes(`a3s-code ${manifest.current}`)) {
+if (
+  ![homeLayout, tuiRuntimeDemo].some((source) =>
+    source.includes(`a3s-code ${manifest.current}`),
+  )
+) {
   fail(`The home page does not display a3s-code ${manifest.current}.`);
 }
 

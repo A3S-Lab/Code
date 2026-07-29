@@ -1,0 +1,243 @@
+@media (max-width: 1100px) {
+  .a3s-capability-console {
+    grid-template-columns: 230px minmax(0, 1fr);
+  }
+
+  .a3s-capability-selector > button {
+    padding-right: 12px;
+    padding-left: 12px;
+    grid-template-columns: 20px 32px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .a3s-capability-selector > button > i {
+    width: 31px;
+    height: 31px;
+  }
+
+  .a3s-capability-player-stage {
+    padding-right: 20px;
+    padding-left: 20px;
+    gap: 16px;
+    grid-template-columns: 120px minmax(0, 1fr);
+  }
+
+  .a3s-capability-player-intro {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+}
+
+@media (max-width: 860px) {
+  .a3s-capability-stories {
+    padding-top: 96px;
+    padding-bottom: 96px;
+  }
+
+  .a3s-capability-console {
+    min-height: 0;
+    grid-template-columns: 1fr;
+  }
+
+  .a3s-capability-selector {
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid #29313c;
+    flex-direction: row;
+    scrollbar-width: none;
+  }
+
+  .a3s-capability-selector::-webkit-scrollbar {
+    display: none;
+  }
+
+  .a3s-capability-selector > button {
+    min-width: 190px;
+    min-height: 108px;
+    border-right: 1px solid #242c35;
+    border-bottom: 0;
+    grid-template-columns: 20px 30px minmax(0, 1fr);
+  }
+
+  .a3s-capability-selector > button::after {
+    width: auto;
+    height: 2px;
+    inset: auto 18px 0;
+    transform: scaleX(0.35);
+  }
+
+  .a3s-capability-selector > button.is-active::after {
+    transform: scaleX(1);
+  }
+
+  .a3s-capability-selector > button > em {
+    display: none;
+  }
+
+  .a3s-capability-player-stage {
+    min-height: 460px;
+  }
+}
+
+@media (max-width: 640px) {
+  .a3s-capability-stories {
+    padding-top: 76px;
+    padding-bottom: 76px;
+  }
+
+  .a3s-capability-console {
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+  }
+
+  .a3s-capability-selector > button {
+    min-width: 176px;
+    min-height: 96px;
+    padding: 13px 11px;
+    grid-template-columns: 26px minmax(0, 1fr);
+  }
+
+  .a3s-capability-selector > button > span {
+    display: none;
+  }
+
+  .a3s-capability-selector > button > p small {
+    font-size: 7px;
+  }
+
+  .a3s-capability-selector > button > p strong {
+    font-size: 10px;
+  }
+
+  .a3s-capability-player-intro {
+    padding: 22px 18px 20px;
+  }
+
+  .a3s-capability-player-intro h3 {
+    font-size: 23px;
+  }
+
+  .a3s-capability-player-stage {
+    min-height: 0;
+    padding: 16px 12px 18px;
+    grid-template-columns: 1fr;
+  }
+
+  .a3s-capability-stage-rail {
+    display: grid;
+    padding: 0 0 4px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .a3s-capability-stage-rail li {
+    min-height: 52px;
+    padding-right: 8px;
+    grid-template-columns: 19px minmax(0, 1fr);
+    gap: 5px;
+  }
+
+  .a3s-capability-stage-rail li::after {
+    width: auto;
+    height: 1px;
+    inset: 9px 0 auto 20px;
+  }
+
+  .a3s-capability-stage-rail li > i {
+    width: 19px;
+    height: 19px;
+  }
+
+  .a3s-capability-stage-rail li > span {
+    font-size: 7px;
+  }
+
+  .a3s-capability-scene {
+    min-height: 390px;
+    padding: 12px;
+  }
+
+  .a3s-capability-call,
+  .a3s-runtime-tool-call {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .a3s-capability-call em {
+    display: none;
+  }
+
+  .a3s-progressive-endpoint span {
+    display: none;
+  }
+
+  .a3s-progressive-steps > div {
+    grid-template-columns: 54px 14px minmax(0, 1fr);
+  }
+
+  .a3s-intelligence-workbench {
+    min-height: 0;
+    grid-template-columns: 1fr;
+  }
+
+  .a3s-intelligence-code {
+    border-right: 0;
+    border-bottom: 1px solid #29323c;
+  }
+
+  .a3s-intelligence-workbench > aside {
+    min-height: 174px;
+  }
+
+  .a3s-intelligence-workbench li {
+    min-height: 34px;
+  }
+
+  .a3s-capability-scene--intelligence {
+    min-height: 0;
+  }
+
+  .a3s-capability-scene--intelligence > footer {
+    flex-wrap: wrap;
+  }
+
+  .a3s-capability-scene--intelligence > footer code {
+    display: none;
+  }
+
+  .a3s-ctx-results > div {
+    grid-template-columns: 18px 48px minmax(0, 1fr);
+  }
+
+  .a3s-ctx-results > div small {
+    display: none;
+  }
+
+  .a3s-ctx-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .a3s-capability-player-footer > div code:nth-child(n + 3) {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .a3s-capability-player-stage,
+  .a3s-capability-stage-rail li.is-active > i,
+  .a3s-progressive-steps .is-active i,
+  .a3s-progressive-view.is-ready,
+  .a3s-runtime-batch > div.is-running > i b,
+  .a3s-ctx-actions > div.is-ready {
+    animation: none;
+  }
+
+  .a3s-capability-selector > button,
+  .a3s-capability-selector > button::after,
+  .a3s-capability-approval,
+  .a3s-progressive-steps > div,
+  .a3s-runtime-batch > div > i b,
+  .a3s-intelligence-workbench li {
+    transition: none;
+  }
+}

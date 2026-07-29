@@ -321,6 +321,56 @@ existing directory, and is created atomically with private permissions. Parent
 traversal, escaping symlinks, missing parent directories, and existing targets
 are rejected instead of overwriting or writing outside the workspace.
 
+## Code Intelligence
+
+The agent, TUI `/ide`, and A3S Web Monaco editor share one read-only Code
+Intelligence runtime. The current language profiles cover Rust and
+TypeScript/JavaScript. Install the matching `rust-analyzer` or
+`typescript-language-server` executable before starting `a3s code`. A missing
+server degrades only that language; it does not disable the editor, ordinary
+file tools, or another working language.
+
+Semantic results always describe files saved on disk. Unsaved editor buffers
+are never published to the shared runtime. The UI labels those results as the
+"saved version," and saving refreshes the workspace manifest and subsequent
+semantic queries.
+
+Press `:` inside `/ide` to use:
+
+| Command                  | Result                                                   |
+| ------------------------ | -------------------------------------------------------- |
+| `:status`                | Language state and negotiated capabilities.              |
+| `:symbols [query]`       | Current-file symbols or bounded workspace symbol search. |
+| `:definition`            | Definitions at the saved-file cursor position.           |
+| `:declaration`           | Declarations at the saved-file cursor position.          |
+| `:references`            | References at the saved-file cursor position.            |
+| `:implementations`       | Implementations at the saved-file cursor position.       |
+| `:diagnostics`           | Diagnostics for the current saved file.                  |
+| `:diagnostics workspace` | Bounded diagnostics across saved workspace files.        |
+
+The agent receives the same capability through `code_symbols`,
+`code_navigation`, and `code_diagnostics`. Source reads, text search, and
+mutations still go only through `read`, `grep`, `edit`, and `patch`; Code
+Intelligence does not create a second mutation path.
+
+## Cross-Session Context Recall
+
+When the local `ctx` index is installed and initialized, startup enables two
+recall tiers: long-term Memory for curated durable information, and `/ctx` for
+raw history across tools and sessions. Use it to recover prior decisions,
+commands, failures, and test evidence instead of deriving the same work again.
+
+| Command         | Behavior                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------------ |
+| `/ctx <query>`  | Search the local session index and display up to eight selectable hits.                    |
+| `/ctx <n>`      | Pull a bounded window around hit n and attach it once to the next message.                 |
+| `/ctx save <n>` | Save the hit as episodic memory with `ctx_event_id` and `ctx_session_id` provenance links. |
+
+An attached transcript is control-character stripped, size-bounded, and quoted
+as untrusted historical reference. Instructions inside it do not become
+current user instructions. A promoted memory carries `source=ctx`, so the
+memory view can jump back to its originating event or session.
+
 ## Sessions And Safety
 
 Core session snapshots auto-save under
@@ -558,6 +608,25 @@ reports, and local loops keep working.
 
 Signed-in behavior adds A3S OS asset publication, runtime tools, trusted view
 links, and asset activity panels without changing the local-first TUI contract.
+
+The signed-in progressive capability API uses one permission-filtered endpoint
+and expands only as needed:
+
+```text
+list → search → describe → execute
+modules  find op   one schema   run it
+```
+
+The model discovers modules, searches operations, and loads the complete schema
+for only the operation it will call. An `execute` request with `shaped=true`
+can return a trusted `.view` or `viewUrl`, which becomes an inline `Open view`
+action in the TUI.
+
+Login also registers the `runtime` tool. It resolves a tool-kind worker by UUID
+or name, submits independent inputs as an A3S OS Function-as-a-Service batch,
+streams per-item progress, and returns aggregated results. When signed out, the
+tool is absent from the model registry; local files, shell, MCP, `task`,
+`parallel_task`, `dynamic_workflow`, Memory, and `/ctx` remain available.
 
 | Capability                           | Signed out                                                                                                                                                               | Signed in after `/login`                                                                                            |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |

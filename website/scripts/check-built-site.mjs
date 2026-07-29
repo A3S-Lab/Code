@@ -48,6 +48,26 @@ for (const file of requiredFiles) {
   await access(path.join(outputRoot, file));
 }
 
+const capabilityMarkers = [
+  'a3s-capability-stories',
+  'HITL',
+  'PROGRESSIVE API',
+  'RUNTIME TOOL',
+  'CODE INTELLIGENCE',
+  'CTX RECALL',
+];
+
+for (const homepage of ['index.html', 'en/index.html']) {
+  const html = await readFile(path.join(outputRoot, homepage), 'utf8');
+  for (const marker of capabilityMarkers) {
+    if (!html.includes(marker)) {
+      throw new Error(
+        `${homepage} is missing homepage capability marker: ${marker}`,
+      );
+    }
+  }
+}
+
 const brokenReferences = [];
 const htmlFiles = await collectHtmlFiles(outputRoot);
 const referencePattern = /(?:href|src)="([^"]+)"/g;
