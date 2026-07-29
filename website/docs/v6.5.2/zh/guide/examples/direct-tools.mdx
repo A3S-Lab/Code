@@ -13,6 +13,82 @@ import { Tab, Tabs } from '@rspress/core/theme';
 管控的是 agent turn 内由模型选择的工具调用，不是你的应用代码是否可以调用 SDK helper。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+use serde_json::{json, Value};
+use std::collections::HashSet;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let allowed = HashSet::from(["glob", "grep", "read", "generate_object"]);
+    let check = |name: &str| -> a3s_code_core::Result<()> {
+        allowed
+            .contains(name)
+            .then_some(())
+            .ok_or_else(|| {
+                a3s_code_core::CodeError::Security(format!(
+                    "此处不允许直接调用工具：{name}"
+                ))
+            })
+    };
+
+    check("glob")?;
+    let files = session.glob("**/*.rs").await?;
+    println!("glob 找到 {} 个 Rust 文件", files.len());
+
+    check("grep")?;
+    let matches = session.grep("Agent::new").await?;
+    println!("grep 找到 {} 行匹配", matches.lines().count());
+
+    check("read")?;
+    let readme = session.read_file("README.md").await?;
+    println!("README 大小为 {} 字节", readme.len());
+
+    let raw = session
+        .tool("read", json!({ "file_path": "Cargo.toml" }))
+        .await?;
+    println!("通过 tool() 读取了 {} 字节", raw.output.len());
+    println!("会话暴露了 {} 个工具", session.tool_definitions().len());
+
+    check("generate_object")?;
+    let structured = session
+        .tool(
+            "generate_object",
+            json!({
+                "schema": {
+                    "type": "object",
+                    "required": ["count", "language"],
+                    "properties": {
+                        "count": { "type": "integer" },
+                        "language": { "type": "string" }
+                    }
+                },
+                "prompt": "这个项目中有多少个 Rust 文件？",
+                "schema_name": "file_stats"
+            }),
+        )
+        .await?;
+    if structured.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "generate_object".into(),
+            message: structured.output,
+        });
+    }
+    let generated: Value = serde_json::from_str(&structured.output)?;
+    println!("结构化输出：{}", generated["object"]);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts

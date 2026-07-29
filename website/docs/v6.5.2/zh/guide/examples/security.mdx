@@ -14,6 +14,74 @@ import { Tab, Tabs } from '@rspress/core/theme';
 就应使用这套机制。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    hitl::{ConfirmationPolicy, TimeoutAction},
+    permissions::PermissionPolicy,
+    Agent, AgentEvent, SessionOptions,
+};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let permission_policy = PermissionPolicy::new()
+        .allow("read(*)")
+        .allow("grep(*)")
+        .allow("glob(*)")
+        .allow("ls(*)")
+        .allow("bash(git status:*)")
+        .deny("write(**/.env*)")
+        .deny("bash(rm -rf*)")
+        .ask("write(*)")
+        .ask("edit(*)")
+        .ask("bash(git push:*)")
+        .ask("bash(npm publish:*)")
+        .ask("bash(*)");
+    let confirmation_policy =
+        ConfirmationPolicy::enabled().with_timeout(120_000, TimeoutAction::Reject);
+
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_permission_policy(permission_policy)
+                .with_confirmation_policy(confirmation_policy),
+        )
+        .build()
+        .await?;
+
+    let (mut events, lifecycle) = session
+        .stream("提升版本号并推送发布。", None)
+        .await?;
+    while let Some(event) = events.recv().await {
+        if let AgentEvent::ConfirmationRequired {
+            tool_id,
+            tool_name,
+            args,
+            ..
+        } = event
+        {
+            println!("[confirm] {tool_name}\n{args:#}");
+            session
+                .confirm_tool_use(
+                    &tool_id,
+                    false,
+                    Some("Rejected by the host review".into()),
+                )
+                .await?;
+        }
+    }
+    let _ = lifecycle.await;
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -114,15 +182,132 @@ if __name__ == "__main__":
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	enabled := true
+	timeoutMS := uint64(120_000)
+	session, err := agent.Session(
+		ctx,
+		".",
+		&code.SessionOptions{
+			PermissionPolicy: &code.PermissionPolicy{
+				Allow:           []string{"read(*)", "grep(*)", "glob(*)", "ls(*)", "bash(git status:*)"},
+				Deny:            []string{"write(**/.env*)", "bash(rm -rf*)"},
+				Ask:             []string{"write(*)", "edit(*)", "bash(git push:*)", "bash(npm publish:*)", "bash(*)"},
+				DefaultDecision: "ask",
+			},
+			ConfirmationPolicy: &code.ConfirmationPolicy{
+				Enabled:          &enabled,
+				DefaultTimeoutMS: &timeoutMS,
+				TimeoutAction:    "reject",
+			},
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	stream, err := session.Stream(ctx, "提升版本号并推送发布。", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for event := range stream.Events {
+		if event.Type != code.EventConfirmationRequired {
+			continue
+		}
+		pending, err := session.PendingConfirmations(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(pending) == 0 {
+			continue
+		}
+		request := pending[0]
+		args, _ := json.MarshalIndent(request.Args, "", "  ")
+		fmt.Printf("[confirm] %s\n%s\n", request.ToolName, args)
+		if _, err = session.ConfirmToolUse(
+			ctx,
+			request.ToolID,
+			false,
+			"Rejected by the Go host review",
+		); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if err := <-stream.Done; err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+</Tab>
 </Tabs>
 
 ## 添加安全提供器
 
 `DefaultSecurityProvider` 会启用输入污点追踪和输出净化，独立于权限策略对工具的输入输出
-进行筛查。通过 `securityProvider`（Node）/ `security_provider`（Python）传入；省略则完全
-关闭安全功能。
+进行筛查。通过 `securityProvider`（Node）、`security_provider`（Python）传入，或把
+Go 的 `SessionOptions.DefaultSecurity` 设为 `true`；省略则关闭安全功能。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{permissions::PermissionPolicy, Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_default_security()
+                .with_permission_policy(
+                    PermissionPolicy::new()
+                        .allow("bash(echo:*)")
+                        .ask("bash(*)"),
+                ),
+        )
+        .build()
+        .await?;
+
+    let result = session
+        .send(
+            "使用 bash 准确运行：echo screened-by-security-provider",
+            None,
+        )
+        .await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -139,9 +324,11 @@ const session = agent.session(process.cwd(), {
   },
 });
 
-// 宿主的高权限操作会经过提供程序和策略。
-const out = await session.bash('echo "screened by the security provider"');
-console.log(out);
+// 模型选择的工具调用会同时经过提供程序与策略。
+const result = await session.run(
+  'Use bash to run exactly: echo screened-by-security-provider',
+);
+console.log(result.text);
 
 session.close();
 ```
@@ -166,9 +353,11 @@ def main() -> None:
 
     session = agent.session(".", opts)
 
-    # 宿主的高权限操作会经过提供程序和策略。
-    out = session.bash('echo "screened by the security provider"')
-    print(out)
+    # 模型选择的工具调用会同时经过提供程序与策略。
+    result = session.run(
+        "Use bash to run exactly: echo screened-by-security-provider"
+    )
+    print(result.text)
 
     session.close()
 
@@ -176,6 +365,55 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		DefaultSecurity: code.Ptr(true),
+		PermissionPolicy: &code.PermissionPolicy{
+			Allow:           []string{"bash(echo:*)"},
+			Ask:             []string{"bash(*)"},
+			DefaultDecision: "ask",
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	result, err := session.Run(
+		ctx,
+		"Use bash to run exactly: echo screened-by-security-provider",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+任意自定义 `SecurityProvider` trait 实现仍是 Rust 原生扩展点；四种 SDK 都暴露
+这里使用的内置提供器。
 
 </Tab>
 </Tabs>

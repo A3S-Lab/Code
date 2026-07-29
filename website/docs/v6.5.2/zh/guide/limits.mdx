@@ -40,14 +40,17 @@ CI、发布和用户可见自动化应使用严格限制；本地探索可以放
 
 ## 保留上限
 
-session 会把 run 历史、trace events 和 subagent task 快照保存在内存里。对于短任务没有问题；但对于在 cluster 负载下运行数小时甚至数天的 session，这些内存存储会无限增长。`SessionRetentionLimits`（CHANGELOG [3.3.0] "SessionRetentionLimits"）提供可选的 FIFO 上限来防止泄漏。**默认是无上限的——不设置任何上限就不会改变任何行为。**
+session 会把 run 历史、trace events 和 subagent task 快照保存在内存里。
+`SessionRetentionLimits` 使用保守的有限默认值，避免长时间会话无限增长。可以覆盖
+任意单项 FIFO 上限；只有明确设置 `unbounded: true` 才会启用无限保留。
 
-四个相互独立的上限，可以只设置其中一部分，其余保持无上限：
+五个相互独立的上限：
 
 | 字段                          | 触发上限时的效果                                                                                                     |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `max_runs_retained`           | 新建 run 超过上限时，**最旧**的 run 及其全部 events 被丢弃。                                                         |
 | `max_events_per_run`          | run 中最旧的 events 按 FIFO 丢弃。run 快照的 `event_count` **不会**被递减——它保持有史以来记录的累计总数。            |
+| `max_event_bytes_per_run`     | 丢弃最旧的 run events，直到满足序列化字节上限；单条超大 event 不会被保留。                                           |
 | `max_trace_events`            | trace sink 超过上限后，每次新写入都会丢弃最旧的一条 event。                                                          |
 | `max_terminal_subagent_tasks` | 超过上限后丢弃最旧的**终态**（completed / failed / cancelled）subagent task 快照。**running 的任务永远不会被丢弃。** |
 
@@ -58,6 +61,7 @@ const session = agent.session('/repo', {
   retentionLimits: {
     maxRunsRetained: 100,
     maxEventsPerRun: 5000,
+    maxEventBytesPerRun: 16 * 1024 * 1024,
     maxTraceEvents: 20000,
     maxTerminalSubagentTasks: 500,
   },
@@ -69,11 +73,26 @@ opts = SessionOptions()
 opts.retention_limits = {
     'max_runs_retained': 100,
     'max_events_per_run': 5000,
+    'max_event_bytes_per_run': 16 * 1024 * 1024,
     'max_trace_events': 20000,
     'max_terminal_subagent_tasks': 500,
 }
 session = agent.session('/repo', opts)
 ```
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	RetentionLimits: &code.RetentionLimits{
+		MaxRunsRetained:          code.Ptr(uint(100)),
+		MaxEventsPerRun:          code.Ptr(uint(5_000)),
+		MaxEventBytesPerRun:      code.Ptr(uint(16 * 1024 * 1024)),
+		MaxTraceEvents:           code.Ptr(uint(20_000)),
+		MaxTerminalSubagentTasks: code.Ptr(uint(500)),
+	},
+})
+```
+
+Rust 使用对应的 `SessionRetentionLimits` builder 方法。
 
 ## 预算守卫
 

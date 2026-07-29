@@ -19,6 +19,33 @@ core `McpServerConfig` shape and avoids the positional overload's argument
 ordering.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::mcp::{McpServerConfig, McpTransportConfig};
+use std::collections::HashMap;
+
+let count = session
+    .add_mcp_server(McpServerConfig {
+        name: "echo".into(),
+        transport: McpTransportConfig::Stdio {
+            command: "node".into(),
+            args: vec![
+                "tools/mcp_echo_server.mjs".into(),
+                "example-value".into(),
+            ],
+        },
+        enabled: true,
+        env: HashMap::new(),
+        oauth: None,
+        tool_timeout_secs: 30,
+    })
+    .await?;
+
+println!("registered tools: {count}");
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -86,6 +113,28 @@ or release notes.
 ## Inspect And Remove
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use serde_json::json;
+
+println!("{:#?}", session.mcp_status().await);
+println!(
+    "{:#?}",
+    session
+        .tool_names()
+        .into_iter()
+        .filter(|name| name.starts_with("mcp__"))
+        .collect::<Vec<_>>()
+);
+let result = session
+    .tool("mcp__echo__echo", json!({ "message": "docs mcp ok" }))
+    .await?;
+println!("{}", result.output);
+session.remove_mcp_server("echo").await?;
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts

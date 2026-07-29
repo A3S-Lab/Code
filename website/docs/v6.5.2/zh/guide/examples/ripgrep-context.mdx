@@ -12,6 +12,38 @@ import { Tab, Tabs } from '@rspress/core/theme';
 agent 限定在大型代码库的某个特定切片，而不是让它从头开始探索时，可以使用这种方式。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let files = session.glob("src/**/*.rs").await?;
+    let hits = session.grep("create_session").await?;
+    let context = format!(
+        "范围内的文件：\n{}\n\n“create_session”的匹配项：\n{}",
+        files.join("\n"),
+        hits
+    );
+    let answer = session
+        .send(
+            &format!("只使用以下上下文，解释 create_session 如何连接：\n\n{context}"),
+            None,
+        )
+        .await?;
+    println!("{}", answer.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -63,6 +95,55 @@ answer = session.run(
     f'Using only this context, explain how createSession is wired up:\n\n{context}'
 )
 print(answer)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	files, err := session.Glob(ctx, "sdk/go/**/*.go")
+	if err != nil {
+		log.Fatal(err)
+	}
+	hits, err := session.Grep(ctx, "Session")
+	if err != nil {
+		log.Fatal(err)
+	}
+	scope := "范围内的文件：\n" + strings.Join(files, "\n") +
+		"\n\n“Session”的匹配项：\n" + hits
+	answer, err := session.Run(
+		ctx,
+		"只使用以下上下文，解释 Session 如何连接：\n\n"+scope,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(answer.Text)
+}
 ```
 
 </Tab>

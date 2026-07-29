@@ -5,11 +5,15 @@ description: 'AgentDir structure, loading map, serve daemon, and durability boun
 
 # Agent Directory
 
+import { Tab, Tabs } from '@rspress/core/theme';
+
 AgentDir is a single directory that defines a durable agent by convention. One folder contains the main agent's role, runtime config, private skills, directory-scoped tools, and recurring schedules. `AgentDir::load` reads the directory and synthesizes existing A3S Code config objects; it does not introduce a new runtime or a new prompt system.
 
 The deliberate design choice: `instructions.md` is injected as a prompt **slot**, not as a system-prompt override. The harness keeps `BOUNDARIES`, response-format contracts, tool visibility, the safety gate, and verification authoritative. A scheduled run is always a full harness turn through `AgentSession::send`, never a raw model call.
 
-This feature is Rust-side and gated behind the `serve` Cargo feature. Library-only embedders that never enable `serve` pay no extra cost.
+The core implementation is gated behind the Rust `serve` Cargo feature.
+Rust, Node.js, Python, and Go all expose the same daemon lifecycle through
+their native SDK surface.
 
 ## Structure
 
@@ -38,10 +42,13 @@ Only `instructions.md` is required. Everything else is optional; missing directo
 
 `serve_agent_dir` loads schedules into independent sessions and runs their cron loops until a cancellation token fires. Every fire routes the schedule prompt through `AgentSession::send`.
 
+<Tabs>
+<Tab label="Rust">
+
 ```rust
 use a3s_code_core::config::AgentDir;
 use a3s_code_core::serve::serve_agent_dir;
-use a3s_code_core::Agent;
+use a3s_code_core::{Agent, SessionOptions};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -49,13 +56,101 @@ async fn main() -> anyhow::Result<()> {
     let agent_dir = AgentDir::load("./my-agent")?;
     let agent = Agent::from_config(agent_dir.config.clone()).await?;
     let cancel = CancellationToken::new();
+    let shutdown = cancel.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        shutdown.cancel();
+    });
 
-    serve_agent_dir(&agent, &agent_dir, "./workspace", None, cancel).await?;
+    let options = SessionOptions::new().with_file_session_store("./sessions");
+    serve_agent_dir(
+        &agent,
+        &agent_dir,
+        "./workspace",
+        Some(options),
+        cancel,
+    )
+    .await?;
+    agent.close().await;
     Ok(())
 }
 ```
 
-Enable the feature in `Cargo.toml`:
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, FileSessionStore } from '@a3s-lab/code';
+
+const agent = await Agent.create('./my-agent/agent.acl');
+const daemon = await agent.serveAgentDir('./my-agent', './workspace', {
+  sessionStore: new FileSessionStore('./sessions'),
+});
+
+await new Promise<void>((resolve) => process.once('SIGINT', resolve));
+await daemon.stop();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, FileSessionStore, SessionOptions
+
+agent = Agent.create('./my-agent/agent.acl')
+options = SessionOptions()
+options.session_store = FileSessionStore('./sessions')
+daemon = agent.serve_agent_dir('./my-agent', './workspace', options)
+
+input('Press Enter to stop the AgentDir daemon...')
+daemon.stop()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stopSignal()
+
+	agent, err := code.NewAgent(ctx, "./my-agent/agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	daemon, err := agent.ServeAgentDir(ctx, "./my-agent", "./workspace", &code.SessionOptions{
+		FileSessionStoreDir: "./sessions",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	<-ctx.Done()
+	if err := daemon.Stop(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+Direct Rust consumers must enable the feature in `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -64,27 +159,22 @@ a3s-code-core = { version = "...", features = ["serve"] }
 
 ## Overriding Session Options
 
-The fourth argument to `serve_agent_dir` is an optional `SessionOptions` that merges into every schedule session. Use it to pin the model, LLM client, session store, or prompt slots. The daemon always assigns each schedule a stable `session_id` of `schedule:<name>`; any `session_id` in the extra options is intentionally ignored so schedules do not collide in the same store. If `prompt_slots` is omitted, the AgentDir `instructions.md` slot is used.
-
-```rust
-use a3s_code_core::SessionOptions;
-
-let extra = SessionOptions::new(); // set model, session_store, etc.
-serve_agent_dir(&agent, &agent_dir, "./workspace", Some(extra), cancel).await?;
-```
+The fourth argument to Rust `serve_agent_dir`, or the `options` argument to
+`serveAgentDir` / `serve_agent_dir` / `ServeAgentDir`, merges into every
+schedule session. Use it to pin the model, session store, permissions, or
+prompt slots. The daemon always assigns each schedule a stable `session_id` of
+`schedule:<name>`; any `session_id` in the extra options is intentionally
+ignored so schedules do not collide in the same store. If prompt slots are
+omitted, the AgentDir `instructions.md` slot is used.
 
 Graceful cancellation lets in-flight turns finish the current loop iteration. An AgentDir with no enabled schedules returns immediately.
 
 ## Durability
 
-By default every daemon boot starts schedule sessions fresh. Pass a `SessionStore` in `SessionOptions` to resume existing `schedule:<name>` sessions from stored conversation history.
-
-```rust
-use a3s_code_core::SessionOptions;
-
-let extra = SessionOptions::new().with_file_session_store("./sessions");
-serve_agent_dir(&agent, &agent_dir, "./workspace", Some(extra), cancel).await?;
-```
+By default every daemon boot starts schedule sessions fresh. Pass a file
+session store in `SessionOptions`—`with_file_session_store`,
+`FileSessionStore`, or `FileSessionStoreDir`, as shown above—to resume existing
+`schedule:<name>` sessions from stored conversation history.
 
 Recovery restores history only. The current `instructions.md`, `skills/`, and `tools/` are re-applied on every boot, so directory edits take effect after restart even for resumed sessions.
 

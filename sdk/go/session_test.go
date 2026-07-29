@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestSessionStreamPreservesUnknownEvents(t *testing.T) {
@@ -190,5 +191,113 @@ func TestSessionCloseValidatesBeforeConsumingClose(t *testing.T) {
 	}
 	if got := runtime.operations(); len(got) != 1 || got[0] != "session_close" {
 		t.Fatalf("close operations = %v", got)
+	}
+}
+
+func TestSessionCallbackAPIsRegisterAndReleaseHandlers(t *testing.T) {
+	runtime := &fakeRuntime{
+		request: func(
+			_ context.Context,
+			operation string,
+			_ map[string]any,
+		) (any, error) {
+			switch operation {
+			case "session_unregister_hook":
+				return map[string]any{"removed": true}, nil
+			case "session_list_commands":
+				return map[string]any{"commands": []any{}}, nil
+			default:
+				return map[string]any{}, nil
+			}
+		},
+	}
+	session := testSession(runtime)
+	ctx := context.Background()
+
+	if err := session.RegisterHookWithHandler(ctx, Hook{
+		ID:        "guard",
+		EventType: "pre_tool_use",
+	}, func(_ context.Context, event json.RawMessage) (*HookResponse, error) {
+		var value map[string]any
+		if err := json.Unmarshal(event, &value); err != nil {
+			return nil, err
+		}
+		return &HookResponse{Action: "block", Reason: "denied"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := session.SetBudgetGuard(ctx, &BudgetGuardHandlers{
+		CheckBeforeTool: func(
+			_ context.Context,
+			value BudgetToolContext,
+		) (*BudgetDecision, error) {
+			if value.ToolName != "bash" {
+				t.Fatalf("tool = %q", value.ToolName)
+			}
+			return &BudgetDecision{
+				Decision: "deny",
+				Resource: "tools",
+				Reason:   "limit reached",
+			}, nil
+		},
+		Timeout: time.Second,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := session.RegisterCommand(
+		ctx,
+		"status",
+		"Show status",
+		"/status",
+		func(_ context.Context, args string, commandContext CommandContext) (string, error) {
+			return commandContext.SessionID + ":" + args, nil
+		},
+		time.Second,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.mu.Lock()
+	if len(runtime.callbacks) != 3 {
+		t.Fatalf("callbacks = %d, want 3", len(runtime.callbacks))
+	}
+	budgetID := session.budgetCallback
+	commandID := session.commandCallbacks["status"]
+	budgetCallback := runtime.callbacks[budgetID]
+	commandCallback := runtime.callbacks[commandID]
+	runtime.mu.Unlock()
+
+	decision, err := budgetCallback(
+		ctx,
+		"check_before_tool",
+		json.RawMessage(`{"session_id":"s","tool_name":"bash"}`),
+	)
+	if err != nil || decision.(*BudgetDecision).Decision != "deny" {
+		t.Fatalf("budget callback = %#v, %v", decision, err)
+	}
+	command, err := commandCallback(
+		ctx,
+		"command",
+		json.RawMessage(`{"args":"now","context":{"session_id":"s"}}`),
+	)
+	if err != nil || command != "s:now" {
+		t.Fatalf("command callback = %#v, %v", command, err)
+	}
+
+	if removed, err := session.UnregisterHook(ctx, "guard"); err != nil || !removed {
+		t.Fatalf("UnregisterHook = %v, %v", removed, err)
+	}
+	if err := session.SetBudgetGuard(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if len(runtime.callbacks) != 0 {
+		t.Fatalf("callbacks leaked after close: %#v", runtime.callbacks)
 	}
 }

@@ -21,6 +21,12 @@ func TestCreateSessionAndCloseWithInjectedRuntime(t *testing.T) {
 				}
 				return map[string]any{"agent_id": "agent-1"}, nil
 			case "session_create":
+				options, ok := params["options"].(*SessionOptions)
+				if !ok || options.HostEnv == nil ||
+					options.HostEnv.SequentialIDPrefix == nil ||
+					*options.HostEnv.SequentialIDPrefix != "replay" {
+					t.Fatalf("deterministic host env was not forwarded: %#v", params)
+				}
 				return map[string]any{
 					"session_handle": "handle-1",
 					"session_id":     "session-1",
@@ -45,8 +51,14 @@ func TestCreateSessionAndCloseWithInjectedRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	prefix := "replay"
+	fixedTime := uint64(1_700_000_000_000)
 	session, err := agent.Session(ctx, "C:/repo", &SessionOptions{
 		SessionID: "session-1",
+		HostEnv: &HostEnvConfig{
+			SequentialIDPrefix: &prefix,
+			FixedTimeMS:        &fixedTime,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

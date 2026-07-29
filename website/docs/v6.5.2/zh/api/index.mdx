@@ -70,21 +70,22 @@ cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge
 
 `code.Create` 会对传输协议、事件协议和完整操作清单执行 fail-closed 握手。
 Go 错误使用稳定的 `*code.Error` 错误码，Context 取消和 Deadline 仍可通过
-`errors.Is` 判断。自定义 `LlmClient`、Workspace Backend、Hook Executor 或
-记忆实现等 Rust trait 对象注入仍只属于 Rust API；存在可序列化配置时，
-桥接程序会接受对应的值类型配置。
+`errors.Is` 判断。桥接程序覆盖完整的可序列化 Agent/Session 能力，以及由 Go
+实现的 Hook、预算守卫、斜杠命令和流水线回调。任意 Rust trait 对象仍属于
+Rust 原生扩展机制；其他 SDK 通过等价的值配置、回调、直接工具或 MCP 边界接入。
 
 ## 四种 SDK 的共用能力
 
 四种 SDK 使用相同的 Session 生命周期、事件格式和 Snapshot。界面可以订阅同一套
 `AgentEvent` / `EventEnvelopeV1`，保存后也可以按 Session ID 恢复。
 
-共用指南现在会在桥接程序支持同一能力时，将 Go 与 Node.js、Python 并列展示。
+共用指南会在完整的共用 SDK 能力面中，将 Go 与 Node.js、Python 并列展示。
 可以从[快速开始](/guide/examples/quick-start)开始，再阅读
 [流式事件](/guide/examples/streaming)、[直接工具](/guide/examples/direct-tools)、
 [会话](/guide/sessions)、[验证](/guide/verification)、[MCP](/guide/mcp)和
 [持久化](/guide/persistence)。
 
-接入自己的基础设施时，可以替换 `LlmClient`、`ContextProvider`、
-`MemoryStore`、`SessionStore`、Workspace 服务、工具、权限确认、Hook、MCP
-Transport 和 Graph Store。界面接入可从 [Session 与事件流](/guide/sessions) 开始。
+四种 SDK 都能配置持久化、记忆、Local/S3 Workspace、Remote Git、权限与确认、
+Hook、MCP、队列、确定性重放和编排。Rust 还可以接收自定义 `LlmClient` 或
+`ContextProvider` 等任意进程内 trait 实现；其他语言通过回调、直接工具或 MCP
+接入自定义服务。界面接入可从 [Session 与事件流](/guide/sessions) 开始。

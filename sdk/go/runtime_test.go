@@ -9,6 +9,7 @@ import (
 	"os"
 	goruntime "runtime"
 	"testing"
+	"time"
 
 	"github.com/A3S-Lab/Code/sdk/go/v6/internal/bridge"
 )
@@ -19,6 +20,7 @@ func TestBridgeHelperProcess(t *testing.T) {
 	}
 	scanner := bufio.NewScanner(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
+	var callbackRequestID uint64
 	for scanner.Scan() {
 		var request bridge.Request
 		if json.Unmarshal(scanner.Bytes(), &request) != nil {
@@ -41,6 +43,41 @@ func TestBridgeHelperProcess(t *testing.T) {
 				},
 			})
 		}
+		if request.Operation == "trigger_callback" {
+			callbackRequestID = request.ID
+			_ = encoder.Encode(map[string]any{
+				"protocol_version": bridge.ProtocolVersion,
+				"id":               91,
+				"kind":             "callback",
+				"ok":               true,
+				"callback": map[string]any{
+					"callback_id": 91,
+					"handler_id":  request.Params["handler_id"],
+					"method":      "test",
+					"payload":     map[string]any{"value": 7},
+					"timeout_ms":  5000,
+				},
+			})
+			continue
+		}
+		if request.Operation == "callback_response" && callbackRequestID != 0 {
+			_ = encoder.Encode(map[string]any{
+				"protocol_version": bridge.ProtocolVersion,
+				"id":               request.ID,
+				"kind":             "response",
+				"ok":               true,
+				"result":           map[string]any{"accepted": true},
+			})
+			_ = encoder.Encode(map[string]any{
+				"protocol_version": bridge.ProtocolVersion,
+				"id":               callbackRequestID,
+				"kind":             "response",
+				"ok":               true,
+				"result":           request.Params["result"],
+			})
+			callbackRequestID = 0
+			continue
+		}
 		_ = encoder.Encode(map[string]any{
 			"protocol_version": bridge.ProtocolVersion,
 			"id":               request.ID,
@@ -52,6 +89,51 @@ func TestBridgeHelperProcess(t *testing.T) {
 		})
 	}
 	os.Exit(0)
+}
+
+func TestLocalRuntimeMultiplexesCallbacks(t *testing.T) {
+	runtime, err := NewLocalRuntime(
+		context.Background(),
+		WithBridgePath(os.Args[0]),
+		withBridgeArguments("-test.run=TestBridgeHelperProcess"),
+		WithBridgeEnvironment("A3S_CODE_GO_TEST_HELPER=1"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	handlerID, err := runtime.registerCallback(
+		func(_ context.Context, method string, payload json.RawMessage) (any, error) {
+			if method != "test" {
+				t.Fatalf("method = %q", method)
+			}
+			var input struct {
+				Value int `json:"value"`
+			}
+			if err := json.Unmarshal(payload, &input); err != nil {
+				return nil, err
+			}
+			return map[string]any{"value": input.Value * 2}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Value int `json:"value"`
+	}
+	if err := runtime.Request(
+		context.Background(),
+		"trigger_callback",
+		map[string]any{"handler_id": handlerID},
+		&result,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if result.Value != 14 {
+		t.Fatalf("callback result = %#v", result)
+	}
 }
 
 func TestLocalRuntimeMultiplexesRequestAndStream(t *testing.T) {
@@ -225,6 +307,25 @@ func TestRustBridgeIntegration(t *testing.T) {
 	}
 	if len(names) == 0 {
 		t.Fatal("real bridge returned no tool names")
+	}
+	if err := session.RegisterCommand(
+		ctx,
+		"bridge-status",
+		"Verify the Go callback transport",
+		"/bridge-status <value>",
+		func(_ context.Context, args string, commandContext CommandContext) (string, error) {
+			return commandContext.SessionID + ":" + args, nil
+		},
+		time.Second,
+	); err != nil {
+		t.Fatal(err)
+	}
+	commandResult, err := session.Send(ctx, "/bridge-status ready", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commandResult.Text != "go-rust-integration:ready" {
+		t.Fatalf("callback command result = %q", commandResult.Text)
 	}
 	if err := session.Close(ctx); err != nil {
 		t.Fatal(err)

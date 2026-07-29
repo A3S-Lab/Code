@@ -817,6 +817,9 @@ pub struct RetentionLimitsObject {
     /// FIFO-dropped from each run's buffer past this cap. The
     /// snapshot's cumulative `eventCount` is not decremented.
     pub max_events_per_run: Option<u32>,
+    /// Cap on serialized event bytes retained per run. Oldest records are
+    /// dropped until both the count and byte caps are satisfied.
+    pub max_event_bytes_per_run: Option<u32>,
     /// Cap on events retained in InMemoryTraceSink.
     pub max_trace_events: Option<u32>,
     /// Cap on **terminal** (Completed / Failed / Cancelled) subagent

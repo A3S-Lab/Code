@@ -175,6 +175,72 @@ func (session *Session) ActiveTools(ctx context.Context) ([]ActiveTool, error) {
 	return result, nil
 }
 
+func (session *Session) SubagentTask(
+	ctx context.Context,
+	taskID string,
+) (*SubagentTask, error) {
+	const op = "session_subagent_task"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(taskID) == "" {
+		return nil, invalid(op, "task id cannot be empty")
+	}
+	params := session.params()
+	params["task_id"] = taskID
+	var result struct {
+		Task *SubagentTask `json:"task"`
+	}
+	if err := session.runtime.Request(ctx, op, params, &result); err != nil {
+		return nil, err
+	}
+	return result.Task, nil
+}
+
+func (session *Session) SubagentTasks(ctx context.Context) ([]SubagentTask, error) {
+	const op = "session_subagent_tasks"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	var result []SubagentTask
+	if err := session.runtime.Request(ctx, op, session.params(), &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (session *Session) PendingSubagentTasks(ctx context.Context) ([]SubagentTask, error) {
+	const op = "session_pending_subagent_tasks"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	var result []SubagentTask
+	if err := session.runtime.Request(ctx, op, session.params(), &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (session *Session) CancelSubagentTask(
+	ctx context.Context,
+	taskID string,
+) (bool, error) {
+	const op = "session_cancel_subagent_task"
+	if err := validateSession(session, ctx, op); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(taskID) == "" {
+		return false, invalid(op, "task id cannot be empty")
+	}
+	params := session.params()
+	params["task_id"] = taskID
+	var result struct {
+		Cancelled bool `json:"cancelled"`
+	}
+	err := session.runtime.Request(ctx, op, params, &result)
+	return result.Cancelled, err
+}
+
 func (session *Session) CancelRun(ctx context.Context, runID string) (bool, error) {
 	const op = "session_cancel_run"
 	if err := validateSession(session, ctx, op); err != nil {
@@ -256,6 +322,22 @@ func (session *Session) VerificationReports(
 		return nil, err
 	}
 	return result, nil
+}
+
+func (session *Session) RecordVerificationReports(
+	ctx context.Context,
+	reports []VerificationReport,
+) error {
+	const op = "session_record_verification_reports"
+	if err := validateSession(session, ctx, op); err != nil {
+		return err
+	}
+	if len(reports) == 0 {
+		return invalid(op, "at least one report is required")
+	}
+	params := session.params()
+	params["reports"] = reports
+	return session.runtime.Request(ctx, op, params, nil)
 }
 
 func (session *Session) VerificationSummary(

@@ -19,13 +19,75 @@ register at least one `external` (or `hybrid`) lane handler first, otherwise eve
 runs in-process and there is nothing to drain.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    queue::{
+        ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
+        TaskHandlerMode,
+    },
+    Agent, SessionOptions,
+};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_queue_config(SessionQueueConfig::default()),
+        )
+        .build()
+        .await?;
+    session
+        .set_lane_handler(
+            SessionLane::Execute,
+            LaneHandlerConfig {
+                mode: TaskHandlerMode::External,
+                timeout_ms: 300_000,
+            },
+        )
+        .await?;
+
+    for task in session.pending_external_tasks().await {
+        println!(
+            "pending: {} on {:?} ({})",
+            task.task_id, task.lane, task.command_type
+        );
+        let completed = session
+            .complete_external_task(
+                &task.task_id,
+                ExternalTaskResult {
+                    success: true,
+                    result: json!({
+                        "summary": "worker completed the test run",
+                        "command": "npm run build",
+                        "exit_code": 0
+                    }),
+                    error: None,
+                },
+            )
+            .await;
+        println!("completed: {completed}");
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
 import { Agent } from '@a3s-lab/code';
 
 const agent = await Agent.create('agent.acl');
-const session = agent.session(process.cwd());
+const session = agent.session(process.cwd(), { queueConfig: {} });
 
 // Route a lane to an external worker so its tools are queued, not executed.
 await session.setLaneHandler('execute', {
@@ -68,10 +130,12 @@ session.close();
 
 ```python
 import os
-from a3s_code import Agent
+from a3s_code import Agent, SessionOptions, SessionQueueConfig
 
 agent = Agent.create("agent.acl")
-session = agent.session(os.getcwd())
+opts = SessionOptions()
+opts.queue_config = SessionQueueConfig()
+session = agent.session(os.getcwd(), opts)
 
 # Route a lane to an external worker so its tools are queued, not executed.
 session.set_lane_handler("execute", "external", 300000)
@@ -105,6 +169,69 @@ session.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		QueueConfig: &code.SessionQueueConfig{},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	err = session.SetLaneHandler(ctx, code.LaneExecute, code.LaneHandlerConfig{
+		Mode:      "external",
+		TimeoutMS: 300_000,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	pending, err := session.PendingExternalTasks(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, task := range pending {
+		fmt.Println("pending:", task.TaskID, task.Lane, task.CommandType)
+		completed, err := session.CompleteExternalTask(
+			ctx,
+			task.TaskID,
+			code.ExternalTaskResult{
+				Success: true,
+				Result: json.RawMessage(
+					`{"summary":"worker completed the test run","exit_code":0}`,
+				),
+			},
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("completed:", completed)
+	}
+}
+```
+
+</Tab>
 </Tabs>
 
 Notes:
@@ -119,3 +246,5 @@ Notes:
 - `completeExternalTask` / `complete_external_task` returns `true` when the task was found
   and completed, `false` otherwise. In Python these queue methods are synchronous; in Node
   `pendingExternalTasks` and `completeExternalTask` return promises.
+- Go uses `PendingExternalTasks` and `CompleteExternalTask`; both accept the
+  caller's `context.Context`.

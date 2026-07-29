@@ -27,6 +27,36 @@ Set any subset of the slots when you open a session. They apply to every turn of
 session.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions, SystemPromptSlots};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let slots = SystemPromptSlots::default()
+        .with_role("release-readiness reviewer")
+        .with_guidelines(
+            "Find blockers before improvements. Require command evidence for done claims.",
+        )
+        .with_response_style("concise, findings first");
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_prompt_slots(slots))
+        .build()
+        .await?;
+
+    let result = session.send("Is this repo ready to ship?", None).await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -80,6 +110,49 @@ main()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		PromptSlots: &code.PromptSlots{
+			Role: "release-readiness reviewer",
+			Guidelines: "Find blockers before improvements. " +
+				"Require command evidence for done claims.",
+			ResponseStyle: "concise, findings first",
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "Is this repo ready to ship?")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+</Tab>
 </Tabs>
 
 ## Each slot in turn
@@ -88,6 +161,71 @@ The four slots compose independently. A persona-only session, a reviewer with st
 guidelines, and a session that appends a freeform instruction all use the same option set.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions, SystemPromptSlots};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+
+    let role_only = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_prompt_slots(
+            SystemPromptSlots::default().with_role(
+                "You are a senior Rust developer who specializes in async programming.",
+            ),
+        ))
+        .build()
+        .await?;
+    role_only.close().await;
+
+    let reviewer = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_prompt_slots(
+            SystemPromptSlots::default()
+                .with_role("You are a Python code reviewer.")
+                .with_guidelines("Always check for type hints. Flag any use of `eval()`.")
+                .with_response_style("Reply in bullet points. Be concise."),
+        ))
+        .build()
+        .await?;
+    reviewer.close().await;
+
+    let extra_only = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_prompt_slots(
+            SystemPromptSlots::default().with_extra("Always end your response with '-- A3S'"),
+        ))
+        .build()
+        .await?;
+    extra_only.close().await;
+
+    let file_manager = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_prompt_slots(
+            SystemPromptSlots::default()
+                .with_role("You are a minimalist file manager.")
+                .with_guidelines("Only create files when explicitly asked."),
+        ))
+        .build()
+        .await?;
+    let result = file_manager
+        .send(
+            "Create test.txt with 'prompt slots work', then read it back.",
+            None,
+        )
+        .await?;
+    println!("{}", result.text);
+
+    file_manager.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -147,6 +285,75 @@ session = agent.session(workspace, opts)
 result = session.send(
     "Create a file called test.txt with the content 'prompt slots work'. Then read it back.",
 )
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func open(
+	ctx context.Context,
+	agent *code.Agent,
+	slots code.PromptSlots,
+) *code.Session {
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		PromptSlots: &slots,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	return session
+}
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	roleOnly := open(ctx, agent, code.PromptSlots{
+		Role: "You are a senior Rust developer who specializes in async programming.",
+	})
+	roleOnly.Close(ctx)
+
+	reviewer := open(ctx, agent, code.PromptSlots{
+		Role:          "You are a Python code reviewer.",
+		Guidelines:    "Always check for type hints. Flag any use of `eval()`.",
+		ResponseStyle: "Reply in bullet points. Be concise.",
+	})
+	reviewer.Close(ctx)
+
+	extraOnly := open(ctx, agent, code.PromptSlots{
+		Extra: "Always end your response with '-- A3S'",
+	})
+	extraOnly.Close(ctx)
+
+	fileManager := open(ctx, agent, code.PromptSlots{
+		Role:       "You are a minimalist file manager.",
+		Guidelines: "Only create files when explicitly asked.",
+	})
+	defer fileManager.Close(context.Background())
+	result, err := fileManager.Run(
+		ctx,
+		"Create test.txt with 'prompt slots work', then read it back.",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
 ```
 
 </Tab>

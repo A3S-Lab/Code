@@ -323,6 +323,18 @@ export interface AutoDelegationOptions {
   /** Maximum number of automatic child tasks per user request. */
   maxTasks?: number
 }
+/**
+ * Host-provided deterministic ID and clock configuration.
+ *
+ * Set both fields when replaying a run so session/run IDs and timestamps are
+ * reproducible across hosts. Omitted fields keep their system-backed default.
+ */
+export interface HostEnvOptions {
+  /** Prefix for deterministic IDs (`<prefix>-0`, `<prefix>-1`, ...). */
+  sequentialIdPrefix?: string
+  /** Fixed Unix-epoch timestamp returned by the session clock. */
+  fixedTimeMs?: number
+}
 export interface SessionOptions {
   /** Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o"). */
   model?: string
@@ -551,6 +563,8 @@ export interface SessionOptions {
    * session's events.
    */
   correlationId?: string
+  /** Deterministic ID and clock configuration for replay and tests. */
+  hostEnv?: HostEnvOptions
   /**
    * Optional FIFO retention caps on the session's in-memory stores.
    * Missing fields keep finite framework defaults. Set `unbounded: true`
@@ -868,6 +882,8 @@ export interface RetentionLimitsObject {
    * snapshot's cumulative `eventCount` is not decremented.
    */
   maxEventsPerRun?: number
+  /** Cap on serialized event bytes retained per run. */
+  maxEventBytesPerRun?: number
   /** Cap on events retained in InMemoryTraceSink. */
   maxTraceEvents?: number
   /**

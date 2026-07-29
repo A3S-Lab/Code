@@ -25,6 +25,34 @@ Prompt slots 是以声明式方式塑造智能体系统提示词的会话选项�
 在打开会话时设置任意子集的槽位。它们会应用于该会话的每一轮对话。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions, SystemPromptSlots};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let slots = SystemPromptSlots::default()
+        .with_role("发布就绪审查员")
+        .with_guidelines("先找阻塞项，再提改进；完成结论必须有命令证据。")
+        .with_response_style("简洁，发现优先");
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_prompt_slots(slots))
+        .build()
+        .await?;
+
+    let result = session.send("这个仓库可以发布了吗？", None).await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -78,6 +106,48 @@ main()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		PromptSlots: &code.PromptSlots{
+			Role:          "发布就绪审查员",
+			Guidelines:    "先找阻塞项，再提改进；完成结论必须有命令证据。",
+			ResponseStyle: "简洁，发现优先",
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "这个仓库可以发布了吗？")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+</Tab>
 </Tabs>
 
 ## 逐个槽位说明
@@ -86,6 +156,69 @@ main()
 会话，使用的都是同一组选项。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions, SystemPromptSlots};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+
+    let role_only = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_prompt_slots(
+            SystemPromptSlots::default().with_role("你是擅长异步编程的资深 Rust 开发者。"),
+        ))
+        .build()
+        .await?;
+    role_only.close().await;
+
+    let reviewer = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_prompt_slots(
+            SystemPromptSlots::default()
+                .with_role("你是 Python 代码审查员。")
+                .with_guidelines("始终检查类型提示，并标记所有 `eval()` 调用。")
+                .with_response_style("使用要点列表，保持简洁。"),
+        ))
+        .build()
+        .await?;
+    reviewer.close().await;
+
+    let extra_only = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_prompt_slots(
+            SystemPromptSlots::default().with_extra("每次回复都以“-- A3S”结尾。"),
+        ))
+        .build()
+        .await?;
+    extra_only.close().await;
+
+    let file_manager = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_prompt_slots(
+            SystemPromptSlots::default()
+                .with_role("你是极简文件管理员。")
+                .with_guidelines("只有用户明确要求时才创建文件。"),
+        ))
+        .build()
+        .await?;
+    let result = file_manager
+        .send(
+            "创建 test.txt，写入“prompt slots work”，然后读回内容。",
+            None,
+        )
+        .await?;
+    println!("{}", result.text);
+
+    file_manager.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -145,6 +278,75 @@ session = agent.session(workspace, opts)
 result = session.send(
     "Create a file called test.txt with the content 'prompt slots work'. Then read it back.",
 )
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func open(
+	ctx context.Context,
+	agent *code.Agent,
+	slots code.PromptSlots,
+) *code.Session {
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		PromptSlots: &slots,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	return session
+}
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	roleOnly := open(ctx, agent, code.PromptSlots{
+		Role: "你是擅长异步编程的资深 Rust 开发者。",
+	})
+	roleOnly.Close(ctx)
+
+	reviewer := open(ctx, agent, code.PromptSlots{
+		Role:          "你是 Python 代码审查员。",
+		Guidelines:    "始终检查类型提示，并标记所有 `eval()` 调用。",
+		ResponseStyle: "使用要点列表，保持简洁。",
+	})
+	reviewer.Close(ctx)
+
+	extraOnly := open(ctx, agent, code.PromptSlots{
+		Extra: "每次回复都以“-- A3S”结尾。",
+	})
+	extraOnly.Close(ctx)
+
+	fileManager := open(ctx, agent, code.PromptSlots{
+		Role:       "你是极简文件管理员。",
+		Guidelines: "只有用户明确要求时才创建文件。",
+	})
+	defer fileManager.Close(context.Background())
+	result, err := fileManager.Run(
+		ctx,
+		"创建 test.txt，写入“prompt slots work”，然后读回内容。",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
 ```
 
 </Tab>

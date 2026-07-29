@@ -14,7 +14,7 @@ SDK 宿主可以用 `Agent.create("agent.acl")` 显式传入任意 `.acl` 文件
 
 ## 基础配置
 
-```text
+```acl
 default_model = "provider/model-id"
 max_parallel_tasks = 4
 auto_parallel = false
@@ -41,7 +41,7 @@ providers "provider" {
 
 ## 目录发现
 
-```text
+```acl
 skill_dirs = ["./.a3s/skills"]
 agent_dirs = ["./.a3s/agents"]
 
@@ -57,7 +57,7 @@ auto_delegation {
 
 ## 会话存储
 
-```text
+```acl
 storage_backend = "file"
 sessions_dir = ".a3s/sessions"
 ```

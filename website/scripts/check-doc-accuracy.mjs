@@ -202,6 +202,23 @@ const currentDocuments = new Map(
   ),
 );
 
+const sdkTabs = new Map([
+  ['Rust', /```rust(?:[^\n]*)\n/],
+  ['Node.js', /```(?:ts|typescript)(?:[^\n]*)\n/],
+  ['Python', /```python(?:[^\n]*)\n/],
+  ['Go', /```go(?:[^\n]*)\n/],
+]);
+let aclFenceCount = 0;
+
+function looksLikeAcl(source) {
+  return (
+    /(?:^|\n)\s*(?:version|provider|model|agent_dirs|skill_dirs|mcp_servers|memory|session)\s*=/m.test(
+      source,
+    ) ||
+    /(?:^|\n)\s*(?:provider|model|agent|mcp|tool)\s+"[^"]+"\s*\{/m.test(source)
+  );
+}
+
 for (const [file, content] of currentDocuments) {
   if (file.startsWith('en/') && /[\u3400-\u9fff]/u.test(content)) {
     fail(`${manifest.current}/${file} contains Chinese text.`);
@@ -232,9 +249,50 @@ for (const [file, content] of currentDocuments) {
     '/guide/go-sdk',
     'Node/Python wrappers will follow',
     'Node/Python 封装稍后',
+    'not yet exposed on the JS/Python option surface',
+    '尚未暴露在 JS/Python 选项面上',
+    'This feature is Rust-side',
+    '该特性位于 Rust 侧',
   ]) {
     if (content.includes(staleText)) {
       fail(`${manifest.current}/${file} contains stale text: ${staleText}.`);
+    }
+  }
+
+  for (const [index, match] of [
+    ...content.matchAll(/<Tabs>([\s\S]*?)<\/Tabs>/g),
+  ].entries()) {
+    const tabs = match[1];
+    if (
+      ![...sdkTabs.keys()].some((label) => tabs.includes(`label="${label}"`))
+    ) {
+      continue;
+    }
+
+    for (const [label, codeFence] of sdkTabs) {
+      const tab = tabs.match(
+        new RegExp(`<Tab label="${label}">([\\s\\S]*?)<\\/Tab>`),
+      )?.[1];
+      if (!tab) {
+        fail(
+          `${manifest.current}/${file} SDK tab group ${index + 1} is missing ${label}.`,
+        );
+      } else if (!codeFence.test(tab)) {
+        fail(
+          `${manifest.current}/${file} SDK tab group ${index + 1} has no complete ${label} code block.`,
+        );
+      }
+    }
+  }
+
+  aclFenceCount += [...content.matchAll(/^```acl(?:[^\n]*)\n/gm)].length;
+  for (const block of content.matchAll(
+    /^```(?:text|txt|hcl)(?:[^\n]*)\n([\s\S]*?)^```/gm,
+  )) {
+    if (looksLikeAcl(block[1])) {
+      fail(
+        `${manifest.current}/${file} contains ACL configuration in a non-ACL code fence.`,
+      );
     }
   }
 
@@ -253,6 +311,24 @@ for (const [file, content] of currentDocuments) {
         `${manifest.current}/${file} references a missing repository path: ${reference}.`,
       );
     }
+  }
+}
+
+if (aclFenceCount === 0) {
+  fail(`${manifest.current} contains no ACL code fences.`);
+}
+
+const aclRemarkPath = path.join(websiteRoot, 'remark-acl-syntax.ts');
+if (!(await exists(aclRemarkPath))) {
+  fail('Missing the ACL syntax-highlighting remark plugin.');
+} else {
+  const aclRemarkSource = await readFile(aclRemarkPath, 'utf8');
+  if (
+    !rspressConfig.includes('remarkAclSyntax') ||
+    !aclRemarkSource.includes("node.lang = 'hcl'") ||
+    !aclRemarkSource.includes('displayLanguage=ACL')
+  ) {
+    fail('ACL fences are not mapped to the HCL grammar with an ACL label.');
   }
 }
 
@@ -365,7 +441,87 @@ const pythonMethodsByReceiver = {
   Session: pythonMethods(pythonSessionSources.join('\n')),
 };
 
+function normalizedMethodName(method) {
+  return method.replaceAll('_', '').toLowerCase();
+}
+
+const nodeOnlySessionConvenienceMethods = new Set([
+  // Go methods already accept a context and block until completion; these
+  // Promise aliases do not represent separate runtime capabilities.
+  'cancelAsync',
+  'closeAsync',
+]);
+const pythonSessionCapabilities = new Set(
+  [...pythonMethodsByReceiver.Session].map(normalizedMethodName),
+);
+const goSessionCapabilities = new Set(
+  [...goMethods.Session].map(normalizedMethodName),
+);
+
+for (const method of nodeMethods.Session) {
+  if (nodeOnlySessionConvenienceMethods.has(method)) {
+    continue;
+  }
+  const capability = normalizedMethodName(method);
+  if (!pythonSessionCapabilities.has(capability)) {
+    fail(
+      `Python Session is missing the Node.js ${method}() capability (${capability}).`,
+    );
+  }
+  if (!goSessionCapabilities.has(capability)) {
+    fail(
+      `Go Session is missing the Node.js ${method}() capability (${capability}).`,
+    );
+  }
+}
+
+const rustAgentApiFiles = (
+  await collectFiles(path.join(repositoryRoot, 'core', 'src', 'agent_api'))
+).filter((file) => file.endsWith('.rs'));
+const rustAgentFacade = await readFile(
+  path.join(repositoryRoot, 'core', 'src', 'agent_api', 'agent_facade.rs'),
+  'utf8',
+);
+const rustSessionSources = await Promise.all(
+  rustAgentApiFiles
+    .filter((file) => file !== 'agent_facade.rs')
+    .map((file) =>
+      readFile(
+        path.join(repositoryRoot, 'core', 'src', 'agent_api', file),
+        'utf8',
+      ),
+    ),
+);
+
+function rustMethods(source) {
+  return new Set(
+    [
+      ...source.matchAll(
+        /\bpub\s+(?:async\s+)?fn\s+([a-z][a-z0-9_]*)\s*(?:<[^>{}\n]*>)?\s*\(/g,
+      ),
+    ].map((match) => match[1]),
+  );
+}
+
+const rustMethodsByReceiver = {
+  Agent: rustMethods(rustAgentFacade),
+  Session: rustMethods(rustSessionSources.join('\n')),
+};
+
 for (const [file, content] of currentDocuments) {
+  for (const block of content.matchAll(/```rust[^\n]*\n([\s\S]*?)```/g)) {
+    for (const call of block[1].matchAll(
+      /\b(agent|session)\.([a-z][a-z0-9_]*)\s*\(/g,
+    )) {
+      const receiver = call[1] === 'agent' ? 'Agent' : 'Session';
+      if (!rustMethodsByReceiver[receiver].has(call[2])) {
+        fail(
+          `${manifest.current}/${file} calls missing Rust ${receiver} method ${call[2]}().`,
+        );
+      }
+    }
+  }
+
   for (const block of content.matchAll(/```go[^\n]*\n([\s\S]*?)```/g)) {
     for (const call of block[1].matchAll(
       /\b(agent|session)\.([A-Z][A-Za-z0-9_]*)\s*\(/g,
@@ -417,5 +573,5 @@ if (errors.length > 0) {
 }
 
 console.log(
-  `Documentation accuracy verified for ${manifest.current}, ${manifest.archives.length} immutable revision snapshots, and Node.js/Python/Go SDK examples.`,
+  `Documentation accuracy verified for ${manifest.current}, ${manifest.archives.length} immutable revision snapshots, ACL highlighting, and Rust/Node.js/Python/Go SDK examples.`,
 );

@@ -8,9 +8,10 @@ import { Tab, Tabs } from '@rspress/core/theme';
 # Workspace Backends
 
 Workspace backends decide where built-in workspace tools read and write files.
-The default is the local filesystem rooted at the session workspace. The SDKs
-also expose typed backends for local files, S3-compatible object storage, and
-an optional HTTP/JSON remote git provider.
+The default is the local filesystem rooted at the session workspace. All four
+SDKs expose configuration for local files, S3-compatible object storage, and an
+optional HTTP/JSON remote git provider. Go uses value configurations where
+Node.js and Python use backend objects.
 
 Use this surface when the host owns workspace placement: local development,
 browser or container workspaces, object-storage workspaces, or managed sessions.
@@ -34,6 +35,30 @@ The explicit local backend is useful when host code wants one option surface for
 both local and remote sessions.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions, WorkspaceServices};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let backend = WorkspaceServices::local("/repo");
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_workspace_backend(backend))
+        .build()
+        .await?;
+
+    println!("{}", session.read_file("Cargo.toml").await?);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -58,6 +83,51 @@ session = agent.session("/repo", opts)
 ```
 
 </Tab>
+<Tab label="Go">
+
+The workspace path already selects the default local backend. Use
+`WorkspaceBackendConfig` when one option shape must cover local and remote
+sessions:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		WorkspaceBackend: &code.WorkspaceBackendConfig{
+			Kind: "local",
+			Root: "/repo",
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	content, err := session.ReadFile(ctx, "go.mod", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(content)
+}
+```
+
+</Tab>
 </Tabs>
 
 ## S3 Backend
@@ -66,6 +136,51 @@ session = agent.session("/repo", opts)
 including AWS S3, MinIO, RustFS, Cloudflare R2, and Backblaze B2.
 
 <Tabs>
+<Tab label="Rust">
+
+The Rust crate must be built with its `s3` feature.
+
+```rust
+use std::env;
+
+use a3s_code_core::{Agent, S3BackendConfig, SessionOptions, WorkspaceServices};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let bucket = env::var("WORKSPACE_S3_BUCKET")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let access_key = env::var("S3_ACCESS_KEY_ID")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let secret_key = env::var("S3_SECRET_ACCESS_KEY")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+
+    let mut config =
+        S3BackendConfig::new(bucket, "sessions/example", access_key, secret_key)
+            .region(env::var("WORKSPACE_S3_REGION").unwrap_or_else(|_| "us-east-1".into()))
+            .force_path_style(true)
+            .enable_search(false);
+    if let Ok(endpoint) = env::var("WORKSPACE_S3_ENDPOINT") {
+        config = config.endpoint(endpoint);
+    }
+
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("s3://workspace-bucket/sessions/example")
+        .options(
+            SessionOptions::new().with_workspace_backend(WorkspaceServices::s3(config)),
+        )
+        .build()
+        .await?;
+
+    println!("{}", session.read_file("README.md").await?);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -112,6 +227,63 @@ session = agent.session("s3://workspace-bucket/sessions/example", opts)
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	forcePathStyle := true
+	searchEnabled := false
+	session, err := agent.Session(
+		ctx,
+		"s3://workspace-bucket/sessions/example",
+		&code.SessionOptions{
+			WorkspaceBackend: &code.WorkspaceBackendConfig{
+				Kind: "s3",
+				S3: &code.S3BackendConfig{
+					Endpoint:        os.Getenv("WORKSPACE_S3_ENDPOINT"),
+					Region:          os.Getenv("WORKSPACE_S3_REGION"),
+					AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
+					SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
+					Bucket:          os.Getenv("WORKSPACE_S3_BUCKET"),
+					Prefix:          "sessions/example",
+					ForcePathStyle:  &forcePathStyle,
+					SearchEnabled:   &searchEnabled,
+				},
+			},
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	content, err := session.ReadFile(ctx, "README.md", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(content)
+}
+```
+
+</Tab>
 </Tabs>
 
 S3 search is intentionally opt-in. When enabled, `grep` / `glob` degrade to
@@ -137,6 +309,11 @@ the endpoint rate-limits.
 | `maxGrepBytesPerObject` | `max_grep_bytes_per_object` | no       | Per-object download cap for `grep`; used only when search is enabled.           |
 | `searchConcurrency`     | `search_concurrency`        | no       | Concurrent object downloads during `grep`; used only when search is enabled.    |
 
+Go exposes the same fields on `S3BackendConfig`: `Bucket`, `Prefix`,
+`AccessKeyID`, `SecretAccessKey`, `Endpoint`, `Region`, `SessionToken`,
+`ForcePathStyle`, `MaxReadBytes`, `SearchEnabled`, `MaxObjectsScanned`,
+`MaxGrepBytesPerObject`, and `SearchConcurrency`.
+
 ## Remote Git
 
 `remoteGit` attaches an HTTP/JSON git provider on top of `workspaceBackend`. It is
@@ -146,6 +323,57 @@ local `.git` directory.
 `remoteGit` requires `workspaceBackend`; passing it alone is rejected.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use std::env;
+
+use a3s_code_core::{
+    Agent, RemoteGitBackendConfig, S3BackendConfig, SessionOptions, WorkspaceServices,
+};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let bucket = env::var("WORKSPACE_S3_BUCKET")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let access_key = env::var("S3_ACCESS_KEY_ID")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let secret_key = env::var("S3_SECRET_ACCESS_KEY")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let base_url = env::var("REMOTE_GIT_BASE_URL")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let token = env::var("REMOTE_GIT_TOKEN")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+
+    let storage = WorkspaceServices::s3(S3BackendConfig::new(
+        bucket,
+        "sessions/example",
+        access_key,
+        secret_key,
+    ));
+    let backend = storage.with_remote_git(
+        RemoteGitBackendConfig::new(base_url, "sessions/example").bearer_token(token),
+    )?;
+
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("s3://workspace-bucket/sessions/example")
+        .options(SessionOptions::new().with_workspace_backend(backend))
+        .build()
+        .await?;
+
+    let status = session
+        .tool("git", serde_json::json!({ "command": "status" }))
+        .await?;
+    println!("{}", status.output);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -205,6 +433,66 @@ session = agent.session("s3://workspace-bucket/sessions/example", opts)
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	forcePathStyle := true
+	session, err := agent.Session(
+		ctx,
+		"s3://workspace-bucket/sessions/example",
+		&code.SessionOptions{
+			WorkspaceBackend: &code.WorkspaceBackendConfig{
+				Kind: "s3",
+				S3: &code.S3BackendConfig{
+					Endpoint:        os.Getenv("WORKSPACE_S3_ENDPOINT"),
+					Region:          os.Getenv("WORKSPACE_S3_REGION"),
+					AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
+					SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
+					Bucket:          os.Getenv("WORKSPACE_S3_BUCKET"),
+					Prefix:          "sessions/example",
+					ForcePathStyle:  &forcePathStyle,
+				},
+			},
+			RemoteGit: &code.RemoteGitBackendConfig{
+				BaseURL:     os.Getenv("REMOTE_GIT_BASE_URL"),
+				RepoID:      "sessions/example",
+				BearerToken: os.Getenv("REMOTE_GIT_TOKEN"),
+			},
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	status, err := session.Git(ctx, code.GitOptions{Command: "status"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(status.Output)
+}
+```
+
+</Tab>
 </Tabs>
 
 Keep remote git credentials out of `agent.acl` and agent directories. Inject them
@@ -222,6 +510,10 @@ from the host environment or secret manager.
 | `requestTimeoutMs` | `request_timeout_ms` | no         | Per-call HTTP timeout in milliseconds; defaults to 30000.                              |
 | `maxDiffBytes`     | `max_diff_bytes`     | no         | Client-side cap on `diff` response bytes; defaults to 1 MiB.                           |
 | `maxLogEntries`    | `max_log_entries`    | no         | Client-side cap on `log` entries; defaults to 200.                                     |
+
+Go exposes the same fields on `RemoteGitBackendConfig`: `BaseURL`, `RepoID`,
+`BearerToken`, `ClientCertPEM`, `ClientKeyPEM`, `RequestTimeoutMS`,
+`MaxDiffBytes`, and `MaxLogEntries`.
 
 ## Choosing A Backend
 

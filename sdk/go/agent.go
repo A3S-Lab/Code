@@ -175,16 +175,96 @@ func (agent *Agent) ResumeSession(
 	return agent.newSession(ctx, op, params)
 }
 
+func (agent *Agent) ReplaceSession(
+	ctx context.Context,
+	current *Session,
+	options *SessionOptions,
+) (*Session, error) {
+	const op = "agent_replace_session"
+	if err := validateAgent(agent, ctx, op); err != nil {
+		return nil, err
+	}
+	if current == nil || current.handle == "" {
+		return nil, invalid(op, "current session is not initialized")
+	}
+	params := current.params()
+	params["agent_id"] = agent.id
+	if options != nil {
+		params["options"] = options
+	}
+	return agent.newSession(ctx, op, params)
+}
+
+func (agent *Agent) SessionForAgent(
+	ctx context.Context,
+	workspace string,
+	agentName string,
+	agentDirs []string,
+	options *SessionOptions,
+) (*Session, error) {
+	const op = "agent_session_for_agent"
+	if err := validateAgent(agent, ctx, op); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(workspace) == "" {
+		return nil, invalid(op, "workspace cannot be empty")
+	}
+	if strings.TrimSpace(agentName) == "" {
+		return nil, invalid(op, "agent name cannot be empty")
+	}
+	params := map[string]any{
+		"agent_id":   agent.id,
+		"workspace":  workspace,
+		"agent_name": agentName,
+		"agent_dirs": agentDirs,
+	}
+	if options != nil {
+		params["options"] = options
+	}
+	return agent.newSession(ctx, op, params)
+}
+
+func (agent *Agent) SessionForWorker(
+	ctx context.Context,
+	workspace string,
+	worker WorkerAgentSpec,
+	options *SessionOptions,
+) (*Session, error) {
+	const op = "agent_session_for_worker"
+	if err := validateAgent(agent, ctx, op); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(workspace) == "" {
+		return nil, invalid(op, "workspace cannot be empty")
+	}
+	if strings.TrimSpace(worker.Name) == "" || strings.TrimSpace(worker.Description) == "" {
+		return nil, invalid(op, "worker name and description cannot be empty")
+	}
+	params := map[string]any{
+		"agent_id":  agent.id,
+		"workspace": workspace,
+		"worker":    worker,
+	}
+	if options != nil {
+		params["options"] = options
+	}
+	return agent.newSession(ctx, op, params)
+}
+
 func (agent *Agent) newSession(
 	ctx context.Context,
 	operation string,
 	params map[string]any,
 ) (*Session, error) {
 	var created struct {
-		SessionHandle string  `json:"session_handle"`
-		SessionID     string  `json:"session_id"`
-		Workspace     string  `json:"workspace"`
-		InitWarning   *string `json:"init_warning"`
+		SessionHandle   string  `json:"session_handle"`
+		SessionID       string  `json:"session_id"`
+		Workspace       string  `json:"workspace"`
+		InitWarning     *string `json:"init_warning"`
+		TenantID        *string `json:"tenant_id"`
+		Principal       *string `json:"principal"`
+		AgentTemplateID *string `json:"agent_template_id"`
+		CorrelationID   *string `json:"correlation_id"`
 	}
 	if err := agent.runtime.Request(ctx, operation, params, &created); err != nil {
 		return nil, err
@@ -198,11 +278,15 @@ func (agent *Agent) newSession(
 		)
 	}
 	return &Session{
-		runtime:     agent.runtime,
-		handle:      created.SessionHandle,
-		id:          created.SessionID,
-		workspace:   created.Workspace,
-		initWarning: created.InitWarning,
+		runtime:         agent.runtime,
+		handle:          created.SessionHandle,
+		id:              created.SessionID,
+		workspace:       created.Workspace,
+		initWarning:     created.InitWarning,
+		tenantID:        created.TenantID,
+		principal:       created.Principal,
+		agentTemplateID: created.AgentTemplateID,
+		correlationID:   created.CorrelationID,
 	}, nil
 }
 
@@ -249,6 +333,80 @@ func (agent *Agent) CloseSession(ctx context.Context, sessionID string) (bool, e
 		"session_id": sessionID,
 	}, &result)
 	return result.Closed, err
+}
+
+func (agent *Agent) DisconnectIdleMCP(
+	ctx context.Context,
+	idleThresholdMS uint64,
+) ([]string, error) {
+	const op = "agent_disconnect_idle_mcp"
+	if err := validateAgent(agent, ctx, op); err != nil {
+		return nil, err
+	}
+	var result struct {
+		Names []string `json:"names"`
+	}
+	err := agent.runtime.Request(ctx, op, map[string]any{
+		"agent_id":          agent.id,
+		"idle_threshold_ms": idleThresholdMS,
+	}, &result)
+	return result.Names, err
+}
+
+type ServeHandle struct {
+	runtime  Runtime
+	handle   string
+	stopOnce sync.Once
+	stopErr  error
+}
+
+func (agent *Agent) ServeAgentDir(
+	ctx context.Context,
+	dir string,
+	workspace string,
+	options *SessionOptions,
+) (*ServeHandle, error) {
+	const op = "agent_serve_agent_dir"
+	if err := validateAgent(agent, ctx, op); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(dir) == "" || strings.TrimSpace(workspace) == "" {
+		return nil, invalid(op, "agent directory and workspace cannot be empty")
+	}
+	params := map[string]any{
+		"agent_id":  agent.id,
+		"dir":       dir,
+		"workspace": workspace,
+	}
+	if options != nil {
+		params["options"] = options
+	}
+	var result struct {
+		Handle string `json:"serve_handle"`
+	}
+	if err := agent.runtime.Request(ctx, op, params, &result); err != nil {
+		return nil, err
+	}
+	if result.Handle == "" {
+		return nil, sdkError(op, CodeProtocol, "bridge returned an empty serve handle", nil)
+	}
+	return &ServeHandle{runtime: agent.runtime, handle: result.Handle}, nil
+}
+
+func (handle *ServeHandle) Stop(ctx context.Context) error {
+	const op = "agent_stop_serve"
+	if handle == nil {
+		return nil
+	}
+	if ctx == nil {
+		return invalid(op, "context cannot be nil")
+	}
+	handle.stopOnce.Do(func() {
+		handle.stopErr = handle.runtime.Request(ctx, op, map[string]any{
+			"serve_handle": handle.handle,
+		}, nil)
+	})
+	return handle.stopErr
 }
 
 func (agent *Agent) IsClosed(ctx context.Context) (bool, error) {

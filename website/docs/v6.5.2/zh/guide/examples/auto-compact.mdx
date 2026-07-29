@@ -14,6 +14,43 @@ token。续写则处理另一个方向：当单条回复因长度被截断时，
 拼出完整回复。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let options = SessionOptions::new()
+        .with_auto_compact(true)
+        .with_auto_compact_threshold(0.75)
+        .with_continuation(true)
+        .with_max_continuation_turns(3);
+    let session = agent
+        .session_builder("/repo")
+        .options(options)
+        .build()
+        .await?;
+
+    for step in 0..50 {
+        session
+            .send(&format!("第 {step} 步：继续重构解析器"), None)
+            .await?;
+    }
+
+    println!("历史消息数：{}", session.history().len());
+    if let Some(memory) = session.memory() {
+        println!("最近记忆：{:#?}", memory.get_recent(5).await?);
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -73,9 +110,59 @@ session.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	options := &code.SessionOptions{
+		AutoCompact:          code.Ptr(true),
+		AutoCompactThreshold: code.Ptr(float32(0.75)),
+		ContinuationEnabled:  code.Ptr(true),
+		MaxContinuationTurns: code.Ptr(uint32(3)),
+	}
+	session, err := agent.Session(ctx, "/repo", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	for step := 0; step < 50; step++ {
+		prompt := fmt.Sprintf("第 %d 步：继续重构解析器", step)
+		if _, err := session.Run(ctx, prompt); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	history, err := session.History(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("历史消息数：", len(history))
+}
+```
+
+</Tab>
 </Tabs>
 
 长 session 若希望由 runtime 替你管理 context pressure，就使用自动压缩。
 `autoCompactThreshold` / `auto_compact_threshold` 是触发压缩的上下文窗口占比
-（0.0–1.0，默认 0.8）；调低它可以更早触发压缩。用 `history()`（同步）和
-`memoryRecent` / `memory_recent` 查看实时 session。
+（0.0–1.0，默认 0.8）；调低它可以更早触发压缩。四种 SDK 都能通过各自的
+history API 检查当前会话。四种 SDK 也都提供直接读取最近记忆的接口：
+`memoryRecent` / `memory_recent` / `MemoryRecent`。

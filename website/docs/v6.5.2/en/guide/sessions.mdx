@@ -83,6 +83,22 @@ conversation operation will not inherit a stale busy state from that stream.
 ## Send
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+let result = session
+    .send(
+        "Review this repository and list release blockers",
+        None,
+    )
+    .await?;
+
+println!("{}", result.text);
+println!("{}", result.usage.total_tokens);
+println!("{:?}", result.verification_summary().status);
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -93,6 +109,19 @@ const result = await session.send(
 console.log(result.text);
 console.log(result.totalTokens);
 console.log(result.verificationStatus);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+result = session.send(
+    "Review this repository and list release blockers",
+)
+
+print(result.text)
+print(result.total_tokens)
+print(result.verification_status)
 ```
 
 </Tab>
@@ -118,6 +147,30 @@ fmt.Println(result.VerificationSummary.Status)
 ## Stream
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{AgentEvent, CodeError};
+
+let (mut events, lifecycle) = session
+    .stream("Run the focused tests and explain failures", None)
+    .await?;
+
+while let Some(event) = events.recv().await {
+    match event {
+        AgentEvent::TextDelta { text } => print!("{text}"),
+        AgentEvent::ToolStart { name, .. } => println!("\ntool: {name}"),
+        AgentEvent::End { .. } => break,
+        AgentEvent::Error { message } => return Err(CodeError::Llm(message)),
+        _ => {}
+    }
+}
+lifecycle
+    .await
+    .map_err(|error| CodeError::Internal(error.into()))??;
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -133,6 +186,19 @@ while (true) {
   if (event.text) process.stdout.write(event.text);
   if (event.toolName) console.log('tool:', event.toolName);
 }
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+for event in session.stream("Run the focused tests and explain failures"):
+    if event.type == "text_delta" and event.text:
+        print(event.text, end="", flush=True)
+    elif event.type == "tool_start":
+        print(f"\ntool: {event.tool_name or 'unknown'}")
+    elif event.type == "error":
+        raise RuntimeError(event.error or "stream error")
 ```
 
 </Tab>
@@ -194,6 +260,20 @@ console.log(session.history().length === snapshot.length);
 ## Resume
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+let session = agent
+    .resume_session_async(
+        "release-review",
+        SessionOptions::new().with_file_session_store("./.a3s/sessions"),
+    )
+    .await?;
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -203,6 +283,17 @@ const agent = await Agent.create('agent.acl');
 const session = agent.resumeSession('release-review', {
   sessionStore: new FileSessionStore('./.a3s/sessions'),
 });
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import FileSessionStore, SessionOptions
+
+opts = SessionOptions()
+opts.session_store = FileSessionStore("./.a3s/sessions")
+session = agent.resume_session("release-review", opts)
 ```
 
 </Tab>
@@ -220,8 +311,8 @@ session, err := agent.ResumeSession(ctx, "release-review", options)
 
 Set `autoSave: true` or call `await session.save()` when using a session store.
 This resumes a saved session snapshot; interrupted run checkpoints use
-`session.resumeRun(runId)` instead. The Go bridge supports snapshot
-`Save`/`ResumeSession`, but does not expose interrupted-run `resumeRun`.
+`session.resumeRun(runId)` instead. Go uses `Save`, `ResumeSession`, and
+`ResumeRun(ctx, runID)` for the same two persistence levels.
 See [Persistence](/guide/persistence).
 
 ## Lifecycle and Close
@@ -397,6 +488,15 @@ const session = agent.sessionForAgent('/repo', 'explore', ['./agents'], {
 });
 ```
 
-The Go bridge does not expose `sessionForAgent`. Configure `AgentDirs` in
-`SessionOptions`, then create the session through `Agent.Session`; use the
-regular session API for the resulting conversation.
+```go
+session, err := agent.SessionForAgent(
+	ctx,
+	"/repo",
+	"explore",
+	[]string{"./agents"},
+	&code.SessionOptions{PlanningMode: code.PlanningAuto},
+)
+```
+
+For disposable value-defined workers, use `SessionForWorker`; both methods
+return the regular Go `Session` API.

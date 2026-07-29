@@ -114,6 +114,19 @@ pub struct AutoDelegationOptions {
     pub max_tasks: Option<u32>,
 }
 
+/// Host-provided deterministic ID and clock configuration.
+///
+/// Set both fields when replaying a run so session/run IDs and timestamps are
+/// reproducible across hosts. Omitted fields keep their system-backed default.
+#[napi(object)]
+#[derive(Default)]
+pub struct HostEnvOptions {
+    /// Prefix for deterministic IDs (`<prefix>-0`, `<prefix>-1`, ...).
+    pub sequential_id_prefix: Option<String>,
+    /// Fixed Unix-epoch timestamp returned by the session clock.
+    pub fixed_time_ms: Option<f64>,
+}
+
 #[napi(object)]
 #[derive(Default)]
 pub struct SessionOptions {
@@ -298,6 +311,8 @@ pub struct SessionOptions {
     /// Distributed-trace correlation id propagated through this
     /// session's events.
     pub correlation_id: Option<String>,
+    /// Deterministic ID and clock configuration for replay and tests.
+    pub host_env: Option<HostEnvOptions>,
     /// Optional FIFO retention caps on the session's in-memory stores.
     /// Missing fields keep finite framework defaults. Set `unbounded: true`
     /// only when unlimited retention is deliberate.
@@ -714,6 +729,9 @@ pub(super) fn js_session_options_to_rust(
     if let Some(c) = o.correlation_id {
         opts = opts.with_correlation_id(c);
     }
+    if let Some(host_env) = o.host_env {
+        opts = opts.with_host_env(js_host_env_to_rust(host_env)?);
+    }
     if let Some(rl) = o.retention_limits {
         let mut limits = if rl.unbounded.unwrap_or(false) {
             a3s_code_core::retention::SessionRetentionLimits::unbounded()
@@ -725,6 +743,9 @@ pub(super) fn js_session_options_to_rust(
         }
         if let Some(n) = rl.max_events_per_run {
             limits.max_events_per_run = Some(n as usize);
+        }
+        if let Some(n) = rl.max_event_bytes_per_run {
+            limits.max_event_bytes_per_run = Some(n as usize);
         }
         if let Some(n) = rl.max_trace_events {
             limits.max_trace_events = Some(n as usize);
@@ -785,6 +806,35 @@ pub(super) fn js_session_options_to_rust(
     }
 
     Ok(opts)
+}
+
+fn js_host_env_to_rust(
+    options: HostEnvOptions,
+) -> napi::Result<std::sync::Arc<a3s_code_core::host_env::HostEnv>> {
+    use a3s_code_core::host_env::{
+        Clock, FixedClock, HostEnv, IdGenerator, SequentialIdGenerator, SystemClock,
+        SystemIdGenerator,
+    };
+
+    let id_generator: std::sync::Arc<dyn IdGenerator> =
+        if let Some(prefix) = options.sequential_id_prefix {
+            std::sync::Arc::new(SequentialIdGenerator::new(prefix))
+        } else {
+            std::sync::Arc::new(SystemIdGenerator)
+        };
+
+    let clock: std::sync::Arc<dyn Clock> = if let Some(value) = options.fixed_time_ms {
+        if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > u64::MAX as f64 {
+            return Err(napi::Error::from_reason(
+                "hostEnv.fixedTimeMs must be a non-negative integer within the u64 range",
+            ));
+        }
+        std::sync::Arc::new(FixedClock::new(value as u64))
+    } else {
+        std::sync::Arc::new(SystemClock)
+    };
+
+    Ok(std::sync::Arc::new(HostEnv::new(id_generator, clock)))
 }
 
 pub(super) fn apply_planning_mode(

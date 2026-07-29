@@ -38,7 +38,7 @@ Node.js 工厂在 JavaScript 接口上保持同步命名，但原生实现会把
 
 集成检查也覆盖会创建文件型 session store 的 ACL 字段：
 
-```text
+```acl
 storage_backend = "file"
 sessions_dir = "/tmp/a3s-doc-stores/acl-storage"
 ```
@@ -583,8 +583,7 @@ session.correlationId; // -> 'trace-example'
 每个受治理的工具调用（包括嵌套调用与可信宿主直接调用）也会在执行前检查。
 `Deny` 返回 `CodeError::BudgetExhausted { resource, reason }`;`SoftLimit` 发射 `AgentEvent::BudgetThresholdHit { kind: "soft", .. }` 后继续执行。
 
-Rust 宿主直接注入 trait。Node.js 与 Python 的回调桥接见本节后文；Go 当前不支持
-注入宿主回调：
+Rust 宿主直接注入 trait。Node.js、Python 与 Go 的回调桥接见本节后文：
 
 ```rust
 let guard: Arc<dyn BudgetGuard> = /* host-supplied impl */;
@@ -627,6 +626,18 @@ session = agent_b.session(workspace, opts)
 result = session.resume_run('run-id-from-node-a')
 ```
 
+```go
+// Go 等价写法
+session, err := agent.Session(ctx, workspace, &code.SessionOptions{
+	FileSessionStoreDir: "./.a3s/sessions",
+	SessionID:           "session-from-node-a",
+})
+if err != nil {
+	return err
+}
+result, err := session.ResumeRun(ctx, "run-id-from-node-a")
+```
+
 resume 出来的会**分配一个全新的 run id** — 框架不假装旧 run 还在继续,新旧 run 的关系是 host 的元数据。两个可区分的错误路径方便 host 端调度分支:
 
 - `"resume_run requires a session_store"` — host 应该回退到新建 session。
@@ -636,7 +647,10 @@ resume 出来的会**分配一个全新的 run id** — 框架不假装旧 run �
 
 ### 长时间会话的保留上限
 
-`SessionRetentionLimits` 让 host 给四种 in-memory 存储设上限:run 记录、每 run 的事件、trace 事件、**终态的** subagent 任务快照。每个字段都是可选的(`None` 保持原本无上限的默认 — 短 session 没问题,小时/天级的就漏内存)。FIFO 严格按插入序丢;**Running 状态的** subagent 任务永不被丢。
+`SessionRetentionLimits` 让 host 给四种 in-memory 存储设上限：run 记录、每 run 的事件、
+trace 事件、**终态的** subagent 任务快照。每个字段都是可选的；省略时保留框架的有限
+默认值，只有明确设置 `unbounded: true` 才恢复无限保留。FIFO 严格按插入序丢；
+**Running 状态的** subagent 任务永不被丢。
 
 ```rust
 use a3s_code_core::retention::SessionRetentionLimits;
@@ -650,7 +664,9 @@ let limits = SessionRetentionLimits::new()
 let opts = SessionOptions::new().with_retention_limits(limits);
 ```
 
-上限建议跟 host 自己 Prometheus / 观测系统的内存预算保持一致。Node 暴露为 `retentionLimits`；Python 暴露为 `opts.retention_limits`。
+上限建议跟 host 自己 Prometheus / 观测系统的内存预算保持一致。Node 暴露为
+`retentionLimits`；Python 暴露为 `opts.retention_limits`；Go 暴露为
+`SessionOptions.RetentionLimits`。
 
 ### MCP 闲置断开
 
@@ -671,11 +687,16 @@ setInterval(async () => {
 dropped = agent.disconnect_idle_mcp(5 * 60 * 1000)
 ```
 
+```go
+// Go 同样传入毫秒数
+dropped, err := agent.DisconnectIdleMCP(ctx, 5*60*1000)
+```
+
 每次 `connect` 和成功的 `call_tool` 都会刷新活跃时间。Host 走旁路通道路由 tool 时,可以手动 `McpManager.touch(name)` 把 server 保温。
 
 ### `BudgetGuard` 的 SDK 桥接
 
-两个 SDK 共用同一个决策返回形状:
+所有支持回调的 SDK 共用同一个决策返回形状：
 
 | 返回值                                                   | 效果                                                                            |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
@@ -683,7 +704,8 @@ dropped = agent.disconnect_idle_mcp(5 * 60 * 1000)
 | `{decision:'soft', resource, consumed, limit, message?}` | 发射 `BudgetThresholdHit('soft')` 事件,继续执行                                 |
 | `{decision:'deny',  resource, reason}`                   | 中止调用,Python 抛 `RuntimeError("Budget exhausted...")`/Node reject 同样的错误 |
 
-guard 对象上缺失的方法 = 宽松默认(Allow / no-op);callback 抛错 → fallback 到 Allow,异常的 guard 不会拖垮 live session。
+guard 对象上缺失的方法会使用宽松默认值（Allow / no-op）。Python 回调异常会回退为
+Allow；Go 回调报错、超时或返回无法解析的决策时会 fail-closed 为 Deny。
 
 ```python
 # Python：通过 SessionOptions 在创建会话前挂载
@@ -715,7 +737,27 @@ session.setBudgetGuard({
 });
 ```
 
-Node 回调接收单个 `ctx` 对象，且**绝不能 throw**；请用 `try/catch` 包裹并返回显式决策。
-卡住或无法解析的 `check*` 回调会 fail-closed 为 `deny`。Python 回调使用位置参数，异常会被捕获并视为 Allow。
+```go
+err := session.SetBudgetGuard(ctx, &code.BudgetGuardHandlers{
+	CheckBeforeLLM: func(
+		_ context.Context,
+		call code.BudgetLLMContext,
+	) (*code.BudgetDecision, error) {
+		if overBudget(call.SessionID) {
+			return &code.BudgetDecision{
+				Decision: "deny",
+				Resource: "llm_tokens",
+				Reason:   "cap",
+			}, nil
+		}
+		return &code.BudgetDecision{Decision: "allow"}, nil
+	},
+})
+```
 
-Node 用 `setBudgetGuard(null)` 清除;Python 把 `opts.budget_guard` 设回 `None` 后重建 session。
+Node 回调接收单个 `ctx` 对象，且**绝不能 throw**；请用 `try/catch` 包裹并返回显式决策。
+卡住或无法解析的 `check*` 回调会 fail-closed 为 `deny`。Python 回调使用位置参数，
+异常会被捕获并视为 Allow。Go handler 接收带类型的 context，报错或超时会 fail-closed。
+
+Node 用 `setBudgetGuard(null)` 清除；Python 把 `opts.budget_guard` 设回 `None` 后重建
+session；Go 调用 `session.SetBudgetGuard(ctx, nil)`。

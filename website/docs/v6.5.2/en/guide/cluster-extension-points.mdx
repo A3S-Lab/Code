@@ -9,7 +9,9 @@ import { Tab, Tabs } from '@rspress/core/theme';
 
 A cluster host platform runs long-lived agent sessions across many nodes. The framework does not ship a scheduler or a placement engine. Instead it exposes a small set of seams: it defines the decision points, emits structured events, and lets the host supply the policy. Everything below is something you wire from outside the framework — you never fork it.
 
-This page is precise about which seams are available from both SDKs (shown with Node.js + Python code) and which are configured in the Rust core today (described in prose when no SDK option exists yet).
+This page shows the equivalent native seams in Rust, Node.js, Python, and Go.
+The configuration shape follows each language's conventions, while the
+underlying capability and lifecycle contract stay the same.
 
 ## Identity labels
 
@@ -18,6 +20,38 @@ Every session can carry four opaque identity labels. The framework never interpr
 Pair identity labels with a `sessionStore` / `session_store` so the labels survive a process restart. On resume, **caller-supplied options win**, so you can relabel a session as you move it between nodes.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let options = SessionOptions::new()
+        .with_tenant_id("tenant-example")
+        .with_principal("principal-example")
+        .with_agent_template_id("agent-template-example")
+        .with_correlation_id("trace-example")
+        .with_file_session_store("./.a3s/sessions");
+    let session = agent
+        .session_builder("/path/to/project")
+        .options(options)
+        .build()
+        .await?;
+
+    println!("tenant: {:?}", session.tenant_id());
+    println!("principal: {:?}", session.principal());
+    println!("template: {:?}", session.agent_template_id());
+    println!("correlation: {:?}", session.correlation_id());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -54,6 +88,58 @@ print(session.correlation_id)     # 'trace-example'
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func value(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, "/path/to/project", &code.SessionOptions{
+		TenantID:           "tenant-example",
+		Principal:          "principal-example",
+		AgentTemplateID:    "agent-template-example",
+		CorrelationID:      "trace-example",
+		FileSessionStoreDir: "./.a3s/sessions",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	info, err := session.Info(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("tenant:", value(info.TenantID))
+	fmt.Println("principal:", value(info.Principal))
+	fmt.Println("template:", value(info.AgentTemplateID))
+	fmt.Println("correlation:", value(info.CorrelationID))
+}
+```
+
+</Tab>
 </Tabs>
 
 ## Budget / cost guard
@@ -61,6 +147,72 @@ print(session.correlation_id)     # 'trace-example'
 A budget guard lets the host gate every LLM call against a cost or token budget. The framework calls your guard _before_ each LLM request and _after_ it returns. The guard is policy you own; the framework only enforces the decision you hand back.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+
+use a3s_code_core::{
+    budget::{BudgetDecision, BudgetGuard},
+    llm::TokenUsage,
+    Agent, SessionOptions,
+};
+
+#[derive(Debug)]
+struct TokenGuard {
+    limit: usize,
+    used: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl BudgetGuard for TokenGuard {
+    async fn check_before_llm(
+        &self,
+        _session_id: &str,
+        estimated_prompt_tokens: usize,
+    ) -> BudgetDecision {
+        let used = self.used.load(Ordering::Relaxed);
+        if used.saturating_add(estimated_prompt_tokens) > self.limit {
+            BudgetDecision::Deny {
+                resource: "tokens".into(),
+                reason: "monthly cap reached".into(),
+            }
+        } else {
+            BudgetDecision::Allow
+        }
+    }
+
+    async fn record_after_llm(&self, _session_id: &str, usage: &TokenUsage) {
+        self.used.fetch_add(usage.total_tokens, Ordering::Relaxed);
+    }
+}
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let guard = Arc::new(TokenGuard {
+        limit: 50_000,
+        used: AtomicUsize::new(0),
+    });
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_budget_guard(guard))
+        .build()
+        .await?;
+
+    let result = session.send("Summarize this repository.", None).await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -107,9 +259,80 @@ session = agent.session('/path/to/project', opts)
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync/atomic"
+	"time"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	const limit uint64 = 50_000
+	var used atomic.Uint64
+	err = session.SetBudgetGuard(ctx, &code.BudgetGuardHandlers{
+		CheckBeforeLLM: func(
+			_ context.Context,
+			call code.BudgetLLMContext,
+		) (*code.BudgetDecision, error) {
+			if used.Load()+uint64(call.EstimatedTokens) > limit {
+				return &code.BudgetDecision{
+					Decision: "deny",
+					Resource: "tokens",
+					Reason:   "monthly cap reached",
+				}, nil
+			}
+			return &code.BudgetDecision{Decision: "allow"}, nil
+		},
+		RecordAfterLLM: func(
+			_ context.Context,
+			call code.BudgetUsageContext,
+		) error {
+			used.Add(uint64(call.Usage.TotalTokens))
+			return nil
+		},
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.SetBudgetGuard(context.Background(), nil)
+
+	result, err := session.Run(ctx, "Summarize this repository.")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s\nspent %d / %d tokens\n", result.Text, used.Load(), limit)
+}
+```
+
+Go callbacks use the same fail-closed contract: an error, timeout, or malformed
+decision denies the protected LLM or tool call.
+
+</Tab>
 </Tabs>
 
-The decision shape is identical across both SDKs:
+The native guard decision shape is equivalent across all four SDKs:
 
 | Return value                                                | Effect                                                                                                               |
 | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -117,7 +340,7 @@ The decision shape is identical across both SDKs:
 | `{ decision: 'soft', resource, consumed, limit, message? }` | Emits `BudgetThresholdHit` (kind `soft`) and proceeds.                                                               |
 | `{ decision: 'deny', resource, reason }`                    | Aborts the LLM call. Python raises `RuntimeError("Budget exhausted...")`; Node rejects with `"Budget exhausted..."`. |
 
-Robustness is intentional but SDK-specific: a **missing guard method** is treated as the permissive default. Python callback errors fall back to Allow. Node callbacks must not throw; timeouts and malformed `check*` returns fail closed as `deny`.
+Robustness is intentional but SDK-specific: a **missing guard method** is treated as the permissive default. Python callback errors fall back to Allow. Node callbacks must not throw. Go errors, timeouts, and malformed `check*` returns fail closed as `deny`.
 
 ## Cluster event vocabulary
 
@@ -135,13 +358,154 @@ These are observed through the same verified hook API your in-session hooks alre
 
 A cluster that wants **bit-identical replay** of a run on a different node must remove the two sources of nondeterminism in a normal run: random IDs and the wall clock. The Rust core models both behind a `HostEnv { id_generator, clock }`. The default pairs a UUID generator with the system clock; replay tooling swaps in a `SequentialIdGenerator` and a `FixedClock` so that re-executing the same inputs produces the same IDs and timestamps, and therefore the same output, on any node.
 
-This is configured in the **Rust core today**. It is not yet exposed on the JS/Python option surface, so there is no Node/Python code for it — SDK wiring may follow.
+All four SDKs expose the same deterministic configuration. Set both the ID
+prefix and fixed timestamp, and recreate the configuration from the same values
+at the start of each replay.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::{
+    host_env::{FixedClock, HostEnv, SequentialIdGenerator},
+    Agent, SessionOptions,
+};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let host_env = Arc::new(HostEnv::new(
+        Arc::new(SequentialIdGenerator::new("replay")),
+        Arc::new(FixedClock::new(1_700_000_000_000)),
+    ));
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_host_env(host_env))
+        .build()
+        .await?;
+
+    println!("{}", session.session_id());
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('.', {
+  hostEnv: {
+    sequentialIdPrefix: 'replay',
+    fixedTimeMs: 1_700_000_000_000,
+  },
+});
+
+console.log(session.sessionId);
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, HostEnvConfig, SessionOptions
+
+agent = Agent.create('agent.acl')
+options = SessionOptions()
+options.host_env = HostEnvConfig(
+    sequential_id_prefix='replay',
+    fixed_time_ms=1_700_000_000_000,
+)
+session = agent.session('.', options)
+
+print(session.session_id)
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.NewAgent(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	prefix := "replay"
+	fixedTime := uint64(1_700_000_000_000)
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		HostEnv: &code.HostEnvConfig{
+			SequentialIDPrefix: &prefix,
+			FixedTimeMS:        &fixedTime,
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	fmt.Println(session.SessionID())
+}
+```
+
+</Tab>
+</Tabs>
 
 ## Loop checkpoints and run resumption
 
 With a `sessionStore` / `session_store` configured, the agent loop persists a checkpoint after **each completed tool round**, keyed by run id. Any node that shares the same store can rehydrate the run and continue it.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_file_session_store("./.a3s/sessions")
+                .with_session_id("session-from-node-a"),
+        )
+        .build()
+        .await?;
+
+    let result = session.resume_run("run-id-from-node-a").await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -170,6 +534,46 @@ result = session.resume_run('run-id-from-node-a')
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	options := &code.SessionOptions{
+		SessionID:           "session-from-node-a",
+		FileSessionStoreDir: "./.a3s/sessions",
+	}
+	session, err := agent.Session(ctx, ".", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	result, err := session.ResumeRun(ctx, "run-id-from-node-a")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+</Tab>
 </Tabs>
 
 A **new run id** is allocated for the resumed work — the original run is left intact in the store. Two error paths are worth handling:
@@ -183,9 +587,14 @@ Because checkpoints are taken only **between tool rounds, never mid-tool**, a re
 
 A session that runs for hours or days accumulates state in four in-memory stores: run records, per-run event buffers, trace events, and terminal subagent task snapshots. Left unbounded, these grow with session age — fine for short-lived sessions, a real leak for long-lived ones.
 
-`SessionRetentionLimits` caps each of the four stores. Every cap is optional: `None` means the unbounded default. Eviction is strict **FIFO**, and **running subagent tasks are never dropped** — only terminal (completed/failed) snapshots are evicted.
+`SessionRetentionLimits` caps each store. Omitted fields keep the framework's
+finite defaults; set `unbounded: true` only when unlimited retention is
+intentional. Eviction is strict **FIFO**, and **running subagent tasks are never
+dropped** — only terminal snapshots are evicted.
 
-Use `retentionLimits` in Node or `opts.retention_limits` in Python. Rust hosts use `SessionOptions::with_retention_limits(...)`. See [Limits](/guide/limits) for field names and examples.
+Use `retentionLimits` in Node, `opts.retention_limits` in Python, or
+`SessionOptions.RetentionLimits` in Go. Rust hosts use
+`SessionOptions::with_retention_limits(...)`. See [Limits](/guide/limits).
 
 ---
 

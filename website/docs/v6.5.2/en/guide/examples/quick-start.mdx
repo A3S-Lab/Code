@@ -12,6 +12,32 @@ project directory, run one turn with `send`, print the reply text, and inspect t
 verification summary the runtime produced for that turn.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    // Agent::new accepts an .acl file path or inline ACL source.
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let result = session
+        .send("List the files in this directory.", None)
+        .await?;
+    println!("{}", result.text);
+
+    // What the runtime checked while producing that turn.
+    println!("{}", result.verification_summary_text());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -90,7 +116,7 @@ func main() {
 </Tabs>
 
 The agent factory accepts either an `.acl` file path or inline ACL source text
-in all three SDKs. Always close the session when you are done so the runtime
+in all four SDKs. Always close the session when you are done so the runtime
 can flush state and release resources. Go close operations accept a context
 because they also stop the bridge-owned native resources.
 

@@ -13,6 +13,41 @@ A3S Code 不再内置默认 skills。请从磁盘上的目录加载自己的技�
 session 创建时加载。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+use std::path::Path;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/path/to/project")
+        .options(
+            SessionOptions::new()
+                .with_skill_dirs(["./.a3s/skills"])
+                .with_agent_dir("./.a3s/agents"),
+        )
+        .build()
+        .await?;
+
+    session.register_agent_dir(Path::new("./team/shared-agents"))?;
+    println!("工具：{:?}", session.tool_names());
+    println!("技能：{:?}", session.skill_names());
+
+    let result = session
+        .send("使用项目约定技能搭建一个新模块。", None)
+        .await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -71,6 +106,58 @@ result = session.run(
 print(result.text)
 
 session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, "/path/to/project", &code.SessionOptions{
+		SkillDirs: []string{"./.a3s/skills"},
+		AgentDirs: []string{"./.a3s/agents"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	if _, err := session.RegisterAgentDir(ctx, "./team/shared-agents"); err != nil {
+		log.Fatal(err)
+	}
+	tools, err := session.ToolNames(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	skills, err := session.SkillNames(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("工具：", tools)
+	fmt.Println("技能：", skills)
+
+	result, err := session.Run(ctx, "使用项目约定技能搭建一个新模块。")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
 ```
 
 </Tab>

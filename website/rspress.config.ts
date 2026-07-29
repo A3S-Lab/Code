@@ -4,6 +4,7 @@ import type { Theme } from '@code-hike/lighter';
 import type { RawCode } from 'codehike/code';
 import { remarkCodeHike } from 'codehike/mdx';
 import codeHikeTheme from './codehike-theme.json';
+import { remarkAclSyntax } from './remark-acl-syntax';
 
 const base = process.env.DOCS_BASE ?? '/Code/';
 const siteOrigin = process.env.DOCS_ORIGIN ?? 'https://a3s-lab.github.io';
@@ -23,6 +24,7 @@ export default defineConfig({
   llms: true,
   markdown: {
     remarkPlugins: [
+      remarkAclSyntax,
       [
         remarkCodeHike,
         {

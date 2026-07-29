@@ -17,7 +17,7 @@ you want to balance cost against capability without changing any of your prompts
 Models are configured in your agent file. Each provider lists the models it
 exposes, and `default_model` is used when a session does not set `model`.
 
-```text
+```acl
 default_model = "provider/fast-model"
 
 providers "provider" {
@@ -36,6 +36,44 @@ runs — `send`, `run`, `task`, `parallel`, `pipeline` — uses that model. One
 agent configuration can drive different model choices for different sessions.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+
+    let fast = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_model("provider/fast-model"))
+        .build()
+        .await?;
+    let draft = fast
+        .send("Draft a short README intro for this project.", None)
+        .await?
+        .text;
+    println!("draft: {draft}");
+    fast.close().await;
+
+    let review = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_model("provider/review-model"))
+        .build()
+        .await?;
+    let critique = review
+        .send(&format!("Critique this README intro:\n{draft}"), None)
+        .await?;
+    println!("critique: {}", critique.text);
+
+    review.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -82,6 +120,56 @@ review.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	fast, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/fast-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	draft, err := fast.Run(ctx, "Draft a short README intro for this project.")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("draft:", draft.Text)
+	fast.Close(ctx)
+
+	review, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/review-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer review.Close(context.Background())
+	critique, err := review.Run(ctx, "Critique this README intro:\n"+draft.Text)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("critique:", critique.Text)
+}
+```
+
+</Tab>
 </Tabs>
 
 ## Per-worker-agent model override
@@ -92,6 +180,60 @@ delegates to it. The orchestrating session keeps its own `model`; only the
 delegated work runs on the worker's model.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    subagent::ModelConfig as WorkerModelConfig, Agent, SessionOptions, WorkerAgentSpec,
+};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+
+    let mut scout = WorkerAgentSpec::read_only(
+        "scout",
+        "Reads files and reports findings.",
+    );
+    scout.model = Some(WorkerModelConfig::from_model_ref(
+        "provider/fast-model",
+    ));
+    let session = agent
+        .session_builder("/repo")
+        .options(
+            SessionOptions::new()
+                .with_model("provider/review-model")
+                .with_worker_agent(scout),
+        )
+        .build()
+        .await?;
+
+    let findings = session
+        .tool(
+            "task",
+            json!({
+                "agent": "scout",
+                "description": "List public APIs",
+                "prompt": "List every public API in src/."
+            }),
+        )
+        .await?;
+    let plan = session
+        .send(
+            &format!("Given these findings, propose a refactor:\n{}", findings.output),
+            None,
+        )
+        .await?;
+    println!("{}", plan.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -156,6 +298,56 @@ plan = session.run(f'Given these findings, propose a refactor:\n{findings.output
 print(plan)
 
 session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/review-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	findings, err := session.Task(ctx, code.DelegateTaskOptions{
+		Agent:       "explore",
+		Description: "List public APIs",
+		Prompt:      "List every public API in src/.",
+		Model:       "provider/fast-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	plan, err := session.Run(
+		ctx,
+		"Given these findings, propose a refactor:\n"+findings.Output,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(plan.Text)
+}
 ```
 
 </Tab>

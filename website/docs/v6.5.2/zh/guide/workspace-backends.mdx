@@ -8,8 +8,8 @@ import { Tab, Tabs } from '@rspress/core/theme';
 # 工作区后端
 
 工作区后端决定内置工作区工具从哪里读写文件。默认后端是以会话工作区为根目录的
-本地文件系统。SDK 也暴露了显式本地后端、S3 兼容对象存储后端，以及可选的
-HTTP/JSON 远端 Git 提供程序。
+本地文件系统。四种 SDK 都提供显式本地后端、S3 兼容对象存储后端，以及可选的
+HTTP/JSON 远端 Git 配置。Node.js 与 Python 使用后端对象，Go 使用值配置。
 
 当宿主负责工作区放置时使用这组能力：本地开发、浏览器或容器工作区、对象存储
 工作区、托管会话等。
@@ -31,6 +31,30 @@ MCP 或 A3S Box 额外提供隔离后的执行能力。
 显式本地后端适合宿主希望本地与远程会话都使用同一组选项接口的场景。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions, WorkspaceServices};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let backend = WorkspaceServices::local("/repo");
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_workspace_backend(backend))
+        .build()
+        .await?;
+
+    println!("{}", session.read_file("Cargo.toml").await?);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -55,6 +79,50 @@ session = agent.session("/repo", opts)
 ```
 
 </Tab>
+<Tab label="Go">
+
+工作区路径本身会选择默认本地后端。当本地与远端会话需要共用同一种选项结构时，
+可使用 `WorkspaceBackendConfig`：
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		WorkspaceBackend: &code.WorkspaceBackendConfig{
+			Kind: "local",
+			Root: "/repo",
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	content, err := session.ReadFile(ctx, "go.mod", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(content)
+}
+```
+
+</Tab>
 </Tabs>
 
 ## S3 后端
@@ -63,6 +131,51 @@ session = agent.session("/repo", opts)
 RustFS、Cloudflare R2 和 Backblaze B2。
 
 <Tabs>
+<Tab label="Rust">
+
+Rust crate 需要启用 `s3` feature。
+
+```rust
+use std::env;
+
+use a3s_code_core::{Agent, S3BackendConfig, SessionOptions, WorkspaceServices};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let bucket = env::var("WORKSPACE_S3_BUCKET")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let access_key = env::var("S3_ACCESS_KEY_ID")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let secret_key = env::var("S3_SECRET_ACCESS_KEY")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+
+    let mut config =
+        S3BackendConfig::new(bucket, "sessions/example", access_key, secret_key)
+            .region(env::var("WORKSPACE_S3_REGION").unwrap_or_else(|_| "us-east-1".into()))
+            .force_path_style(true)
+            .enable_search(false);
+    if let Ok(endpoint) = env::var("WORKSPACE_S3_ENDPOINT") {
+        config = config.endpoint(endpoint);
+    }
+
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("s3://workspace-bucket/sessions/example")
+        .options(
+            SessionOptions::new().with_workspace_backend(WorkspaceServices::s3(config)),
+        )
+        .build()
+        .await?;
+
+    println!("{}", session.read_file("README.md").await?);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -109,6 +222,63 @@ session = agent.session("s3://workspace-bucket/sessions/example", opts)
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	forcePathStyle := true
+	searchEnabled := false
+	session, err := agent.Session(
+		ctx,
+		"s3://workspace-bucket/sessions/example",
+		&code.SessionOptions{
+			WorkspaceBackend: &code.WorkspaceBackendConfig{
+				Kind: "s3",
+				S3: &code.S3BackendConfig{
+					Endpoint:        os.Getenv("WORKSPACE_S3_ENDPOINT"),
+					Region:          os.Getenv("WORKSPACE_S3_REGION"),
+					AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
+					SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
+					Bucket:          os.Getenv("WORKSPACE_S3_BUCKET"),
+					Prefix:          "sessions/example",
+					ForcePathStyle:  &forcePathStyle,
+					SearchEnabled:   &searchEnabled,
+				},
+			},
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	content, err := session.ReadFile(ctx, "README.md", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(content)
+}
+```
+
+</Tab>
 </Tabs>
 
 S3 搜索需要显式启用。启用后，`grep` / `glob` 会降级为对象列表和有上限的下载。
@@ -133,6 +303,11 @@ S3 搜索需要显式启用。启用后，`grep` / `glob` 会降级为对象列�
 | `maxGrepBytesPerObject` | `max_grep_bytes_per_object` | 否   | `grep` 的单对象下载上限；仅启用搜索时使用。      |
 | `searchConcurrency`     | `search_concurrency`        | 否   | `grep` 时并发下载对象数；仅启用搜索时使用。      |
 
+Go 在 `S3BackendConfig` 上提供同一组字段：`Bucket`、`Prefix`、
+`AccessKeyID`、`SecretAccessKey`、`Endpoint`、`Region`、`SessionToken`、
+`ForcePathStyle`、`MaxReadBytes`、`SearchEnabled`、`MaxObjectsScanned`、
+`MaxGrepBytesPerObject` 与 `SearchConcurrency`。
+
 ## 远端 Git
 
 `remoteGit` 会在 `workspaceBackend` 之上挂载 HTTP/JSON Git 提供程序。它用于没有
@@ -141,6 +316,57 @@ S3 搜索需要显式启用。启用后，`grep` / `glob` 会降级为对象列�
 `remoteGit` 必须和 `workspaceBackend` 一起传；单独传入会被拒绝。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use std::env;
+
+use a3s_code_core::{
+    Agent, RemoteGitBackendConfig, S3BackendConfig, SessionOptions, WorkspaceServices,
+};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let bucket = env::var("WORKSPACE_S3_BUCKET")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let access_key = env::var("S3_ACCESS_KEY_ID")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let secret_key = env::var("S3_SECRET_ACCESS_KEY")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let base_url = env::var("REMOTE_GIT_BASE_URL")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+    let token = env::var("REMOTE_GIT_TOKEN")
+        .map_err(|error| a3s_code_core::CodeError::Config(error.to_string()))?;
+
+    let storage = WorkspaceServices::s3(S3BackendConfig::new(
+        bucket,
+        "sessions/example",
+        access_key,
+        secret_key,
+    ));
+    let backend = storage.with_remote_git(
+        RemoteGitBackendConfig::new(base_url, "sessions/example").bearer_token(token),
+    )?;
+
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("s3://workspace-bucket/sessions/example")
+        .options(SessionOptions::new().with_workspace_backend(backend))
+        .build()
+        .await?;
+
+    let status = session
+        .tool("git", serde_json::json!({ "command": "status" }))
+        .await?;
+    println!("{}", status.output);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -200,6 +426,66 @@ session = agent.session("s3://workspace-bucket/sessions/example", opts)
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	forcePathStyle := true
+	session, err := agent.Session(
+		ctx,
+		"s3://workspace-bucket/sessions/example",
+		&code.SessionOptions{
+			WorkspaceBackend: &code.WorkspaceBackendConfig{
+				Kind: "s3",
+				S3: &code.S3BackendConfig{
+					Endpoint:        os.Getenv("WORKSPACE_S3_ENDPOINT"),
+					Region:          os.Getenv("WORKSPACE_S3_REGION"),
+					AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
+					SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
+					Bucket:          os.Getenv("WORKSPACE_S3_BUCKET"),
+					Prefix:          "sessions/example",
+					ForcePathStyle:  &forcePathStyle,
+				},
+			},
+			RemoteGit: &code.RemoteGitBackendConfig{
+				BaseURL:     os.Getenv("REMOTE_GIT_BASE_URL"),
+				RepoID:      "sessions/example",
+				BearerToken: os.Getenv("REMOTE_GIT_TOKEN"),
+			},
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	status, err := session.Git(ctx, code.GitOptions{Command: "status"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(status.Output)
+}
+```
+
+</Tab>
 </Tabs>
 
 不要把远端 Git 凭据写入 `agent.acl` 或智能体目录。应由宿主通过环境变量或密钥
@@ -217,6 +503,10 @@ session = agent.session("s3://workspace-bucket/sessions/example", opts)
 | `requestTimeoutMs` | `request_timeout_ms` | 否       | 单次 HTTP 调用超时，单位毫秒；默认 30000。              |
 | `maxDiffBytes`     | `max_diff_bytes`     | 否       | `diff` 响应字节数客户端上限；默认 1 MiB。               |
 | `maxLogEntries`    | `max_log_entries`    | 否       | `log` 条目数客户端上限；默认 200。                      |
+
+Go 在 `RemoteGitBackendConfig` 上提供同一组字段：`BaseURL`、`RepoID`、
+`BearerToken`、`ClientCertPEM`、`ClientKeyPEM`、`RequestTimeoutMS`、
+`MaxDiffBytes` 与 `MaxLogEntries`。
 
 ## 选择后端
 

@@ -43,7 +43,7 @@ explicit pre-initialized memory store.
 The integration check also covers the ACL field that creates a file-backed
 session store:
 
-```text
+```acl
 storage_backend = "file"
 sessions_dir = "/tmp/a3s-doc-stores/acl-storage"
 ```
@@ -611,9 +611,8 @@ including nested and trusted host-direct calls. `Deny` returns
 `CodeError::BudgetExhausted { resource, reason }`; `SoftLimit` emits
 an `AgentEvent::BudgetThresholdHit { kind: "soft", .. }` and proceeds.
 
-Rust hosts inject the trait directly. Node.js and Python expose callback
-bridges later in this section; Go does not currently expose host callback
-injection:
+Rust hosts inject the trait directly. Node.js, Python, and Go expose callback
+bridges later in this section:
 
 ```rust
 let guard: Arc<dyn BudgetGuard> = /* host-supplied impl */;
@@ -664,6 +663,18 @@ session = agent_b.session(workspace, opts)
 result = session.resume_run('run-id-from-node-a')
 ```
 
+```go
+// Go equivalent
+session, err := agent.Session(ctx, workspace, &code.SessionOptions{
+	FileSessionStoreDir: "./.a3s/sessions",
+	SessionID:           "session-from-node-a",
+})
+if err != nil {
+	return err
+}
+result, err := session.ResumeRun(ctx, "run-id-from-node-a")
+```
+
 A **new** run id is allocated for the resumed work — the framework
 does not pretend the old run continues. Two distinguishable error
 paths:
@@ -684,8 +695,8 @@ across the boundary is worse than re-asking the LLM.
 `SessionRetentionLimits` lets the host cap the four in-memory stores
 that grow with session age: the run records, per-run event buffers,
 trace events, and **terminal** subagent task snapshots. Each cap is
-optional (`None` keeps the unbounded default — fine for short
-sessions, a memory leak for hour- or day-long ones). Eviction is
+optional (omission keeps the finite framework default; `unbounded: true`
+deliberately restores unlimited retention). Eviction is
 strict FIFO; running subagent tasks are never dropped.
 
 ```rust
@@ -702,7 +713,8 @@ let opts = SessionOptions::new().with_retention_limits(limits);
 
 The host should pick caps from the same observability budget that caps the rest
 of its in-memory state (Prometheus carries history anyway). Node exposes this
-as `retentionLimits`; Python exposes it as `opts.retention_limits`.
+as `retentionLimits`; Python as `opts.retention_limits`; Go as
+`SessionOptions.RetentionLimits`.
 
 ### MCP idle disconnect
 
@@ -727,13 +739,18 @@ setInterval(async () => {
 dropped = agent.disconnect_idle_mcp(5 * 60 * 1000)
 ```
 
+```go
+// Go — milliseconds, matching the other SDKs.
+dropped, err := agent.DisconnectIdleMCP(ctx, 5*60*1000)
+```
+
 Activity is stamped on `connect` and on every successful `call_tool`.
 Hosts that route tool traffic through a side channel can call
 `McpManager.touch(name)` to manually keep a server warm.
 
 ### BudgetGuard SDK bridges
 
-Both SDKs accept the same decision shape:
+All callback-capable SDKs accept the same decision shape:
 
 | Return                                                   | Effect                                                               |
 | -------------------------------------------------------- | -------------------------------------------------------------------- |
@@ -742,9 +759,9 @@ Both SDKs accept the same decision shape:
 | `{decision:'deny',  resource, reason}`                   | abort the call, throw `RuntimeError("Budget exhausted...")` (Python) |
 |                                                          | / reject with `"Budget exhausted..."` (Node)                         |
 
-Missing methods on the guard object are treated as a permissive
-default (Allow / no-op). Callback errors fall back to Allow — a
-misbehaving guard cannot halt a live session.
+Missing methods on the guard object are treated as a permissive default
+(Allow / no-op). Python callback errors fall back to Allow. Go callback errors,
+timeouts, and malformed decisions fail closed as Deny.
 
 ```python
 # Python — attach via SessionOptions before agent.session(...)
@@ -777,10 +794,30 @@ session.setBudgetGuard({
 });
 ```
 
+```go
+err := session.SetBudgetGuard(ctx, &code.BudgetGuardHandlers{
+	CheckBeforeLLM: func(
+		_ context.Context,
+		call code.BudgetLLMContext,
+	) (*code.BudgetDecision, error) {
+		if overBudget(call.SessionID) {
+			return &code.BudgetDecision{
+				Decision: "deny",
+				Resource: "llm_tokens",
+				Reason:   "cap",
+			}, nil
+		}
+		return &code.BudgetDecision{Decision: "allow"}, nil
+	},
+})
+```
+
 Node callbacks receive a single `ctx` object and must not throw; wrap handler
 logic in `try/catch` and return an explicit decision. Hung or unreadable
 `check*` callbacks fail closed as `deny`. Python callbacks use positional
-arguments and catch exceptions as Allow.
+arguments and catch exceptions as Allow. Go handlers receive typed contexts;
+callback errors and timeouts fail closed.
 
 Pass `null` to `setBudgetGuard` (Node) or set `opts.budget_guard =
-None` and re-create the session (Python) to clear.
+None` and re-create the session (Python) to clear. Call
+`session.SetBudgetGuard(ctx, nil)` in Go.

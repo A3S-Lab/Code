@@ -120,6 +120,8 @@ pub(super) struct PySessionOptions {
     /// Distributed-trace correlation id propagated through this
     /// session's events.
     pub(super) correlation_id: Option<String>,
+    /// Deterministic ID and clock configuration for replay and tests.
+    pub(super) host_env: Option<PyHostEnvConfig>,
     /// Automatically save the session to the configured store after each turn (default: False).
     pub(super) auto_save: bool,
     /// Optional Python-side BudgetGuard. The framework calls
@@ -138,12 +140,12 @@ pub(super) struct PySessionOptions {
     ///
     ///   - ``max_runs_retained``           -- cap on InMemoryRunStore.runs
     ///   - ``max_events_per_run``          -- cap on per-run event buffers
+    ///   - ``max_event_bytes_per_run``     -- cap on serialized event bytes per run
     ///   - ``max_trace_events``            -- cap on InMemoryTraceSink
     ///   - ``max_terminal_subagent_tasks`` -- cap on terminal subagent entries
     ///
-    /// Missing keys keep the unbounded default for that store. Used by
-    /// long-running cluster sessions to stop in-memory state from
-    /// growing unboundedly.
+    /// Missing keys keep the finite framework default for that store. Set
+    /// ``unbounded=True`` only when unlimited retention is deliberate.
     pub(super) retention_limits: Option<pyo3::PyObject>,
     /// Structured JSONL trajectory path. When set, records user input,
     /// LLM turns, tool calls, tool observations, token usage, and episode end.
@@ -215,6 +217,7 @@ impl Clone for PySessionOptions {
             principal: self.principal.clone(),
             agent_template_id: self.agent_template_id.clone(),
             correlation_id: self.correlation_id.clone(),
+            host_env: self.host_env.clone(),
             auto_save: self.auto_save,
             budget_guard: pyo3::Python::with_gil(|py| {
                 self.budget_guard.as_ref().map(|o| o.clone_ref(py))
@@ -283,6 +286,7 @@ impl PySessionOptions {
             principal: None,
             agent_template_id: None,
             correlation_id: None,
+            host_env: None,
             auto_save: false,
             budget_guard: None,
             retention_limits: None,
@@ -874,6 +878,17 @@ impl PySessionOptions {
         self.correlation_id = value;
     }
 
+    /// Deterministic ID and clock configuration for replay and tests.
+    #[getter]
+    fn get_host_env(&self) -> Option<PyHostEnvConfig> {
+        self.host_env.clone()
+    }
+
+    #[setter]
+    fn set_host_env(&mut self, value: Option<PyHostEnvConfig>) {
+        self.host_env = value;
+    }
+
     /// Automatically save the session after each turn (default: False).
     #[getter]
     fn get_auto_save(&self) -> bool {
@@ -901,7 +916,7 @@ impl PySessionOptions {
     }
 
     /// Optional FIFO retention config as a dict with ``unbounded`` and any subset of:
-    /// ``max_runs_retained``, ``max_events_per_run``,
+    /// ``max_runs_retained``, ``max_events_per_run``, ``max_event_bytes_per_run``,
     /// ``max_trace_events``, ``max_terminal_subagent_tasks``.
     /// Missing cap keys keep finite defaults unless ``unbounded=True``.
     #[getter]

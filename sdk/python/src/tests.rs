@@ -281,6 +281,46 @@ fn session_options_map_llm_logprob_controls() {
 }
 
 #[test]
+fn session_options_map_deterministic_host_env() {
+    let mut session_options = PySessionOptions::new();
+    session_options.host_env = Some(PyHostEnvConfig {
+        sequential_id_prefix: Some("replay".to_string()),
+        fixed_time_ms: Some(1_700_000_000_000),
+    });
+
+    let opts = build_rust_session_options(session_options).unwrap();
+    let host_env = opts.host_env.expect("host env");
+    assert_eq!(host_env.next_id(), "replay-0");
+    assert_eq!(host_env.next_id(), "replay-1");
+    assert_eq!(host_env.now_ms(), 1_700_000_000_000);
+}
+
+#[test]
+fn session_options_map_every_retention_limit() {
+    pyo3::prepare_freethreaded_python();
+    let retention = Python::with_gil(|py| {
+        let dict = PyDict::new(py);
+        dict.set_item("unbounded", false).unwrap();
+        dict.set_item("max_runs_retained", 10).unwrap();
+        dict.set_item("max_events_per_run", 20).unwrap();
+        dict.set_item("max_event_bytes_per_run", 30).unwrap();
+        dict.set_item("max_trace_events", 40).unwrap();
+        dict.set_item("max_terminal_subagent_tasks", 50).unwrap();
+        dict.into_any().unbind()
+    });
+    let mut session_options = PySessionOptions::new();
+    session_options.retention_limits = Some(retention);
+
+    let opts = build_rust_session_options(session_options).unwrap();
+    let limits = opts.retention_limits.expect("retention limits");
+    assert_eq!(limits.max_runs_retained, Some(10));
+    assert_eq!(limits.max_events_per_run, Some(20));
+    assert_eq!(limits.max_event_bytes_per_run, Some(30));
+    assert_eq!(limits.max_trace_events, Some(40));
+    assert_eq!(limits.max_terminal_subagent_tasks, Some(50));
+}
+
+#[test]
 fn artifact_store_limits_map_to_rust_session_options() {
     let mut session_options = PySessionOptions::new();
     session_options.artifact_store_limits = Some(PyArtifactStoreLimits {

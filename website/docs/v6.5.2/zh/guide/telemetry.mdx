@@ -12,6 +12,20 @@ A3S Code 通过事件、追踪、验证报告和结果元数据提供运行证�
 ## 结果元数据
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+let result = session.send("运行发布检查", None).await?;
+
+println!("{}", result.usage.prompt_tokens);
+println!("{}", result.usage.completion_tokens);
+println!("{}", result.usage.total_tokens);
+println!("{}", result.tool_calls_count);
+println!("{:?}", result.verification_summary().status);
+println!("{}", result.verification_summary_text());
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -62,6 +76,16 @@ fmt.Println(result.VerificationSummaryText)
 ## 追踪与验证
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+let trace = session.trace_events();
+let reports = session.verification_reports();
+let summary = session.verification_summary();
+let text = session.verification_summary_text();
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -94,8 +118,8 @@ text, textErr := session.VerificationSummaryText(ctx)
 </Tab>
 </Tabs>
 
-Go 方法需要跨越原生桥接边界，因此会返回 `error`；Node.js 与 Python 的这些
-进程内观察读取器是同步接口。
+Go 方法需要跨越原生桥接边界，因此会返回 `error`；Rust、Node.js 与 Python 的
+这些进程内观察读取器是同步接口。
 
 ## 流式事件
 

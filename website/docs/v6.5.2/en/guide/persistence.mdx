@@ -23,6 +23,26 @@ A3S Code persists three related but different things:
 ## File Session Store
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+let options = SessionOptions::new()
+    .with_session_id("release-review")
+    .with_file_session_store("./.a3s/sessions")
+    .with_auto_save(true);
+let session = agent
+    .session_builder("/repo")
+    .options(options)
+    .build()
+    .await?;
+
+session.send("Review release readiness", None).await?;
+session.save().await?;
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts title=persistence.ts
@@ -116,6 +136,20 @@ from an atomic backend.
 ## Resume
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::SessionOptions;
+
+let resumed = agent
+    .resume_session_async(
+        "release-review",
+        SessionOptions::new().with_file_session_store("./.a3s/sessions"),
+    )
+    .await?;
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -166,7 +200,8 @@ tool is executing, that round's work is lost on resume and the LLM
 re-deliberates from the previous checkpoint — re-running a non-idempotent tool
 (write, bash) on the wrong side of the boundary is worse than re-asking the LLM.
 
-`session.resumeRun(runId)` (Node) / `session.resume_run(run_id)` (Python) — core
+`session.resumeRun(runId)` (Node) / `session.resume_run(run_id)` (Python) /
+`session.ResumeRun(ctx, runID)` (Go) — core
 `AgentSession::resume_run(checkpoint_run_id)` — loads the latest checkpoint
 stored under that run ID and replays the loop from the last boundary. Because
 the checkpoint lives in the shared store, resume can happen on **any** node that
@@ -189,10 +224,16 @@ result = session.resume_run('run-abc123')
 print(result.total_tokens)
 ```
 
-The current Go bridge exposes snapshot `Save` / `ResumeSession`, run records,
-and replay events, but not the `resumeRun` loop-checkpoint operation or workflow
-checkpoint orchestration. This guide shows a Go tab only where that operation
-is actually part of the Go surface.
+```go
+result, err := session.ResumeRun(ctx, "run-abc123")
+if err != nil {
+	return err
+}
+fmt.Println(result.Usage.TotalTokens)
+```
+
+Go also exposes workflow checkpoint orchestration through
+`ParallelResumable(ctx, specs, workflowID)`.
 
 `resume_run` rejects when the session has no `sessionStore` configured (or when
 no checkpoint exists for the given ID). `SessionStore` gains

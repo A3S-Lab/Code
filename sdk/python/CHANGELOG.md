@@ -4,6 +4,11 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Added `HostEnvConfig` and `SessionOptions.host_env` for deterministic ID and
+  clock replay parity with Rust, Node.js, and Go.
+
 ## [6.5.2] - 2026-07-28
 
 ### Changed

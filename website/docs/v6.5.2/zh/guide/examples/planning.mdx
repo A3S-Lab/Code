@@ -10,8 +10,8 @@ import { Tab, Tabs } from '@rspress/core/theme';
 Planning 模式让 session 在开始调用工具之前先生成一份结构化计划。它适合多步骤工作
 （重构、发布评审、审计），你希望 agent 先把目标拆解清楚，而不是直接动手修改。
 
-通过 session 选项 `planningMode`（Node）/ `planning_mode`（Python）进行设置。
-可接受的值为：
+通过会话的规划选项设置：Rust 和 Go 使用 `PlanningMode`，Node.js 使用
+`planningMode`，Python 使用 `planning_mode`。可接受的值为：
 
 | 值           | 行为                                      |
 | ------------ | ----------------------------------------- |
@@ -22,6 +22,31 @@ Planning 模式让 session 在开始调用工具之前先生成一份结构化�
 `"auto"` 是默认的结构化预分析路径。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, PlanningMode, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_planning_mode(PlanningMode::Auto))
+        .build()
+        .await?;
+
+    let result = session.send("规划并完成发布就绪审查。", None).await?;
+    println!("{}", result.text);
+    println!("执行了 {} 次工具调用", result.tool_calls_count);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -57,6 +82,45 @@ print(result.text)
 print(f"{result.tool_calls_count} tool calls executed")
 
 session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		PlanningMode: code.PlanningAuto,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "规划并完成发布就绪审查。")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+	fmt.Printf("执行了 %d 次工具调用\n", result.ToolCallsCount)
+}
 ```
 
 </Tab>

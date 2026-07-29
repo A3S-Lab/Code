@@ -15,6 +15,55 @@ import { Tab, Tabs } from '@rspress/core/theme';
 处于活动状态，`unregisterHook` 则按名称移除某个钩子。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::{
+    hooks::{
+        Hook, HookConfig, HookEvent, HookEventType, HookHandler, HookMatcher, HookResponse,
+    },
+    Agent,
+};
+
+struct ContinueHandler;
+
+impl HookHandler for ContinueHandler {
+    fn handle(&self, event: &HookEvent) -> HookResponse {
+        println!("observed {}", event.event_type());
+        HookResponse::continue_()
+    }
+}
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let hook = Hook::new("observe-env-read", HookEventType::PreToolUse)
+        .with_matcher(HookMatcher::path("**/.env*"))
+        .with_config(HookConfig {
+            priority: 100,
+            ..HookConfig::default()
+        });
+    session.register_hook(hook)?;
+    session.register_hook_handler("observe-env-read", Arc::new(ContinueHandler))?;
+
+    println!("active hooks: {}", session.hook_count());
+    session.send("读取项目 README 并总结。", None).await?;
+
+    session.unregister_hook_handler("observe-env-read")?;
+    session.unregister_hook("observe-env-read")?;
+    println!("active hooks: {}", session.hook_count());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -74,18 +123,77 @@ session.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	priority := 100
+	err = session.RegisterHookWithHandler(ctx, code.Hook{
+		ID:        "observe-env-read",
+		EventType: "pre_tool_use",
+		Matcher:   &code.HookMatcher{PathPattern: "**/.env*"},
+		Config:    &code.HookConfig{Priority: &priority},
+	}, func(_ context.Context, event json.RawMessage) (*code.HookResponse, error) {
+		fmt.Println("hook event:", string(event))
+		return &code.HookResponse{Action: "continue"}, nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	count, err := session.HookCount(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("active hooks:", count)
+
+	if _, err = session.Run(ctx, "读取项目 README 并总结。"); err != nil {
+		log.Fatal(err)
+	}
+
+	if _, err = session.UnregisterHook(ctx, "observe-env-read"); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+</Tab>
 </Tabs>
 
 注意事项：
 
 - 钩子回调返回一个决策。返回 `{ action: "continue" }`（Node）/
-  `{"action": "continue"}`（Python）即可让 Agent 继续执行。
+  `{"action": "continue"}`（Python）/
+  `&code.HookResponse{Action: "continue"}`（Go）即可让 Agent 继续执行。
 - 匹配器（`{ pathPattern: '**/.env*' }`）将钩子限定到路径匹配该模式的事件，而
-  `{ priority: 100 }` 用于对同一事件上的多个钩子排序（数值越大越先执行）。
+  `{ priority: 100 }` 用于对同一事件上的多个钩子排序（数值越小越先执行）。
 - Node 钩子回调**不得**抛出异常——未捕获的抛出可能会终止进程。请让处理逻辑保持完备，
   并始终返回一个决策。
-- `hookCount` / `hook_count` 反映当前已注册钩子的数量，在测试中可方便地断言注册与
+- `hookCount` / `hook_count` / `HookCount` 反映当前已注册钩子的数量，在测试中可方便地断言注册与
   清理是否生效。
-- `unregisterHook` / `unregister_hook` 接收你注册时使用的名称。请始终拆除不再需要的
+- `unregisterHook` / `unregister_hook` / `UnregisterHook` 接收你注册时使用的名称。请始终拆除不再需要的
   钩子，以免它们在多次运行之间泄漏。
 - 把钩子当作生产关卡前，请先验证你所依赖的具体 event path。

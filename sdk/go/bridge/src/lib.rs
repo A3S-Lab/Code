@@ -6,9 +6,11 @@
 //! one `response` envelope.
 
 use a3s_code_core::{
-    run_event_envelope_v1, Agent, AgentResult, AgentSession, CodeError, EventEnvelopeV1, Message,
-    PlanningMode, ReadFileOptions, SessionOptions, SystemPromptSlots, ToolCallResult,
+    execute_steps_parallel_resumable, run_event_envelope_v1, Agent, AgentResult, AgentSession,
+    AgentStepSpec, CodeError, EventEnvelopeV1, Message, PlanningMode, ReadFileOptions,
+    SessionOptions, SystemPromptSlots, ToolCallResult,
 };
+use base64::Engine as _;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -16,7 +18,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 pub const BRIDGE_PROTOCOL_VERSION: u16 = 1;
 
@@ -24,8 +27,14 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "sdk_capabilities",
     "agent_create",
     "agent_refresh_mcp_tools",
+    "agent_replace_session",
+    "agent_session_for_agent",
+    "agent_session_for_worker",
     "agent_list_sessions",
     "agent_close_session",
+    "agent_disconnect_idle_mcp",
+    "agent_serve_agent_dir",
+    "agent_stop_serve",
     "agent_is_closed",
     "agent_close",
     "session_create",
@@ -33,7 +42,13 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_info",
     "session_is_closed",
     "session_send",
+    "session_resume_run",
+    "session_send_with_attachments",
     "session_stream",
+    "session_stream_with_attachments",
+    "session_parallel",
+    "session_parallel_resumable",
+    "session_workflow_step",
     "session_cancel",
     "session_cancel_and_settle",
     "session_history",
@@ -58,20 +73,56 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_run_event_page",
     "session_current_run",
     "session_active_tools",
+    "session_subagent_task",
+    "session_subagent_tasks",
+    "session_pending_subagent_tasks",
+    "session_cancel_subagent_task",
     "session_cancel_run",
     "session_pending_confirmations",
     "session_confirm_tool_use",
     "session_cancel_confirmations",
     "session_verification_reports",
+    "session_record_verification_reports",
     "session_verification_summary",
     "session_verification_summary_text",
     "session_verification_presets",
     "session_verify_commands",
     "session_register_agent_dir",
+    "session_register_worker_agent",
+    "session_register_worker_agents",
+    "session_add_skill",
+    "session_remove_skill",
     "session_skill_names",
+    "session_register_dynamic_workflow",
+    "session_unregister_dynamic_tool",
     "session_add_mcp_server",
     "session_remove_mcp_server",
     "session_mcp_status",
+    "session_has_memory",
+    "session_remember_success",
+    "session_remember_failure",
+    "session_recall_similar",
+    "session_recall_by_tags",
+    "session_memory_recent",
+    "session_memory_stats",
+    "session_get_working_memory",
+    "session_clear_working_memory",
+    "session_get_short_term_memory",
+    "session_clear_short_term_memory",
+    "session_has_queue",
+    "session_set_lane_handler",
+    "session_complete_external_task",
+    "session_pending_external_tasks",
+    "session_queue_stats",
+    "session_dead_letters",
+    "session_queue_metrics",
+    "session_register_hook",
+    "session_unregister_hook",
+    "session_hook_count",
+    "session_set_budget_guard",
+    "session_register_command",
+    "session_list_commands",
+    "callback_response",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +151,8 @@ pub struct BridgeEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<EventEnvelopeV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback: Option<BridgeCallbackInvocation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<BridgeError>,
 }
 
@@ -112,6 +165,7 @@ impl BridgeEnvelope {
             ok: true,
             result: Some(result),
             event: None,
+            callback: None,
             error: None,
         }
     }
@@ -124,6 +178,7 @@ impl BridgeEnvelope {
             ok: true,
             result: None,
             event: Some(event),
+            callback: None,
             error: None,
         }
     }
@@ -136,10 +191,24 @@ impl BridgeEnvelope {
             ok: false,
             result: None,
             event: None,
+            callback: None,
             error: Some(BridgeError {
                 code: error.code,
                 message: error.message,
             }),
+        }
+    }
+
+    fn callback(id: u64, callback: BridgeCallbackInvocation) -> Self {
+        Self {
+            protocol_version: BRIDGE_PROTOCOL_VERSION,
+            id,
+            kind: "callback",
+            ok: true,
+            result: None,
+            event: None,
+            callback: Some(callback),
+            error: None,
         }
     }
 }
@@ -180,6 +249,8 @@ pub struct BridgeState {
     next_handle: AtomicU64,
     agents: RwLock<HashMap<String, Arc<Agent>>>,
     sessions: RwLock<HashMap<String, SessionEntry>>,
+    serve_handles: RwLock<HashMap<String, CancellationToken>>,
+    callbacks: RwLock<Option<Arc<CallbackClient>>>,
 }
 
 impl Default for BridgeState {
@@ -188,6 +259,8 @@ impl Default for BridgeState {
             next_handle: AtomicU64::new(1),
             agents: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
+            serve_handles: RwLock::new(HashMap::new()),
+            callbacks: RwLock::new(None),
         }
     }
 }
@@ -195,6 +268,16 @@ impl Default for BridgeState {
 impl BridgeState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    async fn install_callback_writer(&self, writer: mpsc::UnboundedSender<BridgeEnvelope>) {
+        *self.callbacks.write().await = Some(Arc::new(CallbackClient::new(writer)));
+    }
+
+    async fn callback_client(&self) -> Result<Arc<CallbackClient>, BridgeFailure> {
+        self.callbacks.read().await.clone().ok_or_else(|| {
+            BridgeFailure::new("CALLBACK_UNAVAILABLE", "callback transport is unavailable")
+        })
     }
 
     fn handle(&self, prefix: &str) -> String {
@@ -245,6 +328,17 @@ impl BridgeState {
                 "operations": BRIDGE_OPERATIONS,
                 "event_protocol_version": a3s_code_core::EVENT_ENVELOPE_V1_VERSION,
             })),
+            "callback_response" => {
+                let callback_id: u64 = required(&request.params, "callback_id")?;
+                let result = request.params.get("result").cloned();
+                let error = optional::<String>(&request.params, "error")?;
+                let accepted = self
+                    .callback_client()
+                    .await?
+                    .respond(callback_id, CallbackReply { result, error })
+                    .await;
+                Ok(json!({ "accepted": accepted }))
+            }
             "agent_create" => {
                 let config_source: String = required(&request.params, "config_source")?;
                 let agent = Arc::new(Agent::create(config_source).await?);
@@ -258,6 +352,67 @@ impl BridgeState {
                     .refresh_mcp_tools()
                     .await?;
                 Ok(json!({ "refreshed": true }))
+            }
+            "agent_replace_session" => {
+                let agent_id: String = required(&request.params, "agent_id")?;
+                let current = self.request_session(&request.params).await?;
+                let options = optional::<BridgeSessionOptions>(&request.params, "options")?
+                    .unwrap_or_default()
+                    .into_core()?;
+                let replacement = Arc::new(
+                    self.agent(&agent_id)
+                        .await?
+                        .replace_session_async(&current, options)
+                        .await?,
+                );
+                self.insert_session(agent_id, replacement).await
+            }
+            "agent_session_for_agent" => {
+                let agent_id: String = required(&request.params, "agent_id")?;
+                let workspace: String = required(&request.params, "workspace")?;
+                let agent_name: String = required(&request.params, "agent_name")?;
+                let agent_dirs =
+                    optional::<Vec<String>>(&request.params, "agent_dirs")?.unwrap_or_default();
+                let registry = a3s_code_core::AgentRegistry::new();
+                for dir in agent_dirs {
+                    for definition in
+                        a3s_code_core::subagent::load_agents_from_dir(std::path::Path::new(&dir))
+                    {
+                        registry.register(definition);
+                    }
+                }
+                let definition = registry.get(&agent_name).ok_or_else(|| {
+                    BridgeFailure::new(
+                        "NOT_FOUND",
+                        format!("agent definition {agent_name:?} was not found"),
+                    )
+                })?;
+                let options = optional::<BridgeSessionOptions>(&request.params, "options")?
+                    .map(BridgeSessionOptions::into_core)
+                    .transpose()?;
+                let session = Arc::new(
+                    self.agent(&agent_id)
+                        .await?
+                        .session_for_agent_async(workspace, &definition, options)
+                        .await?,
+                );
+                self.insert_session(agent_id, session).await
+            }
+            "agent_session_for_worker" => {
+                let agent_id: String = required(&request.params, "agent_id")?;
+                let workspace: String = required(&request.params, "workspace")?;
+                let worker =
+                    required::<BridgeWorkerAgentSpec>(&request.params, "worker")?.into_core()?;
+                let options = optional::<BridgeSessionOptions>(&request.params, "options")?
+                    .map(BridgeSessionOptions::into_core)
+                    .transpose()?;
+                let session = Arc::new(
+                    self.agent(&agent_id)
+                        .await?
+                        .session_for_worker_async(workspace, worker, options)
+                        .await?,
+                );
+                self.insert_session(agent_id, session).await
             }
             "agent_list_sessions" => {
                 let sessions = self
@@ -276,6 +431,58 @@ impl BridgeState {
                     .close_session(&session_id)
                     .await;
                 Ok(json!({ "closed": closed }))
+            }
+            "agent_disconnect_idle_mcp" => {
+                let idle_threshold_ms: u64 = required(&request.params, "idle_threshold_ms")?;
+                let disconnected = self
+                    .agent(&required::<String>(&request.params, "agent_id")?)
+                    .await?
+                    .disconnect_idle_mcp(idle_threshold_ms)
+                    .await;
+                Ok(json!({ "names": disconnected }))
+            }
+            "agent_serve_agent_dir" => {
+                let agent_id: String = required(&request.params, "agent_id")?;
+                let dir: String = required(&request.params, "dir")?;
+                let workspace: String = required(&request.params, "workspace")?;
+                let options = optional::<BridgeSessionOptions>(&request.params, "options")?
+                    .map(BridgeSessionOptions::into_core)
+                    .transpose()?;
+                let agent_dir = a3s_code_core::config::AgentDir::load(&dir)
+                    .map_err(|error| BridgeFailure::new("CONFIG_ERROR", error.to_string()))?;
+                let cancel = CancellationToken::new();
+                let task_cancel = cancel.clone();
+                let agent = self.agent(&agent_id).await?;
+                tokio::spawn(async move {
+                    let _ = a3s_code_core::serve::serve_agent_dir(
+                        &agent,
+                        &agent_dir,
+                        workspace,
+                        options,
+                        task_cancel,
+                    )
+                    .await;
+                });
+                let serve_handle = self.handle("serve");
+                self.serve_handles
+                    .write()
+                    .await
+                    .insert(serve_handle.clone(), cancel);
+                Ok(json!({ "serve_handle": serve_handle }))
+            }
+            "agent_stop_serve" => {
+                let serve_handle: String = required(&request.params, "serve_handle")?;
+                let stopped = self
+                    .serve_handles
+                    .write()
+                    .await
+                    .remove(&serve_handle)
+                    .map(|token| {
+                        token.cancel();
+                        true
+                    })
+                    .unwrap_or(false);
+                Ok(json!({ "stopped": stopped }))
             }
             "agent_is_closed" => {
                 let closed = self
@@ -342,6 +549,78 @@ impl BridgeState {
                 let history = optional::<Vec<Message>>(&request.params, "history")?;
                 let result = session.send(&prompt, history.as_deref()).await?;
                 agent_result_value(result)
+            }
+            "session_resume_run" => {
+                let checkpoint_run_id: String = required(&request.params, "checkpoint_run_id")?;
+                let result = self
+                    .request_session(&request.params)
+                    .await?
+                    .resume_run(&checkpoint_run_id)
+                    .await?;
+                agent_result_value(result)
+            }
+            "session_send_with_attachments" => {
+                let session = self.request_session(&request.params).await?;
+                let prompt: String = required(&request.params, "prompt")?;
+                let attachments =
+                    required::<Vec<BridgeAttachment>>(&request.params, "attachments")?
+                        .into_iter()
+                        .map(BridgeAttachment::into_core)
+                        .collect::<Result<Vec<_>, _>>()?;
+                let history = optional::<Vec<Message>>(&request.params, "history")?;
+                let result = session
+                    .send_with_attachments(&prompt, &attachments, history.as_deref())
+                    .await?;
+                agent_result_value(result)
+            }
+            "session_parallel" => {
+                let specs: Vec<AgentStepSpec> = required(&request.params, "specs")?;
+                let budget_tokens = optional::<u64>(&request.params, "budget_tokens")?;
+                let workflow = self
+                    .request_session(&request.params)
+                    .await?
+                    .workflow_with_token_budget(budget_tokens);
+                let outcomes = workflow.parallel(specs).await;
+                let budget = workflow.budget_snapshot().map(|snapshot| {
+                    json!({
+                        "consumed_tokens": snapshot.consumed_tokens,
+                        "limit_tokens": snapshot.limit_tokens,
+                    })
+                });
+                Ok(json!({
+                    "outcomes": outcomes,
+                    "budget": budget,
+                }))
+            }
+            "session_parallel_resumable" => {
+                let session = self.request_session(&request.params).await?;
+                let specs: Vec<AgentStepSpec> = required(&request.params, "specs")?;
+                let workflow_id: String = required(&request.params, "workflow_id")?;
+                let store = session.session_store().ok_or_else(|| {
+                    BridgeFailure::new(
+                        "SESSION_ERROR",
+                        "parallel resumable requires a session store",
+                    )
+                })?;
+                let outcomes = execute_steps_parallel_resumable(
+                    session.agent_executor(),
+                    specs,
+                    &workflow_id,
+                    store,
+                    None,
+                )
+                .await;
+                encode(outcomes)
+            }
+            "session_workflow_step" => {
+                let spec: AgentStepSpec = required(&request.params, "spec")?;
+                let outcome = self
+                    .request_session(&request.params)
+                    .await?
+                    .workflow()
+                    .agent(spec)
+                    .await;
+                encode(outcome)
             }
             "session_cancel" => {
                 let cancelled = self.request_session(&request.params).await?.cancel().await;
@@ -573,6 +852,40 @@ impl BridgeState {
                     .await;
                 encode(tools)
             }
+            "session_subagent_task" => {
+                let task_id: String = required(&request.params, "task_id")?;
+                let task = self
+                    .request_session(&request.params)
+                    .await?
+                    .subagent_task(&task_id)
+                    .await;
+                Ok(json!({ "task": task }))
+            }
+            "session_subagent_tasks" => {
+                let tasks = self
+                    .request_session(&request.params)
+                    .await?
+                    .subagent_tasks()
+                    .await;
+                encode(tasks)
+            }
+            "session_pending_subagent_tasks" => {
+                let tasks = self
+                    .request_session(&request.params)
+                    .await?
+                    .pending_subagent_tasks()
+                    .await;
+                encode(tasks)
+            }
+            "session_cancel_subagent_task" => {
+                let task_id: String = required(&request.params, "task_id")?;
+                let cancelled = self
+                    .request_session(&request.params)
+                    .await?
+                    .cancel_subagent_task(&task_id)
+                    .await;
+                Ok(json!({ "cancelled": cancelled }))
+            }
             "session_cancel_run" => {
                 let run_id: String = required(&request.params, "run_id")?;
                 let cancelled = self
@@ -616,6 +929,14 @@ impl BridgeState {
                     .verification_reports();
                 encode(reports)
             }
+            "session_record_verification_reports" => {
+                let reports: Vec<a3s_code_core::verification::VerificationReport> =
+                    required(&request.params, "reports")?;
+                self.request_session(&request.params)
+                    .await?
+                    .record_verification_reports(reports);
+                Ok(json!({ "recorded": true }))
+            }
             "session_verification_summary" => {
                 let summary = self
                     .request_session(&request.params)
@@ -656,9 +977,62 @@ impl BridgeState {
                     .register_agent_dir(std::path::Path::new(&path))?;
                 Ok(json!({ "count": count }))
             }
+            "session_register_worker_agent" => {
+                let worker =
+                    required::<BridgeWorkerAgentSpec>(&request.params, "worker")?.into_core()?;
+                let definition = self
+                    .request_session(&request.params)
+                    .await?
+                    .register_worker_agent(worker)?;
+                Ok(agent_definition_value(definition))
+            }
+            "session_register_worker_agents" => {
+                let workers: Vec<BridgeWorkerAgentSpec> = required(&request.params, "workers")?;
+                let workers = workers
+                    .into_iter()
+                    .map(BridgeWorkerAgentSpec::into_core)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let definitions = self
+                    .request_session(&request.params)
+                    .await?
+                    .register_worker_agents(workers)?;
+                Ok(Value::Array(
+                    definitions
+                        .into_iter()
+                        .map(agent_definition_value)
+                        .collect(),
+                ))
+            }
+            "session_add_skill" => {
+                let skill: BridgeInlineSkill = required(&request.params, "skill")?;
+                self.request_session(&request.params)
+                    .await?
+                    .add_skill(Arc::new(skill.into_core()?))?;
+                Ok(json!({ "added": true }))
+            }
+            "session_remove_skill" => {
+                let name: String = required(&request.params, "name")?;
+                self.request_session(&request.params)
+                    .await?
+                    .remove_skill(&name)?;
+                Ok(json!({ "removed": true }))
+            }
             "session_skill_names" => {
                 let names = self.request_session(&request.params).await?.skill_names();
                 Ok(json!({ "names": names }))
+            }
+            "session_register_dynamic_workflow" => {
+                self.request_session(&request.params)
+                    .await?
+                    .register_dynamic_workflow_runtime()?;
+                Ok(json!({ "registered": true }))
+            }
+            "session_unregister_dynamic_tool" => {
+                let name: String = required(&request.params, "name")?;
+                self.request_session(&request.params)
+                    .await?
+                    .unregister_dynamic_tool(&name)?;
+                Ok(json!({ "unregistered": true }))
             }
             "session_add_mcp_server" => {
                 let config: a3s_code_core::mcp::McpServerConfig =
@@ -686,9 +1060,252 @@ impl BridgeState {
                     .await;
                 encode(statuses)
             }
+            "session_has_memory" => {
+                let available = self
+                    .request_session(&request.params)
+                    .await?
+                    .memory()
+                    .is_some();
+                Ok(json!({ "available": available }))
+            }
+            "session_remember_success" => {
+                let task: String = required(&request.params, "task")?;
+                let tools: Vec<String> = required(&request.params, "tools")?;
+                let result: String = required(&request.params, "result")?;
+                self.request_memory(&request.params)
+                    .await?
+                    .remember_success(&task, &tools, &result)
+                    .await
+                    .map_err(memory_failure)?;
+                Ok(json!({ "remembered": true }))
+            }
+            "session_remember_failure" => {
+                let task: String = required(&request.params, "task")?;
+                let error: String = required(&request.params, "error")?;
+                let tools: Vec<String> = required(&request.params, "tools")?;
+                self.request_memory(&request.params)
+                    .await?
+                    .remember_failure(&task, &error, &tools)
+                    .await
+                    .map_err(memory_failure)?;
+                Ok(json!({ "remembered": true }))
+            }
+            "session_recall_similar" => {
+                let query: String = required(&request.params, "query")?;
+                let limit = optional::<usize>(&request.params, "limit")?.unwrap_or(5);
+                let items = self
+                    .request_memory(&request.params)
+                    .await?
+                    .recall_similar(&query, limit)
+                    .await
+                    .map_err(memory_failure)?;
+                encode(items)
+            }
+            "session_recall_by_tags" => {
+                let tags: Vec<String> = required(&request.params, "tags")?;
+                let limit = optional::<usize>(&request.params, "limit")?.unwrap_or(10);
+                let items = self
+                    .request_memory(&request.params)
+                    .await?
+                    .recall_by_tags(&tags, limit)
+                    .await
+                    .map_err(memory_failure)?;
+                encode(items)
+            }
+            "session_memory_recent" => {
+                let limit = optional::<usize>(&request.params, "limit")?.unwrap_or(10);
+                let items = self
+                    .request_memory(&request.params)
+                    .await?
+                    .get_recent(limit)
+                    .await
+                    .map_err(memory_failure)?;
+                encode(items)
+            }
+            "session_memory_stats" => {
+                let stats = self
+                    .request_memory(&request.params)
+                    .await?
+                    .stats()
+                    .await
+                    .map_err(memory_failure)?;
+                encode(stats)
+            }
+            "session_get_working_memory" => {
+                let items = self
+                    .request_memory(&request.params)
+                    .await?
+                    .get_working()
+                    .await;
+                encode(items)
+            }
+            "session_clear_working_memory" => {
+                self.request_memory(&request.params)
+                    .await?
+                    .clear_working()
+                    .await;
+                Ok(json!({ "cleared": true }))
+            }
+            "session_get_short_term_memory" => {
+                let items = self
+                    .request_memory(&request.params)
+                    .await?
+                    .get_short_term()
+                    .await;
+                encode(items)
+            }
+            "session_clear_short_term_memory" => {
+                self.request_memory(&request.params)
+                    .await?
+                    .clear_short_term()
+                    .await;
+                Ok(json!({ "cleared": true }))
+            }
+            "session_has_queue" => {
+                let available = self.request_session(&request.params).await?.has_queue();
+                Ok(json!({ "available": available }))
+            }
+            "session_set_lane_handler" => {
+                let lane = parse_lane(&required::<String>(&request.params, "lane")?)?;
+                let config =
+                    required::<BridgeLaneHandlerConfig>(&request.params, "config")?.into_core()?;
+                self.request_session(&request.params)
+                    .await?
+                    .set_lane_handler(lane, config)
+                    .await?;
+                Ok(json!({ "configured": true }))
+            }
+            "session_complete_external_task" => {
+                let task_id: String = required(&request.params, "task_id")?;
+                let result: a3s_code_core::queue::ExternalTaskResult =
+                    required(&request.params, "result")?;
+                let completed = self
+                    .request_session(&request.params)
+                    .await?
+                    .complete_external_task(&task_id, result)
+                    .await;
+                Ok(json!({ "completed": completed }))
+            }
+            "session_pending_external_tasks" => {
+                let tasks = self
+                    .request_session(&request.params)
+                    .await?
+                    .pending_external_tasks()
+                    .await;
+                encode(tasks)
+            }
+            "session_queue_stats" => {
+                let stats = self
+                    .request_session(&request.params)
+                    .await?
+                    .queue_stats()
+                    .await;
+                encode(stats)
+            }
+            "session_dead_letters" => {
+                let letters = self
+                    .request_session(&request.params)
+                    .await?
+                    .dead_letters()
+                    .await;
+                encode(letters)
+            }
+            "session_queue_metrics" => {
+                let metrics = self
+                    .request_session(&request.params)
+                    .await?
+                    .queue_metrics()
+                    .await;
+                Ok(queue_metrics_value(metrics))
+            }
+            "session_register_hook" => {
+                let hook: a3s_code_core::hooks::Hook = required(&request.params, "hook")?;
+                let hook_id = hook.id.clone();
+                let handler_id = optional::<String>(&request.params, "handler_id")?;
+                let timeout_ms = hook.config.timeout_ms;
+                let session = self.request_session(&request.params).await?;
+                session.register_hook(hook)?;
+                if let Some(handler_id) = handler_id {
+                    session.register_hook_handler(
+                        &hook_id,
+                        Arc::new(BridgeHookHandler {
+                            client: self.callback_client().await?,
+                            handler_id,
+                            timeout_ms,
+                            runtime: tokio::runtime::Handle::current(),
+                        }),
+                    )?;
+                } else {
+                    session.unregister_hook_handler(&hook_id)?;
+                }
+                Ok(json!({ "registered": true }))
+            }
+            "session_unregister_hook" => {
+                let hook_id: String = required(&request.params, "hook_id")?;
+                let session = self.request_session(&request.params).await?;
+                session.unregister_hook_handler(&hook_id)?;
+                let removed = session.unregister_hook(&hook_id)?.is_some();
+                Ok(json!({ "removed": removed }))
+            }
+            "session_hook_count" => {
+                let count = self.request_session(&request.params).await?.hook_count();
+                Ok(json!({ "count": count }))
+            }
+            "session_set_budget_guard" => {
+                let handler_id = optional::<String>(&request.params, "handler_id")?;
+                let session = self.request_session(&request.params).await?;
+                match handler_id {
+                    Some(handler_id) => {
+                        let timeout_ms =
+                            optional::<u64>(&request.params, "timeout_ms")?.unwrap_or(5_000);
+                        session.set_budget_guard(Some(Arc::new(BridgeBudgetGuard {
+                            client: self.callback_client().await?,
+                            handler_id,
+                            timeout_ms,
+                        })))?;
+                    }
+                    None => session.set_budget_guard(None)?,
+                }
+                Ok(json!({ "configured": true }))
+            }
+            "session_register_command" => {
+                let name: String = required(&request.params, "name")?;
+                let description: String = required(&request.params, "description")?;
+                let usage = optional::<String>(&request.params, "usage")?;
+                let handler_id: String = required(&request.params, "handler_id")?;
+                let timeout_ms = optional::<u64>(&request.params, "timeout_ms")?.unwrap_or(5_000);
+                self.request_session(&request.params)
+                    .await?
+                    .register_command(Arc::new(BridgeSlashCommand {
+                        name,
+                        description,
+                        usage,
+                        client: self.callback_client().await?,
+                        handler_id,
+                        timeout_ms,
+                        runtime: tokio::runtime::Handle::current(),
+                    }))?;
+                Ok(json!({ "registered": true }))
+            }
+            "session_list_commands" => {
+                let commands = self
+                    .request_session(&request.params)
+                    .await?
+                    .command_registry()
+                    .list_full();
+                Ok(json!({
+                    "commands": commands.into_iter().map(|(name, description, usage)| {
+                        json!({ "name": name, "description": description, "usage": usage })
+                    }).collect::<Vec<_>>()
+                }))
+            }
             "session_stream" => Err(BridgeFailure::new(
                 "INTERNAL_ERROR",
                 "session_stream must be dispatched through the streaming path",
+            )),
+            "session_stream_with_attachments" => Err(BridgeFailure::new(
+                "INTERNAL_ERROR",
+                "session_stream_with_attachments must be dispatched through the streaming path",
             )),
             operation => Err(BridgeFailure::new(
                 "UNSUPPORTED_OPERATION",
@@ -708,6 +1325,10 @@ impl BridgeState {
             "session_id": session.id(),
             "workspace": session.workspace().display().to_string(),
             "init_warning": session.init_warning(),
+            "tenant_id": session.tenant_id(),
+            "principal": session.principal(),
+            "agent_template_id": session.agent_template_id(),
+            "correlation_id": session.correlation_id(),
         });
         self.sessions
             .write()
@@ -721,6 +1342,22 @@ impl BridgeState {
             .await
     }
 
+    async fn request_memory(
+        &self,
+        params: &Value,
+    ) -> Result<Arc<a3s_code_core::memory::AgentMemory>, BridgeFailure> {
+        self.request_session(params)
+            .await?
+            .memory()
+            .cloned()
+            .ok_or_else(|| {
+                BridgeFailure::new(
+                    "MEMORY_UNAVAILABLE",
+                    "memory is unavailable for this session; inspect init_warning",
+                )
+            })
+    }
+
     async fn stream(
         &self,
         request: &BridgeRequest,
@@ -729,7 +1366,17 @@ impl BridgeState {
         let session = self.request_session(&request.params).await?;
         let prompt: String = required(&request.params, "prompt")?;
         let history = optional::<Vec<Message>>(&request.params, "history")?;
-        let (mut events, handle) = session.stream(&prompt, history.as_deref()).await?;
+        let (mut events, handle) = if request.operation == "session_stream_with_attachments" {
+            let attachments = required::<Vec<BridgeAttachment>>(&request.params, "attachments")?
+                .into_iter()
+                .map(BridgeAttachment::into_core)
+                .collect::<Result<Vec<_>, _>>()?;
+            session
+                .stream_with_attachments(&prompt, &attachments, history.as_deref())
+                .await?
+        } else {
+            session.stream(&prompt, history.as_deref()).await?
+        };
         while let Some(event) = events.recv().await {
             let envelope = EventEnvelopeV1::try_from(event)
                 .map_err(|error| BridgeFailure::new("SERIALIZATION_ERROR", error.to_string()))?;
@@ -744,6 +1391,15 @@ impl BridgeState {
     }
 
     pub async fn close_all(&self) {
+        for token in self
+            .serve_handles
+            .write()
+            .await
+            .drain()
+            .map(|(_, token)| token)
+        {
+            token.cancel();
+        }
         let sessions = self
             .sessions
             .read()
@@ -772,6 +1428,7 @@ impl BridgeState {
 pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(BridgeState::new());
     let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<BridgeEnvelope>();
+    state.install_callback_writer(writer_tx.clone()).await;
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         while let Some(envelope) = writer_rx.recv().await {
@@ -805,7 +1462,10 @@ pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
             };
-            let result = if request.operation == "session_stream" {
+            let result = if matches!(
+                request.operation.as_str(),
+                "session_stream" | "session_stream_with_attachments"
+            ) {
                 state.stream(&request, &writer_tx).await
             } else {
                 state.dispatch(&request).await
@@ -819,6 +1479,7 @@ pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     state.close_all().await;
+    drop(state);
     drop(writer_tx);
     writer
         .await
@@ -827,20 +1488,849 @@ pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+struct BridgeAttachment {
+    data: String,
+    media_type: String,
+}
+
+impl BridgeAttachment {
+    fn into_core(self) -> Result<a3s_code_core::Attachment, BridgeFailure> {
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(self.data)
+            .map_err(|error| {
+                BridgeFailure::new(
+                    "INVALID_REQUEST",
+                    format!("invalid attachment data: {error}"),
+                )
+            })?;
+        Ok(a3s_code_core::Attachment::new(data, self.media_type))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeCallbackInvocation {
+    pub callback_id: u64,
+    pub handler_id: String,
+    pub method: String,
+    pub payload: Value,
+    pub timeout_ms: u64,
+}
+
+struct CallbackReply {
+    result: Option<Value>,
+    error: Option<String>,
+}
+
+struct CallbackClient {
+    next_id: AtomicU64,
+    writer: mpsc::UnboundedSender<BridgeEnvelope>,
+    pending: Mutex<HashMap<u64, oneshot::Sender<CallbackReply>>>,
+}
+
+impl CallbackClient {
+    fn new(writer: mpsc::UnboundedSender<BridgeEnvelope>) -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            writer,
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn invoke(
+        &self,
+        handler_id: &str,
+        method: &str,
+        payload: Value,
+        timeout_ms: u64,
+    ) -> Result<Value, BridgeFailure> {
+        let callback_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().await.insert(callback_id, tx);
+        if self
+            .writer
+            .send(BridgeEnvelope::callback(
+                callback_id,
+                BridgeCallbackInvocation {
+                    callback_id,
+                    handler_id: handler_id.to_string(),
+                    method: method.to_string(),
+                    payload,
+                    timeout_ms,
+                },
+            ))
+            .is_err()
+        {
+            self.pending.lock().await.remove(&callback_id);
+            return Err(BridgeFailure::new(
+                "BRIDGE_CLOSED",
+                "bridge output is closed",
+            ));
+        }
+        let reply =
+            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await {
+                Ok(Ok(reply)) => reply,
+                Ok(Err(_)) => {
+                    self.pending.lock().await.remove(&callback_id);
+                    return Err(BridgeFailure::new(
+                        "CALLBACK_ERROR",
+                        "callback response channel closed",
+                    ));
+                }
+                Err(_) => {
+                    self.pending.lock().await.remove(&callback_id);
+                    return Err(BridgeFailure::new(
+                        "CALLBACK_TIMEOUT",
+                        format!("callback {handler_id:?} timed out after {timeout_ms}ms"),
+                    ));
+                }
+            };
+        self.pending.lock().await.remove(&callback_id);
+        if let Some(error) = reply.error {
+            return Err(BridgeFailure::new("CALLBACK_ERROR", error));
+        }
+        Ok(reply.result.unwrap_or(Value::Null))
+    }
+
+    async fn respond(&self, callback_id: u64, reply: CallbackReply) -> bool {
+        match self.pending.lock().await.remove(&callback_id) {
+            Some(sender) => sender.send(reply).is_ok(),
+            None => false,
+        }
+    }
+}
+
+struct BridgeHookHandler {
+    client: Arc<CallbackClient>,
+    handler_id: String,
+    timeout_ms: u64,
+    runtime: tokio::runtime::Handle,
+}
+
+impl a3s_code_core::hooks::HookHandler for BridgeHookHandler {
+    fn handle(
+        &self,
+        event: &a3s_code_core::hooks::HookEvent,
+    ) -> a3s_code_core::hooks::HookResponse {
+        self.try_handle(event)
+            .unwrap_or_else(|_| a3s_code_core::hooks::HookResponse::continue_())
+    }
+
+    fn try_handle(
+        &self,
+        event: &a3s_code_core::hooks::HookEvent,
+    ) -> Result<a3s_code_core::hooks::HookResponse, String> {
+        let payload = serde_json::to_value(event)
+            .map_err(|error| format!("failed to serialize hook event: {error}"))?;
+        let value = self
+            .runtime
+            .block_on(
+                self.client
+                    .invoke(&self.handler_id, "hook", payload, self.timeout_ms),
+            )
+            .map_err(|error| error.message)?;
+        parse_hook_response(value)
+    }
+}
+
+fn parse_hook_response(value: Value) -> Result<a3s_code_core::hooks::HookResponse, String> {
+    use a3s_code_core::hooks::HookResponse;
+    if value.is_null() {
+        return Ok(HookResponse::continue_());
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| "hook callback must return an object or null".to_string())?;
+    match object
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("continue")
+    {
+        "continue" => Ok(
+            match object.get("modified").filter(|value| !value.is_null()) {
+                Some(modified) => HookResponse::continue_with(modified.clone()),
+                None => HookResponse::continue_(),
+            },
+        ),
+        "block" => Ok(HookResponse::block(
+            object
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("Blocked by Go hook"),
+        )),
+        "retry" => Ok(HookResponse::retry(
+            object
+                .get("delay_ms")
+                .or_else(|| object.get("delayMs"))
+                .and_then(Value::as_u64)
+                .unwrap_or(1_000),
+        )),
+        "skip" => Ok(HookResponse::skip()),
+        other => Err(format!("unknown hook action {other:?}")),
+    }
+}
+
+struct BridgeBudgetGuard {
+    client: Arc<CallbackClient>,
+    handler_id: String,
+    timeout_ms: u64,
+}
+
+#[async_trait::async_trait]
+impl a3s_code_core::budget::BudgetGuard for BridgeBudgetGuard {
+    async fn check_before_llm(
+        &self,
+        session_id: &str,
+        estimated_prompt_tokens: usize,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        self.decision(
+            "check_before_llm",
+            json!({
+                "session_id": session_id,
+                "estimated_tokens": estimated_prompt_tokens,
+            }),
+        )
+        .await
+    }
+
+    async fn record_after_llm(&self, session_id: &str, usage: &a3s_code_core::TokenUsage) {
+        let _ = self
+            .client
+            .invoke(
+                &self.handler_id,
+                "record_after_llm",
+                json!({ "session_id": session_id, "usage": usage }),
+                self.timeout_ms,
+            )
+            .await;
+    }
+
+    async fn check_before_tool(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        self.decision(
+            "check_before_tool",
+            json!({ "session_id": session_id, "tool_name": tool_name }),
+        )
+        .await
+    }
+}
+
+impl BridgeBudgetGuard {
+    async fn decision(
+        &self,
+        method: &str,
+        payload: Value,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        match self
+            .client
+            .invoke(&self.handler_id, method, payload, self.timeout_ms)
+            .await
+            .and_then(|value| {
+                parse_budget_decision(value)
+                    .map_err(|message| BridgeFailure::new("CALLBACK_ERROR", message))
+            }) {
+            Ok(decision) => decision,
+            Err(error) => a3s_code_core::budget::BudgetDecision::Deny {
+                resource: "budget_guard_callback".to_string(),
+                reason: error.message,
+            },
+        }
+    }
+}
+
+fn parse_budget_decision(value: Value) -> Result<a3s_code_core::budget::BudgetDecision, String> {
+    use a3s_code_core::budget::BudgetDecision;
+    if value.is_null() {
+        return Ok(BudgetDecision::Allow);
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| "budget callback must return an object or null".to_string())?;
+    match object
+        .get("decision")
+        .and_then(Value::as_str)
+        .unwrap_or("allow")
+    {
+        "allow" => Ok(BudgetDecision::Allow),
+        "deny" => Ok(BudgetDecision::Deny {
+            resource: required_callback_string(object, "resource")?,
+            reason: required_callback_string(object, "reason")?,
+        }),
+        "soft" => Ok(BudgetDecision::SoftLimit {
+            resource: required_callback_string(object, "resource")?,
+            consumed: required_callback_number(object, "consumed")?,
+            limit: required_callback_number(object, "limit")?,
+            message: object
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }),
+        other => Err(format!("unknown budget decision {other:?}")),
+    }
+}
+
+fn required_callback_string(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<String, String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("callback result requires string field {key:?}"))
+}
+
+fn required_callback_number(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<f64, String> {
+    object
+        .get(key)
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("callback result requires finite number field {key:?}"))
+}
+
+struct BridgeSlashCommand {
+    name: String,
+    description: String,
+    usage: Option<String>,
+    client: Arc<CallbackClient>,
+    handler_id: String,
+    timeout_ms: u64,
+    runtime: tokio::runtime::Handle,
+}
+
+impl a3s_code_core::commands::SlashCommand for BridgeSlashCommand {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn usage(&self) -> Option<&str> {
+        self.usage.as_deref()
+    }
+
+    fn execute(
+        &self,
+        args: &str,
+        context: &a3s_code_core::commands::CommandContext,
+    ) -> a3s_code_core::commands::CommandOutput {
+        let payload = json!({
+            "args": args,
+            "context": {
+                "session_id": context.session_id,
+                "workspace": context.workspace,
+                "model": context.model,
+                "history_len": context.history_len,
+                "total_tokens": context.total_tokens,
+                "total_cost": context.total_cost,
+                "tool_names": context.tool_names,
+                "mcp_servers": context.mcp_servers.iter().map(|(name, count)| {
+                    json!({ "name": name, "tool_count": count })
+                }).collect::<Vec<_>>(),
+            }
+        });
+        let result = tokio::task::block_in_place(|| {
+            self.runtime.block_on(self.client.invoke(
+                &self.handler_id,
+                "command",
+                payload,
+                self.timeout_ms,
+            ))
+        });
+        match result {
+            Ok(Value::String(text)) => a3s_code_core::commands::CommandOutput::text(text),
+            Ok(value) => a3s_code_core::commands::CommandOutput::text(
+                value
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Go command returned no text"),
+            ),
+            Err(error) => a3s_code_core::commands::CommandOutput::text(format!(
+                "Command '{}' failed: {}",
+                self.name, error.message
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeWorkerAgentSpec {
+    name: String,
+    description: String,
+    #[serde(default = "default_worker_kind")]
+    kind: String,
+    #[serde(default)]
+    hidden: bool,
+    permissions: Option<a3s_code_core::permissions::PermissionPolicy>,
+    model: Option<String>,
+    prompt: Option<String>,
+    max_steps: Option<usize>,
+    confirmation_inheritance: Option<String>,
+}
+
+fn default_worker_kind() -> String {
+    "custom".to_string()
+}
+
+impl BridgeWorkerAgentSpec {
+    fn into_core(self) -> Result<a3s_code_core::WorkerAgentSpec, BridgeFailure> {
+        use a3s_code_core::{ConfirmationInheritance, WorkerAgentKind, WorkerAgentSpec};
+        let kind = match self.kind.trim().to_ascii_lowercase().as_str() {
+            "read_only" | "readonly" | "read-only" | "explore" => WorkerAgentKind::ReadOnly,
+            "planner" | "plan" => WorkerAgentKind::Planner,
+            "implementer" | "implementation" | "general" => WorkerAgentKind::Implementer,
+            "verifier" | "verification" | "verify" => WorkerAgentKind::Verifier,
+            "reviewer" | "review" | "code-review" => WorkerAgentKind::Reviewer,
+            "custom" => WorkerAgentKind::Custom,
+            other => {
+                return Err(BridgeFailure::new(
+                    "INVALID_REQUEST",
+                    format!("unknown worker kind {other:?}"),
+                ))
+            }
+        };
+        let confirmation_inheritance = self
+            .confirmation_inheritance
+            .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+                "auto_approve" | "autoapprove" => Ok(ConfirmationInheritance::AutoApprove),
+                "deny_on_ask" | "deny" => Ok(ConfirmationInheritance::DenyOnAsk),
+                "inherit_parent" | "inherit" => Ok(ConfirmationInheritance::InheritParent),
+                other => Err(BridgeFailure::new(
+                    "INVALID_REQUEST",
+                    format!("unknown confirmation inheritance {other:?}"),
+                )),
+            })
+            .transpose()?;
+        Ok(WorkerAgentSpec {
+            name: self.name,
+            description: self.description,
+            kind,
+            hidden: self.hidden,
+            permissions: self.permissions,
+            model: self
+                .model
+                .map(a3s_code_core::subagent::ModelConfig::from_model_ref),
+            prompt: self.prompt,
+            max_steps: self.max_steps,
+            confirmation_inheritance,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeInlineSkill {
+    name: String,
+    #[serde(default)]
+    kind: String,
+    content: String,
+}
+
+impl BridgeInlineSkill {
+    fn into_core(self) -> Result<a3s_code_core::skills::Skill, BridgeFailure> {
+        let name = self.name.trim().to_string();
+        if name.is_empty() {
+            return Err(BridgeFailure::new(
+                "INVALID_REQUEST",
+                "skill name cannot be empty",
+            ));
+        }
+        let kind = match self.kind.trim().to_ascii_lowercase().as_str() {
+            "" | "instruction" => a3s_code_core::skills::SkillKind::Instruction,
+            "persona" => a3s_code_core::skills::SkillKind::Persona,
+            "tool" => a3s_code_core::skills::SkillKind::Tool,
+            other => {
+                return Err(BridgeFailure::new(
+                    "INVALID_REQUEST",
+                    format!("unknown skill kind {other:?}"),
+                ))
+            }
+        };
+        Ok(a3s_code_core::skills::Skill {
+            name,
+            description: String::new(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind,
+            content: self.content,
+            tags: Vec::new(),
+            version: None,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeLaneHandlerConfig {
+    mode: String,
+    #[serde(default = "default_lane_timeout")]
+    timeout_ms: u64,
+}
+
+fn default_lane_timeout() -> u64 {
+    60_000
+}
+
+impl BridgeLaneHandlerConfig {
+    fn into_core(self) -> Result<a3s_code_core::queue::LaneHandlerConfig, BridgeFailure> {
+        let mode = match self.mode.trim().to_ascii_lowercase().as_str() {
+            "internal" => a3s_code_core::queue::TaskHandlerMode::Internal,
+            "external" => a3s_code_core::queue::TaskHandlerMode::External,
+            "hybrid" => a3s_code_core::queue::TaskHandlerMode::Hybrid,
+            other => {
+                return Err(BridgeFailure::new(
+                    "INVALID_REQUEST",
+                    format!("unknown lane handler mode {other:?}"),
+                ))
+            }
+        };
+        Ok(a3s_code_core::queue::LaneHandlerConfig {
+            mode,
+            timeout_ms: self.timeout_ms,
+        })
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct BridgeSessionQueueConfig {
+    control_concurrency: Option<usize>,
+    query_concurrency: Option<usize>,
+    execute_concurrency: Option<usize>,
+    generate_concurrency: Option<usize>,
+    lane_handlers: HashMap<String, BridgeLaneHandlerConfig>,
+    enable_dlq: Option<bool>,
+    dlq_max_size: Option<usize>,
+    enable_metrics: Option<bool>,
+    enable_alerts: Option<bool>,
+    timeout_ms: Option<u64>,
+    storage_path: Option<String>,
+    enable_all_features: Option<bool>,
+}
+
+impl BridgeSessionQueueConfig {
+    fn into_core(self) -> Result<a3s_code_core::queue::SessionQueueConfig, BridgeFailure> {
+        let mut config = if self.enable_all_features.unwrap_or(false) {
+            a3s_code_core::queue::SessionQueueConfig::default().with_lane_features()
+        } else {
+            a3s_code_core::queue::SessionQueueConfig::default()
+        };
+        if let Some(value) = self.control_concurrency {
+            config.control_max_concurrency = value;
+        }
+        if let Some(value) = self.query_concurrency {
+            config.query_max_concurrency = value;
+        }
+        if let Some(value) = self.execute_concurrency {
+            config.execute_max_concurrency = value;
+        }
+        if let Some(value) = self.generate_concurrency {
+            config.generate_max_concurrency = value;
+        }
+        for (lane, handler) in self.lane_handlers {
+            config
+                .lane_handlers
+                .insert(parse_lane(&lane)?, handler.into_core()?);
+        }
+        if self.enable_dlq.unwrap_or(false) {
+            config = config.with_dlq(self.dlq_max_size);
+        }
+        if self.enable_metrics.unwrap_or(false) {
+            config = config.with_metrics();
+        }
+        if self.enable_alerts.unwrap_or(false) {
+            config = config.with_alerts();
+        }
+        if let Some(value) = self.timeout_ms {
+            config = config.with_timeout(value);
+        }
+        if let Some(value) = self.storage_path {
+            config = config.with_storage(value);
+        }
+        Ok(config)
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct BridgeConfirmationPolicy {
+    enabled: Option<bool>,
+    default_timeout_ms: Option<u64>,
+    timeout_action: Option<String>,
+    yolo_lanes: Vec<String>,
+}
+
+impl BridgeConfirmationPolicy {
+    fn into_core(self) -> Result<a3s_code_core::hitl::ConfirmationPolicy, BridgeFailure> {
+        let mut policy = if self.enabled.unwrap_or(false) {
+            a3s_code_core::hitl::ConfirmationPolicy::enabled()
+        } else {
+            a3s_code_core::hitl::ConfirmationPolicy::default()
+        };
+        let timeout_action = match self
+            .timeout_action
+            .as_deref()
+            .unwrap_or("reject")
+            .trim()
+            .to_ascii_lowercase()
+            .replace('-', "_")
+            .as_str()
+        {
+            "reject" => a3s_code_core::hitl::TimeoutAction::Reject,
+            "auto_approve" | "autoapprove" => a3s_code_core::hitl::TimeoutAction::AutoApprove,
+            other => {
+                return Err(BridgeFailure::new(
+                    "INVALID_REQUEST",
+                    format!("unknown confirmation timeout action {other:?}"),
+                ))
+            }
+        };
+        if let Some(timeout) = self.default_timeout_ms {
+            policy = policy.with_timeout(timeout, timeout_action);
+        }
+        if !self.yolo_lanes.is_empty() {
+            policy = policy.with_yolo_lanes(
+                self.yolo_lanes
+                    .iter()
+                    .map(|lane| parse_lane(lane))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        Ok(policy)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeArtifactStoreLimits {
+    max_artifacts: usize,
+    max_bytes: usize,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct BridgeAutoDelegation {
+    enabled: Option<bool>,
+    auto_parallel: Option<bool>,
+    min_confidence: Option<f32>,
+    max_tasks: Option<usize>,
+}
+
+impl BridgeAutoDelegation {
+    fn into_core(self) -> a3s_code_core::AutoDelegationConfig {
+        let mut config = a3s_code_core::AutoDelegationConfig::default();
+        if let Some(value) = self.enabled {
+            config.enabled = value;
+        }
+        if let Some(value) = self.auto_parallel {
+            config.auto_parallel = value;
+        }
+        if let Some(value) = self.min_confidence {
+            config.min_confidence = value.clamp(0.0, 1.0);
+        }
+        if let Some(value) = self.max_tasks {
+            config.max_tasks = value.max(1);
+        }
+        config
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct BridgeRetentionLimits {
+    unbounded: bool,
+    max_runs_retained: Option<usize>,
+    max_events_per_run: Option<usize>,
+    max_event_bytes_per_run: Option<usize>,
+    max_trace_events: Option<usize>,
+    max_terminal_subagent_tasks: Option<usize>,
+}
+
+impl BridgeRetentionLimits {
+    fn into_core(self) -> a3s_code_core::retention::SessionRetentionLimits {
+        let mut limits = if self.unbounded {
+            a3s_code_core::retention::SessionRetentionLimits::unbounded()
+        } else {
+            a3s_code_core::retention::SessionRetentionLimits::default()
+        };
+        if let Some(value) = self.max_runs_retained {
+            limits.max_runs_retained = Some(value);
+        }
+        if let Some(value) = self.max_events_per_run {
+            limits.max_events_per_run = Some(value);
+        }
+        if let Some(value) = self.max_event_bytes_per_run {
+            limits.max_event_bytes_per_run = Some(value);
+        }
+        if let Some(value) = self.max_trace_events {
+            limits.max_trace_events = Some(value);
+        }
+        if let Some(value) = self.max_terminal_subagent_tasks {
+            limits.max_terminal_subagent_tasks = Some(value);
+        }
+        limits
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeTrajectoryConfig {
+    path: String,
+    mode: Option<String>,
+    max_text_bytes: Option<usize>,
+    include_messages: Option<bool>,
+}
+
+impl BridgeTrajectoryConfig {
+    fn into_core(self) -> Result<a3s_code_core::RlTrajectoryConfig, BridgeFailure> {
+        let mut config = a3s_code_core::RlTrajectoryConfig::new(self.path);
+        if let Some(mode) = self.mode {
+            let parsed = a3s_code_core::RlTrajectoryMode::parse(&mode).ok_or_else(|| {
+                BridgeFailure::new("INVALID_REQUEST", "trajectory mode must be on or off")
+            })?;
+            config = config.with_mode(parsed);
+        }
+        if let Some(value) = self.max_text_bytes {
+            config = config.with_max_text_bytes(value);
+        }
+        if let Some(value) = self.include_messages {
+            config = config.with_include_messages(value);
+        }
+        Ok(config)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeWorkspaceBackend {
+    kind: String,
+    root: Option<String>,
+    s3: Option<BridgeS3Config>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeS3Config {
+    endpoint: Option<String>,
+    region: Option<String>,
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: Option<String>,
+    bucket: String,
+    prefix: String,
+    force_path_style: Option<bool>,
+    request_timeout_ms: Option<u64>,
+    max_read_bytes: Option<u64>,
+    search_enabled: Option<bool>,
+    max_objects_scanned: Option<usize>,
+    max_grep_bytes_per_object: Option<u64>,
+    search_concurrency: Option<usize>,
+}
+
+impl BridgeS3Config {
+    fn into_core(self) -> a3s_code_core::S3BackendConfig {
+        let mut config = a3s_code_core::S3BackendConfig::new(
+            self.bucket,
+            self.prefix,
+            self.access_key_id,
+            self.secret_access_key,
+        );
+        if let Some(value) = self.endpoint {
+            config = config.endpoint(value);
+        }
+        if let Some(value) = self.region {
+            config = config.region(value);
+        }
+        if let Some(value) = self.session_token {
+            config = config.session_token(value);
+        }
+        if let Some(value) = self.force_path_style {
+            config = config.force_path_style(value);
+        }
+        if let Some(value) = self.request_timeout_ms {
+            config = config.request_timeout(std::time::Duration::from_millis(value));
+        }
+        if let Some(value) = self.max_read_bytes {
+            config = config.max_read_bytes(value);
+        }
+        if let Some(value) = self.search_enabled {
+            config = config.enable_search(value);
+        }
+        if let Some(value) = self.max_objects_scanned {
+            config = config.max_objects_scanned(value);
+        }
+        if let Some(value) = self.max_grep_bytes_per_object {
+            config = config.max_grep_bytes_per_object(value);
+        }
+        if let Some(value) = self.search_concurrency {
+            config = config.search_concurrency(value);
+        }
+        config
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeRemoteGitConfig {
+    base_url: String,
+    repo_id: String,
+    bearer_token: Option<String>,
+    client_cert_pem: Option<String>,
+    client_key_pem: Option<String>,
+    request_timeout_ms: Option<u64>,
+    max_diff_bytes: Option<u64>,
+    max_log_entries: Option<usize>,
+}
+
+impl BridgeRemoteGitConfig {
+    fn into_core(self) -> a3s_code_core::RemoteGitBackendConfig {
+        let mut config = a3s_code_core::RemoteGitBackendConfig::new(self.base_url, self.repo_id);
+        if let Some(value) = self.bearer_token {
+            config = config.bearer_token(value);
+        }
+        if let Some(value) = self.client_cert_pem {
+            config = config.client_cert_pem(value);
+        }
+        if let Some(value) = self.client_key_pem {
+            config = config.client_key_pem(value);
+        }
+        if let Some(value) = self.request_timeout_ms {
+            config = config.request_timeout(std::time::Duration::from_millis(value));
+        }
+        if let Some(value) = self.max_diff_bytes {
+            config = config.max_diff_bytes(value);
+        }
+        if let Some(value) = self.max_log_entries {
+            config = config.max_log_entries(value);
+        }
+        config
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct BridgeSessionOptions {
     model: Option<String>,
+    builtin_skills: Option<bool>,
     agent_dirs: Vec<String>,
     skill_dirs: Vec<String>,
+    worker_agents: Vec<BridgeWorkerAgentSpec>,
+    queue_config: Option<BridgeSessionQueueConfig>,
+    permission_policy: Option<a3s_code_core::permissions::PermissionPolicy>,
+    confirmation_policy: Option<BridgeConfirmationPolicy>,
     enforce_active_skill_tool_restrictions: Option<bool>,
     file_memory_dir: Option<String>,
     file_session_store_dir: Option<String>,
+    default_security: Option<bool>,
+    workspace_backend: Option<BridgeWorkspaceBackend>,
+    remote_git: Option<BridgeRemoteGitConfig>,
     session_id: Option<String>,
     tenant_id: Option<String>,
     principal: Option<String>,
     agent_template_id: Option<String>,
     correlation_id: Option<String>,
+    host_env: Option<BridgeHostEnvConfig>,
     planning_mode: Option<String>,
     goal_tracking: Option<bool>,
     auto_save: Option<bool>,
@@ -852,6 +2342,7 @@ struct BridgeSessionOptions {
     auto_compact: Option<bool>,
     auto_compact_threshold: Option<f32>,
     max_context_tokens: Option<usize>,
+    artifact_store_limits: Option<BridgeArtifactStoreLimits>,
     continuation_enabled: Option<bool>,
     max_continuation_turns: Option<u32>,
     temperature: Option<f32>,
@@ -859,8 +2350,15 @@ struct BridgeSessionOptions {
     max_tool_rounds: Option<usize>,
     max_parallel_tasks: Option<usize>,
     auto_delegation_enabled: Option<bool>,
+    auto_delegation: Option<BridgeAutoDelegation>,
     manual_delegation_enabled: Option<bool>,
     auto_parallel_delegation: Option<bool>,
+    llm_logprobs: Option<bool>,
+    llm_top_logprobs: Option<usize>,
+    max_execution_time_ms: Option<u64>,
+    retention_limits: Option<BridgeRetentionLimits>,
+    trajectory: Option<BridgeTrajectoryConfig>,
+    inline_skills: Vec<BridgeInlineSkill>,
     prompt_slots: Option<BridgePromptSlots>,
 }
 
@@ -873,11 +2371,21 @@ struct BridgePromptSlots {
     extra: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct BridgeHostEnvConfig {
+    sequential_id_prefix: Option<String>,
+    fixed_time_ms: Option<u64>,
+}
+
 impl BridgeSessionOptions {
     fn into_core(self) -> Result<SessionOptions, BridgeFailure> {
         let mut options = SessionOptions::new();
         if let Some(value) = self.model {
             options = options.with_model(value);
+        }
+        if self.builtin_skills.unwrap_or(false) {
+            options = options.with_builtin_skills();
         }
         for value in self.agent_dirs {
             options = options.with_agent_dir(PathBuf::from(value));
@@ -888,11 +2396,67 @@ impl BridgeSessionOptions {
         if let Some(value) = self.enforce_active_skill_tool_restrictions {
             options = options.with_active_skill_tool_restrictions(value);
         }
+        for worker in self.worker_agents {
+            options = options.with_worker_agent(worker.into_core()?);
+        }
+        if let Some(value) = self.queue_config {
+            options = options.with_queue_config(value.into_core()?);
+        }
+        if let Some(value) = self.permission_policy {
+            options = options.with_permission_policy(value);
+        }
+        if let Some(value) = self.confirmation_policy {
+            options = options.with_confirmation_policy(value.into_core()?);
+        }
         if let Some(value) = self.file_memory_dir {
             options = options.with_file_memory(value);
         }
         if let Some(value) = self.file_session_store_dir {
             options = options.with_file_session_store(value);
+        }
+        if self.default_security.unwrap_or(false) {
+            options = options.with_default_security();
+        }
+        if let Some(value) = self.workspace_backend {
+            let services = match value.kind.trim().to_ascii_lowercase().as_str() {
+                "" | "local" => {
+                    let root = value.root.ok_or_else(|| {
+                        BridgeFailure::new(
+                            "INVALID_REQUEST",
+                            "local workspace backend requires root",
+                        )
+                    })?;
+                    a3s_code_core::WorkspaceServices::local(root)
+                }
+                "s3" => {
+                    let config = value.s3.ok_or_else(|| {
+                        BridgeFailure::new(
+                            "INVALID_REQUEST",
+                            "S3 workspace backend requires s3 configuration",
+                        )
+                    })?;
+                    a3s_code_core::WorkspaceServices::s3(config.into_core())
+                }
+                other => {
+                    return Err(BridgeFailure::new(
+                        "INVALID_REQUEST",
+                        format!("unsupported workspace backend kind {other:?}"),
+                    ))
+                }
+            };
+            let services = if let Some(remote_git) = self.remote_git {
+                services
+                    .with_remote_git(remote_git.into_core())
+                    .map_err(|error| BridgeFailure::new("INVALID_REQUEST", error.to_string()))?
+            } else {
+                services
+            };
+            options = options.with_workspace_backend(services);
+        } else if self.remote_git.is_some() {
+            return Err(BridgeFailure::new(
+                "INVALID_REQUEST",
+                "remote_git requires workspace_backend",
+            ));
         }
         if let Some(value) = self.session_id {
             options = options.with_session_id(value);
@@ -908,6 +2472,25 @@ impl BridgeSessionOptions {
         }
         if let Some(value) = self.correlation_id {
             options = options.with_correlation_id(value);
+        }
+        if let Some(value) = self.host_env {
+            use a3s_code_core::host_env::{
+                Clock, FixedClock, HostEnv, IdGenerator, SequentialIdGenerator, SystemClock,
+                SystemIdGenerator,
+            };
+
+            let id_generator: Arc<dyn IdGenerator> =
+                if let Some(prefix) = value.sequential_id_prefix {
+                    Arc::new(SequentialIdGenerator::new(prefix))
+                } else {
+                    Arc::new(SystemIdGenerator)
+                };
+            let clock: Arc<dyn Clock> = if let Some(now_ms) = value.fixed_time_ms {
+                Arc::new(FixedClock::new(now_ms))
+            } else {
+                Arc::new(SystemClock)
+            };
+            options = options.with_host_env(Arc::new(HostEnv::new(id_generator, clock)));
         }
         if let Some(value) = self.planning_mode {
             options = options.with_planning_mode(match value.to_ascii_lowercase().as_str() {
@@ -952,6 +2535,13 @@ impl BridgeSessionOptions {
         if let Some(value) = self.max_context_tokens {
             options = options.with_max_context_tokens(value);
         }
+        if let Some(value) = self.artifact_store_limits {
+            options =
+                options.with_artifact_store_limits(a3s_code_core::tools::ArtifactStoreLimits {
+                    max_artifacts: value.max_artifacts,
+                    max_bytes: value.max_bytes,
+                });
+        }
         if let Some(value) = self.continuation_enabled {
             options = options.with_continuation(value);
         }
@@ -973,11 +2563,36 @@ impl BridgeSessionOptions {
         if let Some(value) = self.auto_delegation_enabled {
             options = options.with_auto_delegation_enabled(value);
         }
+        if let Some(value) = self.auto_delegation {
+            options = options.with_auto_delegation(value.into_core());
+        }
         if let Some(value) = self.manual_delegation_enabled {
             options = options.with_manual_delegation_enabled(value);
         }
         if let Some(value) = self.auto_parallel_delegation {
             options = options.with_auto_parallel_delegation(value);
+        }
+        if let Some(value) = self.llm_logprobs {
+            options = options.with_llm_logprobs(value);
+        }
+        if let Some(value) = self.llm_top_logprobs {
+            options = options.with_llm_top_logprobs(value);
+        }
+        if let Some(value) = self.retention_limits {
+            options = options.with_retention_limits(value.into_core());
+        }
+        if let Some(value) = self.trajectory {
+            options = options.with_rl_trajectory(value.into_core()?);
+        }
+        if !self.inline_skills.is_empty() {
+            let registry = a3s_code_core::skills::SkillRegistry::new();
+            for skill in self.inline_skills {
+                registry.register_unchecked(Arc::new(skill.into_core()?));
+            }
+            options = options.with_skill_registry(Arc::new(registry));
+        }
+        if let Some(value) = self.max_execution_time_ms {
+            options.max_execution_time_ms = Some(value);
         }
         if let Some(value) = self.prompt_slots {
             options = options.with_prompt_slots(SystemPromptSlots {
@@ -1017,6 +2632,54 @@ fn encode(value: impl Serialize) -> Result<Value, BridgeFailure> {
         .map_err(|error| BridgeFailure::new("SERIALIZATION_ERROR", error.to_string()))
 }
 
+fn parse_lane(value: &str) -> Result<a3s_code_core::queue::SessionLane, BridgeFailure> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "control" => Ok(a3s_code_core::queue::SessionLane::Control),
+        "query" => Ok(a3s_code_core::queue::SessionLane::Query),
+        "execute" => Ok(a3s_code_core::queue::SessionLane::Execute),
+        "generate" => Ok(a3s_code_core::queue::SessionLane::Generate),
+        other => Err(BridgeFailure::new(
+            "INVALID_REQUEST",
+            format!("unknown session lane {other:?}"),
+        )),
+    }
+}
+
+fn memory_failure(error: anyhow::Error) -> BridgeFailure {
+    BridgeFailure::new("MEMORY_ERROR", error.to_string())
+}
+
+fn queue_metrics_value(metrics: Option<a3s_code_core::queue::MetricsSnapshot>) -> Value {
+    let Some(metrics) = metrics else {
+        return Value::Null;
+    };
+    let histograms = metrics
+        .histograms
+        .into_iter()
+        .map(|(name, stats)| {
+            (
+                name,
+                json!({
+                    "count": stats.count,
+                    "sum": stats.sum,
+                    "min": if stats.count == 0 { 0.0 } else { stats.min },
+                    "max": if stats.count == 0 { 0.0 } else { stats.max },
+                    "mean": stats.mean,
+                    "p50": stats.percentiles.p50,
+                    "p90": stats.percentiles.p90,
+                    "p95": stats.percentiles.p95,
+                    "p99": stats.percentiles.p99,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    json!({
+        "counters": metrics.counters,
+        "gauges": metrics.gauges,
+        "histograms": histograms,
+    })
+}
+
 fn empty_object() -> Value {
     Value::Object(serde_json::Map::new())
 }
@@ -1054,6 +2717,28 @@ fn agent_result_value(result: AgentResult) -> Result<Value, BridgeFailure> {
         "verification_summary_text": result.verification_summary_text(),
         "has_pending_verification": result.has_pending_verification(),
     }))
+}
+
+fn agent_definition_value(definition: a3s_code_core::AgentDefinition) -> Value {
+    let permissions = definition.permissions;
+    json!({
+        "name": definition.name,
+        "description": definition.description,
+        "native": definition.native,
+        "hidden": definition.hidden,
+        "permissions": {
+            "deny": permissions.deny.into_iter().map(|rule| rule.rule).collect::<Vec<_>>(),
+            "allow": permissions.allow.into_iter().map(|rule| rule.rule).collect::<Vec<_>>(),
+            "ask": permissions.ask.into_iter().map(|rule| rule.rule).collect::<Vec<_>>(),
+            "default_decision": permissions.default_decision,
+            "enabled": permissions.enabled,
+        },
+        "model": definition.model.map(|model| model.model_ref()),
+        "prompt": definition.prompt,
+        "max_steps": definition.max_steps,
+        "tool_free": definition.tool_free,
+        "confirmation_inheritance": definition.confirmation_inheritance,
+    })
 }
 
 #[cfg(test)]
@@ -1177,6 +2862,154 @@ mod tests {
             .dispatch(&request("sdk_capabilities", json!([])))
             .await
             .unwrap_err();
+        assert_eq!(error.code, "INVALID_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn callback_transport_round_trips_and_cleans_up_timeouts() {
+        let (writer, mut envelopes) = mpsc::unbounded_channel();
+        let client = Arc::new(CallbackClient::new(writer));
+
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move {
+                client
+                    .invoke(
+                        "go-handler",
+                        "hook",
+                        json!({ "event": "pre_tool_use" }),
+                        1_000,
+                    )
+                    .await
+            })
+        };
+        let envelope = envelopes.recv().await.unwrap();
+        let callback = envelope.callback.unwrap();
+        assert_eq!(callback.handler_id, "go-handler");
+        assert_eq!(callback.method, "hook");
+        assert!(
+            client
+                .respond(
+                    callback.callback_id,
+                    CallbackReply {
+                        result: Some(json!({ "action": "block" })),
+                        error: None,
+                    },
+                )
+                .await
+        );
+        assert_eq!(
+            pending.await.unwrap().unwrap(),
+            json!({ "action": "block" })
+        );
+        assert!(client.pending.lock().await.is_empty());
+
+        let timed_out = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move {
+                client
+                    .invoke("slow-handler", "command", Value::Null, 1)
+                    .await
+            })
+        };
+        let _ = envelopes.recv().await.unwrap();
+        let error = timed_out.await.unwrap().unwrap_err();
+        assert_eq!(error.code, "CALLBACK_TIMEOUT");
+        assert!(client.pending.lock().await.is_empty());
+    }
+
+    #[test]
+    fn session_options_map_sdk_value_configuration() {
+        let bridge: BridgeSessionOptions = serde_json::from_value(json!({
+            "model": "anthropic/test-model",
+            "agent_dirs": ["agents"],
+            "skill_dirs": ["skills"],
+            "session_id": "session-1",
+            "tenant_id": "tenant-1",
+            "principal": "user-1",
+            "agent_template_id": "template-1",
+            "correlation_id": "trace-1",
+            "host_env": {
+                "sequential_id_prefix": "replay",
+                "fixed_time_ms": 1_700_000_000_000_u64
+            },
+            "goal_tracking": true,
+            "auto_save": true,
+            "max_parse_retries": 4,
+            "tool_timeout_ms": 1_500,
+            "llm_api_timeout_ms": 2_500,
+            "circuit_breaker_threshold": 5,
+            "duplicate_tool_call_threshold": 6,
+            "auto_compact": true,
+            "auto_compact_threshold": 0.7,
+            "max_context_tokens": 32_000,
+            "continuation_enabled": false,
+            "max_continuation_turns": 7,
+            "temperature": 0.25,
+            "thinking_budget": 2_048,
+            "max_tool_rounds": 8,
+            "max_parallel_tasks": 3,
+            "manual_delegation_enabled": false,
+            "auto_parallel_delegation": true,
+            "llm_logprobs": true,
+            "llm_top_logprobs": 2,
+            "max_execution_time_ms": 60_000,
+            "prompt_slots": {
+                "role": "reviewer",
+                "guidelines": "be precise"
+            }
+        }))
+        .unwrap();
+        let options = bridge.into_core().unwrap();
+
+        assert_eq!(options.model.as_deref(), Some("anthropic/test-model"));
+        assert_eq!(options.agent_dirs, vec![PathBuf::from("agents")]);
+        assert_eq!(options.skill_dirs, vec![PathBuf::from("skills")]);
+        assert_eq!(options.session_id.as_deref(), Some("session-1"));
+        assert_eq!(options.tenant_id.as_deref(), Some("tenant-1"));
+        assert_eq!(options.principal.as_deref(), Some("user-1"));
+        assert_eq!(options.agent_template_id.as_deref(), Some("template-1"));
+        assert_eq!(options.correlation_id.as_deref(), Some("trace-1"));
+        let host_env = options.host_env.as_ref().expect("host env");
+        assert_eq!(host_env.next_id(), "replay-0");
+        assert_eq!(host_env.next_id(), "replay-1");
+        assert_eq!(host_env.now_ms(), 1_700_000_000_000);
+        assert!(options.goal_tracking);
+        assert!(options.auto_save);
+        assert_eq!(options.max_parse_retries, Some(4));
+        assert_eq!(options.tool_timeout_ms, Some(1_500));
+        assert_eq!(options.llm_api_timeout_ms, Some(2_500));
+        assert_eq!(options.circuit_breaker_threshold, Some(5));
+        assert_eq!(options.duplicate_tool_call_threshold, Some(6));
+        assert!(options.auto_compact);
+        assert_eq!(options.auto_compact_threshold, Some(0.7));
+        assert_eq!(options.max_context_tokens, Some(32_000));
+        assert_eq!(options.continuation_enabled, Some(false));
+        assert_eq!(options.max_continuation_turns, Some(7));
+        assert_eq!(options.temperature, Some(0.25));
+        assert_eq!(options.thinking_budget, Some(2_048));
+        assert_eq!(options.max_tool_rounds, Some(8));
+        assert_eq!(options.max_parallel_tasks, Some(3));
+        assert_eq!(options.manual_delegation_enabled, Some(false));
+        assert_eq!(options.auto_parallel_delegation, Some(true));
+        assert_eq!(options.llm_logprobs, Some(true));
+        assert_eq!(options.llm_top_logprobs, Some(2));
+        assert_eq!(options.max_execution_time_ms, Some(60_000));
+        let slots = options.prompt_slots.unwrap();
+        assert_eq!(slots.role.as_deref(), Some("reviewer"));
+        assert_eq!(slots.guidelines.as_deref(), Some("be precise"));
+    }
+
+    #[test]
+    fn remote_git_requires_a_workspace_backend() {
+        let bridge: BridgeSessionOptions = serde_json::from_value(json!({
+            "remote_git": {
+                "base_url": "https://git.example.test",
+                "repo_id": "repo-1"
+            }
+        }))
+        .unwrap();
+        let error = bridge.into_core().err().unwrap();
         assert_eq!(error.code, "INVALID_REQUEST");
     }
 }

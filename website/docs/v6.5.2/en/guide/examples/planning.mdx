@@ -12,8 +12,9 @@ calling tools. Use it for multi-step work (refactors, release reviews, audits)
 where you want the agent to decompose the goal first instead of jumping straight
 into edits.
 
-Set it through the session option `planningMode` (Node) / `planning_mode`
-(Python). The accepted values are:
+Set it through the session planning option: `PlanningMode` in Rust and Go,
+`planningMode` in Node.js, and `planning_mode` in Python. The accepted values
+are:
 
 | Value        | Behavior                                                        |
 | ------------ | --------------------------------------------------------------- |
@@ -24,6 +25,33 @@ Set it through the session option `planningMode` (Node) / `planning_mode`
 `"auto"` is the default structured pre-analysis path.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, PlanningMode, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_planning_mode(PlanningMode::Auto))
+        .build()
+        .await?;
+
+    let result = session
+        .send("Plan and complete the release-readiness review.", None)
+        .await?;
+    println!("{}", result.text);
+    println!("{} tool calls executed", result.tool_calls_count);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -59,6 +87,45 @@ print(result.text)
 print(f"{result.tool_calls_count} tool calls executed")
 
 session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		PlanningMode: code.PlanningAuto,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "Plan and complete the release-readiness review.")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+	fmt.Printf("%d tool calls executed\n", result.ToolCallsCount)
+}
 ```
 
 </Tab>

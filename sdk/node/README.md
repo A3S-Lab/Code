@@ -223,6 +223,18 @@ that would not reduce estimated history usage.
 The legacy boolean shortcut still works: `{ planning: true }` forces planning
 and `{ planning: false }` disables it.
 
+For deterministic replay, set both host-environment fields. Recreate the same
+options at the beginning of each replay to reset the ID sequence:
+
+```js
+const session = await agent.sessionAsync('/my-project', {
+  hostEnv: {
+    sequentialIdPrefix: 'replay',
+    fixedTimeMs: 1700000000000,
+  },
+})
+```
+
 When streaming, `task_updated` is the authoritative task-list snapshot for UI
 rendering. `planning_end` contains the initial plan, while `step_start` and
 `step_end` are fine-grained progress events.

@@ -24,6 +24,57 @@ The simplest path: call `generate_object` directly, check the tool exit code,
 and parse the validated object out of the result.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let result = session
+        .tool(
+            "generate_object",
+            json!({
+                "schema": {
+                    "type": "object",
+                    "required": ["name", "age", "skills"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "age": { "type": "integer", "minimum": 0 },
+                        "skills": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "minItems": 1
+                        }
+                    }
+                },
+                "prompt": "Extract: \"Alice is 28, skilled in Rust, TypeScript, and Python.\"",
+                "schema_name": "developer",
+                "mode": "tool"
+            }),
+        )
+        .await?;
+    if result.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "generate_object".into(),
+            message: result.output,
+        });
+    }
+
+    let value: Value = serde_json::from_str(&result.output)?;
+    println!("{}", value["object"]);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -102,6 +153,67 @@ session.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Tool(ctx, "generate_object", map[string]any{
+		"schema": map[string]any{
+			"type":     "object",
+			"required": []string{"name", "age", "skills"},
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+				"age":  map[string]any{"type": "integer", "minimum": 0},
+				"skills": map[string]any{
+					"type": "array", "items": map[string]any{"type": "string"},
+					"minItems": 1,
+				},
+			},
+		},
+		"prompt":      `Extract: "Alice is 28, skilled in Rust, TypeScript, and Python."`,
+		"schema_name": "developer",
+		"mode":        "tool",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if result.ExitCode != 0 {
+		log.Fatal(result.Output)
+	}
+	var value struct {
+		Object map[string]any `json:"object"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &value); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(value.Object)
+}
+```
+
+</Tab>
 </Tabs>
 
 The validated value lives on the `object` key of the parsed output. When
@@ -115,6 +227,44 @@ Constrain a field to a fixed set with `enum`. This turns a free-form model
 classification into a schema-gated result.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use serde_json::{json, Value};
+
+let result = session
+    .tool(
+        "generate_object",
+        json!({
+            "schema": {
+                "type": "object",
+                "required": ["sentiment", "confidence"],
+                "properties": {
+                    "sentiment": {
+                        "type": "string",
+                        "enum": ["positive", "negative", "neutral"]
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                    }
+                }
+            },
+            "prompt": "Classify sentiment: \"This is the worst product I have ever used.\"",
+            "schema_name": "sentiment"
+        }),
+    )
+    .await?;
+let value: Value = serde_json::from_str(&result.output)?;
+println!(
+    "{} {}",
+    value["object"]["sentiment"],
+    value["object"]["confidence"]
+);
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -157,6 +307,38 @@ print(obj["sentiment"], obj["confidence"])  # "negative" 0.97
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Tool(ctx, "generate_object", map[string]any{
+	"schema": map[string]any{
+		"type":     "object",
+		"required": []string{"sentiment", "confidence"},
+		"properties": map[string]any{
+			"sentiment": map[string]any{
+				"type": "string", "enum": []string{"positive", "negative", "neutral"},
+			},
+			"confidence": map[string]any{
+				"type": "number", "minimum": 0, "maximum": 1,
+			},
+		},
+	},
+	"prompt":      `Classify sentiment: "This is the worst product I have ever used."`,
+	"schema_name": "sentiment",
+})
+if err != nil {
+	return err
+}
+var value struct {
+	Object map[string]any `json:"object"`
+}
+if err := json.Unmarshal([]byte(result.Output), &value); err != nil {
+	return err
+}
+fmt.Println(value.Object["sentiment"], value.Object["confidence"])
+```
+
+</Tab>
 </Tabs>
 
 ## Nested schemas and arrays
@@ -166,6 +348,48 @@ limit, and the runtime validates the whole structure. This models real config
 files, manifests, or API payloads in one call.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use serde_json::{json, Value};
+
+let result = session
+    .tool(
+        "generate_object",
+        json!({
+            "schema": {
+                "type": "object",
+                "required": ["items"],
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 5,
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "category"],
+                            "properties": {
+                                "name": { "type": "string" },
+                                "category": {
+                                    "type": "string",
+                                    "enum": ["fruit", "vegetable", "grain"]
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "prompt": "List 3 food items with their categories.",
+            "schema_name": "food_list"
+        }),
+    )
+    .await?;
+let value: Value = serde_json::from_str(&result.output)?;
+let items = value["object"]["items"].as_array().unwrap();
+println!("{} {:?}", items.len(), items);
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -233,6 +457,48 @@ print(len(items), [i["name"] for i in items])
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Tool(ctx, "generate_object", map[string]any{
+	"schema": map[string]any{
+		"type":     "object",
+		"required": []string{"items"},
+		"properties": map[string]any{
+			"items": map[string]any{
+				"type": "array", "minItems": 3, "maxItems": 5,
+				"items": map[string]any{
+					"type":     "object",
+					"required": []string{"name", "category"},
+					"properties": map[string]any{
+						"name": map[string]any{"type": "string"},
+						"category": map[string]any{
+							"type": "string",
+							"enum": []string{"fruit", "vegetable", "grain"},
+						},
+					},
+				},
+			},
+		},
+	},
+	"prompt":      "List 3 food items with their categories.",
+	"schema_name": "food_list",
+})
+if err != nil {
+	return err
+}
+var value struct {
+	Object struct {
+		Items []map[string]any `json:"items"`
+	} `json:"object"`
+}
+if err := json.Unmarshal([]byte(result.Output), &value); err != nil {
+	return err
+}
+fmt.Println(len(value.Object.Items), value.Object.Items)
+```
+
+</Tab>
 </Tabs>
 
 ## Agent-driven invocation
@@ -240,6 +506,25 @@ print(len(items), [i["name"] for i in items])
 You can also let the agent decide when to use structured output. Ask it to call `generate_object` during a `send`; it gathers context first, then emits the object.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+let result = session
+    .send(
+        "Use generate_object to extract the movie title, year, and genre from: \
+         The movie \"Inception\" was released in 2010 and is a sci-fi thriller.",
+        None,
+    )
+    .await?;
+
+println!(
+    "tool calls: {}, tokens: {}",
+    result.tool_calls_count,
+    result.usage.total_tokens
+);
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -266,6 +551,25 @@ result = session.send(
 )
 
 print(f"tool calls: {result.tool_calls_count}, tokens: {result.total_tokens}")
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Run(
+	ctx,
+	"Use generate_object to extract the movie title, year, and genre from: "+
+		`The movie "Inception" was released in 2010 and is a sci-fi thriller.`,
+)
+if err != nil {
+	return err
+}
+fmt.Printf(
+	"tool calls: %d, tokens: %d\n",
+	result.ToolCallsCount,
+	result.Usage.TotalTokens,
+)
 ```
 
 </Tab>

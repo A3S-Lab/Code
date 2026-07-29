@@ -18,6 +18,49 @@ The example below reads package metadata, the changelog, and the release script,
 then reports version mismatches without editing any files.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+use serde_json::Value;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/path/to/project")
+        .build()
+        .await?;
+
+    let (package, changelog, release_script) = tokio::try_join!(
+        session.read_file("package.json"),
+        session.read_file("CHANGELOG.md"),
+        session.read_file("scripts/release.sh"),
+    )?;
+
+    let package: Value = serde_json::from_str(&package)?;
+    let version = package["version"].as_str().unwrap_or_default();
+    let mut mismatches = Vec::new();
+    if !changelog.contains(version) {
+        mismatches.push(format!("CHANGELOG.md is missing {version}"));
+    }
+    if !release_script.contains(version) {
+        mismatches.push(format!("release.sh is missing {version}"));
+    }
+
+    if mismatches.is_empty() {
+        println!("All files agree on the version.");
+    } else {
+        println!("{}", mismatches.join("\n"));
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -72,6 +115,69 @@ if pkg_version not in release_script:
 print("\n".join(mismatches) if mismatches else "All files agree on the version.")
 
 session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, "/path/to/project", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	pkg, err := session.ReadFile(ctx, "package.json", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	changelog, err := session.ReadFile(ctx, "CHANGELOG.md", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	releaseScript, err := session.ReadFile(ctx, "scripts/release.sh", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var metadata struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(pkg), &metadata); err != nil {
+		log.Fatal(err)
+	}
+	var mismatches []string
+	if !strings.Contains(changelog, metadata.Version) {
+		mismatches = append(mismatches, "CHANGELOG.md is missing "+metadata.Version)
+	}
+	if !strings.Contains(releaseScript, metadata.Version) {
+		mismatches = append(mismatches, "release.sh is missing "+metadata.Version)
+	}
+	if len(mismatches) == 0 {
+		fmt.Println("All files agree on the version.")
+	} else {
+		fmt.Println(strings.Join(mismatches, "\n"))
+	}
+}
 ```
 
 </Tab>

@@ -14,6 +14,40 @@ agent to a specific slice of a large codebase instead of letting it explore from
 scratch.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let files = session.glob("src/**/*.rs").await?;
+    let hits = session.grep("create_session").await?;
+    let context = format!(
+        "Files in scope:\n{}\n\nMatches for \"create_session\":\n{}",
+        files.join("\n"),
+        hits
+    );
+    let answer = session
+        .send(
+            &format!(
+                "Using only this context, explain how create_session is wired up:\n\n{context}"
+            ),
+            None,
+        )
+        .await?;
+    println!("{}", answer.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -65,6 +99,55 @@ answer = session.run(
     f'Using only this context, explain how createSession is wired up:\n\n{context}'
 )
 print(answer)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	files, err := session.Glob(ctx, "sdk/go/**/*.go")
+	if err != nil {
+		log.Fatal(err)
+	}
+	hits, err := session.Grep(ctx, "Session")
+	if err != nil {
+		log.Fatal(err)
+	}
+	scope := "Files in scope:\n" + strings.Join(files, "\n") +
+		"\n\nMatches for \"Session\":\n" + hits
+	answer, err := session.Run(
+		ctx,
+		"Using only this context, explain how Session is wired up:\n\n"+scope,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(answer.Text)
+}
 ```
 
 </Tab>

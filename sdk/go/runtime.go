@@ -31,6 +31,13 @@ type Runtime interface {
 	Close() error
 }
 
+type callbackHandler func(context.Context, string, json.RawMessage) (any, error)
+
+type callbackRuntime interface {
+	registerCallback(callbackHandler) (string, error)
+	unregisterCallback(string)
+}
+
 // EventStream carries lossless event envelopes and one terminal error. Done
 // yields nil after normal completion. Callers should continuously consume
 // Events until it closes, then read Done.
@@ -99,11 +106,13 @@ type LocalRuntime struct {
 	stdin   io.WriteCloser
 	stderr  *lockedBuffer
 
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	pending map[uint64]*pendingCall
+	writeMu   sync.Mutex
+	mu        sync.Mutex
+	pending   map[uint64]*pendingCall
+	callbacks map[string]callbackHandler
 
 	nextID          atomic.Uint64
+	nextCallbackID  atomic.Uint64
 	closed          atomic.Bool
 	closeOnce       sync.Once
 	closeErr        error
@@ -156,6 +165,7 @@ func NewLocalRuntime(ctx context.Context, options ...LocalRuntimeOption) (*Local
 		stdin:           stdin,
 		stderr:          stderr,
 		pending:         make(map[uint64]*pendingCall),
+		callbacks:       make(map[string]callbackHandler),
 		processDone:     make(chan error, 1),
 		shutdownTimeout: config.shutdownTimeout,
 	}
@@ -352,6 +362,19 @@ func (runtime *LocalRuntime) readLoop(stdout io.Reader) {
 			))
 			return
 		}
+		if envelope.Kind == "callback" {
+			if envelope.Callback == nil {
+				runtime.terminate(sdkError(
+					"bridge_read",
+					CodeProtocol,
+					"bridge emitted an empty callback envelope",
+					nil,
+				))
+				return
+			}
+			go runtime.invokeCallback(*envelope.Callback)
+			continue
+		}
 
 		runtime.mu.Lock()
 		call := runtime.pending[envelope.ID]
@@ -415,6 +438,63 @@ func (runtime *LocalRuntime) readLoop(stdout io.Reader) {
 	}
 }
 
+func (runtime *LocalRuntime) registerCallback(handler callbackHandler) (string, error) {
+	if runtime == nil || handler == nil {
+		return "", invalid("register_callback", "callback handler cannot be nil")
+	}
+	if runtime.closed.Load() {
+		return "", ErrBridgeClosed
+	}
+	id := fmt.Sprintf("go-callback-%d", runtime.nextCallbackID.Add(1))
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.closed.Load() {
+		return "", ErrBridgeClosed
+	}
+	runtime.callbacks[id] = handler
+	return id, nil
+}
+
+func (runtime *LocalRuntime) unregisterCallback(id string) {
+	if runtime == nil || id == "" {
+		return
+	}
+	runtime.mu.Lock()
+	delete(runtime.callbacks, id)
+	runtime.mu.Unlock()
+}
+
+func (runtime *LocalRuntime) invokeCallback(callback bridge.Callback) {
+	runtime.mu.Lock()
+	handler := runtime.callbacks[callback.HandlerID]
+	runtime.mu.Unlock()
+
+	timeout := time.Duration(callback.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var result any
+	var callbackErr error
+	if handler == nil {
+		callbackErr = fmt.Errorf("callback handler %q is not registered", callback.HandlerID)
+	} else {
+		result, callbackErr = handler(ctx, callback.Method, callback.Payload)
+	}
+	params := map[string]any{"callback_id": callback.CallbackID}
+	if callbackErr != nil {
+		params["error"] = callbackErr.Error()
+	} else {
+		params["result"] = result
+	}
+
+	responseCtx, responseCancel := context.WithTimeout(context.Background(), timeout)
+	defer responseCancel()
+	_ = runtime.Request(responseCtx, "callback_response", params, nil)
+}
+
 func (runtime *LocalRuntime) terminate(err error) {
 	runtime.closed.Store(true)
 	runtime.failAll(err)
@@ -428,6 +508,7 @@ func (runtime *LocalRuntime) failAll(err error) {
 	runtime.mu.Lock()
 	pending := runtime.pending
 	runtime.pending = make(map[uint64]*pendingCall)
+	runtime.callbacks = make(map[string]callbackHandler)
 	runtime.mu.Unlock()
 	for _, call := range pending {
 		if call.stream != nil {

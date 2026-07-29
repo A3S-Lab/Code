@@ -19,6 +19,54 @@ embedded skills, so `builtinSkills` / `builtin_skills` is only a compatibility
 flag. Registered skills become visible through `Skill` and `search_skills`.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_skill_dirs(["./skills"]))
+        .build()
+        .await?;
+
+    println!("{:?}", session.tool_names());
+    let run = session
+        .send(
+            "Search available skills, then apply the most relevant one.",
+            None,
+        )
+        .await?;
+    println!("{}", run.text);
+
+    let result = session
+        .tool(
+            "Skill",
+            json!({
+                "skill_name": "release-review",
+                "prompt": "Review this release patch for blockers and verification gaps."
+            }),
+        )
+        .await?;
+    if result.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "Skill".into(),
+            message: result.output,
+        });
+    }
+    println!("{}", result.output);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -81,6 +129,63 @@ if result.exit_code != 0:
 print(result.output)
 
 session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		SkillDirs: []string{"./skills"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	names, err := session.ToolNames(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(names)
+	run, err := session.Run(
+		ctx,
+		"Search available skills, then apply the most relevant one.",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(run.Text)
+
+	result, err := session.Tool(ctx, "Skill", map[string]any{
+		"skill_name": "release-review",
+		"prompt": "Review this release patch for blockers and verification gaps.",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if result.ExitCode != 0 {
+		log.Fatal(result.Output)
+	}
+	fmt.Println(result.Output)
+}
 ```
 
 </Tab>

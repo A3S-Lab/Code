@@ -91,10 +91,14 @@ name = "a3s-code-go-bridge"
 version = "6.5.2"
 dependencies = [
  "a3s-code-core",
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

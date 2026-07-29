@@ -17,7 +17,7 @@ import { Tab, Tabs } from '@rspress/core/theme';
 模型在智能体文件中配置。每个 provider 列出它对外暴露的模型，当会话未设置 `model`
 时则使用 `default_model`。
 
-```text
+```acl
 default_model = "provider/fast-model"
 
 providers "provider" {
@@ -36,6 +36,44 @@ providers "provider" {
 模型选择。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+
+    let fast = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_model("provider/fast-model"))
+        .build()
+        .await?;
+    let draft = fast
+        .send("为这个项目起草一段简短的 README 介绍。", None)
+        .await?
+        .text;
+    println!("草稿：{draft}");
+    fast.close().await;
+
+    let review = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_model("provider/review-model"))
+        .build()
+        .await?;
+    let critique = review
+        .send(&format!("审查这段 README 介绍：\n{draft}"), None)
+        .await?;
+    println!("审查意见：{}", critique.text);
+
+    review.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -82,6 +120,56 @@ review.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	fast, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/fast-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	draft, err := fast.Run(ctx, "为这个项目起草一段简短的 README 介绍。")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("草稿：", draft.Text)
+	fast.Close(ctx)
+
+	review, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/review-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer review.Close(context.Background())
+	critique, err := review.Run(ctx, "审查这段 README 介绍：\n"+draft.Text)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("审查意见：", critique.Text)
+}
+```
+
+</Tab>
 </Tabs>
 
 ## 按工作智能体覆盖模型
@@ -91,6 +179,57 @@ worker 智能体通过各自的规格进行注册。为某个 worker 指定自�
 委派出去的工作才会运行在该 worker 的模型上。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    subagent::ModelConfig as WorkerModelConfig, Agent, SessionOptions, WorkerAgentSpec,
+};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+
+    let mut scout = WorkerAgentSpec::read_only("scout", "读取文件并报告发现。");
+    scout.model = Some(WorkerModelConfig::from_model_ref(
+        "provider/fast-model",
+    ));
+    let session = agent
+        .session_builder("/repo")
+        .options(
+            SessionOptions::new()
+                .with_model("provider/review-model")
+                .with_worker_agent(scout),
+        )
+        .build()
+        .await?;
+
+    let findings = session
+        .tool(
+            "task",
+            json!({
+                "agent": "scout",
+                "description": "列出公共 API",
+                "prompt": "列出 src/ 中的所有公共 API。"
+            }),
+        )
+        .await?;
+    let plan = session
+        .send(
+            &format!("根据这些发现提出重构方案：\n{}", findings.output),
+            None,
+        )
+        .await?;
+    println!("{}", plan.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -155,6 +294,56 @@ plan = session.run(f'Given these findings, propose a refactor:\n{findings.output
 print(plan)
 
 session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/review-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	findings, err := session.Task(ctx, code.DelegateTaskOptions{
+		Agent:       "explore",
+		Description: "列出公共 API",
+		Prompt:      "列出 src/ 中的所有公共 API。",
+		Model:       "provider/fast-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	plan, err := session.Run(
+		ctx,
+		"根据这些发现提出重构方案：\n"+findings.Output,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(plan.Text)
+}
 ```
 
 </Tab>

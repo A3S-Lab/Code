@@ -9,8 +9,11 @@ import {
 } from 'codehike/code';
 
 const languageNames: Record<string, string> = {
+  acl: 'ACL',
   bash: 'Shell',
   console: 'Terminal',
+  go: 'Go',
+  hcl: 'HCL',
   javascript: 'JavaScript',
   js: 'JavaScript',
   json: 'JSON',
@@ -96,9 +99,11 @@ const callout: AnnotationHandler = {
   ),
 };
 
-function parseTitle(meta: string) {
+function parseMetaValue(meta: string, names: string[]) {
   const match = meta.match(
-    /(?:^|\s)(?:title|filename)=(?:"([^"]+)"|'([^']+)'|([^\s]+))/,
+    new RegExp(
+      `(?:^|\\s)(?:${names.join('|')})=(?:"([^"]+)"|'([^']+)'|([^\\s]+))`,
+    ),
   );
   return match?.[1] ?? match?.[2] ?? match?.[3] ?? '';
 }
@@ -120,9 +125,12 @@ export default function A3SCodeBlock({
   }, [codeblock.code]);
   const [wrapped, setWrapped] = useState(longestLine > 96);
   const [expanded, setExpanded] = useState(false);
-  const title = parseTitle(codeblock.meta);
+  const title = parseMetaValue(codeblock.meta, ['title', 'filename']);
+  const displayLanguage = parseMetaValue(codeblock.meta, ['displayLanguage']);
   const language =
-    languageNames[codeblock.lang.toLowerCase()] ?? codeblock.lang.toUpperCase();
+    displayLanguage ||
+    languageNames[codeblock.lang.toLowerCase()] ||
+    codeblock.lang.toUpperCase();
   const compact = lineCount <= 3 && longestLine <= 96 && !title;
   const collapsible = lineCount > 28;
 

@@ -83,7 +83,7 @@ storage, memory, delegation, and asset paths. Keep real keys, private provider
 URLs, tenant identifiers, and user-specific paths out of committed examples.
 Resolve credentials through environment variables:
 
-```text
+```acl
 default_model = "provider/model-id"
 max_parallel_tasks = 8
 os = env("A3S_OS_URL")
@@ -543,7 +543,7 @@ workflow PTC steps may also call `ctx.tool("runtime", ...)`.
 
 Add an A3S OS endpoint to `config.acl`, then sign in:
 
-```text
+```acl
 os = "https://os.example.com"
 ```
 

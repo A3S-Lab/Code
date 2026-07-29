@@ -171,6 +171,7 @@ from a3s_code import (
     DefaultSecurityProvider,
     FileMemoryStore,
     FileSessionStore,
+    HostEnvConfig,
     LocalWorkspaceBackend,
     S3WorkspaceBackend,
 )
@@ -240,6 +241,10 @@ opts.manual_delegation_enabled = True
 opts.auto_compact = True
 opts.auto_compact_threshold = 0.8
 opts.max_context_tokens = 128_000
+opts.host_env = HostEnvConfig(
+    sequential_id_prefix="replay",
+    fixed_time_ms=1_700_000_000_000,
+)
 session = agent.session("/my-project", opts)
 session.write_file("notes.txt", "one\ntwo\n")
 session.read_file("src/main.py")

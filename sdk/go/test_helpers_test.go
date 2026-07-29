@@ -3,6 +3,7 @@ package code
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 )
 
@@ -18,6 +19,8 @@ type fakeRuntime struct {
 	stream       func(context.Context, string, map[string]any) (*EventStream, error)
 	closed       bool
 	capabilities *Capabilities
+	callbacks    map[string]callbackHandler
+	nextCallback uint64
 }
 
 func (runtime *fakeRuntime) Request(
@@ -85,6 +88,24 @@ func (runtime *fakeRuntime) Close() error {
 	defer runtime.mu.Unlock()
 	runtime.closed = true
 	return nil
+}
+
+func (runtime *fakeRuntime) registerCallback(handler callbackHandler) (string, error) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.nextCallback++
+	id := fmt.Sprintf("fake-callback-%d", runtime.nextCallback)
+	if runtime.callbacks == nil {
+		runtime.callbacks = make(map[string]callbackHandler)
+	}
+	runtime.callbacks[id] = handler
+	return id, nil
+}
+
+func (runtime *fakeRuntime) unregisterCallback(id string) {
+	runtime.mu.Lock()
+	delete(runtime.callbacks, id)
+	runtime.mu.Unlock()
 }
 
 func (runtime *fakeRuntime) operations() []string {

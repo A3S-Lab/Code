@@ -16,6 +16,74 @@ to the `ask` path. To keep a human in the loop, add a confirmation policy:
 against a real repository.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    hitl::{ConfirmationPolicy, TimeoutAction},
+    permissions::PermissionPolicy,
+    Agent, AgentEvent, SessionOptions,
+};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let permission_policy = PermissionPolicy::new()
+        .allow("read(*)")
+        .allow("grep(*)")
+        .allow("glob(*)")
+        .allow("ls(*)")
+        .allow("bash(git status:*)")
+        .deny("write(**/.env*)")
+        .deny("bash(rm -rf*)")
+        .ask("write(*)")
+        .ask("edit(*)")
+        .ask("bash(git push:*)")
+        .ask("bash(npm publish:*)")
+        .ask("bash(*)");
+    let confirmation_policy =
+        ConfirmationPolicy::enabled().with_timeout(120_000, TimeoutAction::Reject);
+
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_permission_policy(permission_policy)
+                .with_confirmation_policy(confirmation_policy),
+        )
+        .build()
+        .await?;
+
+    let (mut events, lifecycle) = session
+        .stream("Bump the version and push the release.", None)
+        .await?;
+    while let Some(event) = events.recv().await {
+        if let AgentEvent::ConfirmationRequired {
+            tool_id,
+            tool_name,
+            args,
+            ..
+        } = event
+        {
+            println!("[confirm] {tool_name}\n{args:#}");
+            session
+                .confirm_tool_use(
+                    &tool_id,
+                    false,
+                    Some("Rejected by the host review".into()),
+                )
+                .await?;
+        }
+    }
+    let _ = lifecycle.await;
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -116,16 +184,133 @@ if __name__ == "__main__":
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	enabled := true
+	timeoutMS := uint64(120_000)
+	session, err := agent.Session(
+		ctx,
+		".",
+		&code.SessionOptions{
+			PermissionPolicy: &code.PermissionPolicy{
+				Allow:           []string{"read(*)", "grep(*)", "glob(*)", "ls(*)", "bash(git status:*)"},
+				Deny:            []string{"write(**/.env*)", "bash(rm -rf*)"},
+				Ask:             []string{"write(*)", "edit(*)", "bash(git push:*)", "bash(npm publish:*)", "bash(*)"},
+				DefaultDecision: "ask",
+			},
+			ConfirmationPolicy: &code.ConfirmationPolicy{
+				Enabled:          &enabled,
+				DefaultTimeoutMS: &timeoutMS,
+				TimeoutAction:    "reject",
+			},
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	stream, err := session.Stream(ctx, "Bump the version and push the release.", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for event := range stream.Events {
+		if event.Type != code.EventConfirmationRequired {
+			continue
+		}
+		pending, err := session.PendingConfirmations(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(pending) == 0 {
+			continue
+		}
+		request := pending[0]
+		args, _ := json.MarshalIndent(request.Args, "", "  ")
+		fmt.Printf("[confirm] %s\n%s\n", request.ToolName, args)
+		if _, err = session.ConfirmToolUse(
+			ctx,
+			request.ToolID,
+			false,
+			"Rejected by the Go host review",
+		); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if err := <-stream.Done; err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+</Tab>
 </Tabs>
 
 ## Add a security provider
 
 A `DefaultSecurityProvider` enables input taint tracking and output sanitisation,
 screening tool I/O independently of the permission policy. Pass one through
-`securityProvider` (Node) / `security_provider` (Python); omit it to disable
-security entirely.
+`securityProvider` (Node), `security_provider` (Python), or set Go
+`SessionOptions.DefaultSecurity` to `true`; omit it to disable security.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{permissions::PermissionPolicy, Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_default_security()
+                .with_permission_policy(
+                    PermissionPolicy::new()
+                        .allow("bash(echo:*)")
+                        .ask("bash(*)"),
+                ),
+        )
+        .build()
+        .await?;
+
+    let result = session
+        .send(
+            "Use bash to run exactly: echo screened-by-security-provider",
+            None,
+        )
+        .await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -142,9 +327,11 @@ const session = agent.session(process.cwd(), {
   },
 });
 
-// Privileged host operations run through the provider + policy.
-const out = await session.bash('echo "screened by the security provider"');
-console.log(out);
+// A model-selected tool call runs through both the provider and the policy.
+const result = await session.run(
+  'Use bash to run exactly: echo screened-by-security-provider',
+);
+console.log(result.text);
 
 session.close();
 ```
@@ -169,9 +356,11 @@ def main() -> None:
 
     session = agent.session(".", opts)
 
-    # Privileged host operations run through the provider + policy.
-    out = session.bash('echo "screened by the security provider"')
-    print(out)
+    # A model-selected tool call runs through both the provider and the policy.
+    result = session.run(
+        "Use bash to run exactly: echo screened-by-security-provider"
+    )
+    print(result.text)
 
     session.close()
 
@@ -179,6 +368,55 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		DefaultSecurity: code.Ptr(true),
+		PermissionPolicy: &code.PermissionPolicy{
+			Allow:           []string{"bash(echo:*)"},
+			Ask:             []string{"bash(*)"},
+			DefaultDecision: "ask",
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	result, err := session.Run(
+		ctx,
+		"Use bash to run exactly: echo screened-by-security-provider",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+Arbitrary custom `SecurityProvider` trait implementations remain a Rust-native
+extension point; all SDKs expose the built-in provider shown here.
 
 </Tab>
 </Tabs>

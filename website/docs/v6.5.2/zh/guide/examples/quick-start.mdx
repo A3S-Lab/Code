@@ -11,6 +11,30 @@ import { Tab, Tabs } from '@rspress/core/theme';
 运行一轮对话，打印回复文本，并查看运行时为该轮生成的验证摘要。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    // Agent::new 接受 .acl 文件路径或内联 ACL 源文本。
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let result = session.send("列出当前目录中的文件。", None).await?;
+    println!("{}", result.text);
+
+    // 运行时在生成这个回合时执行的验证。
+    println!("{}", result.verification_summary_text());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -88,7 +112,7 @@ func main() {
 </Tab>
 </Tabs>
 
-三个 SDK 的 Agent 工厂都接收 `.acl` 文件路径或内联 ACL 源文本。使用完毕后，
+四种 SDK 的 Agent 工厂都接收 `.acl` 文件路径或内联 ACL 源文本。使用完毕后，
 请务必关闭 Session，让 Runtime 刷新状态并释放资源。Go 的关闭操作接收 Context，
 因为它还需要停止桥接程序持有的原生资源。
 

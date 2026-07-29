@@ -12,6 +12,51 @@ import { Tab, Tabs } from '@rspress/core/theme';
 每个事件都带有稳定的 `version`、`type`、`payload` 和可选 `metadata` 信封字段。常见类型包括 `agent_start`、`text_delta` / `reasoning_delta`、`tool_start` / `tool_end`、`agent_end` 和 `error`。验证信息位于 `agent_end` 的 payload 与便捷字段中。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, AgentEvent, CodeError, PlanningMode, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_planning_mode(PlanningMode::Disabled))
+        .build()
+        .await?;
+
+    let (mut events, lifecycle) = session
+        .stream("使用 bash 工具运行测试，然后总结结果。", None)
+        .await?;
+
+    while let Some(event) = events.recv().await {
+        match event {
+            AgentEvent::TextDelta { text } => print!("{text}"),
+            AgentEvent::ToolStart { name, .. } => println!("\n[工具开始] {name}"),
+            AgentEvent::ToolEnd {
+                name, exit_code, ..
+            } => println!("\n[工具结束] {name}，退出码={exit_code}"),
+            AgentEvent::End {
+                verification_summary,
+                ..
+            } => println!("\n[验证] {verification_summary:?}"),
+            AgentEvent::Error { message } => return Err(CodeError::Llm(message)),
+            _ => {}
+        }
+    }
+    lifecycle
+        .await
+        .map_err(|error| CodeError::Internal(error.into()))??;
+    println!("\n[流式输出完成]");
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -150,8 +195,8 @@ func main() {
 
 说明：
 
-- Node 使用 `stream.next()`，Python 使用同步迭代器；Go 必须先持续读取 `stream.Events`，再从 `stream.Done` 读取最终错误。取消 Go Context 也会请求原生 Session 取消当前 Run。
-- 三种 SDK 都公开规范事件类型。Node 和 Python 提供便捷投影；Go 将 `Payload` 与 `Metadata` 保留为 `json.RawMessage`，并提供 `DecodePayload`。未来未知事件类型在三个 SDK 中都不会丢失。
+- Rust 从 Tokio channel 接收 `AgentEvent`；Node.js 使用 `stream.next()`，Python 使用同步迭代器；Go 必须先持续读取 `stream.Events`，再从 `stream.Done` 读取最终错误。取消 Go Context 也会请求原生 Session 取消当前 Run。
+- 四种 SDK 都公开规范事件类型。Node.js 和 Python 提供便捷投影；Go 将 `Payload` 与 `Metadata` 保留为 `json.RawMessage`，并提供 `DecodePayload`。未来未知事件类型在四种 SDK 中都不会丢失。
 - 当启用确认策略时，流式事件还可能包含人工介入（human-in-the-loop）确认信号（`confirmation_required`、`confirmation_received`、`confirmation_timeout`）。
 
 可运行的流式示例位于 `sdk/node/examples/streaming/`。完整的人工确认

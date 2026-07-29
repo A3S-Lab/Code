@@ -39,18 +39,18 @@ Use strict limits for CI, release, and user-facing automation. Use larger budget
 ## Retention Limits
 
 A session keeps its run history, trace events, and subagent task snapshots in
-memory. For short runs that is fine; for a session that lives for hours or days
-under a cluster workload those in-memory stores grow without bound.
-`SessionRetentionLimits` (CHANGELOG [3.3.0] "SessionRetentionLimits") adds
-optional FIFO caps so they don't leak. **The default is unbounded — setting no
-cap changes no behavior.**
+memory. `SessionRetentionLimits` applies conservative finite defaults so a
+long-lived session cannot grow those stores without bound. Override any
+individual FIFO cap, or explicitly set `unbounded: true` to opt into unlimited
+retention.
 
-Four independent caps; cap any subset, leave the rest unbounded:
+Five independent caps:
 
 | Field                         | Effect when capped                                                                                                                                  |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `max_runs_retained`           | When a new run pushes past the cap, the **oldest** run and all of its events are dropped.                                                           |
 | `max_events_per_run`          | The oldest events in a run are FIFO-dropped. The run snapshot's `event_count` is **not** decremented — it stays the cumulative total ever recorded. |
+| `max_event_bytes_per_run`     | Oldest run events are dropped until the serialized-byte cap is met; an oversized single event is not retained.                                      |
 | `max_trace_events`            | The oldest event in the trace sink is dropped on each new write past the cap.                                                                       |
 | `max_terminal_subagent_tasks` | The oldest **terminal** (completed / failed / cancelled) subagent task snapshot is dropped past the cap. **Running tasks are never dropped.**       |
 
@@ -62,6 +62,7 @@ const session = agent.session('/repo', {
   retentionLimits: {
     maxRunsRetained: 100,
     maxEventsPerRun: 5000,
+    maxEventBytesPerRun: 16 * 1024 * 1024,
     maxTraceEvents: 20000,
     maxTerminalSubagentTasks: 500,
   },
@@ -73,11 +74,26 @@ opts = SessionOptions()
 opts.retention_limits = {
     'max_runs_retained': 100,
     'max_events_per_run': 5000,
+    'max_event_bytes_per_run': 16 * 1024 * 1024,
     'max_trace_events': 20000,
     'max_terminal_subagent_tasks': 500,
 }
 session = agent.session('/repo', opts)
 ```
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	RetentionLimits: &code.RetentionLimits{
+		MaxRunsRetained:          code.Ptr(uint(100)),
+		MaxEventsPerRun:          code.Ptr(uint(5_000)),
+		MaxEventBytesPerRun:      code.Ptr(uint(16 * 1024 * 1024)),
+		MaxTraceEvents:           code.Ptr(uint(20_000)),
+		MaxTerminalSubagentTasks: code.Ptr(uint(500)),
+	},
+})
+```
+
+Rust uses the corresponding `SessionRetentionLimits` builder methods.
 
 ## Budget Guard
 

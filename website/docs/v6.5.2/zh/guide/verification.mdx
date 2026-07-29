@@ -18,6 +18,33 @@ import { Tab, Tabs } from '@rspress/core/theme';
 一条验证命令就是一个小而具名的检查：一个 `id`、一个 `kind`、一段可读的 `description`，以及要运行的 `command`。当某个失败应被视为硬失败而非警告时，将该检查标记为 `required`。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::verification::VerificationCommand;
+
+let commands = vec![
+    VerificationCommand::required(
+        "build",
+        "build",
+        "项目可以编译",
+        "cargo build --all-features",
+    )
+    .with_timeout_ms(120_000),
+    VerificationCommand::required(
+        "tests",
+        "test",
+        "单元测试通过",
+        "cargo test",
+    ),
+];
+let report = session
+    .verify_commands("release-readiness", &commands)
+    .await?;
+println!("{report:#?}");
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -104,6 +131,26 @@ fmt.Println(report)
 每个回合的 `send()` 结果同样携带只读的验证字段，因此你无需单独发起一次验证调用即可据结果拦截。用这些字段判断该回合是否真正完成了它所声称的工作。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+let result = session.send("应用修复并运行检查", None).await?;
+let summary = result.verification_summary();
+
+println!("{:?}", summary.status);
+println!("{}", summary.pending_required_check_count);
+println!("{}", summary.failed_check_count);
+println!("{}", summary.report_count);
+println!("{}", result.verification_summary_text());
+
+if summary.failed_check_count > 0 {
+    return Err(a3s_code_core::CodeError::Session(
+        "当前回合声称已完成，但验证失败".to_string(),
+    ));
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -165,6 +212,24 @@ if summary.FailedCheckCount > 0 {
 除了逐回合的字段之外，会话还暴露完整的报告集合、一份结构化摘要、可用的预设，以及一份可读的概要。该概要是向人展示某回合*为何*通过或失败的最快方式。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+let reports = session.verification_reports();
+let summary = session.verification_summary();
+let presets = session.verification_presets();
+let text = session.verification_summary_text();
+
+println!(
+    "{} 份报告，状态 {:?}，{} 个预设",
+    reports.len(),
+    summary.status,
+    presets.len()
+);
+println!("{text}");
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts

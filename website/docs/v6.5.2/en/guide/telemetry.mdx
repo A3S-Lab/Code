@@ -13,6 +13,20 @@ and result metadata.
 ## Result metadata
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+let result = session.send("Run release checks", None).await?;
+
+println!("{}", result.usage.prompt_tokens);
+println!("{}", result.usage.completion_tokens);
+println!("{}", result.usage.total_tokens);
+println!("{}", result.tool_calls_count);
+println!("{:?}", result.verification_summary().status);
+println!("{}", result.verification_summary_text());
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -63,6 +77,16 @@ fmt.Println(result.VerificationSummaryText)
 ## Traces and verification
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+let trace = session.trace_events();
+let reports = session.verification_reports();
+let summary = session.verification_summary();
+let text = session.verification_summary_text();
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -95,8 +119,8 @@ text, textErr := session.VerificationSummaryText(ctx)
 </Tab>
 </Tabs>
 
-The Go methods cross the native bridge and therefore return an `error`; Node.js
-and Python expose these in-process observation getters synchronously.
+The Go methods cross the native bridge and therefore return an `error`; Rust,
+Node.js, and Python expose these in-process observation getters synchronously.
 
 ## Streaming events
 

@@ -74,10 +74,11 @@ cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge
 `code.Create` performs a fail-closed handshake for the transport protocol,
 event protocol, and complete operation inventory. Go failures use stable
 `*code.Error` codes while context cancellation and deadlines remain available
-through `errors.Is`. Rust trait-object injections such as a custom `LlmClient`,
-Workspace backend, hook executor, or memory implementation remain Rust-only;
-the bridge accepts their serializable configuration counterparts where one
-exists.
+through `errors.Is`. The bridge covers the complete serializable Agent/Session
+surface plus Go-backed hooks, budget guards, slash commands, and pipeline
+callbacks. Arbitrary Rust trait-object implementations remain a Rust-native
+extension mechanism; the other SDKs use their equivalent value configuration,
+callback, direct-tool, or MCP boundary.
 
 ## What the SDKs share
 
@@ -85,15 +86,18 @@ All four SDKs use the same session lifecycle, event format, and snapshots. A UI
 can subscribe to the same `AgentEvent` / `EventEnvelopeV1` stream and resume
 saved work by session ID.
 
-The shared guides now place Go beside Node.js and Python where the bridge
-exposes the same capability. Start with
+The shared guides place Go beside Node.js and Python for the complete common
+SDK capability surface. Start with
 [quick start](/guide/examples/quick-start), then continue to
 [streaming](/guide/examples/streaming),
 [direct tools](/guide/examples/direct-tools), [sessions](/guide/sessions),
 [verification](/guide/verification), [MCP](/guide/mcp), and
 [persistence](/guide/persistence).
 
-When connecting your own infrastructure, you can replace `LlmClient`,
-`ContextProvider`, `MemoryStore`, `SessionStore`, Workspace services, tools,
-permission confirmation, hooks, MCP transports, and graph stores. For UI
-integration, start with [sessions and event streams](/guide/sessions).
+All four SDKs can configure persistence, memory, local/S3 workspaces, remote
+Git, permissions and confirmation, hooks, MCP, queues, deterministic replay,
+and orchestration. Rust additionally accepts arbitrary in-process trait
+implementations such as a custom `LlmClient` or `ContextProvider`; other
+languages integrate custom services through callbacks, direct tools, or MCP.
+For UI integration, start with
+[sessions and event streams](/guide/sessions).

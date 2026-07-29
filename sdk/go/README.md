@@ -138,19 +138,32 @@ report, err := session.VerifyCommands(ctx, "release", []code.VerificationCommand
 _, _, _, _ = content, result, matches, report
 ```
 
-The stable surface includes:
+The stable surface is aligned with the Node.js and Python SDKs for
+serializable Agent and Session capabilities, including:
 
-- Agent creation, session creation/resume/list/close, and MCP refresh.
-- `Send`, `Run`, `Stream`, history, save, cancellation, and close.
+- Agent creation, session creation/resume/replace/list/close, worker sessions,
+  MCP refresh/idle disconnect, and agent-directory serving.
+- `Send`, `Run`, `Stream`, attachments, checkpoint resume, history, save,
+  cancellation, and close.
+- Parallel, resumable parallel, workflow-step, and pipeline orchestration.
 - Generic `Tool` plus file, shell, search, Git, web, QuickJS program, and
   delegated-task conveniences.
 - Run snapshots and replay events, active tools, traces, artifacts, pending
-  confirmations, and verification reports.
-- Live agent directories, skills, and MCP server add/remove/status.
+  confirmations, subagent tasks, and verification reports.
+- Memory recall/recording, lane queues, external tasks, dead letters, and
+  queue metrics.
+- Go-backed lifecycle hooks, budget guards, and slash commands through the
+  callback transport.
+- Live agent directories, workers, skills, dynamic workflows, and MCP server
+  add/remove/status.
+- File memory/session persistence, default security, local or S3 workspaces,
+  remote Git, permission/confirmation policies, retention, trajectory,
+  deterministic ID/clock replay, delegation, and prompt-slot configuration.
 
-Rust trait-object injections such as custom `LlmClient`, workspace backends,
-hook executors, and memory implementations are intentionally Rust-only. The Go
-bridge accepts their serializable configuration counterparts where one exists.
+Rust trait-object injections such as a custom `LlmClient`, arbitrary workspace
+implementation, or custom memory store implementation remain Rust-native
+extension points. The Go SDK exposes every corresponding serializable
+configuration and callback-backed extension point.
 
 ## Errors
 

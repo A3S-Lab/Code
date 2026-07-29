@@ -10,7 +10,7 @@ A3S Code 从 ACL 读取运行时配置。配置源可以是 `.acl` 文件路径�
 
 ## 基本结构
 
-```text
+```acl
 default_model = "provider/model-id"
 max_parallel_tasks = 4
 auto_parallel = false
@@ -52,7 +52,7 @@ sessions_dir = ".a3s/sessions"
 
 ## 委派控制
 
-```text
+```acl
 agent_dirs = ["./.a3s/agents"]
 
 auto_delegation {
@@ -72,7 +72,7 @@ auto_delegation {
 
 ## 存储
 
-```text
+```acl
 storage_backend = "memory"
 storage_backend = "file"
 sessions_dir = ".a3s/sessions"

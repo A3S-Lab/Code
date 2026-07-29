@@ -253,6 +253,25 @@ pub(super) fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustS
     if let Some(c) = so.correlation_id {
         o = o.with_correlation_id(c);
     }
+    if let Some(host_env) = so.host_env {
+        use a3s_code_core::host_env::{
+            Clock, FixedClock, HostEnv, IdGenerator, SequentialIdGenerator, SystemClock,
+            SystemIdGenerator,
+        };
+
+        let id_generator: Arc<dyn IdGenerator> = if let Some(prefix) = host_env.sequential_id_prefix
+        {
+            Arc::new(SequentialIdGenerator::new(prefix))
+        } else {
+            Arc::new(SystemIdGenerator)
+        };
+        let clock: Arc<dyn Clock> = if let Some(now_ms) = host_env.fixed_time_ms {
+            Arc::new(FixedClock::new(now_ms))
+        } else {
+            Arc::new(SystemClock)
+        };
+        o = o.with_host_env(Arc::new(HostEnv::new(id_generator, clock)));
+    }
     if let Some(guard) = so.budget_guard {
         let wrapped: std::sync::Arc<dyn a3s_code_core::budget::BudgetGuard> =
             std::sync::Arc::new(PyBudgetGuard::new(guard));

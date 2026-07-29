@@ -74,6 +74,19 @@ Node 与 Python 的事件流迭代器会在终止边界等待这段生命周期�
 ## 发送消息
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+let result = session
+    .send("审查这个仓库并列出发布阻塞项", None)
+    .await?;
+
+println!("{}", result.text);
+println!("{}", result.usage.total_tokens);
+println!("{:?}", result.verification_summary().status);
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -82,6 +95,17 @@ const result = await session.send('检查仓库并列出发布阻塞项');
 console.log(result.text);
 console.log(result.totalTokens);
 console.log(result.verificationStatus);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+result = session.send("审查这个仓库并列出发布阻塞项")
+
+print(result.text)
+print(result.total_tokens)
+print(result.verification_status)
 ```
 
 </Tab>
@@ -104,6 +128,30 @@ fmt.Println(result.VerificationSummary.Status)
 ## 流式输出
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{AgentEvent, CodeError};
+
+let (mut events, lifecycle) = session
+    .stream("运行相关测试并解释失败原因", None)
+    .await?;
+
+while let Some(event) = events.recv().await {
+    match event {
+        AgentEvent::TextDelta { text } => print!("{text}"),
+        AgentEvent::ToolStart { name, .. } => println!("\n工具：{name}"),
+        AgentEvent::End { .. } => break,
+        AgentEvent::Error { message } => return Err(CodeError::Llm(message)),
+        _ => {}
+    }
+}
+lifecycle
+    .await
+    .map_err(|error| CodeError::Internal(error.into()))??;
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -117,6 +165,19 @@ while (true) {
   if (event.text) process.stdout.write(event.text);
   if (event.toolName) console.log('tool:', event.toolName);
 }
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+for event in session.stream("运行相关测试并解释失败原因"):
+    if event.type == "text_delta" and event.text:
+        print(event.text, end="", flush=True)
+    elif event.type == "tool_start":
+        print(f"\n工具：{event.tool_name or '未知'}")
+    elif event.type == "error":
+        raise RuntimeError(event.error or "流式执行出错")
 ```
 
 </Tab>
@@ -169,6 +230,20 @@ console.log(session.history().length === snapshot.length);
 ## 恢复会话
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+let session = agent
+    .resume_session_async(
+        "release-review",
+        SessionOptions::new().with_file_session_store("./.a3s/sessions"),
+    )
+    .await?;
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -178,6 +253,17 @@ const agent = await Agent.create('agent.acl');
 const session = agent.resumeSession('release-review', {
   sessionStore: new FileSessionStore('./.a3s/sessions'),
 });
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import FileSessionStore, SessionOptions
+
+opts = SessionOptions()
+opts.session_store = FileSessionStore("./.a3s/sessions")
+session = agent.resume_session("release-review", opts)
 ```
 
 </Tab>
@@ -195,8 +281,8 @@ session, err := agent.ResumeSession(ctx, "release-review", options)
 
 使用会话存储时设置 `autoSave: true`，或显式调用 `await session.save()`。
 这里恢复的是已保存的会话快照；中断运行的检查点通过
-`session.resumeRun(runId)` 恢复。Go 桥接层支持快照级的 `Save` 和
-`ResumeSession`，但没有暴露中断运行级的 `resumeRun`。参见
+`session.resumeRun(runId)` 恢复。Go 使用 `Save`、`ResumeSession` 和
+`ResumeRun(ctx, runID)` 对应同样的两层持久化。参见
 [持久化](/guide/persistence)。
 
 ## 生命周期与关闭
@@ -367,5 +453,15 @@ const session = agent.sessionForAgent('/repo', 'explore', ['./agents'], {
 });
 ```
 
-Go 桥接层没有暴露 `sessionForAgent`。可在 `SessionOptions` 中配置
-`AgentDirs`，再通过 `Agent.Session` 创建会话；后续仍使用通用会话 API。
+```go
+session, err := agent.SessionForAgent(
+	ctx,
+	"/repo",
+	"explore",
+	[]string{"./agents"},
+	&code.SessionOptions{PlanningMode: code.PlanningAuto},
+)
+```
+
+对于通过值定义的一次性 worker，可使用 `SessionForWorker`；两种方法都返回通用的
+Go `Session` API。

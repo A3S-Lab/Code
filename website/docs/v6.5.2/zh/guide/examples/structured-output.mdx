@@ -18,6 +18,57 @@ JSON Schema 校验，并且只在零退出码结果中返回校验后的对象�
 最简单的方式：直接调用 `generate_object`，先检查工具退出码，再从结果中解析出校验后的对象。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let result = session
+        .tool(
+            "generate_object",
+            json!({
+                "schema": {
+                    "type": "object",
+                    "required": ["name", "age", "skills"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "age": { "type": "integer", "minimum": 0 },
+                        "skills": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "minItems": 1
+                        }
+                    }
+                },
+                "prompt": "提取：Alice 今年 28 岁，擅长 Rust、TypeScript 和 Python。",
+                "schema_name": "developer",
+                "mode": "tool"
+            }),
+        )
+        .await?;
+    if result.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "generate_object".into(),
+            message: result.output,
+        });
+    }
+
+    let value: Value = serde_json::from_str(&result.output)?;
+    println!("{}", value["object"]);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -96,6 +147,67 @@ session.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Tool(ctx, "generate_object", map[string]any{
+		"schema": map[string]any{
+			"type":     "object",
+			"required": []string{"name", "age", "skills"},
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+				"age":  map[string]any{"type": "integer", "minimum": 0},
+				"skills": map[string]any{
+					"type": "array", "items": map[string]any{"type": "string"},
+					"minItems": 1,
+				},
+			},
+		},
+		"prompt":      "提取：Alice 今年 28 岁，擅长 Rust、TypeScript 和 Python。",
+		"schema_name": "developer",
+		"mode":        "tool",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if result.ExitCode != 0 {
+		log.Fatal(result.Output)
+	}
+	var value struct {
+		Object map[string]any `json:"object"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &value); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(value.Object)
+}
+```
+
+</Tab>
 </Tabs>
 
 校验后的值位于解析输出的 `object` 键上。当 `result.exitCode`（Node）/
@@ -107,6 +219,44 @@ session.close()
 用 `enum` 把字段约束到一个固定集合。这会把自由文本分类变成带 schema 闸门的结果。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use serde_json::{json, Value};
+
+let result = session
+    .tool(
+        "generate_object",
+        json!({
+            "schema": {
+                "type": "object",
+                "required": ["sentiment", "confidence"],
+                "properties": {
+                    "sentiment": {
+                        "type": "string",
+                        "enum": ["positive", "negative", "neutral"]
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                    }
+                }
+            },
+            "prompt": "判断情感：这是我用过最差的产品。",
+            "schema_name": "sentiment"
+        }),
+    )
+    .await?;
+let value: Value = serde_json::from_str(&result.output)?;
+println!(
+    "{} {}",
+    value["object"]["sentiment"],
+    value["object"]["confidence"]
+);
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -149,6 +299,38 @@ print(obj["sentiment"], obj["confidence"])  # "negative" 0.97
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Tool(ctx, "generate_object", map[string]any{
+	"schema": map[string]any{
+		"type":     "object",
+		"required": []string{"sentiment", "confidence"},
+		"properties": map[string]any{
+			"sentiment": map[string]any{
+				"type": "string", "enum": []string{"positive", "negative", "neutral"},
+			},
+			"confidence": map[string]any{
+				"type": "number", "minimum": 0, "maximum": 1,
+			},
+		},
+	},
+	"prompt":      "判断情感：这是我用过最差的产品。",
+	"schema_name": "sentiment",
+})
+if err != nil {
+	return err
+}
+var value struct {
+	Object map[string]any `json:"object"`
+}
+if err := json.Unmarshal([]byte(result.Output), &value); err != nil {
+	return err
+}
+fmt.Println(value.Object["sentiment"], value.Object["confidence"])
+```
+
+</Tab>
 </Tabs>
 
 ## 嵌套模式与数组
@@ -156,6 +338,48 @@ print(obj["sentiment"], obj["confidence"])  # "negative" 0.97
 Schema 可以任意深度地嵌套对象和数组，运行时会校验整个结构。这能在一次调用中建模真实的配置文件、清单或 API 载荷。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use serde_json::{json, Value};
+
+let result = session
+    .tool(
+        "generate_object",
+        json!({
+            "schema": {
+                "type": "object",
+                "required": ["items"],
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 5,
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "category"],
+                            "properties": {
+                                "name": { "type": "string" },
+                                "category": {
+                                    "type": "string",
+                                    "enum": ["fruit", "vegetable", "grain"]
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "prompt": "列出 3 种食物及其类别。",
+            "schema_name": "food_list"
+        }),
+    )
+    .await?;
+let value: Value = serde_json::from_str(&result.output)?;
+let items = value["object"]["items"].as_array().unwrap();
+println!("{} {:?}", items.len(), items);
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -223,6 +447,48 @@ print(len(items), [i["name"] for i in items])
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Tool(ctx, "generate_object", map[string]any{
+	"schema": map[string]any{
+		"type":     "object",
+		"required": []string{"items"},
+		"properties": map[string]any{
+			"items": map[string]any{
+				"type": "array", "minItems": 3, "maxItems": 5,
+				"items": map[string]any{
+					"type":     "object",
+					"required": []string{"name", "category"},
+					"properties": map[string]any{
+						"name": map[string]any{"type": "string"},
+						"category": map[string]any{
+							"type": "string",
+							"enum": []string{"fruit", "vegetable", "grain"},
+						},
+					},
+				},
+			},
+		},
+	},
+	"prompt":      "列出 3 种食物及其类别。",
+	"schema_name": "food_list",
+})
+if err != nil {
+	return err
+}
+var value struct {
+	Object struct {
+		Items []map[string]any `json:"items"`
+	} `json:"object"`
+}
+if err := json.Unmarshal([]byte(result.Output), &value); err != nil {
+	return err
+}
+fmt.Println(len(value.Object.Items), value.Object.Items)
+```
+
+</Tab>
 </Tabs>
 
 ## 智能体自主调用
@@ -230,6 +496,25 @@ print(len(items), [i["name"] for i in items])
 你也可以让 agent 自行决定何时使用结构化输出。让它在 `send` 过程中调用 `generate_object`；它会先收集上下文，再输出对象。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+let result = session
+    .send(
+        "使用 generate_object 从下面内容提取电影标题、年份和类型：\
+         《盗梦空间》于 2010 年上映，是一部科幻惊悚片。",
+        None,
+    )
+    .await?;
+
+println!(
+    "工具调用：{}，令牌：{}",
+    result.tool_calls_count,
+    result.usage.total_tokens
+);
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -256,6 +541,25 @@ result = session.send(
 )
 
 print(f"tool calls: {result.tool_calls_count}, tokens: {result.total_tokens}")
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Run(
+	ctx,
+	"使用 generate_object 从下面内容提取电影标题、年份和类型："+
+		"《盗梦空间》于 2010 年上映，是一部科幻惊悚片。",
+)
+if err != nil {
+	return err
+}
+fmt.Printf(
+	"工具调用：%d，令牌：%d\n",
+	result.ToolCallsCount,
+	result.Usage.TotalTokens,
+)
 ```
 
 </Tab>

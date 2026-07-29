@@ -1,6 +1,10 @@
 package code
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+	"time"
+)
 
 type Capabilities struct {
 	ProtocolVersion      int      `json:"protocol_version"`
@@ -23,42 +27,65 @@ type PromptSlots struct {
 	Extra         string `json:"extra,omitempty"`
 }
 
-// SessionOptions contains value-shaped session overrides supported by the
-// language-neutral bridge. Rust trait injections remain available only to
-// native Rust embedders.
+// HostEnvConfig makes framework-generated IDs and timestamps reproducible.
+// Set both fields for deterministic replay; nil fields keep system defaults.
+type HostEnvConfig struct {
+	SequentialIDPrefix *string `json:"sequential_id_prefix,omitempty"`
+	FixedTimeMS        *uint64 `json:"fixed_time_ms,omitempty"`
+}
+
+// SessionOptions contains the same value-shaped session configuration exposed
+// by the Rust, TypeScript, and Python SDKs.
 type SessionOptions struct {
-	Model                              string       `json:"model,omitempty"`
-	AgentDirs                          []string     `json:"agent_dirs,omitempty"`
-	SkillDirs                          []string     `json:"skill_dirs,omitempty"`
-	EnforceActiveSkillToolRestrictions *bool        `json:"enforce_active_skill_tool_restrictions,omitempty"`
-	FileMemoryDir                      string       `json:"file_memory_dir,omitempty"`
-	FileSessionStoreDir                string       `json:"file_session_store_dir,omitempty"`
-	SessionID                          string       `json:"session_id,omitempty"`
-	TenantID                           string       `json:"tenant_id,omitempty"`
-	Principal                          string       `json:"principal,omitempty"`
-	AgentTemplateID                    string       `json:"agent_template_id,omitempty"`
-	CorrelationID                      string       `json:"correlation_id,omitempty"`
-	PlanningMode                       PlanningMode `json:"planning_mode,omitempty"`
-	GoalTracking                       *bool        `json:"goal_tracking,omitempty"`
-	AutoSave                           *bool        `json:"auto_save,omitempty"`
-	MaxParseRetries                    *uint32      `json:"max_parse_retries,omitempty"`
-	ToolTimeoutMS                      *uint64      `json:"tool_timeout_ms,omitempty"`
-	LLMAPITimeoutMS                    *uint64      `json:"llm_api_timeout_ms,omitempty"`
-	CircuitBreakerThreshold            *uint32      `json:"circuit_breaker_threshold,omitempty"`
-	DuplicateToolCallThreshold         *uint32      `json:"duplicate_tool_call_threshold,omitempty"`
-	AutoCompact                        *bool        `json:"auto_compact,omitempty"`
-	AutoCompactThreshold               *float32     `json:"auto_compact_threshold,omitempty"`
-	MaxContextTokens                   *uint        `json:"max_context_tokens,omitempty"`
-	ContinuationEnabled                *bool        `json:"continuation_enabled,omitempty"`
-	MaxContinuationTurns               *uint32      `json:"max_continuation_turns,omitempty"`
-	Temperature                        *float32     `json:"temperature,omitempty"`
-	ThinkingBudget                     *uint        `json:"thinking_budget,omitempty"`
-	MaxToolRounds                      *uint        `json:"max_tool_rounds,omitempty"`
-	MaxParallelTasks                   *uint        `json:"max_parallel_tasks,omitempty"`
-	AutoDelegationEnabled              *bool        `json:"auto_delegation_enabled,omitempty"`
-	ManualDelegationEnabled            *bool        `json:"manual_delegation_enabled,omitempty"`
-	AutoParallelDelegation             *bool        `json:"auto_parallel_delegation,omitempty"`
-	PromptSlots                        *PromptSlots `json:"prompt_slots,omitempty"`
+	Model                              string                  `json:"model,omitempty"`
+	BuiltinSkills                      *bool                   `json:"builtin_skills,omitempty"`
+	AgentDirs                          []string                `json:"agent_dirs,omitempty"`
+	SkillDirs                          []string                `json:"skill_dirs,omitempty"`
+	WorkerAgents                       []WorkerAgentSpec       `json:"worker_agents,omitempty"`
+	QueueConfig                        *SessionQueueConfig     `json:"queue_config,omitempty"`
+	PermissionPolicy                   *PermissionPolicy       `json:"permission_policy,omitempty"`
+	ConfirmationPolicy                 *ConfirmationPolicy     `json:"confirmation_policy,omitempty"`
+	EnforceActiveSkillToolRestrictions *bool                   `json:"enforce_active_skill_tool_restrictions,omitempty"`
+	FileMemoryDir                      string                  `json:"file_memory_dir,omitempty"`
+	FileSessionStoreDir                string                  `json:"file_session_store_dir,omitempty"`
+	DefaultSecurity                    *bool                   `json:"default_security,omitempty"`
+	WorkspaceBackend                   *WorkspaceBackendConfig `json:"workspace_backend,omitempty"`
+	RemoteGit                          *RemoteGitBackendConfig `json:"remote_git,omitempty"`
+	SessionID                          string                  `json:"session_id,omitempty"`
+	TenantID                           string                  `json:"tenant_id,omitempty"`
+	Principal                          string                  `json:"principal,omitempty"`
+	AgentTemplateID                    string                  `json:"agent_template_id,omitempty"`
+	CorrelationID                      string                  `json:"correlation_id,omitempty"`
+	HostEnv                            *HostEnvConfig          `json:"host_env,omitempty"`
+	PlanningMode                       PlanningMode            `json:"planning_mode,omitempty"`
+	GoalTracking                       *bool                   `json:"goal_tracking,omitempty"`
+	AutoSave                           *bool                   `json:"auto_save,omitempty"`
+	MaxParseRetries                    *uint32                 `json:"max_parse_retries,omitempty"`
+	ToolTimeoutMS                      *uint64                 `json:"tool_timeout_ms,omitempty"`
+	LLMAPITimeoutMS                    *uint64                 `json:"llm_api_timeout_ms,omitempty"`
+	CircuitBreakerThreshold            *uint32                 `json:"circuit_breaker_threshold,omitempty"`
+	DuplicateToolCallThreshold         *uint32                 `json:"duplicate_tool_call_threshold,omitempty"`
+	AutoCompact                        *bool                   `json:"auto_compact,omitempty"`
+	AutoCompactThreshold               *float32                `json:"auto_compact_threshold,omitempty"`
+	MaxContextTokens                   *uint                   `json:"max_context_tokens,omitempty"`
+	ArtifactStoreLimits                *ArtifactStoreLimits    `json:"artifact_store_limits,omitempty"`
+	ContinuationEnabled                *bool                   `json:"continuation_enabled,omitempty"`
+	MaxContinuationTurns               *uint32                 `json:"max_continuation_turns,omitempty"`
+	Temperature                        *float32                `json:"temperature,omitempty"`
+	ThinkingBudget                     *uint                   `json:"thinking_budget,omitempty"`
+	MaxToolRounds                      *uint                   `json:"max_tool_rounds,omitempty"`
+	MaxParallelTasks                   *uint                   `json:"max_parallel_tasks,omitempty"`
+	AutoDelegationEnabled              *bool                   `json:"auto_delegation_enabled,omitempty"`
+	AutoDelegation                     *AutoDelegationConfig   `json:"auto_delegation,omitempty"`
+	ManualDelegationEnabled            *bool                   `json:"manual_delegation_enabled,omitempty"`
+	AutoParallelDelegation             *bool                   `json:"auto_parallel_delegation,omitempty"`
+	LLMLogprobs                        *bool                   `json:"llm_logprobs,omitempty"`
+	LLMTopLogprobs                     *uint                   `json:"llm_top_logprobs,omitempty"`
+	MaxExecutionTimeMS                 *uint64                 `json:"max_execution_time_ms,omitempty"`
+	RetentionLimits                    *RetentionLimits        `json:"retention_limits,omitempty"`
+	Trajectory                         *TrajectoryConfig       `json:"trajectory,omitempty"`
+	InlineSkills                       []InlineSkill           `json:"inline_skills,omitempty"`
+	PromptSlots                        *PromptSlots            `json:"prompt_slots,omitempty"`
 }
 
 // Ptr is a convenience for pointer-valued options that distinguish an
@@ -336,3 +363,380 @@ type GitOptions struct {
 	Target           string `json:"target,omitempty"`
 	Ref              string `json:"ref,omitempty"`
 }
+
+// Attachment is an image supplied with a multimodal prompt. Data is encoded as
+// base64 by encoding/json and decoded by the native bridge.
+type Attachment struct {
+	Data      []byte `json:"data"`
+	MediaType string `json:"media_type"`
+}
+
+type SessionRequest struct {
+	Prompt      string       `json:"prompt"`
+	History     []Message    `json:"history,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+type AgentStepSpec struct {
+	TaskID          string          `json:"task_id"`
+	Agent           string          `json:"agent"`
+	Description     string          `json:"description"`
+	Prompt          string          `json:"prompt"`
+	MaxSteps        *uint           `json:"max_steps,omitempty"`
+	ParentSessionID string          `json:"parent_session_id,omitempty"`
+	OutputSchema    json.RawMessage `json:"output_schema,omitempty"`
+}
+
+type ToolSourceAnchor struct {
+	Tool      string `json:"tool"`
+	URLOrPath string `json:"url_or_path"`
+}
+
+type StepOutcome struct {
+	TaskID        string             `json:"task_id"`
+	SessionID     string             `json:"session_id"`
+	Agent         string             `json:"agent"`
+	Output        string             `json:"output"`
+	Success       bool               `json:"success"`
+	Structured    json.RawMessage    `json:"structured,omitempty"`
+	SourceAnchors []ToolSourceAnchor `json:"source_anchors"`
+}
+
+type WorkflowBudget struct {
+	ConsumedTokens uint64  `json:"consumed_tokens"`
+	LimitTokens    *uint64 `json:"limit_tokens,omitempty"`
+}
+
+type ParallelResult struct {
+	Outcomes []StepOutcome   `json:"outcomes"`
+	Budget   *WorkflowBudget `json:"budget,omitempty"`
+}
+
+type PermissionPolicy struct {
+	Deny            []string `json:"deny,omitempty"`
+	Allow           []string `json:"allow,omitempty"`
+	Ask             []string `json:"ask,omitempty"`
+	DefaultDecision string   `json:"default_decision,omitempty"`
+	Enabled         *bool    `json:"enabled,omitempty"`
+}
+
+type ConfirmationPolicy struct {
+	Enabled          *bool    `json:"enabled,omitempty"`
+	DefaultTimeoutMS *uint64  `json:"default_timeout_ms,omitempty"`
+	TimeoutAction    string   `json:"timeout_action,omitempty"`
+	YoloLanes        []string `json:"yolo_lanes,omitempty"`
+}
+
+type WorkerAgentSpec struct {
+	Name                    string            `json:"name"`
+	Description             string            `json:"description"`
+	Kind                    string            `json:"kind,omitempty"`
+	Hidden                  bool              `json:"hidden,omitempty"`
+	Permissions             *PermissionPolicy `json:"permissions,omitempty"`
+	Model                   string            `json:"model,omitempty"`
+	Prompt                  string            `json:"prompt,omitempty"`
+	MaxSteps                *uint             `json:"max_steps,omitempty"`
+	ConfirmationInheritance string            `json:"confirmation_inheritance,omitempty"`
+}
+
+type AgentDefinition struct {
+	Name                    string           `json:"name"`
+	Description             string           `json:"description"`
+	Native                  bool             `json:"native"`
+	Hidden                  bool             `json:"hidden"`
+	Permissions             PermissionPolicy `json:"permissions"`
+	Model                   string           `json:"model,omitempty"`
+	Prompt                  string           `json:"prompt,omitempty"`
+	MaxSteps                *uint            `json:"max_steps,omitempty"`
+	ToolFree                bool             `json:"tool_free"`
+	ConfirmationInheritance string           `json:"confirmation_inheritance,omitempty"`
+}
+
+type InlineSkill struct {
+	Name    string `json:"name"`
+	Kind    string `json:"kind,omitempty"`
+	Content string `json:"content"`
+}
+
+type AutoDelegationConfig struct {
+	Enabled       *bool    `json:"enabled,omitempty"`
+	AutoParallel  *bool    `json:"auto_parallel,omitempty"`
+	MinConfidence *float32 `json:"min_confidence,omitempty"`
+	MaxTasks      *uint    `json:"max_tasks,omitempty"`
+}
+
+type ArtifactStoreLimits struct {
+	MaxArtifacts uint `json:"max_artifacts"`
+	MaxBytes     uint `json:"max_bytes"`
+}
+
+type RetentionLimits struct {
+	Unbounded                bool  `json:"unbounded,omitempty"`
+	MaxRunsRetained          *uint `json:"max_runs_retained,omitempty"`
+	MaxEventsPerRun          *uint `json:"max_events_per_run,omitempty"`
+	MaxEventBytesPerRun      *uint `json:"max_event_bytes_per_run,omitempty"`
+	MaxTraceEvents           *uint `json:"max_trace_events,omitempty"`
+	MaxTerminalSubagentTasks *uint `json:"max_terminal_subagent_tasks,omitempty"`
+}
+
+type TrajectoryConfig struct {
+	Path            string `json:"path"`
+	Mode            string `json:"mode,omitempty"`
+	MaxTextBytes    *uint  `json:"max_text_bytes,omitempty"`
+	IncludeMessages *bool  `json:"include_messages,omitempty"`
+}
+
+type WorkspaceBackendConfig struct {
+	Kind string           `json:"kind"`
+	Root string           `json:"root,omitempty"`
+	S3   *S3BackendConfig `json:"s3,omitempty"`
+}
+
+type S3BackendConfig struct {
+	Endpoint              string  `json:"endpoint,omitempty"`
+	Region                string  `json:"region,omitempty"`
+	AccessKeyID           string  `json:"access_key_id"`
+	SecretAccessKey       string  `json:"secret_access_key"`
+	SessionToken          string  `json:"session_token,omitempty"`
+	Bucket                string  `json:"bucket"`
+	Prefix                string  `json:"prefix"`
+	ForcePathStyle        *bool   `json:"force_path_style,omitempty"`
+	RequestTimeoutMS      *uint64 `json:"request_timeout_ms,omitempty"`
+	MaxReadBytes          *uint64 `json:"max_read_bytes,omitempty"`
+	SearchEnabled         *bool   `json:"search_enabled,omitempty"`
+	MaxObjectsScanned     *uint   `json:"max_objects_scanned,omitempty"`
+	MaxGrepBytesPerObject *uint64 `json:"max_grep_bytes_per_object,omitempty"`
+	SearchConcurrency     *uint   `json:"search_concurrency,omitempty"`
+}
+
+type RemoteGitBackendConfig struct {
+	BaseURL          string  `json:"base_url"`
+	RepoID           string  `json:"repo_id"`
+	BearerToken      string  `json:"bearer_token,omitempty"`
+	ClientCertPEM    string  `json:"client_cert_pem,omitempty"`
+	ClientKeyPEM     string  `json:"client_key_pem,omitempty"`
+	RequestTimeoutMS *uint64 `json:"request_timeout_ms,omitempty"`
+	MaxDiffBytes     *uint64 `json:"max_diff_bytes,omitempty"`
+	MaxLogEntries    *uint   `json:"max_log_entries,omitempty"`
+}
+
+type SubagentStatus string
+
+const (
+	SubagentRunning   SubagentStatus = "running"
+	SubagentCompleted SubagentStatus = "completed"
+	SubagentFailed    SubagentStatus = "failed"
+	SubagentCancelled SubagentStatus = "cancelled"
+)
+
+type SubagentProgress struct {
+	TimestampMS uint64          `json:"timestamp_ms"`
+	Status      string          `json:"status"`
+	Metadata    json.RawMessage `json:"metadata"`
+}
+
+type SubagentTask struct {
+	TaskID          string             `json:"task_id"`
+	ParentSessionID string             `json:"parent_session_id"`
+	ChildSessionID  string             `json:"child_session_id"`
+	Agent           string             `json:"agent"`
+	Description     string             `json:"description"`
+	Status          SubagentStatus     `json:"status"`
+	StartedMS       uint64             `json:"started_ms"`
+	UpdatedMS       uint64             `json:"updated_ms"`
+	FinishedMS      *uint64            `json:"finished_ms,omitempty"`
+	Output          *string            `json:"output,omitempty"`
+	Success         *bool              `json:"success,omitempty"`
+	SourceAnchors   []ToolSourceAnchor `json:"source_anchors"`
+	Progress        []SubagentProgress `json:"progress"`
+}
+
+type MemoryItem struct {
+	ID           string            `json:"id"`
+	Content      string            `json:"content"`
+	Timestamp    string            `json:"timestamp"`
+	Importance   float32           `json:"importance"`
+	Tags         []string          `json:"tags"`
+	MemoryType   string            `json:"memory_type"`
+	Metadata     map[string]string `json:"metadata"`
+	AccessCount  uint32            `json:"access_count"`
+	LastAccessed *string           `json:"last_accessed,omitempty"`
+}
+
+type MemoryStats struct {
+	LongTermCount  uint `json:"long_term_count"`
+	ShortTermCount uint `json:"short_term_count"`
+	WorkingCount   uint `json:"working_count"`
+}
+
+type SessionLane string
+
+const (
+	LaneControl  SessionLane = "control"
+	LaneQuery    SessionLane = "query"
+	LaneExecute  SessionLane = "execute"
+	LaneGenerate SessionLane = "generate"
+)
+
+type LaneHandlerConfig struct {
+	Mode      string `json:"mode"`
+	TimeoutMS uint64 `json:"timeout_ms,omitempty"`
+}
+
+type SessionQueueConfig struct {
+	ControlConcurrency  *uint                             `json:"control_concurrency,omitempty"`
+	QueryConcurrency    *uint                             `json:"query_concurrency,omitempty"`
+	ExecuteConcurrency  *uint                             `json:"execute_concurrency,omitempty"`
+	GenerateConcurrency *uint                             `json:"generate_concurrency,omitempty"`
+	LaneHandlers        map[SessionLane]LaneHandlerConfig `json:"lane_handlers,omitempty"`
+	EnableDLQ           *bool                             `json:"enable_dlq,omitempty"`
+	DLQMaxSize          *uint                             `json:"dlq_max_size,omitempty"`
+	EnableMetrics       *bool                             `json:"enable_metrics,omitempty"`
+	EnableAlerts        *bool                             `json:"enable_alerts,omitempty"`
+	TimeoutMS           *uint64                           `json:"timeout_ms,omitempty"`
+	StoragePath         string                            `json:"storage_path,omitempty"`
+	EnableAllFeatures   *bool                             `json:"enable_all_features,omitempty"`
+}
+
+type ExternalTask struct {
+	TaskID      string          `json:"task_id"`
+	SessionID   string          `json:"session_id"`
+	Lane        string          `json:"lane"`
+	CommandType string          `json:"command_type"`
+	Payload     json.RawMessage `json:"payload"`
+	TimeoutMS   uint64          `json:"timeout_ms"`
+}
+
+type ExternalTaskResult struct {
+	Success bool            `json:"success"`
+	Result  json.RawMessage `json:"result"`
+	Error   string          `json:"error,omitempty"`
+}
+
+type LaneStatus struct {
+	Lane           string `json:"lane"`
+	Pending        uint   `json:"pending"`
+	Active         uint   `json:"active"`
+	MaxConcurrency uint   `json:"max_concurrency"`
+	HandlerMode    string `json:"handler_mode"`
+}
+
+type QueueStats struct {
+	TotalPending    uint                  `json:"total_pending"`
+	TotalActive     uint                  `json:"total_active"`
+	ExternalPending uint                  `json:"external_pending"`
+	Lanes           map[string]LaneStatus `json:"lanes"`
+}
+
+type HistogramStats struct {
+	Count uint64  `json:"count"`
+	Sum   float64 `json:"sum"`
+	Min   float64 `json:"min"`
+	Max   float64 `json:"max"`
+	Mean  float64 `json:"mean"`
+	P50   float64 `json:"p50"`
+	P90   float64 `json:"p90"`
+	P95   float64 `json:"p95"`
+	P99   float64 `json:"p99"`
+}
+
+type QueueMetrics struct {
+	Counters   map[string]uint64         `json:"counters"`
+	Gauges     map[string]float64        `json:"gauges"`
+	Histograms map[string]HistogramStats `json:"histograms"`
+}
+
+type DeadLetter struct {
+	CommandID   string `json:"command_id"`
+	CommandType string `json:"command_type"`
+	LaneID      string `json:"lane_id"`
+	Error       string `json:"error"`
+	Attempts    uint32 `json:"attempts"`
+	FailedAt    string `json:"failed_at"`
+}
+
+type HookMatcher struct {
+	Tool           string `json:"tool,omitempty"`
+	PathPattern    string `json:"path_pattern,omitempty"`
+	CommandPattern string `json:"command_pattern,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	Skill          string `json:"skill,omitempty"`
+}
+
+type HookConfig struct {
+	Priority       *int    `json:"priority,omitempty"`
+	TimeoutMS      *uint64 `json:"timeout_ms,omitempty"`
+	AsyncExecution *bool   `json:"async_execution,omitempty"`
+	MaxRetries     *uint32 `json:"max_retries,omitempty"`
+}
+
+type Hook struct {
+	ID        string       `json:"id"`
+	EventType string       `json:"event_type"`
+	Matcher   *HookMatcher `json:"matcher,omitempty"`
+	Config    *HookConfig  `json:"config,omitempty"`
+}
+
+type CommandInfo struct {
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Usage       *string `json:"usage,omitempty"`
+}
+
+type HookResponse struct {
+	Action   string `json:"action"`
+	Reason   string `json:"reason,omitempty"`
+	Modified any    `json:"modified,omitempty"`
+	DelayMS  uint64 `json:"delay_ms,omitempty"`
+}
+
+type HookHandler func(context.Context, json.RawMessage) (*HookResponse, error)
+
+type BudgetDecision struct {
+	Decision string  `json:"decision"`
+	Resource string  `json:"resource,omitempty"`
+	Consumed float64 `json:"consumed,omitempty"`
+	Limit    float64 `json:"limit,omitempty"`
+	Message  string  `json:"message,omitempty"`
+	Reason   string  `json:"reason,omitempty"`
+}
+
+type BudgetLLMContext struct {
+	SessionID       string `json:"session_id"`
+	EstimatedTokens uint   `json:"estimated_tokens"`
+}
+
+type BudgetToolContext struct {
+	SessionID string `json:"session_id"`
+	ToolName  string `json:"tool_name"`
+}
+
+type BudgetUsageContext struct {
+	SessionID string     `json:"session_id"`
+	Usage     TokenUsage `json:"usage"`
+}
+
+type BudgetGuardHandlers struct {
+	CheckBeforeLLM  func(context.Context, BudgetLLMContext) (*BudgetDecision, error)
+	RecordAfterLLM  func(context.Context, BudgetUsageContext) error
+	CheckBeforeTool func(context.Context, BudgetToolContext) (*BudgetDecision, error)
+	Timeout         time.Duration
+}
+
+type CommandContext struct {
+	SessionID   string             `json:"session_id"`
+	Workspace   string             `json:"workspace"`
+	Model       string             `json:"model"`
+	HistoryLen  uint               `json:"history_len"`
+	TotalTokens uint64             `json:"total_tokens"`
+	TotalCost   float64            `json:"total_cost"`
+	ToolNames   []string           `json:"tool_names"`
+	MCPServers  []CommandMCPServer `json:"mcp_servers"`
+}
+
+type CommandMCPServer struct {
+	Name      string `json:"name"`
+	ToolCount uint   `json:"tool_count"`
+}
+
+type CommandHandler func(context.Context, string, CommandContext) (string, error)

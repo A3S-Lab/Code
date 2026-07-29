@@ -16,6 +16,50 @@ import { Tab, Tabs } from '@rspress/core/theme';
 `parallel` 接收一个 `AgentStepSpec` 数组并发执行它们，**按输入顺序**（而非完成顺序）为每个 spec 返回一个 `StepOutcome`。每个 spec 路由到一个具名子代理（`explore`、`plan`、`review`、`verification`、`general` 等）。在 spec 上设置 `outputSchema` / `output_schema` 即可拿到经过 schema 校验的 `structured` 结果。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, AgentStepSpec};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+    let workflow = session.workflow();
+
+    let outcomes = workflow
+        .parallel(vec![
+            AgentStepSpec::new(
+                "langs",
+                "general",
+                "列出语言",
+                "列出三种系统编程语言。",
+            )
+            .with_max_steps(2),
+            AgentStepSpec::new(
+                "verdict",
+                "general",
+                "分类",
+                "Rust 是否无需 GC 就能保证内存安全？只回答是或否。",
+            )
+            .with_max_steps(2),
+        ])
+        .await;
+
+    for outcome in outcomes {
+        println!(
+            "[parallel] {}: success={}",
+            outcome.task_id, outcome.success
+        );
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -89,15 +133,137 @@ session.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	maxSteps := uint(2)
+	result, err := session.Parallel(ctx, []code.AgentStepSpec{
+		{
+			TaskID:      "langs",
+			Description: "列出语言",
+			Agent:       "general",
+			Prompt:      "列出三种系统编程语言，用逗号分隔。",
+			MaxSteps:    &maxSteps,
+		},
+		{
+			TaskID:      "verdict",
+			Description: "分类",
+			Agent:       "general",
+			Prompt:      "Rust 是否无需 GC 就能保证内存安全？只回答是或否。",
+			MaxSteps:    &maxSteps,
+			OutputSchema: json.RawMessage(`{
+				"type":"object",
+				"properties":{"memory_safe":{"type":"boolean"}},
+				"required":["memory_safe"]
+			}`),
+		},
+	}, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, outcome := range result.Outcomes {
+		fmt.Printf(
+			"[parallel] %s: success=%t structured=%s\n",
+			outcome.TaskID,
+			outcome.Success,
+			outcome.Structured,
+		)
+	}
+}
+```
+
+</Tab>
 </Tabs>
 
-结果在 Python 中是字典（`o['task_id']`、`o['success']`、`o.get('structured')`），在 Node 中是对象（`o.taskId`、`o.success`、`o.structured`）。会话选项 `maxParallelTasks` / `max_parallel_tasks` 限制并发量；多出的 spec 会排队，而返回的结果数组仍然是完整的，且保持顺序。
+结果在 Python 中是字典，在 Node 中是对象，在 Go 中是 `StepOutcome` 值。会话选项
+`maxParallelTasks` / `max_parallel_tasks` / `MaxParallelTasks` 限制并发量；多出的
+spec 会排队，而返回的结果数组仍然完整且保持顺序。
 
 ## 用 `session.pipeline` 构建按条目执行的链
 
 `pipeline` 接收一个输入 `items` 列表和一个有序的 `stages` 列表。每个条目独立地流经各个阶段——阶段之间**没有屏障**，因此一个较快的条目可以在一个较慢的条目仍处于阶段 1 时就到达阶段 2。阶段回调接收一个 `ctx`：第一个阶段看到 `ctx.item`，后续阶段看到 `ctx.previous`（上一个 `StepOutcome`，你可以基于其 `.output` 继续构建）。返回下一个 spec 以继续，或返回 `null` / `None` 以提前停止该条目的链。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::{Agent, AgentStepSpec, PipelineStage};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+    let workflow = session.workflow();
+
+    let stages: Vec<PipelineStage<String>> = vec![
+        Arc::new(|_, item| {
+            Some(
+                AgentStepSpec::new(
+                    "summarize",
+                    "general",
+                    "总结",
+                    format!("用一句话说明什么是{item}。"),
+                )
+                .with_max_steps(2),
+            )
+        }),
+        Arc::new(|previous, _| {
+            previous.map(|outcome| {
+                AgentStepSpec::new(
+                    "classify",
+                    "general",
+                    "分类",
+                    format!(
+                        "只回答是或否：下面描述的是编程语言吗？\n\n{}",
+                        outcome.output
+                    ),
+                )
+                .with_max_steps(2)
+            })
+        }),
+    ];
+
+    let results = workflow
+        .pipeline(vec!["Rust 编程语言".to_string()], stages)
+        .await;
+    for result in results.into_iter().flatten() {
+        println!("[pipeline] {}", result.output);
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -176,15 +342,146 @@ session.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	maxSteps := uint(2)
+	results, err := session.Pipeline(
+		ctx,
+		[]any{"Rust 编程语言"},
+		[]code.PipelineStage{
+			func(
+				_ context.Context,
+				stage code.PipelineContext,
+			) (*code.AgentStepSpec, error) {
+				return &code.AgentStepSpec{
+					TaskID:      "summarize",
+					Agent:       "general",
+					Description: "总结",
+					Prompt:      fmt.Sprintf("用一句话说明什么是 %v。", stage.Item),
+					MaxSteps:    &maxSteps,
+				}, nil
+			},
+			func(
+				_ context.Context,
+				stage code.PipelineContext,
+			) (*code.AgentStepSpec, error) {
+				return &code.AgentStepSpec{
+					TaskID:      "classify",
+					Agent:       "general",
+					Description: "分类",
+					Prompt:      "只回答是或否：下面描述的是编程语言吗？\n\n" + stage.Previous.Output,
+					MaxSteps:    &maxSteps,
+				}, nil
+			},
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, outcome := range results {
+		if outcome != nil {
+			fmt.Println(outcome.Output)
+		}
+	}
+}
+```
+
+</Tab>
 </Tabs>
 
-与 `parallel` 的关键区别：阶段是有序且相互依赖的，但各条目在阶段之间**不会**彼此等待。Node 的阶段回调绝不能抛出异常——出错时返回 `null`；Python 的阶段可以抛出（抛出的阶段会被捕获并视为 `None`）。
+与 `parallel` 的关键区别：阶段是有序且相互依赖的，但各条目在阶段之间**不会**
+彼此等待。Node 的阶段回调绝不能抛出异常——出错时返回 `null`；Python 的阶段可以
+抛出并被视为 `None`；Go 阶段返回 `(*AgentStepSpec, error)`。
 
 ## 用 `session.parallelResumable` 恢复运行
 
-`parallelResumable` 就是带日志的 `parallel`。它的第一个参数是 `specs`，第二个参数是稳定的 `workflowId`；每个步骤的结果都会被记录到会话的 store，因此如果进程在运行中途崩溃，你可以用同一个 `workflowId` 再次调用它，已完成的步骤会从日志中重放而不会重新执行。它**需要一个会话 store**——在打开会话时传入 `sessionStore` / `session_store`，否则调用会抛错。
+`parallelResumable` 就是带日志的 `parallel`。它的第一个参数是 `specs`，第二个参数是
+稳定的 `workflowId`；每个步骤的结果都会被记录到会话的 store，因此如果进程在
+运行中途崩溃，你可以用同一个 `workflowId` 再次调用它，已完成步骤会从日志中重放。
+它**需要一个会话 store**——打开会话时传入 `sessionStore`、`session_store` 或
+Go 的 `FileSessionStoreDir`。
 
 <Tabs>
+<Tab label="Rust">
+
+Rust 通过具名 `workflow.phase` 暴露相同的检查点行为。配置会话存储后，每个 phase
+都是可恢复的屏障。
+
+```rust
+use a3s_code_core::{Agent, AgentStepSpec, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_file_session_store("./.a3s/sessions")
+                .with_session_id("nightly-audit-session"),
+        )
+        .build()
+        .await?;
+    let workflow = session.workflow();
+
+    let outcomes = workflow
+        .phase(
+            "nightly-audit",
+            vec![
+                AgentStepSpec::new(
+                    "deps",
+                    "general",
+                    "审计依赖",
+                    "检查清单中的过时依赖。",
+                )
+                .with_max_steps(2),
+                AgentStepSpec::new(
+                    "tests",
+                    "verification",
+                    "运行测试",
+                    "运行测试套件并总结失败。",
+                )
+                .with_max_steps(2),
+            ],
+        )
+        .await;
+
+    for outcome in outcomes {
+        println!("{}:{}", outcome.task_id, outcome.success);
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -217,7 +514,8 @@ const outcomes = await session.parallelResumable(
   'nightly-audit',
 );
 
-// 使用同一个 workflowId 重跑时，会从日志中回放已完成的步骤。
+// 中断后使用相同 workflowId 重启。已完成步骤从日志加载；
+// 完全成功的运行会删除检查点。
 console.log(outcomes.map((o) => `${o.taskId}:${o.success}`).join(' '));
 
 session.close();
@@ -244,10 +542,69 @@ outcomes = session.parallel_resumable(
     "nightly-audit",
 )
 
-# 使用同一个 workflow_id 重跑时，会从日志中回放已完成的步骤。
+# 中断后使用相同 workflow_id 重启。已完成步骤从日志加载；
+# 完全成功的运行会删除检查点。
 print(" ".join(f"{o['task_id']}:{o['success']}" for o in outcomes))
 
 session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	options := &code.SessionOptions{
+		SessionID:           "nightly-audit-session",
+		FileSessionStoreDir: "./.a3s/sessions",
+	}
+	session, err := agent.Session(ctx, ".", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	maxSteps := uint(2)
+	outcomes, err := session.ParallelResumable(ctx, []code.AgentStepSpec{
+		{
+			TaskID:      "deps",
+			Agent:       "general",
+			Description: "审计依赖",
+			Prompt:      "检查 manifest 中是否存在过期依赖。",
+			MaxSteps:    &maxSteps,
+		},
+		{
+			TaskID:      "tests",
+			Agent:       "verification",
+			Description: "运行测试",
+			Prompt:      "运行测试套件并总结失败。",
+			MaxSteps:    &maxSteps,
+		},
+	}, "nightly-audit")
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, outcome := range outcomes {
+		fmt.Printf("%s:%t ", outcome.TaskID, outcome.Success)
+	}
+}
 ```
 
 </Tab>
@@ -255,12 +612,50 @@ session.close()
 
 ## 用 `session.parallel` 做预算受限的扇出
 
-把 token 预算作为第二个参数传入，所有子代理就会汇入**同一个账本**。传入预算时，
+传入 token 预算后，所有子代理就会汇入**同一个账本**。传入预算时，
 `parallel` 解析为 `{ outcomes, budget }`（账本快照）而非原来的结果数组；一旦达到
 上限，之后启动的 step 会被拒绝（`success: false`）。它是软上限——宽扇出可能冲过
 上限几个在飞回合；在飞工作绝不会被强杀。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, AgentStepSpec};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+    let workflow = session.workflow_with_token_budget(Some(50_000));
+
+    let outcomes = workflow
+        .parallel(vec![
+            AgentStepSpec::new("a", "general", "问题一", "回答：准备。")
+                .with_max_steps(2),
+            AgentStepSpec::new("b", "general", "问题二", "回答：开始。")
+                .with_max_steps(2),
+        ])
+        .await;
+    for outcome in outcomes {
+        println!("{}: success={}", outcome.task_id, outcome.success);
+    }
+
+    if let Some(budget) = workflow.budget_snapshot() {
+        println!(
+            "spent {} / {} tokens",
+            budget.consumed_tokens,
+            budget.limit_tokens.unwrap_or_default()
+        );
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -320,14 +715,71 @@ session.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	maxSteps := uint(2)
+	budgetTokens := uint64(50_000)
+	result, err := session.Parallel(ctx, []code.AgentStepSpec{
+		{TaskID: "a", Agent: "general", Description: "问题 1", Prompt: "只回答一个词：ready。", MaxSteps: &maxSteps},
+		{TaskID: "b", Agent: "general", Description: "问题 2", Prompt: "只回答一个词：go。", MaxSteps: &maxSteps},
+	}, &budgetTokens)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, outcome := range result.Outcomes {
+		fmt.Printf("[budget] %s: success=%t\n", outcome.TaskID, outcome.Success)
+	}
+	if result.Budget != nil && result.Budget.LimitTokens != nil {
+		fmt.Printf(
+			"spent %d / %d tokens\n",
+			result.Budget.ConsumedTokens,
+			*result.Budget.LimitTokens,
+		)
+	}
+}
+```
+
+</Tab>
 </Tabs>
 
 说明：
 
-- 三个原语都返回按输入顺序对齐的结果：`{ taskId, success, output, error?, structured? }`（Node 对象）/ `{ "task_id", "success", "output", "error"?, "structured"? }`（Python 字典）。
-- 在 spec 上设置 `outputSchema` / `output_schema` 可在 `structured` 中拿到解析后的结果。
-- `maxSteps` / `max_steps` 限制每个子代理的步数；会话选项 `maxParallelTasks` / `max_parallel_tasks` 限制扇出并发量。
-- 给 `parallel` 传入 token 预算（第 2 个参数 `budgetTokens` / `budget_tokens=`）即可让整个扇出对同一个账本计数；此时返回形状变为 `{ outcomes, budget }`。它是软上限（用量在每次调用之后记账）。
-- Node 的 pipeline 阶段回调绝不能抛出异常——出错时返回 `null`。Python 的阶段可以抛出（抛出的阶段会被捕获并视为 `None`）。
+- 三个原语都返回按输入顺序对齐的结果。Go 使用 `StepOutcome`；Node 使用对象；
+  Python 使用字典。
+- 在 spec 上设置 `outputSchema` / `output_schema` / `OutputSchema`，可在
+  `structured` / `Structured` 中拿到解析后的结果。
+- `maxSteps` / `max_steps` / `MaxSteps` 限制每个子代理的步数；会话选项
+  `maxParallelTasks` / `max_parallel_tasks` / `MaxParallelTasks` 限制扇出并发量。
+- 给 `parallel` 传入 token 预算即可让整个扇出对同一个账本计数。Go 把 `*uint64`
+  作为 `Parallel` 的第三个参数，并从 `ParallelResult.Budget` 读取账本。它是软上限。
+- Node 的 pipeline 阶段回调绝不能抛出异常——出错时返回 `null`。Python 的阶段可以
+  抛出并被视为 `None`；Go 阶段返回 `error`。
 
-可运行版本见 `sdk/node/examples/orchestration/parallel-pipeline.mjs` 和 `sdk/python/examples/orchestration_workflow.py`。
+可运行的 Node.js 和 Python 版本见
+`sdk/node/examples/orchestration/parallel-pipeline.mjs` 和
+`sdk/python/examples/orchestration_workflow.py`；上面的 Rust 与 Go 页签均为自包含示例。

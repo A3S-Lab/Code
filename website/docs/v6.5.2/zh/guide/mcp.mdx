@@ -17,6 +17,33 @@ session 中，名称格式为 `mcp__<server>__<tool>`。
 `McpServerConfig` 形状，避免 positional overload 的参数顺序问题。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::mcp::{McpServerConfig, McpTransportConfig};
+use std::collections::HashMap;
+
+let count = session
+    .add_mcp_server(McpServerConfig {
+        name: "echo".into(),
+        transport: McpTransportConfig::Stdio {
+            command: "node".into(),
+            args: vec![
+                "tools/mcp_echo_server.mjs".into(),
+                "example-value".into(),
+            ],
+        },
+        enabled: true,
+        env: HashMap::new(),
+        oauth: None,
+        tool_timeout_secs: 30,
+    })
+    .await?;
+
+println!("已注册工具数：{count}");
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -81,6 +108,28 @@ Python 通过 `session.add_mcp({...})` 暴露相同的对象式 API。
 ## 检查和移除
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use serde_json::json;
+
+println!("{:#?}", session.mcp_status().await);
+println!(
+    "{:#?}",
+    session
+        .tool_names()
+        .into_iter()
+        .filter(|name| name.starts_with("mcp__"))
+        .collect::<Vec<_>>()
+);
+let result = session
+    .tool("mcp__echo__echo", json!({ "message": "文档 MCP 正常" }))
+    .await?;
+println!("{}", result.output);
+session.remove_mcp_server("echo").await?;
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts

@@ -9,7 +9,8 @@ import { Tab, Tabs } from '@rspress/core/theme';
 
 集群宿主平台在多个节点上运行长时运行的智能体会话。框架本身并不附带调度器或放置引擎，而是暴露一小组接缝：它定义决策点、发出结构化事件，并把策略交给宿主来提供。下文的所有内容都是你从框架外部接入的——你永远不需要分叉框架。
 
-本页会明确区分哪些接缝在两个 SDK 中都可用（以 Node.js + Python 代码展示），哪些当前只在 Rust 核心中配置（没有 SDK 选项时以文字说明）。
+本页给出 Rust、Node.js、Python 和 Go 中等价的原生接缝。配置形式遵循各语言习惯，
+底层能力和生命周期契约保持一致。
 
 ## 身份标签
 
@@ -18,6 +19,38 @@ import { Tab, Tabs } from '@rspress/core/theme';
 请将身份标签与 `sessionStore` / `session_store` 搭配使用，使标签在进程重启后依然保留。恢复时，**由调用方提供的选项优先生效**，因此你可以在节点之间迁移会话时为其重新打标签。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let options = SessionOptions::new()
+        .with_tenant_id("tenant-example")
+        .with_principal("principal-example")
+        .with_agent_template_id("agent-template-example")
+        .with_correlation_id("trace-example")
+        .with_file_session_store("./.a3s/sessions");
+    let session = agent
+        .session_builder("/path/to/project")
+        .options(options)
+        .build()
+        .await?;
+
+    println!("tenant: {:?}", session.tenant_id());
+    println!("principal: {:?}", session.principal());
+    println!("template: {:?}", session.agent_template_id());
+    println!("correlation: {:?}", session.correlation_id());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -54,6 +87,58 @@ print(session.correlation_id)     # 'trace-example'
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func value(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, "/path/to/project", &code.SessionOptions{
+		TenantID:           "tenant-example",
+		Principal:          "principal-example",
+		AgentTemplateID:    "agent-template-example",
+		CorrelationID:      "trace-example",
+		FileSessionStoreDir: "./.a3s/sessions",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	info, err := session.Info(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("tenant:", value(info.TenantID))
+	fmt.Println("principal:", value(info.Principal))
+	fmt.Println("template:", value(info.AgentTemplateID))
+	fmt.Println("correlation:", value(info.CorrelationID))
+}
+```
+
+</Tab>
 </Tabs>
 
 ## 预算 / 成本守卫
@@ -61,6 +146,72 @@ print(session.correlation_id)     # 'trace-example'
 预算守卫让宿主针对成本或令牌预算对每一次 LLM 调用进行把关。框架会在每次 LLM 请求*之前*调用你的守卫，并在请求返回*之后*再次调用。守卫是你自己拥有的策略；框架只负责执行你返回的决策。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+
+use a3s_code_core::{
+    budget::{BudgetDecision, BudgetGuard},
+    llm::TokenUsage,
+    Agent, SessionOptions,
+};
+
+#[derive(Debug)]
+struct TokenGuard {
+    limit: usize,
+    used: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl BudgetGuard for TokenGuard {
+    async fn check_before_llm(
+        &self,
+        _session_id: &str,
+        estimated_prompt_tokens: usize,
+    ) -> BudgetDecision {
+        let used = self.used.load(Ordering::Relaxed);
+        if used.saturating_add(estimated_prompt_tokens) > self.limit {
+            BudgetDecision::Deny {
+                resource: "tokens".into(),
+                reason: "monthly cap reached".into(),
+            }
+        } else {
+            BudgetDecision::Allow
+        }
+    }
+
+    async fn record_after_llm(&self, _session_id: &str, usage: &TokenUsage) {
+        self.used.fetch_add(usage.total_tokens, Ordering::Relaxed);
+    }
+}
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let guard = Arc::new(TokenGuard {
+        limit: 50_000,
+        used: AtomicUsize::new(0),
+    });
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_budget_guard(guard))
+        .build()
+        .await?;
+
+    let result = session.send("总结这个仓库。", None).await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -107,9 +258,80 @@ session = agent.session('/path/to/project', opts)
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync/atomic"
+	"time"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	const limit uint64 = 50_000
+	var used atomic.Uint64
+	err = session.SetBudgetGuard(ctx, &code.BudgetGuardHandlers{
+		CheckBeforeLLM: func(
+			_ context.Context,
+			call code.BudgetLLMContext,
+		) (*code.BudgetDecision, error) {
+			if used.Load()+uint64(call.EstimatedTokens) > limit {
+				return &code.BudgetDecision{
+					Decision: "deny",
+					Resource: "tokens",
+					Reason:   "monthly cap reached",
+				}, nil
+			}
+			return &code.BudgetDecision{Decision: "allow"}, nil
+		},
+		RecordAfterLLM: func(
+			_ context.Context,
+			call code.BudgetUsageContext,
+		) error {
+			used.Add(uint64(call.Usage.TotalTokens))
+			return nil
+		},
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.SetBudgetGuard(context.Background(), nil)
+
+	result, err := session.Run(ctx, "总结这个仓库。")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s\nspent %d / %d tokens\n", result.Text, used.Load(), limit)
+}
+```
+
+Go 回调遵循相同的 fail-closed 契约：回调报错、超时或返回无法解析的决策时，
+受保护的 LLM 或工具调用会被拒绝。
+
+</Tab>
 </Tabs>
 
-两个 SDK 的决策结构完全一致：
+四种 SDK 的原生守卫具有等价的决策结构：
 
 | 返回值                                                      | 效果                                                                                                               |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -117,7 +339,7 @@ session = agent.session('/path/to/project', opts)
 | `{ decision: 'soft', resource, consumed, limit, message? }` | 发出 `BudgetThresholdHit`（kind 为 `soft`）并继续执行。                                                            |
 | `{ decision: 'deny', resource, reason }`                    | 中止 LLM 调用。Python 抛出 `RuntimeError("Budget exhausted...")`；Node 以 `"Budget exhausted..."` 拒绝（reject）。 |
 
-这种健壮性是刻意为之，但两个 SDK 的失败语义不同：**缺失的守卫方法**会被当作宽松默认值处理。Python 回调出错会回退为 Allow。Node 回调不能 throw；超时或无法解析的 `check*` 返回会 fail-closed 为 `deny`。
+这种健壮性是刻意为之，但各 SDK 的失败语义略有不同：**缺失的守卫方法**会被当作宽松默认值处理。Python 回调出错会回退为 Allow。Node 回调不能 throw。Go 回调报错、超时或返回无法解析的 `check*` 决策时，会 fail-closed 为 `deny`。
 
 ## 集群事件词汇
 
@@ -135,13 +357,153 @@ session = agent.session('/path/to/project', opts)
 
 希望在另一节点上对某次运行进行**逐位一致重放**的集群，必须消除常规运行中两处不确定性的来源：随机 ID 和挂钟时间。Rust 核心将二者建模在一个 `HostEnv { id_generator, clock }` 之后。默认实现把 UUID 生成器与系统时钟配对；重放工具会换入 `SequentialIdGenerator` 和 `FixedClock`，使得对相同输入的重新执行在任意节点上都产生相同的 ID 和时间戳，从而产生相同的输出。
 
-这是当前**在 Rust 核心中配置的**。它尚未暴露在 JS/Python 选项面上，因此没有对应的 Node/Python 代码——SDK 接入可能随后跟进。
+四种 SDK 都提供同一确定性配置。请同时设置 ID 前缀和固定时间戳，并在每次重放开始时
+用相同的值重新创建配置。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::{
+    host_env::{FixedClock, HostEnv, SequentialIdGenerator},
+    Agent, SessionOptions,
+};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let host_env = Arc::new(HostEnv::new(
+        Arc::new(SequentialIdGenerator::new("replay")),
+        Arc::new(FixedClock::new(1_700_000_000_000)),
+    ));
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_host_env(host_env))
+        .build()
+        .await?;
+
+    println!("{}", session.session_id());
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('.', {
+  hostEnv: {
+    sequentialIdPrefix: 'replay',
+    fixedTimeMs: 1_700_000_000_000,
+  },
+});
+
+console.log(session.sessionId);
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, HostEnvConfig, SessionOptions
+
+agent = Agent.create('agent.acl')
+options = SessionOptions()
+options.host_env = HostEnvConfig(
+    sequential_id_prefix='replay',
+    fixed_time_ms=1_700_000_000_000,
+)
+session = agent.session('.', options)
+
+print(session.session_id)
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.NewAgent(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	prefix := "replay"
+	fixedTime := uint64(1_700_000_000_000)
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		HostEnv: &code.HostEnvConfig{
+			SequentialIDPrefix: &prefix,
+			FixedTimeMS:        &fixedTime,
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	fmt.Println(session.SessionID())
+}
+```
+
+</Tab>
+</Tabs>
 
 ## 循环检查点与运行恢复
 
 配置了 `sessionStore` / `session_store` 后，智能体循环会在**每一轮工具调用完成之后**持久化一个检查点，以运行 id 作为键。任何共享同一存储的节点都可以重新水合该运行并继续它。
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_file_session_store("./.a3s/sessions")
+                .with_session_id("session-from-node-a"),
+        )
+        .build()
+        .await?;
+
+    let result = session.resume_run("run-id-from-node-a").await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -170,6 +532,46 @@ result = session.resume_run('run-id-from-node-a')
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	options := &code.SessionOptions{
+		SessionID:           "session-from-node-a",
+		FileSessionStoreDir: "./.a3s/sessions",
+	}
+	session, err := agent.Session(ctx, ".", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	result, err := session.ResumeRun(ctx, "run-id-from-node-a")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+</Tab>
 </Tabs>
 
 系统会为恢复的工作分配一个**新的运行 id**——存储中的原始运行保持不变。有两条错误路径值得处理：
@@ -183,9 +585,13 @@ result = session.resume_run('run-id-from-node-a')
 
 运行数小时或数天的会话会在四个内存存储中累积状态：运行记录、每次运行的事件缓冲区、追踪事件，以及终态子智能体任务快照。若不加限制，它们会随会话寿命增长——对短寿命会话无妨，对长寿命会话则是真实的泄漏。
 
-`SessionRetentionLimits` 为这四个存储分别设置上限。每个上限都是可选的：`None` 表示无上限的默认值。驱逐采用严格的 **FIFO**，并且**正在运行的子智能体任务永不被丢弃**——只有终态（已完成/已失败）快照会被驱逐。
+`SessionRetentionLimits` 为这些存储设置上限。省略字段时保留框架的有限默认值；
+只有明确需要无限保留时才设置 `unbounded: true`。驱逐采用严格的 **FIFO**，并且
+**正在运行的子智能体任务永不被丢弃**——只有终态快照会被驱逐。
 
-Node 使用 `retentionLimits`，Python 使用 `opts.retention_limits`。Rust 宿主使用 `SessionOptions::with_retention_limits(...)`。字段名和示例见[限制](/guide/limits)。
+Node 使用 `retentionLimits`，Python 使用 `opts.retention_limits`，Go 使用
+`SessionOptions.RetentionLimits`。Rust 宿主使用
+`SessionOptions::with_retention_limits(...)`。字段名和示例见[限制](/guide/limits)。
 
 ---
 

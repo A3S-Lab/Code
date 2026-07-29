@@ -14,6 +14,72 @@ inspects a repo, then creates, lists, and removes a worktree directly through th
 tool surface.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+use serde_json::json;
+use std::path::Path;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder("/path/to/repo").build().await?;
+
+    let status = session.tool("git", json!({ "command": "status" })).await?;
+    println!("{}", status.output);
+
+    let worktree = Path::new("/path/to/repo").join("wt-feature-auth");
+    let created = session
+        .tool(
+            "git",
+            json!({
+                "command": "worktree",
+                "subcommand": "create",
+                "name": "feature-auth",
+                "path": worktree
+            }),
+        )
+        .await?;
+    if created.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "git".into(),
+            message: format!("create failed: {}", created.output),
+        });
+    }
+
+    let list = session
+        .tool(
+            "git",
+            json!({ "command": "worktree", "subcommand": "list" }),
+        )
+        .await?;
+    println!("{}", list.output);
+
+    let removed = session
+        .tool(
+            "git",
+            json!({
+                "command": "worktree",
+                "subcommand": "remove",
+                "path": worktree
+            }),
+        )
+        .await?;
+    if removed.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "git".into(),
+            message: format!("remove failed: {}", removed.output),
+        });
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -94,12 +160,71 @@ session.close()
 ```
 
 </Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"path/filepath"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, "/path/to/repo", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	status, err := session.Git(ctx, code.GitOptions{Command: "status"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(status.Output)
+
+	worktree := filepath.Join("/path/to/repo", "wt-feature-auth")
+	created, err := session.Git(ctx, code.GitOptions{
+		Command: "worktree", Subcommand: "create",
+		Name: "feature-auth", Path: worktree,
+	})
+	if err != nil || created.ExitCode != 0 {
+		log.Fatalf("create failed: %v %s", err, created.Output)
+	}
+	list, err := session.Git(ctx, code.GitOptions{
+		Command: "worktree", Subcommand: "list",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(list.Output)
+
+	removed, err := session.Git(ctx, code.GitOptions{
+		Command: "worktree", Subcommand: "remove", Path: worktree,
+	})
+	if err != nil || removed.ExitCode != 0 {
+		log.Fatalf("remove failed: %v %s", err, removed.Output)
+	}
+}
+```
+
+</Tab>
 </Tabs>
 
 Pass a command object rather than positional arguments: `{ command: 'status' }`,
 `{ command: 'diff' }`, or `{ command: 'worktree', subcommand: 'list' }`. Each
-call returns a tool result, so check `exitCode` (Node) / `exit_code` (Python)
-before trusting the output.
+call returns a tool result, so check `exit_code` (Rust/Python), `exitCode`
+(Node.js), or `ExitCode` (Go) before trusting the output.
 
 Direct git calls are privileged host operations. Put push, publish, and release
 workflows behind application-level approval or automation gates.

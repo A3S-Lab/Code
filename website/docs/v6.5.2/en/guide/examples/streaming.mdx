@@ -12,6 +12,54 @@ import { Tab, Tabs } from '@rspress/core/theme';
 Each event carries the stable envelope fields `version`, `type`, `payload`, and optional `metadata`. The common kinds are `agent_start`, `text_delta` / `reasoning_delta`, `tool_start` / `tool_end`, `agent_end`, and `error`. Verification data is carried by the `agent_end` payload and convenience fields.
 
 <Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, AgentEvent, CodeError, PlanningMode, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_planning_mode(PlanningMode::Disabled))
+        .build()
+        .await?;
+
+    let (mut events, lifecycle) = session
+        .stream(
+            "Use the bash tool to run the tests, then summarize the result.",
+            None,
+        )
+        .await?;
+
+    while let Some(event) = events.recv().await {
+        match event {
+            AgentEvent::TextDelta { text } => print!("{text}"),
+            AgentEvent::ToolStart { name, .. } => println!("\n[tool:start] {name}"),
+            AgentEvent::ToolEnd {
+                name, exit_code, ..
+            } => println!("\n[tool:end] {name} exit={exit_code}"),
+            AgentEvent::End {
+                verification_summary,
+                ..
+            } => println!("\n[verification] {verification_summary:?}"),
+            AgentEvent::Error { message } => return Err(CodeError::Llm(message)),
+            _ => {}
+        }
+    }
+    lifecycle
+        .await
+        .map_err(|error| CodeError::Internal(error.into()))??;
+    println!("\n[stream] complete");
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
 <Tab label="Node.js">
 
 ```ts
@@ -150,8 +198,8 @@ func main() {
 
 Notes:
 
-- Node iterates with `stream.next()`, Python uses a synchronous iterator, and Go drains `stream.Events` before reading the terminal error from `stream.Done`. Canceling the Go context also requests cancellation of the active native run.
-- All three SDKs expose the canonical event type. Node and Python add convenience projections; Go keeps `Payload` and `Metadata` as `json.RawMessage` and provides `DecodePayload`. Unknown future event types remain lossless in every SDK.
+- Rust receives `AgentEvent` values from a Tokio channel, Node.js iterates with `stream.next()`, Python uses a synchronous iterator, and Go drains `stream.Events` before reading the terminal error from `stream.Done`. Canceling the Go context also requests cancellation of the active native run.
+- All four SDKs expose the canonical event type. Node.js and Python add convenience projections; Go keeps `Payload` and `Metadata` as `json.RawMessage` and provides `DecodePayload`. Unknown future event types remain lossless in every SDK.
 - Streamed events can also include human-in-the-loop confirmation signals (`confirmation_required`, `confirmation_received`, `confirmation_timeout`) when a confirmation policy is enabled.
 
 Runnable streaming examples ship under `sdk/node/examples/streaming/`.
