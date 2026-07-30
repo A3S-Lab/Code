@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { A3sCodeTui, type A3sCodeTuiInputMode } from './A3sCodeTui';
 import type { HomeLabels } from './home-copy';
 
 const tuiDemoPhases = [
@@ -37,7 +38,6 @@ const tuiDemoIndex = {
   remoteui: tuiDemoPhases.indexOf('remoteui'),
   answer: tuiDemoPhases.indexOf('answer'),
 } as const;
-type TuiComposerMode = 'default' | 'shell' | 'research';
 type TuiDemoStatus = 'pending' | 'active' | 'done';
 const tuiDemoStatusGlyph: Record<TuiDemoStatus, string> = {
   pending: '◻',
@@ -116,7 +116,7 @@ export function RuntimeExecutionFlow({ labels }: { labels: HomeLabels }) {
   const composerDemos: Partial<
     Record<
       TuiDemoPhase,
-      { mode: TuiComposerMode; symbol: string; text: string }
+      { mode: A3sCodeTuiInputMode; symbol: string; text: string }
     >
   > = {
     slash: { mode: 'default', symbol: '❯', text: labels.tuiSlashInput },
@@ -320,224 +320,18 @@ export function RuntimeExecutionFlow({ labels }: { labels: HomeLabels }) {
   }
 
   return (
-    <div
-      className={[
-        'a3s-runtime-inspector',
-        'a3s-tui-player',
-        isRunning ? 'is-running' : '',
-      ]
-        .filter(Boolean)
-        .join(' ')}
-      data-phase={active}
-      aria-label={labels.architectureAlt}
-      ref={playerRef}
-    >
-      <header className="a3s-tui-titlebar">
-        <span className="a3s-tui-window-dots" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </span>
-        <div className="a3s-tui-title">
-          <b>a3s code</b>
-          <em>{labels.tuiWorkspace}</em>
-        </div>
-        <button
-          className={isRunning ? 'is-playing' : ''}
-          onClick={playFlow}
-          type="button"
-        >
-          <i aria-hidden="true" />
-          {prefersReducedMotion && !isRunning
-            ? labels.flowPlayOnce
-            : labels.flowReplay}
-        </button>
-      </header>
-
-      <section className="a3s-tui-terminal">
-        <div className="a3s-tui-welcome" aria-label="A3S Code">
-          <pre aria-hidden="true" className="a3s-tui-mascot">
-            {tuiMascot}
-          </pre>
-          <TuiWordmark />
-        </div>
-        <p className="a3s-tui-meta">
-          <span>a3s-code v6.6.0</span>
-          <i>·</i>
-          <span>openai/gpt-5</span>
-          <i>·</i>
-          <span>12 skills</span>
-          <i>·</i>
-          <span>{labels.tuiWorkspace}</span>
-        </p>
-        <p className="a3s-tui-tip">{labels.tuiTip}</p>
-
-        <div className="a3s-tui-transcript" aria-live="off">
-          {activeIndex > tuiDemoIndex.compose ? (
-            <article className="a3s-tui-entry a3s-tui-entry--user">
-              <span aria-hidden="true">›</span>
-              <div>
-                <small>{labels.tuiUser}</small>
-                <p>{labels.flowTask}</p>
-              </div>
-            </article>
-          ) : null}
-
-          {activeIndex >= tuiDemoIndex.artifact ? (
-            <article
-              className={[
-                'a3s-tui-artifact',
-                artifactIsPublished ? 'is-published' : 'is-publishing',
-                remoteUiIsReady ? 'is-ready' : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-            >
-              <div className="a3s-tui-artifact-meta">
-                <header>
-                  <span aria-hidden="true">◇</span>
-                  <strong>{labels.tuiArtifact}</strong>
-                  <small>
-                    {artifactIsPublished
-                      ? labels.tuiArtifactReady
-                      : labels.tuiArtifactWriting}
-                  </small>
-                </header>
-                <code>{labels.tuiArtifactPath}</code>
-                <span
-                  className={[
-                    'a3s-tui-open-view',
-                    activeIndex === tuiDemoIndex.remoteui ? 'is-opening' : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                >
-                  <i aria-hidden="true">↗</i>
-                  {artifactIsPublished
-                    ? labels.tuiOpenView
-                    : labels.tuiArtifactWriting}
-                  {artifactIsPublished ? <b>{labels.tuiRemoteUi}</b> : null}
-                </span>
-              </div>
-              <div
-                className={[
-                  'a3s-tui-remote-view',
-                  !artifactIsPublished
-                    ? 'is-preparing'
-                    : remoteUiIsReady
-                      ? 'is-ready'
-                      : 'is-streaming',
-                ].join(' ')}
-              >
-                <header>
-                  <span aria-hidden="true">●</span>
-                  <b>{labels.tuiRemoteUi}</b>
-                  <small>
-                    {!artifactIsPublished
-                      ? labels.tuiRemotePreparing
-                      : remoteUiIsReady
-                        ? labels.tuiRemoteReady
-                        : labels.tuiRemoteStreaming}
-                  </small>
-                </header>
-                <div>
-                  <strong>{labels.tuiReportTitle}</strong>
-                  <small>
-                    {remoteUiIsReady ? labels.tuiReportSummary : '···'}
-                  </small>
-                  <span aria-hidden="true">
-                    <i />
-                    <i />
-                    <i />
-                  </span>
-                </div>
-              </div>
-            </article>
-          ) : null}
-
-          {activeIndex >= tuiDemoIndex.answer ? (
-            <article className="a3s-tui-entry a3s-tui-entry--assistant">
-              <span aria-hidden="true">•</span>
-              <div>
-                <strong>{labels.tuiAssistant}</strong>
-                <p>{labels.tuiResponse}</p>
-              </div>
-            </article>
-          ) : null}
-
-          {inputMenuIsOpen ? (
-            <div
-              aria-hidden="true"
-              className={`a3s-tui-input-menu is-${active}`}
-            >
-              {active === 'mention' ? (
-                <strong>{labels.tuiFilePicker}</strong>
-              ) : null}
-              <ul>
-                {inputMenuItems.map(([label, detail], index) => (
-                  <li className={index === 0 ? 'is-selected' : ''} key={label}>
-                    <code>{label}</code>
-                    <span>{detail}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-        </div>
-      </section>
-
-      <section className="a3s-tui-composer" data-input-mode={composerMode}>
-        <div className="a3s-tui-activity" aria-live="polite">
-          {isWorking ? (
-            <>
-              <i aria-hidden="true">✶</i>
-              <span>{labels.tuiWorking}</span>
-              <small>(00:04 · ↓ 1.2k tokens)</small>
-            </>
-          ) : null}
-        </div>
-        {activeIndex >= tuiDemoIndex.plan ? (
-          <section className="a3s-tui-plan" aria-label={labels.tuiPlan}>
-            <ol>
-              {planItems.map((item, index) => (
-                <li className={`is-${item.status}`} key={item.label}>
-                  <span aria-hidden="true">{index === 0 ? '⎿' : ''}</span>
-                  <i aria-hidden="true">{tuiDemoStatusGlyph[item.status]}</i>
-                  <p>{item.label}</p>
-                </li>
-              ))}
-            </ol>
-          </section>
-        ) : null}
-        <div className="a3s-tui-effort-rule">
-          <span>{composerStatus}</span>
-        </div>
-        <div className="a3s-tui-input">
-          <span aria-hidden="true">{composerSymbol}</span>
-          <p>
-            {typedComposerText}
-            <i aria-hidden="true" />
-          </p>
-        </div>
-        <div className="a3s-tui-input-rule" />
-        <footer className="a3s-tui-footer">
-          <span className="a3s-tui-mode">
-            <i aria-hidden="true">●</i>
-            {labels.tuiMode}
-          </span>
-          <span className="a3s-tui-context">
-            {labels.tuiContext}
-            <i aria-hidden="true">
-              <b />
-            </i>
-          </span>
-          <span className="a3s-tui-identity">
-            <b>a3s</b>
-            <em>git:(main)</em>
-            <em>gpt-5 (128k context)</em>
-          </span>
-        </footer>
-        {visibleSubagents.length > 0 ? (
+    <A3sCodeTui
+      activity={
+        isWorking ? (
+          <>
+            <i aria-hidden="true">✶</i>
+            <span>{labels.tuiWorking}</span>
+            <small>(00:04 · ↓ 1.2k tokens)</small>
+          </>
+        ) : undefined
+      }
+      afterFooter={
+        visibleSubagents.length > 0 ? (
           <section className="a3s-tui-agents" aria-label={labels.tuiSubagents}>
             <header>
               <span aria-hidden="true">•</span>
@@ -558,8 +352,169 @@ export function RuntimeExecutionFlow({ labels }: { labels: HomeLabels }) {
               ))}
             </div>
           </section>
+        ) : undefined
+      }
+      ariaLabel={labels.architectureAlt}
+      beforeInput={
+        activeIndex >= tuiDemoIndex.plan ? (
+          <section className="a3s-tui-plan" aria-label={labels.tuiPlan}>
+            <ol>
+              {planItems.map((item, index) => (
+                <li className={`is-${item.status}`} key={item.label}>
+                  <span aria-hidden="true">{index === 0 ? '⎿' : ''}</span>
+                  <i aria-hidden="true">{tuiDemoStatusGlyph[item.status]}</i>
+                  <p>{item.label}</p>
+                </li>
+              ))}
+            </ol>
+          </section>
+        ) : undefined
+      }
+      composerMode={composerMode}
+      composerStatus={composerStatus}
+      composerSymbol={composerSymbol}
+      composerText={typedComposerText}
+      contextLabel={labels.tuiContext}
+      isPlaying={isRunning}
+      modeLabel={labels.tuiMode}
+      onPlayback={playFlow}
+      phase={active}
+      playbackLabel={
+        prefersReducedMotion && !isRunning
+          ? labels.flowPlayOnce
+          : labels.flowReplay
+      }
+      ref={playerRef}
+      showCursor={!prefersReducedMotion}
+      surface="hero"
+      workspace={labels.tuiWorkspace}
+    >
+      <div className="a3s-tui-welcome" aria-label="A3S Code">
+        <pre aria-hidden="true" className="a3s-tui-mascot">
+          {tuiMascot}
+        </pre>
+        <TuiWordmark />
+      </div>
+      <p className="a3s-tui-meta">
+        <span>a3s-code v6.6.0</span>
+        <i>·</i>
+        <span>openai/gpt-5</span>
+        <i>·</i>
+        <span>12 skills</span>
+        <i>·</i>
+        <span>{labels.tuiWorkspace}</span>
+      </p>
+      <p className="a3s-tui-tip">{labels.tuiTip}</p>
+
+      <div className="a3s-tui-transcript" aria-live="off">
+        {activeIndex > tuiDemoIndex.compose ? (
+          <article className="a3s-tui-entry a3s-tui-entry--user">
+            <span aria-hidden="true">›</span>
+            <div>
+              <small>{labels.tuiUser}</small>
+              <p>{labels.flowTask}</p>
+            </div>
+          </article>
         ) : null}
-      </section>
-    </div>
+
+        {activeIndex >= tuiDemoIndex.artifact ? (
+          <article
+            className={[
+              'a3s-tui-artifact',
+              artifactIsPublished ? 'is-published' : 'is-publishing',
+              remoteUiIsReady ? 'is-ready' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+          >
+            <div className="a3s-tui-artifact-meta">
+              <header>
+                <span aria-hidden="true">◇</span>
+                <strong>{labels.tuiArtifact}</strong>
+                <small>
+                  {artifactIsPublished
+                    ? labels.tuiArtifactReady
+                    : labels.tuiArtifactWriting}
+                </small>
+              </header>
+              <code>{labels.tuiArtifactPath}</code>
+              <span
+                className={[
+                  'a3s-tui-open-view',
+                  activeIndex === tuiDemoIndex.remoteui ? 'is-opening' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                <i aria-hidden="true">↗</i>
+                {artifactIsPublished
+                  ? labels.tuiOpenView
+                  : labels.tuiArtifactWriting}
+                {artifactIsPublished ? <b>{labels.tuiRemoteUi}</b> : null}
+              </span>
+            </div>
+            <div
+              className={[
+                'a3s-tui-remote-view',
+                !artifactIsPublished
+                  ? 'is-preparing'
+                  : remoteUiIsReady
+                    ? 'is-ready'
+                    : 'is-streaming',
+              ].join(' ')}
+            >
+              <header>
+                <span aria-hidden="true">●</span>
+                <b>{labels.tuiRemoteUi}</b>
+                <small>
+                  {!artifactIsPublished
+                    ? labels.tuiRemotePreparing
+                    : remoteUiIsReady
+                      ? labels.tuiRemoteReady
+                      : labels.tuiRemoteStreaming}
+                </small>
+              </header>
+              <div>
+                <strong>{labels.tuiReportTitle}</strong>
+                <small>
+                  {remoteUiIsReady ? labels.tuiReportSummary : '···'}
+                </small>
+                <span aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              </div>
+            </div>
+          </article>
+        ) : null}
+
+        {activeIndex >= tuiDemoIndex.answer ? (
+          <article className="a3s-tui-entry a3s-tui-entry--assistant">
+            <span aria-hidden="true">•</span>
+            <div>
+              <strong>{labels.tuiAssistant}</strong>
+              <p>{labels.tuiResponse}</p>
+            </div>
+          </article>
+        ) : null}
+
+        {inputMenuIsOpen ? (
+          <div aria-hidden="true" className={`a3s-tui-input-menu is-${active}`}>
+            {active === 'mention' ? (
+              <strong>{labels.tuiFilePicker}</strong>
+            ) : null}
+            <ul>
+              {inputMenuItems.map(([label, detail], index) => (
+                <li className={index === 0 ? 'is-selected' : ''} key={label}>
+                  <code>{label}</code>
+                  <span>{detail}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </A3sCodeTui>
   );
 }
