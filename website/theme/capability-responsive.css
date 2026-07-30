@@ -15,16 +15,9 @@
     height: 31px;
   }
 
-  .a3s-capability-player-stage {
-    padding-right: 20px;
-    padding-left: 20px;
-    gap: 16px;
-    grid-template-columns: 120px minmax(0, 1fr);
-  }
-
   .a3s-capability-player-intro {
     align-items: flex-start;
-    flex-direction: column;
+    grid-template-columns: 1fr;
     gap: 14px;
   }
 }
@@ -37,13 +30,12 @@
 
   .a3s-capability-console {
     min-height: 0;
+    gap: 14px;
     grid-template-columns: 1fr;
   }
 
   .a3s-capability-selector {
     overflow-x: auto;
-    border-right: 0;
-    border-bottom: 1px solid #29313c;
     flex-direction: row;
     scrollbar-width: none;
   }
@@ -76,7 +68,7 @@
   }
 
   .a3s-capability-player-stage {
-    min-height: 460px;
+    min-height: 390px;
   }
 }
 
@@ -86,10 +78,8 @@
     padding-bottom: 76px;
   }
 
-  .a3s-capability-console {
-    border-right: 0;
-    border-left: 0;
-    border-radius: 0;
+  .a3s-capability-player.a3s-runtime-inspector {
+    min-height: 680px;
   }
 
   .a3s-capability-selector > button {
@@ -112,50 +102,20 @@
   }
 
   .a3s-capability-player-intro {
-    padding: 22px 18px 20px;
+    gap: 9px;
   }
 
   .a3s-capability-player-intro h3 {
-    font-size: 23px;
+    font-size: 16px;
   }
 
   .a3s-capability-player-stage {
-    min-height: 0;
-    padding: 16px 12px 18px;
-    grid-template-columns: 1fr;
-  }
-
-  .a3s-capability-stage-rail {
-    display: grid;
-    padding: 0 0 4px;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .a3s-capability-stage-rail li {
-    min-height: 52px;
-    padding-right: 8px;
-    grid-template-columns: 19px minmax(0, 1fr);
-    gap: 5px;
-  }
-
-  .a3s-capability-stage-rail li::after {
-    width: auto;
-    height: 1px;
-    inset: 9px 0 auto 20px;
-  }
-
-  .a3s-capability-stage-rail li > i {
-    width: 19px;
-    height: 19px;
-  }
-
-  .a3s-capability-stage-rail li > span {
-    font-size: 7px;
+    min-height: 360px;
   }
 
   .a3s-capability-scene {
-    min-height: 390px;
-    padding: 12px;
+    min-height: 350px;
+    padding: 0;
   }
 
   .a3s-capability-call,
@@ -217,14 +177,14 @@
     grid-template-columns: 1fr;
   }
 
-  .a3s-capability-player-footer > div code:nth-child(n + 3) {
+  .a3s-capability-tui-tag:nth-of-type(n + 4) {
     display: none;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .a3s-capability-player-stage,
-  .a3s-capability-stage-rail li.is-active > i,
+  .a3s-capability-tui-plan li.is-active > i,
   .a3s-progressive-steps .is-active i,
   .a3s-progressive-view.is-ready,
   .a3s-runtime-batch > div.is-running > i b,

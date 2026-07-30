@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { A3sCodeTui } from './A3sCodeTui';
 
 type Locale = 'zh' | 'en';
 
@@ -16,6 +17,7 @@ type CapabilityStory = {
   eyebrow: string;
   title: Localized;
   body: Localized;
+  prompt: Localized;
   availability: Localized;
   tags: string[];
   stages: Localized[];
@@ -33,6 +35,10 @@ const sectionCopy = {
     pause: '暂停',
     replay: '重播',
     step: '阶段',
+    working: '正在执行能力流程',
+    mode: 'Default',
+    context: 'ctx:12%',
+    workspace: '~/workspace/a3s',
   },
   en: {
     eyebrow: 'A3S CODE / DISTINCTIVE CAPABILITIES',
@@ -45,6 +51,10 @@ const sectionCopy = {
     pause: 'Pause',
     replay: 'Replay',
     step: 'Stage',
+    working: 'Running capability flow',
+    mode: 'Default',
+    context: 'ctx:12%',
+    workspace: '~/workspace/a3s',
   },
 };
 
@@ -60,6 +70,10 @@ export const capabilityStories: CapabilityStory[] = [
     body: {
       zh: '需要确认的调用会在执行前暂停，并展示规范化参数。你可以只允许一次、保留精确的会话或项目授权，或者拒绝并说明原因。',
       en: 'Calls that need confirmation pause before execution and expose canonical arguments. Allow once, retain an exact session or project grant, or deny with a reason.',
+    },
+    prompt: {
+      zh: '测试通过后，将 main 分支推送到 origin',
+      en: 'Push main to origin after the tests pass',
     },
     availability: {
       zh: 'Default 模式 · 风险感知',
@@ -85,6 +99,10 @@ export const capabilityStories: CapabilityStory[] = [
       zh: '登录 A3S OS 后，通过一个按权限过滤的入口执行 list → search → describe → execute。模型无需把整个平台手册塞进上下文。',
       en: 'After A3S OS login, one permission-filtered endpoint runs list → search → describe → execute. The model never needs the whole platform manual in context.',
     },
+    prompt: {
+      zh: '部署发布知识包，并打开运行视图',
+      en: 'Deploy the release knowledge package and open its run view',
+    },
     availability: {
       zh: '登录后可用 · 权限过滤',
       en: 'Available after login · permission-filtered',
@@ -108,6 +126,10 @@ export const capabilityStories: CapabilityStory[] = [
     body: {
       zh: '登录后注册的 runtime 工具按 UUID 或名称解析 tool-kind Worker，提交 Function as a Service 批任务，流式呈现进度并聚合结果。',
       en: 'The login-gated runtime tool resolves a tool-kind worker by UUID or name, submits a Function-as-a-Service batch, streams progress, and aggregates results.',
+    },
+    prompt: {
+      zh: '并行检查 core、Node 和 Python 发布包',
+      en: 'Check the core, Node, and Python releases in parallel',
     },
     availability: {
       zh: '登录后注册 · 批量执行',
@@ -133,6 +155,10 @@ export const capabilityStories: CapabilityStory[] = [
       zh: '基于已保存文件提供符号、定义、声明、引用、实现与诊断。Agent 工具、/ide 和 Monaco 使用同一运行时，脏缓冲区不会伪装成已发布语义。',
       en: 'Saved files provide symbols, definitions, declarations, references, implementations, and diagnostics. Agent tools, /ide, and Monaco share the runtime; dirty buffers never masquerade as published semantics.',
     },
+    prompt: {
+      zh: '查找 RuntimeTool 的引用并汇总诊断',
+      en: 'Find RuntimeTool references and collect diagnostics',
+    },
     availability: {
       zh: 'Rust · TypeScript / JavaScript',
       en: 'Rust · TypeScript / JavaScript',
@@ -156,6 +182,10 @@ export const capabilityStories: CapabilityStory[] = [
     body: {
       zh: '本地 ctx 可用时，/ctx 会搜索跨工具、跨会话的索引。命中窗口可以一次性附加到下一条消息，也可以携带来源保存为长期记忆。',
       en: 'When the local ctx index is available, /ctx searches across tools and sessions. A hit can be attached once to the next turn or saved to long-term memory with provenance.',
+    },
+    prompt: {
+      zh: '/ctx RemoteUI view link',
+      en: '/ctx RemoteUI view link',
     },
     availability: {
       zh: '本地索引 · 跨会话 · 可追溯',
@@ -229,19 +259,27 @@ function StageRail({
   story: CapabilityStory;
 }) {
   return (
-    <ol className="a3s-capability-stage-rail">
-      {story.stages.map((item, index) => (
-        <li
-          className={
-            index < stage ? 'is-complete' : index === stage ? 'is-active' : ''
-          }
-          key={item.en}
-        >
-          <i aria-hidden="true">{index < stage ? '✓' : index + 1}</i>
-          <span>{value(item, locale)}</span>
-        </li>
-      ))}
-    </ol>
+    <section
+      aria-label={`${sectionCopy[locale].step} ${stage + 1} / 4`}
+      className="a3s-tui-plan a3s-capability-tui-plan"
+    >
+      <ol>
+        {story.stages.map((item, index) => {
+          const status =
+            index < stage ? 'done' : index === stage ? 'active' : 'pending';
+          const glyph =
+            status === 'done' ? '✔' : status === 'active' ? '◼' : '◻';
+
+          return (
+            <li className={`is-${status}`} key={item.en}>
+              <span aria-hidden="true">{index === 0 ? '⎿' : ''}</span>
+              <i aria-hidden="true">{glyph}</i>
+              <p>{value(item, locale)}</p>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 }
 
@@ -772,32 +810,38 @@ export function CapabilityShowcase({
           ))}
         </nav>
 
-        <div className="a3s-capability-player">
-          <header className="a3s-capability-player-bar">
-            <span>
-              <i />
-              <i />
-              <i />
-            </span>
-            <p>
-              <b>{labels.live}</b>
-              <small>
-                {story.index} / {story.eyebrow}
-              </small>
-            </p>
-            <button onClick={togglePlayback} type="button">
-              <i
-                className={isPlaying ? 'is-pause' : 'is-play'}
-                aria-hidden="true"
-              />
-              {isPlaying
-                ? labels.pause
-                : stage === 3
-                  ? labels.replay
-                  : labels.play}
-            </button>
-          </header>
-
+        <A3sCodeTui
+          activity={
+            isPlaying && isVisible ? (
+              <>
+                <i aria-hidden="true">✶</i>
+                <span>{labels.working}</span>
+                <small>
+                  ({labels.step} {String(stage + 1).padStart(2, '0')} / 04)
+                </small>
+              </>
+            ) : undefined
+          }
+          ariaLabel={`${story.eyebrow}: ${value(story.title, locale)}`}
+          beforeInput={
+            <StageRail locale={locale} stage={stage} story={story} />
+          }
+          className={`a3s-capability-player is-${story.key}`}
+          composerStatus="◇ high"
+          composerText={value(story.prompt, locale)}
+          contextLabel={labels.context}
+          isPlaying={isPlaying && isVisible}
+          modeLabel={labels.mode}
+          onPlayback={togglePlayback}
+          phase={`${story.key}-${stage + 1}`}
+          playbackLabel={
+            isPlaying ? labels.pause : stage === 3 ? labels.replay : labels.play
+          }
+          ref={hostRef}
+          showCursor={!reducedMotion}
+          surface={`capability-${story.key}`}
+          workspace={labels.workspace}
+        >
           <div className="a3s-capability-player-intro">
             <div>
               <span>{story.eyebrow}</span>
@@ -810,24 +854,27 @@ export function CapabilityShowcase({
             </small>
           </div>
 
-          <div className="a3s-capability-player-stage" key={story.key}>
-            <StageRail locale={locale} stage={stage} story={story} />
+          <p className="a3s-tui-meta a3s-capability-tui-meta">
+            <span>{labels.live}</span>
+            <i>·</i>
+            <span>{story.index} / 05</span>
+            {story.tags.map((tag) => (
+              <span className="a3s-capability-tui-tag" key={tag}>
+                <i>·</i>
+                {tag}
+              </span>
+            ))}
+          </p>
+
+          <div
+            className="a3s-tui-transcript a3s-capability-player-stage"
+            key={story.key}
+          >
             <div className="a3s-capability-scene-wrap">
               <CapabilityScene locale={locale} stage={stage} story={story} />
             </div>
           </div>
-
-          <footer className="a3s-capability-player-footer">
-            <span>
-              {labels.step} {String(stage + 1).padStart(2, '0')} / 04
-            </span>
-            <div>
-              {story.tags.map((tag) => (
-                <code key={tag}>{tag}</code>
-              ))}
-            </div>
-          </footer>
-        </div>
+        </A3sCodeTui>
       </div>
     </section>
   );

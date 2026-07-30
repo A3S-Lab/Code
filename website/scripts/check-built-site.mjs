@@ -50,11 +50,20 @@ for (const file of requiredFiles) {
 
 const capabilityMarkers = [
   'a3s-capability-stories',
+  'data-a3s-code-tui="hero"',
+  'data-a3s-code-tui="capability-hitl"',
   'HITL',
   'PROGRESSIVE API',
   'RUNTIME TOOL',
   'CODE INTELLIGENCE',
   'CTX RECALL',
+];
+
+const sharedTuiRegionMarkers = [
+  'data-tui-region="titlebar"',
+  'data-tui-region="terminal"',
+  'data-tui-region="composer"',
+  'data-tui-region="footer"',
 ];
 
 for (const homepage of ['index.html', 'en/index.html']) {
@@ -63,6 +72,15 @@ for (const homepage of ['index.html', 'en/index.html']) {
     if (!html.includes(marker)) {
       throw new Error(
         `${homepage} is missing homepage capability marker: ${marker}`,
+      );
+    }
+  }
+
+  for (const marker of sharedTuiRegionMarkers) {
+    const count = html.split(marker).length - 1;
+    if (count < 2) {
+      throw new Error(
+        `${homepage} must render the shared A3S Code TUI ${marker} region for both the hero and capability player`,
       );
     }
   }
