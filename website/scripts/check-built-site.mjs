@@ -66,6 +66,20 @@ const sharedTuiRegionMarkers = [
   'data-tui-region="footer"',
 ];
 
+const realCapabilityTuiMarkers = [
+  'data-real-tui-scene="hitl"',
+  'a3s-real-user-message',
+  'a3s-real-tool-line',
+  '◇ high',
+  'default mode',
+];
+
+const obsoleteCapabilityUiMarkers = [
+  'a3s-capability-player-intro',
+  'a3s-capability-tui-plan',
+  'HUMAN APPROVAL REQUIRED',
+];
+
 for (const homepage of ['index.html', 'en/index.html']) {
   const html = await readFile(path.join(outputRoot, homepage), 'utf8');
   for (const marker of capabilityMarkers) {
@@ -81,6 +95,22 @@ for (const homepage of ['index.html', 'en/index.html']) {
     if (count < 2) {
       throw new Error(
         `${homepage} must render the shared A3S Code TUI ${marker} region for both the hero and capability player`,
+      );
+    }
+  }
+
+  for (const marker of realCapabilityTuiMarkers) {
+    if (!html.includes(marker)) {
+      throw new Error(
+        `${homepage} is missing real capability TUI marker: ${marker}`,
+      );
+    }
+  }
+
+  for (const marker of obsoleteCapabilityUiMarkers) {
+    if (html.includes(marker)) {
+      throw new Error(
+        `${homepage} still renders obsolete capability UI: ${marker}`,
       );
     }
   }

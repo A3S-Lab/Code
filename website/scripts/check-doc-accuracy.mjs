@@ -88,6 +88,7 @@ const [
   rspressConfig,
   homeLayout,
   tuiRuntimeDemo,
+  tuiWelcomeBanner,
 ] = await Promise.all([
   readFile(path.join(repositoryRoot, 'core', 'Cargo.toml'), 'utf8'),
   readFile(path.join(repositoryRoot, 'sdk', 'node', 'package.json'), 'utf8'),
@@ -103,6 +104,10 @@ const [
   ),
   readFile(
     path.join(websiteRoot, 'theme', 'components', 'TuiRuntimeDemo.tsx'),
+    'utf8',
+  ),
+  readFile(
+    path.join(websiteRoot, 'theme', 'components', 'TuiWelcomeBanner.tsx'),
     'utf8',
   ),
 ]);
@@ -166,7 +171,7 @@ if (JSON.stringify(versions) !== JSON.stringify(configuredVersions)) {
   );
 }
 if (
-  ![homeLayout, tuiRuntimeDemo].some((source) =>
+  ![homeLayout, tuiRuntimeDemo, tuiWelcomeBanner].some((source) =>
     source.includes(`a3s-code ${manifest.current}`),
   )
 ) {
