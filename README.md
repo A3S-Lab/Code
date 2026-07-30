@@ -115,7 +115,7 @@ background service share the same execution semantics without sharing a UI.
 ## Capability map
 
 The Core crate has no default Cargo features. Baseline behavior stays small;
-cloud backends, serving, and telemetry are opt-in.
+browser-backed search, cloud backends, serving, and telemetry are opt-in.
 
 | Area | What is available | Activation |
 | --- | --- | --- |
@@ -131,6 +131,7 @@ cloud backends, serving, and telemetry are opt-in.
 | Persistence | Atomic snapshots, run events, traces, artifacts, verification, checkpoints, and optional RL trajectories | Configured store and host policy |
 | State graph | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow projection | Explicit application use |
 | Agent release contract | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks | Baseline admission API |
+| Headless web search | Browser-backed Google/Baidu engines and managed browser lifecycle APIs | Cargo feature `headless-search` |
 | S3 workspace | S3-compatible object backend | Cargo feature `s3` |
 | Filesystem agent server | Agent-directory serving and cron schedules | Cargo feature `serve` |
 | OpenTelemetry | OTLP export in addition to baseline `tracing` | Cargo feature `telemetry` |
@@ -210,7 +211,7 @@ the model.
 | Files and directories | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, order-selectable paginated `glob`, and mode-selectable `grep` |
 | Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination |
 | Code intelligence | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools |
-| Web evidence | Quality-gated API → HTTP/RSS → lazy-headless `web_search` with session circuits, plus bounded `web_fetch`, source normalization, and SSRF protections |
+| Web evidence | Quality-gated native API → HTTP/RSS `web_search` with session circuits, plus bounded `web_fetch`, source normalization, and SSRF protections; the optional `headless-search` feature adds a lazy Google/Baidu tier |
 | Composition | Safe `batch`, sandboxed QuickJS `program`, structured `generate_object`, `task`, and `parallel_task` |
 | Extensibility | `Skill`, `search_skills`, namespaced `mcp__<server>__<tool>`, and explicit `dynamic_workflow` |
 
@@ -379,9 +380,12 @@ python -m pip install a3s-code
 go get github.com/A3S-Lab/Code/sdk/go/v6
 ```
 
-The native SDK crates enable the Core `s3` and `serve` features. The pure-Go
-package uses the matching `a3s-code-go-bridge` release asset and requires no
-CGO. See the [Node.js](sdk/node/README.md), [Python](sdk/python/README.md), and
+The native SDK crates explicitly enable the Core `headless-search`, `s3`, and
+`serve` features to preserve their complete product surface. Direct Rust
+embedders receive native API and HTTP/RSS search without a browser dependency
+unless they opt into `headless-search`. The pure-Go package uses the matching
+`a3s-code-go-bridge` release asset and requires no CGO. See the
+[Node.js](sdk/node/README.md), [Python](sdk/python/README.md), and
 [Go](sdk/go/README.md) guides for surface-specific examples and intentional API
 differences.
 

@@ -3,8 +3,10 @@
 mod engines;
 mod fallback;
 
+#[cfg(feature = "headless-search")]
 use crate::config::{BrowserBackend, HeadlessConfig};
 use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
+#[cfg(feature = "headless-search")]
 use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider};
 use a3s_search::proxy::ProxyConfig;
 use a3s_search::{
@@ -25,7 +27,41 @@ const MAX_JSON_CONTENT_BYTES: usize = 4 * 1024;
 const JSON_OUTPUT_RESERVE_BYTES: usize = 4 * 1024;
 const MAX_JSON_OUTPUT_BYTES: usize = crate::tools::MAX_OUTPUT_SIZE - JSON_OUTPUT_RESERVE_BYTES;
 
-use engines::{add_headless_engine, add_http_engine, default_engine_selection};
+#[cfg(feature = "headless-search")]
+const WEB_SEARCH_DESCRIPTION: &str =
+    "Search the web through a quality-gated cascade: native APIs first, HTTP/RSS engines only \
+     when needed, and headless Google/Baidu only when earlier tiers remain insufficient. \
+     Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
+     are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
+     Supports proxy configuration for conventional and headless search transports.";
+
+#[cfg(not(feature = "headless-search"))]
+const WEB_SEARCH_DESCRIPTION: &str =
+    "Search the web through a quality-gated cascade of native APIs and HTTP/RSS engines. \
+     Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
+     are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
+     Supports proxy configuration for conventional search transports.";
+
+#[cfg(feature = "headless-search")]
+const ENGINE_CATALOG_DESCRIPTION: &str =
+    "Optional. List of search engines or native providers to use. Without explicit configuration, \
+     all built-in providers that advertise anonymous access are combined with the public HTTP \
+     defaults. Available: anysearch (anonymous or authenticated native provider), tavily (keyless \
+     or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), \
+     wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), \
+     g / google (Google, headless), baidu (Baidu, headless).";
+
+#[cfg(not(feature = "headless-search"))]
+const ENGINE_CATALOG_DESCRIPTION: &str =
+    "Optional. List of search engines or native providers to use. Without explicit configuration, \
+     all built-in providers that advertise anonymous access are combined with the public HTTP \
+     defaults. Available: anysearch (anonymous or authenticated native provider), tavily (keyless \
+     or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), \
+     wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), and bing_cn (Bing China RSS).";
+
+#[cfg(feature = "headless-search")]
+use engines::add_headless_engine;
+use engines::{add_http_engine, default_engine_selection};
 use fallback::{
     failure_metadata, failure_summary, outcome_metadata, text_notice_note, tier_timeout,
     tiered_engine_plan, tool_error_kind_for_failures, usable_result_count,
@@ -44,6 +80,7 @@ impl WebSearchTool {
     /// Chrome process for the rest of the TUI session. Keeping the pool scoped
     /// to one invocation lets the cleanup guard deterministically close it on
     /// success, error, timeout, or caller cancellation.
+    #[cfg(feature = "headless-search")]
     fn create_pool(headless_config: Option<&HeadlessConfig>) -> Option<Arc<BrowserPool>> {
         let config = headless_config?;
         let executable = config.browser_path.as_ref().map(std::path::PathBuf::from);
@@ -72,10 +109,12 @@ impl Default for WebSearchTool {
     }
 }
 
+#[cfg(feature = "headless-search")]
 struct BrowserPoolCleanup {
     pool: Option<Arc<BrowserPool>>,
 }
 
+#[cfg(feature = "headless-search")]
 impl BrowserPoolCleanup {
     fn new(pool: Option<Arc<BrowserPool>>) -> Self {
         Self { pool }
@@ -97,6 +136,7 @@ impl BrowserPoolCleanup {
     }
 }
 
+#[cfg(feature = "headless-search")]
 impl Drop for BrowserPoolCleanup {
     fn drop(&mut self) {
         let Some(pool) = self.pool.take() else {
@@ -116,6 +156,7 @@ impl Drop for BrowserPoolCleanup {
     }
 }
 
+#[cfg(feature = "headless-search")]
 fn managed_headless_config() -> Option<HeadlessConfig> {
     let status =
         crate::search_runtime::browser_status(crate::search_runtime::ManagedBrowser::Chrome);
@@ -375,11 +416,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the web through a quality-gated cascade: native APIs first, HTTP/RSS engines only \
-         when needed, and headless Google/Baidu only when earlier tiers remain insufficient. \
-         Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
-         are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
-         Supports proxy configuration for conventional and headless search transports."
+        WEB_SEARCH_DESCRIPTION
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -396,7 +433,7 @@ impl Tool for WebSearchTool {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Optional. List of search engines or native providers to use. Without explicit configuration, all built-in providers that advertise anonymous access are combined with the public HTTP defaults. Available: anysearch (anonymous or authenticated native provider), tavily (keyless or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
+                    "description": ENGINE_CATALOG_DESCRIPTION
                 },
                 "limit": {
                     "type": "integer",
@@ -435,7 +472,7 @@ impl Tool for WebSearchTool {
                 },
                 {
                     "query": "最新新闻",
-                    "engines": ["baidu", "bing_cn"],
+                    "engines": ["sogou", "bing_cn"],
                     "limit": 10
                 }
             ]
@@ -624,56 +661,59 @@ impl Tool for WebSearchTool {
             cascade.push_tier("http", results);
         }
 
-        if cascade.needs_next_tier() && !tier_plan.headless.is_empty() {
-            let mut results = SearchResults::new();
-            if search_deadline
-                .saturating_duration_since(Instant::now())
-                .is_zero()
-            {
-                results.add_failure(
-                    EngineFailure::new(
-                        "Headless search tier",
-                        "timeout",
-                        "search deadline was exhausted before the headless tier could start",
-                    )
-                    .with_transient(true),
-                );
-            } else {
-                let headless_config = config
-                    .and_then(|config| config.headless.clone())
-                    .or_else(managed_headless_config);
-                match Self::create_pool(headless_config.as_ref()) {
-                    Some(pool) => {
-                        let mut cleanup = BrowserPoolCleanup::new(Some(Arc::clone(&pool)));
-                        let mut search = tier_search(ctx, Arc::clone(&search_metrics));
-                        for shortcut in &tier_plan.headless {
-                            if !add_headless_engine(&mut search, shortcut, &pool) {
-                                results.add_failure(EngineFailure::new(
-                                    shortcut,
-                                    "unsupported_engine",
-                                    "headless engine is not available",
-                                ));
-                            }
-                        }
-                        results = execute_search_stage(
-                            search,
-                            results,
-                            &query_str,
+        #[cfg(feature = "headless-search")]
+        {
+            if cascade.needs_next_tier() && !tier_plan.headless.is_empty() {
+                let mut results = SearchResults::new();
+                if search_deadline
+                    .saturating_duration_since(Instant::now())
+                    .is_zero()
+                {
+                    results.add_failure(
+                        EngineFailure::new(
                             "Headless search tier",
-                            search_deadline,
-                            0,
+                            "timeout",
+                            "search deadline was exhausted before the headless tier could start",
                         )
-                        .await;
-                        cleanup.shutdown().await;
+                        .with_transient(true),
+                    );
+                } else {
+                    let headless_config = config
+                        .and_then(|config| config.headless.clone())
+                        .or_else(managed_headless_config);
+                    match Self::create_pool(headless_config.as_ref()) {
+                        Some(pool) => {
+                            let mut cleanup = BrowserPoolCleanup::new(Some(Arc::clone(&pool)));
+                            let mut search = tier_search(ctx, Arc::clone(&search_metrics));
+                            for shortcut in &tier_plan.headless {
+                                if !add_headless_engine(&mut search, shortcut, &pool) {
+                                    results.add_failure(EngineFailure::new(
+                                        shortcut,
+                                        "unsupported_engine",
+                                        "headless engine is not available",
+                                    ));
+                                }
+                            }
+                            results = execute_search_stage(
+                                search,
+                                results,
+                                &query_str,
+                                "Headless search tier",
+                                search_deadline,
+                                0,
+                            )
+                            .await;
+                            cleanup.shutdown().await;
+                        }
+                        None => results.add_failure(EngineFailure::new(
+                            "Headless search tier",
+                            "headless_unavailable",
+                            "no managed headless browser is available",
+                        )),
                     }
-                    None => results.add_failure(EngineFailure::new(
-                        "Headless search tier",
-                        "headless_unavailable",
-                        "no managed headless browser is available",
-                    )),
                 }
+                cascade.push_tier("headless", results);
             }
-            cascade.push_tier("headless", results);
         }
 
         let final_quality = cascade.quality();

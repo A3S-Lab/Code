@@ -1,7 +1,9 @@
 //! Integration tests for web_search tool with headless engines
 //!
-//! Run basic tests: cargo test -p a3s-code-core --test test_web_search_headless
-//! Run with actual browser: cargo test -p a3s-code-core --test test_web_search_headless -- --ignored
+//! Run basic tests: cargo test -p a3s-code-core --features headless-search --test test_web_search_headless
+//! Run with actual browser: cargo test -p a3s-code-core --features headless-search --test test_web_search_headless -- --ignored
+
+#![cfg(feature = "headless-search")]
 
 use a3s_code_core::config::{BrowserBackend, HeadlessConfig, SearchConfig};
 use a3s_code_core::tools::{ToolContext, ToolExecutor};

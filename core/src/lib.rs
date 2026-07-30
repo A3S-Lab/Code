@@ -110,6 +110,7 @@ pub mod rl_trajectory;
 pub mod run;
 pub(crate) mod safety_gate;
 pub mod sandbox;
+#[cfg(feature = "headless-search")]
 pub mod search_runtime;
 pub mod security;
 #[cfg(feature = "serve")]

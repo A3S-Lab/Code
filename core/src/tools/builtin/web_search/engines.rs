@@ -1,14 +1,16 @@
 //! Search-engine registry, aliases, and construction.
 
-use a3s_search::a3s_use_browser::BrowserPool;
 use a3s_search::engines::{
-    Baidu, BingChina, BingParser, BraveParser, DuckDuckGoParser, Google, So360Parser, SogouParser,
-    Wikipedia,
+    BingChina, BingParser, BraveParser, DuckDuckGoParser, So360Parser, SogouParser, Wikipedia,
 };
 use a3s_search::providers::BuiltinProvider;
+#[cfg(feature = "headless-search")]
 use a3s_search::{
-    BrowserFetcher, EngineFailure, HtmlEngine, HttpFetcher, Search, SearchError, WaitStrategy,
+    a3s_use_browser::BrowserPool,
+    engines::{Baidu, Google},
+    BrowserFetcher, WaitStrategy,
 };
+use a3s_search::{EngineFailure, HtmlEngine, HttpFetcher, Search, SearchError};
 use std::sync::Arc;
 
 const PUBLIC_FALLBACK_ENGINES: [&str; 2] = ["ddg", "wiki"];
@@ -17,6 +19,7 @@ const PUBLIC_FALLBACK_ENGINES: [&str; 2] = ["ddg", "wiki"];
 pub(super) enum EngineTier {
     Api,
     Http,
+    #[cfg(feature = "headless-search")]
     Headless,
 }
 
@@ -53,6 +56,7 @@ pub(super) fn engine_tier(shortcut: &str) -> Option<EngineTier> {
     }
     match shortcut {
         "ddg" | "brave" | "bing" | "wiki" | "sogou" | "360" | "bing_cn" => Some(EngineTier::Http),
+        #[cfg(feature = "headless-search")]
         "g" | "baidu" => Some(EngineTier::Headless),
         _ => None,
     }
@@ -150,6 +154,7 @@ pub(super) fn default_engine_selection(
 }
 
 /// Add a headless engine using BrowserPool.
+#[cfg(feature = "headless-search")]
 pub(super) fn add_headless_engine(
     search: &mut Search,
     shortcut: &str,

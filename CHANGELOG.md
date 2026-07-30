@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Made browser-backed Google/Baidu search and the managed browser lifecycle API
+  opt-in behind the `headless-search` Cargo feature. Default Core embeddings
+  retain native API and HTTP/RSS `web_search` without compiling
+  `a3s-use-browser` or `chromiumoxide`; the Node and Python products explicitly
+  enable the feature to preserve their existing search surface.
+
 ## [6.6.0] - 2026-07-29
 
 ### Added

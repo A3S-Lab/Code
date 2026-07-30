@@ -3,6 +3,7 @@ use crate::config::{SearchConfig, SearchEngineConfig};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[cfg(feature = "headless-search")]
 #[tokio::test]
 async fn headless_browser_pool_is_scoped_to_one_tool_execution() {
     let config = HeadlessConfig::default();
@@ -17,6 +18,7 @@ async fn headless_browser_pool_is_scoped_to_one_tool_execution() {
     second.shutdown().await;
 }
 
+#[cfg(feature = "headless-search")]
 #[tokio::test]
 async fn dropped_cleanup_guard_schedules_background_shutdown() {
     let config = HeadlessConfig::default();
@@ -118,7 +120,10 @@ fn automatic_tier_plan_is_stable_and_deduplicated() {
 
     assert_eq!(plan.api, ["anysearch"]);
     assert_eq!(plan.http, ["ddg", "brave", "bing", "wiki"]);
+    #[cfg(feature = "headless-search")]
     assert_eq!(plan.headless, ["g", "baidu"]);
+    #[cfg(not(feature = "headless-search"))]
+    assert!(plan.headless.is_empty());
 }
 
 #[test]
@@ -145,7 +150,10 @@ fn tier_plan_normalizes_aliases_and_respects_disabled_configuration() {
     let automatic = tiered_engine_plan(&["AnySearch"], Some(&config), true);
     assert_eq!(automatic.api, ["anysearch"]);
     assert_eq!(automatic.http, ["brave", "bing"]);
+    #[cfg(feature = "headless-search")]
     assert_eq!(automatic.headless, ["g", "baidu"]);
+    #[cfg(not(feature = "headless-search"))]
+    assert!(automatic.headless.is_empty());
 
     let explicit = tiered_engine_plan(&["duckduckgo", "wikipedia"], None, false);
     assert!(explicit.api.is_empty());
@@ -529,18 +537,29 @@ fn bing_china_is_http_only() {
         super::engines::engine_tier("bing_cn"),
         Some(super::engines::EngineTier::Http)
     );
+    #[cfg(feature = "headless-search")]
     assert_eq!(
         super::engines::engine_tier("google"),
         Some(super::engines::EngineTier::Headless)
     );
+    #[cfg(not(feature = "headless-search"))]
+    assert_eq!(super::engines::engine_tier("google"), None);
 }
 
+#[cfg(feature = "headless-search")]
 #[test]
 fn explicit_headless_selection_does_not_invent_earlier_tiers() {
     let plan = tiered_engine_plan(&["google"], None, false);
     assert!(plan.api.is_empty());
     assert!(plan.http.is_empty());
     assert_eq!(plan.headless, ["g"]);
+}
+
+#[cfg(not(feature = "headless-search"))]
+#[test]
+fn headless_selection_is_unavailable_without_the_feature() {
+    let plan = tiered_engine_plan(&["google", "baidu"], None, false);
+    assert!(plan.is_empty());
 }
 
 #[tokio::test]
@@ -638,6 +657,14 @@ fn test_web_search_schema_is_canonical() {
                 && description.contains("anysearch")
                 && description.contains("tavily")
         }));
+    #[cfg(feature = "headless-search")]
+    assert!(params["properties"]["engines"]["description"]
+        .as_str()
+        .is_some_and(|description| description.contains("Google, headless")));
+    #[cfg(not(feature = "headless-search"))]
+    assert!(params["properties"]["engines"]["description"]
+        .as_str()
+        .is_some_and(|description| !description.contains("Google")));
 }
 
 #[test]
@@ -696,6 +723,7 @@ fn test_add_http_engine_unknown() {
     assert_eq!(search.engine_count(), 0);
 }
 
+#[cfg(feature = "headless-search")]
 #[test]
 fn test_add_headless_engine_valid() {
     let mut search = Search::new();
@@ -712,6 +740,7 @@ fn test_add_headless_engine_valid() {
     assert_eq!(search.engine_count(), 2);
 }
 
+#[cfg(feature = "headless-search")]
 #[test]
 fn test_add_headless_engine_aliases() {
     let mut search = Search::new();
@@ -722,6 +751,7 @@ fn test_add_headless_engine_aliases() {
     assert_eq!(search.engine_count(), 1);
 }
 
+#[cfg(feature = "headless-search")]
 #[test]
 fn test_add_headless_engine_unknown() {
     let mut search = Search::new();

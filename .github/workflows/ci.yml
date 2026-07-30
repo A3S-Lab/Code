@@ -32,6 +32,18 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      - name: Check browser dependency boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          default_tree="$(cargo tree -p a3s-code-core --no-default-features -e normal)"
+          if grep -q 'chromiumoxide' <<<"$default_tree"; then
+            echo "default Core must not compile the browser/CDP dependency stack" >&2
+            exit 1
+          fi
+          headless_tree="$(cargo tree -p a3s-code-core --no-default-features --features headless-search -e normal)"
+          grep -q 'chromiumoxide' <<<"$headless_tree"
+
       - name: Clippy
         run: cargo clippy --workspace --lib --bins -- -D warnings
 

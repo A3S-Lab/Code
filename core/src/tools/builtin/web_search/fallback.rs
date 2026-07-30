@@ -7,6 +7,7 @@ use a3s_search::{EngineFailure, EngineOutcome, SearchResults};
 use std::time::Duration;
 
 const DEFAULT_HTTP_TIER: [&str; 4] = ["ddg", "brave", "bing", "wiki"];
+#[cfg(feature = "headless-search")]
 const DEFAULT_HEADLESS_TIER: [&str; 2] = ["g", "baidu"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -52,8 +53,11 @@ pub(super) fn tiered_engine_plan(
         for shortcut in DEFAULT_HTTP_TIER {
             add_planned_engine(&mut plan, shortcut, config);
         }
-        for shortcut in DEFAULT_HEADLESS_TIER {
-            add_planned_engine(&mut plan, shortcut, config);
+        #[cfg(feature = "headless-search")]
+        {
+            for shortcut in DEFAULT_HEADLESS_TIER {
+                add_planned_engine(&mut plan, shortcut, config);
+            }
         }
     }
 
@@ -76,6 +80,7 @@ fn add_planned_engine(
     let target = match engine_tier(canonical) {
         Some(EngineTier::Api) => &mut plan.api,
         Some(EngineTier::Http) => &mut plan.http,
+        #[cfg(feature = "headless-search")]
         Some(EngineTier::Headless) => &mut plan.headless,
         None => return,
     };
