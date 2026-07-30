@@ -10,6 +10,7 @@ type A3sCodeTuiProps = {
   branch?: string;
   children: ReactNode;
   className?: string;
+  composerHidden?: boolean;
   composerMode?: A3sCodeTuiInputMode;
   composerStatus: string;
   composerSymbol?: string;
@@ -17,6 +18,7 @@ type A3sCodeTuiProps = {
   contextLabel: string;
   identity?: string;
   isPlaying: boolean;
+  modeGlyph?: string;
   modeLabel: string;
   model?: string;
   onPlayback: () => void;
@@ -41,6 +43,7 @@ export const A3sCodeTui = forwardRef<HTMLDivElement, A3sCodeTuiProps>(
       branch = 'git:(main)',
       children,
       className,
+      composerHidden = false,
       composerMode = 'default',
       composerStatus,
       composerSymbol = '❯',
@@ -48,6 +51,7 @@ export const A3sCodeTui = forwardRef<HTMLDivElement, A3sCodeTuiProps>(
       contextLabel,
       identity = 'a3s',
       isPlaying,
+      modeGlyph = '●',
       modeLabel,
       model = 'gpt-5 (128k context)',
       onPlayback,
@@ -66,8 +70,10 @@ export const A3sCodeTui = forwardRef<HTMLDivElement, A3sCodeTuiProps>(
           'a3s-runtime-inspector',
           'a3s-tui-player',
           isPlaying && 'is-running',
+          composerHidden && 'is-fullscreen',
           className,
         )}
+        data-composer-hidden={composerHidden || undefined}
         data-a3s-code-tui={surface}
         data-phase={phase}
         ref={ref}
@@ -98,7 +104,11 @@ export const A3sCodeTui = forwardRef<HTMLDivElement, A3sCodeTuiProps>(
         </section>
 
         <section
-          className="a3s-tui-composer"
+          aria-hidden={composerHidden || undefined}
+          className={classNames(
+            'a3s-tui-composer',
+            composerHidden && 'is-hidden',
+          )}
           data-input-mode={composerMode}
           data-tui-region="composer"
         >
@@ -119,7 +129,7 @@ export const A3sCodeTui = forwardRef<HTMLDivElement, A3sCodeTuiProps>(
           <div className="a3s-tui-input-rule" />
           <footer className="a3s-tui-footer" data-tui-region="footer">
             <span className="a3s-tui-mode">
-              <i aria-hidden="true">●</i>
+              <i aria-hidden="true">{modeGlyph}</i>
               {modeLabel}
             </span>
             <span className="a3s-tui-context">

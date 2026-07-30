@@ -61,7 +61,6 @@ export const copy = {
     flowPlayOnce: '播放一次',
     tuiWorkspace: '~/workspace/a3s',
     tuiMode: 'default',
-    tuiTip: '输入消息 · / 打开命令 · Shift+Tab 切换模式 · Ctrl+C 两次退出',
     tuiSlashInput: '/effort',
     tuiSlashEffort: '调整推理强度',
     tuiSlashModel: '切换模型与 Provider',
@@ -174,8 +173,6 @@ export const copy = {
     flowPlayOnce: 'PLAY ONCE',
     tuiWorkspace: '~/workspace/a3s',
     tuiMode: 'default',
-    tuiTip:
-      'Type a message · / for commands · Shift+Tab cycles mode · Ctrl+C twice to exit',
     tuiSlashInput: '/effort',
     tuiSlashEffort: 'adjust model effort',
     tuiSlashModel: 'switch model and provider',

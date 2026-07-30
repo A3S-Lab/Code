@@ -1,6 +1,6 @@
 @media (max-width: 1100px) {
   .a3s-capability-console {
-    grid-template-columns: 230px minmax(0, 1fr);
+    grid-template-columns: 225px minmax(0, 1fr);
   }
 
   .a3s-capability-selector > button {
@@ -15,10 +15,8 @@
     height: 31px;
   }
 
-  .a3s-capability-player-intro {
-    align-items: flex-start;
-    grid-template-columns: 1fr;
-    gap: 14px;
+  .a3s-real-tool-line > header {
+    grid-template-columns: 15px auto minmax(0, 1fr);
   }
 }
 
@@ -66,10 +64,6 @@
   .a3s-capability-selector > button > em {
     display: none;
   }
-
-  .a3s-capability-player-stage {
-    min-height: 390px;
-  }
 }
 
 @media (max-width: 640px) {
@@ -101,103 +95,183 @@
     font-size: 10px;
   }
 
-  .a3s-capability-player-intro {
-    gap: 9px;
+  .a3s-capability-player > .a3s-tui-terminal {
+    padding: 14px 11px 8px;
   }
 
-  .a3s-capability-player-intro h3 {
-    font-size: 16px;
+  .a3s-capability-player.is-fullscreen > .a3s-tui-terminal {
+    padding: 5px;
   }
 
-  .a3s-capability-player-stage {
-    min-height: 360px;
+  .a3s-real-transcript {
+    gap: 14px;
   }
 
-  .a3s-capability-scene {
-    min-height: 350px;
-    padding: 0;
+  .a3s-real-user-message {
+    padding: 11px 10px;
   }
 
-  .a3s-capability-call,
-  .a3s-runtime-tool-call {
-    grid-template-columns: auto minmax(0, 1fr);
+  .a3s-real-user-message > p,
+  .a3s-real-tool-line > header > strong {
+    font-size: 10.5px;
   }
 
-  .a3s-capability-call em {
+  .a3s-real-tool-line > header > code {
+    font-size: 9.5px;
+  }
+
+  .a3s-real-tool-line > div > p > code {
+    font-size: 9px;
+  }
+
+  .a3s-real-approval > ol > li > span,
+  .a3s-real-approval > ol > li > b,
+  .a3s-real-approval > ol > li > i,
+  .a3s-real-approval > ol > li > p,
+  .a3s-real-approval-detail > span,
+  .a3s-real-approval-detail > code {
+    font-size: 9.5px;
+  }
+
+  .a3s-real-runtime-tracker > header {
+    grid-template-columns: 13px minmax(0, 1fr);
+  }
+
+  .a3s-real-runtime-tracker > header > small {
+    padding-left: 20px;
+    grid-column: 1 / -1;
+  }
+
+  .a3s-real-runtime-tracker > div > p {
+    grid-template-columns: 13px auto minmax(0, 1fr);
+  }
+
+  .a3s-real-runtime-tracker > div > p > small {
     display: none;
   }
 
-  .a3s-progressive-endpoint span {
-    display: none;
+  .a3s-real-ide {
+    grid-template-rows: minmax(0, 1fr) 52px;
+    gap: 3px;
   }
 
-  .a3s-progressive-steps > div {
-    grid-template-columns: 54px 14px minmax(0, 1fr);
+  .a3s-real-ide-main,
+  .a3s-real-ide-footer {
+    gap: 3px;
   }
 
-  .a3s-intelligence-workbench {
-    min-height: 0;
-    grid-template-columns: 1fr;
+  .a3s-real-ide-main {
+    grid-template-columns: minmax(105px, 0.31fr) minmax(0, 0.69fr);
   }
 
-  .a3s-intelligence-code {
-    border-right: 0;
-    border-bottom: 1px solid #29323c;
+  .a3s-real-ide-frame {
+    border-radius: 5px;
+    grid-template-rows: 24px minmax(0, 1fr);
   }
 
-  .a3s-intelligence-workbench > aside {
-    min-height: 174px;
+  .a3s-real-ide-frame > header {
+    padding: 0 6px;
+    font-size: 8.5px;
   }
 
-  .a3s-intelligence-workbench li {
-    min-height: 34px;
+  .a3s-real-ide-tree > div {
+    padding: 4px 2px;
   }
 
-  .a3s-capability-scene--intelligence {
-    min-height: 0;
+  .a3s-real-ide-tree p {
+    min-height: 23px;
+    padding: 0 3px;
+    grid-template-columns: 11px minmax(0, 1fr);
+    gap: 3px;
+    font-size: 8.5px;
   }
 
-  .a3s-capability-scene--intelligence > footer {
-    flex-wrap: wrap;
+  .a3s-real-ide-tree p:nth-child(n + 2) {
+    padding-left: 8px;
   }
 
-  .a3s-capability-scene--intelligence > footer code {
-    display: none;
+  .a3s-real-ide-code > p {
+    min-height: 24px;
+    grid-template-columns: 28px minmax(0, 1fr);
   }
 
-  .a3s-ctx-results > div {
-    grid-template-columns: 18px 48px minmax(0, 1fr);
+  .a3s-real-ide-code > p > span {
+    padding-right: 5px;
+    font-size: 8px;
   }
 
-  .a3s-ctx-results > div small {
-    display: none;
+  .a3s-real-ide-code > p > code,
+  .a3s-real-ide-results > p {
+    font-size: 8.5px;
   }
 
-  .a3s-ctx-actions {
-    grid-template-columns: 1fr;
+  .a3s-real-ide-footer .a3s-real-ide-frame > p {
+    padding-right: 5px;
+    padding-left: 5px;
+    font-size: 7.5px;
   }
 
-  .a3s-capability-tui-tag:nth-of-type(n + 4) {
-    display: none;
+  .a3s-real-ctx-results > div > p {
+    grid-template-columns: 23px minmax(0, 1fr);
+  }
+
+  .a3s-real-ctx-results > div > p > b,
+  .a3s-real-ctx-results > div > p > strong,
+  .a3s-real-notice {
+    font-size: 9.5px;
+  }
+
+  .a3s-real-ctx-results > div > small,
+  .a3s-real-ctx-results > footer {
+    padding-left: 28px;
+    font-size: 8.5px;
+  }
+}
+
+@media (max-width: 390px) {
+  .a3s-real-approval > ol > li {
+    grid-template-columns: 10px 11px 12px minmax(0, 1fr);
+    gap: 3px;
+  }
+
+  .a3s-real-approval > ol > li > p {
+    font-size: 8.7px;
+  }
+
+  .a3s-real-tool-line > header {
+    grid-template-columns: 13px auto minmax(0, 1fr);
+    gap: 3px;
+  }
+
+  .a3s-real-tool-line > header > strong {
+    font-size: 9.5px;
+  }
+
+  .a3s-real-tool-line > header > code {
+    font-size: 8.7px;
+  }
+
+  .a3s-real-ide-main {
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+
+  .a3s-real-ide-footer {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  }
+
+  .a3s-real-ctx-results > div > p > strong,
+  .a3s-real-ctx-results > div > small {
+    white-space: normal;
+  }
+
+  .a3s-real-ctx-results > footer {
+    white-space: normal;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .a3s-capability-player-stage,
-  .a3s-capability-tui-plan li.is-active > i,
-  .a3s-progressive-steps .is-active i,
-  .a3s-progressive-view.is-ready,
-  .a3s-runtime-batch > div.is-running > i b,
-  .a3s-ctx-actions > div.is-ready {
-    animation: none;
-  }
-
-  .a3s-capability-selector > button,
-  .a3s-capability-selector > button::after,
-  .a3s-capability-approval,
-  .a3s-progressive-steps > div,
-  .a3s-runtime-batch > div > i b,
-  .a3s-intelligence-workbench li {
-    transition: none;
+  .a3s-capability-console,
+  .a3s-capability-selector {
+    scroll-behavior: auto;
   }
 }
