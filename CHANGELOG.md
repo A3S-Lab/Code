@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Upgraded the Core HTTP transport to `reqwest` 0.12 so the Windows Bash curl
+  compatibility path sends its normalized JSON body without leading CRLF
+  bytes, while preserving stable retryable timeout diagnostics.
+
 ## [6.7.0] - 2026-07-31
 
 ### Added

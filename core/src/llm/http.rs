@@ -42,6 +42,12 @@ impl HttpClientError {
                 operation: operation.to_string(),
                 message: error.to_string(),
             }
+        } else if error.is_timeout() {
+            // reqwest 0.12 no longer guarantees that the rendered transport
+            // chain contains the word "timeout" on every platform. Preserve
+            // the stable public diagnostic while retaining the retryable
+            // Transport classification.
+            Self::transport(operation, format!("timed out: {error}"))
         } else {
             Self::transport(operation, error.to_string())
         }
