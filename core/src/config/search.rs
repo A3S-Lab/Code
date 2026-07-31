@@ -31,10 +31,10 @@ pub struct SearchConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BrowserBackend {
-    /// Chrome/Chromium headless browser.
+    /// Chrome/Chromium headless browser and the cross-platform default.
     #[default]
     Chrome,
-    /// Lightpanda headless browser.
+    /// Explicit Lightpanda backend (native Linux/macOS; WSL2 on Windows).
     Lightpanda,
 }
 

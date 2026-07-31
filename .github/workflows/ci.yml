@@ -36,11 +36,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          default_tree="$(cargo tree -p a3s-code-core --no-default-features -e normal)"
-          if grep -q 'chromiumoxide' <<<"$default_tree"; then
-            echo "default Core must not compile the browser/CDP dependency stack" >&2
+          minimal_tree="$(cargo tree -p a3s-code-core --no-default-features -e normal)"
+          if grep -q 'chromiumoxide' <<<"$minimal_tree"; then
+            echo "minimal Core must not compile the browser/CDP dependency stack" >&2
             exit 1
           fi
+          default_tree="$(cargo tree -p a3s-code-core -e normal)"
+          grep -q 'chromiumoxide' <<<"$default_tree"
           headless_tree="$(cargo tree -p a3s-code-core --no-default-features --features headless-search -e normal)"
           grep -q 'chromiumoxide' <<<"$headless_tree"
 

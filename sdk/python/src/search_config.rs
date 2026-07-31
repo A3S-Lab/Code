@@ -92,7 +92,7 @@ impl From<PySearchHealthConfig> for RustSearchHealthConfig {
 pub(super) enum PyBrowserBackend {
     /// Chrome/Chromium headless.
     Chrome,
-    /// Lightpanda headless browser (Linux/macOS only).
+    /// Lightpanda headless browser (native Linux/macOS; WSL2 on Windows hosts).
     Lightpanda,
 }
 

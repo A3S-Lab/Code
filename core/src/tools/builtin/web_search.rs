@@ -10,8 +10,8 @@ use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider};
 use a3s_search::proxy::ProxyConfig;
 use a3s_search::{
-    EngineFailure, Metrics, MetricsSnapshot, Search, SearchCascade, SearchQualityFloor,
-    SearchQuery, SearchResult, SearchResults,
+    EngineFailure, Metrics, MetricsSnapshot, Search, SearchCascade, SearchCoalescerSnapshot,
+    SearchQualityFloor, SearchQuery, SearchResult, SearchResults,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -81,8 +81,7 @@ impl WebSearchTool {
     /// to one invocation lets the cleanup guard deterministically close it on
     /// success, error, timeout, or caller cancellation.
     #[cfg(feature = "headless-search")]
-    fn create_pool(headless_config: Option<&HeadlessConfig>) -> Option<Arc<BrowserPool>> {
-        let config = headless_config?;
+    fn create_pool(config: &HeadlessConfig) -> Arc<BrowserPool> {
         let executable = config.browser_path.as_ref().map(std::path::PathBuf::from);
         let provider = match (config.backend, executable) {
             (BrowserBackend::Chrome, Some(path)) => BrowserProvider::ChromeExecutable(path),
@@ -99,7 +98,7 @@ impl WebSearchTool {
             launch_args: config.launch_args.clone(),
         };
 
-        Some(Arc::new(BrowserPool::new(pool_config)))
+        Arc::new(BrowserPool::new(pool_config))
     }
 }
 
@@ -168,6 +167,18 @@ fn managed_headless_config() -> Option<HeadlessConfig> {
     })
 }
 
+#[cfg(feature = "headless-search")]
+fn effective_headless_config(
+    configured: Option<&HeadlessConfig>,
+    proxy_url: Option<&str>,
+) -> Option<HeadlessConfig> {
+    let mut config = configured.cloned().or_else(managed_headless_config)?;
+    if let Some(proxy_url) = proxy_url {
+        config.proxy_url = Some(proxy_url.to_string());
+    }
+    Some(config)
+}
+
 fn search_result_json(result: &SearchResult, full_text_bytes: Option<usize>) -> serde_json::Value {
     let engines = sorted_search_engines(result);
     let safe_url = safe_search_result_url(result);
@@ -181,6 +192,7 @@ fn search_result_json(result: &SearchResult, full_text_bytes: Option<usize>) -> 
         "content": safe_content,
         "engines": engines,
         "score": result.score,
+        "query_match_score": result.query_match_score,
         "published_date": result.published_date,
     });
     if let (Some(maximum), Some(full_text)) = (full_text_bytes, result.full_text.as_deref()) {
@@ -208,6 +220,25 @@ fn bounded_json_search_results(
         break;
     }
     bounded
+}
+
+fn json_search_payload(
+    results: Vec<serde_json::Value>,
+    quality_met: bool,
+    quality: &a3s_search::SearchQuality,
+    quality_floor: &SearchQualityFloor,
+) -> serde_json::Value {
+    if quality_met {
+        serde_json::Value::Array(results)
+    } else {
+        serde_json::json!({
+            "status": "quality_not_met",
+            "message": "Search exhausted the available tiers without meeting the generic quality floor; reformulate the query before treating these candidates as evidence.",
+            "search_quality": quality,
+            "search_quality_floor": quality_floor,
+            "results": results,
+        })
+    }
 }
 
 fn safe_search_result_url(result: &SearchResult) -> String {
@@ -307,10 +338,23 @@ fn search_metrics_json(snapshot: &MetricsSnapshot) -> serde_json::Value {
     })
 }
 
+fn search_coalescer_json(snapshot: &SearchCoalescerSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "max_in_flight": snapshot.max_in_flight,
+        "in_flight": snapshot.in_flight,
+        "leader_requests": snapshot.leader_requests,
+        "shared_requests": snapshot.shared_requests,
+        "bypassed_requests": snapshot.bypassed_requests,
+        "abandoned_requests": snapshot.abandoned_requests,
+    })
+}
+
 fn tier_search(ctx: &ToolContext, metrics: Arc<Metrics>) -> Search {
     Search::new()
         .with_metrics(metrics)
         .with_circuit_breaker(ctx.search_circuit_breaker())
+        .with_bulkhead(ctx.search_bulkhead())
+        .with_request_coalescer(ctx.search_request_coalescer())
 }
 
 fn search_error_failure(engine: &str, error: &a3s_search::SearchError) -> EngineFailure {
@@ -678,15 +722,24 @@ impl Tool for WebSearchTool {
                         .with_transient(true),
                     );
                 } else {
-                    let headless_config = config
-                        .and_then(|config| config.headless.clone())
-                        .or_else(managed_headless_config);
-                    match Self::create_pool(headless_config.as_ref()) {
-                        Some(pool) => {
+                    let headless_config = effective_headless_config(
+                        config.and_then(|config| config.headless.as_ref()),
+                        proxy_url.as_deref(),
+                    );
+                    match headless_config {
+                        Some(headless_config) => {
+                            let pool = Self::create_pool(&headless_config);
                             let mut cleanup = BrowserPoolCleanup::new(Some(Arc::clone(&pool)));
                             let mut search = tier_search(ctx, Arc::clone(&search_metrics));
+                            let retry_budget = ctx.search_retry_budget();
                             for shortcut in &tier_plan.headless {
-                                if !add_headless_engine(&mut search, shortcut, &pool) {
+                                if !add_headless_engine(
+                                    &mut search,
+                                    shortcut,
+                                    &pool,
+                                    headless_config.backend,
+                                    &retry_budget,
+                                ) {
                                     results.add_failure(EngineFailure::new(
                                         shortcut,
                                         "unsupported_engine",
@@ -751,6 +804,7 @@ impl Tool for WebSearchTool {
         });
         let metrics = search_metrics.snapshot().await;
         let metrics_json = search_metrics_json(&metrics);
+        let coalescer_json = search_coalescer_json(&ctx.search_request_coalescer().snapshot());
 
         let items = search_results.items();
         let results: Vec<_> = items
@@ -787,7 +841,7 @@ impl Tool for WebSearchTool {
 
         if results.is_empty() {
             let metadata = serde_json::json!({
-                "status": if errors.is_empty() { "complete" } else { "failed" },
+                "status": if quality_met && errors.is_empty() { "complete" } else { "failed" },
                 "engine_selection_source": engine_selection_source,
                 "selected_engines": &selected_engines,
                 "engine_fallback": (tier_reports.len() > 1).then_some("quality_gated_tiers"),
@@ -798,6 +852,7 @@ impl Tool for WebSearchTool {
                 "search_tiers": &tier_reports,
                 "engine_outcomes": outcome_metadata(search_results.outcomes()),
                 "search_metrics": metrics_json,
+                "search_coalescing": coalescer_json,
                 "engine_errors": engine_errors,
                 "engine_failures": engine_failures,
             });
@@ -805,7 +860,7 @@ impl Tool for WebSearchTool {
                 "No results found for query: \"{}\"{}{}",
                 query_str, notice_note, error_note
             );
-            if errors.is_empty() {
+            if quality_met && errors.is_empty() {
                 return Ok(ToolOutput::success(message).with_metadata(metadata));
             }
             let mut output = ToolOutput::error(message).with_metadata(metadata);
@@ -832,7 +887,13 @@ impl Tool for WebSearchTool {
                 .map(str::to_string)
                 .collect::<Vec<_>>();
             (
-                serde_json::to_string_pretty(&json_results).unwrap_or_default(),
+                serde_json::to_string_pretty(&json_search_payload(
+                    json_results,
+                    quality_met,
+                    &final_quality,
+                    &quality_floor,
+                ))
+                .unwrap_or_default(),
                 source_anchors,
                 returned_result_count,
             )
@@ -860,9 +921,14 @@ impl Tool for WebSearchTool {
             (text, source_anchors, results.len())
         };
 
+        let tool_output = if quality_met {
+            ToolOutput::success(output)
+        } else {
+            ToolOutput::error(output)
+        };
         Ok(
-            ToolOutput::success(output).with_metadata(serde_json::json!({
-                "status": if errors.is_empty() { "complete" } else { "partial" },
+            tool_output.with_metadata(serde_json::json!({
+                "status": if !quality_met { "failed" } else if errors.is_empty() { "complete" } else { "partial" },
                 "engine_selection_source": engine_selection_source,
                 "selected_engines": &selected_engines,
                 "source_anchors": source_anchors,
@@ -874,6 +940,7 @@ impl Tool for WebSearchTool {
                 "search_tiers": &tier_reports,
                 "engine_outcomes": outcome_metadata(search_results.outcomes()),
                 "search_metrics": metrics_json,
+                "search_coalescing": coalescer_json,
                 "engine_errors": engine_errors,
                 "engine_failures": engine_failures,
                 "available_result_count": results.len(),
