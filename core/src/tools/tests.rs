@@ -184,8 +184,8 @@ impl WorkspaceCommandRunner for MockCommandRunner {
 #[tokio::test]
 async fn test_tool_executor_creation() {
     let executor = ToolExecutor::new("/tmp".to_string());
-    // Baseline tools on a raw ToolExecutor: 13
-    assert_eq!(executor.registry.len(), 13);
+    // Baseline tools on a raw local ToolExecutor: 14
+    assert_eq!(executor.registry.len(), 14);
 }
 
 #[tokio::test]
@@ -214,6 +214,7 @@ async fn test_builtin_tools_registered() {
     assert!(definitions.iter().any(|t| t.name == "patch"));
     assert!(definitions.iter().any(|t| t.name == "web_fetch"));
     assert!(definitions.iter().any(|t| t.name == "web_search"));
+    assert!(definitions.iter().any(|t| t.name == "download"));
     assert!(definitions.iter().any(|t| t.name == "batch"));
 }
 
@@ -239,6 +240,7 @@ async fn test_builtin_file_tools_use_workspace_services() {
     assert!(!definitions.iter().any(|tool| tool.name == "grep"));
     assert!(definitions.iter().any(|tool| tool.name == "edit"));
     assert!(definitions.iter().any(|tool| tool.name == "patch"));
+    assert!(!definitions.iter().any(|tool| tool.name == "download"));
 
     let read = executor
         .execute("read", &serde_json::json!({"file_path": "remote.txt"}))
@@ -422,8 +424,8 @@ fn test_tool_executor_workspace() {
 fn test_tool_executor_registry() {
     let executor = ToolExecutor::new("/tmp".to_string());
     let registry = executor.registry();
-    // Baseline tools on a raw ToolExecutor: 13
-    assert_eq!(registry.len(), 13);
+    // Baseline tools on a raw local ToolExecutor: 14
+    assert_eq!(registry.len(), 14);
 }
 
 #[tokio::test]

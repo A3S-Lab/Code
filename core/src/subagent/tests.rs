@@ -341,6 +341,20 @@ fn test_builtin_agent_permissions_are_bounded() {
         PermissionDecision::Deny
     );
     assert_eq!(
+        explore.permissions.check(
+            "download",
+            &serde_json::json!({"url": "https://example.com/file"})
+        ),
+        PermissionDecision::Deny
+    );
+    assert_eq!(
+        general.permissions.check(
+            "download",
+            &serde_json::json!({"url": "https://example.com/file"})
+        ),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
         general
             .permissions
             .check("parallel_task", &serde_json::json!({})),
@@ -378,6 +392,15 @@ fn test_builtin_agent_permissions_are_bounded() {
                 .check("write", &serde_json::json!({"file_path": "x"})),
             PermissionDecision::Deny,
             "{} should stay read-only for workspace writes",
+            agent.name
+        );
+        assert_eq!(
+            agent.permissions.check(
+                "download",
+                &serde_json::json!({"url": "https://example.com/file"})
+            ),
+            PermissionDecision::Deny,
+            "{} should stay read-only for downloads",
             agent.name
         );
         assert_eq!(

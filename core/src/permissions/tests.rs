@@ -107,6 +107,55 @@ fn interactive_guardrail_exposes_four_risk_levels_without_weakening_hitl() {
 }
 
 #[test]
+fn download_is_a_bounded_mixed_workspace_mutation() {
+    let default = InteractiveToolGuardrail::default();
+    let assessment = default.assess(
+        "download",
+        &json!({
+            "url": "https://example.com/release.bin",
+            "file_path": "artifacts/release.bin"
+        }),
+    );
+    assert_eq!(assessment.level, ToolRiskLevel::Bounded);
+    assert_eq!(
+        assessment.dimensions.tool_type,
+        ToolRiskType::WorkspaceMutation
+    );
+    assert_eq!(
+        assessment.dimensions.operation_target,
+        OperationTarget::Multiple
+    );
+    assert_eq!(
+        assessment.dimensions.environment_sensitivity,
+        EnvironmentSensitivity::Mixed
+    );
+    assert_eq!(
+        default.check(
+            "download",
+            &json!({"url": "https://example.com/release.bin"})
+        ),
+        PermissionDecision::Ask
+    );
+    assert_eq!(
+        InteractiveToolGuardrail::for_mode("auto").check(
+            "download",
+            &json!({"url": "https://example.com/release.bin"})
+        ),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        default.check(
+            "download",
+            &json!({
+                "url": "https://example.com/release.bin",
+                "file_path": "../outside.bin"
+            })
+        ),
+        PermissionDecision::Deny
+    );
+}
+
+#[test]
 fn interactive_guardrail_aggregates_the_highest_batch_risk() {
     let guardrail = InteractiveToolGuardrail::for_mode("auto");
     for (args, expected_level, expected_action, expected_permission) in [

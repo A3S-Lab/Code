@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a local-workspace `download` tool with SSRF-safe redirects, strict HTTP
+  range validation, adaptive bounded concurrency, retry and sequential fallback,
+  optional SHA-256 verification, and crash-safe atomic publication.
+
 ### Changed
 
 - Made browser-backed Google/Baidu search and the managed browser lifecycle API

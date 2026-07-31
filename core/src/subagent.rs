@@ -807,7 +807,7 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
 fn explore_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
         .allow_all(&["read", "grep", "glob", "ls", "web_fetch", "web_search"])
-        .deny_all(&["write", "edit", "task", "parallel_task"])
+        .deny_all(&["write", "edit", "download", "task", "parallel_task"])
         .allow("Bash(ls:*)")
         .allow("Bash(cat:*)")
         .allow("Bash(head:*)")
@@ -834,6 +834,7 @@ fn general_permissions() -> PermissionPolicy {
             "bash",
             "web_fetch",
             "web_search",
+            "download",
             "git",
             "patch",
             "batch",
@@ -847,7 +848,7 @@ fn general_permissions() -> PermissionPolicy {
 fn plan_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
         .allow_all(&["read", "grep", "glob", "ls"])
-        .deny_all(&["write", "edit", "bash", "task", "parallel_task"]);
+        .deny_all(&["write", "edit", "download", "bash", "task", "parallel_task"]);
     policy.default_decision = PermissionDecision::Deny;
     policy
 }
@@ -864,7 +865,7 @@ fn verification_permissions() -> PermissionPolicy {
             "web_fetch",
             "web_search",
         ])
-        .deny_all(&["write", "edit", "task", "parallel_task"]);
+        .deny_all(&["write", "edit", "download", "task", "parallel_task"]);
     policy.default_decision = PermissionDecision::Deny;
     policy
 }
@@ -881,7 +882,7 @@ fn review_permissions() -> PermissionPolicy {
             "web_fetch",
             "web_search",
         ])
-        .deny_all(&["write", "edit", "task", "parallel_task"]);
+        .deny_all(&["write", "edit", "download", "task", "parallel_task"]);
     policy.default_decision = PermissionDecision::Deny;
     policy
 }

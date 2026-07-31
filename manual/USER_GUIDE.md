@@ -262,8 +262,15 @@ read-only tool invocation and never writes the workspace.
 | `bash` | Execute shell commands |
 | `web_fetch` | Fetch web page content |
 | `web_search` | Perform web search |
+| `download` | Download a binary file into the local workspace |
 | `git` | Git status, diff, branch, and worktree operations |
 | `program` | Bounded programmatic tool calling (PTC) |
+
+`download` accepts a public HTTP(S) URL and an optional workspace-relative
+`file_path`. It streams binary data through a size limit, uses validated Range
+requests only when the server supplies a representation validator, and publishes
+the destination atomically after optional SHA-256 verification. It is available
+only for local workspace backends.
 
 ### 5.2 Delegation Tools
 

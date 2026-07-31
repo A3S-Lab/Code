@@ -149,7 +149,7 @@ impl PermissionRule {
                     .unwrap_or("")
                     .to_string()
             }
-            "read" | "write" | "edit" => {
+            "read" | "write" | "edit" | "download" => {
                 // For file operations, use the file_path field
                 args.get("file_path")
                     .and_then(|v| v.as_str())

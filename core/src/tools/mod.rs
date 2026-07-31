@@ -347,7 +347,7 @@ impl ToolExecutor {
         ctx: &ToolContext,
     ) -> Result<()> {
         let path_field = match name {
-            "read" | "write" | "edit" | "patch" => Some("file_path"),
+            "read" | "write" | "edit" | "patch" | "download" => Some("file_path"),
             "ls" | "grep" | "glob" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
                 Some("path")
             }

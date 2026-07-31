@@ -6,6 +6,7 @@
 pub(crate) mod bash;
 pub mod batch;
 mod code_intelligence;
+mod download;
 mod edit;
 mod generate_object;
 pub(crate) mod git;
@@ -14,6 +15,7 @@ mod grep;
 mod ls;
 mod patch;
 mod read;
+mod safe_http;
 mod web_fetch;
 mod web_search;
 mod write;
@@ -55,6 +57,9 @@ pub fn register_builtins(
     }
     if capabilities.write {
         registry.register_builtin(Arc::new(write::WriteTool));
+        if workspace_services.local_root().is_some() {
+            registry.register_builtin(Arc::new(download::DownloadTool));
+        }
     }
     if capabilities.read && capabilities.write {
         registry.register_builtin(Arc::new(edit::EditTool));

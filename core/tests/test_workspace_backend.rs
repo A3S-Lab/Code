@@ -435,6 +435,7 @@ async fn custom_workspace_file_tools_do_not_touch_local_filesystem() {
     assert!(definitions.iter().any(|tool| tool.name == "ls"));
     assert!(definitions.iter().any(|tool| tool.name == "edit"));
     assert!(definitions.iter().any(|tool| tool.name == "patch"));
+    assert!(!definitions.iter().any(|tool| tool.name == "download"));
     assert!(!definitions.iter().any(|tool| tool.name == "bash"));
     assert!(!definitions.iter().any(|tool| tool.name == "grep"));
     assert!(!definitions.iter().any(|tool| tool.name == "glob"));

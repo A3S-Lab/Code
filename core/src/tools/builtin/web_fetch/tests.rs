@@ -1,4 +1,8 @@
+use super::super::safe_http::{build_proxy_client, parse_macos_proxy, validate_resolved_addresses};
+#[cfg(unix)]
+use super::super::safe_http::{command_output_with_timeout, SYSTEM_PROXY_LOOKUP_TIMEOUT};
 use super::*;
+use std::net::SocketAddr;
 
 #[test]
 fn test_html_to_text_basic() {

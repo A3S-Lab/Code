@@ -35,7 +35,7 @@ pub enum SessionLane {
     Control,
     /// Query operations (P1) - workspace reads and Code Intelligence queries
     Query,
-    /// Execute operations (P2) - bash, write, edit
+    /// Execute operations (P2) - bash, write, edit, download
     Execute,
     /// Generate operations (P3) - LLM calls
     Generate,
@@ -59,7 +59,7 @@ impl SessionLane {
             | "web_search" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
                 SessionLane::Query
             }
-            "bash" | "write" | "edit" | "delete" | "move" | "copy" | "execute" => {
+            "bash" | "write" | "edit" | "download" | "delete" | "move" | "copy" | "execute" => {
                 SessionLane::Execute
             }
             _ => SessionLane::Execute,

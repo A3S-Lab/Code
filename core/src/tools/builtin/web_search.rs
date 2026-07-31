@@ -595,11 +595,11 @@ impl Tool for WebSearchTool {
                     .and_then(|config| config.headless.as_ref())
                     .and_then(|config| config.proxy_url.clone())
             })
-            .or_else(super::web_fetch::explicit_web_proxy_from_env);
+            .or_else(super::safe_http::explicit_web_proxy_from_env);
         if proxy_url.is_none() {
             let remaining = search_deadline.saturating_duration_since(Instant::now());
             if !remaining.is_zero() {
-                proxy_url = tokio::time::timeout(remaining, super::web_fetch::system_web_proxy())
+                proxy_url = tokio::time::timeout(remaining, super::safe_http::system_web_proxy())
                     .await
                     .ok()
                     .flatten();

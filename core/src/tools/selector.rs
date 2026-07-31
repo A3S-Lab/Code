@@ -31,6 +31,14 @@ const FETCH_TERMS: &[&str] = &[
     "打开",
 ];
 
+const DOWNLOAD_TERMS: &[&str] = &[
+    "download",
+    "save file",
+    "fetch file",
+    "binary file",
+    "artifact file",
+];
+
 const GIT_TERMS: &[&str] = &[
     "git", "commit", "branch", "diff", "status", "log", "tag", "release", "push", "pull", "merge",
     "rebase", "github", "提交", "分支", "标签", "发布", "推送",
@@ -118,6 +126,7 @@ pub fn select_tools_for_prompt(tools: &[ToolDefinition], prompt: &str) -> Vec<To
     let prompt_lower = prompt.to_lowercase();
     let wants_web = contains_any(&prompt_lower, WEB_TERMS);
     let wants_fetch = contains_any(&prompt_lower, FETCH_TERMS);
+    let wants_download = contains_any(&prompt_lower, DOWNLOAD_TERMS);
     let wants_git = contains_any(&prompt_lower, GIT_TERMS);
     let wants_batch = contains_any(&prompt_lower, BATCH_TERMS);
     let wants_program = contains_any(&prompt_lower, PROGRAM_TERMS);
@@ -133,6 +142,7 @@ pub fn select_tools_for_prompt(tools: &[ToolDefinition], prompt: &str) -> Vec<To
         let include = core.contains(name)
             || (name == "web_search" && wants_web)
             || (name == "web_fetch" && (wants_web || wants_fetch))
+            || (name == "download" && wants_download)
             || (name == "git" && wants_git)
             || (name == "batch" && wants_batch)
             || (name == "program" && wants_program)
@@ -274,7 +284,7 @@ fn is_generic_mcp_action_token(token: &str) -> bool {
 fn is_known_special_tool(name: &str) -> bool {
     matches!(
         name,
-        "web_search" | "web_fetch" | "git" | "batch" | "program"
+        "web_search" | "web_fetch" | "download" | "git" | "batch" | "program"
     )
 }
 
@@ -305,6 +315,7 @@ mod tests {
                 "code_diagnostics",
                 "web_search",
                 "web_fetch",
+                "download",
                 "git",
                 "batch",
                 "program",
@@ -327,6 +338,7 @@ mod tests {
         assert!(names.contains(&"search_skills"));
         assert!(!names.contains(&"web_search"));
         assert!(!names.contains(&"web_fetch"));
+        assert!(!names.contains(&"download"));
         assert!(!names.contains(&"git"));
         assert!(!names.contains(&"batch"));
         assert!(!names.contains(&"program"));
@@ -389,6 +401,18 @@ mod tests {
         assert!(names.contains(&"web_search"));
         assert!(names.contains(&"web_fetch"));
         assert!(names.contains(&"git"));
+    }
+
+    #[test]
+    fn download_terms_enable_download_tool() {
+        let selected = select_tools_for_prompt(
+            &defs(&["read", "web_fetch", "download"]),
+            "download the release artifact file",
+        );
+        let names: Vec<_> = selected.iter().map(|tool| tool.name.as_str()).collect();
+
+        assert!(names.contains(&"download"));
+        assert!(!names.contains(&"web_fetch"));
     }
 
     #[test]
