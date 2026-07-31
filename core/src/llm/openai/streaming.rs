@@ -28,28 +28,24 @@ impl OpenAiClient {
                     // Wrap in tokio::select! so cancellation aborts the HTTP request mid-flight
                     let resp = tokio::select! {
                         _ = cancel_token.cancelled() => {
-                            return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request cancelled"));
+                            return AttemptOutcome::Fatal(anyhow::Error::new(
+                                crate::llm::HttpClientError::cancelled(
+                                    "OpenAI streaming HTTP request",
+                                ),
+                            ));
                         }
                         result = http.post_streaming(url, headers, request, cancel_token.clone()) => {
                             match result {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    // Transient network error (timeout, reset,
-                                    // mid-flight drop — common on throttled
-                                    // endpoints): retry with backoff like 429/5xx
-                                    // instead of failing the turn. GLM and other
-                                    // OpenAI-compatible endpoints hit this most.
-                                    return if crate::retry::is_transient_error(&e) {
+                                    return if crate::llm::http::is_retryable_http_failure(&e) {
                                         AttemptOutcome::Retryable {
                                             status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
                                             body: format!("network error: {e}"),
                                             retry_after: None,
                                         }
                                     } else {
-                                        AttemptOutcome::Fatal(anyhow::anyhow!(
-                                            "HTTP request failed: {}",
-                                            e
-                                        ))
+                                        AttemptOutcome::Fatal(e.context("HTTP request failed"))
                                     };
                                 }
                             }
@@ -92,6 +88,7 @@ impl OpenAiClient {
             let stream_cancellation = cancel_token.clone();
             tokio::spawn(async move {
                 let mut buffer = String::new();
+                let mut utf8_decoder = crate::sse::Utf8StreamDecoder::default();
                 let mut content_blocks: Vec<ContentBlock> = Vec::new();
                 let mut text_content = String::new();
                 let mut reasoning_content_accum = String::new();
@@ -105,14 +102,14 @@ impl OpenAiClient {
                 let mut response_model = None;
                 let mut response_object = None;
                 let mut first_token_ms = None;
-                let mut saw_done = false;
                 let mut parsed_any_event = false;
+                let mut stream_failed = false;
 
                 loop {
                     let chunk_result = tokio::select! {
                         biased;
-                        _ = stream_cancellation.cancelled() => break,
-                        _ = tx.closed() => break,
+                        _ = stream_cancellation.cancelled() => return,
+                        _ = tx.closed() => return,
                         chunk = stream.next() => match chunk {
                             Some(chunk) => chunk,
                             None => break,
@@ -122,11 +119,15 @@ impl OpenAiClient {
                         Ok(c) => c,
                         Err(e) => {
                             tracing::error!("Stream error: {}", e);
+                            stream_failed = true;
                             break;
                         }
                     };
 
-                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    if let Err(error) = utf8_decoder.push_to(&chunk, &mut buffer) {
+                        tracing::error!(%error, "OpenAI-compatible stream returned invalid UTF-8");
+                        break;
+                    }
 
                     while let Some(event_end) = buffer.find("\n\n") {
                         let event_data: String = buffer.drain(..event_end).collect();
@@ -135,7 +136,6 @@ impl OpenAiClient {
                         for line in event_data.lines() {
                             if let Some(data) = crate::sse::data_field_value(line) {
                                 if data == "[DONE]" {
-                                    saw_done = true;
                                     if !text_content.is_empty() {
                                         content_blocks.push(ContentBlock::Text {
                                             text: text_content.clone(),
@@ -183,7 +183,7 @@ impl OpenAiClient {
                                         }),
                                     };
                                     let _ = tx.send(StreamEvent::Done(response)).await;
-                                    continue;
+                                    return;
                                 }
 
                                 if let Ok(event) = serde_json::from_str::<OpenAiStreamChunk>(data) {
@@ -413,8 +413,8 @@ impl OpenAiClient {
                     }
                 }
 
-                if saw_done {
-                    return;
+                if let Err(error) = utf8_decoder.finish() {
+                    tracing::error!(%error, "OpenAI-compatible stream ended inside a UTF-8 code point");
                 }
 
                 let trailing = buffer.trim();
@@ -562,6 +562,30 @@ impl OpenAiClient {
                     }
                 }
 
+                if finish_reason.is_none() {
+                    if stream_failed {
+                        tracing::warn!(
+                            provider = %provider_name,
+                            model = %request_model,
+                            "OpenAI-compatible stream failed before terminal evidence; closing without Done"
+                        );
+                    } else if parsed_any_event {
+                        tracing::warn!(
+                            provider = %provider_name,
+                            model = %request_model,
+                            "OpenAI-compatible stream reached EOF before terminal evidence; closing without Done"
+                        );
+                    } else {
+                        tracing::warn!(
+                            provider = %provider_name,
+                            model = %request_model,
+                            trailing = %trailing.chars().take(400).collect::<String>(),
+                            "OpenAI-compatible stream ended without any parseable events"
+                        );
+                    }
+                    return;
+                }
+
                 if parsed_any_event
                     || !text_content.is_empty()
                     || !tool_calls.is_empty()
@@ -570,7 +594,7 @@ impl OpenAiClient {
                     tracing::warn!(
                         provider = %provider_name,
                         model = %request_model,
-                        "OpenAI-compatible stream ended without [DONE]; finalizing buffered response"
+                        "OpenAI-compatible stream ended without [DONE] after finish reason; finalizing buffered response"
                     );
                     if !text_content.is_empty() {
                         content_blocks.push(ContentBlock::Text {
@@ -616,13 +640,6 @@ impl OpenAiClient {
                         }),
                     };
                     let _ = tx.send(StreamEvent::Done(response)).await;
-                } else {
-                    tracing::warn!(
-                        provider = %provider_name,
-                        model = %request_model,
-                        trailing = %trailing.chars().take(400).collect::<String>(),
-                        "OpenAI-compatible stream ended without any parseable events"
-                    );
                 }
             });
 

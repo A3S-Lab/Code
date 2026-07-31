@@ -1,0 +1,194 @@
+---
+title: '智能体目录'
+description: '智能体目录结构、加载映射、serve 守护进程和持久化边界。'
+---
+
+# 智能体目录
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+AgentDir 是按约定定义长期 Agent 的单一目录。一个文件夹承载主 Agent 的角色、运行配置、私有 skills、目录级 tools 和周期性 schedules。`AgentDir::load` 读取该目录并合成已有的 A3S Code 配置对象；它不引入新的 runtime，也不引入新的 prompt 系统。
+
+这是一个有意为之的设计选择：`instructions.md` 作为 prompt **slot** 注入，而不是作为 system-prompt 覆盖。harness 始终保持 `BOUNDARIES`、response-format 契约、tool 可见性、安全门以及 verification 的权威性。一次调度运行始终是一个完整的 harness turn（`AgentSession::send`），绝不是裸的模型调用。
+
+核心实现由 Rust 的 `serve` Cargo feature 控制。Rust、Node.js、Python 和 Go
+都通过各自的原生 SDK 暴露同一套守护进程生命周期。
+
+## 目录结构
+
+```text
+my-agent/
+├── instructions.md   (required)  Role and guidelines. Injected as a prompt slot.
+├── agent.acl         (optional)  Model, providers, queue, and CodeConfig.
+├── skills/           (optional)  Private *.md skills.
+├── schedules/        (optional)  Cron jobs: frontmatter + body prompt.
+└── tools/            (optional)  Tool specs: kind: mcp or kind: script.
+```
+
+只有 `instructions.md` 是必需的。其余一切都是可选的，缺失的子目录只是不贡献对应能力。
+
+`AgentDir::load` 将该目录映射到已有对象上：
+
+| Path              | Becomes                  | Notes                                                                                              |
+| ----------------- | ------------------------ | -------------------------------------------------------------------------------------------------- |
+| `instructions.md` | `SystemPromptSlots.role` | 主 Agent 的角色 slot，详见 [instructions.md](/guide/filesystem-instructions)。                     |
+| `agent.acl`       | `CodeConfig`             | 模型、provider、队列和目录发现配置，详见 [agent.acl](/guide/filesystem-config)。                   |
+| `skills/`         | `skill_dirs`             | AgentDir 私有技能，详见 [skills/ 技能目录](/guide/filesystem-skills)。                             |
+| `schedules/*.md`  | `Vec<ScheduleSpec>`      | 每个文件一条周期性 turn，详见 [schedules/ 调度目录](/guide/filesystem-schedules)。                 |
+| `tools/*.md`      | `Vec<ToolSpec>`          | 每个文件一个 `kind: mcp` 或 `kind: script` 工具，详见 [tools/ 工具目录](/guide/filesystem-tools)。 |
+
+## `serve` 守护进程
+
+`serve_agent_dir` 将调度加载到各自独立的 session 中，并运行它们的 cron 循环，直到某个 cancellation token 触发。每次触发都会把该调度的 prompt 经由 `AgentSession::send` 路由。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::config::AgentDir;
+use a3s_code_core::serve::serve_agent_dir;
+use a3s_code_core::{Agent, SessionOptions};
+use tokio_util::sync::CancellationToken;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let agent_dir = AgentDir::load("./my-agent")?;
+    let agent = Agent::from_config(agent_dir.config.clone()).await?;
+    let cancel = CancellationToken::new();
+    let shutdown = cancel.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        shutdown.cancel();
+    });
+
+    let options = SessionOptions::new().with_file_session_store("./sessions");
+    serve_agent_dir(
+        &agent,
+        &agent_dir,
+        "./workspace",
+        Some(options),
+        cancel,
+    )
+    .await?;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, FileSessionStore } from '@a3s-lab/code';
+
+const agent = await Agent.create('./my-agent/agent.acl');
+const daemon = await agent.serveAgentDir('./my-agent', './workspace', {
+  sessionStore: new FileSessionStore('./sessions'),
+});
+
+await new Promise<void>((resolve) => process.once('SIGINT', resolve));
+await daemon.stop();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, FileSessionStore, SessionOptions
+
+agent = Agent.create('./my-agent/agent.acl')
+options = SessionOptions()
+options.session_store = FileSessionStore('./sessions')
+daemon = agent.serve_agent_dir('./my-agent', './workspace', options)
+
+input('按 Enter 停止 AgentDir 守护进程……')
+daemon.stop()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stopSignal()
+
+	agent, err := code.NewAgent(ctx, "./my-agent/agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	daemon, err := agent.ServeAgentDir(ctx, "./my-agent", "./workspace", &code.SessionOptions{
+		FileSessionStoreDir: "./sessions",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	<-ctx.Done()
+	if err := daemon.Stop(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+直接使用 Rust 的项目还需要在 `Cargo.toml` 中启用该 feature：
+
+```toml
+[dependencies]
+a3s-code-core = { version = "...", features = ["serve"] }
+```
+
+## 覆盖会话选项
+
+Rust `serve_agent_dir` 的第四个参数，或 `serveAgentDir` / `serve_agent_dir` /
+`ServeAgentDir` 的 `options` 参数，会合并进每一个调度 session，可用于固定 model、
+session store、权限或 prompt slots。守护进程始终为每个 schedule 分配稳定的
+`session_id`：`schedule:<name>`；extra options 中的 `session_id` 会被有意忽略，
+避免多个 schedule 写入同一个 store id。若未提供 prompt slots，则使用 AgentDir
+的 `instructions.md` slot。
+
+优雅取消会让进行中的 turn 完成其循环迭代后再停止；一旦每个 job 循环都已退出，守护进程返回 `Ok(())`。一个没有任何已启用调度的 AgentDir 会立即返回。
+
+## 持久性
+
+默认情况下，每次守护进程启动都会全新启动每个调度 session。在
+`SessionOptions` 中传入文件 session store——如上例中的
+`with_file_session_store`、`FileSessionStore` 或 `FileSessionStoreDir`——即可
+从已保存的对话历史恢复现有的 `schedule:<name>` session。
+
+恢复只还原历史。当前的 `instructions.md`、`skills/` 和 `tools/` 会在每次启动时重新应用，因此即便是被恢复的 session，编辑 AgentDir 也会在下一次重启时生效。
+
+## 状态
+
+| Area                                      | State                                              |
+| ----------------------------------------- | -------------------------------------------------- |
+| `instructions.md`、`agent.acl`、`skills/` | 已加载并使用。                                     |
+| `schedules/` + serve 守护进程             | 已实现（`serve` feature）。                        |
+| 启动时重新水合                            | 已实现，配合 `SessionStore` 可在重启后恢复上下文。 |
+| `tools/`（`kind: mcp`）                   | 已实现，声明式 MCP server 注册进每个调度 session。 |
+| `tools/`（`kind: script`）                | 已实现，基于 `program` 路径的沙箱化 QuickJS tool。 |
+
+## 备注
+
+- `instructions.md` 是一个角色 slot，因此 harness 的边界、响应契约以及 verification 保持权威。
+- AgentDir 是主 Agent 的目录；它不同于 `agent_dirs` / `registerAgentDir`，后者扫描 [agents/ 角色目录](/guide/filesystem-agents) 以获取 worker/subagent 定义。
+- secret 应放在环境变量或宿主密钥系统中，并从 `agent.acl` 引用，不要内联写进目录里。
+- `tools/` 由 serve 守护进程按调度 session 安装。普通交互式 session 应优先使用 direct tools、MCP 或 SDK 注册路径。

@@ -454,6 +454,59 @@ fn session_options_maps_llm_logprob_controls() {
 }
 
 #[test]
+fn session_options_map_deterministic_host_env() {
+    let opts = js_session_options_to_rust(Some(SessionOptions {
+        host_env: Some(HostEnvOptions {
+            sequential_id_prefix: Some("replay".to_string()),
+            fixed_time_ms: Some(1_700_000_000_000.0),
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+
+    let host_env = opts.host_env.expect("host env");
+    assert_eq!(host_env.next_id(), "replay-0");
+    assert_eq!(host_env.next_id(), "replay-1");
+    assert_eq!(host_env.now_ms(), 1_700_000_000_000);
+}
+
+#[test]
+fn session_options_reject_invalid_fixed_time() {
+    let result = js_session_options_to_rust(Some(SessionOptions {
+        host_env: Some(HostEnvOptions {
+            sequential_id_prefix: None,
+            fixed_time_ms: Some(-1.0),
+        }),
+        ..Default::default()
+    }));
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn session_options_map_every_retention_limit() {
+    let opts = js_session_options_to_rust(Some(SessionOptions {
+        retention_limits: Some(RetentionLimitsObject {
+            unbounded: Some(false),
+            max_runs_retained: Some(10),
+            max_events_per_run: Some(20),
+            max_event_bytes_per_run: Some(30),
+            max_trace_events: Some(40),
+            max_terminal_subagent_tasks: Some(50),
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+
+    let limits = opts.retention_limits.expect("retention limits");
+    assert_eq!(limits.max_runs_retained, Some(10));
+    assert_eq!(limits.max_events_per_run, Some(20));
+    assert_eq!(limits.max_event_bytes_per_run, Some(30));
+    assert_eq!(limits.max_trace_events, Some(40));
+    assert_eq!(limits.max_terminal_subagent_tasks, Some(50));
+}
+
+#[test]
 fn confirmation_policy_maps_yolo_lanes_to_rust_options() {
     let opts = js_session_options_to_rust(Some(SessionOptions {
         confirmation_policy: Some(ConfirmationPolicy {

@@ -18,6 +18,20 @@ struct NoopSessionCommand;
 
 struct FailingCloseSessionTransport;
 
+#[derive(Default)]
+struct CountingMemoryObserver(std::sync::atomic::AtomicUsize);
+
+#[async_trait::async_trait]
+impl crate::memory::MemoryObserver for CountingMemoryObserver {
+    async fn on_memory_stored(
+        &self,
+        _observation: crate::memory::MemoryObservation,
+    ) -> anyhow::Result<()> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::tools::Tool for NamedSessionTool {
     fn name(&self) -> &str {
@@ -191,6 +205,12 @@ struct FailingStreamingClient;
 struct NonRetryableStreamingClient {
     streaming_calls: Arc<std::sync::atomic::AtomicUsize>,
     complete_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[derive(Clone, Default)]
+struct SessionAdmissionClient {
+    active: Arc<std::sync::atomic::AtomicUsize>,
+    max_active: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Clone)]
@@ -485,6 +505,37 @@ impl LlmClient for NonRetryableStreamingClient {
 }
 
 #[async_trait::async_trait]
+impl LlmClient for SessionAdmissionClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        let active = self
+            .active
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        self.max_active
+            .fetch_max(active, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        self.active
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(scripted_text_response(r#"{"ok":true}"#))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("session admission test uses blocking structured generation")
+    }
+}
+
+#[async_trait::async_trait]
 impl LlmClient for CancellableStreamingClient {
     async fn complete(
         &self,
@@ -674,6 +725,66 @@ async fn test_session_default() {
     assert!(session.is_ok());
     let debug = format!("{:?}", session.unwrap());
     assert!(debug.contains("AgentSession"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_session_direct_generations_share_provider_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Arc::new(SessionAdmissionClient::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session_async(
+            dir.path().to_string_lossy().to_string(),
+            Some(SessionOptions::new().with_llm_client(client.clone())),
+        )
+        .await
+        .unwrap();
+    let args = serde_json::json!({
+        "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "ok": {"type": "boolean"}
+            },
+            "required": ["ok"]
+        },
+        "schema_name": "session_admission",
+        "prompt": "Return an object whose ok field is true.",
+        "mode": "prompt",
+        "max_repair_attempts": 0,
+        "timeout_ms": 2_000
+    });
+
+    let (first, second) = tokio::join!(
+        session.tool("generate_object", args.clone()),
+        session.tool("generate_object", args)
+    );
+    let results = [first.unwrap(), second.unwrap()];
+
+    assert!(results
+        .iter()
+        .all(|result| result.exit_code == 0 && result.output.contains(r#""ok":true"#)));
+    assert_eq!(
+        client.max_active.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "all host-direct loops in one session must share the provider gate"
+    );
+    let mut queue_waits = results
+        .iter()
+        .map(|result| {
+            result
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.pointer("/generation_admission/queue_wait_ms"))
+                .and_then(serde_json::Value::as_u64)
+                .expect("generation admission metadata")
+        })
+        .collect::<Vec<_>>();
+    queue_waits.sort_unstable();
+    assert!(
+        queue_waits[1] >= 80,
+        "the second direct generation should wait for session capacity: {queue_waits:?}"
+    );
 }
 
 #[tokio::test]
@@ -1211,7 +1322,7 @@ async fn test_new_rejects_hcl_files() {
 }
 
 #[test]
-fn test_from_config_requires_default_model() {
+fn test_from_config_defers_default_model_validation_to_session() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let config = CodeConfig {
         providers: vec![ProviderConfig {
@@ -1224,8 +1335,15 @@ fn test_from_config_requires_default_model() {
         }],
         ..Default::default()
     };
-    let result = rt.block_on(Agent::from_config(config));
-    assert!(result.is_err());
+    let agent = rt
+        .block_on(Agent::from_config(config))
+        .expect("agent bootstrap must allow a host-supplied session client");
+    let workspace = tempfile::tempdir().unwrap();
+    let error = rt
+        .block_on(agent.session_async(workspace.path().display().to_string(), None))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("default_model"), "{error:#}");
 }
 
 #[tokio::test]
@@ -2297,6 +2415,32 @@ async fn test_agent_rejects_duplicate_live_ids_across_sync_and_async_factories()
 }
 
 #[tokio::test]
+async fn synchronous_session_build_keeps_configured_memory_observers() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let observer = Arc::new(CountingMemoryObserver::default());
+    let session = agent
+        .session(
+            "/tmp/test-sync-memory-observer",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("sync-memory-observer")
+                    .with_memory(Arc::new(a3s_memory::InMemoryStore::new()))
+                    .with_memory_observer(observer.clone()),
+            ),
+        )
+        .unwrap();
+
+    session
+        .memory()
+        .unwrap()
+        .remember(a3s_memory::MemoryItem::new("A durable learned preference."))
+        .await
+        .unwrap();
+
+    assert_eq!(observer.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn test_closed_session_releases_id_while_old_handle_is_still_held() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session_id = "closed-id-reuse";
@@ -2511,6 +2655,66 @@ async fn test_agent_close_session_closes_target_session() {
 
     // Unknown ids report false.
     assert!(!agent.close_session("does-not-exist").await);
+}
+
+#[tokio::test]
+async fn test_session_close_waits_for_accepted_memory_extraction_to_persist() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_session_id("close-drains-memory")
+        .with_memory(Arc::new(a3s_memory::InMemoryStore::new()));
+    let session = Arc::new(
+        agent
+            .build_session(
+                "/tmp/test-close-drains-memory".into(),
+                Arc::new(StaticStreamingClient::new("unused")),
+                &opts,
+            )
+            .unwrap(),
+    );
+    let memory = Arc::clone(session.memory().expect("session memory"));
+    let mut ticket = memory.enqueue_llm_extraction();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let extraction = tokio::spawn({
+        let memory = Arc::clone(&memory);
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        async move {
+            ticket.wait_for_turn().await;
+            started.notify_one();
+            release.notified().await;
+            memory
+                .remember(
+                    a3s_memory::MemoryItem::new(
+                        "Session close preserves accepted durable memory extraction.",
+                    )
+                    .with_type(a3s_memory::MemoryType::Semantic),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    started.notified().await;
+
+    let close = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move { session.close().await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    assert!(
+        !close.is_finished(),
+        "close must wait while an accepted extraction is still pending"
+    );
+
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(1), close)
+        .await
+        .expect("close should finish after memory persistence")
+        .unwrap();
+    extraction.await.unwrap();
+    assert!(session.is_closed());
+    assert_eq!(memory.stats().await.unwrap().long_term_count, 1);
 }
 
 #[tokio::test]
@@ -3136,6 +3340,117 @@ async fn test_session_confirmation_api_resolves_pending_request() {
     assert!(response.approved);
     assert_eq!(response.reason.as_deref(), Some("approved by test"));
     assert!(session.pending_confirmations().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_close_rejects_and_clears_every_pending_confirmation() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let (event_tx, _) = tokio::sync::broadcast::channel(8);
+    let manager = Arc::new(crate::hitl::ConfirmationManager::new(
+        crate::hitl::ConfirmationPolicy::enabled(),
+        event_tx,
+    ));
+    let opts = SessionOptions::new().with_confirmation_manager(manager.clone());
+    let session = agent
+        .session_async("/tmp/test-workspace-close-confirmations", Some(opts))
+        .await
+        .unwrap();
+
+    let first = manager
+        .request_confirmation("tool-close-1", "bash", &serde_json::json!({}))
+        .await;
+    let second = manager
+        .request_confirmation("tool-close-2", "write", &serde_json::json!({}))
+        .await;
+    assert_eq!(session.pending_confirmations().await.len(), 2);
+
+    session.close().await;
+
+    for response in [first, second] {
+        let response = tokio::time::timeout(std::time::Duration::from_secs(1), response)
+            .await
+            .expect("session close must settle confirmations promptly")
+            .expect("confirmation sender must return a rejection");
+        assert!(!response.approved);
+        assert_eq!(response.reason.as_deref(), Some("Confirmation cancelled"));
+    }
+    assert!(session.pending_confirmations().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_close_settles_a_stream_blocked_on_confirmation() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let (event_tx, _) = tokio::sync::broadcast::channel(8);
+    let manager = Arc::new(crate::hitl::ConfirmationManager::new(
+        crate::hitl::ConfirmationPolicy::enabled()
+            .with_timeout(5_000, crate::hitl::TimeoutAction::Reject),
+        event_tx,
+    ));
+    let opts = SessionOptions::new()
+        .with_confirmation_manager(manager.clone())
+        .with_permission_policy(crate::permissions::PermissionPolicy::new());
+    let session = agent
+        .build_session(
+            "/tmp/test-close-stream-confirmation".into(),
+            Arc::new(ScriptedStreamingClient::new(vec![
+                scripted_tool_call_response(
+                    "tool-close-stream",
+                    "bash",
+                    serde_json::json!({"command": "echo must-not-run"}),
+                ),
+                scripted_text_response("must not continue"),
+            ])),
+            &opts,
+        )
+        .unwrap();
+
+    let (mut rx, handle) = session.stream("run a command", None).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while manager.pending_count().await != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the tool confirmation must become pending");
+    let run_id = session.current_run().await.unwrap().id().to_string();
+
+    session.close().await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+        .await
+        .expect("close must settle the stream lifecycle")
+        .expect("stream lifecycle must not panic");
+
+    let mut events = Vec::new();
+    while let Some(event) = rx.recv().await {
+        events.push(event);
+    }
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ConfirmationRequired {
+            tool_id,
+            tool_name,
+            ..
+        } if tool_id == "tool-close-stream" && tool_name == "bash"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ConfirmationReceived {
+            tool_id,
+            approved: false,
+            reason,
+        } if tool_id == "tool-close-stream"
+            && reason.as_deref() == Some("Confirmation cancelled")
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolExecutionStart { id, .. } if id == "tool-close-stream"
+    )));
+    assert_eq!(manager.pending_count().await, 0);
+    assert!(session.current_run().await.is_none());
+    assert_eq!(
+        session.run_snapshot(&run_id).await.unwrap().status,
+        crate::run::RunStatus::Cancelled
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4027,7 +4342,7 @@ async fn test_resume_session_restores_verification_reports() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_verify_commands_builds_report_from_bash_results() {
+async fn test_verify_commands_builds_report_from_shell_results() {
     let temp_dir = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
@@ -4039,7 +4354,7 @@ async fn test_verify_commands_builds_report_from_bash_results() {
             "check:smoke",
             "smoke",
             "Run smoke command",
-            "printf ok",
+            "echo ok",
         ),
         crate::verification::VerificationCommand::required(
             "check:failure",
@@ -5452,15 +5767,18 @@ async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
             serde_json::json!({"file_path": "note.txt"}),
         ),
         scripted_text_response("child read complete"),
+        scripted_text_response("control child complete"),
     ]));
     let worker = crate::subagent::WorkerAgentSpec::custom(
         "needs-parent-hitl",
         "Uses parent HITL for Ask decisions",
     )
+    .with_confirmation(crate::subagent::ConfirmationInheritance::InheritParent)
     .with_max_steps(3);
     let opts = SessionOptions::new()
         .with_llm_client(client)
         .with_worker_agent(worker)
+        .with_max_parallel_tasks(1)
         .with_confirmation_policy(crate::hitl::ConfirmationPolicy::enabled());
     let session = agent
         .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
@@ -5470,12 +5788,20 @@ async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
     let (_rx, join) = session.tool_with_events(
         "parallel_task",
         serde_json::json!({
-            "tasks": [{
-                "agent": "needs-parent-hitl",
-                "description": "Read a note",
-                "prompt": "Read note.txt",
-                "max_steps": 3
-            }]
+            "tasks": [
+                {
+                    "agent": "needs-parent-hitl",
+                    "description": "Read a note",
+                    "prompt": "Read note.txt",
+                    "max_steps": 3
+                },
+                {
+                    "agent": "needs-parent-hitl",
+                    "description": "Independent control",
+                    "prompt": "Return a short control result.",
+                    "max_steps": 1
+                }
+            ]
         }),
     );
 
@@ -5524,10 +5850,11 @@ async fn test_dynamic_workflow_parallel_explore_can_use_readonly_web_tools() {
             serde_json::json!({"url": "not-a-url"}),
         ),
         scripted_text_response("explore web fetch completed"),
+        scripted_text_response("independent web review completed"),
     ]));
     let opts = SessionOptions::new()
         .with_llm_client(client)
-        .with_max_parallel_tasks(2)
+        .with_max_parallel_tasks(1)
         .with_manual_delegation_enabled(true);
     let session = agent
         .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
@@ -5547,12 +5874,20 @@ async function run(ctx, inputs) {
       step_id: "web_research",
       step_name: "parallel_task",
       input: {
-        tasks: [{
-          agent: "explore",
-          description: "Fetch web evidence",
-          prompt: "Use web_fetch on the requested URL and summarize the result.",
-          max_steps: 3,
-        }],
+        tasks: [
+          {
+            agent: "explore",
+            description: "Fetch web evidence",
+            prompt: "Use web_fetch on the requested URL and summarize the result.",
+            max_steps: 3,
+          },
+          {
+            agent: "explore",
+            description: "Review web evidence",
+            prompt: "Return a short independent review.",
+            max_steps: 1,
+          },
+        ],
       },
       retry: { max_attempts: 1, delay_ms: 0 },
     };
@@ -5618,13 +5953,14 @@ async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_permission
             serde_json::json!({"command": "echo inherited-dynamic-workflow-deep-research"}),
         ),
         scripted_text_response("deep-research child bash completed"),
+        scripted_text_response("deep-research control child completed"),
     ]));
     let policy = crate::permissions::PermissionPolicy::new().allow("bash(*)");
     let opts = SessionOptions::new()
         .with_llm_client(client)
         .with_permission_policy(policy)
         .with_workspace_backend(services)
-        .with_max_parallel_tasks(2)
+        .with_max_parallel_tasks(1)
         .with_manual_delegation_enabled(true);
     let session = agent
         .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
@@ -5644,12 +5980,20 @@ async function run(ctx, inputs) {
       step_id: "deep_research",
       step_name: "parallel_task",
       input: {
-        tasks: [{
-          agent: "deep-research",
-          description: "Use inherited parent tool policy",
-          prompt: "Run the harmless bash command requested by this regression test.",
-          max_steps: 3,
-        }],
+        tasks: [
+          {
+            agent: "deep-research",
+            description: "Use inherited parent tool policy",
+            prompt: "Run the harmless bash command requested by this regression test.",
+            max_steps: 3,
+          },
+          {
+            agent: "deep-research",
+            description: "Verify inherited policy independently",
+            prompt: "Return a short control result.",
+            max_steps: 1,
+          },
+        ],
       },
       retry: { max_attempts: 1, delay_ms: 0 },
     };
@@ -5716,12 +6060,13 @@ async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_write_perm
             }),
         ),
         scripted_text_response("deep-research child write completed"),
+        scripted_text_response("deep-research write control completed"),
     ]));
     let policy = crate::permissions::PermissionPolicy::new().allow("write(*)");
     let opts = SessionOptions::new()
         .with_llm_client(client)
         .with_permission_policy(policy)
-        .with_max_parallel_tasks(2)
+        .with_max_parallel_tasks(1)
         .with_manual_delegation_enabled(true);
     let session = agent
         .session_async(dir.path().to_string_lossy().to_string(), Some(opts))
@@ -5741,12 +6086,20 @@ async function run(ctx, inputs) {
       step_id: "deep_research",
       step_name: "parallel_task",
       input: {
-        tasks: [{
-          agent: "deep-research",
-          description: "Use inherited parent write policy",
-          prompt: "Write the requested child evidence file.",
-          max_steps: 3,
-        }],
+        tasks: [
+          {
+            agent: "deep-research",
+            description: "Use inherited parent write policy",
+            prompt: "Write the requested child evidence file.",
+            max_steps: 3,
+          },
+          {
+            agent: "deep-research",
+            description: "Verify inherited write policy independently",
+            prompt: "Return a short control result.",
+            max_steps: 1,
+          },
+        ],
       },
       retry: { max_attempts: 1, delay_ms: 0 },
     };

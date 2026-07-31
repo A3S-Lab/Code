@@ -37,6 +37,20 @@ impl Tool for EditTool {
                 "replace_all": {
                     "type": "boolean",
                     "description": "Optional. Replace all occurrences. Default: false."
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Optional. Preview the exact diff and replacement count without writing. Default: false."
+                },
+                "max_replacements": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional safety ceiling. Reject the edit before writing when it would replace more occurrences."
+                },
+                "expected_replacements": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional compare guard. Reject the edit before writing unless the observed replacement count is exactly this value."
                 }
             },
             "required": ["file_path", "old_string", "new_string"],
@@ -50,14 +64,24 @@ impl Tool for EditTool {
                     "file_path": "src/lib.rs",
                     "old_string": "foo",
                     "new_string": "bar",
-                    "replace_all": true
+                    "replace_all": true,
+                    "dry_run": true,
+                    "max_replacements": 20
                 }
             ]
         })
     }
 
-    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
-        let mut capabilities = crate::tools::ToolCapabilities::conservative();
+    fn capabilities(&self, args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        let mut capabilities = if args
+            .get("dry_run")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            crate::tools::ToolCapabilities::parallel_safe_read(16)
+        } else {
+            crate::tools::ToolCapabilities::conservative()
+        };
         capabilities.output_kind = crate::tools::ToolOutputKind::Diff;
         capabilities
     }
@@ -77,11 +101,26 @@ impl Tool for EditTool {
             Some(s) => s,
             None => return Ok(ToolOutput::error("new_string parameter is required")),
         };
+        if old_string.is_empty() {
+            return Ok(ToolOutput::error("old_string must not be empty"));
+        }
 
         let replace_all = args
             .get("replace_all")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let max_replacements = match positive_usize_arg(args, "max_replacements") {
+            Ok(value) => value,
+            Err(error) => return Ok(ToolOutput::error(error)),
+        };
+        let expected_replacements = match positive_usize_arg(args, "expected_replacements") {
+            Ok(value) => value,
+            Err(error) => return Ok(ToolOutput::error(error)),
+        };
 
         let workspace_path = match ctx.resolve_workspace_path(file_path) {
             Ok(path) => path,
@@ -116,31 +155,68 @@ impl Tool for EditTool {
             )));
         }
 
+        let replacement_count = if replace_all { count } else { 1 };
+        if let Some(expected) = expected_replacements {
+            if replacement_count != expected {
+                return Ok(ToolOutput::error(format!(
+                    "Replacement count mismatch in {display_path}: expected {expected} replacement(s), found {replacement_count}. Re-run dry_run to inspect the current file."
+                ))
+                .with_metadata(serde_json::json!({
+                    "file_path": file_path,
+                    "dry_run": dry_run,
+                    "expected_replacements": expected,
+                    "replacement_count": replacement_count,
+                })));
+            }
+        }
+        if let Some(maximum) = max_replacements {
+            if replacement_count > maximum {
+                return Ok(ToolOutput::error(format!(
+                    "Edit would replace {replacement_count} occurrence(s) in {display_path}, which exceeds max_replacements={maximum}."
+                ))
+                .with_metadata(serde_json::json!({
+                    "file_path": file_path,
+                    "dry_run": dry_run,
+                    "max_replacements": maximum,
+                    "replacement_count": replacement_count,
+                })));
+            }
+        }
+
         let new_content = if replace_all {
             content.replace(old_string, new_string)
         } else {
             content.replacen(old_string, new_string, 1)
         };
 
+        let change_metadata = || {
+            serde_json::json!({
+                "file_path": file_path,
+                "before": content,
+                "after": new_content,
+                "dry_run": dry_run,
+                "replacement_count": replacement_count,
+                "expected_replacements": expected_replacements,
+                "max_replacements": max_replacements,
+            })
+        };
+        if dry_run {
+            return Ok(ToolOutput::success(format!(
+                "Dry run: would replace {replacement_count} occurrence(s) in {display_path}; nothing was written"
+            ))
+            .with_metadata(change_metadata()));
+        }
+
         match ctx
             .workspace_services
             .write_for_edit(&workspace_path, &new_content, version.as_deref())
             .await
         {
-            Ok(_) => {
-                // Attach diff metadata so frontend can show Monaco diff
-                let mut metadata = serde_json::Map::new();
-                metadata.insert("file_path".to_string(), serde_json::json!(file_path));
-                metadata.insert("before".to_string(), serde_json::json!(content));
-                metadata.insert("after".to_string(), serde_json::json!(new_content));
-
-                Ok(ToolOutput::success(format!(
-                    "Replaced {} occurrence(s) in {}",
-                    if replace_all { count } else { 1 },
-                    display_path
-                ))
-                .with_metadata(serde_json::Value::Object(metadata)))
-            }
+            Ok(_) => Ok(ToolOutput::success(format!(
+                "Replaced {} occurrence(s) in {}",
+                replacement_count, display_path
+            ))
+            .with_metadata(change_metadata())),
             Err(e) => {
                 // Surface the typed kind via ToolOutput.error_kind so SDK
                 // callers can react programmatically; the human-readable
@@ -161,6 +237,21 @@ impl Tool for EditTool {
                 })
             }
         }
+    }
+}
+
+fn positive_usize_arg(
+    args: &serde_json::Value,
+    name: &str,
+) -> std::result::Result<Option<usize>, String> {
+    match args.get(name) {
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Some)
+            .ok_or_else(|| format!("{name} must be a positive integer")),
+        None => Ok(None),
     }
 }
 
@@ -217,6 +308,95 @@ mod tests {
         assert!(result.success);
         let content = std::fs::read_to_string(temp.path().join("test.txt")).unwrap();
         assert_eq!(content, "ccc bbb ccc");
+    }
+
+    #[tokio::test]
+    async fn test_edit_dry_run_returns_diff_without_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("test.txt");
+        std::fs::write(&path, "alpha alpha").unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = EditTool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "test.txt",
+                    "old_string": "alpha",
+                    "new_string": "beta",
+                    "replace_all": true,
+                    "dry_run": true
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "alpha alpha");
+        let metadata = result.metadata.unwrap();
+        assert_eq!(metadata["dry_run"], true);
+        assert_eq!(metadata["replacement_count"], 2);
+        assert_eq!(metadata["before"], "alpha alpha");
+        assert_eq!(metadata["after"], "beta beta");
+        assert!(
+            EditTool
+                .capabilities(&serde_json::json!({"dry_run": true}))
+                .read_only
+        );
+    }
+
+    #[tokio::test]
+    async fn test_edit_expected_replacements_mismatch_does_not_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("test.txt");
+        std::fs::write(&path, "alpha alpha").unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = EditTool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "test.txt",
+                    "old_string": "alpha",
+                    "new_string": "beta",
+                    "replace_all": true,
+                    "expected_replacements": 3
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result
+            .content
+            .contains("expected 3 replacement(s), found 2"));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "alpha alpha");
+    }
+
+    #[tokio::test]
+    async fn test_edit_max_replacements_blocks_oversized_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("test.txt");
+        std::fs::write(&path, "alpha alpha alpha").unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = EditTool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "test.txt",
+                    "old_string": "alpha",
+                    "new_string": "beta",
+                    "replace_all": true,
+                    "max_replacements": 2
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result.content.contains("exceeds max_replacements=2"));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "alpha alpha alpha");
     }
 
     #[tokio::test]
@@ -279,6 +459,15 @@ mod tests {
         let examples = params["examples"].as_array().unwrap();
         assert_eq!(examples[0]["file_path"], "src/lib.rs");
         assert!(examples[0].get("path").is_none());
+        assert_eq!(params["properties"]["dry_run"]["type"], "boolean");
+        assert_eq!(
+            params["properties"]["max_replacements"]["minimum"],
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            params["properties"]["expected_replacements"]["minimum"],
+            serde_json::json!(1)
+        );
     }
 
     #[tokio::test]

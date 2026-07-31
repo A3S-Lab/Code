@@ -348,6 +348,54 @@ async fn test_multiple_confirmations() {
 }
 
 #[tokio::test]
+async fn duplicate_tool_ids_reject_both_requests_without_leaving_a_receiver() {
+    let (event_tx, mut event_rx) = broadcast::channel(100);
+    let manager = ConfirmationManager::new(ConfirmationPolicy::enabled(), event_tx);
+
+    let first = manager
+        .request_confirmation("duplicate-id", "bash", &serde_json::json!({"cmd": "first"}))
+        .await;
+    let duplicate = manager
+        .request_confirmation(
+            "duplicate-id",
+            "write",
+            &serde_json::json!({"path": "second"}),
+        )
+        .await;
+
+    for receiver in [first, duplicate] {
+        let response = receiver
+            .await
+            .expect("a duplicate id must return an explicit rejection");
+        assert!(!response.approved);
+        assert!(response
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Duplicate confirmation tool id")));
+    }
+    assert_eq!(manager.pending_count().await, 0);
+    assert!(!manager.confirm("duplicate-id", true, None).await.unwrap());
+
+    assert!(matches!(
+        event_rx.recv().await.unwrap(),
+        AgentEvent::ConfirmationRequired {
+            ref tool_id,
+            ref tool_name,
+            ..
+        } if tool_id == "duplicate-id" && tool_name == "bash"
+    ));
+    assert!(matches!(
+        event_rx.recv().await.unwrap(),
+        AgentEvent::ConfirmationReceived {
+            ref tool_id,
+            approved: false,
+            ..
+        } if tool_id == "duplicate-id"
+    ));
+    assert!(event_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn test_pending_confirmations_info() {
     let (event_tx, _) = broadcast::channel(100);
     let manager = ConfirmationManager::new(ConfirmationPolicy::enabled(), event_tx);
@@ -403,6 +451,27 @@ async fn test_cancel_nonexistent() {
 
     let cancelled = manager.cancel("non-existent").await;
     assert!(!cancelled);
+}
+
+#[tokio::test]
+async fn cancelling_one_confirmation_leaves_concurrent_confirmation_pending() {
+    let (event_tx, _) = broadcast::channel(100);
+    let manager = ConfirmationManager::new(ConfirmationPolicy::enabled(), event_tx);
+    let cancelled = manager
+        .request_confirmation("tool-cancelled", "bash", &serde_json::json!({}))
+        .await;
+    let untouched = manager
+        .request_confirmation("tool-untouched", "write", &serde_json::json!({}))
+        .await;
+
+    assert!(manager.cancel("tool-cancelled").await);
+    assert!(!cancelled.await.unwrap().approved);
+    let pending = manager.pending_confirmations().await;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].0, "tool-untouched");
+
+    assert!(manager.confirm("tool-untouched", true, None).await.unwrap());
+    assert!(untouched.await.unwrap().approved);
 }
 
 #[tokio::test]
@@ -528,6 +597,27 @@ async fn test_timeout_auto_approve() {
     let response = rx.await.unwrap();
     assert!(response.approved);
     assert!(response.reason.as_ref().unwrap().contains("auto_approved"));
+}
+
+#[tokio::test]
+async fn expiring_one_confirmation_leaves_concurrent_confirmation_pending() {
+    let (event_tx, _) = broadcast::channel(100);
+    let manager = ConfirmationManager::new(ConfirmationPolicy::enabled(), event_tx);
+    let expired = manager
+        .request_confirmation("tool-expired", "bash", &serde_json::json!({}))
+        .await;
+    let untouched = manager
+        .request_confirmation("tool-untouched", "write", &serde_json::json!({}))
+        .await;
+
+    assert!(manager.expire("tool-expired", TimeoutAction::Reject).await);
+    assert!(!expired.await.unwrap().approved);
+    let pending = manager.pending_confirmations().await;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].0, "tool-untouched");
+
+    assert!(manager.confirm("tool-untouched", true, None).await.unwrap());
+    assert!(untouched.await.unwrap().approved);
 }
 
 #[tokio::test]

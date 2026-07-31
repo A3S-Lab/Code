@@ -167,8 +167,9 @@ impl LanguageRuntime {
             workspace_folders.clone(),
             WorkspaceSettings::new(profile.workspace_settings(&canonical_root, &layout)),
         ));
+        let launch = profile.launch(&canonical_root, &layout).await;
         let process =
-            LspProcess::spawn(profile.command(), &canonical_root, router).map_err(|source| {
+            LspProcess::spawn(&launch.command, &canonical_root, router).map_err(|source| {
                 LanguageRuntimeError::Process {
                     operation: "start",
                     source,
@@ -195,9 +196,8 @@ impl LanguageRuntime {
             Arc::clone(&diagnostic_updates),
         ));
 
-        let initialization_options = profile.initialization_options(&canonical_root, &layout);
         let initialization_options =
-            (!initialization_options.is_null()).then_some(initialization_options);
+            (!launch.initialization_options.is_null()).then_some(launch.initialization_options);
         let config = InitializeConfig::new(
             root_url,
             workspace_folders,
@@ -255,6 +255,18 @@ impl LanguageRuntime {
 
     pub(crate) fn capabilities(&self) -> CodeIntelligenceCapabilities {
         self.initialized.capabilities
+    }
+
+    pub(crate) async fn prepare_saved_document(
+        &self,
+        path: &WorkspacePath,
+        saved_content: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), LanguageRuntimeError> {
+        self.require_path(path)?;
+        self.sync_saved_document(path, saved_content, cancellation)
+            .await?;
+        ensure_not_cancelled(cancellation)
     }
 
     pub(crate) async fn document_symbols(
@@ -545,6 +557,15 @@ impl LanguageRuntime {
                 operation: "shutdown",
                 source,
             })
+    }
+
+    pub(crate) fn force_kill(&self) {
+        self.process.force_kill();
+        if let Ok(mut task) = self.notification_task.try_lock() {
+            if let Some(task) = task.take() {
+                task.abort();
+            }
+        }
     }
 
     pub(crate) fn unavailable_message(&self) -> Option<String> {

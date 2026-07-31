@@ -30,6 +30,7 @@ pub(crate) enum ToolGateDenial {
     HookBlock,
     PermissionDeny,
     MissingConfirmationManager,
+    ConfirmationUnavailable,
 }
 
 impl ToolGateDenial {
@@ -39,6 +40,7 @@ impl ToolGateDenial {
             ToolGateDenial::HookBlock => "hook_block",
             ToolGateDenial::PermissionDeny => "permission_deny",
             ToolGateDenial::MissingConfirmationManager => "missing_confirmation_manager",
+            ToolGateDenial::ConfirmationUnavailable => "confirmation_unavailable",
         }
     }
 }
@@ -63,6 +65,8 @@ pub(crate) struct ToolGateInput<'a> {
     pub(crate) tool_name: &'a str,
     pub(crate) args: &'a serde_json::Value,
     pub(crate) pre_tool_block: Option<String>,
+    /// Escalation-only requirement supplied by the registered tool.
+    pub(crate) tool_requires_confirmation: bool,
 }
 
 pub(crate) struct ToolSafetyGate<'a> {
@@ -96,10 +100,17 @@ impl<'a> ToolSafetyGate<'a> {
                 event_reason: "Blocked by deny rule in permission policy".to_string(),
                 reason: ToolGateDenial::PermissionDeny,
             },
+            PermissionDecision::Allow if input.tool_requires_confirmation => {
+                self.confirmation_decision(input.tool_name, input.args)
+                    .await
+            }
             PermissionDecision::Allow => ToolGateDecision::Execute {
                 reason: ToolGateApproval::PermissionAllow,
             },
-            PermissionDecision::Ask => self.confirmation_decision(input.tool_name).await,
+            PermissionDecision::Ask => {
+                self.confirmation_decision(input.tool_name, input.args)
+                    .await
+            }
         }
     }
 
@@ -141,31 +152,56 @@ impl<'a> ToolSafetyGate<'a> {
             .unwrap_or(PermissionDecision::Ask)
     }
 
-    async fn confirmation_decision(&self, tool_name: &str) -> ToolGateDecision {
+    async fn confirmation_decision(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> ToolGateDecision {
         let Some(cm) = &self.config.confirmation_manager else {
-            let msg = format!(
-                "Tool '{}' requires confirmation but no HITL confirmation manager is configured. \
-                 Configure a confirmation policy to enable tool execution.",
-                tool_name
-            );
-            return ToolGateDecision::Deny {
-                output: msg.clone(),
-                event_reason: msg,
-                reason: ToolGateDenial::MissingConfirmationManager,
-            };
+            return missing_confirmation_manager(tool_name);
         };
 
-        if !cm.requires_confirmation(tool_name).await {
+        if !cm.confirmation_available_for(tool_name, args).await {
+            return confirmation_unavailable(tool_name);
+        };
+
+        if !cm.requires_confirmation_for(tool_name, args).await {
             return ToolGateDecision::Execute {
                 reason: ToolGateApproval::ConfirmationNotRequired,
             };
         }
 
-        let policy = cm.policy().await;
+        let policy = cm.policy_for(tool_name, args).await;
         ToolGateDecision::Confirm {
             timeout_ms: policy.default_timeout_ms,
             timeout_action: policy.timeout_action,
         }
+    }
+}
+
+fn missing_confirmation_manager(tool_name: &str) -> ToolGateDecision {
+    let msg = format!(
+        "Tool '{}' requires confirmation but no HITL confirmation manager is configured. \
+         Configure a confirmation policy to enable tool execution.",
+        tool_name
+    );
+    ToolGateDecision::Deny {
+        output: msg.clone(),
+        event_reason: msg,
+        reason: ToolGateDenial::MissingConfirmationManager,
+    }
+}
+
+fn confirmation_unavailable(tool_name: &str) -> ToolGateDecision {
+    let msg = format!(
+        "Tool '{}' requires authority outside the active execution boundary. \
+         The current confirmation policy cannot authorize this invocation.",
+        tool_name
+    );
+    ToolGateDecision::Deny {
+        output: msg.clone(),
+        event_reason: msg,
+        reason: ToolGateDenial::ConfirmationUnavailable,
     }
 }
 
@@ -217,6 +253,7 @@ mod tests {
                 tool_name: "write",
                 args: &json!({"file_path": "x"}),
                 pre_tool_block: None,
+                tool_requires_confirmation: false,
             })
             .await;
 
@@ -243,6 +280,7 @@ mod tests {
                 tool_name: "write",
                 args: &json!({"file_path": "x"}),
                 pre_tool_block: None,
+                tool_requires_confirmation: false,
             })
             .await;
 
@@ -269,6 +307,7 @@ mod tests {
                 tool_name: "write",
                 args: &json!({"file_path": "x"}),
                 pre_tool_block: None,
+                tool_requires_confirmation: false,
             })
             .await;
 
@@ -295,6 +334,7 @@ mod tests {
                 tool_name: "write",
                 args: &json!({"file_path": "x"}),
                 pre_tool_block: None,
+                tool_requires_confirmation: false,
             })
             .await;
 
@@ -320,6 +360,7 @@ mod tests {
                 tool_name: "bash",
                 args: &json!({"command": "echo ok"}),
                 pre_tool_block: Some("blocked by policy".to_string()),
+                tool_requires_confirmation: false,
             })
             .await;
 
@@ -347,6 +388,7 @@ mod tests {
                 tool_name: "bash",
                 args: &json!({"command": "echo ok"}),
                 pre_tool_block: None,
+                tool_requires_confirmation: false,
             })
             .await;
 
@@ -378,6 +420,7 @@ mod tests {
                 tool_name: "bash",
                 args: &json!({"command": "echo ok"}),
                 pre_tool_block: None,
+                tool_requires_confirmation: false,
             })
             .await;
 
@@ -388,6 +431,91 @@ mod tests {
                 timeout_action: crate::hitl::TimeoutAction::Reject,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn tool_requirement_escalates_permission_allow_to_confirmation() {
+        let (event_tx, _) = broadcast::channel(8);
+        let manager = Arc::new(ConfirmationManager::new(
+            ConfirmationPolicy::enabled().with_timeout(2468, crate::hitl::TimeoutAction::Reject),
+            event_tx,
+        ));
+        let config = AgentConfig {
+            permission_checker: Some(Arc::new(StaticPermission(PermissionDecision::Allow))),
+            confirmation_manager: Some(manager),
+            ..Default::default()
+        };
+        let gate = ToolSafetyGate::new(&config);
+
+        let decision = gate
+            .decide(ToolGateInput {
+                tool_name: "mcp__use_fixture__submit",
+                args: &json!({}),
+                pre_tool_block: None,
+                tool_requires_confirmation: true,
+            })
+            .await;
+
+        assert_eq!(
+            decision,
+            ToolGateDecision::Confirm {
+                timeout_ms: 2468,
+                timeout_action: crate::hitl::TimeoutAction::Reject,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn escalated_allow_without_confirmation_manager_fails_closed() {
+        let config = AgentConfig {
+            permission_checker: Some(Arc::new(StaticPermission(PermissionDecision::Allow))),
+            confirmation_manager: None,
+            ..Default::default()
+        };
+        let gate = ToolSafetyGate::new(&config);
+
+        let decision = gate
+            .decide(ToolGateInput {
+                tool_name: "mcp__use_ocr__ocr_extract",
+                args: &json!({"file": "scan.png"}),
+                pre_tool_block: None,
+                tool_requires_confirmation: true,
+            })
+            .await;
+
+        assert!(matches!(
+            decision,
+            ToolGateDecision::Deny {
+                reason: ToolGateDenial::MissingConfirmationManager,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn tool_requirement_never_weakens_permission_deny() {
+        let config = AgentConfig {
+            permission_checker: Some(Arc::new(StaticPermission(PermissionDecision::Deny))),
+            ..Default::default()
+        };
+        let gate = ToolSafetyGate::new(&config);
+
+        let decision = gate
+            .decide(ToolGateInput {
+                tool_name: "mcp__use_fixture__read",
+                args: &json!({}),
+                pre_tool_block: None,
+                tool_requires_confirmation: false,
+            })
+            .await;
+
+        assert!(matches!(
+            decision,
+            ToolGateDecision::Deny {
+                reason: ToolGateDenial::PermissionDeny,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -409,6 +537,7 @@ mod tests {
                 tool_name: "read",
                 args: &json!({"file_path": "README.md"}),
                 pre_tool_block: None,
+                tool_requires_confirmation: false,
             })
             .await;
 

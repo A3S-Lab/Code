@@ -1,0 +1,595 @@
+/* Canvas UI-inspired premium motion layer. */
+
+.a3s-premium-effects-anchor {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.rp-nav {
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.28);
+}
+
+.rp-nav::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(108, 163, 255, 0.12) 28%,
+    rgba(134, 118, 255, 0.58) 48%,
+    rgba(91, 212, 195, 0.2) 68%,
+    transparent 100%
+  );
+  content: '';
+  opacity: 0.58;
+  pointer-events: none;
+}
+
+.a3s-home {
+  --a3s-premium-blue: 108, 163, 255;
+  --a3s-premium-violet: 124, 108, 255;
+  background: var(--a3s-canvas);
+  isolation: isolate;
+}
+
+.a3s-global-grid {
+  position: fixed;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  inset: var(--rp-nav-height, 64px) 0 0;
+}
+
+.a3s-global-grid-canvas {
+  position: absolute;
+  display: block;
+  width: 100%;
+  height: 100%;
+  inset: 0;
+  mix-blend-mode: screen;
+  opacity: 0.72;
+}
+
+.a3s-home::after {
+  position: fixed;
+  z-index: 7;
+  background-image: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.18) 0.45px,
+    transparent 0.7px
+  );
+  background-size: 4px 4px;
+  content: '';
+  inset: 0;
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.65),
+    rgba(0, 0, 0, 0.2) 35%,
+    rgba(0, 0, 0, 0.48)
+  );
+  mix-blend-mode: soft-light;
+  opacity: 0.1;
+  pointer-events: none;
+}
+
+.a3s-hero {
+  --a3s-hero-x: 72%;
+  --a3s-hero-y: 34%;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      circle at 78% 30%,
+      rgba(var(--a3s-premium-blue), 0.055),
+      transparent 34%
+    ),
+    linear-gradient(120deg, rgba(255, 255, 255, 0.012), transparent 38%);
+}
+
+.a3s-hero::before {
+  position: absolute;
+  z-index: 0;
+  background:
+    radial-gradient(
+      circle 330px at var(--a3s-hero-x) var(--a3s-hero-y),
+      rgba(var(--a3s-premium-blue), 0.15),
+      rgba(var(--a3s-premium-violet), 0.055) 38%,
+      transparent 72%
+    ),
+    conic-gradient(
+      from 205deg at 70% 42%,
+      transparent 0deg,
+      rgba(80, 141, 255, 0.08) 46deg,
+      transparent 108deg,
+      rgba(240, 180, 77, 0.035) 185deg,
+      transparent 248deg
+    );
+  content: '';
+  filter: blur(22px);
+  inset: -16%;
+  opacity: 0.82;
+  pointer-events: none;
+}
+
+.a3s-hero-copy,
+.a3s-hero-visual {
+  position: relative;
+  z-index: 1;
+}
+
+.a3s-hero h1 {
+  text-shadow: 0 18px 54px rgba(0, 0, 0, 0.42);
+}
+
+.a3s-hero h1 > span {
+  background: linear-gradient(
+    105deg,
+    #f6f8fb 4%,
+    #8bbcff 38%,
+    #b4a8ff 67%,
+    #f2c66d 100%
+  );
+  background-clip: text;
+  filter: drop-shadow(0 12px 28px rgba(92, 139, 222, 0.16));
+}
+
+.a3s-eyebrow > span {
+  box-shadow:
+    0 0 12px rgba(60, 207, 145, 0.58),
+    0 0 24px rgba(60, 207, 145, 0.12);
+}
+
+.a3s-button--primary {
+  box-shadow:
+    0 12px 32px rgba(78, 68, 205, 0.14),
+    inset 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.a3s-button--primary:hover {
+  box-shadow:
+    0 16px 44px rgba(91, 74, 232, 0.24),
+    0 0 0 1px rgba(139, 182, 255, 0.12),
+    inset 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.a3s-install-console,
+.a3s-feature-card,
+.a3s-bento-card,
+.a3s-surface-card {
+  --a3s-spot-x: 50%;
+  --a3s-spot-y: 50%;
+  isolation: isolate;
+  position: relative;
+}
+
+.a3s-surface-card {
+  overflow: hidden;
+}
+
+.a3s-install-console::before,
+.a3s-feature-card::before,
+.a3s-bento-card::before,
+.a3s-surface-card::before {
+  position: absolute;
+  z-index: 0;
+  background: radial-gradient(
+    360px circle at var(--a3s-spot-x) var(--a3s-spot-y),
+    rgba(var(--a3s-premium-blue), 0.13),
+    rgba(var(--a3s-premium-violet), 0.045) 34%,
+    transparent 68%
+  );
+  content: '';
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms ease;
+}
+
+.a3s-install-console.is-pointer-active::before,
+.a3s-feature-card.is-pointer-active::before,
+.a3s-bento-card.is-pointer-active::before,
+.a3s-surface-card.is-pointer-active::before,
+.a3s-install-console:focus-within::before,
+.a3s-feature-card:focus-within::before,
+.a3s-bento-card:focus-within::before,
+.a3s-surface-card:focus-within::before {
+  opacity: 1;
+}
+
+.a3s-install-console > *,
+.a3s-feature-card > *,
+.a3s-bento-card > *,
+.a3s-surface-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.a3s-install-console {
+  border-color: rgba(117, 143, 178, 0.36);
+  background: rgba(11, 15, 21, 0.86);
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.36),
+    0 0 0 1px rgba(120, 177, 255, 0.025),
+    inset 0 1px rgba(255, 255, 255, 0.055);
+  backdrop-filter: blur(18px) saturate(120%);
+}
+
+.a3s-install-console::after {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 14%;
+  width: 72%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(143, 205, 255, 0.9),
+    rgba(148, 118, 255, 0.72),
+    transparent
+  );
+  box-shadow: 0 0 14px rgba(114, 179, 255, 0.48);
+  content: '';
+  opacity: 0.42;
+  pointer-events: none;
+  transform: scaleX(0.7);
+  transition:
+    opacity 220ms ease,
+    transform 280ms ease;
+}
+
+.a3s-install-console:hover::after,
+.a3s-install-console:focus-within::after {
+  opacity: 0.86;
+  transform: scaleX(1);
+}
+
+.a3s-install-platforms button.is-active .a3s-install-target-icons {
+  filter: drop-shadow(0 0 9px rgba(112, 177, 255, 0.42));
+}
+
+.a3s-runtime-inspector {
+  isolation: isolate;
+  border-color: rgba(111, 142, 182, 0.42);
+  box-shadow:
+    0 34px 100px rgba(0, 0, 0, 0.46),
+    0 0 0 1px rgba(116, 172, 255, 0.035),
+    0 0 72px rgba(66, 106, 173, 0.09),
+    inset 0 1px rgba(255, 255, 255, 0.04);
+  transition:
+    border-color 300ms ease,
+    box-shadow 300ms ease;
+}
+
+.a3s-hero-visual:hover .a3s-runtime-inspector {
+  border-color: rgba(128, 177, 239, 0.58);
+  box-shadow:
+    0 38px 112px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(129, 184, 255, 0.06),
+    0 0 92px rgba(66, 111, 188, 0.13),
+    inset 0 1px rgba(255, 255, 255, 0.055);
+}
+
+.a3s-runtime-inspector::after {
+  position: absolute;
+  z-index: 9;
+  top: 0;
+  right: 14%;
+  left: 14%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(114, 195, 255, 0.82) 34%,
+    rgba(143, 124, 255, 0.94) 64%,
+    transparent
+  );
+  box-shadow:
+    0 0 14px rgba(89, 169, 255, 0.58),
+    0 4px 22px rgba(89, 127, 255, 0.12);
+  content: '';
+  opacity: 0;
+  pointer-events: none;
+  transform: scaleX(0.2);
+  transition:
+    opacity 180ms ease,
+    transform 320ms ease;
+}
+
+.a3s-runtime-inspector.is-running::after {
+  opacity: 0.72;
+  transform: scaleX(1);
+}
+
+.a3s-section {
+  --a3s-section-accent: 108, 163, 255;
+}
+
+.a3s-tutorial-section {
+  --a3s-section-accent: 132, 111, 255;
+}
+
+.a3s-capabilities {
+  --a3s-section-accent: 95, 187, 214;
+}
+
+.a3s-surfaces {
+  --a3s-section-accent: 77, 198, 149;
+}
+
+.a3s-section-header {
+  position: relative;
+  background:
+    radial-gradient(
+      620px circle at 12% 112%,
+      rgba(var(--a3s-section-accent), 0.09),
+      transparent 66%
+    ),
+    linear-gradient(120deg, rgba(255, 255, 255, 0.012), transparent 42%);
+}
+
+.a3s-section-header::after {
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: min(34%, 420px);
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    rgba(var(--a3s-section-accent), 0.58),
+    transparent
+  );
+  content: '';
+  pointer-events: none;
+}
+
+.a3s-section-eyebrow {
+  align-items: center;
+  gap: 12px;
+}
+
+.a3s-section-eyebrow::after {
+  width: 34px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    rgba(var(--a3s-section-accent, 108, 163, 255), 0.72),
+    transparent
+  );
+  content: '';
+}
+
+.a3s-feature-card,
+.a3s-bento-card,
+.a3s-surface-card {
+  transition:
+    background-color 240ms ease,
+    box-shadow 240ms ease,
+    color 240ms ease;
+}
+
+.a3s-feature-card:hover,
+.a3s-bento-card:hover,
+.a3s-surface-card:hover {
+  box-shadow:
+    inset 0 1px rgba(153, 196, 255, 0.07),
+    inset 0 0 52px rgba(61, 101, 166, 0.035);
+}
+
+.a3s-feature-card:hover h3,
+.a3s-bento-card:hover h3,
+.a3s-surface-card:hover h3 {
+  color: #fff;
+}
+
+.a3s-feature-card:hover .a3s-tag-row > span,
+.a3s-bento-card:hover .a3s-tag-row > span {
+  border-color: rgba(117, 156, 209, 0.36);
+  color: #8998ab;
+}
+
+.a3s-bento-card::after {
+  transform-origin: center;
+  transition:
+    border-color 300ms ease,
+    box-shadow 300ms ease,
+    transform 500ms ease;
+}
+
+.a3s-bento-card:hover::after {
+  border-color: rgba(126, 181, 255, 0.26);
+  box-shadow:
+    0 0 0 32px rgba(108, 163, 255, 0.036),
+    0 0 0 64px rgba(108, 163, 255, 0.022),
+    0 0 70px rgba(75, 126, 204, 0.1);
+  transform: translate(-8px, -8px) scale(1.05);
+}
+
+.a3s-tutorial-step[data-selected='true'] {
+  box-shadow:
+    inset 2px 0 rgba(132, 182, 255, 0.36),
+    inset 0 0 72px rgba(65, 106, 173, 0.045);
+}
+
+.a3s-surface-card:hover > code {
+  border-color: rgba(117, 155, 205, 0.42);
+  background: rgba(18, 23, 31, 0.92);
+  color: #bbc6d4;
+}
+
+.a3s-boundaries-art {
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.035),
+    inset -40px 0 90px rgba(61, 99, 159, 0.035);
+}
+
+.a3s-boundary-line {
+  background:
+    linear-gradient(90deg, transparent, rgba(130, 198, 255, 0.98), transparent)
+      no-repeat,
+    linear-gradient(90deg, #446da7, #73592c);
+  background-position:
+    -18% 50%,
+    0 50%;
+  background-size:
+    16% 2px,
+    100% 1px;
+}
+
+.a3s-boundaries:hover .a3s-boundary-line,
+.a3s-boundaries:focus-within .a3s-boundary-line {
+  animation: a3s-premium-contract-pulse 1.8s ease-out both;
+}
+
+.a3s-cta {
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      circle at 82% 26%,
+      rgba(89, 139, 220, 0.19),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 64% 112%,
+      rgba(114, 91, 218, 0.12),
+      transparent 46%
+    ),
+    linear-gradient(120deg, #11141b, #0b0d11 62%);
+}
+
+.a3s-cta::before {
+  position: absolute;
+  z-index: 0;
+  width: 620px;
+  height: 360px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 110deg,
+    rgba(79, 138, 230, 0.16),
+    rgba(129, 94, 225, 0.08),
+    transparent 48%,
+    rgba(77, 192, 173, 0.05),
+    rgba(79, 138, 230, 0.16)
+  );
+  content: '';
+  filter: blur(64px);
+  inset: -120px -130px auto auto;
+  opacity: 0.72;
+  pointer-events: none;
+  transform: rotate(2deg);
+}
+
+.a3s-cta::after {
+  z-index: 0;
+  opacity: 0.76;
+  transform: scale(1.01);
+}
+
+.a3s-cta > * {
+  z-index: 2;
+}
+
+@keyframes a3s-premium-contract-pulse {
+  0%,
+  18% {
+    background-position:
+      -18% 50%,
+      0 50%;
+    filter: none;
+  }
+
+  28% {
+    filter: drop-shadow(0 0 7px rgba(93, 169, 255, 0.72));
+  }
+
+  72% {
+    filter: drop-shadow(0 0 5px rgba(93, 169, 255, 0.42));
+  }
+
+  82%,
+  100% {
+    background-position:
+      118% 50%,
+      0 50%;
+    filter: none;
+  }
+}
+
+@media (max-width: 920px) {
+  .a3s-hero::before {
+    inset: -8%;
+  }
+
+  .a3s-home::after {
+    opacity: 0.065;
+  }
+}
+
+@media (max-width: 640px) {
+  .a3s-hero::before {
+    background: radial-gradient(
+      circle 250px at 72% 24%,
+      rgba(var(--a3s-premium-blue), 0.14),
+      transparent 72%
+    );
+    filter: blur(18px);
+  }
+
+  .a3s-global-grid-canvas {
+    opacity: 0.58;
+  }
+
+  .a3s-section-header::after {
+    width: 52%;
+  }
+}
+
+@media (hover: none) {
+  .a3s-install-console::before,
+  .a3s-feature-card::before,
+  .a3s-bento-card::before,
+  .a3s-surface-card::before {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .a3s-install-console::after,
+  .a3s-runtime-inspector::after,
+  .a3s-bento-card::after {
+    transition: none;
+  }
+
+  .a3s-boundaries:hover .a3s-boundary-line,
+  .a3s-boundaries:focus-within .a3s-boundary-line {
+    animation: none;
+  }
+
+  .a3s-install-console.is-pointer-active::before,
+  .a3s-feature-card.is-pointer-active::before,
+  .a3s-bento-card.is-pointer-active::before,
+  .a3s-surface-card.is-pointer-active::before {
+    opacity: 0;
+  }
+
+  .a3s-global-grid-canvas {
+    opacity: 0.52;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .a3s-home::after {
+    display: none;
+  }
+
+  .a3s-global-grid-canvas {
+    opacity: 0.4;
+  }
+}

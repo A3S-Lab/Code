@@ -1,0 +1,219 @@
+---
+title: '工具'
+description: '工具选择、直接工具调用与验证证据'
+---
+
+# 工具
+
+A3S Code 会保留工具注册表。`toolNames()` 返回当前会话的工具表面。这个表面由
+工作区能力与会话级集成共同组装；因此非本地工作区可以有意隐藏它无法提供服务的工具。
+
+工具活动通过会话事件流传给客户端。界面可以直接展示开始、输出、错误和完成状态，
+不需要解析终端文本。
+
+## 工具表面
+
+| 层级                       | 工具                                                                  | 注册规则                                                                                                                                 |
+| -------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| 受工作区能力限制的内置工具 | `read`、`write`、`edit`、`patch`、`grep`、`glob`、`ls`、`bash`、`git` | 仅在 `WorkspaceServices` 声明具备所需能力时注册。例如浏览器或 S3 工作区可以暴露文件工具，同时隐藏 `bash` 或本地 Git。                    |
+| 运行时内置工具             | `web_fetch`、`web_search`、`batch`、`program`                         | 由核心工具执行器注册。`batch` 和 `program` 接收当前有作用域的调用器，因此内部工具既受会话表面限制，也继承调用方的治理作用域。            |
+| 会话启动工具               | `task`、`parallel_task`、`generate_object`、`search_skills`、`Skill`  | 构建 `AgentSession` 时加入。关闭手动委派后会移除委派工具；`generate_object` 需要已配置的大语言模型客户端；技能工具使用有效的技能注册表。 |
+| 动态集成                   | `mcp__<server>__<tool>` 与宿主注册工具                                | 从 MCP 管理器或宿主代码发现后加入。                                                                                                      |
+
+当某个工作流依赖特定工具可见时，在测试或应用诊断中使用 `toolNames()` /
+`toolDefinitions()` 验证。工具可见性不是安全授权。`send`、`run`、`stream`
+中的模型选择工具调用会经过当前技能限制、权限策略、确认、钩子、预算、队列与超时、
+取消、递归调用保护、输出净化、制品上限与工作区路径检查。`session.tool(...)`
+这类直接 SDK 调用使用另一条显式策略，见下文。`activeTools()` 回答的是另一个问题：
+当前操作中有哪些工具调用正在运行。
+
+## 统一调用内核
+
+运行时会为每次调用标记来源：
+
+| 来源         | 示例                                                                                        | 权限与确认策略                                                 |
+| ------------ | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| 智能体       | 模型在 `send` 或 `stream` 中发出工具调用                                                    | 应用完整的模型侧策略与人工确认。                               |
+| 嵌套调用     | `batch`、`program` 或其他编排器的内部调用                                                   | 继承调用方受治理的调用器与调用栈。                             |
+| 宿主直接调用 | `session.tool(...)`、带类型的读写及 Git 辅助方法、`session.program(...)` 与直接任务辅助方法 | 可信控制面：宿主已经选择该调用，因此跳过模型侧权限与人工确认。 |
+
+三种来源都经过同一个调用内核。前置钩子可以阻止调用；预算检查在产生副作用前执行；
+队列与超时、取消、递归保护、后置钩子以及安全提供程序的输出净化仍然有效。安装
+有作用域的调用器后，嵌套调用不能回退到原始注册表。
+
+宿主直接调用策略不是面向终端用户的授权系统。嵌入式应用必须先完成用户身份认证和
+授权，再把请求翻译成直接 SDK 辅助方法。关闭会话会通过会话取消作用域中止正在执行的
+宿主直接调用工具。
+
+```ts
+const files = await session.glob('src/**/*.rs');
+const hits = await session.grep('PermissionPolicy');
+const status = await session.git('status');
+const output = await session.bash('cargo test -p a3s-code-core');
+const raw = await session.tool('read', { file_path: 'README.md' });
+const schemas = session.toolDefinitions();
+const hitLines = hits.split('\n').filter(Boolean).length;
+
+console.log(files.length, hitLines, output.length, schemas.length);
+console.log(status.output);
+console.log(raw.output);
+```
+
+直接工具调用在会话工作区下执行，应视为宿主侧特权操作。它们不更新对话记录，
+因此不占用会话的单任务对话租约。`session.tool(...)`、
+`session.program(...)`、`session.git(...)`、`session.writeFile(...)`、
+`session.ls(...)`、`session.editFile(...)` 和 `session.patchFile(...)` 返回
+`ToolResult`，读取 `output`、`exitCode` 和可选的 `metadataJson`。类型化
+读取、搜索和命令行辅助方法返回更简单的值：`readFile`、`grep`、`bash` 返回字符串，
+`glob` 返回字符串数组。长输出应在进入提示词前先摘要。
+
+## 结构化输出：`generate_object`
+
+`generate_object` 工具会让配置的大语言模型生成 JSON 对象，对响应执行 JSON 模式
+校验，并且只在零退出码结果中返回校验后的对象。它有两种使用方式：
+
+1. **智能体自主调用**：大语言模型在工具列表中看到 `generate_object`，在需要结构化输出时自行决定调用。
+2. **直接调用**：应用通过 `session.tool('generate_object', ...)` 绕过模型驱动的工具选择步骤；工具内部仍会调用配置的 LLM。
+
+```ts
+const result = await session.tool('generate_object', {
+  schema: {
+    type: 'object',
+    required: ['sentiment', 'confidence'],
+    properties: {
+      sentiment: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+    },
+  },
+  prompt: '分类: "这个产品太棒了！"',
+  schema_name: 'sentiment',
+  mode: 'tool',
+  max_repair_attempts: 2,
+});
+
+if (result.exitCode !== 0) {
+  throw new Error(result.output);
+}
+
+const { object } = JSON.parse(result.output);
+// object = { sentiment: "positive", confidence: 0.95 }
+```
+
+### 参数
+
+| 参数                  | 类型   | 必填 | 说明                                                                    |
+| --------------------- | ------ | ---- | ----------------------------------------------------------------------- |
+| `schema`              | 对象   | 是   | 用于校验输出的 JSON 模式                                                |
+| `prompt`              | 字符串 | 是   | 描述要生成或提取的内容                                                  |
+| `schema_name`         | 字符串 | 否   | 短名称（默认 `"result"`）                                               |
+| `schema_description`  | 字符串 | 否   | 合成工具的描述                                                          |
+| `system`              | 字符串 | 否   | 可选系统提示                                                            |
+| `mode`                | 字符串 | 否   | `"auto"` / `"strict"` / `"json"` / `"tool"` / `"prompt"`（默认 `auto`） |
+| `max_repair_attempts` | 整数   | 否   | 0–5（默认 2）                                                           |
+
+### 模式
+
+- **`tool`**：注入一个合成工具，其参数就是模式。这是当前跨服务提供商的默认路径。
+- **`prompt`**：将模式指令追加到提示词中。它适合作为仅提示词的回退路径，但更依赖模型遵循指令。
+- **`auto`**：当前解析为 `tool`。
+- **`strict` / `json`**：API 接受这两个值，但当前运行路径会解析为 `tool`，因为服务提供商级 `response_format` 尚未在这里启用。
+
+### 流式
+
+通过 `session.stream()` 调用时，部分对象以 `tool_output_delta` 事件发出：
+
+```ts
+const stream = await session.stream('提取所有发票...');
+
+while (true) {
+  const { value: ev, done } = await stream.next();
+  if (done) break;
+  if (!ev) continue;
+
+  if (ev.type === 'tool_output_delta' && ev.toolName === 'generate_object') {
+    const { object_partial } = JSON.parse(ev.text);
+    renderProgress(object_partial);
+  }
+}
+```
+
+### 修复重试
+
+如果大语言模型输出未通过模式校验，工具会自动将校验错误反馈给模型并重试。这能处理缺少必填字段、枚举值错误等边界情况，无需应用层重试逻辑。
+
+委派子任务可以直接使用 SDK 辅助方法，它们底层仍是同一组核心工具：
+
+```ts
+await session.task({
+  agent: 'explore',
+  description: '查找认证文件',
+  prompt: '检查认证相关文件，并返回紧凑证据列表。',
+});
+
+await session.tasks([
+  { agent: 'explore', description: '查找测试', prompt: '定位认证测试。' },
+  {
+    agent: 'verification',
+    description: '检查风险',
+    prompt: '审查认证边界情况。',
+  },
+]);
+```
+
+自动子智能体委派也使用同一组核心工具。`autoParallel: false` 只关闭自动并行扇出，
+不会移除 `parallel_task` 或 `session.tasks(...)`。
+
+## 程序化工具调用
+
+程序化工具调用不是单次直接工具调用。`program` 工具会在内嵌 QuickJS 虚拟机中运行
+受限 JavaScript 脚本；脚本定义 `async function run(ctx, inputs)`，用一个有边界的
+程序替代多轮模型工具调用。
+
+不要让模型反复消耗工具回合：
+
+```text
+grep -> read -> grep -> read -> summarize
+```
+
+可以让模型请求 `program` 运行一个脚本：
+
+```js
+// search-auth.js
+export default async function run(ctx, inputs) {
+  const hits = await ctx.grep(inputs.query, { glob: '*.rs' });
+  const files = await ctx.glob('crates/**/*.rs');
+  const snippets = [];
+
+  for (const file of files.slice(0, 20)) {
+    const content = await ctx.readFile(file);
+    if (content.includes(inputs.query)) {
+      snippets.push({ file, preview: content.slice(0, 1200) });
+    }
+  }
+
+  return {
+    summary: `找到 ${snippets.length} 个与 ${inputs.query} 相关的候选文件`,
+    evidence: snippets,
+    rawSearch: hits,
+  };
+}
+```
+
+SDK 的 `session.program(...)` 支持内联 `source`，也支持 workspace 相对路径 `.js` 或 `.mjs` 文件：
+
+```js
+await session.program({
+  path: 'scripts/ptc/search-auth.js',
+  inputs: { query: 'PermissionPolicy' },
+  allowedTools: ['grep', 'glob', 'read'],
+  limits: {
+    timeoutMs: 30000,
+    maxToolCalls: 30,
+    maxOutputBytes: 65536,
+  },
+});
+```
+
+`session.program(...)` 等价于 `session.tool('program', { type: 'script', language: 'javascript', ... })`，只是使用 SDK 原生命名。如果省略 `allowedTools` / `allowed_tools`，脚本可以调用除 `program` 之外的所有已注册工具。需要更小能力面时，再显式传入 allow-list。
+
+QuickJS VM 不获得文件系统、网络、子进程或环境变量权限。脚本唯一有用的能力来自 `ctx`，这些方法会回到 A3S Code 的受控工具执行路径。PTC 会返回可读的 `ToolResult.output`，结构化数据位于 `ToolResult.metadataJson`。原始大输出不应反复塞进 prompt；应先总结发现、证据引用、风险和建议下一步。

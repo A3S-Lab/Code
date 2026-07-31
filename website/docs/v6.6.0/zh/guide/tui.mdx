@@ -1,0 +1,366 @@
+---
+title: 'A3S Code TUI'
+description: '安装、配置并使用 a3s code 终端应用'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# A3S Code TUI
+
+`a3s code` 是 A3S Code 的交互式终端应用。它由
+[`a3s` CLI](https://github.com/A3S-Lab/a3s) 发布，嵌入
+`a3s-code-core` 运行时，并使用 [`a3s-tui`](https://github.com/A3S-Lab/TUI)
+渲染运行时事件流。
+
+需要现成的终端编程智能体时使用 TUI；要构建自己的运行框架、IDE 扩展、
+服务器工作进程、工作流运行器或产品界面时使用 SDK。
+
+## 界面结构
+
+| 组成部分     | 仓库                                            | 职责                                                                                                                      |
+| ------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| A3S Code SDK | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) | Rust 运行时 crate，以及 Node.js、Python 和 Go SDK。                                                                       |
+| `a3s code`   | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   | 驱动 A3S Code 会话的终端编程智能体应用。                                                                                  |
+| A3S Use      | [A3S-Lab/Use](https://github.com/A3S-Lab/Use)   | 独立发布的 Browser、原生 Office、内置 OCR、可选 Office 兼容层，以及通过标准 MCP 与 Skill 投影到 Code 的签名外部应用能力。 |
+| `a3s-tui`    | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)   | CLI 使用的终端界面框架，不是智能体运行时。                                                                                |
+| A3S 单体仓库 | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   | 产品文档、发布编排、子模块版本固定与相关 crate。                                                                          |
+
+## 安装
+
+先运行对应平台的一键安装脚本：
+
+<Tabs>
+<Tab label="macOS / Linux">
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.sh | sh
+```
+
+</Tab>
+<Tab label="Windows">
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
+```
+
+</Tab>
+</Tabs>
+
+脚本会选择当前系统与架构对应的发布包并校验 SHA-256。也可以使用
+`brew install a3s-lab/tap/a3s` 或 `cargo install a3s`。
+
+安装后，在希望 Agent 检查的 Workspace 中运行：
+
+```bash
+a3s code
+a3s code resume <session-id>
+a3s code resume
+a3s code update
+```
+
+顶层 `a3s update` 命令也会被 CLI 接受，并路由到同一个更新程序。
+
+## 配置
+
+TUI 按以下顺序发现配置：
+
+1. `A3S_CONFIG_FILE`
+2. 从当前目录向上查找的 `.a3s/config.acl`
+3. `~/.a3s/config.acl`
+
+TUI 使用 `.a3s/config.acl` 作为项目本地配置。SDK 示例经常使用
+`agent.acl`，因为嵌入方会通过 `Agent.create("agent.acl")` 显式传入
+配置路径。二者都是 ACL 文件；关键区别在于由谁发现文件。
+可选的 A3S OS 端点使用 `os = "https://..."` 配置。
+
+`/ide` 与 `/config` 共用同一套全屏编辑器。文件树使用终端安全的文件类型与目录
+符号、语义化图标颜色和对齐的展开标记；编辑器标题、文件元数据与带分隔线的
+行号 gutter 复用同一图标来源，不依赖 emoji 或 Nerd Font。
+
+不要把真实密钥、私有服务提供商 URL、租户标识或用户本地路径提交到仓库。
+公开模板应通过环境变量解析凭据：
+
+```acl
+default_model = "provider/model-id"
+os = env("A3S_OS_URL")
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+```
+
+## 会话恢复
+
+核心会话快照会自动保存到
+`<workspace>/.a3s/tui/sessions/v1/sessions`，TUI 自己维护的逐会话状态保存在
+`<workspace>/.a3s/tui/session-state/v1`。退出后，CLI 会打印完整的
+`a3s code resume <session-id>` 命令；启用颜色输出时，该命令会高亮显示。不带 id 的
+`a3s code resume` 会恢复当前工作区中最近保存的会话。
+
+恢复时会保留该会话的模型及凭据来源、推理强度、执行模式
+（`default`、`plan` 或 `auto`）和语法高亮主题。如果退出中断了 durable `/goal`，启动时
+会显示“继续目标”与“保持暂停”：前者从下一次目标迭代继续，且不改变已恢复的执行模式；
+后者进入会话并保持目标暂停，之后可用 `/goal resume` 继续。
+
+## 文件系统优先工作流
+
+TUI 面向工作区。它在仓库中启动时，可以加载 SDK 会话也会使用的文件系统优先约定：
+
+| 路径                        | TUI 中的作用                                            |
+| --------------------------- | ------------------------------------------------------- |
+| `AGENTS.md`                 | 加载到上下文中的项目说明。                              |
+| `.a3s/config.acl`           | 项目本地模型、服务提供商、技能、存储和委派策略。        |
+| `.a3s/agents/`              | 可供 `task`、`parallel_task` 和自动委派使用的工作角色。 |
+| `.a3s/skills/` 与 `skills/` | 暴露给会话的可复用项目技能。                            |
+| `.a3s/kb/`                  | TUI 知识工作流使用的项目知识库。                        |
+
+这些文件让行为可审查，但不会绕过运行时边界。权限策略、确认提示、
+工作区检查、工具可见性、响应契约与验证仍然通过 A3S Code 执行路径。
+
+## 通过 A3S Use 使用浏览器、办公文档与文字识别
+
+A3S Use 是独立发布的首次使用组件。终端接管前，`a3s code` 会复用健康安装；网络和
+自动准备策略允许时，会安装经过校验的发行版。`--offline`、`A3S_OFFLINE=1` 和
+`A3S_NO_AUTO_INSTALL=1` 始终禁止该修改。准备失败不会阻止 Code 启动，并会通过 `/use`
+保持可诊断。运行时与模型资源也可以显式提前准备：
+
+```bash
+a3s install use --source release
+a3s install use/browser
+
+# 可选的 OfficeCLI 兼容 provider；原生 Office 已内置在 Use 中。
+a3s install use/office
+
+# 安装或修复固定版本的本地 PP-OCRv6 模型。
+a3s install use/ocr
+a3s use ocr doctor --json
+```
+
+当 Use 主程序就绪后，Code 会读取它带版本号的能力注册表，并同时监听代次与内容修订。
+之后服务提供商变化，以及扩展的安装、升级、启用或禁用，都会把对应 MCP 与已校验的
+`SKILL.md` 热插拔到当前会话。如果启动时缺少组件且首次准备被禁用或失败，则需要在
+显式安装后重启 Code 一次；之后的能力变化不需要重启。
+
+`/use` 与 `/use status` 会显示 Use 可执行文件路径和版本、注册表收敛状态、
+服务提供商就绪状态、MCP 连接与工具数量，以及技能的校验和加载状态。`/use repair`
+只打印非破坏性的修复指引，绝不会自动执行安装或改变扩展状态。
+
+主编码模型有意看不到原始 `mcp__use_*` 定义；它通过 `task` 看到专用的 `use`
+工作智能体，并把应用操作委派给它。Use 工作智能体只能看到 `mcp__use_*`，不能使用
+命令行、工作区、无关 MCP 或递归委派工具。受管技能只提供领域指引，不能扩大权限。
+用户可以直接说“用浏览器检查这个页面”“用 Office 更新这个工作簿”或“对这张扫描图做
+文字识别”，无需手写工具名。能力不可用时，工作智能体会返回带类型的失败结果，不会
+换用其他工具兜底。默认浏览器接口包含诊断和有边界的安装工具；缺少受管浏览器时，
+只能在父 TUI 确认后由 Use 工作智能体请求安装。
+
+| 能力        | Code 接口             | 服务提供商与确认行为                                                                                                                              |
+| ----------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 浏览器      | `mcp__use_browser__*` | 使用已发现的浏览器，或通过需要父级 HITL 的修改请求安装受管服务提供商。封闭会话内的只读检查可直接执行；导航、联网读取、输入、点击与提交需要 HITL。 |
+| 原生 Office | `mcp__use_office__*`  | 使用带修订与冲突检查的有界原生 Office 包内核。封闭环境内的读取可直接执行；修改与破坏性保存需要 HITL。                                             |
+| 内置 OCR    | `mcp__use_ocr__*`     | 通过 ONNX Runtime 在本地运行固定版本的 `PP-OCRv6_small` 检测与识别模型。诊断与提取均为封闭环境只读工具，源文件字节不会离开设备。                  |
+
+MCP 行为元数据只能提升风险，不能降低父级策略。只有同时声明
+`readOnlyHint=true`、`openWorldHint=false` 且不是破坏性操作时，才不需要额外确认。
+缺少注解、开放世界、修改、破坏性或提交风险都会向父 TUI 请求确认；父级拒绝始终有效。
+Office 修改绝不会被自动重试，尤其 `use.office.outcome_unknown` 表示变更可能已经
+落地，工作智能体必须保留证据并停止。
+
+Code 也不会把 MCP 结果压扁成纯文本：`outputSchema`、`structuredContent`、图片、
+文本或二进制资源、协议元数据和带 SHA-256 的有界制品都会进入正常的对话记录和
+工具结果路径。
+
+## 运行时事件流
+
+TUI 将 `AgentSession::stream()` 视为事实来源。运行时事件驱动对话文本、工具调用
+进度、规划状态、批准提示、记忆视图、Git 和文件面板、验证证据与可回放的运行状态。
+
+`Ctrl+T` 打开完整、实时的语义会话记录，其中包括用户与
+助手消息、计划、每个工具的完整生命周期与完整输出、子智能体状态，以及当前仍在
+流式生成的 Markdown 尾部。
+
+这个分层对产品构建者很重要：TUI 只是运行时上方的一个有主张的客户端。
+SDK 嵌入方可以基于同样的会话、工具、事件、持久化与验证 API 构建不同控制面。
+
+## HITL 权限确认
+
+HITL 是执行边界，不是按工具名称粗略分类。Default 模式会让受约束的 Workspace
+文件修改和沙箱内普通命令保持流畅；显式主机 Shell、缺少沙箱时的 Shell、受保护控制
+元数据、修改型 Git 操作和带外部副作用的调用会在执行前暂停。Plan 模式拒绝修改，
+Auto 模式永远不会打开确认界面，无法证明安全的操作会直接失败。
+
+确认界面显示规范化后的真实参数，并提供四个明确决定：
+
+1. 仅允许这一次。
+2. 在当前会话中允许这一精确能力。
+3. 把这一精确能力规则写入项目的 `.a3s/permissions.acl`。
+4. 拒绝，并把原因返回给 Agent。
+
+`/permissions` 可以检查并撤销会话或项目授权。项目授权使用原子 ACL 重写；撤销只影响
+之后的检查，不会取消已经开始执行的工具。
+
+## 代码智能
+
+Agent、TUI `/ide` 和 A3S Web Monaco 共用一个只读代码智能运行时。目前支持 Rust 与
+TypeScript/JavaScript；启动 `a3s code` 前应安装对应的 `rust-analyzer` 或
+`typescript-language-server`。缺少某个语言服务只会让该语言显示为不可用或降级，
+不会关闭编辑器、普通文件工具或其他正常语言。
+
+语义结果始终基于磁盘上已保存的文件。未保存缓冲区不会发布给共享运行时，界面会明确
+显示“已保存版本”，保存后才刷新 Workspace 清单与语义结果。
+
+在 `/ide` 中按 `:` 后可使用：
+
+| 命令                     | 结果                                          |
+| ------------------------ | --------------------------------------------- |
+| `:status`                | 语言状态与协商后的能力。                      |
+| `:symbols [query]`       | 当前文件符号，或有上限的 Workspace 符号搜索。 |
+| `:definition`            | 光标位置的定义。                              |
+| `:declaration`           | 光标位置的声明。                              |
+| `:references`            | 光标位置的引用。                              |
+| `:implementations`       | 光标位置的实现。                              |
+| `:diagnostics`           | 当前已保存文件的诊断。                        |
+| `:diagnostics workspace` | 有上限的 Workspace 诊断。                     |
+
+Agent 通过 `code_symbols`、`code_navigation` 和 `code_diagnostics` 使用同一能力；
+源码读取、文本搜索和修改仍只经过 `read`、`grep`、`edit` 与 `patch`，代码智能不会创建
+第二条修改路径。
+
+## 跨会话上下文检索
+
+本地 `ctx` 已安装并完成索引时，TUI 在启动时启用两层召回：长期 Memory 保存经过筛选的
+稳定信息，`/ctx` 则搜索跨工具、跨会话的原始历史。它用于找回以前的决定、命令、错误
+和测试结果，而不是重新推断已经完成的工作。
+
+| 命令            | 行为                                                                 |
+| --------------- | -------------------------------------------------------------------- |
+| `/ctx <query>`  | 搜索本地会话索引，并显示最多八个可选择结果。                         |
+| `/ctx <n>`      | 拉取第 n 个结果附近的有界记录，并一次性附加到下一条消息。            |
+| `/ctx save <n>` | 保存为长期情节记忆，并保留 `ctx_event_id` 与 `ctx_session_id` 回链。 |
+
+附加的历史记录会去除终端控制字符、限制大小，并作为不可信引用文本包裹；其中旧指令不会被
+当成当前用户指令执行。保存到 Memory 的结果带有 `source=ctx` 来源，因此可以从记忆追溯
+到原始会话。
+
+## 渐进式 API 与 Runtime 工具
+
+这两项能力只在配置 A3S OS 并通过 `/login` 登录后出现。渐进式 API 使用一个按当前账号
+权限过滤的入口，按需执行：
+
+```text
+list → search → describe → execute
+模块    找操作    读单个 Schema   执行
+```
+
+模型先发现模块，再搜索操作，只为将要调用的那一个操作加载完整输入输出 Schema，因此
+无需把整个平台能力目录塞进会话上下文。`execute` 使用 `shaped=true` 时可以返回受信任
+视图，TUI 会把有效 `.view` 或 `viewUrl` 显示为内联“打开视图”操作。
+
+登录后注册的 `runtime` 工具用于 A3S OS Function as a Service 批执行。它按 UUID 或名称
+解析 tool-kind Worker，把相互独立的输入作为一个批任务提交，流式返回每项进度，最后
+聚合所有结果。未登录时该工具不会出现在模型工具列表中；本地文件、Shell、MCP、
+`task`、`parallel_task`、`dynamic_workflow`、Memory 与 `/ctx` 仍可正常使用。
+
+## 斜杠命令
+
+内置斜杠命令包括：
+
+| 命令                                   | 作用                                                                 |
+| -------------------------------------- | -------------------------------------------------------------------- |
+| `/model`                               | 在已配置模型和已登录账号模型之间切换。                               |
+| `/init`                                | 分析工作区并生成 `AGENTS.md`。                                       |
+| `/config`                              | 在编辑器中打开当前生效的 ACL 配置。                                  |
+| `/use` / `/use status` / `/use repair` | 查看实时 A3S Use 能力状态，或打印不会自动执行的显式修复指引。        |
+| `/theme`                               | 切换代码高亮主题。                                                   |
+| `/flow`                                | 选择或草拟工作流资源，用于本地开发与可选宿主集成。                   |
+| `/agent`                               | 选择智能体定义，用于本地开发与可选宿主集成。                         |
+| `/mcp`                                 | 选择 MCP 服务资源，用于本地开发与可选宿主集成。                      |
+| `/skill`                               | 选择技能资源，用于本地开发与可选宿主集成。                           |
+| `/okf`                                 | 选择 OKF 包，用于本地开发与知识包管理。                              |
+| `/login` 与 `/logout`                  | 登录或退出 `os` 端点对应的 A3S OS 账号。                             |
+| “打开视图”                             | 点击内联按钮，在原生窗口中打开最近验证过的本地报告或可信运行时视图。 |
+| `/plugin` 与 `/reload`                 | 启用、禁用并重新扫描技能与插件。                                     |
+| `/ide`                                 | 打开工作区文件树和代码查看器。                                       |
+| `/memory`                              | 浏览长期记忆。                                                       |
+| `/kb`                                  | 把文本、文件或目录加入项目知识库。                                   |
+| `/ctx`                                 | 搜索历史会话、附加结果，或保存到记忆。                               |
+| `/effort`                              | 调整对所有服务提供商生效的宿主预算，并在其支持时传递原生推理强度。   |
+| `/compact`                             | 总结并压缩对话上下文。                                               |
+| `/goal <text>`                         | 为会话设置持续目标。                                                 |
+| `/goal resume`                         | 继续会话恢复时保持暂停的持久目标。                                   |
+| `/loop`                                | 自动继续执行任务，直到完成或停止。                                   |
+| `/sleep`                               | 把今天的工作整理进长期记忆。                                         |
+| `/help`                                | 显示命令与快捷键。                                                   |
+| `/fork`                                | 从当前点分支出新的已保存会话。                                       |
+| `/clear`                               | 重置对话。                                                           |
+| `/auto`                                | 切换到自动批准模式。                                                 |
+| `/update`                              | 将 CLI 升级到最新发行版。                                            |
+| `/exit`                                | 退出 `a3s code`。                                                    |
+
+部分命令只能在会话空闲时执行，因为它们会改变对话、模型、上下文或进程状态。
+
+## 推理强度与深度研究
+
+| 级别        | 推理预算 | 工具轮次 | 续写次数 | 并行任务数 |
+| ----------- | -------: | -------: | -------: | ---------: |
+| `low`       |    2,048 |      240 |        4 |          4 |
+| `medium`    |    8,192 |      800 |        8 |          8 |
+| `high`      |   16,384 |    1,200 |       12 |         12 |
+| `xhigh`     |   32,768 |    1,800 |       16 |         16 |
+| `max`       |   65,536 |    2,400 |       24 |         24 |
+| `ultracode` |   65,536 |    3,200 |       32 |         32 |
+
+`low` 到 `max` 保持 Codex 原生 `reasoning.effort` 映射，并关闭运行时自动委派；
+`task` 与 `parallel_task` 仍可被明确调用。只有 `ultracode` 会启用自动委派、
+自动规划与动态工作流指引。仅用于生成最终回答的合成续写不会再次启动子智能体。
+
+深度研究当前先收集有数量上限的网页种子，再根据复杂度选择直接快速路径，或本地
+`parallel_task` 轨道与有上限的后续回合。在函数即服务支持就绪前，A3S OS 运行时的
+工具调用扇出保持禁用。
+
+在 TUI 输入 `? <query>` 可启动深度研究。默认情况下，它允许直接网页访问和委派网页
+工具；查询中包含 `no web`、`do not use web` 或 `不要联网` 时，这些网页路径会被
+禁用，同时保留本地证据收集与后续深度。
+
+每次运行的制品位于：
+
+```text
+.a3s/research/<slug>/report.md
+.a3s/research/<slug>/index.html
+```
+
+已完成报告必须能够追溯到本次运行收集的来源。若证据收集或合成无法满足这个条件，
+A3S 会写入明确标注的低置信度深度研究恢复报告，而不是把无证据结论伪装成已完成报告。
+本地 HTML 由仅环回地址、无需认证的查看器提供，因此退出登录时也可以通过
+“打开视图”打开。
+
+无界面命令使用相同工作流：
+
+```bash
+a3s code deepresearch [--local|--os] [--local-only|--web] <query>
+```
+
+`--local` 只表示本地编排，仍允许网页证据；`--local-only`（也接受 `--offline`）
+会强制禁用网络，`--web` 会显式启用网页与工作区证据。自然语言中的 `no web`
+仅作为兼容性兜底。`--os` 当前禁用。无界面命令的所有阶段共同消耗
+一个 60 秒绝对时限，其中宿主直接执行最多使用 20 秒；失败后仅用剩余预算执行
+最多一轮兜底，并为取消与制品收尾保留最后 3 秒。若最终只能生成恢复报告，
+制品仍会落盘，但命令会以错误状态结束。
+
+## 相关页面
+
+1. [文件系统优先](/guide/filesystem-first)
+2. [会话](/guide/sessions)
+3. [命令](/guide/commands)
+4. [工具](/guide/tools)
+5. [安全](/guide/security)

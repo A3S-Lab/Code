@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="420" viewBox="0 0 1200 420"
+     role="img" aria-labelledby="title desc">
+  <title id="title">A3S Code — governed agent runtime</title>
+  <desc id="desc">A governed agent turn flows through a workspace-bound session, model, policy gate, and tool boundary before emitting versioned events and an atomic session snapshot.</desc>
+
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111923"/>
+      <stop offset="1" stop-color="#0d1117"/>
+    </linearGradient>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#6ca3ff"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#f0b44d"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="418" rx="24" fill="#0d1117" stroke="#263445" stroke-width="2"/>
+
+  <g id="identity" transform="translate(62 52)">
+    <text fill="#6ca3ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="2.2">A3S / AGENT RUNTIME</text>
+    <text y="82" fill="#eef4fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="70" font-weight="760" letter-spacing="-2">A3S Code</text>
+    <text y="132" fill="#eef4fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="24" font-weight="600">Build coding agents whose tools, policy,</text>
+    <text y="166" fill="#eef4fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="24" font-weight="600">events, and durable evidence stay explicit.</text>
+
+    <g transform="translate(0 220)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">
+      <rect width="145" height="42" rx="6" fill="#141d28" stroke="#31445b"/>
+      <circle cx="22" cy="21" r="5" fill="#f0b44d"/>
+      <text x="38" y="27" fill="#c6d1df">RUST CORE</text>
+
+      <rect x="157" width="190" height="42" rx="6" fill="#141d28" stroke="#31445b"/>
+      <circle cx="179" cy="21" r="5" fill="#6ca3ff"/>
+      <text x="195" y="27" fill="#c6d1df">NODE + PYTHON</text>
+
+      <rect x="359" width="94" height="42" rx="6" fill="#141d28" stroke="#31445b"/>
+      <circle cx="381" cy="21" r="5" fill="#3ccf91"/>
+      <text x="397" y="27" fill="#c6d1df">MIT</text>
+    </g>
+
+    <g transform="translate(0 310)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">
+      <text fill="#8996a8">AGENT</text>
+      <path d="M70 0H126" stroke="#31445b" stroke-width="2"/>
+      <text x="140" fill="#8996a8">WORKSPACE</text>
+      <path d="M252 0H308" stroke="#31445b" stroke-width="2"/>
+      <text x="322" fill="#8996a8">EVIDENCE</text>
+    </g>
+  </g>
+
+  <path d="M562 44V376" stroke="#263445" stroke-width="2"/>
+
+  <g id="governed-turn" transform="translate(608 44)">
+    <rect width="532" height="332" rx="12" fill="url(#panel)" stroke="#31445b" stroke-width="2"/>
+
+    <g transform="translate(24 25)">
+      <circle cx="7" cy="7" r="7" fill="#3ccf91"/>
+      <text x="26" y="14" fill="#eef4fb" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" font-weight="700">AgentSession</text>
+      <text x="182" y="14" fill="#8996a8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">workspace://repo</text>
+      <text x="462" y="14" fill="#8996a8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">#07</text>
+    </g>
+
+    <g transform="translate(24 72)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700">
+      <rect width="102" height="48" rx="6" fill="#152235" stroke="#446da7"/>
+      <text x="20" y="30" fill="#cfe0ff">MODEL</text>
+
+      <path d="M110 24H148" stroke="#6ca3ff" stroke-width="2" marker-end="url(#arrow-blue)"/>
+
+      <rect x="156" width="112" height="48" rx="6" fill="#271f12" stroke="#8a672b"/>
+      <text x="176" y="30" fill="#ffd997">POLICY</text>
+
+      <path d="M276 24H314" stroke="#f0b44d" stroke-width="2" marker-end="url(#arrow-amber)"/>
+
+      <rect x="322" width="90" height="48" rx="6" fill="#152235" stroke="#446da7"/>
+      <text x="344" y="30" fill="#cfe0ff">TOOL</text>
+
+      <path d="M420 24H454" stroke="#6ca3ff" stroke-width="2" marker-end="url(#arrow-blue)"/>
+      <circle cx="470" cy="24" r="10" fill="#10271f" stroke="#3ccf91" stroke-width="2"/>
+      <path d="M465 24L469 28L476 19" fill="none" stroke="#3ccf91" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <g transform="translate(24 146)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+      <text y="14" fill="#8996a8" font-size="18" letter-spacing="1.2">EventEnvelopeV1</text>
+
+      <g transform="translate(0 34)" font-size="19">
+        <rect width="484" height="38" rx="5" fill="#111923"/>
+        <text x="14" y="25" fill="#6ca3ff">01</text>
+        <text x="56" y="25" fill="#c6d1df">turn_start</text>
+        <text x="364" y="25" fill="#8996a8">turn: 7</text>
+      </g>
+
+      <g transform="translate(0 76)" font-size="19">
+        <rect width="484" height="38" rx="5" fill="#171a1c"/>
+        <text x="14" y="25" fill="#f0b44d">02</text>
+        <text x="56" y="25" fill="#ffd997">tool_execution_start</text>
+        <text x="364" y="25" fill="#8996a8">read</text>
+      </g>
+
+      <g transform="translate(0 118)" font-size="19">
+        <rect width="484" height="38" rx="5" fill="#111923"/>
+        <text x="14" y="25" fill="#6ca3ff">03</text>
+        <text x="56" y="25" fill="#c6d1df">tool_end</text>
+        <text x="364" y="25" fill="#8996a8">exit: 0</text>
+      </g>
+    </g>
+
+    <g transform="translate(24 310)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">
+      <circle cx="7" cy="7" r="7" fill="#3ccf91"/>
+      <text x="26" y="14" fill="#baf5dc">SessionSnapshotV1</text>
+      <text x="484" y="14" fill="#8996a8" text-anchor="end">atomic · persisted</text>
+    </g>
+  </g>
+</svg>

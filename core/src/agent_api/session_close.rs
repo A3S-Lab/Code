@@ -24,6 +24,9 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 const QUEUE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const MEMORY_EXTRACTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const RUN_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+const RUN_ABORT_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Bundle of `Arc`-shared session state needed to perform a graceful close
 /// from anywhere holding (a clone of) the handle.
@@ -47,6 +50,13 @@ pub(crate) struct SessionCloseHandle {
     /// Optional session-owned lane queue. Close first shuts it down to reject
     /// new work, then drains commands admitted before the close boundary.
     pub(crate) command_queue: Option<Arc<crate::session_lane_queue::SessionLaneQueue>>,
+    /// Single-flight run admission and the abort handles for any streaming
+    /// execution/forwarder tasks owned by the active lease.
+    pub(crate) run_admission: Arc<super::run_admission::RunAdmission>,
+    /// Completed-turn memory extractions registered before the close boundary.
+    /// They are drained before session cancellation so durable memories are not
+    /// lost merely because the host closes immediately after receiving output.
+    pub(crate) memory: Option<Arc<crate::memory::AgentMemory>>,
     /// Session-owned MCP source. Inherited/global managers are deliberately
     /// absent so closing one session cannot tear down shared connections.
     pub(crate) mcp_manager: Arc<crate::mcp::manager::McpManager>,
@@ -83,16 +93,19 @@ impl SessionCloseHandle {
     /// for the public-facing contract):
     /// 1. Flip the `closed` flag so further `send`/`stream` fast-fail;
     /// 2. Stop the lane queue from accepting new commands;
-    /// 3. Fire the session-level cancellation token so every derived run
+    /// 3. Drain completed-turn memory extractions already accepted for storage;
+    /// 4. Fire the session-level cancellation token so every derived run
     ///    and subagent task token fires;
-    /// 4. Mark the active run as `Cancelled` in the run store and notify the
+    /// 5. Mark the active run as `Cancelled` in the run store and notify the
     ///    configured hook executor;
-    /// 5. Mark every still-running delegated subagent task as `Cancelled`
+    /// 6. Mark every still-running delegated subagent task as `Cancelled`
     ///    in the tracker;
-    /// 6. Cancel pending HITL tool confirmations so blocked tool callers
+    /// 7. Cancel pending HITL tool confirmations so blocked tool callers
     ///    receive a rejection instead of hanging.
-    /// 7. Drain commands admitted before queue shutdown;
-    /// 8. Disconnect MCP servers owned by this session only.
+    /// 8. Drain commands admitted before queue shutdown;
+    /// 9. Settle the active stream, force-aborting its execution and forwarder
+    ///    after a bounded cooperative grace period;
+    /// 10. Disconnect MCP servers owned by this session only.
     pub(crate) async fn close(&self) {
         {
             let _mutation = self
@@ -110,10 +123,25 @@ impl SessionCloseHandle {
             queue.shutdown().await;
         }
 
-        // 2. Fire the session-level token so children cascade.
+        // 2. Preserve already-completed turns before cancellation invalidates
+        // their model request tokens. The wait is bounded so an unavailable
+        // provider cannot make session close hang indefinitely.
+        if let Some(memory) = &self.memory {
+            if !memory
+                .drain_llm_extractions(MEMORY_EXTRACTION_DRAIN_TIMEOUT)
+                .await
+            {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    "Completed-turn memory extraction did not drain before close timeout"
+                );
+            }
+        }
+
+        // 3. Fire the session-level token so children cascade.
         self.session_cancel.cancel();
 
-        // 3. Mark the active run cancelled and notify the hook executor. The
+        // 4. Mark the active run cancelled and notify the hook executor. The
         //    per-run token has already fired via step 1.
         let had_active_token = self.cancel_token.lock().await.is_some();
         if had_active_token {
@@ -126,7 +154,7 @@ impl SessionCloseHandle {
             }
         }
 
-        // 4. Mark every still-running subagent task cancelled.
+        // 5. Mark every still-running subagent task cancelled.
         let pending: Vec<String> = self
             .subagent_tasks
             .list_for_parent(&self.session_id)
@@ -139,12 +167,12 @@ impl SessionCloseHandle {
             let _ = self.subagent_tasks.cancel(&task_id).await;
         }
 
-        // 5. Cancel pending HITL confirmations.
+        // 6. Cancel pending HITL confirmations.
         if let Some(manager) = &self.confirmation_manager {
             let _ = manager.cancel_all().await;
         }
 
-        // 6. Let work admitted before shutdown finish after cancellation has
+        // 7. Let work admitted before shutdown finish after cancellation has
         // propagated. A misbehaving command cannot block close indefinitely.
         if let Some(queue) = &self.command_queue {
             if let Err(error) = queue.drain(QUEUE_DRAIN_TIMEOUT).await {
@@ -156,7 +184,27 @@ impl SessionCloseHandle {
             }
         }
 
-        // 7. Wait for any extension mutation admitted before `closed` was
+        // 8. Give the active operation a bounded cooperative grace period.
+        // If a streaming execution or a blocked event forwarder ignores
+        // cancellation, abort those concrete tasks while leaving the lifecycle
+        // supervisor alive to clear run state and release admission.
+        if !self.run_admission.wait_until_idle(RUN_CANCEL_GRACE).await {
+            if self.run_admission.abort_stream_workers() {
+                if !self.run_admission.wait_until_idle(RUN_ABORT_GRACE).await {
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        "Session streaming tasks did not settle after forced abortion"
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    "Session blocking run did not settle before close timeout"
+                );
+            }
+        }
+
+        // 9. Wait for any extension mutation admitted before `closed` was
         // flipped, then release only session-owned MCP resources. Removing all
         // configurations (not only connected clients) also cleans up a failed
         // add transaction. Agent-global and host-owned inherited managers have

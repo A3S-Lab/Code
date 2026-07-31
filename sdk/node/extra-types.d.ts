@@ -24,6 +24,10 @@ export type ToolErrorKind =
   | { type: 'invalid_argument'; message: string }
   | { type: 'unsupported'; message: string }
   | { type: 'timeout'; op: string; duration_ms: number }
+  | { type: 'transport'; op: string }
+  | { type: 'cancelled'; op: string }
+  | { type: 'partial_failure'; failed: number; total: number }
+  | { type: 'rate_limited'; retry_after_ms: number | null }
 
 export type VerificationStatus = 'passed' | 'failed' | 'needs_review' | 'skipped'
 

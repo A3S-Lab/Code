@@ -124,6 +124,70 @@ async fn manifest_search_matches_glob_and_grep() {
     assert_eq!(grep.match_count, 1);
     assert_eq!(grep.file_count, 1);
     assert!(grep.output.contains("src/main.rs:2"));
+
+    let metadata_only = backend
+        .grep_with_sources(WorkspaceGrepRequest {
+            base: WorkspacePath::root(),
+            pattern: "hello".to_string(),
+            glob: None,
+            context_lines: 0,
+            case_insensitive: false,
+            max_output_size: 0,
+        })
+        .await
+        .unwrap();
+    assert_eq!(metadata_only.result.match_count, 2);
+    assert_eq!(metadata_only.result.file_count, 2);
+    assert!(metadata_only.result.output.is_empty());
+    assert!(!metadata_only.result.truncated);
+    assert_eq!(
+        metadata_only.matched_paths.unwrap(),
+        vec![
+            WorkspacePath::from_normalized("README.md"),
+            WorkspacePath::from_normalized("src/main.rs")
+        ]
+    );
+}
+
+#[tokio::test]
+async fn manifest_credential_boundary_filters_sensitive_grep_candidates() {
+    let temp = tempfile::tempdir().unwrap();
+    write(
+        &temp.path().join("src/lib.rs"),
+        b"pub const BOUNDARY_TOKEN_NAME: &str = \"external\";\n",
+    );
+    write(
+        &temp.path().join("apps/api/.env.local"),
+        b"BOUNDARY_TOKEN_NAME=secret\n",
+    );
+
+    let backend = ManifestWorkspaceBackend::new_with_access_policy(
+        temp.path(),
+        LocalWorkspaceAccessPolicy::CredentialBoundary,
+    );
+    let mut rx = backend.manifest().subscribe();
+    tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let grep = backend
+        .grep(WorkspaceGrepRequest {
+            base: WorkspacePath::root(),
+            pattern: "BOUNDARY_TOKEN_NAME".to_string(),
+            glob: None,
+            context_lines: 0,
+            case_insensitive: false,
+            max_output_size: 1024,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(grep.match_count, 1);
+    assert_eq!(grep.file_count, 1);
+    assert!(grep.output.contains("src/lib.rs"));
+    assert!(!grep.output.contains("secret"));
+    assert!(!grep.output.contains(".env"));
 }
 
 #[tokio::test]

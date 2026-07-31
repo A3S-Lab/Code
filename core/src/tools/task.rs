@@ -44,7 +44,7 @@ const MAX_TASK_SOURCE_TOOL_BYTES: usize = 64;
 const MAX_TASK_SOURCE_VALUE_BYTES: usize = 4 * 1024;
 const MAX_PARALLEL_TASK_SOURCE_ANCHORS: usize = MAX_TASK_SOURCE_ANCHORS;
 const TASK_TOOL_DESCRIPTION: &str = "Delegate a bounded task to a specialized child run. Choose the canonical worker name from the live agent catalog. Custom agents from agent_dirs and .a3s/agents are supported; .claude/agents is read for compatibility.";
-const PARALLEL_TASK_TOOL_DESCRIPTION: &str = "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. By default any failed child makes the tool fail; evidence-gathering callers may set allow_partial_failure=true to continue when at least one child succeeds. Transient provider failures may be retried once only for explicitly read-only branches; successful and potentially mutating branches are never replayed. Use this only when the work genuinely splits into branches that can be investigated or implemented separately. Do not use it for trivial, conversational, single-step, or dependent work. Choose canonical worker names from the live agent catalog.";
+const PARALLEL_TASK_TOOL_DESCRIPTION: &str = "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. By default any failed child makes the tool fail; evidence-gathering callers may set allow_partial_failure=true to continue when at least one child succeeds. Child output never authorizes branch replay; provider and child runtimes own any typed retry policy below this boundary. Use this only when the work genuinely splits into branches that can be investigated or implemented separately. Do not use it for trivial, conversational, single-step, or dependent work. Choose canonical worker names from the live agent catalog.";
 
 /// Task tool parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +96,7 @@ mod parallel_execution;
 const MAX_PARALLEL_TASKS_PER_CALL: usize = 32;
 
 /// Task executor for delegated child runs.
+#[derive(Clone)]
 pub struct TaskExecutor {
     /// Agent registry for looking up agent definitions
     registry: Arc<AgentRegistry>,
@@ -184,6 +185,17 @@ impl TaskExecutor {
         }
         self.parent_context = Some(ctx);
         self
+    }
+
+    fn scoped_for_invocation(self: &Arc<Self>, ctx: &ToolContext) -> Arc<Self> {
+        if !ctx.has_run_governance() {
+            return Arc::clone(self);
+        }
+        let mut scoped = self.as_ref().clone();
+        scoped.parent_context = scoped.parent_context.take().map(|parent| {
+            parent.with_run_governance(ctx.run_permission_checker(), ctx.run_confirmation_manager())
+        });
+        Arc::new(scoped)
     }
 
     /// Bind every run started by this executor to a parent lifetime.
@@ -405,6 +417,10 @@ impl TaskExecutor {
         if let Some(ref parent_ctx) = self.parent_context {
             if let Some(ref services) = parent_ctx.workspace_services {
                 tool_context = tool_context.with_workspace_services(Arc::clone(services));
+            }
+            if let Some(ref sandbox) = parent_ctx.sandbox_handle {
+                child_executor.registry().set_sandbox(Arc::clone(sandbox));
+                tool_context = tool_context.with_sandbox(Arc::clone(sandbox));
             }
         }
 
@@ -860,9 +876,10 @@ impl Tool for TaskTool {
         let params: TaskParams =
             serde_json::from_value(args.clone()).context("Invalid task parameters")?;
         let parent_cancellation = ctx.cancellation_token();
+        let executor = self.executor.scoped_for_invocation(ctx);
 
         if params.background {
-            let task_id = Arc::clone(&self.executor).execute_background_with_parent_cancellation(
+            let task_id = executor.execute_background_with_parent_cancellation(
                 params,
                 ctx.agent_event_tx.clone(),
                 ctx.session_id.clone(),
@@ -874,8 +891,7 @@ impl Tool for TaskTool {
             )));
         }
 
-        let result = self
-            .executor
+        let result = executor
             .execute_with_parent_cancellation(
                 params,
                 ctx.agent_event_tx.clone(),
@@ -947,26 +963,62 @@ impl Tool for ParallelTaskTool {
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let started_at = std::time::Instant::now();
-        let params: ParallelTaskParams =
-            serde_json::from_value(args.clone()).context("Invalid parallel task parameters")?;
+        let params: ParallelTaskParams = match serde_json::from_value(args.clone()) {
+            Ok(params) => params,
+            Err(error) => {
+                return Ok(invalid_parallel_task_argument(format!(
+                    "Invalid parallel_task parameters: {error}"
+                )));
+            }
+        };
         let parent_cancellation = ctx.cancellation_token();
+        let executor = self.executor.scoped_for_invocation(ctx);
 
-        if params.tasks.is_empty() {
-            return Ok(ToolOutput::error("No tasks provided".to_string()));
+        if params.tasks.len() < 2 {
+            return Ok(invalid_parallel_task_argument(
+                "parallel_task requires at least 2 independent tasks".to_string(),
+            ));
         }
         if params.tasks.len() > MAX_PARALLEL_TASKS_PER_CALL {
-            return Ok(ToolOutput::error(format!(
+            return Ok(invalid_parallel_task_argument(format!(
                 "parallel_task accepts at most {MAX_PARALLEL_TASKS_PER_CALL} tasks"
             )));
         }
+        if let Some((index, _)) = params
+            .tasks
+            .iter()
+            .enumerate()
+            .find(|(_, task)| task.background)
+        {
+            return Ok(invalid_parallel_task_argument(format!(
+                "parallel_task task {} cannot set background=true; every branch is already executed concurrently and collected by the parent call",
+                index + 1
+            )));
+        }
+        if params.timeout_ms == Some(0) {
+            return Ok(invalid_parallel_task_argument(
+                "parallel_task timeout_ms must be at least 1".to_string(),
+            ));
+        }
+        if let Some(min_success_count) = params.min_success_count {
+            if !params.allow_partial_failure {
+                return Ok(invalid_parallel_task_argument(
+                    "parallel_task min_success_count requires allow_partial_failure=true"
+                        .to_string(),
+                ));
+            }
+            if min_success_count == 0 || min_success_count > params.tasks.len() {
+                return Ok(invalid_parallel_task_argument(format!(
+                    "parallel_task min_success_count must be between 1 and the task count ({})",
+                    params.tasks.len()
+                )));
+            }
+        }
 
         let task_count = params.tasks.len();
-        let tasks = params.tasks.clone();
-
-        let mut run = self
-            .executor
+        let run = executor
             .execute_parallel_for_tool(
-                tasks.clone(),
+                params.tasks.clone(),
                 ctx.agent_event_tx.clone(),
                 parallel_execution::ParallelToolOptions {
                     parent_session_id: ctx.session_id.as_deref(),
@@ -975,20 +1027,6 @@ impl Tool for ParallelTaskTool {
                     allow_partial_failure: params.allow_partial_failure,
                     parent_cancellation: Some(&parent_cancellation),
                 },
-            )
-            .await;
-        let retry_summary = self
-            .executor
-            .retry_transient_parallel_failures(
-                &tasks,
-                parallel_execution::ParallelRetryOptions {
-                    event_tx: ctx.agent_event_tx.clone(),
-                    parent_session_id: ctx.session_id.as_deref(),
-                    parent_cancellation: &parent_cancellation,
-                    total_timeout_ms: params.timeout_ms,
-                    started_at,
-                },
-                &mut run,
             )
             .await;
         let results = run.results;
@@ -1017,7 +1055,6 @@ impl Tool for ParallelTaskTool {
                 "truncated_for_context": truncated,
                 "artifact_id": task_artifact_id(result),
                 "artifact_uri": task_artifact_uri(result),
-                "retry_attempts": retry_summary.attempts_by_index.get(i).copied().unwrap_or_default(),
             }));
             output.push_str(&format!(
                 "--- Task {} ({}) {} ---\n{}\n\n",
@@ -1032,12 +1069,6 @@ impl Tool for ParallelTaskTool {
         let failed_count = results.len().saturating_sub(success_count);
         let all_success = failed_count == 0;
         let partial_failure = failed_count > 0 && success_count > 0;
-        if retry_summary.recovered_task_count > 0 {
-            output.push_str(&format!(
-                "Recovered {} transient read-only child failure(s) by retrying only failed branches.\n",
-                retry_summary.recovered_task_count
-            ));
-        }
         if params.allow_partial_failure && partial_failure {
             output.push_str(&format!(
                 "Partial failure tolerated: {success_count} succeeded, {failed_count} failed.\n"
@@ -1080,13 +1111,15 @@ impl Tool for ParallelTaskTool {
             "timed_out": run.timed_out,
             "min_success_count": params.min_success_count,
             "returned_early": run.returned_early,
-            "retry_attempt_count": retry_summary.retry_attempt_count,
-            "retried_task_count": retry_summary.retried_task_count,
-            "recovered_task_count": retry_summary.recovered_task_count,
             "duration_ms": started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             "results": metadata_results,
         })))
     }
+}
+
+fn invalid_parallel_task_argument(message: String) -> ToolOutput {
+    ToolOutput::error(&message)
+        .with_error_kind(crate::tools::ToolErrorKind::InvalidArgument { message })
 }
 
 #[cfg(test)]

@@ -1,0 +1,34 @@
+{
+  "name": "a3s-code-website",
+  "version": "0.0.0",
+  "description": "Official multilingual website and documentation for A3S Code.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rspress build",
+    "check:site": "node scripts/check-built-site.mjs",
+    "dev": "rspress dev",
+    "format": "prettier --write .",
+    "generate:tutorial": "node scripts/generate-runtime-tutorial.mjs",
+    "format:check": "prettier --check .",
+    "lint": "rslint && tsc --noEmit && node scripts/check-language-parity.mjs && node scripts/check-doc-accuracy.mjs",
+    "normalize:docs": "node scripts/normalize-imported-docs.mjs",
+    "prebuild": "npm run generate:tutorial",
+    "preview": "rspress preview"
+  },
+  "dependencies": {
+    "@rspress/core": "^2.0.17",
+    "codehike": "^1.1.0",
+    "simple-icons": "^16.27.1"
+  },
+  "devDependencies": {
+    "@rslint/core": "^0.5.3",
+    "@types/node": "^22.8.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "prettier": "^3.8.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "^6.0.3"
+  }
+}

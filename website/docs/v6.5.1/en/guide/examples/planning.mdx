@@ -1,0 +1,73 @@
+---
+title: 'Planning'
+description: 'Make the agent plan before it acts with planningMode'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Planning
+
+Planning mode tells the session to produce a structured plan before it starts
+calling tools. Use it for multi-step work (refactors, release reviews, audits)
+where you want the agent to decompose the goal first instead of jumping straight
+into edits.
+
+Set it through the session option `planningMode` (Node) / `planning_mode`
+(Python). The accepted values are:
+
+| Value        | Behavior                                                        |
+| ------------ | --------------------------------------------------------------- |
+| `"auto"`     | The runtime detects from the message when a plan is worthwhile. |
+| `"enabled"`  | Force a plan on every request, even simple ones.                |
+| `"disabled"` | Skip planning entirely for the lowest-latency path.             |
+
+`"auto"` is the default structured pre-analysis path.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  planningMode: 'auto',
+});
+
+const result = await session.send(
+  'Plan and complete the release-readiness review.',
+);
+console.log(result.text);
+console.log(`${result.toolCallsCount} tool calls executed`);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.planning_mode = "auto"
+session = agent.session("/repo", opts)
+
+result = session.send("Plan and complete the release-readiness review.")
+print(result.text)
+print(f"{result.tool_calls_count} tool calls executed")
+
+session.close()
+```
+
+</Tab>
+</Tabs>
+
+Planning state is attached to the run, so a host UI can render a task list from
+run events and update completion as the agent works. Planning organizes the
+work; verification commands still provide the completion evidence.
+
+Runnable session examples ship at
+`crates/code/sdk/node/examples/orchestration/parallel-pipeline.mjs` and
+`crates/code/sdk/python/examples/orchestration_workflow.py`.

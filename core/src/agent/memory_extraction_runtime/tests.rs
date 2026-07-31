@@ -21,7 +21,7 @@ fn parses_fenced_extraction_json() {
 fn parser_keeps_valid_items_when_sibling_is_malformed() {
     let items = parse_extracted_memories(
             r#"{"items":[
-                {"memory_type":"semantic","content":"A3S memory extraction runs after significant completed turns.","importance":0.8,"tags":["memory"],"source":"project_fact"},
+                {"memory_type":"semantic","content":"A3S asks the LLM to judge every completed non-empty turn for durable memory.","importance":0.8,"tags":["memory"],"source":"project_fact"},
                 {"memory_type":"semantic","content":42,"importance":"high"},
                 {"memory_type":"procedural","content":"Run memory extraction tests after changing extraction parsing behavior.","importance":0.7,"tags":["tests"],"source":"workflow"}
             ]}"#,
@@ -29,7 +29,7 @@ fn parser_keeps_valid_items_when_sibling_is_malformed() {
         .unwrap();
 
     assert_eq!(items.len(), 2);
-    assert!(items[0].content.contains("completed turns"));
+    assert!(items[0].content.contains("completed non-empty turn"));
     assert!(items[1].content.contains("extraction parsing"));
 }
 
@@ -39,10 +39,14 @@ fn missing_extracted_content_is_skipped_during_item_conversion() {
         memory_type: "semantic".to_string(),
         content: String::new(),
         importance: Some(0.8),
+        confidence: Some(0.9),
         tags: vec!["memory".to_string()],
         source: Some("project_fact".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some("This project fact affects future memory behavior.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     assert!(extracted
@@ -56,10 +60,14 @@ fn extracted_memory_becomes_tagged_item() {
         memory_type: "procedural".to_string(),
         content: "Run focused memory tests after changing FileMemoryStore.".to_string(),
         importance: Some(0.9),
+        confidence: Some(0.95),
         tags: vec!["Memory!".to_string(), "Tests".to_string()],
         source: Some("workflow".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some("This repeatable verification prevents storage regressions.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     let (item, supersedes, conflicts_with) = extracted
@@ -71,6 +79,14 @@ fn extracted_memory_becomes_tagged_item() {
     assert!(item.tags.contains(&"llm".to_string()));
     assert!(item.tags.contains(&"memory".to_string()));
     assert_eq!(item.metadata.get("source").unwrap(), "workflow");
+    assert_eq!(item.metadata.get("confidence").unwrap(), "0.95");
+    assert_eq!(item.metadata.get("scope").unwrap(), "workspace");
+    assert_eq!(
+        item.metadata.get("workspace").map(String::as_str),
+        Some("optimize memory")
+    );
+    assert!(item.metadata.get("reason").unwrap().contains("regressions"));
+    assert!(!item.metadata.contains_key("prompt"));
 }
 
 #[test]
@@ -79,10 +95,14 @@ fn extracted_memory_skips_sensitive_content() {
         memory_type: "semantic".to_string(),
         content: "The production API key is sk-1234567890abcdef1234567890abcdef.".to_string(),
         importance: Some(0.9),
+        confidence: Some(0.95),
         tags: vec!["secret".to_string()],
         source: Some("project_fact".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some("Future provider setup would otherwise use this value.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     assert!(extracted
@@ -91,28 +111,28 @@ fn extracted_memory_skips_sensitive_content() {
 }
 
 #[test]
-fn extracted_memory_redacts_sensitive_prompt_metadata() {
+fn extracted_memory_does_not_persist_the_turn_prompt() {
     let extracted = ExtractedMemory {
         memory_type: "procedural".to_string(),
         content: "Use environment variables when configuring provider credentials.".to_string(),
         importance: Some(0.8),
+        confidence: Some(0.9),
         tags: vec!["config".to_string()],
         source: Some("workflow".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some(
+            "This reusable rule prevents credentials from entering configuration.".to_string(),
+        ),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     let (item, _, _) = extracted
-        .into_memory_item(
-            "provider api_key = sk-1234567890abcdef1234567890abcdef",
-            "sess-1",
-            &HashSet::new(),
-        )
+        .into_memory_item("/workspace", "sess-1", &HashSet::new())
         .unwrap();
 
-    let prompt = item.metadata.get("prompt").unwrap();
-    assert!(prompt.contains(SENSITIVE_REDACTION));
-    assert!(!prompt.contains("sk-1234567890abcdef"));
+    assert!(!item.metadata.contains_key("prompt"));
 }
 
 #[test]
@@ -132,21 +152,127 @@ fn extraction_prompt_redacts_sensitive_turn_fields() {
 }
 
 #[test]
-fn extraction_source_is_whitelisted() {
-    let extracted = ExtractedMemory {
+fn extraction_prompt_requires_plain_user_facing_learning_text() {
+    let prompt = build_extraction_prompt("p", "r", "t", "None", 3);
+
+    assert!(prompt.contains("plain user-facing language"));
+    assert!(prompt.contains("at most 64 characters"));
+    assert!(prompt.contains("agent or subagent orchestration"));
+    assert!(prompt.contains("A task-specific direction is not a stable preference or skill"));
+}
+
+#[test]
+fn extraction_rejects_missing_or_unknown_source() {
+    let missing = ExtractedMemory {
         memory_type: "semantic".to_string(),
-        content: "A3S memory uses gated LLM extraction after completed turns.".to_string(),
+        content: "A3S memory uses LLM value judgment after completed turns.".to_string(),
         importance: Some(0.8),
+        confidence: Some(0.9),
         tags: vec![],
-        source: Some("api_key = sk-1234567890abcdef1234567890abcdef".to_string()),
+        source: None,
+        scope: Some("workspace".to_string()),
+        reason: Some("This behavior controls future memory persistence.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![],
+        evolution: None,
+    };
+    let extracted = ExtractedMemory {
+        memory_type: "semantic".to_string(),
+        content: "A3S memory lets the LLM judge value after completed turns.".to_string(),
+        importance: Some(0.8),
+        confidence: Some(0.9),
+        tags: vec![],
+        source: Some("api_key = sk-1234567890abcdef1234567890abcdef".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some("This behavior controls future memory persistence.".to_string()),
+        supersedes: vec![],
+        conflicts_with: vec![],
+        evolution: None,
     };
 
-    let (item, _, _) = extracted
+    assert!(missing
         .into_memory_item("memory design", "sess-1", &HashSet::new())
-        .unwrap();
-    assert_eq!(item.metadata.get("source").unwrap(), "llm_extractor");
+        .is_none());
+    assert!(extracted
+        .into_memory_item("memory design", "sess-1", &HashSet::new())
+        .is_none());
+}
+
+#[test]
+fn extraction_rejects_episodic_turn_history() {
+    let extracted = ExtractedMemory {
+        memory_type: "episodic".to_string(),
+        content: "In this turn, the user asked the assistant to run the memory tests.".to_string(),
+        importance: Some(0.9),
+        confidence: Some(0.95),
+        tags: vec!["history".to_string()],
+        source: Some("workflow".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some("This only describes what happened in the current turn.".to_string()),
+        supersedes: vec![],
+        conflicts_with: vec![],
+        evolution: None,
+    };
+
+    assert!(extracted
+        .into_memory_item("run memory tests", "sess-1", &HashSet::new())
+        .is_none());
+}
+
+#[test]
+fn extraction_rejects_low_importance_items() {
+    let extracted = ExtractedMemory {
+        memory_type: "procedural".to_string(),
+        content: "Run focused memory tests after changing memory persistence behavior.".to_string(),
+        importance: Some(0.2),
+        confidence: Some(0.95),
+        tags: vec!["memory".to_string()],
+        source: Some("workflow".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some("This repeatable check can prevent persistence regressions.".to_string()),
+        supersedes: vec![],
+        conflicts_with: vec![],
+        evolution: None,
+    };
+
+    assert!(extracted
+        .into_memory_item("memory design", "sess-1", &HashSet::new())
+        .is_none());
+}
+
+#[test]
+fn extraction_requires_confident_scoped_and_justified_llm_judgement() {
+    let candidate = || ExtractedMemory {
+        memory_type: "procedural".to_string(),
+        content: "Run focused memory tests after changing memory persistence behavior.".to_string(),
+        importance: Some(0.85),
+        confidence: Some(0.95),
+        tags: vec!["memory".to_string()],
+        source: Some("workflow".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some("This repeatable check prevents future persistence regressions.".to_string()),
+        supersedes: vec![],
+        conflicts_with: vec![],
+        evolution: None,
+    };
+
+    let mut low_confidence = candidate();
+    low_confidence.confidence = Some(0.4);
+    assert!(low_confidence
+        .into_memory_item("/workspace", "sess-1", &HashSet::new())
+        .is_none());
+
+    let mut missing_scope = candidate();
+    missing_scope.scope = None;
+    assert!(missing_scope
+        .into_memory_item("/workspace", "sess-1", &HashSet::new())
+        .is_none());
+
+    let mut missing_reason = candidate();
+    missing_reason.reason = None;
+    assert!(missing_reason
+        .into_memory_item("/workspace", "sess-1", &HashSet::new())
+        .is_none());
 }
 
 #[test]
@@ -159,10 +285,14 @@ fn extracted_memory_records_allowed_supersedes() {
         content: "Run focused memory and file-store tests after changing memory persistence."
             .to_string(),
         importance: Some(0.9),
+        confidence: Some(0.95),
         tags: vec!["memory".to_string()],
         source: Some("workflow".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some("This verification workflow prevents persistence regressions.".to_string()),
         supersedes: vec![allowed_id.clone(), ignored_id],
         conflicts_with: vec![],
+        evolution: None,
     };
 
     let (item, supersedes, conflicts_with) = extracted
@@ -184,10 +314,14 @@ fn extracted_memory_records_allowed_conflicts() {
         memory_type: "semantic".to_string(),
         content: "This project currently prefers workspace-local memory stores.".to_string(),
         importance: Some(0.75),
+        confidence: Some(0.9),
         tags: vec!["memory".to_string()],
         source: Some("decision".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some("This decision determines where future sessions persist memory.".to_string()),
         supersedes: vec![],
         conflicts_with: vec![conflict_id.clone(), ignored_id],
+        evolution: None,
     };
 
     let (item, supersedes, conflicts_with) = extracted
@@ -198,6 +332,131 @@ fn extracted_memory_records_allowed_conflicts() {
     assert_eq!(conflicts_with, vec![conflict_id.clone()]);
     assert!(item.tags.contains(&"conflict".to_string()));
     assert_eq!(item.metadata.get("conflicts_with").unwrap(), &conflict_id);
+}
+
+#[test]
+fn extracted_evolution_signal_populates_validated_metadata() {
+    let extracted = reusable_skill_memory(Some(ExtractedEvolution {
+        kind: "skill".to_string(),
+        pattern_key: " Skill / Focused Verification ".to_string(),
+        title: "Focused verification".to_string(),
+        summary: "Run the smallest relevant checks before broad validation.".to_string(),
+        instructions: vec![
+            "Identify the smallest relevant test target.".to_string(),
+            "Run focused checks before the full workspace suite.".to_string(),
+        ],
+    }));
+
+    let (item, _, _) = extracted
+        .into_memory_item("/workspace", "session-one", &HashSet::new())
+        .unwrap();
+
+    assert!(item.tags.contains(&"evolution".to_string()));
+    assert!(item.tags.contains(&"evolution-skill".to_string()));
+    assert_eq!(
+        item.metadata.get("evolution_kind").map(String::as_str),
+        Some("skill")
+    );
+    assert_eq!(
+        item.metadata.get("evolution_pattern").map(String::as_str),
+        Some("skill.focused.verification")
+    );
+    let instructions: Vec<String> =
+        serde_json::from_str(item.metadata.get("evolution_instructions").unwrap()).unwrap();
+    assert_eq!(instructions.len(), 2);
+    assert!(instructions[0].contains("smallest relevant test target"));
+}
+
+#[test]
+fn invalid_or_sensitive_evolution_description_is_not_persisted() {
+    let cases = [
+        ExtractedEvolution {
+            kind: "preference".to_string(),
+            pattern_key: "preference.output.concise".to_string(),
+            title: "Concise output".to_string(),
+            summary: "Keep future responses compact and evidence-backed.".to_string(),
+            instructions: vec!["Lead with the result before details.".to_string()],
+        },
+        ExtractedEvolution {
+            kind: "skill".to_string(),
+            pattern_key: "single".to_string(),
+            title: "Invalid pattern".to_string(),
+            summary: "This pattern lacks the required semantic segments.".to_string(),
+            instructions: vec!["Run the relevant validation target.".to_string()],
+        },
+        ExtractedEvolution {
+            kind: "skill".to_string(),
+            pattern_key: "skill.provider.setup".to_string(),
+            title: "Provider setup".to_string(),
+            summary: "Configure the provider using the reusable local workflow.".to_string(),
+            instructions: vec!["Set api_key=supersecret123 before running the command.".to_string()],
+        },
+    ];
+
+    for signal in cases {
+        let extracted = reusable_skill_memory(Some(signal));
+        let (item, _, _) = extracted
+            .into_memory_item("/workspace", "session-one", &HashSet::new())
+            .unwrap();
+        assert!(!item.tags.contains(&"evolution".to_string()));
+        assert!(!item.metadata.contains_key("evolution_kind"));
+        assert!(!item.metadata.contains_key("evolution_instructions"));
+    }
+}
+
+#[test]
+fn overlong_evolution_copy_is_not_persisted() {
+    let cases = [
+        ExtractedEvolution {
+            kind: "skill".to_string(),
+            pattern_key: "skill.focused.verification".to_string(),
+            title:
+                "A very long internal orchestration title that cannot fit in the product interface"
+                    .to_string(),
+            summary: "Run the smallest relevant checks before broad validation.".to_string(),
+            instructions: vec!["Run the smallest relevant test target first.".to_string()],
+        },
+        ExtractedEvolution {
+            kind: "skill".to_string(),
+            pattern_key: "skill.focused.verification".to_string(),
+            title: "Focused verification".to_string(),
+            summary: "x".repeat(MAX_EVOLUTION_SUMMARY_CHARS + 1),
+            instructions: vec!["Run the smallest relevant test target first.".to_string()],
+        },
+        ExtractedEvolution {
+            kind: "skill".to_string(),
+            pattern_key: "skill.focused.verification".to_string(),
+            title: "Focused verification".to_string(),
+            summary: "Run the smallest relevant checks before broad validation.".to_string(),
+            instructions: vec!["x".repeat(MAX_EVOLUTION_INSTRUCTION_CHARS + 1)],
+        },
+    ];
+
+    for signal in cases {
+        let extracted = reusable_skill_memory(Some(signal));
+        let (item, _, _) = extracted
+            .into_memory_item("/workspace", "session-one", &HashSet::new())
+            .unwrap();
+        assert!(!item.tags.contains(&"evolution".to_string()));
+    }
+}
+
+fn reusable_skill_memory(evolution: Option<ExtractedEvolution>) -> ExtractedMemory {
+    ExtractedMemory {
+        memory_type: "procedural".to_string(),
+        content: "Run focused checks after changing memory persistence behavior.".to_string(),
+        importance: Some(0.9),
+        confidence: Some(0.95),
+        tags: vec!["memory".to_string(), "tests".to_string()],
+        source: Some("workflow".to_string()),
+        scope: Some("workspace".to_string()),
+        reason: Some(
+            "This repeatable workflow prevents future persistence regressions.".to_string(),
+        ),
+        supersedes: vec![],
+        conflicts_with: vec![],
+        evolution,
+    }
 }
 
 #[test]
@@ -281,12 +540,12 @@ async fn related_memories_are_loaded_for_extraction_prompt() {
 }
 
 #[test]
-fn duplicate_memory_detection_is_conservative() {
+fn duplicate_memory_detection_only_handles_exact_normalized_content() {
     assert!(memory_contents_are_duplicates(
         "Run focused memory store tests after changing FileMemoryStore behavior.",
         "  run focused memory store tests after changing FileMemoryStore behavior.  "
     ));
-    assert!(memory_contents_are_duplicates(
+    assert!(!memory_contents_are_duplicates(
         "Run focused memory store regression tests after changing FileMemoryStore behavior.",
         "Run focused memory store tests after changing FileMemoryStore behavior."
     ));
@@ -297,109 +556,31 @@ fn duplicate_memory_detection_is_conservative() {
 }
 
 #[test]
-fn extraction_gate_skips_trivial_turns() {
+fn extraction_evaluation_requires_a_completed_turn() {
     let state = ExecutionLoopState::new(&[]);
     assert!(!should_attempt_llm_memory_extraction(
+        &snapshot(&state),
+        "",
+        "hello"
+    ));
+    assert!(!should_attempt_llm_memory_extraction(
+        &snapshot(&state),
+        "hello",
+        ""
+    ));
+}
+
+#[test]
+fn every_completed_turn_is_sent_to_the_llm_value_judge() {
+    let state = ExecutionLoopState::new(&[]);
+    assert!(should_attempt_llm_memory_extraction(
         &snapshot(&state),
         "hi",
         "hello"
     ));
-}
-
-#[test]
-fn extraction_gate_accepts_tool_turns() {
-    let mut state = ExecutionLoopState::new(&[]);
-    state.tool_calls_count = 1;
     assert!(should_attempt_llm_memory_extraction(
         &snapshot(&state),
-        "run tests",
-        "tests passed"
-    ));
-}
-
-#[test]
-fn extraction_gate_skips_short_successful_read_only_tool_turns() {
-    let mut state = ExecutionLoopState::new(&[]);
-    state.tool_calls_count = 1;
-    state.remember_tool_signature("read", &serde_json::json!({"path":"README.md"}), false);
-
-    assert!(!should_attempt_llm_memory_extraction(
-        &snapshot(&state),
-        "read README",
-        "Here is the README."
-    ));
-}
-
-#[test]
-fn extraction_gate_skips_short_successful_code_intelligence_turns() {
-    for tool in ["code_symbols", "code_navigation", "code_diagnostics"] {
-        let mut state = ExecutionLoopState::new(&[]);
-        state.tool_calls_count = 1;
-        state.remember_tool_signature(tool, &serde_json::json!({}), false);
-
-        assert!(!should_attempt_llm_memory_extraction(
-            &snapshot(&state),
-            "inspect code",
-            "Structured result"
-        ));
-    }
-}
-
-#[test]
-fn extraction_gate_accepts_read_only_tool_turns_with_memory_language() {
-    let mut state = ExecutionLoopState::new(&[]);
-    state.tool_calls_count = 1;
-    state.remember_tool_signature("grep", &serde_json::json!({"pattern":"memory"}), false);
-
-    assert!(should_attempt_llm_memory_extraction(
-        &snapshot(&state),
-        "remember that this repo keeps memory config in HCL",
-        "Got it."
-    ));
-}
-
-#[test]
-fn extraction_gate_accepts_tool_failures() {
-    let mut state = ExecutionLoopState::new(&[]);
-    state.tool_calls_count = 1;
-    state.remember_tool_signature("read", &serde_json::json!({"path":"missing"}), true);
-
-    assert!(should_attempt_llm_memory_extraction(
-        &snapshot(&state),
-        "read missing file",
-        "The read failed."
-    ));
-}
-
-#[test]
-fn extraction_gate_accepts_write_capable_tool_turns() {
-    let mut state = ExecutionLoopState::new(&[]);
-    state.tool_calls_count = 1;
-    state.remember_tool_signature("bash", &serde_json::json!({"cmd":"cargo test"}), false);
-
-    assert!(should_attempt_llm_memory_extraction(
-        &snapshot(&state),
-        "run tests",
-        "tests passed"
-    ));
-}
-
-#[test]
-fn extraction_gate_accepts_explicit_memory_language() {
-    let state = ExecutionLoopState::new(&[]);
-    assert!(should_attempt_llm_memory_extraction(
-        &snapshot(&state),
-        "remember that this repo prefers HCL config",
-        "Got it."
-    ));
-}
-
-#[test]
-fn extraction_gate_accepts_chinese_memory_language() {
-    let state = ExecutionLoopState::new(&[]);
-    assert!(should_attempt_llm_memory_extraction(
-        &snapshot(&state),
-        "请记住：这个项目的记忆系统默认必须启用 LLM 抽取",
-        "已记录这个设计约定。"
+        "请继续",
+        "好的"
     ));
 }

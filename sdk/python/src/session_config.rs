@@ -17,6 +17,40 @@ use pyo3::prelude::*;
 // Policy and delegation configuration
 // ============================================================================
 
+/// Host-provided deterministic ID and clock configuration.
+///
+/// Set both fields for replay so IDs and timestamps are reproducible across
+/// hosts. Omitted fields keep their system-backed default.
+#[pyclass(name = "HostEnvConfig")]
+#[derive(Clone)]
+pub(super) struct PyHostEnvConfig {
+    /// Prefix for deterministic IDs (``<prefix>-0``, ``<prefix>-1``, ...).
+    #[pyo3(get, set)]
+    pub(super) sequential_id_prefix: Option<String>,
+    /// Fixed Unix-epoch timestamp returned by the session clock.
+    #[pyo3(get, set)]
+    pub(super) fixed_time_ms: Option<u64>,
+}
+
+#[pymethods]
+impl PyHostEnvConfig {
+    #[new]
+    #[pyo3(signature = (sequential_id_prefix=None, fixed_time_ms=None))]
+    fn new(sequential_id_prefix: Option<String>, fixed_time_ms: Option<u64>) -> Self {
+        Self {
+            sequential_id_prefix,
+            fixed_time_ms,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "HostEnvConfig(sequential_id_prefix={:?}, fixed_time_ms={:?})",
+            self.sequential_id_prefix, self.fixed_time_ms
+        )
+    }
+}
+
 /// Explicit allow/deny/ask tool permission policy.
 #[pyclass(name = "PermissionPolicy")]
 #[derive(Clone)]

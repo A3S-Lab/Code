@@ -7,6 +7,27 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+#[test]
+fn streamed_value_completion_requires_exact_schema_valid_json() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "required": ["answer"],
+        "additionalProperties": false,
+        "properties": {
+            "answer": { "type": "string", "minLength": 1 }
+        }
+    });
+
+    assert!(is_complete_streamed_value(r#"{"answer":"ready"}"#, &schema));
+    assert!(!is_complete_streamed_value(
+        r#"{"answer":"ready"} trailing"#,
+        &schema
+    ));
+    assert!(!is_complete_streamed_value(r#"{"answer":""}"#, &schema));
+    assert!(!is_complete_streamed_value(r#"{"other":"ready"}"#, &schema));
+    assert!(!is_complete_streamed_value(r#"{"answer":"ready""#, &schema));
+}
+
 struct MockStructuredClient {
     responses: Mutex<Vec<LlmResponse>>,
 }
@@ -152,6 +173,39 @@ impl LlmClient for MockStructuredClient {
 
     fn native_structured_support(&self) -> NativeStructuredSupport {
         NativeStructuredSupport::ForcedTool
+    }
+}
+
+struct CompleteObjectWithoutDoneClient;
+
+#[async_trait]
+impl LlmClient for CompleteObjectWithoutDoneClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        anyhow::bail!("blocking generation is not used in this test")
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            tx.send(StreamEvent::TextDelta(
+                r#"{"color":"blue","count":3}"#.to_string(),
+            ))
+            .await
+            .ok();
+            cancel_token.cancelled().await;
+        });
+        Ok(rx)
     }
 }
 
@@ -1211,6 +1265,39 @@ async fn test_generate_streaming_text_mode() {
     let result = generate_streaming(&client, &req, callback).await.unwrap();
     assert_eq!(result.object["color"], "blue");
     assert_eq!(result.object["count"], 3);
+    assert_eq!(result.usage.total_tokens, 15);
+}
+
+#[tokio::test]
+async fn test_generate_streaming_accepts_a_complete_valid_object_without_done() {
+    let req = StructuredRequest {
+        prompt: "test".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["color", "count"],
+            "properties": {
+                "color": {"type": "string"},
+                "count": {"type": "integer"}
+            }
+        }),
+        schema_name: "result".to_string(),
+        schema_description: None,
+        mode: StructuredMode::Prompt,
+        max_repair_attempts: 0,
+    };
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        generate_streaming(&CompleteObjectWithoutDoneClient, &req, Box::new(|_| {})),
+    )
+    .await
+    .expect("a schema-valid streamed object must not wait forever for Done")
+    .expect("complete streamed object");
+
+    assert_eq!(result.object["color"], "blue");
+    assert_eq!(result.object["count"], 3);
 }
 
 #[tokio::test]
@@ -1967,6 +2054,23 @@ async fn test_routing_unknown_support_falls_back_to_prompt() {
     assert!(directive.force_tool.is_none());
     assert!(directive.response_format.is_none());
     assert!(client.last_tool_names.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_prompt_mode_retains_the_host_validation_schema() {
+    let request = person_request(StructuredMode::Prompt);
+    let client = RecordingClient::new(
+        NativeStructuredSupport::None,
+        vec![MockStructuredClient::text_response(r#"{"name":"Bob"}"#)],
+    );
+
+    let result = generate_blocking(&client, &request).await.unwrap();
+
+    assert_eq!(result.object["name"], "Bob");
+    let directive = client.last_directive.lock().unwrap().clone().unwrap();
+    assert!(directive.force_tool.is_none());
+    assert!(directive.response_format.is_none());
+    assert_eq!(directive.validation_schema, Some(request.schema));
 }
 
 #[tokio::test]

@@ -51,10 +51,10 @@ pub(super) fn load_code_config(config_source: String) -> Result<CodeConfig> {
 }
 
 pub(super) async fn build_agent_from_config(config: CodeConfig) -> Result<Agent> {
-    config
-        .default_llm_config()
-        .context("default_model must be set in 'provider/model' format with a valid API key")?;
-
+    // A host may inject an `LlmClient` through `SessionOptions`, so model
+    // validation belongs to session construction where that override is known.
+    // Sessions without either a host client or a valid configured default still
+    // fail in `resolve_session_llm_client` with the same actionable error.
     let mut agent_config = base_agent_config(&config);
     install_global_skill_registry(&mut agent_config, &config);
     let (global_mcp, global_mcp_tools) = connect_global_mcp(&config).await;
@@ -158,5 +158,12 @@ mod tests {
     fn load_code_config_rejects_json_inline_config() {
         let err = load_code_config("{\"default_model\":\"x\"}".to_string()).unwrap_err();
         assert!(err.to_string().contains("JSON config is not supported"));
+    }
+
+    #[tokio::test]
+    async fn agent_bootstrap_allows_a_host_supplied_session_client() {
+        build_agent_from_config(CodeConfig::default())
+            .await
+            .expect("bootstrap should defer model validation to the session");
     }
 }

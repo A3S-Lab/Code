@@ -87,15 +87,17 @@ impl AgentSession {
     /// 1. flips the session into the **closed** state so further `send`/`stream`
     ///    calls fast-fail with [`crate::error::CodeError::SessionClosed`];
     /// 2. stops the optional lane queue from accepting new commands;
-    /// 3. fires the session-level cancellation token so every derived
+    /// 3. waits for completed-turn memory extractions accepted before close,
+    ///    up to the bounded shutdown deadline;
+    /// 4. fires the session-level cancellation token so every derived
     ///    run/subagent token cascades to cancelled;
-    /// 4. marks the active run `Cancelled` in the run store and notifies the
+    /// 5. marks the active run `Cancelled` in the run store and notifies the
     ///    configured hook executor;
-    /// 5. cancels every still-running delegated subagent task spawned from
+    /// 6. cancels every still-running delegated subagent task spawned from
     ///    this session;
-    /// 6. cancels all pending human-in-the-loop tool confirmations and external
+    /// 7. cancels all pending human-in-the-loop tool confirmations and external
     ///    queue tasks, then drains commands admitted before close;
-    /// 7. disconnects MCP servers owned by this session, without touching
+    /// 8. disconnects MCP servers owned by this session, without touching
     ///    inherited agent- or host-owned managers.
     ///
     /// Subsequent calls are no-ops and are guaranteed not to panic.
@@ -201,7 +203,7 @@ impl AgentSession {
         if self.run_admission.wait_until_idle(grace).await {
             return true;
         }
-        if !self.run_admission.abort_stream_worker() {
+        if !self.run_admission.abort_stream_workers() {
             return false;
         }
         self.run_admission.wait_until_idle(abort_grace).await

@@ -1,4 +1,5 @@
 use super::*;
+use crate::mcp::protocol::ToolContent;
 
 #[test]
 fn test_parse_tool_name() {
@@ -32,6 +33,7 @@ fn test_tool_result_to_string() {
             },
         ],
         is_error: false,
+        ..CallToolResult::default()
     };
 
     let output = tool_result_to_string(&result);
@@ -136,6 +138,7 @@ fn test_tool_result_to_string_single_text() {
             text: "Hello World".to_string(),
         }],
         is_error: false,
+        ..CallToolResult::default()
     };
     let output = tool_result_to_string(&result);
     assert_eq!(output, "Hello World");
@@ -153,6 +156,7 @@ fn test_tool_result_to_string_multiple_text() {
             },
         ],
         is_error: false,
+        ..CallToolResult::default()
     };
     let output = tool_result_to_string(&result);
     assert!(output.contains("First line"));
@@ -164,6 +168,7 @@ fn test_tool_result_to_string_empty() {
     let result = CallToolResult {
         content: vec![],
         is_error: false,
+        ..CallToolResult::default()
     };
     let output = tool_result_to_string(&result);
     assert_eq!(output, "");
@@ -177,6 +182,7 @@ fn test_tool_result_to_string_image() {
             mime_type: "image/png".to_string(),
         }],
         is_error: false,
+        ..CallToolResult::default()
     };
     let output = tool_result_to_string(&result);
     assert!(output.contains("[Image: image/png]"));
@@ -195,6 +201,7 @@ fn test_tool_result_to_string_resource() {
             },
         }],
         is_error: false,
+        ..CallToolResult::default()
     };
     let output = tool_result_to_string(&result);
     assert!(output.contains("Resource content"));
@@ -222,6 +229,7 @@ fn test_tool_result_to_string_mixed_content() {
             },
         ],
         is_error: false,
+        ..CallToolResult::default()
     };
     let output = tool_result_to_string(&result);
     assert!(output.contains("Text content"));

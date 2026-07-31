@@ -1,0 +1,291 @@
+.a3s-capability-stories {
+  padding-top: 128px;
+  padding-bottom: 128px;
+}
+
+.a3s-capability-stories-header > div:last-child {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.a3s-capability-stories-header a {
+  display: inline-flex;
+  color: #9fb9de;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--a3s-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-decoration: none;
+  text-transform: uppercase;
+  transition:
+    color 160ms ease,
+    gap 160ms ease;
+}
+
+.a3s-capability-stories-header a:hover {
+  color: #d8e8ff;
+  gap: 12px;
+}
+
+.a3s-capability-console {
+  --capability-accent: #d7a84b;
+  --capability-accent-rgb: 215, 168, 75;
+  --capability-progress: 1;
+
+  position: relative;
+  display: grid;
+  min-height: 0;
+  background: transparent;
+  gap: 18px;
+  grid-template-columns: minmax(250px, 0.7fr) minmax(0, 1.8fr);
+}
+
+.a3s-capability-console::before {
+  position: absolute;
+  z-index: 0;
+  top: -190px;
+  right: -160px;
+  width: 500px;
+  height: 500px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(var(--capability-accent-rgb), 0.09),
+    transparent 68%
+  );
+  content: '';
+  filter: blur(16px);
+  pointer-events: none;
+}
+
+.a3s-capability-console.is-progressive {
+  --capability-accent: #7db6ff;
+  --capability-accent-rgb: 125, 182, 255;
+}
+
+.a3s-capability-console.is-runtime {
+  --capability-accent: #4ec98b;
+  --capability-accent-rgb: 78, 201, 139;
+}
+
+.a3s-capability-console.is-intelligence {
+  --capability-accent: #6ec6d9;
+  --capability-accent-rgb: 110, 198, 217;
+}
+
+.a3s-capability-console.is-ctx {
+  --capability-accent: #b69bf1;
+  --capability-accent-rgb: 182, 155, 241;
+}
+
+.a3s-capability-console[data-stage='1'] {
+  --capability-progress: 2;
+}
+
+.a3s-capability-console[data-stage='2'] {
+  --capability-progress: 3;
+}
+
+.a3s-capability-console[data-stage='3'] {
+  --capability-progress: 4;
+}
+
+.a3s-capability-selector {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid #29313c;
+  border-radius: 8px;
+  background: rgba(10, 13, 18, 0.84);
+  flex-direction: column;
+  box-shadow:
+    0 28px 72px rgba(0, 0, 0, 0.28),
+    inset 0 1px rgba(255, 255, 255, 0.025);
+}
+
+.a3s-capability-selector > button {
+  position: relative;
+  display: grid;
+  overflow: hidden;
+  min-height: 144px;
+  padding: 20px 18px;
+  border: 0;
+  border-bottom: 1px solid #242c35;
+  background: transparent;
+  color: #77818d;
+  cursor: pointer;
+  grid-template-columns: 26px 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  transition:
+    background 180ms ease,
+    color 180ms ease;
+}
+
+.a3s-capability-selector > button:last-child {
+  border-bottom: 0;
+}
+
+.a3s-capability-selector > button::after {
+  position: absolute;
+  width: 2px;
+  background: var(--capability-accent);
+  box-shadow: 0 0 18px rgba(var(--capability-accent-rgb), 0.72);
+  content: '';
+  inset: 24px auto 24px 0;
+  opacity: 0;
+  transform: scaleY(0.35);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.a3s-capability-selector > button:hover {
+  background: rgba(255, 255, 255, 0.018);
+  color: #aab5c1;
+}
+
+.a3s-capability-selector > button:focus-visible {
+  outline: 1px solid rgba(var(--capability-accent-rgb), 0.72);
+  outline-offset: -3px;
+}
+
+.a3s-capability-selector > button.is-active {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(var(--capability-accent-rgb), 0.085),
+      transparent 78%
+    ),
+    rgba(255, 255, 255, 0.018);
+  color: #dfe6ee;
+}
+
+.a3s-capability-selector > button.is-active::after {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.a3s-capability-selector > button > span {
+  color: #53606f;
+  font-family: var(--a3s-mono);
+  font-size: 9px;
+}
+
+.a3s-capability-selector > button > i {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #303946;
+  border-radius: 8px;
+  background: rgba(15, 20, 27, 0.86);
+  color: #748192;
+  place-items: center;
+  transition:
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.a3s-capability-selector > button > i svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.a3s-capability-selector > button.is-active > i {
+  border-color: rgba(var(--capability-accent-rgb), 0.46);
+  color: var(--capability-accent);
+  box-shadow: 0 0 24px rgba(var(--capability-accent-rgb), 0.1);
+}
+
+.a3s-capability-selector > button > p {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.a3s-capability-selector > button > p small {
+  color: #626f7d;
+  font-family: var(--a3s-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+
+.a3s-capability-selector > button > p strong {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 580;
+  line-height: 1.45;
+}
+
+.a3s-capability-selector > button > em {
+  position: absolute;
+  right: 15px;
+  bottom: 12px;
+  left: 90px;
+  height: 1px;
+  overflow: hidden;
+  background: #242c35;
+}
+
+.a3s-capability-selector > button > em b {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--capability-accent);
+  box-shadow: 0 0 8px rgba(var(--capability-accent-rgb), 0.7);
+  transition: width 220ms ease;
+}
+
+.a3s-capability-selector > button.is-active > em b {
+  width: calc((var(--capability-progress) / 4) * 100%);
+}
+
+.a3s-capability-player.a3s-runtime-inspector {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 720px;
+  overflow: hidden;
+  border-color: #343a40;
+  background: rgb(21, 25, 31);
+}
+
+.a3s-capability-player > .a3s-tui-terminal {
+  overflow: hidden;
+  padding: 20px 20px 12px;
+  flex: 1 1 auto;
+}
+
+.a3s-capability-player > .a3s-tui-composer {
+  flex: 0 0 auto;
+}
+
+.a3s-capability-player.is-fullscreen > .a3s-tui-terminal {
+  padding: 8px;
+}
+
+.a3s-tui-composer.is-hidden {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .a3s-capability-selector > button,
+  .a3s-capability-selector > button::after,
+  .a3s-capability-selector > button > em b {
+    transition: none;
+  }
+}

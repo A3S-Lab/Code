@@ -391,6 +391,11 @@ fn parse_py_retention_limits(
                 limits.max_events_per_run = Some(n);
             }
         }
+        if let Some(v) = dict.get_item("max_event_bytes_per_run").ok().flatten() {
+            if let Ok(n) = v.extract::<usize>() {
+                limits.max_event_bytes_per_run = Some(n);
+            }
+        }
         if let Some(v) = dict.get_item("max_trace_events").ok().flatten() {
             if let Ok(n) = v.extract::<usize>() {
                 limits.max_trace_events = Some(n);
@@ -905,6 +910,7 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLocalWorkspaceBackend>()?;
     m.add_class::<PyS3WorkspaceBackend>()?;
     m.add_class::<PyRemoteGitBackendConfig>()?;
+    m.add_class::<PyHostEnvConfig>()?;
     m.add_class::<PyPermissionPolicy>()?;
     m.add_class::<PyConfirmationPolicy>()?;
     m.add_class::<PyArtifactStoreLimits>()?;

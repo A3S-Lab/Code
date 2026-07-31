@@ -1,0 +1,90 @@
+---
+title: 'Lane Queue'
+description: 'Route a lane to an external worker and drain its pending tasks explicitly.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Lane Queue
+
+By default A3S Code runs every task in-process, with no queue. The lane queue is **optional infrastructure**: register an external handler for a lane and the tools routed to that lane are queued for an outside worker instead of being executed by the agent. You then drain the pending tasks, run them however you like, and report results back. Reach for this only when an external worker is genuinely part of your architecture.
+
+The four lanes are `control`, `query`, `execute`, and `generate`. Each handler has a `mode` of `internal` (the default), `external`, or `hybrid`.
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('./agent.acl');
+const session = agent.session(process.cwd());
+
+// Route the "execute" lane to an external worker.
+// Tools on this lane are NOT run by the agent; they are queued for
+// an outside worker to pick up and complete.
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+
+// hasQueue() is false until at least one external/hybrid lane is registered.
+console.log('queue active:', session.hasQueue());
+
+// Drain whatever is waiting for an external worker.
+const pending = await session.pendingExternalTasks();
+for (const task of pending) {
+  console.log('pending:', task.task_id, task.lane, task.command_type);
+
+  // ... hand off to your worker, run it, then report the outcome back:
+  await session.completeExternalTask(task.task_id, {
+    success: true,
+    result: { note: 'done by external worker' },
+  });
+}
+
+console.log('lane queue drained');
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+session = agent.session(".", opts)
+
+# Route the "execute" lane to an external worker.
+# Tools on this lane are NOT run by the agent; they are queued for
+# an outside worker to pick up and complete.
+session.set_lane_handler("execute", "external", 300000)
+
+# has_queue() is False until at least one external/hybrid lane is registered.
+print("queue active:", session.has_queue())
+
+# Drain whatever is waiting for an external worker.
+pending = session.pending_external_tasks()
+for task in pending:
+    print("pending:", task["task_id"], task["lane"], task["command_type"])
+
+    # ... hand off to your worker, run it, then report the outcome back:
+    session.complete_external_task(
+        task["task_id"],
+        success=True,
+        result={"note": "done by external worker"},
+    )
+
+print("lane queue drained")
+```
+
+</Tab>
+</Tabs>
+
+Notes:
+
+- **The default path is queue-free.** `hasQueue()` / `has_queue()` returns `false` until you register at least one `external` (or `hybrid`) lane handler. If you never call `setLaneHandler` / `set_lane_handler`, every task runs in-process and there is nothing to drain.
+- Each pending task carries `task_id`, `session_id`, `lane`, `command_type`, `payload`, and `timeout_ms`. Pass the `task_id` back to `completeExternalTask` / `complete_external_task` once the work is done.
+- The result shape is `{ success, result?, error? }` — `result` holds any JSON-serializable payload, and `error` is an optional message for failures. `completeExternalTask` / `complete_external_task` returns `true` if the task was found and completed, `false` otherwise.
+- In Python these queue methods are synchronous; in Node `setLaneHandler`, `pendingExternalTasks`, and `completeExternalTask` return promises, while `hasQueue` is synchronous.

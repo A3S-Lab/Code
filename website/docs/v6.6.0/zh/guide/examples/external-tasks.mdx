@@ -1,0 +1,247 @@
+---
+title: '外部任务'
+description: '在智能体进程之外完成排队工作，并把结构化证据报告回去'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 外部任务
+
+有些工作无法在 agent 进程内运行：它属于独立的 worker、CI runner，或位于另一个系统中的
+人工处理者。当某个 lane 被路由到外部处理器时，该 lane 上的工具会被**排队**而不是被执行——
+它们会作为外部任务等待。你的宿主代码会取出待处理队列、以任意方式完成工作，并通过
+`completeExternalTask` 把结果报告回去。仅当外部 worker 确实是你架构的一部分时，才使用此模式。
+
+外部任务由 [lane 队列](/guide/examples/lane-queue) 产生：你必须先注册至少一个
+`external`（或 `hybrid`）lane 处理器，否则每个任务都会在进程内运行，也就没有什么可取出的。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    queue::{
+        ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
+        TaskHandlerMode,
+    },
+    Agent, SessionOptions,
+};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_queue_config(SessionQueueConfig::default()),
+        )
+        .build()
+        .await?;
+    session
+        .set_lane_handler(
+            SessionLane::Execute,
+            LaneHandlerConfig {
+                mode: TaskHandlerMode::External,
+                timeout_ms: 300_000,
+            },
+        )
+        .await?;
+
+    for task in session.pending_external_tasks().await {
+        println!(
+            "待处理：{}，lane={:?}，类型={}",
+            task.task_id, task.lane, task.command_type
+        );
+        let completed = session
+            .complete_external_task(
+                &task.task_id,
+                ExternalTaskResult {
+                    success: true,
+                    result: json!({
+                        "summary": "worker 已完成测试",
+                        "command": "npm run build",
+                        "exit_code": 0
+                    }),
+                    error: None,
+                },
+            )
+            .await;
+        println!("已完成：{completed}");
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session(process.cwd(), { queueConfig: {} });
+
+// 把执行通道路由到外部工作进程，使工具进入队列而不在本地执行。
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+
+// 排空等待宿主处理的任务。
+const pending = await session.pendingExternalTasks();
+
+for (const task of pending) {
+  console.log(
+    `pending: ${task.task_id} on ${task.lane} (${task.command_type})`,
+  );
+
+  try {
+    // ...the host does the real work here (run CI, call a service, ask a human)...
+    const ok = await session.completeExternalTask(task.task_id, {
+      success: true,
+      result: {
+        summary: 'worker completed the test run',
+        command: 'npm run build',
+        exitCode: 0,
+      },
+    });
+    console.log('completed:', ok);
+  } catch (err) {
+    await session.completeExternalTask(task.task_id, {
+      success: false,
+      error: String(err),
+    });
+  }
+}
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import os
+from a3s_code import Agent, SessionOptions, SessionQueueConfig
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.queue_config = SessionQueueConfig()
+session = agent.session(os.getcwd(), opts)
+
+# 把执行通道路由到外部工作进程，使工具进入队列而不在本地执行。
+session.set_lane_handler("execute", "external", 300000)
+
+# 排空等待宿主处理的任务。
+pending = session.pending_external_tasks()
+
+for task in pending:
+    print(f"pending: {task['task_id']} on {task['lane']} ({task['command_type']})")
+
+    try:
+        # ...the host does the real work here (run CI, call a service, ask a human)...
+        ok = session.complete_external_task(
+            task["task_id"],
+            success=True,
+            result={
+                "summary": "worker completed the test run",
+                "command": "npm run build",
+                "exit_code": 0,
+            },
+        )
+        print("completed:", ok)
+    except Exception as err:
+        session.complete_external_task(
+            task["task_id"],
+            success=False,
+            error=str(err),
+        )
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		QueueConfig: &code.SessionQueueConfig{},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	err = session.SetLaneHandler(ctx, code.LaneExecute, code.LaneHandlerConfig{
+		Mode:      "external",
+		TimeoutMS: 300_000,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	pending, err := session.PendingExternalTasks(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, task := range pending {
+		fmt.Println("pending:", task.TaskID, task.Lane, task.CommandType)
+		completed, err := session.CompleteExternalTask(
+			ctx,
+			task.TaskID,
+			code.ExternalTaskResult{
+				Success: true,
+				Result: json.RawMessage(
+					`{"summary":"worker completed the test run","exit_code":0}`,
+				),
+			},
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("completed:", completed)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+说明：
+
+- 每个待处理任务都携带 `task_id`、`session_id`、`lane`、`command_type`、`payload` 和
+  `timeout_ms`。完成时请把 `task_id` 传回 `completeExternalTask` / `complete_external_task`，
+  以便将本次完成匹配到正确的任务。
+- 结果的结构为 `{ success, result?, error? }`。其中 `result` 可以是任意可 JSON 序列化的负载；
+  `error` 是失败时的可选消息。
+- 成功时，返回紧凑的结构化证据（一段摘要加上关键事实），而不是只有原始日志——agent 会基于
+  该结果进行推理，所以请保持其精简且机器可读。
+- 当任务被找到并完成时，`completeExternalTask` / `complete_external_task` 返回 `true`，否则
+  返回 `false`。在 Python 中这些队列方法是同步的；在 Node 中 `pendingExternalTasks` 和
+  `completeExternalTask` 返回 promise。
+- Go 使用 `PendingExternalTasks` 与 `CompleteExternalTask`，两者都接收调用方的
+  `context.Context`。

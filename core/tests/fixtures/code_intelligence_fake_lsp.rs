@@ -11,7 +11,15 @@ fn main() -> io::Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
+    append_log(
+        &log_path,
+        &format!(
+            "{{\"event\":\"process_started\",\"pid\":{}}}",
+            std::process::id()
+        ),
+    )?;
     let push_diagnostics = executable_name.contains("push-diagnostics");
+    let ignore_shutdown = executable_name.contains("ignore-shutdown");
     let cold_navigation = if executable_name.contains("cold-empty") {
         ColdNavigation::Empty
     } else if executable_name.contains("cold-partial") {
@@ -29,6 +37,9 @@ fn main() -> io::Result<()> {
     while let Some(body) = read_message(&mut input)? {
         append_log(&log_path, &body)?;
         let method = string_field(&body, "method").unwrap_or_default();
+        if executable_name.contains("slow-initialize") && method == "initialize" {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
         if method == "workspace/symbol" && body.contains("\"query\":\"terminate-process\"") {
             eprintln!("fixture language server terminated unexpectedly");
             std::process::exit(12);
@@ -42,6 +53,9 @@ fn main() -> io::Result<()> {
                 }
             }
         }
+        if ignore_shutdown && matches!(method.as_str(), "shutdown" | "exit") {
+            continue;
+        }
 
         let Some(id) = request_id(&body) else {
             if method == "exit" {
@@ -49,6 +63,18 @@ fn main() -> io::Result<()> {
             }
             continue;
         };
+        if executable_name.contains("requires-open")
+            && method == "workspace/symbol"
+            && document_uri.is_none()
+        {
+            write_message(
+                &mut output,
+                &format!(
+                    "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":1,\"message\":\"No Project.\"}}}}"
+                ),
+            )?;
+            continue;
+        }
         if is_navigation_method(&method) {
             navigation_requests += 1;
         }
@@ -64,6 +90,13 @@ fn main() -> io::Result<()> {
             &format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{result}}}"),
         )?;
     }
+    append_log(
+        &log_path,
+        &format!(
+            "{{\"event\":\"process_exiting\",\"pid\":{}}}",
+            std::process::id()
+        ),
+    )?;
     Ok(())
 }
 

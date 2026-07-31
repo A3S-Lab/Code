@@ -4,6 +4,132 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.6.0] - 2026-07-29
+
+### Added
+
+- Added `HostEnvConfig` and `SessionOptions.host_env` for deterministic ID and
+  clock replay parity with Rust, Node.js, and Go.
+
+### Changed
+
+- Updated the bundled Core with quality-gated search tiers, typed web-fetch
+  failures, bounded session-forked workflow generation, exact durable step
+  recovery, and structured transport validation contracts.
+
+## [6.5.2] - 2026-07-28
+
+### Changed
+
+- Updated the bundled Core with strict built-in tool contracts, root JSON
+  Schema value support, governed generation timeouts, and typed transport
+  failures.
+
+## [6.5.1] - 2026-07-28
+
+### Changed
+
+- Updated the bundled Core with the shared repository-tool prompt contract,
+  neutral grep pagination compatibility, and real-model context-tool coverage.
+
+## [6.5.0] - 2026-07-28
+
+### Changed
+
+- Updated the bundled Core with budgeted multi-file reads, compact grep result
+  modes, explicit glob ordering, and previewable replacement-count-guarded
+  edits.
+
+## [6.4.3] - 2026-07-25
+
+### Fixed
+
+- Updated the bundled Core so Auto execution stays direct when structured
+  pre-analysis is unavailable and explicit fallback plans contain the original
+  request instead of fabricated numbered tasks.
+
+## [6.4.2] - 2026-07-23
+
+### Fixed
+
+- Updated the bundled Core so managed macOS SRT hosts can pass large Seatbelt
+  profiles by private file without exceeding the process argument-size limit.
+
+## [6.4.1] - 2026-07-23
+
+### Fixed
+
+- Updated the bundled Core so SRT workspace policy scans tolerate files and
+  directories removed concurrently by other workspace processes.
+
+## [6.4.0] - 2026-07-22
+
+### Changed
+
+- Updated the bundled Core to Search 2.1 with structured engine failures,
+  bounded automatic fallback, DuckDuckGo and Wikipedia defaults, and opt-in
+  AnySearch selection.
+
+## [6.3.1] - 2026-07-22
+
+### Fixed
+
+- Updated the bundled Core so managed SRT sandboxes start when protected
+  workspace directories contain absent sensitive-file descendants.
+
+## [6.3.0] - 2026-07-22
+
+### Changed
+
+- Updated the bundled Core with typed model-generation admission, durable
+  memory observers, ordered extraction draining, and run-scoped permission and
+  confirmation snapshots.
+
+## [6.2.0] - 2026-07-22
+
+### Changed
+
+- Updated the bundled Core with the verified SRT process-sandbox contract and
+  the latest delegated confirmation propagation fixes.
+
+## [6.1.0] - 2026-07-20
+
+### Changed
+
+- Updated the bundled Core to `a3s-search` 2.0, with AnySearch as the default
+  web-search provider and Tavily available as an explicit native provider.
+
+## [6.0.0] - 2026-07-19
+
+### Changed
+
+- Updated the bundled Core with expanded TypeScript language profiles, PDF
+  fetching, invariant-safe session forks, typed MCP results and artifacts,
+  delegated permission boundaries, and tool-free standalone greetings.
+- Raised the major version with Core's public standard MCP metadata fields.
+
+## [5.3.5] - 2026-07-17
+
+### Changed
+
+- Updated the bundled Core with host-supplied session client bootstrap, bounded
+  in-place response-stream retry and rollback, explicit search-routing
+  metadata, and the Bing RSS engine.
+
+## [5.3.4] - 2026-07-16
+
+### Fixed
+
+- Updated the bundled Core so a cold workspace-symbol query prepares a saved
+  source document before asking the language server to search its projects.
+
+## [5.3.3] - 2026-07-16
+
+### Fixed
+
+- Updated the bundled Core so abandoned semantic queries share cancellation-safe
+  language-runtime startup and workspace shutdown remains bounded.
+
 ## [5.3.2] - 2026-07-16
 
 ### Fixed

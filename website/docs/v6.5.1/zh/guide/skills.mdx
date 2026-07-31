@@ -1,0 +1,46 @@
+---
+title: 'Skills'
+description: '提示时技能、内联技能与 Skill 工具'
+---
+
+# Skills
+
+Skills 是可复用指令。文件型 skill 目录、inline skills、显式 registry 和
+`search_skills` 使用同一套 discovery 路径。A3S Code 不再内置默认 skills；
+SDK 仍接受 `builtinSkills: true`，但它只是兼容 no-op。
+
+```ts
+const session = agent.session('/repo', {
+  builtinSkills: true,
+  skillDirs: ['/repo/.a3s/skills'],
+  inlineSkills: [
+    {
+      name: 'strict-release-review',
+      kind: 'instruction',
+      content: '始终先列 blocker，再列可选改进。',
+    },
+  ],
+});
+```
+
+`builtinSkills` 不会添加默认 skills。可复用行为应放进项目 skill 文件、
+inline skills 或 agent 定义。Skill 文件是带 frontmatter 的 Markdown。使用
+`skillDirs` 加载技能文件，使用 `agentDirs` 加载 worker/subagent 定义。可用
+`allowed-tools` 限定 Skill 调用期间的工具，例如 `read(*), grep(*), bash(cargo test*)`。
+
+`search_skills` 用于查找相关 skill：
+
+```ts
+await session.tool('search_skills', {
+  query: 'release blockers',
+  limit: 5,
+});
+```
+
+带 `allowed-tools` frontmatter 的 Markdown skill file 和 inline skill 都能被发现。skill 管理现在由 SDK 或文件系统完成，不再作为模型可见的管理工具暴露。
+
+当 skill 通过 `Skill` 工具被调用时，`allowed-tools` 是 fail-secure 的：省略
+frontmatter 不会授予任何工具。请显式声明最小可用工具集。普通 session 的工具调用
+默认不会被 active skill 限制，除非显式打开
+`enforceActiveSkillToolRestrictions` / `enforce_active_skill_tool_restrictions`
+兼容旧行为。

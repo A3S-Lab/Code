@@ -12,7 +12,10 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 pub fn scan_workspace_files(root: &Path) -> Vec<LocalWorkspaceFile> {
     let cancelled = AtomicBool::new(false);
@@ -85,9 +88,11 @@ fn git_ls_files(
     if is_cancelled() {
         return None;
     }
-    let mut command = Command::new("git");
-    command.arg("-C").arg(root).args(args);
-    let (status, stdout) = command_stdout_cancellable(command, is_cancelled)?;
+    let executable = crate::git::trusted_git_executable(root).ok()?;
+    let mut command = Command::new(executable);
+    crate::git::configure_git_environment(&mut command, root);
+    command.args(args);
+    let (status, stdout) = command_stdout_cancellable(command, is_cancelled, GIT_COMMAND_TIMEOUT)?;
     if !status.success() {
         return None;
     }
@@ -103,6 +108,7 @@ fn git_ls_files(
 fn command_stdout_cancellable(
     mut command: Command,
     is_cancelled: &impl Fn() -> bool,
+    timeout: Duration,
 ) -> Option<(ExitStatus, Vec<u8>)> {
     command.stdout(Stdio::piped()).stderr(Stdio::null());
     crate::tools::process::configure_std_process_group(&mut command);
@@ -115,6 +121,7 @@ fn command_stdout_cancellable(
         stdout.read_to_end(&mut bytes).map(|_| bytes)
     });
 
+    let deadline = Instant::now() + timeout;
     let status = loop {
         if is_cancelled() {
             process_group.kill();
@@ -125,7 +132,14 @@ fn command_stdout_cancellable(
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Ok(None) if Instant::now() < deadline => thread::sleep(PROCESS_POLL_INTERVAL),
+            Ok(None) => {
+                process_group.kill();
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return None;
+            }
             Err(_) => {
                 process_group.kill();
                 let _ = child.kill();
@@ -135,7 +149,9 @@ fn command_stdout_cancellable(
             }
         }
     };
-    process_group.disarm();
+    // Manifest discovery does not own a background service. Terminate any
+    // helper that survived the direct Git process before joining its pipes.
+    process_group.kill();
     let stdout = reader.join().ok()?.ok()?;
     Some((status, stdout))
 }
@@ -381,6 +397,7 @@ pub(super) fn is_relevant_event(event: &Event, root: &Path) -> bool {
 mod cancellation_tests {
     use super::*;
     use std::cell::Cell;
+    #[cfg(unix)]
     use std::sync::Arc;
 
     #[test]
@@ -428,10 +445,60 @@ mod cancellation_tests {
         command.args(["-c", "sleep 30 & wait"]);
         let started = std::time::Instant::now();
 
-        let output = command_stdout_cancellable(command, &|| cancelled.load(Ordering::Acquire));
+        let output = command_stdout_cancellable(
+            command,
+            &|| cancelled.load(Ordering::Acquire),
+            Duration::from_secs(5),
+        );
 
         cancel_task.join().unwrap();
         assert!(output.is_none());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellable_command_has_an_independent_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let leaked = directory.path().join("timeout-leak");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            &format!("exec 1>&- 2>&-; sleep 0.30; touch '{}'", leaked.display()),
+        ]);
+        let started = Instant::now();
+
+        let output = command_stdout_cancellable(command, &|| false, Duration::from_millis(50));
+
+        assert!(output.is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(400));
+        assert!(
+            !leaked.exists(),
+            "a timed-out manifest command must not leave delayed side effects"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_command_cleans_up_surviving_descendants() {
+        let directory = tempfile::tempdir().unwrap();
+        let leaked = directory.path().join("descendant-leak");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            &format!("(sleep 0.30; touch '{}') &", leaked.display()),
+        ]);
+        let started = Instant::now();
+
+        let output = command_stdout_cancellable(command, &|| false, Duration::from_secs(1));
+
+        assert!(output.is_some());
+        assert!(started.elapsed() < Duration::from_millis(250));
+        thread::sleep(Duration::from_millis(400));
+        assert!(
+            !leaked.exists(),
+            "a completed manifest command must clean up helper descendants"
+        );
     }
 }

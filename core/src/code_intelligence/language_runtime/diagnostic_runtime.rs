@@ -5,10 +5,10 @@ use std::{
 };
 
 use lsp_types::{
-    DocumentDiagnosticParams, DocumentDiagnosticReport, DocumentDiagnosticReportResult,
-    PartialResultParams, PublishDiagnosticsParams, TextDocumentIdentifier, Uri,
-    WorkDoneProgressParams,
+    DocumentDiagnosticReport, DocumentDiagnosticReportResult, PartialResultParams,
+    PublishDiagnosticsParams, TextDocumentIdentifier, Uri, WorkDoneProgressParams,
 };
+use serde::Serialize;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -25,6 +25,23 @@ use super::{
 use crate::workspace::WorkspacePath;
 
 const MAX_DIAGNOSTICS_PER_DOCUMENT: usize = 1_000;
+
+/// `lsp_types` 0.97 serializes the optional diagnostic identifiers as JSON
+/// `null`, while strict LSP servers require absent optional properties. Keep
+/// the typed request shape and omit values that were not negotiated.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentDiagnosticRequestParams {
+    text_document: TextDocumentIdentifier,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_result_id: Option<String>,
+    #[serde(flatten)]
+    work_done_progress_params: WorkDoneProgressParams,
+    #[serde(flatten)]
+    partial_result_params: PartialResultParams,
+}
 
 #[derive(Debug, Default)]
 pub(super) struct DiagnosticRuntimeState {
@@ -51,7 +68,7 @@ impl LanguageRuntime {
             .request_typed(
                 "diagnostics",
                 "textDocument/diagnostic",
-                DocumentDiagnosticParams {
+                DocumentDiagnosticRequestParams {
                     text_document: TextDocumentIdentifier::new(uri.clone()),
                     identifier: None,
                     previous_result_id: previous_result_id.clone(),

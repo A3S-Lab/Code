@@ -1,15 +1,70 @@
 //! Grep tool - Search file contents with regex
 
+use crate::tools::pagination::{PageRequest, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::tools::MAX_OUTPUT_SIZE;
 use crate::workspace::{WorkspaceGrepRequest, WorkspaceGrepResult, WorkspacePath};
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::stream::{self, StreamExt};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
 const MAX_GREP_SOURCE_ANCHORS: usize = 64;
 const MAX_GREP_FALLBACK_CANDIDATES: usize = MAX_GREP_SOURCE_ANCHORS * 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GrepOutputMode {
+    Content,
+    FilesWithMatches,
+    Count,
+    Summary,
+}
+
+impl GrepOutputMode {
+    fn parse(args: &serde_json::Value) -> std::result::Result<Self, String> {
+        match args
+            .get("output_mode")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("content")
+        {
+            "content" => Ok(Self::Content),
+            "files_with_matches" => Ok(Self::FilesWithMatches),
+            "count" => Ok(Self::Count),
+            "summary" => Ok(Self::Summary),
+            _ => Err(
+                "output_mode must be 'content', 'files_with_matches', 'count', or 'summary'"
+                    .to_string(),
+            ),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Content => "content",
+            Self::FilesWithMatches => "files_with_matches",
+            Self::Count => "count",
+            Self::Summary => "summary",
+        }
+    }
+
+    fn paginated(self) -> bool {
+        matches!(self, Self::FilesWithMatches | Self::Count)
+    }
+}
+
+fn has_non_neutral_page_controls(args: &serde_json::Value) -> bool {
+    let limit_is_non_neutral = match args.get("limit") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(value) => value.as_u64() != Some(DEFAULT_PAGE_LIMIT as u64),
+    };
+    let cursor_is_non_neutral = match args.get("cursor") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::String(value)) => !value.trim().is_empty(),
+        Some(_) => true,
+    };
+    limit_is_non_neutral || cursor_is_non_neutral
+}
 
 pub struct GrepTool;
 
@@ -20,7 +75,7 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search for a pattern in files using ripgrep. Returns matching lines with file paths and line numbers."
+        "Search file contents with regex. Return matching content, a paginated file list, per-file matching-line counts, or a compact full-scan summary."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -47,6 +102,21 @@ impl Tool for GrepTool {
                 "-i": {
                     "type": "boolean",
                     "description": "Optional. Case insensitive search."
+                },
+                "output_mode": {
+                    "type": "string",
+                    "enum": ["content", "files_with_matches", "count", "summary"],
+                    "description": "Optional. content returns matching lines (default); files_with_matches returns lexically paginated paths; count returns lexically paginated matching-line counts per file; summary returns only full-scan totals."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_PAGE_LIMIT,
+                    "description": "Optional for files_with_matches/count. Maximum files to return. Default: 200; maximum: 1000."
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Optional for files_with_matches/count. Copy the exact cursor from the previous result."
                 }
             },
             "required": ["pattern"],
@@ -58,20 +128,51 @@ impl Tool for GrepTool {
                     "pattern": "fn main",
                     "path": "src",
                     "glob": "*.rs",
-                    "context": 2
+                    "context": 2,
+                    "output_mode": "content"
+                },
+                {
+                    "pattern": "TODO",
+                    "output_mode": "files_with_matches",
+                    "limit": 100
                 }
             ]
         })
     }
 
-    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
-        crate::tools::ToolCapabilities::parallel_safe_read(16)
+    fn capabilities(&self, args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        if GrepOutputMode::parse(args).is_ok_and(GrepOutputMode::paginated) {
+            crate::tools::ToolCapabilities::read_only_paginated(16)
+        } else {
+            crate::tools::ToolCapabilities::parallel_safe_read(16)
+        }
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let pattern_str = match args.get("pattern").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return Ok(ToolOutput::error("pattern parameter is required")),
+        };
+        let output_mode = match GrepOutputMode::parse(args) {
+            Ok(mode) => mode,
+            Err(error) => return Ok(ToolOutput::error(error)),
+        };
+        let page_request = if output_mode.paginated() {
+            match PageRequest::parse(args, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT) {
+                Ok(request) => Some(request),
+                Err(error) => return Ok(ToolOutput::error(error)),
+            }
+        } else {
+            // Structured-output providers can materialize omitted optional
+            // fields with their neutral schema defaults. Do not reject a
+            // content/summary call merely because it carries limit=200 and an
+            // empty cursor; neither value changes the non-paginated result.
+            if has_non_neutral_page_controls(args) {
+                return Ok(ToolOutput::error(
+                    "non-default limit and non-empty cursor are supported only with output_mode='files_with_matches' or 'count'",
+                ));
+            }
+            None
         };
 
         let case_insensitive = args.get("-i").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -112,7 +213,13 @@ impl Tool for GrepTool {
             glob: glob_filter.map(str::to_string),
             context_lines,
             case_insensitive,
-            max_output_size: MAX_OUTPUT_SIZE,
+            // Metadata-only modes ask built-in backends to count all matches
+            // without constructing content that the caller does not want.
+            max_output_size: if output_mode == GrepOutputMode::Content {
+                MAX_OUTPUT_SIZE
+            } else {
+                0
+            },
         };
         let anchor_request = request.clone();
         let outcome = match ctx
@@ -127,15 +234,60 @@ impl Tool for GrepTool {
             Err(e) => return Ok(ToolOutput::error(format!("Grep search failed: {}", e))),
         };
 
+        let result = outcome.result;
+        let matched_paths = outcome.matched_paths;
+
+        if output_mode == GrepOutputMode::Summary {
+            let mut content = format!(
+                "{} matching line(s) in {} file(s)",
+                result.match_count, result.file_count
+            );
+            if result.truncated {
+                content.push_str(" (scan truncated by backend limits)");
+            }
+            return Ok(
+                ToolOutput::success(content).with_metadata(serde_json::json!({
+                    "output_mode": output_mode.as_str(),
+                    "search": grep_search_metadata(&result),
+                })),
+            );
+        }
+
+        if output_mode.paginated() {
+            let Some(page_request) = page_request else {
+                return Ok(ToolOutput::error(
+                    "Unable to construct the requested grep page",
+                ));
+            };
+            let Some(matched_paths) = matched_paths else {
+                return Ok(ToolOutput::error(format!(
+                    "output_mode='{}' requires structured match paths from the workspace backend; use output_mode='content' with this backend",
+                    output_mode.as_str()
+                ))
+                .with_metadata(serde_json::json!({
+                    "output_mode": output_mode.as_str(),
+                    "search": grep_search_metadata(&result),
+                })));
+            };
+            return render_paginated_grep(
+                output_mode,
+                page_request,
+                matched_paths,
+                result,
+                &regex,
+                ctx,
+            )
+            .await;
+        }
+
         let source_anchors = grep_source_anchors(
-            &outcome.result,
-            outcome.matched_paths.as_deref(),
+            &result,
+            matched_paths.as_deref(),
             &anchor_request,
             &regex,
             ctx,
         )
         .await;
-        let result = outcome.result;
         let content = if result.match_count == 0 {
             format!("No matches found for pattern: {}", pattern_str)
         } else if result.truncated {
@@ -158,6 +310,120 @@ impl Tool for GrepTool {
             })))
         }
     }
+}
+
+async fn render_paginated_grep(
+    output_mode: GrepOutputMode,
+    page_request: PageRequest,
+    matched_paths: Vec<WorkspacePath>,
+    result: WorkspaceGrepResult,
+    regex: &Regex,
+    ctx: &ToolContext,
+) -> Result<ToolOutput> {
+    let mut seen = HashSet::new();
+    let mut paths = matched_paths
+        .into_iter()
+        .filter_map(|path| ctx.resolve_workspace_path(path.as_str()).ok())
+        .filter(|path| !path.is_root() && seen.insert(path.as_str().to_string()))
+        .collect::<Vec<_>>();
+    paths.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    let page = match page_request.page(paths) {
+        Ok(page) => page,
+        Err(error) => return Ok(ToolOutput::error(error)),
+    };
+    let page_metadata = page.metadata();
+    let next_cursor = page.next_cursor.clone();
+    let total_items = page.total_items;
+    let source_anchors = page
+        .items
+        .iter()
+        .map(|path| path.as_str().to_string())
+        .collect::<Vec<_>>();
+
+    let (mut content, failed_reads) = match output_mode {
+        GrepOutputMode::FilesWithMatches => (source_anchors.join("\n"), 0usize),
+        GrepOutputMode::Count => count_matching_lines(page.items, regex, ctx).await,
+        GrepOutputMode::Content | GrepOutputMode::Summary => {
+            return Ok(ToolOutput::error(
+                "Only files_with_matches and count support grep pagination",
+            ));
+        }
+    };
+    if content.is_empty() {
+        content = "No matches found".to_string();
+    } else {
+        content.push_str(&format!(
+            "\n\n{} of {total_items} matching file(s) shown",
+            source_anchors.len()
+        ));
+        if let Some(cursor) = next_cursor {
+            content.push_str(&format!(
+                "\nMore files available; continue with cursor={cursor}"
+            ));
+        }
+    }
+    if result.truncated {
+        content.push_str(
+            "\nWarning: the workspace backend reached its scan limit; totals and paths may be incomplete.",
+        );
+    }
+
+    Ok(
+        ToolOutput::success(content).with_metadata(serde_json::json!({
+            "output_mode": output_mode.as_str(),
+            "sort": "path",
+            "source_anchors": source_anchors,
+            "page": page_metadata,
+            "search": grep_search_metadata(&result),
+            "failed_reads": failed_reads,
+        })),
+    )
+}
+
+async fn count_matching_lines(
+    paths: Vec<WorkspacePath>,
+    regex: &Regex,
+    ctx: &ToolContext,
+) -> (String, usize) {
+    let calls = paths.into_iter().map(|path| {
+        let services = ctx.workspace_services.clone();
+        let fs = services.fs();
+        let regex = regex.clone();
+        async move {
+            let read_path = path.clone();
+            let result = services
+                .run_with_timeout(
+                    "grep count read",
+                    async move { fs.read_text(&read_path).await },
+                )
+                .await;
+            (path, result, regex)
+        }
+    });
+    let results = stream::iter(calls).buffered(16).collect::<Vec<_>>().await;
+    let mut rows = Vec::with_capacity(results.len());
+    let mut failed_reads = 0usize;
+    for (path, content, regex) in results {
+        match content {
+            Ok(content) => {
+                let count = content.lines().filter(|line| regex.is_match(line)).count();
+                rows.push(format!("{}: {count} matching line(s)", path.as_str()));
+            }
+            Err(error) => {
+                failed_reads += 1;
+                rows.push(format!("{}: unable to recount ({error})", path.as_str()));
+            }
+        }
+    }
+    (rows.join("\n"), failed_reads)
+}
+
+fn grep_search_metadata(result: &WorkspaceGrepResult) -> serde_json::Value {
+    serde_json::json!({
+        "matching_lines": result.match_count,
+        "matching_files": result.file_count,
+        "truncated": result.truncated,
+    })
 }
 
 async fn grep_source_anchors(
@@ -359,6 +625,176 @@ mod tests {
         assert!(result.content.contains("2 match(es)"));
     }
 
+    #[tokio::test]
+    async fn test_grep_files_mode_is_paginated_without_rendering_matches() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(temp.path().join(name), format!("needle in {name}")).unwrap();
+        }
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let first = GrepTool
+            .execute(
+                &serde_json::json!({
+                    "pattern": "needle",
+                    "output_mode": "files_with_matches",
+                    "limit": 2
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(first.success, "{}", first.content);
+        assert!(!first.content.contains("needle in"));
+        let page = &first.metadata.as_ref().unwrap()["page"];
+        assert_eq!(page["returned_items"], 2);
+        assert_eq!(page["total_items"], 3);
+        assert_eq!(page["next_cursor"], "2");
+
+        let second = GrepTool
+            .execute(
+                &serde_json::json!({
+                    "pattern": "needle",
+                    "output_mode": "files_with_matches",
+                    "limit": 2,
+                    "cursor": "2"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(second.success, "{}", second.content);
+        assert_eq!(second.metadata.unwrap()["page"]["returned_items"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_grep_paginated_modes_sort_paths_before_applying_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let result = render_paginated_grep(
+            GrepOutputMode::FilesWithMatches,
+            PageRequest {
+                offset: 0,
+                requested_limit: 2,
+                limit: 2,
+            },
+            ["c.txt", "a.txt", "b.txt"]
+                .into_iter()
+                .map(WorkspacePath::from_normalized)
+                .collect(),
+            WorkspaceGrepResult {
+                output: String::new(),
+                match_count: 3,
+                file_count: 3,
+                truncated: false,
+            },
+            &Regex::new("needle").unwrap(),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert_eq!(
+            result.metadata.unwrap()["source_anchors"],
+            serde_json::json!(["a.txt", "b.txt"])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grep_count_mode_reports_matching_lines_per_file() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("a.txt"), "needle\nnone\nneedle\n").unwrap();
+        std::fs::write(temp.path().join("b.txt"), "needle\n").unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = GrepTool
+            .execute(
+                &serde_json::json!({
+                    "pattern": "needle",
+                    "output_mode": "count"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert!(result.content.contains("a.txt: 2 matching line(s)"));
+        assert!(result.content.contains("b.txt: 1 matching line(s)"));
+        assert!(!result.content.contains(">a.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_summary_counts_full_scan_without_rendering_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let content = (0..80)
+            .map(|index| format!("needle-{index}-{}", "x".repeat(2_000)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(temp.path().join("large.txt"), content).unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = GrepTool
+            .execute(
+                &serde_json::json!({
+                    "pattern": "needle",
+                    "output_mode": "summary"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert!(result.content.contains("80 matching line(s) in 1 file(s)"));
+        assert!(!result.content.contains("needle-0"));
+        assert_eq!(result.metadata.unwrap()["search"]["truncated"], false);
+    }
+
+    #[tokio::test]
+    async fn test_grep_non_paginated_mode_accepts_materialized_neutral_page_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("a.txt"), "needle\n").unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = GrepTool
+            .execute(
+                &serde_json::json!({
+                    "pattern": "needle",
+                    "output_mode": "content",
+                    "limit": DEFAULT_PAGE_LIMIT,
+                    "cursor": ""
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert!(result.content.contains("needle"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_non_paginated_mode_rejects_effective_page_controls() {
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+        for controls in [
+            serde_json::json!({"limit": 2}),
+            serde_json::json!({"cursor": "2"}),
+        ] {
+            let mut args = serde_json::json!({
+                "pattern": "needle",
+                "output_mode": "summary"
+            });
+            args.as_object_mut()
+                .unwrap()
+                .extend(controls.as_object().unwrap().clone());
+            let result = GrepTool.execute(&args, &ctx).await.unwrap();
+            assert!(!result.success);
+            assert!(result.content.contains("supported only"));
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn test_grep_source_anchor_preserves_newline_filename_without_injection() {
@@ -466,5 +902,9 @@ mod tests {
         let examples = params["examples"].as_array().unwrap();
         assert_eq!(examples[0]["pattern"], "TODO");
         assert!(examples[0].get("query").is_none());
+        assert_eq!(
+            params["properties"]["output_mode"]["enum"],
+            serde_json::json!(["content", "files_with_matches", "count", "summary"])
+        );
     }
 }

@@ -1,0 +1,277 @@
+@media (max-width: 1100px) {
+  .a3s-capability-console {
+    grid-template-columns: 225px minmax(0, 1fr);
+  }
+
+  .a3s-capability-selector > button {
+    padding-right: 12px;
+    padding-left: 12px;
+    grid-template-columns: 20px 32px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .a3s-capability-selector > button > i {
+    width: 31px;
+    height: 31px;
+  }
+
+  .a3s-real-tool-line > header {
+    grid-template-columns: 15px auto minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 860px) {
+  .a3s-capability-stories {
+    padding-top: 96px;
+    padding-bottom: 96px;
+  }
+
+  .a3s-capability-console {
+    min-height: 0;
+    gap: 14px;
+    grid-template-columns: 1fr;
+  }
+
+  .a3s-capability-selector {
+    overflow-x: auto;
+    flex-direction: row;
+    scrollbar-width: none;
+  }
+
+  .a3s-capability-selector::-webkit-scrollbar {
+    display: none;
+  }
+
+  .a3s-capability-selector > button {
+    min-width: 190px;
+    min-height: 108px;
+    border-right: 1px solid #242c35;
+    border-bottom: 0;
+    grid-template-columns: 20px 30px minmax(0, 1fr);
+  }
+
+  .a3s-capability-selector > button::after {
+    width: auto;
+    height: 2px;
+    inset: auto 18px 0;
+    transform: scaleX(0.35);
+  }
+
+  .a3s-capability-selector > button.is-active::after {
+    transform: scaleX(1);
+  }
+
+  .a3s-capability-selector > button > em {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .a3s-capability-stories {
+    padding-top: 76px;
+    padding-bottom: 76px;
+  }
+
+  .a3s-capability-player.a3s-runtime-inspector {
+    min-height: 680px;
+  }
+
+  .a3s-capability-selector > button {
+    min-width: 176px;
+    min-height: 96px;
+    padding: 13px 11px;
+    grid-template-columns: 26px minmax(0, 1fr);
+  }
+
+  .a3s-capability-selector > button > span {
+    display: none;
+  }
+
+  .a3s-capability-selector > button > p small {
+    font-size: 7px;
+  }
+
+  .a3s-capability-selector > button > p strong {
+    font-size: 10px;
+  }
+
+  .a3s-capability-player > .a3s-tui-terminal {
+    padding: 14px 11px 8px;
+  }
+
+  .a3s-capability-player.is-fullscreen > .a3s-tui-terminal {
+    padding: 5px;
+  }
+
+  .a3s-real-transcript {
+    gap: 14px;
+  }
+
+  .a3s-real-user-message {
+    padding: 11px 10px;
+  }
+
+  .a3s-real-user-message > p,
+  .a3s-real-tool-line > header > strong {
+    font-size: 10.5px;
+  }
+
+  .a3s-real-tool-line > header > code {
+    font-size: 9.5px;
+  }
+
+  .a3s-real-tool-line > div > p > code {
+    font-size: 9px;
+  }
+
+  .a3s-real-approval > ol > li > span,
+  .a3s-real-approval > ol > li > b,
+  .a3s-real-approval > ol > li > i,
+  .a3s-real-approval > ol > li > p,
+  .a3s-real-approval-detail > span,
+  .a3s-real-approval-detail > code {
+    font-size: 9.5px;
+  }
+
+  .a3s-real-runtime-tracker > header {
+    grid-template-columns: 13px minmax(0, 1fr);
+  }
+
+  .a3s-real-runtime-tracker > header > small {
+    padding-left: 20px;
+    grid-column: 1 / -1;
+  }
+
+  .a3s-real-runtime-tracker > div > p {
+    grid-template-columns: 13px auto minmax(0, 1fr);
+  }
+
+  .a3s-real-runtime-tracker > div > p > small {
+    display: none;
+  }
+
+  .a3s-real-ide {
+    grid-template-rows: minmax(0, 1fr) 52px;
+    gap: 3px;
+  }
+
+  .a3s-real-ide-main,
+  .a3s-real-ide-footer {
+    gap: 3px;
+  }
+
+  .a3s-real-ide-main {
+    grid-template-columns: minmax(105px, 0.31fr) minmax(0, 0.69fr);
+  }
+
+  .a3s-real-ide-frame {
+    border-radius: 5px;
+    grid-template-rows: 24px minmax(0, 1fr);
+  }
+
+  .a3s-real-ide-frame > header {
+    padding: 0 6px;
+    font-size: 8.5px;
+  }
+
+  .a3s-real-ide-tree > div {
+    padding: 4px 2px;
+  }
+
+  .a3s-real-ide-tree p {
+    min-height: 23px;
+    padding: 0 3px;
+    grid-template-columns: 11px minmax(0, 1fr);
+    gap: 3px;
+    font-size: 8.5px;
+  }
+
+  .a3s-real-ide-tree p:nth-child(n + 2) {
+    padding-left: 8px;
+  }
+
+  .a3s-real-ide-code > p {
+    min-height: 24px;
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .a3s-real-ide-code > p > span {
+    padding-right: 5px;
+    font-size: 8px;
+  }
+
+  .a3s-real-ide-code > p > code,
+  .a3s-real-ide-results > p {
+    font-size: 8.5px;
+  }
+
+  .a3s-real-ide-footer .a3s-real-ide-frame > p {
+    padding-right: 5px;
+    padding-left: 5px;
+    font-size: 7.5px;
+  }
+
+  .a3s-real-ctx-results > div > p {
+    grid-template-columns: 23px minmax(0, 1fr);
+  }
+
+  .a3s-real-ctx-results > div > p > b,
+  .a3s-real-ctx-results > div > p > strong,
+  .a3s-real-notice {
+    font-size: 9.5px;
+  }
+
+  .a3s-real-ctx-results > div > small,
+  .a3s-real-ctx-results > footer {
+    padding-left: 28px;
+    font-size: 8.5px;
+  }
+}
+
+@media (max-width: 390px) {
+  .a3s-real-approval > ol > li {
+    grid-template-columns: 10px 11px 12px minmax(0, 1fr);
+    gap: 3px;
+  }
+
+  .a3s-real-approval > ol > li > p {
+    font-size: 8.7px;
+  }
+
+  .a3s-real-tool-line > header {
+    grid-template-columns: 13px auto minmax(0, 1fr);
+    gap: 3px;
+  }
+
+  .a3s-real-tool-line > header > strong {
+    font-size: 9.5px;
+  }
+
+  .a3s-real-tool-line > header > code {
+    font-size: 8.7px;
+  }
+
+  .a3s-real-ide-main {
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+
+  .a3s-real-ide-footer {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  }
+
+  .a3s-real-ctx-results > div > p > strong,
+  .a3s-real-ctx-results > div > small {
+    white-space: normal;
+  }
+
+  .a3s-real-ctx-results > footer {
+    white-space: normal;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .a3s-capability-console,
+  .a3s-capability-selector {
+    scroll-behavior: auto;
+  }
+}

@@ -10,7 +10,7 @@ pip install a3s-code
 
 From v3.2.1 onwards the PyPI `a3s-code` package is a small pure-Python
 bootstrap. On first `import a3s_code` it downloads the matching native
-wheel from [GitHub Releases](https://github.com/AI45Lab/Code/releases),
+wheel from [GitHub Releases](https://github.com/A3S-Lab/Code/releases),
 verifies the wheel's sha256 against the release manifest, and caches
 the compiled extension under `~/.cache/a3s-code/<version>/`. Subsequent
 imports use the cache.
@@ -25,8 +25,10 @@ interpreter directly:
 
 ```bash
 pip install \
-  https://github.com/AI45Lab/Code/releases/download/v3.2.1/a3s_code-3.2.1-cp312-cp312-manylinux_2_28_x86_64.whl
+  'https://github.com/A3S-Lab/Code/releases/download/v<VERSION>/a3s_code-<VERSION>-cp312-cp312-manylinux_2_28_x86_64.whl'
 ```
+
+Replace `<VERSION>` with the release to install, for example `6.4.0`.
 
 ## Quick Start
 
@@ -104,13 +106,26 @@ and `exit_code` are derived from the same core projection.
 ```python
 from a3s_code import EventType
 
+active_turn = None
+attempt_text = []
 for event in session.stream("Explain the current test failures"):
-    if event.type == EventType.TEXT_DELTA:
-        print(event.text or "", end="")
+    if event.type == EventType.TURN_START:
+        # A repeated turn number replaces an interrupted attempt.
+        active_turn = event.turn
+        attempt_text.clear()
+    elif event.type == EventType.TEXT_DELTA:
+        attempt_text.append(event.text or "")
+    elif event.type == EventType.TURN_END and event.turn == active_turn:
+        print("".join(attempt_text), end="", flush=True)
+        attempt_text.clear()
     elif event.type == EventType.AGENT_END:
         print(event.verification_summary_text or "")
     print(event.version, event.type, event.payload, event.metadata)
 ```
+
+`turn_start` may repeat with the same `turn` when an established provider
+stream is interrupted. Treat each turn as provisional until `turn_end`; reset
+text, reasoning, and tool-call drafts when that turn restarts.
 
 `agent_event_types_v1()` returns the ordered catalog known by the native
 runtime. `AgentEventTypeV1` and `EventType` are generated from the core catalog;
@@ -156,6 +171,7 @@ from a3s_code import (
     DefaultSecurityProvider,
     FileMemoryStore,
     FileSessionStore,
+    HostEnvConfig,
     LocalWorkspaceBackend,
     S3WorkspaceBackend,
 )
@@ -168,9 +184,17 @@ session = agent.session("/my-project",
 
 # Send / Stream
 result = session.send({"prompt": "Explain the auth module"})
+active_turn = None
+attempt_text = []
 for event in session.stream({"prompt": "Refactor auth"}):
-    if event.event_type == "text_delta":
-        print(event.text, end="", flush=True)
+    if event.event_type == "turn_start":
+        active_turn = event.turn
+        attempt_text.clear()
+    elif event.event_type == "text_delta":
+        attempt_text.append(event.text or "")
+    elif event.event_type == "turn_end" and event.turn == active_turn:
+        print("".join(attempt_text), end="", flush=True)
+        attempt_text.clear()
 
 # Streams with no custom history update session history and verification evidence
 # when the stream completes. Passing explicit history keeps the stream isolated.
@@ -217,6 +241,10 @@ opts.manual_delegation_enabled = True
 opts.auto_compact = True
 opts.auto_compact_threshold = 0.8
 opts.max_context_tokens = 128_000
+opts.host_env = HostEnvConfig(
+    sequential_id_prefix="replay",
+    fixed_time_ms=1_700_000_000_000,
+)
 session = agent.session("/my-project", opts)
 session.write_file("notes.txt", "one\ntwo\n")
 session.read_file("src/main.py")
@@ -256,6 +284,24 @@ session.tool("dynamic_workflow", {
     "input": {"message": "hello from Flow"},
 })
 session.unregister_dynamic_tool("dynamic_workflow")
+
+# Folder-style skills
+workspace = "/my-project"
+skill_dir = f"{workspace}/skills"
+session = agent.session(workspace, skill_dirs=[skill_dir])
+matches = session.tool("search_skills", {"query": "review database schema", "limit": 5})
+print(matches.output)
+
+skill_result = session.tool("Skill", {
+    "skill_name": "db-review",
+    "prompt": "Review the migrations and summarize correctness risks.",
+})
+print(skill_result.output)
+
+# Or configure skill directories through SessionOptions.
+opts = SessionOptions()
+opts.skill_dirs = [skill_dir]
+session = agent.session(workspace, opts)
 
 # S3-compatible workspace — point the same direct tools at object storage.
 # `bash`, `git`, `grep`, `glob` are automatically hidden because object

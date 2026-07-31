@@ -92,15 +92,20 @@ pub enum ResponseFormat {
 ///
 /// Carries the union of intents; each provider honors what it supports and
 /// ignores the rest (e.g. Anthropic has no `response_format`, so it only acts
-/// on `force_tool`). The default (`force_tool: None, response_format: None`)
-/// reproduces an ordinary completion, which is why the trait's default
-/// `complete_structured` impl is behavior-preserving.
+/// on `force_tool`). [`Self::validation_schema`] is host-only metadata and must
+/// never be serialized into a provider request. The default reproduces an
+/// ordinary completion, which is why the trait's default `complete_structured`
+/// implementation is behavior-preserving.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StructuredDirective {
     /// Force the model to call exactly this tool (provider `tool_choice`).
     pub force_tool: Option<String>,
     /// Request a provider-native `response_format` (OpenAI-compatible only).
     pub response_format: Option<ResponseFormat>,
+    /// Provider-facing response schema retained for composite-client stream
+    /// validation, including prompt fallback and JSON-object modes where the
+    /// provider directive itself does not carry a schema.
+    pub validation_schema: Option<Value>,
 }
 
 /// Callback for streaming partial object snapshots.
@@ -121,34 +126,18 @@ enum SchemaEnvelope {
 
 impl SchemaEnvelope {
     fn for_schema(schema: &Value) -> Self {
-        if schema_is_object_like(schema) {
-            Self::Direct
-        } else if schema.get("type").and_then(Value::as_str) == Some("array") {
-            Self::Elements
-        } else {
-            Self::Value
+        match schema_root_kind(schema, schema, &mut Vec::new(), 0) {
+            Some(SchemaRootKind::Object) => Self::Direct,
+            Some(SchemaRootKind::Array) => Self::Elements,
+            Some(SchemaRootKind::Other) | None => Self::Value,
         }
     }
 
     fn response_schema(self, schema: &Value) -> Value {
         match self {
             Self::Direct => schema.clone(),
-            Self::Elements => serde_json::json!({
-                "type": "object",
-                "required": ["elements"],
-                "additionalProperties": false,
-                "properties": {
-                    "elements": schema
-                }
-            }),
-            Self::Value => serde_json::json!({
-                "type": "object",
-                "required": ["value"],
-                "additionalProperties": false,
-                "properties": {
-                    "value": schema
-                }
-            }),
+            Self::Elements => wrap_response_schema("elements", schema),
+            Self::Value => wrap_response_schema("value", schema),
         }
     }
 
@@ -190,11 +179,137 @@ impl SchemaEnvelope {
     }
 }
 
-fn schema_is_object_like(schema: &Value) -> bool {
-    schema.get("type").and_then(Value::as_str) == Some("object")
-        || schema.get("properties").is_some()
-        || schema.get("required").is_some()
-        || schema.get("additionalProperties").is_some()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemaRootKind {
+    Object,
+    Array,
+    Other,
+}
+
+fn schema_root_kind(
+    schema: &Value,
+    root: &Value,
+    active_refs: &mut Vec<String>,
+    depth: usize,
+) -> Option<SchemaRootKind> {
+    if depth > 64 {
+        return None;
+    }
+    let object = schema.as_object()?;
+
+    if let Some(kind) = object.get("type").and_then(schema_type_kind) {
+        return Some(kind);
+    }
+    if let Some(value) = object.get("const") {
+        return Some(value_kind(value));
+    }
+    if let Some(values) = object.get("enum").and_then(Value::as_array) {
+        if let Some(kind) = common_value_kind(values) {
+            return Some(kind);
+        }
+    }
+    if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+        if let Some(pointer) = reference.strip_prefix('#') {
+            if !active_refs.iter().any(|active| active == reference) {
+                if let Some(target) = root.pointer(pointer) {
+                    active_refs.push(reference.to_string());
+                    let kind = schema_root_kind(target, root, active_refs, depth + 1);
+                    active_refs.pop();
+                    if kind.is_some() {
+                        return kind;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(all_of) = object.get("allOf").and_then(Value::as_array) {
+        if let Some(kind) = all_of
+            .iter()
+            .find_map(|branch| schema_root_kind(branch, root, active_refs, depth + 1))
+        {
+            return Some(kind);
+        }
+    }
+    for keyword in ["anyOf", "oneOf"] {
+        if let Some(branches) = object.get(keyword).and_then(Value::as_array) {
+            let kinds = branches
+                .iter()
+                .map(|branch| schema_root_kind(branch, root, active_refs, depth + 1))
+                .collect::<Option<Vec<_>>>();
+            if let Some(kinds) = kinds {
+                if let Some(first) = kinds.first().copied() {
+                    if kinds.iter().all(|kind| *kind == first) {
+                        return Some(first);
+                    }
+                }
+            }
+        }
+    }
+
+    // Preserve the established object-schema behavior for schemas that rely
+    // on object-only keywords without an explicit `type`.
+    if ["properties", "required", "additionalProperties"]
+        .iter()
+        .any(|keyword| object.contains_key(*keyword))
+    {
+        return Some(SchemaRootKind::Object);
+    }
+    None
+}
+
+fn schema_type_kind(value: &Value) -> Option<SchemaRootKind> {
+    match value {
+        Value::String(value) => Some(type_name_kind(value)),
+        Value::Array(values) if values.len() == 1 => values[0].as_str().map(type_name_kind),
+        _ => None,
+    }
+}
+
+fn type_name_kind(value: &str) -> SchemaRootKind {
+    match value {
+        "object" => SchemaRootKind::Object,
+        "array" => SchemaRootKind::Array,
+        _ => SchemaRootKind::Other,
+    }
+}
+
+fn value_kind(value: &Value) -> SchemaRootKind {
+    match value {
+        Value::Object(_) => SchemaRootKind::Object,
+        Value::Array(_) => SchemaRootKind::Array,
+        _ => SchemaRootKind::Other,
+    }
+}
+
+fn common_value_kind(values: &[Value]) -> Option<SchemaRootKind> {
+    let first = values.first().map(value_kind)?;
+    values
+        .iter()
+        .all(|value| value_kind(value) == first)
+        .then_some(first)
+}
+
+fn wrap_response_schema(field: &str, schema: &Value) -> Value {
+    let mut embedded = schema.clone();
+    let mut wrapper = serde_json::json!({
+        "type": "object",
+        "required": [field],
+        "additionalProperties": false,
+        "properties": {}
+    });
+
+    // A local reference such as `#/$defs/item` resolves from the provider-
+    // facing document root. Hoist root definitions when the requested schema
+    // must be wrapped so those references retain their original meaning.
+    if let Some(embedded_object) = embedded.as_object_mut() {
+        for keyword in ["$defs", "definitions"] {
+            if let Some(definitions) = embedded_object.remove(keyword) {
+                wrapper[keyword] = definitions;
+            }
+        }
+    }
+    wrapper["properties"][field] = embedded;
+    wrapper
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +418,13 @@ pub async fn generate_streaming(
 
     let cancel_token = CancellationToken::new();
     let mut rx = client
-        .complete_streaming_structured(&messages, Some(&system), &tools, &directive, cancel_token)
+        .complete_streaming_structured(
+            &messages,
+            Some(&system),
+            &tools,
+            &directive,
+            cancel_token.clone(),
+        )
         .await
         .context("LLM streaming call failed during structured generation")?;
 
@@ -311,10 +432,51 @@ pub async fn generate_streaming(
     let mut last_valid_partial: Option<Value> = None;
     let mut final_response: Option<super::LlmResponse> = None;
     let mut last_parse_len: usize = 0;
+    let mut complete_candidate: Option<(Value, String, tokio::time::Instant)> = None;
     // Minimum bytes of new data before attempting a partial parse (reduces CPU)
     const PARSE_THRESHOLD: usize = 8;
-
-    while let Some(event) = rx.recv().await {
+    // Well-behaved providers send Done immediately after the complete object.
+    // A short grace preserves their final usage metadata while preventing an
+    // otherwise valid result from hanging on a compatible endpoint that never
+    // terminates its stream.
+    const DONE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+    loop {
+        let event = if let Some((_, _, deadline)) = complete_candidate.as_ref() {
+            tokio::select! {
+                event = rx.recv() => event,
+                _ = tokio::time::sleep_until(*deadline) => {
+                    let candidate = complete_candidate
+                        .take()
+                        .expect("complete streamed candidate exists");
+                    let (value, raw_text, _) = candidate;
+                    cancel_token.cancel();
+                    on_partial(&value);
+                    return Ok(StructuredResult {
+                        object: value,
+                        raw_text: Some(raw_text),
+                        usage: TokenUsage::default(),
+                        repair_rounds: 0,
+                        mode_used: mode,
+                    });
+                }
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(event) = event else {
+            if let Some((value, raw_text, _)) = complete_candidate.take() {
+                cancel_token.cancel();
+                on_partial(&value);
+                return Ok(StructuredResult {
+                    object: value,
+                    raw_text: Some(raw_text),
+                    usage: TokenUsage::default(),
+                    repair_rounds: 0,
+                    mode_used: mode,
+                });
+            }
+            break;
+        };
         match event {
             StreamEvent::ToolUseInputDelta { delta, .. } if mode == StructuredMode::Tool => {
                 if final_response.is_some() {
@@ -333,6 +495,17 @@ pub async fn generate_streaming(
                         }
                     }
                     last_parse_len = json_buffer.len();
+                }
+                if complete_candidate.is_none() && (delta.contains('}') || delta.contains(']')) {
+                    complete_candidate = resolve_structured(
+                        std::slice::from_ref(&json_buffer),
+                        &req.schema,
+                        envelope,
+                    )
+                    .valid
+                    .map(|(value, raw_text)| {
+                        (value, raw_text, tokio::time::Instant::now() + DONE_GRACE)
+                    });
                 }
             }
             StreamEvent::TextDelta(delta) if mode != StructuredMode::Tool => {
@@ -356,9 +529,21 @@ pub async fn generate_streaming(
                     }
                     last_parse_len = json_buffer.len();
                 }
+                if complete_candidate.is_none() && (delta.contains('}') || delta.contains(']')) {
+                    complete_candidate = resolve_structured(
+                        std::slice::from_ref(&json_buffer),
+                        &req.schema,
+                        envelope,
+                    )
+                    .valid
+                    .map(|(value, raw_text)| {
+                        (value, raw_text, tokio::time::Instant::now() + DONE_GRACE)
+                    });
+                }
             }
             StreamEvent::Done(resp) => {
                 final_response = Some(resp);
+                break;
             }
             _ => {}
         }
@@ -657,6 +842,21 @@ fn validate_against_schema(value: &Value, schema: &Value) -> Result<(), Vec<Stri
     }
 }
 
+/// Return whether a streamed provider payload is already one complete JSON
+/// value that conforms to the provider-facing response schema.
+///
+/// Composite clients can use this to keep candidate streams isolated until a
+/// response is safe to replay, while still accepting a schema-complete object
+/// from endpoints that omit their terminal stream event. The strict direct
+/// parse deliberately rejects prose, code fences, and trailing data; the main
+/// structured engine remains responsible for its broader post-response repair
+/// behavior.
+pub fn is_complete_streamed_value(raw: &str, response_schema: &Value) -> bool {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .is_some_and(|value| validate_against_schema(&value, response_schema).is_ok())
+}
+
 // ---------------------------------------------------------------------------
 // Message/prompt construction helpers
 // ---------------------------------------------------------------------------
@@ -694,24 +894,30 @@ fn resolve_mode(requested: StructuredMode, support: NativeStructuredSupport) -> 
 
 /// Build the provider directive for an already-resolved mode.
 fn build_directive(req: &StructuredRequest, mode: StructuredMode) -> StructuredDirective {
-    match mode {
+    let response_schema = SchemaEnvelope::for_schema(&req.schema).response_schema(&req.schema);
+    let mut directive = match mode {
         StructuredMode::Tool => StructuredDirective {
             force_tool: Some(format!("emit_{}", req.schema_name)),
             response_format: None,
+            validation_schema: None,
         },
         StructuredMode::Strict => StructuredDirective {
             force_tool: None,
             response_format: Some(ResponseFormat::JsonSchema {
                 name: req.schema_name.clone(),
-                schema: SchemaEnvelope::for_schema(&req.schema).response_schema(&req.schema),
+                schema: response_schema.clone(),
             }),
+            validation_schema: None,
         },
         StructuredMode::Json => StructuredDirective {
             force_tool: None,
             response_format: Some(ResponseFormat::JsonObject),
+            validation_schema: None,
         },
         StructuredMode::Auto | StructuredMode::Prompt => StructuredDirective::default(),
-    }
+    };
+    directive.validation_schema = Some(response_schema);
+    directive
 }
 
 fn build_initial_messages(req: &StructuredRequest, mode: StructuredMode) -> Vec<Message> {

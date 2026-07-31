@@ -4,9 +4,9 @@
 //! Flow runtime. Flow owns durable replay and step lifecycle; A3S Code's
 //! existing `program` tool remains the sandbox and tool-call boundary.
 
+use crate::llm::{ModelGenerationAdmission, ModelGenerationConcurrency};
 use crate::tools::{
-    registry_tool_invoker, Tool, ToolContext, ToolInvocation, ToolInvoker, ToolOutput,
-    ToolRegistry, ToolResult,
+    registry_tool_invoker, Tool, ToolContext, ToolInvoker, ToolOutput, ToolRegistry, ToolResult,
 };
 use crate::{
     agent::AgentEvent,
@@ -25,12 +25,14 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
 
 const DYNAMIC_WORKFLOW_TOOL: &str = "dynamic_workflow";
+const GENERATE_OBJECT_TOOL: &str = "generate_object";
 const PROGRAM_TOOL: &str = "program";
 const PARALLEL_TASK_TOOL: &str = "parallel_task";
 const MAX_INLINE_RETRY_RESUMES: usize = 8;
@@ -46,6 +48,61 @@ pub fn dynamic_workflow_store_path(workspace_root: impl AsRef<Path>) -> PathBuf 
         .join(DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH)
 }
 
+/// Recover one completed step output from the exact durable workflow run.
+///
+/// Recovery is bound to the requested run ID and the original input query. It
+/// never acts as a cross-run query cache and never promotes an incomplete step.
+pub async fn recover_dynamic_workflow_step_output(
+    workspace_root: impl AsRef<Path>,
+    run_id: &str,
+    expected_query: &str,
+    step_id: &str,
+) -> Result<Option<Value>> {
+    if !safe_workflow_run_id(run_id) || expected_query.is_empty() || step_id.is_empty() {
+        return Ok(None);
+    }
+    let workspace_root = workspace_root.as_ref();
+    let store_root = dynamic_workflow_store_path(workspace_root);
+    let log_path = store_root.join(format!("{run_id}.jsonl"));
+    match tokio::fs::symlink_metadata(&log_path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Ok(None)
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("inspect dynamic workflow history {}", log_path.display())
+            })
+        }
+    }
+    validate_dynamic_workflow_directory(&workspace_root.join(".a3s"), ".a3s").await?;
+    validate_dynamic_workflow_directory(&store_root, ".a3s/workflow").await?;
+    validate_dynamic_workflow_log(&log_path).await?;
+
+    let events = LocalFileEventStore::new(store_root).list(run_id).await?;
+    let input_matches = events.iter().any(|envelope| {
+        matches!(
+            &envelope.event,
+            FlowEvent::RunCreated { input, .. }
+                if input.get("query").and_then(Value::as_str) == Some(expected_query)
+        )
+    });
+    if !input_matches {
+        return Ok(None);
+    }
+    Ok(events
+        .iter()
+        .rev()
+        .find_map(|envelope| match &envelope.event {
+            FlowEvent::StepCompleted {
+                step_id: completed_step_id,
+                output,
+            } if completed_step_id == step_id => Some(output.clone()),
+            _ => None,
+        }))
+}
+
 /// Limits forwarded to the underlying PTC `program` tool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +113,10 @@ pub struct DynamicWorkflowScriptLimits {
     pub max_tool_calls: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_bytes: Option<usize>,
+    /// Maximum independently session-bound model generations active at once.
+    /// This orchestration limit is not forwarded to the PTC program sandbox.
+    #[serde(default, skip_serializing)]
+    pub max_concurrent_generations: Option<usize>,
 }
 
 /// Runs A3S Flow workflow and step invocations through a sandboxed PTC script.
@@ -66,6 +127,7 @@ pub struct DynamicWorkflowRuntime {
     source: Arc<str>,
     allowed_tools: Vec<String>,
     limits: DynamicWorkflowScriptLimits,
+    parallel_generation_admission: Option<ModelGenerationAdmission>,
 }
 
 impl DynamicWorkflowRuntime {
@@ -87,6 +149,7 @@ impl DynamicWorkflowRuntime {
             source: Arc::from(source.into()),
             allowed_tools,
             limits: DynamicWorkflowScriptLimits::default(),
+            parallel_generation_admission: None,
         }
     }
 
@@ -96,11 +159,21 @@ impl DynamicWorkflowRuntime {
     }
 
     pub fn with_limits(mut self, limits: DynamicWorkflowScriptLimits) -> Self {
+        let generation_concurrency = limits.max_concurrent_generations.unwrap_or(1).clamp(1, 4);
+        self.parallel_generation_admission = NonZeroUsize::new(generation_concurrency)
+            .filter(|maximum| maximum.get() > 1)
+            .map(|maximum| {
+                ModelGenerationAdmission::new(ModelGenerationConcurrency::bounded(maximum))
+            });
         self.limits = limits;
         self
     }
 
-    async fn run_script(&self, payload: Value) -> a3s_flow::Result<ToolResult> {
+    async fn run_script(
+        &self,
+        payload: Value,
+        context: &ToolContext,
+    ) -> a3s_flow::Result<ToolResult> {
         let mut args = json!({
             "type": "script",
             "language": "javascript",
@@ -118,7 +191,7 @@ impl DynamicWorkflowRuntime {
 
         let result = self
             .invoker
-            .invoke(ToolInvocation::nested(PROGRAM_TOOL, args), &self.context)
+            .invoke(context.nested_tool_invocation(PROGRAM_TOOL, args), context)
             .await;
         if result.exit_code != 0 {
             return Err(a3s_flow::FlowError::Runtime(result.output));
@@ -126,11 +199,68 @@ impl DynamicWorkflowRuntime {
         Ok(result)
     }
 
+    async fn context_for_step(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        step_name: &str,
+    ) -> a3s_flow::Result<ToolContext> {
+        if step_name != GENERATE_OBJECT_TOOL {
+            return Ok(self.context.clone());
+        }
+        if let (Some(admission), Some(client)) = (
+            self.parallel_generation_admission.as_ref(),
+            self.context.llm_client(),
+        ) {
+            let fork_id = format!("{run_id}:{step_id}");
+            if let Some(forked_client) = client.fork_for_session(&fork_id) {
+                let permit = admission
+                    .acquire(&self.context.cancellation_token())
+                    .await
+                    .map_err(|error| {
+                        a3s_flow::FlowError::Runtime(format!(
+                            "parallel model-generation admission failed before workflow step: {error}"
+                        ))
+                    })?;
+                return self
+                    .context
+                    .clone()
+                    .with_llm_client(forked_client)
+                    .with_model_generation_permit(admission.clone(), Arc::new(permit))
+                    .map_err(|error| {
+                        a3s_flow::FlowError::Runtime(format!(
+                            "bind parallel model-generation admission to workflow step: {error}"
+                        ))
+                    });
+            }
+        }
+        let Some(admission) = self.context.model_generation_admission() else {
+            return Ok(self.context.clone());
+        };
+        let permit = admission
+            .acquire(&self.context.cancellation_token())
+            .await
+            .map_err(|error| {
+                a3s_flow::FlowError::Runtime(format!(
+                    "model-generation admission failed before workflow step: {error}"
+                ))
+            })?;
+        self.context
+            .clone()
+            .with_model_generation_permit(admission, Arc::new(permit))
+            .map_err(|error| {
+                a3s_flow::FlowError::Runtime(format!(
+                    "bind model-generation admission to workflow step: {error}"
+                ))
+            })
+    }
+
     async fn run_tool_step(&self, tool_name: &str, args: Value) -> a3s_flow::Result<Value> {
         let result = self
             .invoker
             .invoke(
-                ToolInvocation::nested(tool_name.to_string(), args),
+                self.context
+                    .nested_tool_invocation(tool_name.to_string(), args),
                 &self.context,
             )
             .await;
@@ -154,7 +284,7 @@ impl FlowRuntime for DynamicWorkflowRuntime {
     ) -> a3s_flow::Result<RuntimeCommand> {
         let payload = invocation_payload("workflow", &invocation.run_id, &invocation.history)
             .with("input", invocation.input);
-        let result = self.run_script(payload.into_value()).await?;
+        let result = self.run_script(payload.into_value(), &self.context).await?;
         serde_json::from_value(script_result(&result)?).map_err(a3s_flow::FlowError::from)
     }
 
@@ -165,11 +295,18 @@ impl FlowRuntime for DynamicWorkflowRuntime {
                 .await;
         }
 
+        let context = self
+            .context_for_step(
+                &invocation.run_id,
+                &invocation.step_id,
+                &invocation.step_name,
+            )
+            .await?;
         let payload = invocation_payload("step", &invocation.run_id, &invocation.history)
             .with("step_id", invocation.step_id)
             .with("step_name", invocation.step_name)
             .with("input", invocation.input);
-        let result = self.run_script(payload.into_value()).await?;
+        let result = self.run_script(payload.into_value(), &context).await?;
         script_result(&result)
     }
 }
@@ -429,7 +566,13 @@ impl Tool for DynamicWorkflowTool {
                     "properties": {
                         "timeoutMs": { "type": "integer", "minimum": 1 },
                         "maxToolCalls": { "type": "integer", "minimum": 1 },
-                        "maxOutputBytes": { "type": "integer", "minimum": 1 }
+                        "maxOutputBytes": { "type": "integer", "minimum": 1 },
+                        "maxConcurrentGenerations": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 4,
+                            "description": "Optional bounded fan-out for independently session-bound generate_object steps. Providers without session forking remain single-flight."
+                        }
                     }
                 }
             },

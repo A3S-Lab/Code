@@ -1,0 +1,25 @@
+---
+title: '钩子'
+description: '生命周期拦截与策略回调'
+---
+
+# 钩子
+
+钩子用于在会话内注册生命周期回调。管理入口是 `registerHook()`、
+`hookCount()` 和 `unregisterHook()`。
+
+事件包括 `pre_tool_use`、`post_tool_use`、`generate_start`、`generate_end`、`session_start`、`session_end`、`skill_load`、`skill_unload`、`pre_prompt`、`post_response` 和 `on_error`。
+
+```ts
+session.registerHook(
+  'release-publish-observer',
+  'pre_tool_use',
+  { tool: 'bash', commandPattern: 'npm publish|twine upload|cargo publish' },
+  { priority: 50, timeoutMs: 1000 },
+  () => ({ action: 'continue' }),
+);
+```
+
+处理函数可返回 `continue`、`skip`、`block`，或者返回空表示继续。委派和自动
+子智能体扇出都会走 `task` / `parallel_task` 路径；把钩子当作生产关卡前，
+应对产品实际依赖的事件路径做集成测试。

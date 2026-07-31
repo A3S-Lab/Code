@@ -66,6 +66,10 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
   ],
   ['skill_registry', 'Rust SkillRegistry handle; SDKs expose builtin/dir/inline skill inputs.'],
   [
+    'memory_observers',
+    'Rust MemoryObserver trait objects require SDK-specific callback adapters before they can be value-typed options.',
+  ],
+  [
     'budget_guard',
     'Node cannot carry JS functions in value-typed SessionOptions; SDKs expose set_budget_guard/setBudgetGuard.',
   ],
@@ -133,6 +137,14 @@ function readRustModule(rootFile, moduleDir) {
     .map((entry) => `${moduleDir}/${entry.name}`)
     .sort();
   return [read(rootFile), ...files.map(read)].join('\n');
+}
+
+function readGoModule(moduleDir) {
+  return readdirSync(path.join(root, moduleDir), { withFileTypes: true })
+    .filter((entry) =>
+      entry.isFile() && entry.name.endsWith('.go') && !entry.name.endsWith('_test.go'))
+    .map((entry) => read(`${moduleDir}/${entry.name}`))
+    .join('\n');
 }
 
 function stripLineForBraceCounting(line) {
@@ -328,6 +340,31 @@ function tsInterfaceFields(block) {
   return [...new Set(fields)];
 }
 
+function goMethods(source, receiver) {
+  return [
+    ...new Set(
+      [...source.matchAll(
+        new RegExp(
+          `^func\\s+\\([^)]*\\*${receiver}\\)\\s+([A-Z][A-Za-z0-9_]*)\\s*\\(`,
+          'gm',
+        ),
+      )].map(match => match[1]),
+    ),
+  ];
+}
+
+function goStructFields(source, name) {
+  const match = source.match(
+    new RegExp(`^type\\s+${name}\\s+struct\\s*\\{([\\s\\S]*?)^\\}`, 'm'),
+  );
+  assert.ok(match, `could not find Go struct ${name}`);
+  return [
+    ...new Set(
+      [...match[1].matchAll(/^\s*([A-Z][A-Za-z0-9_]*)\s+/gm)].map(entry => entry[1]),
+    ),
+  ];
+}
+
 function expected(coreMethods, omissions, aliases) {
   return [
     ...new Set(
@@ -368,6 +405,8 @@ const python = readRustModule('sdk/python/src/lib.rs', 'sdk/python/src');
 const eventProtocol = read('core/src/event_protocol.rs');
 const nodeEventTypes = read('sdk/node/event-protocol-v1.d.ts');
 const pythonEventTypes = read('sdk/python/python/a3s_code/event_protocol_v1.py');
+const go = readGoModule('sdk/go');
+const goEventTypes = read('sdk/go/event_protocol_v1.go');
 
 const coreAgent = rustPublicMethods(extractImpl(core, 'Agent'));
 const coreSession = rustPublicMethods(extractImpl(core, 'AgentSession'));
@@ -383,6 +422,9 @@ const nodeTypeSessionOptions = tsInterfaceFields(
 const pythonAgent = pythonMethods(extractImpl(python, 'PyAgent'));
 const pythonSession = pythonMethods(extractImpl(python, 'PySession'));
 const pythonSessionOptions = pythonFields(extractStruct(python, 'PySessionOptions'));
+const goAgent = goMethods(go, 'Agent');
+const goSession = goMethods(go, 'Session');
+const goSessionOptions = goStructFields(go, 'SessionOptions');
 
 const expectedAgent = expected(coreAgent, INTENTIONAL_AGENT_OMISSIONS, AGENT_ALIASES);
 const expectedSession = expected(coreSession, INTENTIONAL_SESSION_OMISSIONS, SESSION_ALIASES);
@@ -410,6 +452,88 @@ assertContainsAll(
   requiredSession.map(toLowerCamel),
 );
 
+assertContainsAll('Go Agent', goAgent, [
+  'Capabilities',
+  'Session',
+  'ResumeSession',
+  'RefreshMCPTools',
+  'ListSessions',
+  'CloseSession',
+  'IsClosed',
+  'Close',
+]);
+assertContainsAll('Go Session', goSession, [
+  'Run',
+  'Send',
+  'Stream',
+  'Cancel',
+  'CancelAndSettle',
+  'History',
+  'Close',
+  'Save',
+  'Tool',
+  'Task',
+  'DelegateTask',
+  'Tasks',
+  'ParallelTask',
+  'Program',
+  'WebSearch',
+  'Git',
+  'GitCommand',
+  'ReadFile',
+  'WriteFile',
+  'List',
+  'EditFile',
+  'PatchFile',
+  'Bash',
+  'Glob',
+  'Grep',
+  'Runs',
+  'RunSnapshot',
+  'RunEvents',
+  'RunEventPage',
+  'CurrentRun',
+  'ActiveTools',
+  'CancelRun',
+  'TraceEvents',
+  'PendingConfirmations',
+  'ConfirmToolUse',
+  'CancelConfirmations',
+  'VerificationReports',
+  'VerificationSummary',
+  'VerificationPresets',
+  'VerifyCommands',
+  'AddMCPServer',
+  'RemoveMCPServer',
+  'MCPStatus',
+  'RegisterAgentDir',
+  'SkillNames',
+]);
+assertContainsAll('Go SessionOptions', goSessionOptions, [
+  'Model',
+  'AgentDirs',
+  'SkillDirs',
+  'FileMemoryDir',
+  'FileSessionStoreDir',
+  'SessionID',
+  'TenantID',
+  'Principal',
+  'AgentTemplateID',
+  'CorrelationID',
+  'PlanningMode',
+  'GoalTracking',
+  'AutoSave',
+  'ToolTimeoutMS',
+  'LLMAPITimeoutMS',
+  'AutoCompact',
+  'MaxContextTokens',
+  'Temperature',
+  'ThinkingBudget',
+  'MaxToolRounds',
+  'MaxParallelTasks',
+  'PromptSlots',
+]);
+
 const eventCatalog = eventProtocolCatalog(eventProtocol);
 for (const { constant, wireName } of eventCatalog) {
   assert.ok(
@@ -419,6 +543,16 @@ for (const { constant, wireName } of eventCatalog) {
   assert.ok(
     pythonEventTypes.includes(`${constant}: Final[str] = "${wireName}"`),
     `Python EventType is missing ${constant}=${wireName}`,
+  );
+  const goConstant = `Event${constant
+    .toLowerCase()
+    .split('_')
+    .map(part => part[0].toUpperCase() + part.slice(1))
+    .join('')}`;
+  assert.match(
+    goEventTypes,
+    new RegExp(`\\b${goConstant}\\s*=\\s*"${wireName}"`),
+    `Go event declaration is missing ${goConstant} = "${wireName}"`,
   );
 }
 assert.ok(

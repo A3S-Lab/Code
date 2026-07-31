@@ -1,0 +1,37 @@
+[package]
+name = "a3s-code-go-bridge"
+version = "6.6.0"
+edition = "2021"
+authors = ["A3S Lab Team"]
+license = "MIT"
+repository = "https://github.com/A3S-Lab/Code"
+description = "Machine bridge for the A3S Code Go SDK"
+publish = false
+
+[lib]
+name = "a3s_code_go_bridge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "a3s-code-go-bridge"
+path = "src/main.rs"
+
+[dependencies]
+a3s-code-core = { version = "6.6.0", path = "../../../core", features = ["s3", "serve"] }
+async-trait = "0.1"
+anyhow = "1.0"
+base64 = "0.22"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.35", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-util",
+    "io-std",
+    "sync",
+    "time",
+] }
+tokio-util = { version = "0.7" }
+
+[dev-dependencies]
+tempfile = "3.10"

@@ -17,7 +17,7 @@ errors = []
 
 
 def read(path):
-    return Path(path).read_text()
+    return Path(path).read_text(encoding="utf-8")
 
 
 def fail(message):
@@ -109,6 +109,8 @@ def check_node_lockfile(path):
         for name, value in optional.items():
             if name.startswith("@a3s-lab/code-"):
                 check_equal(f"{path} package {key or '<root>'} optionalDependency {name}", value)
+        if key.startswith("node_modules/@a3s-lab/code-") and package.get("version") is not None:
+            check_equal(f"{path} platform package {key}", package.get("version"))
 
 
 def check_bootstrap_runtime_version(path):
@@ -117,6 +119,17 @@ def check_bootstrap_runtime_version(path):
         fail(f"{path}: missing __version__ literal")
         return
     check_equal(f"{path} __version__", match.group(1))
+
+
+def check_go_module(path):
+    match = re.search(r"^module\s+(\S+)$", read(path), re.MULTILINE)
+    if not match:
+        fail(f"{path}: missing module declaration")
+        return
+    major = expected.split(".", 1)[0]
+    wanted = f"github.com/A3S-Lab/Code/sdk/go/v{major}"
+    if match.group(1) != wanted:
+        fail(f"{path} module: expected {wanted!r}, found {match.group(1)!r}")
 
 
 def check_changelog(path):
@@ -134,16 +147,21 @@ if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', expected):
 check_manifest_version("core/Cargo.toml")
 check_manifest_version("sdk/node/Cargo.toml")
 check_manifest_version("sdk/python/Cargo.toml")
+check_manifest_version("sdk/go/bridge/Cargo.toml")
 check_core_dependency("sdk/node/Cargo.toml")
 check_core_dependency("sdk/python/Cargo.toml")
+check_core_dependency("sdk/go/bridge/Cargo.toml")
 check_package_json("sdk/node/package.json")
 check_pyproject("sdk/python/pyproject.toml")
 check_pyproject("sdk/python-bootstrap/pyproject.toml")
 check_bootstrap_runtime_version("sdk/python-bootstrap/src/a3s_code/_bootstrap.py")
+check_go_module("sdk/go/go.mod")
 check_changelog("CHANGELOG.md")
 check_changelog("sdk/python/CHANGELOG.md")
 check_cargo_lock("Cargo.lock")
+check_cargo_lock("sdk/node/Cargo.lock")
 check_cargo_lock_package("sdk/node/Cargo.lock", "a3s-code-node")
+check_cargo_lock("sdk/python/Cargo.lock")
 check_cargo_lock_package("sdk/python/Cargo.lock", "a3s-code-py")
 check_node_lockfile("sdk/node/package-lock.json")
 check_node_lockfile("sdk/node/examples/package-lock.json")

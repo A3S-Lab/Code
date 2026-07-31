@@ -1,0 +1,155 @@
+---
+title: 'Ripgrep 上下文构建器'
+description: '在向智能体提问前，使用 grep 和 glob 收集代码上下文。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Ripgrep 上下文构建器
+
+通过 `session.grep` 和 `session.glob` 进行快速代码搜索，可以收集相关的文件和匹配行，
+然后将它们注入到提示中 —— 这是在 agent 开始推理之前的一个轻量级检索步骤。当你希望将
+agent 限定在大型代码库的某个特定切片，而不是让它从头开始探索时，可以使用这种方式。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let files = session.glob("src/**/*.rs").await?;
+    let hits = session.grep("create_session").await?;
+    let context = format!(
+        "范围内的文件：\n{}\n\n“create_session”的匹配项：\n{}",
+        files.join("\n"),
+        hits
+    );
+    let answer = session
+        .send(
+            &format!("只使用以下上下文，解释 create_session 如何连接：\n\n{context}"),
+            None,
+        )
+        .await?;
+    println!("{}", answer.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.');
+
+// 1. Find candidate files by glob pattern (returns a list of paths).
+const files = await session.glob('src/**/*.ts');
+
+// 2. Search the workspace for the symbol we care about (returns ripgrep text).
+const hits = await session.grep('createSession');
+
+// 3. Build a context string and feed it into a focused prompt.
+const context = [
+  `Files in scope:\n${files.join('\n')}`,
+  `Matches for "createSession":\n${hits}`,
+].join('\n\n');
+
+const answer = await session.run(
+  `Using only this context, explain how createSession is wired up:\n\n${context}`,
+);
+console.log(answer);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent
+
+agent = Agent.create("agent.acl")
+session = agent.session('.')
+
+# 1. Find candidate files by glob pattern (returns a list of paths).
+files = session.glob('src/**/*.ts')
+
+# 2. Search the workspace for the symbol we care about (returns ripgrep text).
+hits = session.grep('createSession')
+
+# 3. Build a context string and feed it into a focused prompt.
+context = '\n\n'.join([
+    'Files in scope:\n' + '\n'.join(files),
+    'Matches for "createSession":\n' + hits,
+])
+
+answer = session.run(
+    f'Using only this context, explain how createSession is wired up:\n\n{context}'
+)
+print(answer)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	files, err := session.Glob(ctx, "sdk/go/**/*.go")
+	if err != nil {
+		log.Fatal(err)
+	}
+	hits, err := session.Grep(ctx, "Session")
+	if err != nil {
+		log.Fatal(err)
+	}
+	scope := "范围内的文件：\n" + strings.Join(files, "\n") +
+		"\n\n“Session”的匹配项：\n" + hits
+	answer, err := session.Run(
+		ctx,
+		"只使用以下上下文，解释 Session 如何连接：\n\n"+scope,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(answer.Text)
+}
+```
+
+</Tab>
+</Tabs>
+
+`glob` 返回匹配的文件路径列表，而 `grep` 则以单个字符串的形式返回原始的 ripgrep 输出。
+两者都在本地运行并能快速返回，因此你可以在花费一次模型调用之前，链式执行多次搜索来低成本地
+组装上下文。当你需要文件的完整内容而不仅仅是匹配行时，可以将它们与 `session.readFile`
+搭配使用。

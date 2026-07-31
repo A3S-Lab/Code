@@ -209,7 +209,17 @@ impl AnthropicClient {
                                 ))
                             }
                         }
-                        Err(e) => AttemptOutcome::Fatal(e),
+                        Err(e) => {
+                            if crate::llm::http::is_retryable_http_failure(&e) {
+                                AttemptOutcome::Retryable {
+                                    status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                                    body: format!("network error: {e}"),
+                                    retry_after: None,
+                                }
+                            } else {
+                                AttemptOutcome::Fatal(e)
+                            }
+                        }
                     }
                 }
             })
@@ -298,6 +308,10 @@ impl LlmClient for AnthropicClient {
         structured::NativeStructuredSupport::ForcedTool
     }
 
+    fn has_distinct_non_streaming_transport(&self) -> bool {
+        true
+    }
+
     async fn complete_streaming(
         &self,
         messages: &[Message],
@@ -351,28 +365,24 @@ impl AnthropicClient {
                 async move {
                     let resp = tokio::select! {
                         _ = cancel_token.cancelled() => {
-                            return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request cancelled"));
+                            return AttemptOutcome::Fatal(anyhow::Error::new(
+                                crate::llm::HttpClientError::cancelled(
+                                    "Anthropic streaming HTTP request",
+                                ),
+                            ));
                         }
                         result = http.post_streaming(url, headers, request_body, cancel_token.clone()) => {
                             match result {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    // A transient network error (timeout, reset,
-                                    // mid-flight drop — common on throttled
-                                    // endpoints) carries no HTTP status. Retry it
-                                    // with backoff like 429/5xx instead of failing
-                                    // the turn; a real fatal error still bails.
-                                    return if crate::retry::is_transient_error(&e) {
+                                    return if crate::llm::http::is_retryable_http_failure(&e) {
                                         AttemptOutcome::Retryable {
                                             status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
                                             body: format!("network error: {e}"),
                                             retry_after: None,
                                         }
                                     } else {
-                                        AttemptOutcome::Fatal(anyhow::anyhow!(
-                                            "HTTP request failed: {}",
-                                            e
-                                        ))
+                                        AttemptOutcome::Fatal(e.context("HTTP request failed"))
                                     };
                                 }
                             }
@@ -415,6 +425,7 @@ impl AnthropicClient {
             let stream_cancellation = cancel_token.clone();
             tokio::spawn(async move {
                 let mut buffer = String::new();
+                let mut utf8_decoder = crate::sse::Utf8StreamDecoder::default();
                 let mut content_blocks: Vec<ContentBlock> = Vec::new();
                 let mut text_content = String::new();
                 let mut current_tool_id = String::new();
@@ -445,7 +456,10 @@ impl AnthropicClient {
                         }
                     };
 
-                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    if let Err(error) = utf8_decoder.push_to(&chunk, &mut buffer) {
+                        tracing::error!(%error, "Anthropic stream returned invalid UTF-8");
+                        break;
+                    }
 
                     while let Some(event_end) = buffer.find("\n\n") {
                         let event_data: String = buffer.drain(..event_end).collect();
@@ -617,6 +631,9 @@ impl AnthropicClient {
                             }
                         }
                     }
+                }
+                if let Err(error) = utf8_decoder.finish() {
+                    tracing::error!(%error, "Anthropic stream ended inside a UTF-8 code point");
                 }
             });
 
@@ -837,6 +854,7 @@ mod tests {
         let directive = structured::StructuredDirective {
             force_tool: Some("emit_person".to_string()),
             response_format: None,
+            validation_schema: None,
         };
         AnthropicClient::apply_directive(&mut req, &directive);
         assert_eq!(req["tool_choice"]["type"], "tool");
@@ -853,6 +871,7 @@ mod tests {
             &structured::StructuredDirective {
                 force_tool: None,
                 response_format: Some(structured::ResponseFormat::JsonObject),
+                validation_schema: None,
             },
         );
         assert!(req.get("response_format").is_none());

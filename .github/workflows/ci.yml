@@ -32,8 +32,25 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      - name: Check browser dependency boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          default_tree="$(cargo tree -p a3s-code-core --no-default-features -e normal)"
+          if grep -q 'chromiumoxide' <<<"$default_tree"; then
+            echo "default Core must not compile the browser/CDP dependency stack" >&2
+            exit 1
+          fi
+          headless_tree="$(cargo tree -p a3s-code-core --no-default-features --features headless-search -e normal)"
+          grep -q 'chromiumoxide' <<<"$headless_tree"
+
       - name: Clippy
         run: cargo clippy --workspace --lib --bins -- -D warnings
+
+      - name: Check public API compatibility with v5.3.5
+        run: |
+          cargo install cargo-semver-checks --version 0.48.0 --locked
+          bash scripts/check_semver.sh 5.3.5
 
       - name: Default tests
         run: cargo test --workspace
@@ -75,3 +92,51 @@ jobs:
 
       - name: Check Python SDK
         run: cargo check --manifest-path sdk/python/Cargo.toml
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: sdk/go/go.mod
+
+      - name: Check Go SDK
+        run: |
+          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+          A3S_CODE_GO_BRIDGE_TEST_BINARY="$PWD/../../target/debug/a3s-code-go-bridge" \
+            go test -race ./...
+        working-directory: sdk/go
+
+  windows-check:
+    name: Windows check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        shell: bash
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --workspace --lib --bins -- -D warnings
+
+      - name: Library tests
+        run: cargo test --workspace --lib
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: sdk/go/go.mod
+
+      - name: Go SDK integration
+        shell: pwsh
+        working-directory: sdk/go
+        run: |
+          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+          $env:A3S_CODE_GO_BRIDGE_TEST_BINARY = (Resolve-Path "..\..\target\debug\a3s-code-go-bridge.exe").Path
+          go test ./...

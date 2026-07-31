@@ -89,7 +89,7 @@ pub(super) fn pathbuf_to_workspace_path(path: &Path) -> WorkspacePath {
     WorkspacePath::from_normalized(display)
 }
 
-pub(super) fn escape_control_chars_for_display(path: &str) -> String {
+pub(crate) fn escape_control_chars_for_display(path: &str) -> String {
     let mut escaped = String::with_capacity(path.len());
     for ch in path.chars() {
         if ch.is_control() {

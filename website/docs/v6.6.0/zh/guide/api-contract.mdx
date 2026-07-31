@@ -1,0 +1,763 @@
+---
+title: 'API 契约'
+description: '本地集成检查覆盖的 SDK 机制'
+---
+
+# API 契约
+
+本页只记录 `scripts/docs_api_contract_smoke.mjs` 覆盖过的 A3S Code Node.js
+SDK 行为。该脚本会启动一个临时的 OpenAI 兼容测试服务，创建真实 SDK 会话，
+调用原生绑定并断言返回值，不需要先构建文档。
+
+在仓库根目录运行：
+
+```bash
+node scripts/docs_api_contract_smoke.mjs
+```
+
+## 智能体
+
+已验证入口：
+
+```ts
+const agent = await Agent.create(aclSource);
+await agent.refreshMcpTools();
+
+const session = agent.session(workspace, options);
+const named = agent.sessionForAgent(workspace, 'explore', [], options);
+```
+
+`Agent.create()` 接受 ACL 源文本或 `.acl` 文件路径。JSON 配置不在
+已验证契约内。集成检查覆盖 `apiKey`/`baseUrl` 和
+`api_key`/`base_url` 两组服务提供商别名。`sessionForAgent()` 已用内置
+`explore` 智能体验证。
+
+Node.js 工厂在 JavaScript 接口上保持同步命名，但原生实现会把资源解析委托给核心
+的异步会话构建路径。Rust 嵌入方应使用 `SessionBuilder::build().await` 或异步工厂；
+同步 Rust 兼容工厂要求显式传入预先初始化的记忆存储。
+
+集成检查也覆盖会创建文件型 session store 的 ACL 字段：
+
+```acl
+storage_backend = "file"
+sessions_dir = "/tmp/a3s-doc-stores/acl-storage"
+```
+
+本契约不覆盖 `storage_url`。它不是本地文件型 session persistence 路径；
+ACL 中使用 `sessions_dir`，或在 SDK options 中传 `sessionStore`。
+
+## 会话选项
+
+已验证的 option 形状：
+
+```ts
+const session = agent.session(workspace, {
+  model: 'openai/docs-alt',
+  builtinSkills: true,
+  planningMode: 'disabled',
+  memoryStore: new FileMemoryStore(memoryDir),
+  sessionStore: new FileSessionStore(sessionDir),
+  sessionId: 'docs-contract',
+  autoSave: true,
+  securityProvider: new DefaultSecurityProvider(),
+  skillDirs: [path.join(workspace, 'skills')],
+  inlineSkills: [
+    {
+      name: 'strict-release-review',
+      kind: 'instruction',
+      content: 'Always separate blockers from nice-to-have improvements.',
+    },
+  ],
+  maxToolRounds: 24,
+  maxParseRetries: 3,
+  toolTimeoutMs: 120000,
+  circuitBreakerThreshold: 4,
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  continuationEnabled: true,
+  maxContinuationTurns: 3,
+  maxExecutionTimeMs: 300000, // 5 分钟超时
+  confirmationPolicy: {
+    enabled: true,
+    defaultTimeoutMs: 60000,
+    timeoutAction: 'reject',
+  },
+});
+```
+
+`model` 是 per-session override。检查已覆盖使用
+`model: 'openai/docs-alt'` 创建的 session 会把 `docs-alt` 发送给本地
+provider。
+
+基础 session accessor 已验证：
+
+```ts
+console.log(session.sessionId);
+console.log(session.workspace);
+console.log(session.initWarning);
+console.log(session.history());
+console.log(session.cancel());
+```
+
+`workspace` 返回 SDK 规范化后的工作区路径。
+
+`planningMode` 使用显式三态：`'auto'`、`'enabled'`、`'disabled'`。
+
+检查也覆盖 session 创建时接受这个 `permissionPolicy` 形状：
+
+```ts
+agent.session(workspace, {
+  permissionPolicy: {
+    deny: ['write(**/.env*)', 'bash(rm -rf*)'],
+    ask: ['bash(git push*)', 'bash(npm publish*)'],
+    allow: ['read(*)', 'grep(*)', 'glob(*)', 'bash(npm run build*)'],
+    defaultDecision: 'ask',
+    enabled: true,
+  },
+});
+```
+
+提示词插槽选项都是字符串：
+
+```ts
+agent.session(workspace, {
+  role: 'release-readiness reviewer',
+  guidelines:
+    'Find blockers before improvements. Require command evidence for done claims.',
+  responseStyle: 'concise, findings first',
+  goalTracking: true,
+});
+```
+
+## 结果结构
+
+`session.send()` 返回的 `AgentResult` 字段在 result 对象自身：
+
+```ts
+const result = await session.send('Return a short answer');
+
+console.log(result.text);
+console.log(result.toolCallsCount);
+console.log(result.promptTokens);
+console.log(result.completionTokens);
+console.log(result.totalTokens);
+console.log(result.verificationStatus);
+console.log(result.pendingVerificationCount);
+console.log(result.failedVerificationCount);
+console.log(result.verificationReportCount);
+console.log(result.verificationSummaryJson);
+console.log(result.verificationSummaryText);
+```
+
+trace events 和 verification reports 是 session API，不是 `AgentResult` 字段。
+
+## 流式事件
+
+`session.stream()` 返回 `EventStream`。已验证的读取方式是 `.next()`：
+
+```ts
+const stream = await session.stream('Stream one sentence');
+
+while (true) {
+  const { value: event, done } = await stream.next();
+  if (done) break;
+  if (!event) continue;
+  if (event.text) process.stdout.write(event.text);
+}
+```
+
+冒烟检查会在循环结束后立即发起下一次 `send()`。因此这里验证的不只是事件交付，
+还包括流式调用的单任务准入租约已经释放；不需要人为增加重试延时。
+
+每个 SDK 事件都是 envelope v1 投影：`version === 1`、开放的 `type` 字符串、
+完整的 `payload` 和可选 `metadata`。消费者必须为未来事件类型保留默认分支。
+Node 提供 `payloadJson` / `metadataJson` 字符串视图；Python 提供
+`payload_json` / `metadata_json`，并保留 `event_type` 作为 `type` 的别名。
+
+不要依赖 `for await`，除非你安装的 SDK 版本已经单独验证支持异步
+iteration。
+
+## 直接工具
+
+> 完整指南：[工具](/guide/tools)。
+
+已验证的宿主侧直接工具调用：
+
+```ts
+await session.readFile('README.md');
+await session.glob('src/*.rs');
+await session.grep('PermissionPolicy');
+await session.bash('printf docs-bash');
+await session.tool('read', { file_path: 'README.md' });
+await session.git('status');
+await session.git('diff');
+await session.git(
+  'log',
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  5,
+);
+await session.tool('search_skills', { query: 'release blockers', limit: 5 });
+
+session.toolNames();
+session.toolDefinitions();
+session.registerAgentDir(path.join(workspace, 'agents'));
+```
+
+已验证的 `toolNames()` 集合包含 `read`、`write`、`edit`、`patch`、`grep`、
+`glob`、`ls`、`bash`、`task`、`parallel_task`、`search_skills`、`Skill`、
+`program`、`git`、`batch`、`web_fetch` 和 `web_search`。
+
+直接工具调用是宿主侧特权能力。把它暴露给最终用户之前，应在宿主应用内做权限判断。
+
+## AGENTS.md
+
+脚本会在工作区写入一个 `AGENTS.md`，并断言其中的指令标记
+出现在本地服务提供商请求体中：
+
+```md
+# 项目说明
+
+Always mention docs-contract-agents-md-token when asked for project instructions.
+```
+
+项目指令应保持可操作，并且不要包含密钥。
+
+## 程序化工具调用
+
+`session.program()` 在内嵌 QuickJS runtime 中运行有边界的 JavaScript：
+
+```ts
+const result = await session.program({
+  source: `
+    export default async function run(ctx, inputs) {
+      const text = await ctx.readFile('README.md');
+      const hits = await ctx.grep(inputs.q, { glob: '*.md' });
+      return { summary: 'ok', hasHits: text.includes(inputs.q) && hits.includes(inputs.q) };
+    }
+  `,
+  inputs: { q: 'planningMode' },
+  allowedTools: ['read', 'grep'],
+  limits: { timeoutMs: 30000, maxToolCalls: 12, maxOutputBytes: 65536 },
+});
+
+const meta = JSON.parse(result.metadataJson);
+console.log(meta.script_result);
+console.log(meta.program.tool_calls);
+```
+
+已验证的 `ctx` helper：`readFile`、`read`、`grep`、`glob`、`ls`、`bash`、
+`git` 和通用 `tool(name, args)`。`allowedTools` 限制脚本能调用的已注册
+tool。`program` 不会出现在它自己的默认 tool set 里。
+
+## 验证
+
+> 完整指南：[验证](/guide/verification)。
+
+验证信息是 session 级能力：
+
+```ts
+const report = await session.verifyCommands('docs api check', [
+  {
+    id: 'echo',
+    kind: 'command',
+    description: 'echo works',
+    command: 'printf verify',
+    required: true,
+  },
+]);
+
+console.log(report.subject);
+console.log(session.verificationReports());
+console.log(session.verificationSummary());
+console.log(session.verificationSummaryText());
+console.log(session.verificationPresets());
+console.log(formatVerificationSummary(session.verificationSummary()));
+```
+
+## 记忆
+
+> 完整指南：[记忆](/guide/memory)。
+
+Node memory 已用 `FileMemoryStore` 验证：
+
+```ts
+const session = agent.session(workspace, {
+  memoryStore: new FileMemoryStore(memoryDir),
+});
+
+console.log(session.hasMemory);
+await session.rememberSuccess('docs memory success', ['grep'], 'remembered');
+await session.rememberFailure('docs memory failure', 'expected failure', [
+  'bash',
+]);
+await session.memoryRecent(10);
+await session.recallSimilar('docs memory', 5);
+await session.recallByTags(['grep'], 10);
+```
+
+当前 Node.js SDK 已验证的近期记忆方法是 `memoryRecent()`。`recallRecent()`
+不存在于当前 Node.js SDK 接口。
+
+## 技能
+
+> 完整指南：[技能](/guide/skills)。
+
+文件型和内联技能已通过 `search_skills` 验证：
+
+```ts
+const session = agent.session(workspace, {
+  skillDirs: [path.join(workspace, 'skills')],
+  inlineSkills: [
+    {
+      name: 'strict-release-review',
+      kind: 'instruction',
+      content: 'Always separate blockers from nice-to-have improvements.',
+    },
+  ],
+});
+
+await session.tool('search_skills', { query: 'release blockers', limit: 5 });
+await session.tool('search_skills', {
+  query: 'strict release review',
+  limit: 5,
+});
+```
+
+skill-file 检查使用带 YAML frontmatter 的 Markdown，并覆盖了
+`allowed-tools` key。
+
+## 临时提问
+
+> 完整指南：[会话](/guide/sessions)。
+
+当前 SDK surface 没有专用的临时提问 helper。需要不改变 session transcript
+时，使用显式 history：
+
+```ts
+const snapshot = session.history();
+const side = await session.send('What is this test?', snapshot);
+
+console.log(side.text);
+console.log(session.history().length === snapshot.length);
+```
+
+## 运行与取消
+
+> 完整指南：[会话](/guide/sessions)。
+
+每次 `send()` 或 `stream()` 都会记录可回放的 run state：
+
+```ts
+const runs = await session.runs();
+const latest = runs.at(-1);
+
+if (latest) {
+  console.log(await session.runSnapshot(latest.id));
+  console.log(await session.runEvents(latest.id));
+}
+
+const current = await session.currentRun();
+if (current?.id && current.status === 'running') {
+  await session.cancelRun(current.id);
+}
+
+console.log(session.traceEvents());
+```
+
+`currentRun()` 用于读取当前操作。空闲时，它可能返回 `null`，也可能
+因前序控制流保留一个快照。已完成历史请使用 `runs()`。
+
+同一个会话中影响对话记录的操作采用单任务准入。重叠的发送、事件流、附件调用、
+斜杠命令或 `resumeRun` 会立即返回 `SessionBusy`，不会排队。即使公开句柄被丢弃，
+事件流也会保留准入状态，直到生产者停止。
+
+## 持久化
+
+> 完整指南：[持久化](/guide/persistence)与[会话](/guide/sessions)。
+
+文件型会话持久化已验证稳定的 `sessionId`、`autoSave`、显式
+`save()` 和 `resumeSession()`：
+
+```ts
+const session = agent.session(workspace, {
+  sessionStore: new FileSessionStore(sessionDir),
+  sessionId: 'docs-contract',
+  autoSave: true,
+});
+
+await session.save();
+
+const resumed = agent.resumeSession('docs-contract', {
+  sessionStore: new FileSessionStore(sessionDir),
+});
+console.log(resumed.history());
+```
+
+核心持久化会把对话、制品、追踪、运行记录、验证报告和子智能体任务快照一起提交为
+带版本号的 `SessionSnapshotV1`。文件或内存存储会原子发布这个聚合快照。旧式分片
+记录仍可加载；自定义存储必须显式实现聚合保存。
+
+Node 进程需要及时释放会话级后台资源时，调用 `session.close()`。`close()` 是完整的
+优雅停止入口：把 `session.isClosed` 设为 `true`（之后 `send` / `stream` 会以
+`Session closed` 错误立即返回），触发会话级 `CancellationToken`，让所有进行中的运行、
+委派子智能体任务和待人工确认项全部中止。重复调用 `close()` 不会重复操作。
+
+控制面只持有会话 ID 时，可以从智能体侧触发同样的清理：
+
+```ts
+await agent.listSessions(); // ['session-a', 'session-b']
+await agent.closeSession('session-a'); // 若原本处于打开状态，返回 true
+await agent.close(); // 关闭所有活动会话并断开全局 MCP
+```
+
+`agent.close()` 之后，再调用 `agent.session(...)` / `agent.resumeSession(...)` 会立即
+抛出 `Session closed`。该操作幂等。建议在进程退出处理函数中调用，保证没有会话级
+工作进程比智能体存活更久。
+
+## 委派
+
+> 完整指南：[任务](/guide/tasks)与[编排](/guide/orchestration)。
+
+已验证核心委派工具的直接辅助方法：
+
+```ts
+await session.task({
+  agent: 'general',
+  description: 'docs delegated check',
+  prompt: 'Return a short response.',
+  maxSteps: 1,
+});
+
+await session.tasks([
+  {
+    agent: 'general',
+    description: 'one',
+    prompt: 'Return one response.',
+    maxSteps: 1,
+  },
+  {
+    agent: 'general',
+    description: 'two',
+    prompt: 'Return another response.',
+    maxSteps: 1,
+  },
+]);
+```
+
+它们返回来自 `task` 和 `parallel_task` 的 `ToolResult`。
+
+## 钩子
+
+> 完整指南：[钩子](/guide/hooks)。
+
+已验证的钩子管理入口：
+
+```ts
+session.registerHook(
+  'docs-observer',
+  'pre_tool_use',
+  { tool: 'bash' },
+  { priority: 1, timeoutMs: 1000 },
+  () => ({ action: 'continue' }),
+);
+
+console.log(session.hookCount());
+session.unregisterHook('docs-observer');
+```
+
+把钩子行为作为生产关卡前，需要对你依赖的具体事件路径做集成测试。
+
+## 斜杠命令
+
+> 完整指南：[命令](/guide/commands)。
+
+自定义斜杠命令通过 `session.send()` 触发：
+
+```ts
+session.registerCommand(
+  'docs_status',
+  'Return docs command status',
+  (args, ctx) => {
+    return `status args=${args}; session=${ctx.sessionId}; workspace=${ctx.workspace}`;
+  },
+);
+
+console.log(session.listCommands());
+const result = await session.send('/docs_status check');
+console.log(result.text);
+```
+
+## 执行通道队列
+
+> 完整指南：[执行通道队列](/guide/lane-queue)。
+
+队列基础设施需要显式启用：
+
+```ts
+const queued = agent.session(workspace, {
+  queueConfig: { enableDlq: true, enableMetrics: true },
+});
+
+console.log(queued.hasQueue());
+await queued.setLaneHandler('execute', { mode: 'external', timeoutMs: 1000 });
+await queued.pendingExternalTasks();
+await queued.completeExternalTask('missing', {
+  success: true,
+  result: { ok: true },
+});
+await queued.queueStats();
+await queued.queueMetrics();
+await queued.deadLetters();
+```
+
+没有传入 `queueConfig` 的普通会话不会启用队列。
+
+## MCP
+
+> 完整指南：[MCP](/guide/mcp)。闲置断开见[集群扩展点](/guide/cluster-extension-points)。
+
+集成检查覆盖一个真实的标准输入输出 MCP 服务器：
+
+```ts
+const count = await session.addMcp({
+  name: 'echo',
+  transport: {
+    type: 'stdio',
+    command: process.execPath,
+    args: ['tools/mcp_echo_server.mjs', 'example-value'],
+  },
+  timeoutMs: 30000,
+});
+
+console.log(count);
+console.log(await session.mcpStatus());
+console.log(
+  session.toolNames().filter((name) => name.startsWith('mcp__echo__')),
+);
+
+await session.tool('mcp__echo__echo', { message: 'docs mcp ok' });
+await session.removeMcpServer('echo');
+```
+
+服务器注册出的工具名称格式是 `mcp__<server>__<tool>`。
+`addMcpServer(...)` 和 `addMcpServerConfig(...)` 仍是兼容别名；新示例使用参数对象
+更紧凑的 `addMcp(...)` API。
+
+运行时添加或移除只作用于当前会话的私有管理器。智能体全局和宿主提供的管理器是
+继承的只读能力来源，因此一个会话不能修改同级会话或全局 MCP 配置。
+
+## 集群级扩展点
+
+> 完整指南：[集群扩展点](/guide/cluster-extension-points)（身份标签、预算守卫、集群事件、确定性 ID/回放、循环检查点、保留上限）。
+
+这些契约让集群控制面在**不派生框架分支**的前提下接入多租户、成本管控和容错运行。
+框架定义“决策点”和“结构化事件”，**策略实现由宿主提供**。
+
+### 身份标签
+
+`SessionOptions` 上四个可选字段会透传到钩子、追踪与 `SessionData`，框架本身不解释：
+
+```ts
+const session = agent.session(workspace, {
+  tenantId: 'tenant-example',
+  principal: 'principal-example',
+  agentTemplateId: 'agent-template-example',
+  correlationId: 'trace-example',
+  sessionStore: new FileSessionStore('./sessions'),
+});
+session.tenantId; // -> 'tenant-example'
+session.correlationId; // -> 'trace-example'
+```
+
+恢复时，`apply_persisted_runtime_options` 会从持久化快照中还原标签；但**调用方在
+`resume_session` 时传入的选项优先**，可以借此重新设置标签。
+
+### 预算 / 成本守卫
+
+`BudgetGuard` 会在每个属于运行的服务提供商调用前检查，并在成功响应后记录用量；
+每个受治理的工具调用（包括嵌套调用与可信宿主直接调用）也会在执行前检查。
+`Deny` 返回 `CodeError::BudgetExhausted { resource, reason }`;`SoftLimit` 发射 `AgentEvent::BudgetThresholdHit { kind: "soft", .. }` 后继续执行。
+
+Rust 宿主直接注入 trait。Node.js、Python 与 Go 的回调桥接见本节后文：
+
+```rust
+let guard: Arc<dyn BudgetGuard> = /* host-supplied impl */;
+let opts = SessionOptions::new().with_budget_guard(guard);
+```
+
+### 集群事件词汇
+
+`AgentEvent`(`#[non_exhaustive]`)新增三类平台级事件,host 通过 `HookExecutor` 注入:
+
+- `BudgetThresholdHit { resource, kind, consumed, limit, message? }`
+- `PassivationRequested { reason, deadline_ms? }`
+- `PeerInvocation { from_session_id, from_tenant_id?, correlation_id? }`
+
+session 内部 hook 可统一订阅,不必关心 host 用什么传输发过来。
+
+### 确定性标识与时钟
+
+`HostEnv { id_generator, clock }` 替换默认的 `uuid::Uuid::new_v4()` + 墙上时钟。Replay 工具传入 `SequentialIdGenerator` + `FixedClock` 即可在另一台机器上 bit-identical 重放一个 run。
+
+### 循环检查点与运行恢复
+
+配置了 `SessionStore` 后,agent loop **每次 tool round 结束**会持久化一个 `LoopCheckpoint`(按 `run_id` 索引)。任何拥有同一个 store 的节点都能从最近的边界 rehydrate:
+
+```ts
+// Node.js：宿主探测到 A 节点失效后，在 B 节点上恢复：
+const session = agentB.session(workspace, {
+  sessionStore: new FileSessionStore('./sessions'),
+  sessionId: 'session-from-node-a',
+});
+const result = await session.resumeRun('run-id-from-node-a');
+```
+
+```python
+# Python 等价写法
+opts = SessionOptions()
+opts.session_store = FileSessionStore('./sessions')
+opts.session_id = 'session-from-node-a'
+session = agent_b.session(workspace, opts)
+result = session.resume_run('run-id-from-node-a')
+```
+
+```go
+// Go 等价写法
+session, err := agent.Session(ctx, workspace, &code.SessionOptions{
+	FileSessionStoreDir: "./.a3s/sessions",
+	SessionID:           "session-from-node-a",
+})
+if err != nil {
+	return err
+}
+result, err := session.ResumeRun(ctx, "run-id-from-node-a")
+```
+
+resume 出来的会**分配一个全新的 run id** — 框架不假装旧 run 还在继续,新旧 run 的关系是 host 的元数据。两个可区分的错误路径方便 host 端调度分支:
+
+- `"resume_run requires a session_store"` — host 应该回退到新建 session。
+- `"no loop checkpoint found for run 'X'"`：宿主可以稍后重试（可能正好遇到检查点写入竞态），也可以把该运行视为已丢失。
+
+**边界策略**:checkpoint 只在 tool round **之间**取,不在工具执行中途取。进程在工具执行中途死掉时,这一轮的工作会丢失,LLM 从前一个边界重新思考。这是用"重试成本"换"正确性" — 把非幂等工具(write、bash)在边界两侧重跑比让 LLM 重想要糟得多。
+
+### 长时间会话的保留上限
+
+`SessionRetentionLimits` 让 host 给四种 in-memory 存储设上限：run 记录、每 run 的事件、
+trace 事件、**终态的** subagent 任务快照。每个字段都是可选的；省略时保留框架的有限
+默认值，只有明确设置 `unbounded: true` 才恢复无限保留。FIFO 严格按插入序丢；
+**Running 状态的** subagent 任务永不被丢。
+
+```rust
+use a3s_code_core::retention::SessionRetentionLimits;
+
+let limits = SessionRetentionLimits::new()
+    .with_max_runs(100)
+    .with_max_events_per_run(5_000)
+    .with_max_trace_events(10_000)
+    .with_max_terminal_subagent_tasks(1_000);
+
+let opts = SessionOptions::new().with_retention_limits(limits);
+```
+
+上限建议跟 host 自己 Prometheus / 观测系统的内存预算保持一致。Node 暴露为
+`retentionLimits`；Python 暴露为 `opts.retention_limits`；Go 暴露为
+`SessionOptions.RetentionLimits`。
+
+### MCP 闲置断开
+
+`Agent::disconnect_idle_mcp(threshold_ms)` 扫描所有已连接的 MCP server,把"最后活跃时间"早于 `now - threshold_ms` 的全部断开。注册的配置**保留** — 后续 tool 调用会按需重连。返回被断开的 server 名称列表。
+
+```ts
+// Node.js：定期回收闲置的 MCP 子进程
+setInterval(async () => {
+  const dropped = await agent.disconnectIdleMcp(5 * 60 * 1000); // 5min
+  if (dropped.length) {
+    console.log('reaped idle MCP servers:', dropped);
+  }
+}, 60_000);
+```
+
+```python
+# Python 等价写法
+dropped = agent.disconnect_idle_mcp(5 * 60 * 1000)
+```
+
+```go
+// Go 同样传入毫秒数
+dropped, err := agent.DisconnectIdleMCP(ctx, 5*60*1000)
+```
+
+每次 `connect` 和成功的 `call_tool` 都会刷新活跃时间。Host 走旁路通道路由 tool 时,可以手动 `McpManager.touch(name)` 把 server 保温。
+
+### `BudgetGuard` 的 SDK 桥接
+
+所有支持回调的 SDK 共用同一个决策返回形状：
+
+| 返回值                                                   | 效果                                                                            |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `None` / `null` / `{decision:'allow'}`                   | 静默放行                                                                        |
+| `{decision:'soft', resource, consumed, limit, message?}` | 发射 `BudgetThresholdHit('soft')` 事件,继续执行                                 |
+| `{decision:'deny',  resource, reason}`                   | 中止调用,Python 抛 `RuntimeError("Budget exhausted...")`/Node reject 同样的错误 |
+
+guard 对象上缺失的方法会使用宽松默认值（Allow / no-op）。Python 回调异常会回退为
+Allow；Go 回调报错、超时或返回无法解析的决策时会 fail-closed 为 Deny。
+
+```python
+# Python：通过 SessionOptions 在创建会话前挂载
+class MyGuard:
+    def check_before_llm(self, session_id, estimated_tokens):
+        return {"decision": "deny", "resource": "llm_tokens", "reason": "cap"}
+    def record_after_llm(self, session_id, usage):
+        track(session_id, usage["total_tokens"])
+
+opts = SessionOptions()
+opts.budget_guard = MyGuard()
+session = agent.session(workspace, opts)
+```
+
+```ts
+// Node.js：创建会话后通过 setBudgetGuard 挂载。
+// JsFunction 不能放进值类型的 SessionOptions，因此预算守卫注册在 Session 上，
+// 下一次 send/stream 生效。
+session.setBudgetGuard({
+  checkBeforeLlm: (ctx) => {
+    if (overBudget(ctx.sessionId)) {
+      return { decision: 'deny', resource: 'llm_tokens', reason: 'cap' };
+    }
+    return null;
+  },
+  recordAfterLlm: (ctx) => {
+    track(ctx.sessionId, ctx.usage.totalTokens);
+  },
+});
+```
+
+```go
+err := session.SetBudgetGuard(ctx, &code.BudgetGuardHandlers{
+	CheckBeforeLLM: func(
+		_ context.Context,
+		call code.BudgetLLMContext,
+	) (*code.BudgetDecision, error) {
+		if overBudget(call.SessionID) {
+			return &code.BudgetDecision{
+				Decision: "deny",
+				Resource: "llm_tokens",
+				Reason:   "cap",
+			}, nil
+		}
+		return &code.BudgetDecision{Decision: "allow"}, nil
+	},
+})
+```
+
+Node 回调接收单个 `ctx` 对象，且**绝不能 throw**；请用 `try/catch` 包裹并返回显式决策。
+卡住或无法解析的 `check*` 回调会 fail-closed 为 `deny`。Python 回调使用位置参数，
+异常会被捕获并视为 Allow。Go handler 接收带类型的 context，报错或超时会 fail-closed。
+
+Node 用 `setBudgetGuard(null)` 清除；Python 把 `opts.budget_guard` 设回 `None` 后重建
+session；Go 调用 `session.SetBudgetGuard(ctx, nil)`。

@@ -56,11 +56,6 @@ pub(super) fn parallel_task_params_schema_for_agents(
                             "type": "string",
                             "description": "Required. Detailed instruction for the delegated child run."
                         },
-                        "background": {
-                            "type": "boolean",
-                            "description": "Optional. Run this delegated child task in the background. Default: false.",
-                            "default": false
-                        },
                         "max_steps": {
                             "type": "integer",
                             "description": "Optional. Maximum number of tool/model steps for this delegated child task."
@@ -72,7 +67,7 @@ pub(super) fn parallel_task_params_schema_for_agents(
                     },
                     "required": ["agent", "description", "prompt"]
                 },
-                "minItems": 1,
+                "minItems": 2,
                 "maxItems": MAX_PARALLEL_TASKS_PER_CALL
             },
             "allow_partial_failure": {

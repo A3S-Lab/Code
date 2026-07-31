@@ -131,10 +131,55 @@ __all__ = [
 `;
 }
 
+function goName(constant) {
+  return constant
+    .toLowerCase()
+    .split('_')
+    .map(part => part[0].toUpperCase() + part.slice(1))
+    .join('');
+}
+
+function goDeclaration({ version, events }) {
+  const names = events.map(event => `Event${goName(event.constant)}`);
+  const width = Math.max(...names.map(name => name.length)) + 1;
+  const constants = events
+    .map(
+      (event, index) =>
+        `\t${names[index].padEnd(width)}= "${event.wireName}"`,
+    )
+    .join('\n');
+  const catalog = events
+    .map(event => `\tEvent${goName(event.constant)},`)
+    .join('\n');
+  return `// Code generated from core/src/event_protocol.rs; DO NOT EDIT.
+//
+// Run: node scripts/generate_event_protocol_artifacts.mjs
+
+package code
+
+const EventEnvelopeV1Version = ${version}
+
+const (
+${constants}
+)
+
+var agentEventTypesV1 = [...]string{
+${catalog}
+}
+
+// AgentEventTypesV1 returns the ordered catalog known to event envelope version ${version}.
+// Event.Type remains an open string so future event types are preserved.
+func AgentEventTypesV1() []string {
+\treturn append([]string(nil), agentEventTypesV1[:]...)
+}
+`;
+}
+
 const definition = protocolDefinition();
 const outputs = new Map([
   ['sdk/node/event-protocol-v1.d.ts', nodeDeclaration(definition)],
   ['sdk/python/python/a3s_code/event_protocol_v1.py', pythonDeclaration(definition)],
+  ['sdk/go/event_protocol_v1.go', goDeclaration(definition)],
 ]);
 
 let stale = false;

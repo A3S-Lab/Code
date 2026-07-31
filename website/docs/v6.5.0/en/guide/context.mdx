@@ -1,0 +1,59 @@
+---
+title: 'Context'
+description: 'Budgeted context assembly for reliable coding agents'
+---
+
+# Context
+
+A3S Code treats context as a budgeted resource. The model should see the smallest useful context for the current decision, not every available file, skill, memory, and tool log.
+
+## Sources
+
+Context can come from:
+
+- user prompt and conversation history
+- AGENTS.md project instructions
+- skills and agent definitions
+- memory stores
+- file search and direct tool results
+- MCP tools and context providers
+- delegated task summaries
+- trace events
+
+AGENTS.md injection, skills discovery, memory APIs, direct tool results,
+delegated task helpers, and `traceEvents()` are part of the documented Node SDK
+surface. Validate MCP context behavior against your own live integrations
+before documenting it as product behavior.
+
+## Assembly
+
+```text
+sources -> ContextItem -> rank -> dedupe -> budget -> render
+```
+
+Long grep output, logs, and child transcripts should be preserved outside the prompt and summarized into prompt-safe evidence. Use `session.traceEvents()` for compact runtime evidence.
+
+## Compaction
+
+Enable automatic compaction for long sessions:
+
+```ts
+const session = agent.session('/repo', {
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  maxContextTokens: 128_000,
+});
+```
+
+When `maxContextTokens` is omitted, Core uses the selected model's declared
+context window when available. Before each model request, Core accounts for the
+system prompt, conversation, tool calls and results, and exposed tool schemas.
+At the configured threshold it bounds oversized tool output, summarizes the
+older safe prefix, keeps recent messages, and continues the same task. The
+summary participates in later compactions, so long sessions can roll forward
+through repeated compression; this does not enlarge the model's physical
+single-request context window. A successful `context_compacted` event includes
+the cumulative summary so hosts that supply external history can persist the
+same compact generation across turns.
+
+Python exposes the same override as `max_context_tokens`.

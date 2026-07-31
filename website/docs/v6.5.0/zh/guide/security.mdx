@@ -1,0 +1,42 @@
+---
+title: '安全'
+description: '权限策略、HITL、hook 与验证关卡'
+---
+
+# 安全
+
+A3S Code 在创建 session 时暴露安全控制，并通过 session hook 暴露生命周期回调。宿主直接调用 `session.tool()`、`session.bash()` 等 API 时，应把它们视为宿主侧特权操作；是否把这些能力暴露给用户，由宿主应用自己判断。
+
+委派子运行会继承所选 subagent 或 worker spec 的有边界权限。使用 `confirmationInheritance` 控制子运行的 Ask 决策，并把高风险发布命令放在显式 policy 后面。
+
+权限确认界面应该向用户说明操作、原因、影响范围和风险，而不只是放两个按钮。
+
+```ts title=permissions.ts
+const session = agent.session('/repo', {
+  // !callout(1:7) 执行前生效
+  permissionPolicy: {
+    deny: ['bash(rm -rf*)', 'write(**/.env*)'],
+    ask: ['bash(git push*)', 'bash(npm publish*)'],
+    allow: ['read(*)', 'grep(*)', 'glob(*)', 'bash(cargo test*)'],
+    defaultDecision: 'ask',
+    enabled: true,
+  },
+});
+```
+
+Hook API 的管理面包括注册、计数和卸载：
+
+```ts
+session.registerHook(
+  'observe-secret-read',
+  'pre_tool_use',
+  { pathPattern: '**/.env*' },
+  { priority: 100 },
+  () => ({ action: 'continue' }),
+);
+
+console.log(session.hookCount());
+session.unregisterHook('observe-secret-read');
+```
+
+发布流程应要求测试、包检查、CI 和 provider 验证证据。

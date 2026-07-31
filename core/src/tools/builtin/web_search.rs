@@ -1,22 +1,71 @@
 //! Web search tool - Search the web via a3s-search
 
+mod engines;
+mod fallback;
+
+#[cfg(feature = "headless-search")]
 use crate::config::{BrowserBackend, HeadlessConfig};
 use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
+#[cfg(feature = "headless-search")]
 use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider};
-use a3s_search::engines::{
-    Baidu, BingChina, BraveParser, DuckDuckGoParser, Google, So360Parser, SogouParser, Wikipedia,
-};
-use a3s_search::proxy::{ProxyConfig, ProxyPool};
-use a3s_search::WaitStrategy;
+use a3s_search::proxy::ProxyConfig;
 use a3s_search::{
-    BrowserFetcher, HtmlEngine, HttpFetcher, Metrics, MetricsSnapshot, Search, SearchQuery,
-    SearchResult,
+    EngineFailure, Metrics, MetricsSnapshot, Search, SearchCascade, SearchQualityFloor,
+    SearchQuery, SearchResult, SearchResults,
 };
 use anyhow::Result;
 use async_trait::async_trait;
 use regex::Regex;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+const MIN_FULL_TEXT_BYTES: usize = 512;
+const MAX_FULL_TEXT_BYTES: usize = 32 * 1024;
+const MAX_JSON_TITLE_BYTES: usize = 2 * 1024;
+const MAX_JSON_CONTENT_BYTES: usize = 4 * 1024;
+const JSON_OUTPUT_RESERVE_BYTES: usize = 4 * 1024;
+const MAX_JSON_OUTPUT_BYTES: usize = crate::tools::MAX_OUTPUT_SIZE - JSON_OUTPUT_RESERVE_BYTES;
+
+#[cfg(feature = "headless-search")]
+const WEB_SEARCH_DESCRIPTION: &str =
+    "Search the web through a quality-gated cascade: native APIs first, HTTP/RSS engines only \
+     when needed, and headless Google/Baidu only when earlier tiers remain insufficient. \
+     Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
+     are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
+     Supports proxy configuration for conventional and headless search transports.";
+
+#[cfg(not(feature = "headless-search"))]
+const WEB_SEARCH_DESCRIPTION: &str =
+    "Search the web through a quality-gated cascade of native APIs and HTTP/RSS engines. \
+     Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
+     are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
+     Supports proxy configuration for conventional search transports.";
+
+#[cfg(feature = "headless-search")]
+const ENGINE_CATALOG_DESCRIPTION: &str =
+    "Optional. List of search engines or native providers to use. Without explicit configuration, \
+     all built-in providers that advertise anonymous access are combined with the public HTTP \
+     defaults. Available: anysearch (anonymous or authenticated native provider), tavily (keyless \
+     or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), \
+     wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), \
+     g / google (Google, headless), baidu (Baidu, headless).";
+
+#[cfg(not(feature = "headless-search"))]
+const ENGINE_CATALOG_DESCRIPTION: &str =
+    "Optional. List of search engines or native providers to use. Without explicit configuration, \
+     all built-in providers that advertise anonymous access are combined with the public HTTP \
+     defaults. Available: anysearch (anonymous or authenticated native provider), tavily (keyless \
+     or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), \
+     wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), and bing_cn (Bing China RSS).";
+
+#[cfg(feature = "headless-search")]
+use engines::add_headless_engine;
+use engines::{add_http_engine, default_engine_selection};
+use fallback::{
+    failure_metadata, failure_summary, outcome_metadata, text_notice_note, tier_timeout,
+    tiered_engine_plan, tool_error_kind_for_failures, usable_result_count,
+};
 
 pub struct WebSearchTool;
 
@@ -31,6 +80,7 @@ impl WebSearchTool {
     /// Chrome process for the rest of the TUI session. Keeping the pool scoped
     /// to one invocation lets the cleanup guard deterministically close it on
     /// success, error, timeout, or caller cancellation.
+    #[cfg(feature = "headless-search")]
     fn create_pool(headless_config: Option<&HeadlessConfig>) -> Option<Arc<BrowserPool>> {
         let config = headless_config?;
         let executable = config.browser_path.as_ref().map(std::path::PathBuf::from);
@@ -59,10 +109,12 @@ impl Default for WebSearchTool {
     }
 }
 
+#[cfg(feature = "headless-search")]
 struct BrowserPoolCleanup {
     pool: Option<Arc<BrowserPool>>,
 }
 
+#[cfg(feature = "headless-search")]
 impl BrowserPoolCleanup {
     fn new(pool: Option<Arc<BrowserPool>>) -> Self {
         Self { pool }
@@ -84,6 +136,7 @@ impl BrowserPoolCleanup {
     }
 }
 
+#[cfg(feature = "headless-search")]
 impl Drop for BrowserPoolCleanup {
     fn drop(&mut self) {
         let Some(pool) = self.pool.take() else {
@@ -103,6 +156,7 @@ impl Drop for BrowserPoolCleanup {
     }
 }
 
+#[cfg(feature = "headless-search")]
 fn managed_headless_config() -> Option<HeadlessConfig> {
     let status =
         crate::search_runtime::browser_status(crate::search_runtime::ManagedBrowser::Chrome);
@@ -114,19 +168,46 @@ fn managed_headless_config() -> Option<HeadlessConfig> {
     })
 }
 
-fn search_result_json(result: &SearchResult) -> serde_json::Value {
+fn search_result_json(result: &SearchResult, full_text_bytes: Option<usize>) -> serde_json::Value {
     let engines = sorted_search_engines(result);
     let safe_url = safe_search_result_url(result);
     let safe_title = sanitize_http_urls(&result.title);
+    let safe_title = crate::text::truncate_utf8(&safe_title, MAX_JSON_TITLE_BYTES);
     let safe_content = sanitize_http_urls(&result.content);
-    serde_json::json!({
+    let safe_content = crate::text::truncate_utf8(&safe_content, MAX_JSON_CONTENT_BYTES);
+    let mut value = serde_json::json!({
         "title": safe_title,
         "url": safe_url,
         "content": safe_content,
         "engines": engines,
         "score": result.score,
         "published_date": result.published_date,
-    })
+    });
+    if let (Some(maximum), Some(full_text)) = (full_text_bytes, result.full_text.as_deref()) {
+        let sanitized = sanitize_http_urls(full_text);
+        let bounded = crate::text::truncate_utf8(&sanitized, maximum);
+        if !bounded.trim().is_empty() {
+            value["full_text"] = serde_json::Value::String(bounded.to_string());
+        }
+    }
+    value
+}
+
+fn bounded_json_search_results(
+    results: &[&SearchResult],
+    full_text_bytes: Option<usize>,
+) -> Vec<serde_json::Value> {
+    let mut bounded = Vec::with_capacity(results.len());
+    for result in results {
+        bounded.push(search_result_json(result, full_text_bytes));
+        if serde_json::to_vec(&bounded).is_ok_and(|encoded| encoded.len() <= MAX_JSON_OUTPUT_BYTES)
+        {
+            continue;
+        }
+        bounded.pop();
+        break;
+    }
+    bounded
 }
 
 fn safe_search_result_url(result: &SearchResult) -> String {
@@ -180,25 +261,6 @@ fn text_search_result(index: usize, result: &SearchResult) -> String {
     )
 }
 
-fn should_fallback_from_unavailable_headless(
-    engine_count: usize,
-    has_headless_config: bool,
-    engines: &[&str],
-) -> bool {
-    engine_count == 0
-        && !has_headless_config
-        && !engines.is_empty()
-        && engines
-            .iter()
-            .all(|engine| matches!(engine.trim(), "g" | "google" | "baidu"))
-}
-
-fn requires_headless_browser(engines: &[&str]) -> bool {
-    engines
-        .iter()
-        .any(|engine| matches!(engine.trim(), "g" | "google" | "baidu"))
-}
-
 fn sanitize_http_urls(text: &str) -> String {
     static URL_RE: OnceLock<Regex> = OnceLock::new();
     let url_re = URL_RE.get_or_init(|| {
@@ -245,66 +307,106 @@ fn search_metrics_json(snapshot: &MetricsSnapshot) -> serde_json::Value {
     })
 }
 
-/// Add an HTTP engine by shortcut
-fn add_http_engine(search: &mut Search, shortcut: &str, proxy_url: Option<&str>) -> bool {
-    let fetcher = || {
-        proxy_url
-            .and_then(|proxy| HttpFetcher::with_proxy(proxy).ok())
-            .unwrap_or_default()
-    };
-    match shortcut.trim() {
-        "ddg" => {
-            search.add_engine(HtmlEngine::with_fetcher(
-                DuckDuckGoParser,
-                Arc::new(fetcher()),
-            ));
-            true
-        }
-        "brave" => {
-            search.add_engine(HtmlEngine::with_fetcher(BraveParser, Arc::new(fetcher())));
-            true
-        }
-        "wiki" => {
-            search.add_engine(Wikipedia::with_http_fetcher(fetcher()));
-            true
-        }
-        "sogou" => {
-            search.add_engine(HtmlEngine::with_fetcher(SogouParser, Arc::new(fetcher())));
-            true
-        }
-        "360" | "so360" => {
-            search.add_engine(HtmlEngine::with_fetcher(So360Parser, Arc::new(fetcher())));
-            true
-        }
-        "bing_cn" => {
-            search.add_engine(BingChina::new(Arc::new(fetcher())));
-            true
-        }
-        _ => false,
-    }
+fn tier_search(ctx: &ToolContext, metrics: Arc<Metrics>) -> Search {
+    Search::new()
+        .with_metrics(metrics)
+        .with_circuit_breaker(ctx.search_circuit_breaker())
 }
 
-/// Add a headless engine using BrowserPool.
-fn add_headless_engine(search: &mut Search, shortcut: &str, pool: &Arc<BrowserPool>) -> bool {
-    match shortcut.trim() {
-        "g" | "google" => {
-            let fetcher = BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
-                css: "div.g".to_string(),
-                timeout_ms: 5000,
-            });
-            search.add_engine(Google::new(Arc::new(fetcher)));
-            true
-        }
-        "baidu" => {
-            let fetcher = BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
-                css: "div.c-container".to_string(),
-                timeout_ms: 5000,
-            });
-            search.add_engine(Baidu::new(Arc::new(fetcher)));
-            true
-        }
-        _ => false,
+fn search_error_failure(engine: &str, error: &a3s_search::SearchError) -> EngineFailure {
+    let mut failure = EngineFailure::new(engine, error.kind(), error.to_string())
+        .with_transient(error.is_transient());
+    if let Some(retry_after_seconds) = error.retry_after_seconds() {
+        failure = failure.with_retry_after(retry_after_seconds);
     }
+    failure
+}
+
+async fn execute_search_stage(
+    mut search: Search,
+    mut results: SearchResults,
+    query: &str,
+    stage_name: &str,
+    deadline: Instant,
+    remaining_tiers: usize,
+) -> SearchResults {
+    if search.engine_count() == 0 {
+        return results;
+    }
+
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        results.add_failure(
+            EngineFailure::new(
+                stage_name,
+                "timeout",
+                "search deadline was exhausted before this tier could start",
+            )
+            .with_transient(true),
+        );
+        return results;
+    }
+
+    let stage_budget = tier_timeout(remaining, remaining_tiers);
+    let engine_budget = stage_budget
+        .saturating_sub(Duration::from_millis(100))
+        .max(Duration::from_millis(1));
+    search.set_timeout(engine_budget);
+    match tokio::time::timeout(stage_budget, search.search(SearchQuery::new(query))).await {
+        Ok(Ok(stage_results)) => results.merge(stage_results),
+        Ok(Err(error)) => results.add_failure(search_error_failure(stage_name, &error)),
+        Err(_) => results.add_failure(
+            EngineFailure::new(stage_name, "timeout", "search tier timed out").with_transient(true),
+        ),
+    }
+    results
+        .items_mut()
+        .retain(|result| !safe_search_result_url(result).is_empty());
+    results.count = results.items().len();
+    results
+}
+
+struct SearchStageContext<'a> {
+    tool_context: &'a ToolContext,
+    query: &'a str,
+    proxy_url: Option<&'a str>,
+    metrics: &'a Arc<Metrics>,
+    deadline: Instant,
+}
+
+async fn execute_network_stage(
+    context: &SearchStageContext<'_>,
+    shortcuts: &[String],
+    stage_name: &str,
+    remaining_tiers: usize,
+) -> SearchResults {
+    let mut search = tier_search(context.tool_context, Arc::clone(context.metrics));
+    let mut results = SearchResults::new();
+    for shortcut in shortcuts {
+        match add_http_engine(&mut search, shortcut, context.proxy_url) {
+            Ok(true) => {}
+            Ok(false) => results.add_failure(EngineFailure::new(
+                shortcut,
+                "unsupported_engine",
+                "engine is not available in this search tier",
+            )),
+            Err(failure) => {
+                context
+                    .metrics
+                    .record_failure(&failure.kind, failure.transient);
+                results.add_failure(failure);
+            }
+        }
+    }
+    execute_search_stage(
+        search,
+        results,
+        context.query,
+        stage_name,
+        context.deadline,
+        remaining_tiers,
+    )
+    .await
 }
 
 #[async_trait]
@@ -314,10 +416,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the web using multiple search engines. Aggregates results from multiple engines \
-         (DuckDuckGo, Wikipedia, Brave, Sogou, 360, Google, Baidu, Bing China, etc.). \
-         Supports proxy configuration for anti-crawler protection. Returns deduplicated and ranked results. \
-         Google and Baidu use a headless browser; Bing China uses its HTTP RSS endpoint."
+        WEB_SEARCH_DESCRIPTION
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -334,7 +433,7 @@ impl Tool for WebSearchTool {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), g / google (Google, headless), baidu (Baidu, headless)."
+                    "description": ENGINE_CATALOG_DESCRIPTION
                 },
                 "limit": {
                     "type": "integer",
@@ -352,6 +451,12 @@ impl Tool for WebSearchTool {
                     "type": "string",
                     "enum": ["text", "json"],
                     "description": "Optional. Output format. Default: text."
+                },
+                "full_text_bytes": {
+                    "type": "integer",
+                    "minimum": MIN_FULL_TEXT_BYTES,
+                    "maximum": MAX_FULL_TEXT_BYTES,
+                    "description": "Optional. For JSON output, include at most this many UTF-8 bytes of provider-returned full source text per result. Omitted by default."
                 }
             },
             "required": ["query"],
@@ -367,7 +472,7 @@ impl Tool for WebSearchTool {
                 },
                 {
                     "query": "最新新闻",
-                    "engines": ["baidu", "bing_cn"],
+                    "engines": ["sogou", "bing_cn"],
                     "limit": 10
                 }
             ]
@@ -381,7 +486,15 @@ impl Tool for WebSearchTool {
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         // Validate: return error on unknown fields to catch misconfiguration like `engine` vs `engines`
         if let Some(obj) = args.as_object() {
-            let valid_fields = ["query", "engines", "limit", "timeout", "proxy", "format"];
+            let valid_fields = [
+                "query",
+                "engines",
+                "limit",
+                "timeout",
+                "proxy",
+                "format",
+                "full_text_bytes",
+            ];
             for key in obj.keys() {
                 if !valid_fields.contains(&key.as_str()) {
                     return Ok(ToolOutput::error(format!(
@@ -411,17 +524,14 @@ impl Tool for WebSearchTool {
         // Get configuration from context or use defaults
         let config = ctx.search_config.as_ref();
         let default_timeout = config.map(|c| c.timeout).unwrap_or(10);
-        let default_engines: Vec<&str> = if let Some(cfg) = config {
-            // Build default engines list from enabled engines in config
-            cfg.engines
-                .iter()
-                .filter(|(_, engine_cfg)| engine_cfg.enabled)
-                .map(|(name, _)| name.as_str())
-                .collect()
-        } else {
-            vec!["ddg", "wiki"]
-        };
+        let (default_engines, default_engine_selection_source) =
+            default_engine_selection(config.map(Arc::as_ref));
 
+        let engine_selection_source = if args.get("engines").is_some() {
+            "request"
+        } else {
+            default_engine_selection_source
+        };
         let engines: Vec<&str> = args
             .get("engines")
             .and_then(|v| {
@@ -438,18 +548,10 @@ impl Tool for WebSearchTool {
                 }
             })
             .unwrap_or_else(|| default_engines.clone());
-
-        // HTTP-only searches must not probe for or initialize a managed browser.
-        let needs_headless = requires_headless_browser(&engines);
-        let configured_headless = config.and_then(|config| config.headless.as_ref());
-        let implicit_headless_config = if needs_headless {
-            configured_headless
-                .cloned()
-                .or_else(managed_headless_config)
-        } else {
-            None
-        };
-        let headless_config = implicit_headless_config.as_ref();
+        let selected_engines = engines
+            .iter()
+            .map(|engine| engine.to_string())
+            .collect::<Vec<_>>();
 
         let limit = args
             .get("limit")
@@ -462,132 +564,191 @@ impl Tool for WebSearchTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(default_timeout)
             .min(60);
+        let total_timeout = Duration::from_secs(timeout_secs.max(1));
+        let search_started = Instant::now();
+        let search_deadline = search_started + total_timeout;
 
         let output_format = args
             .get("format")
             .and_then(|v| v.as_str())
             .unwrap_or("text");
+        let full_text_bytes = match args.get("full_text_bytes") {
+            None => None,
+            Some(value) => match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
+                Some(value) if (MIN_FULL_TEXT_BYTES..=MAX_FULL_TEXT_BYTES).contains(&value) => {
+                    Some(value)
+                }
+                _ => {
+                    return Ok(ToolOutput::error(format!(
+                        "full_text_bytes must be an integer between {MIN_FULL_TEXT_BYTES} and {MAX_FULL_TEXT_BYTES}"
+                    )))
+                }
+            },
+        };
 
         let mut proxy_url = args
             .get("proxy")
             .and_then(|v| v.as_str())
             .map(str::to_string)
-            .or_else(|| configured_headless.and_then(|config| config.proxy_url.clone()))
+            .or_else(|| {
+                config
+                    .and_then(|config| config.headless.as_ref())
+                    .and_then(|config| config.proxy_url.clone())
+            })
             .or_else(super::safe_http::explicit_web_proxy_from_env);
         if proxy_url.is_none() {
-            proxy_url = super::safe_http::system_web_proxy().await;
+            let remaining = search_deadline.saturating_duration_since(Instant::now());
+            if !remaining.is_zero() {
+                proxy_url = tokio::time::timeout(remaining, super::safe_http::system_web_proxy())
+                    .await
+                    .ok()
+                    .flatten();
+            }
+        }
+        if let Some(proxy) = proxy_url.as_deref() {
+            if parse_proxy_url(proxy).is_none() {
+                let message = "proxy must include a supported scheme, host, and port".to_string();
+                return Ok(ToolOutput::error(&message)
+                    .with_error_kind(ToolErrorKind::InvalidArgument { message }));
+            }
         }
 
-        // Get or initialize BrowserPool if needed
-        let browser_pool = if needs_headless {
-            Self::create_pool(headless_config)
-        } else {
-            None
-        };
-        let mut browser_cleanup = BrowserPoolCleanup::new(browser_pool.clone());
-
-        // Build Search instance with requested engines
         let search_metrics = Arc::new(Metrics::new());
-        let mut search = Search::new().with_metrics(search_metrics.clone());
-        search.set_timeout(std::time::Duration::from_secs(timeout_secs));
-
-        for shortcut in &engines {
-            let shortcut_str = *shortcut;
-
-            // Check if engine is configured and get its settings
-            let engine_config = config.and_then(|c| c.engines.get(shortcut_str));
-
-            // Skip if explicitly disabled in config
-            if let Some(engine_cfg) = engine_config {
-                if !engine_cfg.enabled {
-                    tracing::debug!("Skipping disabled engine: {}", shortcut_str);
-                    continue;
-                }
-            }
-
-            // Try HTTP engine first, then headless
-            if !add_http_engine(&mut search, shortcut_str, proxy_url.as_deref()) {
-                if let Some(ref pool) = browser_pool {
-                    if !add_headless_engine(&mut search, shortcut_str, pool) {
-                        tracing::warn!("Unknown or unavailable search engine: {}", shortcut_str);
-                    }
-                } else {
-                    tracing::warn!(
-                        "Unknown or unavailable search engine: {} (headless engines require headless config)",
-                        shortcut_str
-                    );
-                }
-            }
-        }
-
-        let fell_back_from_headless = should_fallback_from_unavailable_headless(
-            search.engine_count(),
-            headless_config.is_some(),
-            &engines,
-        );
-        if fell_back_from_headless {
-            let _ = add_http_engine(&mut search, "ddg", proxy_url.as_deref());
-            let _ = add_http_engine(&mut search, "wiki", proxy_url.as_deref());
-        }
-
-        if search.engine_count() == 0 {
+        let automatic_fallback = engine_selection_source != "request";
+        let tier_plan = tiered_engine_plan(&engines, config.map(Arc::as_ref), automatic_fallback);
+        if tier_plan.is_empty() {
             let message = format!("No valid engines found in: {:?}", engines);
             return Ok(ToolOutput::error(&message)
-                .with_error_kind(ToolErrorKind::InvalidArgument { message }));
-        }
-
-        // Configure proxy if provided
-        if let Some(url) = proxy_url.as_deref() {
-            // Parse proxy URL into ProxyConfig
-            if let Some(config) = parse_proxy_url(url) {
-                let _pool = ProxyPool::with_proxies(vec![config]);
-                // Note: proxy is applied per-engine fetcher, not globally
-                tracing::debug!("Proxy configuration provided but not yet applied to engines");
-            }
-        }
-
-        let query = SearchQuery::new(&query_str);
-
-        let search_result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs.max(1)),
-            search.search(query),
-        )
-        .await;
-        browser_cleanup.shutdown().await;
-        let search_results = match search_result {
-            Ok(Ok(results)) => results,
-            Ok(Err(e)) => {
-                let metrics = search_metrics.snapshot().await;
-                let message = e.to_string();
-                let output = ToolOutput::error(format!("Search failed: {message}")).with_metadata(
-                    serde_json::json!({
-                        "status": "failed",
-                        "search_metrics": search_metrics_json(&metrics),
-                    }),
-                );
-                return Ok(if looks_rate_limited(&message) {
-                    output.with_error_kind(ToolErrorKind::RateLimited {
-                        retry_after_ms: None,
-                    })
-                } else {
-                    output
-                });
-            }
-            Err(_) => {
-                let metrics = search_metrics.snapshot().await;
-                return Ok(ToolOutput::error(format!(
-                    "Search timed out after {timeout_secs} seconds"
-                ))
-                .with_error_kind(ToolErrorKind::Timeout {
-                    op: "web_search".to_string(),
-                    duration_ms: timeout_secs.saturating_mul(1_000),
-                })
+                .with_error_kind(ToolErrorKind::InvalidArgument { message })
                 .with_metadata(serde_json::json!({
                     "status": "failed",
-                    "search_metrics": search_metrics_json(&metrics),
+                    "engine_selection_source": engine_selection_source,
+                    "selected_engines": &selected_engines,
                 })));
-            }
+        }
+
+        let quality_floor = SearchQualityFloor::for_limit(limit);
+        let mut cascade = SearchCascade::new(SearchQuery::new(&query_str), quality_floor);
+        let stage_context = SearchStageContext {
+            tool_context: ctx,
+            query: &query_str,
+            proxy_url: proxy_url.as_deref(),
+            metrics: &search_metrics,
+            deadline: search_deadline,
         };
+
+        if !tier_plan.api.is_empty() {
+            let remaining_tiers = usize::from(!tier_plan.http.is_empty())
+                + usize::from(!tier_plan.headless.is_empty());
+            let results = execute_network_stage(
+                &stage_context,
+                &tier_plan.api,
+                "API search tier",
+                remaining_tiers,
+            )
+            .await;
+            cascade.push_tier("api", results);
+        }
+
+        if cascade.needs_next_tier() && !tier_plan.http.is_empty() {
+            let results = execute_network_stage(
+                &stage_context,
+                &tier_plan.http,
+                "HTTP search tier",
+                usize::from(!tier_plan.headless.is_empty()),
+            )
+            .await;
+            cascade.push_tier("http", results);
+        }
+
+        #[cfg(feature = "headless-search")]
+        {
+            if cascade.needs_next_tier() && !tier_plan.headless.is_empty() {
+                let mut results = SearchResults::new();
+                if search_deadline
+                    .saturating_duration_since(Instant::now())
+                    .is_zero()
+                {
+                    results.add_failure(
+                        EngineFailure::new(
+                            "Headless search tier",
+                            "timeout",
+                            "search deadline was exhausted before the headless tier could start",
+                        )
+                        .with_transient(true),
+                    );
+                } else {
+                    let headless_config = config
+                        .and_then(|config| config.headless.clone())
+                        .or_else(managed_headless_config);
+                    match Self::create_pool(headless_config.as_ref()) {
+                        Some(pool) => {
+                            let mut cleanup = BrowserPoolCleanup::new(Some(Arc::clone(&pool)));
+                            let mut search = tier_search(ctx, Arc::clone(&search_metrics));
+                            for shortcut in &tier_plan.headless {
+                                if !add_headless_engine(&mut search, shortcut, &pool) {
+                                    results.add_failure(EngineFailure::new(
+                                        shortcut,
+                                        "unsupported_engine",
+                                        "headless engine is not available",
+                                    ));
+                                }
+                            }
+                            results = execute_search_stage(
+                                search,
+                                results,
+                                &query_str,
+                                "Headless search tier",
+                                search_deadline,
+                                0,
+                            )
+                            .await;
+                            cleanup.shutdown().await;
+                        }
+                        None => results.add_failure(EngineFailure::new(
+                            "Headless search tier",
+                            "headless_unavailable",
+                            "no managed headless browser is available",
+                        )),
+                    }
+                }
+                cascade.push_tier("headless", results);
+            }
+        }
+
+        let final_quality = cascade.quality();
+        let quality_met = quality_floor.is_met(&final_quality);
+        let tier_reports = cascade.reports().to_vec();
+        let mut search_results = cascade.into_results();
+        search_results
+            .set_duration(u64::try_from(search_started.elapsed().as_millis()).unwrap_or(u64::MAX));
+
+        let mut notices = Vec::new();
+        let failure_summary = failure_summary(search_results.failures());
+        if usable_result_count(&search_results) > 0 && !failure_summary.is_empty() {
+            notices.push(format!(
+                "Search completed with degraded engines: {failure_summary}."
+            ));
+        }
+        if !quality_met {
+            notices.push(
+                "Search exhausted the available tiers before the result quality floor was met."
+                    .to_string(),
+            );
+        }
+        let executed_engines = search_results
+            .outcomes()
+            .iter()
+            .map(|outcome| outcome.shortcut.clone())
+            .collect::<Vec<_>>();
+        let search_fallback = serde_json::json!({
+            "trigger": "quality_floor",
+            "mode": "tiered",
+            "attempted": tier_reports.len() > 1,
+            "engines": executed_engines,
+            "successful": quality_met,
+            "failures": failure_metadata(search_results.failures()),
+        });
         let metrics = search_metrics.snapshot().await;
         let metrics_json = search_metrics_json(&metrics);
 
@@ -612,6 +773,7 @@ impl Tool for WebSearchTool {
                 })
             })
             .collect::<Vec<_>>();
+        let engine_failures = failure_metadata(search_results.failures());
         let error_note = if errors.is_empty() {
             String::new()
         } else {
@@ -621,45 +783,59 @@ impl Tool for WebSearchTool {
             }
             note
         };
+        let notice_note = text_notice_note(&notices);
 
         if results.is_empty() {
             let metadata = serde_json::json!({
                 "status": if errors.is_empty() { "complete" } else { "failed" },
-                "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
+                "engine_selection_source": engine_selection_source,
+                "selected_engines": &selected_engines,
+                "engine_fallback": (tier_reports.len() > 1).then_some("quality_gated_tiers"),
+                "notices": &notices,
+                "search_fallback": &search_fallback,
+                "search_quality": &final_quality,
+                "search_quality_floor": &quality_floor,
+                "search_tiers": &tier_reports,
+                "engine_outcomes": outcome_metadata(search_results.outcomes()),
                 "search_metrics": metrics_json,
                 "engine_errors": engine_errors,
+                "engine_failures": engine_failures,
             });
             let message = format!(
-                "No results found for query: \"{}\"{}",
-                query_str, error_note
+                "No results found for query: \"{}\"{}{}",
+                query_str, notice_note, error_note
             );
             if errors.is_empty() {
                 return Ok(ToolOutput::success(message).with_metadata(metadata));
             }
-            let output = ToolOutput::error(message).with_metadata(metadata);
-            return Ok(
-                if errors.iter().all(|(_, error)| looks_rate_limited(error)) {
-                    output.with_error_kind(ToolErrorKind::RateLimited {
-                        retry_after_ms: None,
-                    })
-                } else {
-                    output
-                },
-            );
+            let mut output = ToolOutput::error(message).with_metadata(metadata);
+            if let Some(error_kind) =
+                tool_error_kind_for_failures(search_results.failures(), total_timeout)
+            {
+                output = output.with_error_kind(error_kind);
+            }
+            return Ok(output);
         }
 
-        let source_anchors = results
-            .iter()
-            .map(|result| safe_search_result_url(result))
-            .filter(|url| !url.is_empty())
-            .collect::<Vec<_>>();
-
-        let output = if output_format == "json" {
-            let json_results: Vec<serde_json::Value> = results
+        let (output, source_anchors, returned_result_count) = if output_format == "json" {
+            let json_results = bounded_json_search_results(&results, full_text_bytes);
+            let returned_result_count = json_results.len();
+            if returned_result_count < results.len() {
+                notices.push(format!(
+                    "JSON output retained {returned_result_count} of {} usable results within the bounded tool transport; use a narrower query or lower limit to retrieve additional results.",
+                    results.len()
+                ));
+            }
+            let source_anchors = json_results
                 .iter()
-                .map(|result| search_result_json(result))
-                .collect();
-            serde_json::to_string_pretty(&json_results).unwrap_or_default()
+                .filter_map(|result| result.get("url").and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            (
+                serde_json::to_string_pretty(&json_results).unwrap_or_default(),
+                source_anchors,
+                returned_result_count,
+            )
         } else {
             let mut text = format!(
                 "Search results for \"{}\" ({} results, {}ms):\n\n",
@@ -670,30 +846,42 @@ impl Tool for WebSearchTool {
             for (i, result) in results.iter().enumerate() {
                 text.push_str(&text_search_result(i, result));
             }
+            if !notice_note.is_empty() {
+                text.push_str(&notice_note);
+            }
             if !error_note.is_empty() {
                 text.push_str(&error_note);
             }
-            text
+            let source_anchors = results
+                .iter()
+                .map(|result| safe_search_result_url(result))
+                .filter(|url| !url.is_empty())
+                .collect::<Vec<_>>();
+            (text, source_anchors, results.len())
         };
 
         Ok(
             ToolOutput::success(output).with_metadata(serde_json::json!({
                 "status": if errors.is_empty() { "complete" } else { "partial" },
+                "engine_selection_source": engine_selection_source,
+                "selected_engines": &selected_engines,
                 "source_anchors": source_anchors,
-                "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
+                "engine_fallback": (tier_reports.len() > 1).then_some("quality_gated_tiers"),
+                "notices": &notices,
+                "search_fallback": &search_fallback,
+                "search_quality": &final_quality,
+                "search_quality_floor": &quality_floor,
+                "search_tiers": &tier_reports,
+                "engine_outcomes": outcome_metadata(search_results.outcomes()),
                 "search_metrics": metrics_json,
                 "engine_errors": engine_errors,
+                "engine_failures": engine_failures,
+                "available_result_count": results.len(),
+                "returned_result_count": returned_result_count,
+                "output_limited": returned_result_count < results.len(),
             })),
         )
     }
-}
-
-fn looks_rate_limited(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("rate limit")
-        || message.contains("too many requests")
-        || message.contains("http 429")
-        || message.contains("status 429")
 }
 
 /// Parse a proxy URL string like "http://host:port" into a ProxyConfig

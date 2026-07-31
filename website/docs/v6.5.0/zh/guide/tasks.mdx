@@ -1,0 +1,176 @@
+---
+title: '任务'
+description: '使用 task、parallel_task 与 subagent 进行手动和自动委派'
+---
+
+# 任务
+
+常规多智能体路径是 `task` 与 `parallel_task` 这一组核心工具。它们隔离子运行上下文，并向父 agent 返回紧凑结果，而不是完整 transcript。
+
+同一个委派核心也驱动自动 subagent 委派。需要运行时主动为高置信工作启动
+specialist 子 agent 时启用它；如果只想让自动委派串行执行，可以用
+`autoParallel: false` 关闭自动并行 fan-out。
+
+Web 界面可以把这些状态分别展示为计划列表和子 Agent 运行列表，并用任务 ID 关联两者。
+
+## 内置 Subagents
+
+| Agent                         | 适用场景                                                       |
+| ----------------------------- | -------------------------------------------------------------- |
+| `explore`                     | 只读代码搜索、文件检查和结构发现。                             |
+| `plan`                        | 只读实现计划和架构分析。                                       |
+| `general` / `general-purpose` | 多步骤实现工作，可读写并执行命令。                             |
+| `verification`                | 聚焦检查、复现、回归验证和对抗测试。                           |
+| `review`                      | 以 findings 为先的代码审查，关注正确性、回归、安全与可维护性。 |
+
+可以显式提及它们，例如 `@review`、`@agent-plan`、`use the verification subagent` 或 `delegate to general-purpose`。
+
+## 手动委派
+
+让父 agent 委派一个有边界的子任务：
+
+```text
+Use task to ask an explore agent to inspect the auth module.
+Return files inspected, findings, risks, and confidence.
+```
+
+宿主已经知道任务边界时，可以直接调用 SDK helper：
+
+```ts
+const task = await session.task({
+  agent: 'explore',
+  description: 'Inspect auth module',
+  prompt: 'Return files inspected, findings, risks, and confidence.',
+});
+if (task.exitCode !== 0) throw new Error(task.output);
+console.log(task.output);
+```
+
+子 agent 应返回紧凑契约：
+
+- summary
+- files inspected or changed
+- evidence references
+- risks and unknowns
+- confidence
+
+父 agent 不应吞入完整子 transcript。
+
+## 并行委派
+
+当工作彼此独立时，使用 `parallel_task` 或 `session.tasks(...)` 并发执行：
+
+```text
+Run parallel_task with three lanes:
+1. inspect provider config parsing
+2. inspect Node SDK declarations
+3. inspect release scripts
+
+Merge the results into one release-readiness report.
+```
+
+```ts
+const batch = await session.tasks([
+  {
+    agent: 'explore',
+    description: 'Inspect config',
+    prompt: 'Check provider parsing.',
+  },
+  {
+    agent: 'verification',
+    description: 'Verify SDK',
+    prompt: 'Check SDK declarations.',
+  },
+]);
+if (batch.exitCode !== 0) throw new Error(batch.output);
+console.log(batch.output);
+```
+
+`session.task(...)` 和 `session.tasks(...)` 返回来自 `task` / `parallel_task`
+工具的 `ToolResult`。读取 `output` 获取紧凑的子任务摘要，并在信任结果前检查
+`exitCode`。session options 中的 `maxParallelTasks` 与 ACL 中的
+`max_parallel_tasks` 会限制 sibling fan-out。
+
+## 自动委派
+
+自动委派默认需要显式启用。运行时会把当前请求与内置/自定义 agent 描述进行评分，并在置信度足够时启动最多 `maxTasks` 个子运行。
+
+```ts
+const session = agent.session('/repo', {
+  autoDelegation: { enabled: true, minConfidence: 0.72, maxTasks: 4 },
+  maxParallelTasks: 8,
+  autoParallel: false,
+});
+```
+
+```text
+auto_delegation {
+  enabled        = true
+  auto_parallel  = false
+  min_confidence = 0.72
+  max_tasks      = 4
+}
+```
+
+`autoParallel: false` / `auto_parallel = false` 是自动并行子 agent fan-out 的全局开关。手动 `parallel_task` 和 `session.tasks(...)` 仍然可用。
+
+## Agent 目录
+
+通过 `agentDirs`、`agent_dirs` 或 A3S 内置目录加载自定义 agent 定义：
+
+```ts
+const session = agent.session('/repo', { agentDirs: ['./.a3s/agents'] });
+const loaded = session.registerAgentDir('./more-agents');
+```
+
+A3S 会扫描配置的 `agent_dirs`、项目/用户 `.a3s/agents`，以及 Claude 兼容的 `.claude/agents` 迁移路径。新项目优先使用 `.a3s/agents`。
+
+Markdown agent 文件支持 frontmatter：
+
+```markdown
+---
+name: docs-auditor
+description: Use proactively after documentation changes
+tools: Read, Grep, Glob
+disallowedTools:
+  - Write
+  - Bash(rm:*)
+---
+
+Audit docs for drift, broken examples, and unclear migration notes.
+```
+
+`tools` 字段是 allowlist。`disallowedTools` 是 denylist，且优先级高于 allowlist。模型路由字段不属于这个兼容层。
+
+## Worker Agents
+
+通过 `workerAgents` 或 `registerWorkerAgent()` 注册一次性 worker agents：
+
+```ts
+const session = agent.session('/repo', {
+  workerAgents: [
+    {
+      name: 'frontend-worker',
+      description: 'Small verified frontend fixes',
+      kind: 'implementer',
+      model: 'provider/model-id',
+      maxSteps: 24,
+      confirmationInheritance: 'auto_approve',
+    },
+  ],
+});
+```
+
+### 确认继承
+
+通过 `confirmationInheritance` 控制子运行如何处理 Ask 决策：
+
+- `'auto_approve'`（默认）：子运行自动批准所有 Ask 决策
+- `'deny_on_ask'`：子运行遇到 Ask 时立即失败
+- `'inherit_parent'`：子运行继承父级的确认策略
+
+旧生命周期控制面 API 已移除；需要 UI 状态时，应用应消费 streaming events、run replay，以及 Node `cancelRun(runId)`。
+
+## 可编程编排
+
+本页的所有内容都是模型驱动的：`task` / `parallel_task`、`session.task(...)` / `session.tasks(...)` 以及自动委派让 LLM 决定何时以及如何 fan-out。当宿主已经知道工作的形态、并希望它确定可复现时，改用 `session.parallel(...)`、`session.pipeline(...)` 和 `session.parallelResumable(...)` 以编程方式表达。开发者表达的 fan-out、无屏障 pipeline 以及可恢复/可迁移工作流见 [编排](/guide/orchestration)。

@@ -5,6 +5,7 @@
 //! local sessions get the full tool surface (read, write, edit, patch, ls,
 //! bash, grep, glob, git, git_stash, git_worktree).
 
+use super::local_access::{LocalWorkspaceAccessBoundary, LocalWorkspaceAccessPolicy};
 use super::{
     default_path_input, escape_control_chars_for_display, has_windows_path_prefix,
     normalize_relative_path, pathbuf_to_workspace_path, validate_relative_pattern, CommandOutput,
@@ -21,17 +22,54 @@ use super::{
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 /// Local filesystem-backed workspace implementation.
 #[derive(Debug)]
 pub struct LocalWorkspaceBackend {
     pub(super) root: PathBuf,
+    access_boundary: Option<LocalWorkspaceAccessBoundary>,
+}
+
+struct CancelGitWorkerOnDrop {
+    cancellation: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl CancelGitWorkerOnDrop {
+    fn new(cancellation: Arc<AtomicBool>) -> Self {
+        Self {
+            cancellation,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelGitWorkerOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancellation.store(true, Ordering::Release);
+        }
+    }
 }
 
 impl LocalWorkspaceBackend {
     pub fn new(root: PathBuf) -> Self {
+        Self::new_with_access_policy(root, LocalWorkspaceAccessPolicy::Unrestricted)
+    }
+
+    pub fn new_with_access_policy(
+        root: PathBuf,
+        access_policy: LocalWorkspaceAccessPolicy,
+    ) -> Self {
         let canonical = root.canonicalize();
         let root = match canonical {
             Ok(canonical) => canonical,
@@ -45,7 +83,11 @@ impl LocalWorkspaceBackend {
                 root
             }
         };
-        Self { root }
+        let access_boundary = LocalWorkspaceAccessBoundary::for_policy(access_policy, &root);
+        Self {
+            root,
+            access_boundary,
+        }
     }
 
     fn local_path_for_read(&self, path: &WorkspacePath) -> Result<PathBuf> {
@@ -72,6 +114,63 @@ impl LocalWorkspaceBackend {
         a3s_common::tools::resolve_path_for_write(&self.root, path.as_str())
             .map_err(|e| anyhow!("{}", e))
     }
+
+    fn ensure_access(
+        &self,
+        path: &WorkspacePath,
+        resolved: Option<&Path>,
+        metadata: Option<&std::fs::Metadata>,
+        operation: &'static str,
+    ) -> Result<()> {
+        match &self.access_boundary {
+            Some(boundary) => boundary.ensure_access(
+                &self.root,
+                Path::new(path.as_str()),
+                resolved,
+                metadata,
+                operation,
+            ),
+            None => Ok(()),
+        }
+    }
+
+    pub(super) fn ensure_search_base_allowed(&self, path: &WorkspacePath) -> Result<()> {
+        let resolved = self.local_path_for_read(path)?;
+        let metadata = std::fs::metadata(&resolved).ok();
+        self.ensure_access(path, Some(&resolved), metadata.as_ref(), "read")
+    }
+
+    pub(super) fn read_search_file(&self, path: &WorkspacePath) -> Option<String> {
+        let resolved = self.local_path_for_read(path).ok()?;
+        let mut file = std::fs::File::open(&resolved).ok()?;
+        let metadata = file.metadata().ok()?;
+        self.ensure_access(path, Some(&resolved), Some(&metadata), "read")
+            .ok()?;
+        let mut content = String::new();
+        file.read_to_string(&mut content).ok()?;
+        Some(content)
+    }
+
+    fn git_diff_path_allowed(&self, path: &Path) -> bool {
+        let Some(path_text) = path.to_str() else {
+            return false;
+        };
+        let Ok(workspace_path) = normalize_local_path(&self.root, path_text) else {
+            return false;
+        };
+        let candidate = self.root.join(path);
+        let resolved = candidate.canonicalize().ok();
+        let metadata = resolved
+            .as_deref()
+            .and_then(|resolved| std::fs::metadata(resolved).ok());
+        self.ensure_access(
+            &workspace_path,
+            resolved.as_deref(),
+            metadata.as_ref(),
+            "read",
+        )
+        .is_ok()
+    }
 }
 
 impl WorkspacePathResolver for LocalWorkspaceBackend {
@@ -84,17 +183,39 @@ impl WorkspacePathResolver for LocalWorkspaceBackend {
 impl WorkspaceFileSystem for LocalWorkspaceBackend {
     async fn read_text(&self, path: &WorkspacePath) -> WorkspaceResult<String> {
         let resolved = self.local_path_for_read(path)?;
-        match tokio::fs::read_to_string(&resolved).await {
-            Ok(s) => Ok(s),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(WorkspaceError::NotFound {
-                path: resolved.display().to_string(),
-            }),
-            Err(e) => Err(WorkspaceError::Backend(anyhow!(
+        let mut file = match tokio::fs::File::open(&resolved).await {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(WorkspaceError::NotFound {
+                    path: resolved.display().to_string(),
+                })
+            }
+            Err(e) => {
+                return Err(WorkspaceError::Backend(anyhow!(
+                    "Failed to open file {}: {}",
+                    resolved.display(),
+                    e
+                )))
+            }
+        };
+        let metadata = file.metadata().await.map_err(|error| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to inspect file {}: {}",
+                resolved.display(),
+                error
+            ))
+        })?;
+        self.ensure_access(path, Some(&resolved), Some(&metadata), "read")?;
+
+        let mut content = String::new();
+        file.read_to_string(&mut content).await.map_err(|error| {
+            WorkspaceError::Backend(anyhow!(
                 "Failed to read file {}: {}",
                 resolved.display(),
-                e
-            ))),
-        }
+                error
+            ))
+        })?;
+        Ok(content)
     }
 
     async fn write_text(
@@ -102,10 +223,46 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
         path: &WorkspacePath,
         content: &str,
     ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+        self.ensure_access(path, None, None, "write")?;
         let resolved = self.local_path_for_write(path)?;
-        tokio::fs::write(&resolved, content).await.map_err(|e| {
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&resolved)
+            .await
+            .map_err(|e| {
+                WorkspaceError::Backend(anyhow!(
+                    "Failed to open file {} for writing: {}",
+                    resolved.display(),
+                    e
+                ))
+            })?;
+        let metadata = file.metadata().await.map_err(|error| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to inspect file {} before writing: {}",
+                resolved.display(),
+                error
+            ))
+        })?;
+        self.ensure_access(path, Some(&resolved), Some(&metadata), "write")?;
+        file.set_len(0).await.map_err(|e| {
             WorkspaceError::Backend(anyhow!(
                 "Failed to write file {}: {}",
+                resolved.display(),
+                e
+            ))
+        })?;
+        file.write_all(content.as_bytes()).await.map_err(|e| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to write file {}: {}",
+                resolved.display(),
+                e
+            ))
+        })?;
+        file.flush().await.map_err(|e| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to flush file {} after writing: {}",
                 resolved.display(),
                 e
             ))
@@ -189,6 +346,14 @@ impl WorkspaceTextReader for LocalWorkspaceBackend {
                 ))
             }
         })?;
+        let metadata = file.metadata().await.map_err(|error| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to inspect file {}: {}",
+                resolved.display(),
+                error
+            ))
+        })?;
+        self.ensure_access(path, Some(&resolved), Some(&metadata), "read")?;
         let mut lines = BufReader::new(file).lines();
         let mut line_index = 0usize;
         while line_index < offset {
@@ -306,6 +471,7 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
             .map_err(|e| anyhow!("Invalid regex pattern '{}': {}", request.pattern, e))?;
 
         let search_path = self.local_path_for_read(&request.base)?;
+        self.ensure_search_base_allowed(&request.base)?;
         let mut builder = ignore::WalkBuilder::new(&search_path);
         builder.hidden(false).git_ignore(true).git_global(true);
 
@@ -323,6 +489,7 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
         let mut file_count = 0;
         let mut total_size = 0;
         let mut matched_paths = Vec::new();
+        let metadata_only = request.max_output_size == 0;
 
         for entry in builder.build().flatten() {
             if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
@@ -330,9 +497,10 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
             }
 
             let file_path = entry.path();
-            let content = match std::fs::read_to_string(file_path) {
-                Ok(content) => content,
-                Err(_) => continue,
+            let workspace_path =
+                pathbuf_to_workspace_path(file_path.strip_prefix(&self.root).unwrap_or(file_path));
+            let Some(content) = self.read_search_file(&workspace_path) else {
+                continue;
             };
 
             let lines: Vec<&str> = content.lines().collect();
@@ -348,14 +516,12 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
             }
 
             file_count += 1;
-            let workspace_path =
-                pathbuf_to_workspace_path(file_path.strip_prefix(&self.root).unwrap_or(file_path));
             let rel_path = workspace_path.as_str();
             let display_path = escape_control_chars_for_display(rel_path);
             let mut path_recorded = false;
 
             for &match_idx in &file_matches {
-                if total_size > request.max_output_size {
+                if !metadata_only && total_size > request.max_output_size {
                     return Ok(WorkspaceGrepOutcome {
                         result: WorkspaceGrepResult {
                             output,
@@ -372,6 +538,9 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
                     path_recorded = true;
                 }
                 match_count += 1;
+                if metadata_only {
+                    continue;
+                }
 
                 let start = match_idx.saturating_sub(request.context_lines);
                 let end = (match_idx + request.context_lines + 1).min(lines.len());
@@ -480,8 +649,27 @@ impl WorkspaceGit for LocalWorkspaceBackend {
     }
 
     async fn diff(&self, request: WorkspaceGitDiffRequest) -> Result<String> {
-        self.run_blocking_git(move |root| crate::git::get_diff(&root, request.target.as_deref()))
-            .await
+        let target = request.target;
+        if self.access_boundary.is_none() {
+            return self
+                .run_blocking_git(move |root| crate::git::get_diff(&root, target.as_deref()))
+                .await;
+        }
+
+        let target_for_paths = target.clone();
+        let paths = self
+            .run_blocking_git(move |root| {
+                crate::git::get_diff_paths(&root, target_for_paths.as_deref())
+            })
+            .await?;
+        let paths = paths
+            .into_iter()
+            .filter(|path| self.git_diff_path_allowed(path))
+            .collect::<Vec<_>>();
+        self.run_blocking_git(move |root| {
+            crate::git::get_diff_for_paths(&root, target.as_deref(), &paths)
+        })
+        .await
     }
 
     async fn list_remotes(&self) -> Result<Vec<WorkspaceGitRemote>> {
@@ -614,31 +802,19 @@ impl WorkspaceCommandRunner for LocalWorkspaceBackend {
         )
         .map_err(|e| anyhow!("Failed to spawn shell: {}", e))?;
 
-        let (output, timed_out) = crate::tools::process::read_process_output(
+        let output = crate::tools::process::read_process_output(
             &mut child,
             request.timeout_ms,
             request.output_observer.as_deref(),
         )
-        .await;
-
-        if timed_out {
-            return Ok(CommandOutput {
-                output,
-                exit_code: -1,
-                timed_out: true,
-            });
-        }
-
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| anyhow!("Failed to wait for shell: {}", e))?;
-        let exit_code = status.code().unwrap_or(-1);
+        .await
+        .map_err(|error| anyhow!("Failed to capture shell output: {error}"))?;
+        let exit_code = output.status.and_then(|status| status.code()).unwrap_or(-1);
 
         Ok(CommandOutput {
-            output,
+            output: output.combined,
             exit_code,
-            timed_out: false,
+            timed_out: output.timed_out,
         })
     }
 }
@@ -650,32 +826,42 @@ impl LocalWorkspaceBackend {
         F: FnOnce(PathBuf) -> Result<T> + Send + 'static,
     {
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || operation(root))
-            .await
-            .map_err(|e| anyhow!("Git worker failed: {}", e))?
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let worker_cancellation = Arc::clone(&cancellation);
+        let mut cancel_on_drop = CancelGitWorkerOnDrop::new(cancellation);
+        let joined = tokio::task::spawn_blocking(move || {
+            crate::git::with_git_cancellation(worker_cancellation, || operation(root))
+        })
+        .await;
+        cancel_on_drop.disarm();
+        joined.map_err(|e| anyhow!("Git worker failed: {}", e))?
     }
 
     async fn run_git_command(&self, args: Vec<String>) -> Result<(bool, String, String)> {
-        tokio::task::spawn_blocking(crate::git::ensure_git_installed)
-            .await
-            .map_err(|e| anyhow!("Git worker failed: {}", e))??;
+        const GIT_COMMAND_TIMEOUT_MS: u64 = 30_000;
 
-        let mut command = tokio::process::Command::new("git");
+        let executable = crate::git::trusted_git_executable(&self.root)?;
+        let mut command = tokio::process::Command::new(executable);
+        crate::git::configure_tokio_git_environment(&mut command, &self.root);
         command
-            .arg("-C")
-            .arg(self.root.as_os_str())
             .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        let output = command
-            .output()
-            .await
+        crate::tools::process::configure_process_group(&mut command);
+        let mut child = command
+            .spawn()
             .map_err(|e| anyhow!("Failed to execute git: {}", e))?;
+        let output =
+            crate::tools::process::read_process_output(&mut child, GIT_COMMAND_TIMEOUT_MS, None)
+                .await
+                .map_err(|e| anyhow!("Failed to wait for git: {}", e))?;
+        if output.timed_out {
+            bail!("Git command timed out after {GIT_COMMAND_TIMEOUT_MS}ms");
+        }
+        let success = output.status.is_some_and(|status| status.success());
 
-        Ok((
-            output.status.success(),
-            String::from_utf8_lossy(&output.stdout).to_string(),
-            String::from_utf8_lossy(&output.stderr).to_string(),
-        ))
+        Ok((success, output.stdout, output.stderr))
     }
 }
 
@@ -859,6 +1045,221 @@ mod tests {
         assert_eq!(grep.match_count, 1);
         assert_eq!(grep.file_count, 1);
         assert!(grep.output.contains("src/main.rs:2"));
+    }
+
+    fn credential_boundary_backend(root: &Path) -> LocalWorkspaceBackend {
+        LocalWorkspaceBackend::new_with_access_policy(
+            root.to_path_buf(),
+            LocalWorkspaceAccessPolicy::CredentialBoundary,
+        )
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_denies_direct_secret_reads_and_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("apps/api")).unwrap();
+        std::fs::write(temp.path().join("apps/api/.env.local"), "TOKEN=secret\n").unwrap();
+        let backend = credential_boundary_backend(temp.path());
+        let secret = backend.normalize("apps/api/.env.local").unwrap();
+
+        let read_error = backend
+            .read_text(&secret)
+            .await
+            .expect_err("direct secret reads must be denied");
+        assert!(read_error.to_string().contains("credential boundary"));
+
+        let range_error = backend
+            .read_text_range(&secret, 0, 10)
+            .await
+            .expect_err("range reads must use the same boundary");
+        assert!(range_error.to_string().contains("credential boundary"));
+
+        let write_error = backend
+            .write_text(&secret, "TOKEN=overwritten\n")
+            .await
+            .expect_err("direct secret writes must be denied");
+        assert!(write_error.to_string().contains("credential boundary"));
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("apps/api/.env.local")).unwrap(),
+            "TOKEN=secret\n"
+        );
+
+        let new_secret = backend.normalize(".env.generated").unwrap();
+        backend
+            .write_text(&new_secret, "TOKEN=new\n")
+            .await
+            .expect_err("creating a new env file must be denied");
+        assert!(!temp.path().join(".env.generated").exists());
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_filters_grep_and_rejects_explicit_secret_base() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(".env"), "BOUNDARY_TOKEN=secret\n").unwrap();
+        std::fs::write(
+            temp.path().join("README.md"),
+            "BOUNDARY_TOKEN is configured externally\n",
+        )
+        .unwrap();
+        let backend = credential_boundary_backend(temp.path());
+
+        let grep = backend
+            .grep(WorkspaceGrepRequest {
+                base: WorkspacePath::root(),
+                pattern: "BOUNDARY_TOKEN".to_string(),
+                glob: None,
+                context_lines: 0,
+                case_insensitive: false,
+                max_output_size: 1024,
+            })
+            .await
+            .unwrap();
+        assert_eq!(grep.match_count, 1);
+        assert_eq!(grep.file_count, 1);
+        assert!(grep.output.contains("README.md"));
+        assert!(!grep.output.contains("secret"));
+        assert!(!grep.output.contains(".env"));
+
+        let error = backend
+            .grep(WorkspaceGrepRequest {
+                base: backend.normalize(".env").unwrap(),
+                pattern: "secret".to_string(),
+                glob: None,
+                context_lines: 0,
+                case_insensitive: false,
+                max_output_size: 1024,
+            })
+            .await
+            .expect_err("an explicit secret grep must fail closed");
+        assert!(error.to_string().contains("credential boundary"));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn credential_boundary_denies_source_hardlinks_without_truncating_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.txt");
+        let alias = temp.path().join("alias.txt");
+        std::fs::write(&source, "linked secret\n").unwrap();
+        std::fs::hard_link(&source, &alias).unwrap();
+        let backend = credential_boundary_backend(temp.path());
+        let alias_path = backend.normalize("alias.txt").unwrap();
+
+        backend
+            .read_text(&alias_path)
+            .await
+            .expect_err("source-tree hardlink reads must be denied");
+        backend
+            .write_text(&alias_path, "overwritten\n")
+            .await
+            .expect_err("source-tree hardlink writes must be denied");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "linked secret\n");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn credential_boundary_allows_package_store_hardlinks_but_denies_secret_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("node_modules/pkg");
+        std::fs::create_dir_all(&package).unwrap();
+
+        let package_source = package.join("source.js");
+        let package_alias = package.join("alias.js");
+        std::fs::write(&package_source, "export const value = 1;\n").unwrap();
+        std::fs::hard_link(&package_source, &package_alias).unwrap();
+
+        let env = temp.path().join(".env");
+        let env_alias = package.join("credential.txt");
+        std::fs::write(&env, "TOKEN=secret\n").unwrap();
+        std::fs::hard_link(&env, &env_alias).unwrap();
+
+        let backend = credential_boundary_backend(temp.path());
+        let package_content = backend
+            .read_text(&backend.normalize("node_modules/pkg/alias.js").unwrap())
+            .await
+            .expect("ordinary package-store hardlinks should remain readable");
+        assert!(package_content.contains("value = 1"));
+
+        let error = backend
+            .read_text(
+                &backend
+                    .normalize("node_modules/pkg/credential.txt")
+                    .unwrap(),
+            )
+            .await
+            .expect_err("a package-tree alias of a known credential must be denied");
+        assert!(error.to_string().contains("credential boundary"));
+    }
+
+    fn run_test_git(root: &Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args([
+                "-c",
+                "user.name=A3S Test",
+                "-c",
+                "user.email=test@a3s.local",
+            ])
+            .args(args)
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn credential_boundary_filters_git_diff_content_and_option_like_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        if !run_test_git(temp.path(), &["init", "-q"]) {
+            return;
+        }
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::write(temp.path().join(".env"), "TOKEN=old-secret\n").unwrap();
+        std::fs::write(temp.path().join("src/lib.rs"), "pub const VALUE: u8 = 1;\n").unwrap();
+        std::fs::write(temp.path().join("linked.txt"), "hardlink-old-secret\n").unwrap();
+        std::fs::hard_link(
+            temp.path().join("linked.txt"),
+            temp.path().join("linked-alias.txt"),
+        )
+        .unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "baseline"]));
+
+        std::fs::write(temp.path().join(".env"), "TOKEN=new-secret\n").unwrap();
+        std::fs::write(temp.path().join("src/lib.rs"), "pub const VALUE: u8 = 2;\n").unwrap();
+        std::fs::write(
+            temp.path().join("linked-alias.txt"),
+            "hardlink-new-secret\n",
+        )
+        .unwrap();
+
+        let backend = credential_boundary_backend(temp.path());
+        let diff = backend
+            .diff(WorkspaceGitDiffRequest { target: None })
+            .await
+            .unwrap();
+        assert!(diff.contains("VALUE: u8 = 2"), "{diff}");
+        for denied in [
+            "old-secret",
+            "new-secret",
+            "hardlink-old-secret",
+            "hardlink-new-secret",
+            ".env",
+            "linked.txt",
+            "linked-alias.txt",
+        ] {
+            assert!(!diff.contains(denied), "{denied} leaked in {diff}");
+        }
+
+        let output = temp.path().join("injected-diff-output");
+        let error = backend
+            .diff(WorkspaceGitDiffRequest {
+                target: Some(format!("--output={}", output.display())),
+            })
+            .await
+            .expect_err("an option-like target must be parsed only as a revision");
+        assert!(error.to_string().contains("Git diff"));
+        assert!(!output.exists());
     }
 
     #[test]

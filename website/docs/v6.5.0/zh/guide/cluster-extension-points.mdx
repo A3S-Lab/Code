@@ -1,0 +1,192 @@
+---
+title: '集群扩展点'
+description: '集群宿主用来在多节点上运行长时会话、且无需分叉框架的接缝。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 集群扩展点
+
+集群宿主平台在多个节点上运行长时运行的智能体会话。框架本身并不附带调度器或放置引擎，而是暴露一小组接缝：它定义决策点、发出结构化事件，并把策略交给宿主来提供。下文的所有内容都是你从框架外部接入的——你永远不需要分叉框架。
+
+本页会明确区分哪些接缝在两个 SDK 中都可用（以 Node.js + Python 代码展示），哪些当前只在 Rust 核心中配置（没有 SDK 选项时以文字说明）。
+
+## 身份标签
+
+每个会话都可以携带四个不透明的身份标签。框架从不解释它们——它会把它们传播到钩子、追踪和 `SessionData`，并在恢复时还原它们。宿主正是借此把一个会话归属到租户、主体、智能体模板以及更广的关联链。
+
+请将身份标签与 `sessionStore` / `session_store` 搭配使用，使标签在进程重启后依然保留。恢复时，**由调用方提供的选项优先生效**，因此你可以在节点之间迁移会话时为其重新打标签。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+const session = agent.session('/path/to/project', {
+  tenantId: 'tenant-example',
+  principal: 'principal-example',
+  agentTemplateId: 'agent-template-example',
+  correlationId: 'trace-example',
+});
+
+// Getters return string | null
+console.log(session.tenantId); // 'tenant-example'
+console.log(session.principal); // 'principal-example'
+console.log(session.agentTemplateId); // 'agent-template-example'
+console.log(session.correlationId); // 'trace-example'
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+opts = SessionOptions()
+opts.tenant_id = 'tenant-example'
+opts.principal = 'principal-example'
+opts.agent_template_id = 'agent-template-example'
+opts.correlation_id = 'trace-example'
+session = agent.session('/path/to/project', opts)
+
+# Getters are properties, return str | None
+print(session.tenant_id)          # 'tenant-example'
+print(session.principal)          # 'principal-example'
+print(session.agent_template_id)  # 'agent-template-example'
+print(session.correlation_id)     # 'trace-example'
+```
+
+</Tab>
+</Tabs>
+
+## 预算 / 成本守卫
+
+预算守卫让宿主针对成本或令牌预算对每一次 LLM 调用进行把关。框架会在每次 LLM 请求*之前*调用你的守卫，并在请求返回*之后*再次调用。守卫是你自己拥有的策略；框架只负责执行你返回的决策。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+session.setBudgetGuard({
+  checkBeforeLlm(ctx) {
+    if (overLimit(ctx.sessionId, ctx.estimatedTokens)) {
+      return {
+        decision: 'deny',
+        resource: 'tokens',
+        reason: 'monthly cap reached',
+      };
+    }
+    return { decision: 'allow' };
+  },
+  recordAfterLlm(ctx) {
+    meter(ctx.sessionId, ctx.usage);
+  },
+});
+
+// Clear the guard
+session.setBudgetGuard(null);
+```
+
+Node 回调接收单个 `ctx` 对象，且**绝不能抛出异常**。请用 `try/catch` 包裹逻辑并返回显式决策。卡住或无法解析的 `check*` 回调会 fail-closed 为 `deny`。
+
+</Tab>
+<Tab label="Python">
+
+```python
+class MyGuard:
+    def check_before_llm(self, session_id, estimated_tokens):
+        if over_limit(session_id, estimated_tokens):
+            return {'decision': 'deny', 'resource': 'tokens', 'reason': 'monthly cap reached'}
+        return {'decision': 'allow'}
+
+    def record_after_llm(self, session_id, usage):
+        meter(session_id, usage)
+
+opts = SessionOptions()
+opts.budget_guard = MyGuard()
+session = agent.session('/path/to/project', opts)
+
+# To clear: set opts.budget_guard = None and re-create the session.
+```
+
+</Tab>
+</Tabs>
+
+两个 SDK 的决策结构完全一致：
+
+| 返回值                                                      | 效果                                                                                                               |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `None` / `null` / `{ decision: 'allow' }`                   | 继续执行 LLM 调用。                                                                                                |
+| `{ decision: 'soft', resource, consumed, limit, message? }` | 发出 `BudgetThresholdHit`（kind 为 `soft`）并继续执行。                                                            |
+| `{ decision: 'deny', resource, reason }`                    | 中止 LLM 调用。Python 抛出 `RuntimeError("Budget exhausted...")`；Node 以 `"Budget exhausted..."` 拒绝（reject）。 |
+
+这种健壮性是刻意为之，但两个 SDK 的失败语义不同：**缺失的守卫方法**会被当作宽松默认值处理。Python 回调出错会回退为 Allow。Node 回调不能 throw；超时或无法解析的 `check*` 返回会 fail-closed 为 `deny`。
+
+## 集群事件词汇
+
+宿主通过其钩子执行器，将集群级别的决策作为结构化的 `AgentEvent` 变体发出。会话内的钩子以统一方式订阅它们——与它们观察其他任何事件的方式相同——因此在宿主处编写的策略会原样呈现给智能体自身的钩子，无需特殊处理。
+
+集群词汇如下：
+
+- **`BudgetThresholdHit { resource, kind, consumed, limit, message? }`** —— 预算守卫返回了 `soft` 决策（或宿主越过了它自己跟踪的某个阈值）。`kind` 用于区分软性警告与更硬性的限制。
+- **`PassivationRequested { reason, deadline_ms? }`** —— 宿主请求会话进入一个安全、可持久化的状态，以便将其从当前节点驱逐。`deadline_ms` 若存在，则表示强制驱逐前的宽限窗口。
+- **`PeerInvocation { from_session_id, from_tenant_id?, correlation_id? }`** —— 另一个会话调用了本会话。这些标签让接收方能够把调用归属回其源租户和关联链。
+
+这些事件通过你的会话内钩子已经在使用的、经过验证的同一套钩子 API 来观察——Node 中为 `session.registerHook`，Python 中为 `session.register_hook`（参见[钩子](/guide/hooks)）。请将上述三个变体视为已记录在案的契约；宿主负责通过其钩子执行器发出它们。
+
+## 确定性 ID 与时间（重放）
+
+希望在另一节点上对某次运行进行**逐位一致重放**的集群，必须消除常规运行中两处不确定性的来源：随机 ID 和挂钟时间。Rust 核心将二者建模在一个 `HostEnv { id_generator, clock }` 之后。默认实现把 UUID 生成器与系统时钟配对；重放工具会换入 `SequentialIdGenerator` 和 `FixedClock`，使得对相同输入的重新执行在任意节点上都产生相同的 ID 和时间戳，从而产生相同的输出。
+
+这是当前**在 Rust 核心中配置的**。它尚未暴露在 JS/Python 选项面上，因此没有对应的 Node/Python 代码——SDK 接入可能随后跟进。
+
+## 循环检查点与运行恢复
+
+配置了 `sessionStore` / `session_store` 后，智能体循环会在**每一轮工具调用完成之后**持久化一个检查点，以运行 id 作为键。任何共享同一存储的节点都可以重新水合该运行并继续它。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { FileSessionStore } from '@a3s-lab/code';
+
+const session = agent.session(workspace, {
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+  sessionId: 'session-from-node-a',
+});
+
+const result = await session.resumeRun('run-id-from-node-a');
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import FileSessionStore
+
+opts = SessionOptions()
+opts.session_store = FileSessionStore('./.a3s/sessions')
+opts.session_id = 'session-from-node-a'
+session = agent.session(workspace, opts)
+
+result = session.resume_run('run-id-from-node-a')
+```
+
+</Tab>
+</Tabs>
+
+系统会为恢复的工作分配一个**新的运行 id**——存储中的原始运行保持不变。有两条错误路径值得处理：
+
+- **`resume_run requires a session_store`** —— 未配置存储；回退到一个全新会话。
+- **`no loop checkpoint found for run 'X'`** —— 该运行从未到达其第一个检查点，或已被清理；稍后重试，或将该运行视为丢失。
+
+由于检查点只在**工具轮次之间、绝不在工具执行中途**生成，恢复的运行永远不会重放一个执行到一半的工具。存储细节参见[持久化](/guide/persistence)。
+
+## 长时运行会话的保留上限
+
+运行数小时或数天的会话会在四个内存存储中累积状态：运行记录、每次运行的事件缓冲区、追踪事件，以及终态子智能体任务快照。若不加限制，它们会随会话寿命增长——对短寿命会话无妨，对长寿命会话则是真实的泄漏。
+
+`SessionRetentionLimits` 为这四个存储分别设置上限。每个上限都是可选的：`None` 表示无上限的默认值。驱逐采用严格的 **FIFO**，并且**正在运行的子智能体任务永不被丢弃**——只有终态（已完成/已失败）快照会被驱逐。
+
+Node 使用 `retentionLimits`，Python 使用 `opts.retention_limits`。Rust 宿主使用 `SessionOptions::with_retention_limits(...)`。字段名和示例见[限制](/guide/limits)。
+
+---
+
+**另见：** [多机部署](/guide/multi-machine) · [持久化](/guide/persistence) · [限制](/guide/limits) · [钩子](/guide/hooks)

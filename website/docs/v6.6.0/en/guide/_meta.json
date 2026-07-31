@@ -1,0 +1,72 @@
+[
+  "index",
+  "tui",
+  {
+    "type": "dir",
+    "name": "examples",
+    "label": "Examples",
+    "collapsible": true,
+    "collapsed": true
+  },
+  {
+    "type": "section-header",
+    "label": "Filesystem first"
+  },
+  "filesystem-first",
+  "convention-over-configuration",
+  "agents-md",
+  "filesystem-instructions",
+  "filesystem-config",
+  "agent-dir",
+  "filesystem-agents",
+  "filesystem-skills",
+  "filesystem-tools",
+  "filesystem-schedules",
+  {
+    "type": "section-header",
+    "label": "Runtime core"
+  },
+  "api-contract",
+  "sessions",
+  "commands",
+  "tools",
+  "verification",
+  "tasks",
+  "teams",
+  "orchestration",
+  "skills",
+  {
+    "type": "section-header",
+    "label": "Governance engineering"
+  },
+  "security",
+  "hooks",
+  "limits",
+  "isolation",
+  {
+    "type": "section-header",
+    "label": "Infrastructure"
+  },
+  "architecture",
+  "lane-queue",
+  "workspace-backends",
+  "multi-machine",
+  "cluster-extension-points",
+  {
+    "type": "section-header",
+    "label": "Extensions"
+  },
+  "providers",
+  "mcp",
+  "context",
+  "memory",
+  "persistence",
+  "telemetry",
+  {
+    "type": "dir",
+    "name": "rfcs",
+    "label": "RFCs",
+    "collapsible": true,
+    "collapsed": true
+  }
+]

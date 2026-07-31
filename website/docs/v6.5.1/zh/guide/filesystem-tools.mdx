@@ -1,0 +1,67 @@
+---
+title: 'tools/ 工具目录'
+description: '用 AgentDir tools/ 声明 MCP 和 script tools，并保持权限、HITL 与 allow-list 边界。'
+---
+
+# tools/ 工具目录
+
+`tools/` 是 AgentDir 的目录级工具声明。每个 `tools/<name>.md` 描述一个模型可见能力，当前支持 `kind: mcp` 和 `kind: script` 两类。
+
+```text
+release-agent/
+└── tools/
+    ├── github.md
+    └── search-auth.md
+```
+
+工具定义来自文件系统，但工具是否可见、能否执行、是否需要确认，仍由 harness、权限策略和 AgentDir loader 控制。文件存在不等于无限权限。
+
+## MCP 工具
+
+```md
+---
+kind: mcp
+name: github
+transport: stdio
+command: npx
+args: ['-y', '@modelcontextprotocol/server-github']
+env:
+  GITHUB_TOKEN: '${GITHUB_TOKEN}'
+---
+
+GitHub issues and pull request tools.
+```
+
+每个已启用的调度 session 会在启动时连接该 MCP server，并获得命名空间化后的 `mcp__github__*` tools。secret 应通过环境变量注入，不要写进工具文件。
+
+## Script 工具
+
+```md
+---
+kind: script
+name: search-auth
+path: scripts/search-auth.js
+allowed_tools: [grep, glob, read]
+limits:
+  timeoutMs: 30000
+  maxToolCalls: 30
+  maxOutputBytes: 65536
+---
+
+Find authentication-related files and return an evidence list.
+```
+
+`kind: script` 把一个预先参数化的 QuickJS `program` 调用暴露成模型可见工具。脚本源码必须定义 `async function run(ctx, inputs)`。它没有文件系统、网络、进程或环境变量权限，只能通过 `ctx.tool(...)` 调用 allow-list 中的工具。
+
+## 安全边界
+
+- `allowed_tools` 是脚本内部能力边界；只列出最小集合。
+- 未知 `kind`、逃逸 workspace 的路径、重复 tool 名称、非法 limit 都应在加载时失败。
+- 不要让不可信目录声明高权限 MCP server 或脚本工具。
+- 高风险工具应继续走 HITL、allow-list 和审计。
+
+## 当前作用域
+
+`tools/` 由 `serve_agent_dir` 按调度 session 安装。也就是说，它服务于长期 Agent 和周期性任务。普通交互式 session 应优先使用宿主 direct tools、MCP 连接或 SDK 的 `session.tool(...)` 注册路径。
+
+如果一个能力是项目通用连接器，放在宿主配置或 MCP 层更清晰；如果它只属于某个长期 Agent 的定时工作，放进该 AgentDir 的 `tools/`。

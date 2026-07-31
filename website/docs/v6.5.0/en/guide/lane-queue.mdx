@@ -1,0 +1,50 @@
+---
+title: 'Lane Queue'
+description: 'Optional external and hybrid dispatch infrastructure'
+---
+
+# Lane Queue
+
+Ordinary sessions are queue-free. Lane queues are optional advanced infrastructure for applications that need external or hybrid dispatch. They are separate from `task`, `parallel_task`, and automatic subagent delegation.
+
+## When To Use It
+
+Use a queue when you need:
+
+- external workers to complete selected tasks
+- hybrid routing between local and remote executors
+- queue metrics, dead letters, or dispatch observability
+- multi-machine work distribution
+
+## Configure A Session
+
+```ts
+const session = agent.session('/repo', {
+  queueConfig: {
+    enableDlq: true,
+    enableMetrics: true,
+  },
+});
+
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+```
+
+Lane names are `control`, `query`, `execute`, and `generate`.
+
+## External Completion
+
+```ts
+const pending = await session.pendingExternalTasks();
+
+if (pending.length > 0) {
+  await session.completeExternalTask(pending[0].id, {
+    success: true,
+    result: { summary: 'completed by worker' },
+  });
+}
+```
+
+Keep queue use explicit. Do not introduce it for normal local agent sessions.

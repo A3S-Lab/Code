@@ -125,6 +125,32 @@ pub enum AttemptOutcome<T> {
     Fatal(anyhow::Error),
 }
 
+/// A retry loop that exhausted a typed HTTP response status.
+///
+/// The rendered body is diagnostic only; callers use the retained status for
+/// policy decisions.
+#[derive(Debug, thiserror::Error)]
+#[error("LLM API request failed after {attempts} attempts. Last status: {status} Body: {body}")]
+pub(crate) struct RetryExhaustedError {
+    attempts: u32,
+    status: StatusCode,
+    body: String,
+}
+
+impl RetryExhaustedError {
+    pub(crate) fn new(attempts: u32, status: StatusCode, body: impl Into<String>) -> Self {
+        Self {
+            attempts,
+            status,
+            body: body.into(),
+        }
+    }
+
+    pub(crate) fn status(&self) -> StatusCode {
+        self.status
+    }
+}
+
 /// Execute an async operation with retry logic.
 ///
 /// The `operation` closure is called on each attempt and must return an `AttemptOutcome`.
@@ -177,45 +203,11 @@ where
 
     // All retries exhausted
     let status = last_status.unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    anyhow::bail!(
-        "LLM API request failed after {} attempts. Last status: {} Body: {}",
+    Err(anyhow::Error::new(RetryExhaustedError::new(
         config.max_retries + 1,
         status,
         last_body,
-    )
-}
-
-/// Heuristic: is this a transient *network* error worth retrying — a timeout,
-/// connection reset/refused/closed, broken pipe, DNS failure, or a request that
-/// dropped mid-flight? These carry no HTTP status (so `is_retryable_status`
-/// can't see them), yet Claude Code retries them just like 429/5xx. We only have
-/// the error's rendered text (a `CodeError`/`anyhow::Error` chain) to classify.
-pub fn is_transient_error<E: std::fmt::Display>(e: &E) -> bool {
-    let m = e.to_string().to_lowercase();
-    [
-        "timed out",
-        "timeout",
-        "connection reset",
-        "connection refused",
-        "connection closed",
-        "connection aborted",
-        "connection error",
-        "broken pipe",
-        "reset by peer",
-        "error sending request",
-        "incomplete message",
-        "unexpected eof",
-        "dns error",
-        "unreachable",
-        "tls handshake",
-        "request error",
-        "body error",
-        "decoding response",
-        "channel closed",
-        "stream closed",
-    ]
-    .iter()
-    .any(|p| m.contains(p))
+    )))
 }
 
 #[cfg(test)]
@@ -224,18 +216,26 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
-    #[test]
-    fn transient_error_classification() {
-        let t = |s: &str| is_transient_error(&anyhow::anyhow!("{s}"));
-        // Transient network errors → retry.
-        assert!(t("error sending request for url: operation timed out"));
-        assert!(t("connection reset by peer"));
-        assert!(t("LLM error: connection closed before message completed"));
-        assert!(t("tls handshake eof"));
-        // Real application errors → do NOT retry.
-        assert!(!t("invalid api key"));
-        assert!(!t("model not found"));
-        assert!(!t("context length exceeded"));
+    #[tokio::test]
+    async fn retry_exhaustion_preserves_typed_http_status() {
+        let config = RetryConfig {
+            max_retries: 0,
+            ..RetryConfig::default()
+        };
+        let error = with_retry::<(), _, _>(&config, |_| async {
+            AttemptOutcome::Retryable {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                body: "opaque provider response".to_string(),
+                retry_after: None,
+            }
+        })
+        .await
+        .expect_err("the only attempt must fail");
+
+        let exhausted = error
+            .downcast_ref::<RetryExhaustedError>()
+            .expect("retry exhaustion must retain its typed status");
+        assert_eq!(exhausted.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     // ========================================================================

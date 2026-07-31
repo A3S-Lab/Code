@@ -6,6 +6,7 @@ fn test_all_prompts_loaded() {
     assert!(!SYSTEM_DEFAULT.is_empty());
     assert!(!CONTINUATION.is_empty());
     assert!(!BOUNDARIES.is_empty());
+    assert!(!REPOSITORY_TOOL_CONTRACT.is_empty());
     assert!(!AGENT_EXPLORE.is_empty());
     assert!(!AGENT_PLAN.is_empty());
     assert!(!AGENT_CODE_REVIEW.is_empty());
@@ -16,7 +17,6 @@ fn test_all_prompts_loaded() {
     assert!(!SKILLS_CATALOG_HEADER.is_empty());
     assert!(!PLAN_EXECUTE_GOAL.is_empty());
     assert!(!PLAN_EXECUTE_STEP.is_empty());
-    assert!(!PLAN_FALLBACK_STEP.is_empty());
 }
 
 #[test]
@@ -99,6 +99,65 @@ fn test_boundaries_not_duplicated_in_general_purpose() {
     assert!(!SYSTEM_DEFAULT.contains("## Boundaries"));
     let built = SystemPromptSlots::default().build();
     assert_eq!(built.matches("## Boundaries").count(), 1);
+}
+
+#[test]
+fn test_repository_tool_contract_is_injected_for_every_style() {
+    let required_contract = [
+        "## Repository Tool Contract",
+        "`file_path`",
+        "`files`",
+        "`max_output_bytes`",
+        "`metadata.batch.continuation`",
+        "`output_mode`",
+        "`files_with_matches`",
+        "`metadata.page.next_cursor`",
+        "`sort: \"path\"`",
+        "`dry_run`",
+        "`expected_replacements`",
+        "`max_replacements`",
+    ];
+
+    for style in [
+        AgentStyle::GeneralPurpose,
+        AgentStyle::Plan,
+        AgentStyle::Verification,
+        AgentStyle::Explore,
+        AgentStyle::CodeReview,
+    ] {
+        let built = SystemPromptSlots::default().with_style(style).build();
+        for expected in required_contract {
+            assert!(
+                built.contains(expected),
+                "style {style:?} missing repository-tool guidance: {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_repository_tool_contract_is_not_duplicated() {
+    let built = SystemPromptSlots::default().build();
+    assert_eq!(built.matches("## Repository Tool Contract").count(), 1);
+}
+
+#[test]
+fn test_repository_tool_contract_tracks_registered_schema_parameters() {
+    for (tool, schema) in crate::tools::builtin::repository_tool_parameter_schemas() {
+        assert!(
+            REPOSITORY_TOOL_CONTRACT.contains(&format!("`{tool}`")),
+            "repository-tool contract missing tool: {tool}"
+        );
+        let properties = schema["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{tool} schema has no object properties"));
+        for parameter in properties.keys() {
+            assert!(
+                REPOSITORY_TOOL_CONTRACT.contains(&format!("`{parameter}`")),
+                "repository-tool contract missing {tool} parameter: {parameter}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -400,6 +459,7 @@ fn test_code_review_guidelines_appended() {
 fn test_prompts_do_not_reference_removed_surfaces() {
     let prompts = [
         SYSTEM_DEFAULT,
+        REPOSITORY_TOOL_CONTRACT,
         AGENT_VERIFICATION,
         PRE_ANALYSIS_SYSTEM,
         AGENT_EXPLORE,

@@ -1,0 +1,173 @@
+---
+title: 'Limits'
+description: 'Runtime limits, compaction, timeouts, and circuit breakers'
+---
+
+# Limits
+
+Limit options are session-level controls for long-running work, noisy tools, and
+provider failures.
+
+## Session Options
+
+```ts
+const session = agent.session('/repo', {
+  maxToolRounds: 24,
+  maxParseRetries: 3,
+  toolTimeoutMs: 120000,
+  circuitBreakerThreshold: 4,
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  continuationEnabled: true,
+  maxContinuationTurns: 3,
+});
+```
+
+## Option Intent
+
+- `maxToolRounds` is the tool-iteration budget for a turn.
+- `maxParseRetries` is the malformed tool-call recovery budget.
+- `toolTimeoutMs` is the per-tool timeout in milliseconds.
+- `circuitBreakerThreshold` is the repeated provider failure threshold.
+- `autoCompact` and `autoCompactThreshold` enable context compaction behavior.
+- `continuationEnabled` and `maxContinuationTurns` control continuation injection.
+
+## Practical Defaults
+
+Use strict limits for CI, release, and user-facing automation. Use larger budgets for exploratory local coding sessions, but keep verification commands explicit and required when the task has side effects.
+
+## Retention Limits
+
+A session keeps its run history, trace events, and subagent task snapshots in
+memory. For short runs that is fine; for a session that lives for hours or days
+under a cluster workload those in-memory stores grow without bound.
+`SessionRetentionLimits` (CHANGELOG [3.3.0] "SessionRetentionLimits") adds
+optional FIFO caps so they don't leak. **The default is unbounded — setting no
+cap changes no behavior.**
+
+Four independent caps; cap any subset, leave the rest unbounded:
+
+| Field                         | Effect when capped                                                                                                                                  |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_runs_retained`           | When a new run pushes past the cap, the **oldest** run and all of its events are dropped.                                                           |
+| `max_events_per_run`          | The oldest events in a run are FIFO-dropped. The run snapshot's `event_count` is **not** decremented — it stays the cumulative total ever recorded. |
+| `max_trace_events`            | The oldest event in the trace sink is dropped on each new write past the cap.                                                                       |
+| `max_terminal_subagent_tasks` | The oldest **terminal** (completed / failed / cancelled) subagent task snapshot is dropped past the cap. **Running tasks are never dropped.**       |
+
+All caps are soft: enforcement drops the oldest entry on insert and never
+returns an error.
+
+```ts
+const session = agent.session('/repo', {
+  retentionLimits: {
+    maxRunsRetained: 100,
+    maxEventsPerRun: 5000,
+    maxTraceEvents: 20000,
+    maxTerminalSubagentTasks: 500,
+  },
+});
+```
+
+```python
+opts = SessionOptions()
+opts.retention_limits = {
+    'max_runs_retained': 100,
+    'max_events_per_run': 5000,
+    'max_trace_events': 20000,
+    'max_terminal_subagent_tasks': 500,
+}
+session = agent.session('/repo', opts)
+```
+
+## Budget Guard
+
+`BudgetGuard` (CHANGELOG [3.3.0] "BudgetGuard") is a host-supplied cost / quota
+contract. The framework does not enforce budgets itself — it defines the
+decision points and consults a guard the host plugs in. Three hooks are wired at
+the LLM / tool call site:
+
+- `check_before_llm` — before each LLM call.
+- `record_after_llm` — after each successful LLM call, with the actual provider
+  usage, so the host keeps its running spend total accurate.
+- `check_before_tool` — before each tool call.
+
+Each `check_*` returns one of three decisions:
+
+- `Allow` — proceed normally, no event.
+- `SoftLimit { resource, consumed, limit, message }` — emits an
+  `AgentEvent::BudgetThresholdHit { kind: "soft" }` and **proceeds**. In-session
+  hooks can react (auto-compact, swap to a cheaper model next turn).
+- `Deny { resource, reason }` — aborts the call with
+  `CodeError::BudgetExhausted`. **The session stays open** — the caller can retry
+  later or after the host re-allocates budget.
+
+### Node — `session.setBudgetGuard({...})`
+
+Each callback takes a **single `ctx` object** (not positional arguments) and
+returns a decision dict (or `null` / `{ decision: 'allow' }` to allow):
+
+```ts
+session.setBudgetGuard({
+  checkBeforeLlm: (ctx) => {
+    // ctx.sessionId, ctx.estimatedTokens
+    if (overMonthlyCap(ctx.sessionId)) {
+      return {
+        decision: 'deny',
+        resource: 'llm_tokens',
+        reason: 'monthly cap',
+      };
+    }
+    return { decision: 'allow' };
+  },
+  recordAfterLlm: (ctx) => {
+    // ctx.sessionId, ctx.usage — usage keys are camelCase:
+    // promptTokens, completionTokens, totalTokens, cacheReadTokens, cacheWriteTokens
+    addSpend(ctx.sessionId, ctx.usage.totalTokens);
+  },
+  checkBeforeTool: (ctx) => {
+    // ctx.sessionId, ctx.toolName
+    return { decision: 'allow' };
+  },
+  timeoutMs: 5000, // optional, default 5000
+});
+```
+
+The Node bridge **fails closed**: a `check_*` callback that does not return
+within `timeoutMs`, or returns something unreadable, is treated as a **deny** —
+a budget control must never silently disable itself when the guard stalls
+(CHANGELOG [3.3.0] Fixed "Node BudgetGuard fail-open").
+
+The callback **MUST NOT throw.** Due to a napi-rs constraint a thrown exception
+aborts the host process at return-value conversion. Wrap your logic in
+try/catch and return a decision (e.g. a deny) instead of throwing. Hangs are
+handled safely by the fail-closed timeout (CHANGELOG [3.3.0] Known limitations).
+
+### Python — `budget_guard` session option
+
+Python supplies a `BudgetGuard`-shaped object on the `budget_guard`
+`SessionOptions` field. Methods that aren't defined behave as Allow / no-op.
+Python callbacks use **positional arguments** and the framework catches any
+exception they raise (a `check_*` that raises defaults to Allow):
+
+```python
+class MyBudgetGuard:
+    def check_before_llm(self, session_id, est_tokens):
+        if over_monthly_cap(session_id):
+            return {'decision': 'deny', 'resource': 'llm_tokens', 'reason': 'monthly cap'}
+        return {'decision': 'allow'}
+
+    def record_after_llm(self, session_id, usage):
+        # usage is a dict with snake_case keys:
+        # total_tokens, cache_read_tokens (plus prompt_tokens, completion_tokens, cache_write_tokens)
+        add_spend(session_id, usage['total_tokens'])
+
+    def check_before_tool(self, session_id, tool_name):
+        return {'decision': 'allow'}
+
+opts = SessionOptions()
+opts.budget_guard = MyBudgetGuard()
+session = agent.session('/repo', opts)
+```
+
+The decision return dict `{"decision": "deny", "resource": ..., "reason": ...}`
+(and `"soft"` / `"allow"`) is the same shape on both SDKs.

@@ -426,7 +426,15 @@ impl OpenAiClient {
                         }
                         Err(e) => {
                             tracing::error!("HTTP error: {e:?}");
-                            AttemptOutcome::Fatal(e)
+                            if crate::llm::http::is_retryable_http_failure(&e) {
+                                AttemptOutcome::Retryable {
+                                    status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                                    body: format!("network error: {e}"),
+                                    retry_after: None,
+                                }
+                            } else {
+                                AttemptOutcome::Fatal(e)
+                            }
                         }
                     }
                 }
@@ -544,6 +552,10 @@ impl LlmClient for OpenAiClient {
 
     fn native_structured_support(&self) -> structured::NativeStructuredSupport {
         self.native_structured_support
+    }
+
+    fn has_distinct_non_streaming_transport(&self) -> bool {
+        true
     }
 
     async fn complete_streaming(

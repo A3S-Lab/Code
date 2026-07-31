@@ -1,0 +1,90 @@
+---
+title: 'Lane Queue'
+description: '将某条 lane 路由到外部 worker，并显式排空其待处理任务。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Lane Queue
+
+默认情况下，A3S Code 会在进程内运行每一个任务，没有任何队列。lane 队列属于**可选基础设施**：为某条 lane 注册一个外部 handler 后，路由到该 lane 的工具不会由 agent 执行，而是排入队列、等待外部 worker 取走。随后你自己排空这些待处理任务，按需运行它们，再把结果回报回来。只有当外部 worker 确实是你架构的一部分时，才需要用到它。
+
+共有四条 lane：`control`、`query`、`execute` 和 `generate`。每个 handler 的 `mode` 可以是 `internal`（默认）、`external` 或 `hybrid`。
+
+<Tabs>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('./agent.acl');
+const session = agent.session(process.cwd());
+
+// Route the "execute" lane to an external worker.
+// Tools on this lane are NOT run by the agent; they are queued for
+// an outside worker to pick up and complete.
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+
+// hasQueue() is false until at least one external/hybrid lane is registered.
+console.log('queue active:', session.hasQueue());
+
+// Drain whatever is waiting for an external worker.
+const pending = await session.pendingExternalTasks();
+for (const task of pending) {
+  console.log('pending:', task.task_id, task.lane, task.command_type);
+
+  // ... hand off to your worker, run it, then report the outcome back:
+  await session.completeExternalTask(task.task_id, {
+    success: true,
+    result: { note: 'done by external worker' },
+  });
+}
+
+console.log('lane queue drained');
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+session = agent.session(".", opts)
+
+# Route the "execute" lane to an external worker.
+# Tools on this lane are NOT run by the agent; they are queued for
+# an outside worker to pick up and complete.
+session.set_lane_handler("execute", "external", 300000)
+
+# has_queue() is False until at least one external/hybrid lane is registered.
+print("queue active:", session.has_queue())
+
+# Drain whatever is waiting for an external worker.
+pending = session.pending_external_tasks()
+for task in pending:
+    print("pending:", task["task_id"], task["lane"], task["command_type"])
+
+    # ... hand off to your worker, run it, then report the outcome back:
+    session.complete_external_task(
+        task["task_id"],
+        success=True,
+        result={"note": "done by external worker"},
+    )
+
+print("lane queue drained")
+```
+
+</Tab>
+</Tabs>
+
+说明：
+
+- **默认路径不含队列。** 在你至少注册一个 `external`（或 `hybrid`）lane handler 之前，`hasQueue()` / `has_queue()` 始终返回 `false`。如果你从不调用 `setLaneHandler` / `set_lane_handler`，每个任务都会在进程内运行，也就没有任何待排空的内容。
+- 每个待处理任务都带有 `task_id`、`session_id`、`lane`、`command_type`、`payload` 和 `timeout_ms`。工作完成后，把 `task_id` 传回给 `completeExternalTask` / `complete_external_task`。
+- 结果结构为 `{ success, result?, error? }`——`result` 可承载任意可 JSON 序列化的载荷，`error` 是失败时的可选消息。`completeExternalTask` / `complete_external_task` 在找到并完成任务时返回 `true`，否则返回 `false`。
+- 在 Python 中这些队列方法是同步的；在 Node 中 `setLaneHandler`、`pendingExternalTasks` 和 `completeExternalTask` 返回 promise，而 `hasQueue` 是同步的。

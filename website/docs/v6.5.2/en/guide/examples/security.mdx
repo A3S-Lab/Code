@@ -1,0 +1,442 @@
+---
+title: 'Security'
+description: 'Gate privileged operations with a permission policy, a human-in-the-loop confirmation flow, and a security provider'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Security
+
+Every side effect an agent can produce — writing files, running `bash`, pushing
+git — flows through a permission policy. Start from an `ask` or `deny`
+fallback, then list the patterns that should be `allow`-ed, `deny`-ed, or sent
+to the `ask` path. To keep a human in the loop, add a confirmation policy:
+`ask` decisions pause on a `confirmation_required` event so your application
+(or a person) can approve or reject each call. Use this whenever an agent runs
+against a real repository.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    hitl::{ConfirmationPolicy, TimeoutAction},
+    permissions::PermissionPolicy,
+    Agent, AgentEvent, SessionOptions,
+};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let permission_policy = PermissionPolicy::new()
+        .allow("read(*)")
+        .allow("grep(*)")
+        .allow("glob(*)")
+        .allow("ls(*)")
+        .allow("bash(git status:*)")
+        .deny("write(**/.env*)")
+        .deny("bash(rm -rf*)")
+        .ask("write(*)")
+        .ask("edit(*)")
+        .ask("bash(git push:*)")
+        .ask("bash(npm publish:*)")
+        .ask("bash(*)");
+    let confirmation_policy =
+        ConfirmationPolicy::enabled().with_timeout(120_000, TimeoutAction::Reject);
+
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_permission_policy(permission_policy)
+                .with_confirmation_policy(confirmation_policy),
+        )
+        .build()
+        .await?;
+
+    let (mut events, lifecycle) = session
+        .stream("Bump the version and push the release.", None)
+        .await?;
+    while let Some(event) = events.recv().await {
+        if let AgentEvent::ConfirmationRequired {
+            tool_id,
+            tool_name,
+            args,
+            ..
+        } = event
+        {
+            println!("[confirm] {tool_name}\n{args:#}");
+            session
+                .confirm_tool_use(
+                    &tool_id,
+                    false,
+                    Some("Rejected by the host review".into()),
+                )
+                .await?;
+        }
+    }
+    let _ = lifecycle.await;
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session(process.cwd(), {
+  permissionPolicy: {
+    allow: ['read(*)', 'grep(*)', 'glob(*)', 'ls(*)', 'bash(git status:*)'],
+    deny: ['write(**/.env*)', 'bash(rm -rf*)'],
+    ask: [
+      'write(*)',
+      'edit(*)',
+      'bash(git push:*)',
+      'bash(npm publish:*)',
+      'bash(*)',
+    ],
+    defaultDecision: 'ask',
+  },
+  // Turn the `ask` patterns into a human-in-the-loop confirmation flow.
+  confirmationPolicy: {
+    enabled: true,
+    defaultTimeoutMs: 120000,
+    timeoutAction: 'reject',
+  },
+});
+
+// Stream execution and resolve confirmations as they arrive.
+const stream = await session.stream('Bump the version and push the release');
+while (true) {
+  const next = await stream.next();
+  if (next.done || !next.value) break;
+
+  const event = next.value;
+  if (event.type === 'confirmation_required') {
+    // Look up the pending request for richer display.
+    const [pending] = await session.pendingConfirmations();
+    const toolId = pending?.toolId ?? event.toolId;
+    console.log(`[confirm] ${pending?.toolName ?? event.toolName}`);
+    console.log(JSON.stringify(pending?.args ?? {}, null, 2));
+
+    // In a real app, prompt the user here.
+    const approved = false; // deny risky operations by default
+    if (toolId)
+      await session.confirmToolUse(toolId, approved, 'Reviewed by host');
+  }
+}
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, PermissionPolicy, ConfirmationPolicy
+
+
+def main() -> None:
+    agent = Agent.create("agent.acl")
+
+    opts = SessionOptions()
+    opts.permission_policy = PermissionPolicy(
+        allow=["read(*)", "grep(*)", "glob(*)", "ls(*)", "bash(git status:*)"],
+        deny=["write(**/.env*)", "bash(rm -rf*)"],
+        ask=["write(*)", "edit(*)", "bash(git push:*)", "bash(npm publish:*)", "bash(*)"],
+        default_decision="ask",
+    )
+    # Turn the `ask` patterns into a human-in-the-loop confirmation flow.
+    opts.confirmation_policy = ConfirmationPolicy(
+        enabled=True,
+        default_timeout_ms=120_000,
+        timeout_action="reject",
+    )
+
+    session = agent.session(".", opts)
+
+    # Stream execution and resolve confirmations as they arrive.
+    for event in session.stream("Bump the version and push the release"):
+        if event.event_type == "confirmation_required":
+            # Look up the pending request for richer display.
+            pending = session.pending_confirmations()
+            first = pending[0] if pending else {}
+            tool_id = first.get("tool_id") or event.tool_id
+            print(f"[confirm] {first.get('tool_name') or event.tool_name}")
+
+            # In a real app, prompt the user here.
+            approved = False  # deny risky operations by default
+            if tool_id:
+                session.confirm_tool_use(tool_id, approved, "Reviewed by host")
+
+    session.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	enabled := true
+	timeoutMS := uint64(120_000)
+	session, err := agent.Session(
+		ctx,
+		".",
+		&code.SessionOptions{
+			PermissionPolicy: &code.PermissionPolicy{
+				Allow:           []string{"read(*)", "grep(*)", "glob(*)", "ls(*)", "bash(git status:*)"},
+				Deny:            []string{"write(**/.env*)", "bash(rm -rf*)"},
+				Ask:             []string{"write(*)", "edit(*)", "bash(git push:*)", "bash(npm publish:*)", "bash(*)"},
+				DefaultDecision: "ask",
+			},
+			ConfirmationPolicy: &code.ConfirmationPolicy{
+				Enabled:          &enabled,
+				DefaultTimeoutMS: &timeoutMS,
+				TimeoutAction:    "reject",
+			},
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	stream, err := session.Stream(ctx, "Bump the version and push the release.", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for event := range stream.Events {
+		if event.Type != code.EventConfirmationRequired {
+			continue
+		}
+		pending, err := session.PendingConfirmations(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(pending) == 0 {
+			continue
+		}
+		request := pending[0]
+		args, _ := json.MarshalIndent(request.Args, "", "  ")
+		fmt.Printf("[confirm] %s\n%s\n", request.ToolName, args)
+		if _, err = session.ConfirmToolUse(
+			ctx,
+			request.ToolID,
+			false,
+			"Rejected by the Go host review",
+		); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if err := <-stream.Done; err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+## Add a security provider
+
+A `DefaultSecurityProvider` enables input taint tracking and output sanitisation,
+screening tool I/O independently of the permission policy. Pass one through
+`securityProvider` (Node), `security_provider` (Python), or set Go
+`SessionOptions.DefaultSecurity` to `true`; omit it to disable security.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{permissions::PermissionPolicy, Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_default_security()
+                .with_permission_policy(
+                    PermissionPolicy::new()
+                        .allow("bash(echo:*)")
+                        .ask("bash(*)"),
+                ),
+        )
+        .build()
+        .await?;
+
+    let result = session
+        .send(
+            "Use bash to run exactly: echo screened-by-security-provider",
+            None,
+        )
+        .await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, DefaultSecurityProvider } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session(process.cwd(), {
+  securityProvider: new DefaultSecurityProvider(),
+  permissionPolicy: {
+    allow: ['bash(echo:*)'],
+    ask: ['bash(*)'],
+    defaultDecision: 'ask',
+  },
+});
+
+// A model-selected tool call runs through both the provider and the policy.
+const result = await session.run(
+  'Use bash to run exactly: echo screened-by-security-provider',
+);
+console.log(result.text);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, PermissionPolicy, DefaultSecurityProvider
+
+
+def main() -> None:
+    agent = Agent.create("agent.acl")
+
+    opts = SessionOptions()
+    opts.security_provider = DefaultSecurityProvider()
+    opts.permission_policy = PermissionPolicy(
+        allow=["bash(echo:*)"],
+        ask=["bash(*)"],
+        default_decision="ask",
+    )
+
+    session = agent.session(".", opts)
+
+    # A model-selected tool call runs through both the provider and the policy.
+    result = session.run(
+        "Use bash to run exactly: echo screened-by-security-provider"
+    )
+    print(result.text)
+
+    session.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		DefaultSecurity: code.Ptr(true),
+		PermissionPolicy: &code.PermissionPolicy{
+			Allow:           []string{"bash(echo:*)"},
+			Ask:             []string{"bash(*)"},
+			DefaultDecision: "ask",
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	result, err := session.Run(
+		ctx,
+		"Use bash to run exactly: echo screened-by-security-provider",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+Arbitrary custom `SecurityProvider` trait implementations remain a Rust-native
+extension point; all SDKs expose the built-in provider shown here.
+
+</Tab>
+</Tabs>
+
+## Notes
+
+- `defaultDecision` is the fallback for any pattern not matched by `allow` / `deny`
+  / `ask` (one of `allow`, `deny`, or `ask`). Prefer `ask` for real repositories
+  and open up only what automation needs.
+- A `confirmationPolicy` with `enabled: true` is what turns `ask` decisions into a
+  pausing `confirmation_required` event. Resolve each one with
+  `session.confirmToolUse(toolId, approved, reason?)`; if no answer arrives within
+  `defaultTimeoutMs`, `timeoutAction` (`reject`) decides the outcome.
+- Keep release and publish actions (`bash(git push*)`, `bash(npm publish*)`) on the
+  `ask` or `deny` path unless automation owns the final step.
+- Direct host calls such as `session.tool()`, `session.bash()`, and `session.git()`
+  are privileged host operations initiated by your application code. Authorize
+  them in the host before calling the SDK; the permission policy above gates
+  model-selected tool calls inside `send`, `run`, and `stream`.
+
+A runnable confirmation loop ships at
+`sdk/node/examples/streaming/hitl_confirmation_loop.ts` and
+`sdk/python/examples/hitl_confirmation_loop.py`.

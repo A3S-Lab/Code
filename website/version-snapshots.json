@@ -1,0 +1,26 @@
+{
+  "current": "v6.6.0",
+  "archives": [
+    {
+      "version": "v6.5.2",
+      "sourceTag": "v6.5.2",
+      "sourceTree": "6fcc1cabc7299693c1eb06461375e0235860e3d8",
+      "files": 128,
+      "sha256": "ad210b1cda73ebb66604aad0a16391b6092afb2209fdc8ec7a913c6ecbc17ebf"
+    },
+    {
+      "version": "v6.5.1",
+      "sourceTag": "v6.5.1",
+      "sourceTree": "c5222347b1cda17cec414aa642a74c09c66cf63c",
+      "files": 128,
+      "sha256": "ccb8918627459065bb5f8d8ba35c633474da354ab506ab00826670cf341e1a45"
+    },
+    {
+      "version": "v6.5.0",
+      "sourceTag": "v6.5.0",
+      "sourceTree": "c5222347b1cda17cec414aa642a74c09c66cf63c",
+      "files": 128,
+      "sha256": "ccb8918627459065bb5f8d8ba35c633474da354ab506ab00826670cf341e1a45"
+    }
+  ]
+}

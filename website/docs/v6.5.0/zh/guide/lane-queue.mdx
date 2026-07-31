@@ -1,0 +1,41 @@
+---
+title: 'Lane Queue'
+description: '可选外部与混合分发基础设施'
+---
+
+# Lane Queue
+
+普通 session 默认不启用队列。Lane queue 是显式的高级基础设施，独立于 `task`、`parallel_task` 和自动 subagent 委派。
+
+只有需要外部 worker、混合本地/远程执行、队列指标、死信或多机器分发时才启用 lane queue。
+
+```ts
+const session = agent.session('/repo', {
+  queueConfig: {
+    enableDlq: true,
+    enableMetrics: true,
+  },
+});
+
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+```
+
+lane 名称是 `control`、`query`、`execute` 和 `generate`。
+
+外部 worker 完成任务时调用：
+
+```ts
+const pending = await session.pendingExternalTasks();
+
+if (pending.length > 0) {
+  await session.completeExternalTask(pending[0].id, {
+    success: true,
+    result: { summary: 'worker completed the task' },
+  });
+}
+```
+
+普通本地 agent session 不需要引入队列。

@@ -1,0 +1,230 @@
+---
+title: '约定大于配置'
+description: '用文件系统优先的智能体、工具、连接、子智能体、调度、持久化和人工确认构建长期工作单元。'
+---
+
+# 约定大于配置
+
+A3S Code 的约定大于配置能力不是一个单独的运行器，而是一套长期智能体组合：
+[文件系统优先](/guide/filesystem-first)约定、会话运行时、工具权限、
+多智能体委派、可恢复编排、人工确认、运行回放和调度守护进程。它让一个智能体
+从“能聊天的 SDK 会话”变成“有角色、有工具、有团队、有状态、有接管点的工作单元”。
+
+如果你在评估目录优先的智能体框架，可以把 A3S Code 看成更底层、更可嵌入的运行时。
+目录约定、工具、连接、子智能体、调度、持久化和观测都存在，但不会强制绑定到某个
+前端渠道或部署平台；宿主可以把它接入托管会话、开放平台 API、MCP、A3S Box 或
+自己的任务系统。
+
+## 能力映射
+
+| 智能体框架概念   | A3S Code 对应能力                                          | 说明                                                                                     |
+| ---------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| 智能体是一个目录 | [智能体目录](/guide/agent-dir)                             | `instructions.md`、`agent.acl`、`skills/`、`tools/`、`schedules/` 合成一个可运行智能体。 |
+| Markdown 指令    | `instructions.md`、`AGENTS.md`、提示词插槽                 | 指令作为插槽注入，不能覆盖驾驭层的边界、响应契约和安全门。                               |
+| Markdown 技能    | [技能](/guide/skills)                                      | 文件型技能、内联技能和显式注册表使用同一套发现语义。A3S Code 不再内置默认技能。          |
+| TypeScript 工具  | `program`、直接工具、MCP 工具、智能体目录脚本工具          | A3S Code 更关注工具注册、权限门、带类型错误和验证证据；脚本工具运行在 QuickJS 受限环境。 |
+| 沙箱             | `program` 沙箱、权限策略、人工确认、A3S Box                | A3S Code 控制工具权限和脚本沙箱；需要进程、文件系统、网络级隔离时接 A3S Box。            |
+| 渠道             | 托管会话、开放平台 WebSocket/SSE、宿主自有界面             | A3S Code 不把渠道写死，宿主通过流式事件和运行回放接到任意前端。                          |
+| 连接             | MCP、服务提供商配置、宿主注入凭据                          | 连接由宿主配置和授权，不建议把令牌写进智能体目录。                                       |
+| 子智能体         | [任务](/guide/tasks)、[团队](/guide/teams)、`workerAgents` | 支持手动 `task`、并行 `parallel_task`、自动委派和动态工作智能体。                        |
+| 调度             | 智能体目录 `schedules/` + `serve_agent_dir`                | 每个调度有独立会话标识，可配合会话存储在重启后恢复上下文。                               |
+| 持久执行         | `SessionStore`、运行回放、`parallelResumable`              | 会话历史、运行事件和可恢复工作流能落盘；失败步骤可在恢复时重试。                         |
+| 人工确认         | [安全](/guide/security)、确认继承、工具确认                | 高风险工具可请求确认；子运行可配置自动批准、遇到询问时失败或继承父级策略。               |
+| 评测             | [验证](/guide/verification)、报告、回归证据                | A3S Code 把评测产品化为验证命令、证据摘要、运行回放与发布门禁，而不是单独的评测套件。    |
+
+## 最小工作形态
+
+交互式智能体团队可以从一个普通仓库开始：
+
+```text
+repo/
+├── agent.acl
+├── AGENTS.md
+├── .a3s/
+│   ├── agents/
+│   │   ├── release-reviewer.md
+│   │   ├── security-reviewer.md
+│   │   └── verification-runner.md
+│   └── skills/
+│       └── release-readiness.md
+└── src/
+```
+
+`agent.acl` 负责模型、服务提供商、并行度和自动委派：
+
+```acl
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+
+agent_dirs = ["./.a3s/agents"]
+
+auto_delegation {
+  enabled        = true
+  min_confidence = 0.72
+  max_tasks      = 4
+  auto_parallel  = false
+}
+```
+
+宿主启动一个会话，并把技能、智能体目录、持久化和委派策略接进去：
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session('/repo', {
+  skillDirs: ['./.a3s/skills'],
+  agentDirs: ['./.a3s/agents'],
+  autoDelegation: { enabled: true, minConfidence: 0.72, maxTasks: 4 },
+  maxParallelTasks: 8,
+  autoParallel: false,
+  autoSave: true,
+});
+
+const result = await session.send(`
+准备一次发布就绪检查：
+1. 让探索角色找出高风险变更。
+2. 让安全角色检查权限、secret、外部副作用。
+3. 让验证角色给出必须跑的回归命令。
+4. 合并成一个按阻塞程度排序的报告。
+`);
+
+console.log(result.text);
+console.log(result.verificationSummaryText);
+```
+
+## 智能体目录形态
+
+需要长期运行、调度或目录级工具时，使用文件系统优先的智能体：
+
+```text
+release-agent/
+├── instructions.md
+├── agent.acl
+├── skills/
+│   └── release-readiness.md
+├── schedules/
+│   └── daily.md
+└── tools/
+    ├── github.md
+    └── search-auth.md
+```
+
+`instructions.md` 是角色插槽：
+
+```md
+You are a release-readiness agent for this repository.
+Always separate blockers from follow-up work.
+Never invent versions or CI status. Read evidence from the workspace.
+```
+
+`schedules/daily.md` 是周期性回合：
+
+```md
+---
+cron: '0 9 * * *'
+name: daily-release-check
+enabled: true
+---
+
+Summarize merged changes since the last run, inspect release risks,
+and report only blockers plus required verification.
+```
+
+`serve_agent_dir` 会为每个调度创建独立会话。传入 `SessionStore` 后，重启只重新加载
+当前目录配置和工具，历史上下文从存储中恢复。
+
+## 工具与连接
+
+A3S Code 的工具面分三层：
+
+| 层                 | 用法                                                      | 适合场景                                                  |
+| ------------------ | --------------------------------------------------------- | --------------------------------------------------------- |
+| 内置与直接工具     | `session.tool(...)`、文件、命令行、Git、`generate_object` | 宿主明确知道要运行什么，或需要确定性调用。                |
+| MCP                | MCP 服务器                                                | 连接 GitHub、Linear、内部系统、远程宿主工具或跨进程能力。 |
+| 智能体目录脚本工具 | `tools/*.md` + QuickJS `program`                          | 把一段受限脚本包装成模型可见工具。                        |
+
+工具不是“文件存在就无限可用”。可见性、权限门、人工确认、允许列表和沙箱都由驾驭层
+或智能体目录加载器统一控制。高权限工具应只给可信目录，密钥应通过环境变量和宿主连接注入。
+
+## 子智能体与团队
+
+子智能体在 A3S Code 中拆成三种入口：
+
+| 入口                                                                                 | 谁决定分工 | 适合场景                                     |
+| ------------------------------------------------------------------------------------ | ---------- | -------------------------------------------- |
+| `task` / `parallel_task`                                                             | 父智能体   | 模型自己判断要不要委派。                     |
+| `session.task(...)` / `session.tasks(...)`                                           | 宿主代码   | 宿主已经知道执行通道，但仍想复用智能体能力。 |
+| `session.parallel(...)` / `session.pipeline(...)` / `session.parallelResumable(...)` | 宿主代码   | 需要可复现、可测试、可恢复的固定工作流。     |
+
+自动委派依赖智能体描述和置信度评分。它适合“用户只描述目标，由运行时挑选专用智能体”
+的场景；固定发布流程、批量审查、迁移任务更适合用编排显式表达。
+
+## 可观测与接管
+
+长期智能体必须能被观察和中止。A3S Code 的核心观察面包括：
+
+- `stream()` 输出增量事件。
+- `runs()`、`runSnapshot()`、`runEvents()` 查看当前和历史运行。
+- `toolNames()` / `toolDefinitions()` 查看可见工具表面。
+- `activeTools()` 查看当前正在运行的工具调用快照。
+- `cancelRun(runId)` 中止正在执行的回合。
+- `traceEvents()` 读取压缩、委派、工具和验证证据。
+- `verificationSummaryText` 给发布或审核流程使用。
+
+宿主平台可以把这些事件转成 WebSocket/SSE、审计记录、调试面板和工作流节点状态。
+
+## 与 A3S Box 的关系
+
+A3S Code 负责智能体循环、工具、委派、状态和验证。A3S Box 负责更强的运行隔离：MicroVM、OCI workload、网络和 TEE。需要“模型能跑 shell，但进程必须隔离”的场景，应把 A3S Code 的工具执行放进 A3S Box 或由宿主通过 MCP 暴露隔离后的能力。
+
+典型组合：
+
+```text
+A3S Code session
+  -> permission policy and HITL
+  -> MCP tool adapter
+  -> A3S Box isolated workload
+  -> typed result and verification evidence
+```
+
+## 什么时候用
+
+适合：
+
+- 发布巡检、依赖升级、代码库维护等长期工程 Agent。
+- 能拆成 explore / review / verify / implement 多角色协作的任务。
+- 需要自动委派，但仍要保留权限门、审计和验证证据的工作。
+- 需要 cron 调度和可恢复上下文的周期性报告。
+- 需要接入托管工作流、宿主 session 或外部协作渠道的 Agent。
+
+不适合：
+
+- 只需要一次确定性 API 调用的工具型资产，直接用 tool contract 更简单。
+- 需要完整 GUI 自动化但没有结构化工具接口的任务，应优先提供 MCP 工具或浏览器工具，再交给 A3S Code 调度。
+- 需要强 OS 级隔离却只启用本地 shell 的任务，应接入 A3S Box。
+
+## 阅读顺序
+
+1. [文件系统优先](/guide/filesystem-first)
+2. [Agent 目录](/guide/agent-dir)
+3. [agents/ 角色目录](/guide/filesystem-agents)
+4. [tools/ 工具目录](/guide/filesystem-tools)
+5. [schedules/ 调度目录](/guide/filesystem-schedules)
+6. [任务](/guide/tasks)
+7. [团队](/guide/teams)

@@ -1,0 +1,635 @@
+.a3s-real-transcript {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex-direction: column;
+  gap: 18px;
+  font-family: var(--a3s-mono);
+}
+
+.a3s-real-user-message {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  padding: 13px 14px;
+  background: rgb(49, 53, 58);
+  color: rgb(220, 220, 220);
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  animation: a3s-real-row-in 180ms ease-out both;
+}
+
+.a3s-real-user-message > span {
+  color: rgb(220, 220, 220);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.55;
+  opacity: 0.72;
+}
+
+.a3s-real-user-message > p {
+  min-width: 0;
+  margin: 0;
+  color: inherit;
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.a3s-real-tool-stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.a3s-real-tool-line {
+  display: grid;
+  min-width: 0;
+  color: rgb(220, 220, 220);
+  gap: 4px;
+  animation: a3s-real-row-in 180ms ease-out both;
+}
+
+.a3s-real-tool-line > header {
+  display: grid;
+  min-width: 0;
+  min-height: 18px;
+  grid-template-columns: 15px auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 5px;
+}
+
+.a3s-real-tool-line > header > i {
+  color: rgb(120, 123, 125);
+  font-size: 12px;
+  font-style: normal;
+  text-align: center;
+}
+
+.a3s-real-tool-line > header > strong {
+  color: rgb(220, 220, 220);
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.a3s-real-tool-line > header > code {
+  overflow: hidden;
+  min-width: 0;
+  color: rgb(220, 220, 220);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-real-tool-line > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.a3s-real-tool-line > div > p {
+  display: grid;
+  min-width: 0;
+  min-height: 16px;
+  margin: 0;
+  color: rgb(120, 123, 125);
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 2px;
+}
+
+.a3s-real-tool-line > div > p > span {
+  color: rgb(95, 99, 104);
+  text-align: right;
+}
+
+.a3s-real-tool-line > div > p > code {
+  overflow: hidden;
+  color: inherit;
+  font-family: inherit;
+  font-size: 10.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-real-tool-line.is-active > header > i {
+  color: rgb(125, 182, 255);
+  animation: a3s-real-pulse 700ms ease-in-out infinite alternate;
+}
+
+.a3s-real-tool-line.is-success > header > i,
+.a3s-real-tool-line > div > p.is-success {
+  color: rgb(78, 201, 139);
+}
+
+.a3s-real-tool-line.is-warning > header > i {
+  color: rgb(215, 168, 75);
+}
+
+.a3s-real-tool-line.is-muted > header > i,
+.a3s-real-tool-line.is-muted > header > code {
+  color: rgb(120, 123, 125);
+}
+
+.a3s-real-approval {
+  display: grid;
+  min-width: 0;
+  padding: 2px 0 5px;
+  color: rgb(220, 220, 220);
+  gap: 1px;
+  font-family: var(--a3s-mono);
+  animation: a3s-real-row-in 160ms ease-out both;
+}
+
+.a3s-real-approval > header,
+.a3s-real-approval-detail,
+.a3s-real-approval > footer {
+  padding-right: 2px;
+  padding-left: 2px;
+}
+
+.a3s-real-approval > header {
+  display: flex;
+  min-height: 21px;
+  align-items: center;
+  gap: 6px;
+}
+
+.a3s-real-approval > header > span {
+  color: rgb(215, 168, 75);
+  font-size: 12px;
+}
+
+.a3s-real-approval > header > strong {
+  color: rgb(220, 220, 220);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.a3s-real-approval-detail {
+  display: grid;
+  min-width: 0;
+  min-height: 20px;
+  margin: 0;
+  color: rgb(95, 99, 104);
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 4px;
+}
+
+.a3s-real-approval-detail > span,
+.a3s-real-approval-detail > code {
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.a3s-real-approval-detail > code {
+  overflow: hidden;
+  color: rgb(220, 220, 220);
+  font-family: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-real-approval > ol {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  gap: 0;
+  list-style: none;
+}
+
+.a3s-real-approval > ol > li {
+  display: grid;
+  min-width: 0;
+  min-height: 22px;
+  padding: 1px 2px;
+  color: rgb(220, 220, 220);
+  grid-template-columns: 12px 13px 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+.a3s-real-approval > ol > li.is-selected {
+  background: rgb(42, 46, 52);
+}
+
+.a3s-real-approval > ol > li > span,
+.a3s-real-approval > ol > li > b,
+.a3s-real-approval > ol > li > i,
+.a3s-real-approval > ol > li > p {
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.a3s-real-approval > ol > li > span,
+.a3s-real-approval > ol > li > b {
+  color: rgb(95, 99, 104);
+  font-weight: 400;
+}
+
+.a3s-real-approval > ol > li > i {
+  color: rgb(95, 99, 104);
+  font-style: normal;
+}
+
+.a3s-real-approval > ol > li:last-child > i {
+  color: rgb(224, 108, 117);
+}
+
+.a3s-real-approval > ol > li > p {
+  overflow: hidden;
+  margin: 0;
+  color: rgb(220, 220, 220);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-real-approval > footer {
+  min-height: 18px;
+  padding-top: 2px;
+  color: rgb(95, 99, 104);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.a3s-real-open-view {
+  display: grid;
+  min-width: 0;
+  min-height: 22px;
+  margin: 0;
+  color: rgb(220, 220, 220);
+  grid-template-columns: 15px 13px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  font-family: var(--a3s-mono);
+  animation: a3s-real-row-in 180ms ease-out both;
+}
+
+.a3s-real-open-view > i {
+  color: rgb(125, 182, 255);
+  font-style: normal;
+  text-align: center;
+}
+
+.a3s-real-open-view > span {
+  color: rgb(125, 182, 255);
+}
+
+.a3s-real-open-view > strong {
+  color: rgb(220, 220, 220);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.a3s-real-open-view > small {
+  color: rgb(120, 123, 125);
+  font-size: 10px;
+}
+
+.a3s-real-runtime-tracker {
+  padding-top: 4px;
+  padding-bottom: 2px;
+  border-top: 0;
+}
+
+.a3s-real-runtime-tracker > div > p.is-done > i {
+  color: rgb(78, 201, 139);
+  animation: none;
+}
+
+.a3s-real-runtime-tracker > div > p.is-done > i::before {
+  content: '✓';
+}
+
+.a3s-real-runtime-tracker > div > p.is-done > i {
+  font-size: 0;
+}
+
+.a3s-real-runtime-tracker > div > p.is-done > i::before {
+  font-size: 11px;
+}
+
+.a3s-real-ide {
+  display: grid;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) 56px;
+  gap: 4px;
+  font-family: var(--a3s-mono);
+  animation: a3s-real-row-in 160ms ease-out both;
+}
+
+.a3s-real-ide-main,
+.a3s-real-ide-footer {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  gap: 4px;
+}
+
+.a3s-real-ide-main {
+  grid-template-columns: minmax(154px, 0.34fr) minmax(0, 0.66fr);
+}
+
+.a3s-real-ide-footer {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+}
+
+.a3s-real-ide-frame {
+  display: grid;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid rgb(52, 58, 64);
+  border-radius: 7px;
+  background: rgb(21, 25, 31);
+  grid-template-rows: 27px minmax(0, 1fr);
+}
+
+.a3s-real-ide-editor {
+  border-color: rgba(125, 182, 255, 0.76);
+}
+
+.a3s-real-ide-frame > header {
+  display: flex;
+  overflow: hidden;
+  min-width: 0;
+  padding: 0 10px;
+  border-bottom: 1px solid rgba(52, 58, 64, 0.72);
+  color: rgb(220, 220, 220);
+  align-items: center;
+  font-size: 10px;
+  font-weight: 560;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-real-ide-editor > header {
+  color: rgb(125, 182, 255);
+}
+
+.a3s-real-ide-tree > div {
+  overflow: hidden;
+  padding: 6px 5px;
+}
+
+.a3s-real-ide-tree p {
+  display: grid;
+  min-width: 0;
+  min-height: 25px;
+  margin: 0;
+  padding: 0 7px;
+  color: rgb(120, 123, 125);
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+}
+
+.a3s-real-ide-tree p:nth-child(n + 2) {
+  padding-left: 18px;
+}
+
+.a3s-real-ide-tree p.is-selected {
+  background: rgb(42, 46, 52);
+  color: rgb(220, 220, 220);
+}
+
+.a3s-real-ide-tree p > span {
+  color: rgb(110, 198, 217);
+}
+
+.a3s-real-ide-tree p > b {
+  overflow: hidden;
+  font-size: inherit;
+  font-weight: 480;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-real-ide-code {
+  overflow: hidden;
+  min-height: 0;
+  padding: 7px 0;
+}
+
+.a3s-real-ide-code > p {
+  display: grid;
+  min-width: 0;
+  min-height: 27px;
+  margin: 0;
+  padding-right: 8px;
+  color: rgb(220, 220, 220);
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+}
+
+.a3s-real-ide-code > p.is-current {
+  background: rgb(42, 46, 52);
+}
+
+.a3s-real-ide-code > p > span {
+  padding-right: 10px;
+  color: rgb(95, 99, 104);
+  font-size: 9.5px;
+  text-align: right;
+}
+
+.a3s-real-ide-code > p.is-current > span {
+  color: rgb(125, 182, 255);
+}
+
+.a3s-real-ide-code > p > code {
+  overflow: hidden;
+  color: inherit;
+  font-family: inherit;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.a3s-real-ide-results {
+  overflow: hidden;
+  min-height: 0;
+  padding: 7px 5px;
+}
+
+.a3s-real-ide-results > p {
+  min-height: 25px;
+  margin: 0;
+  padding: 5px 7px;
+  color: rgb(220, 220, 220);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.a3s-real-ide-results > p.is-selected {
+  background: rgb(42, 46, 52);
+}
+
+.a3s-real-ide-results.is-loading > p {
+  color: rgb(120, 123, 125);
+}
+
+.a3s-real-ide-footer .a3s-real-ide-frame {
+  grid-template-rows: 22px minmax(0, 1fr);
+}
+
+.a3s-real-ide-footer .a3s-real-ide-frame > header {
+  padding-right: 8px;
+  padding-left: 8px;
+  color: rgb(95, 99, 104);
+  font-size: 8.5px;
+  text-transform: lowercase;
+}
+
+.a3s-real-ide-footer .a3s-real-ide-frame > p {
+  overflow: hidden;
+  min-width: 0;
+  margin: 0;
+  padding: 7px 8px 0;
+  color: rgb(120, 123, 125);
+  font-size: 8.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-real-ctx {
+  gap: 15px;
+}
+
+.a3s-real-ctx-results {
+  display: grid;
+  min-width: 0;
+  color: rgb(220, 220, 220);
+  gap: 3px;
+  font-family: var(--a3s-mono);
+  animation: a3s-real-row-in 180ms ease-out both;
+}
+
+.a3s-real-ctx-results > div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.a3s-real-ctx-results > div > p {
+  display: grid;
+  min-width: 0;
+  min-height: 18px;
+  margin: 0;
+  color: inherit;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 5px;
+}
+
+.a3s-real-ctx-results > div > p > b {
+  color: rgb(110, 198, 217);
+  font-size: 10.5px;
+  text-align: right;
+}
+
+.a3s-real-ctx-results > div > p > strong {
+  overflow: hidden;
+  color: rgb(220, 220, 220);
+  font-size: 10.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-real-ctx-results > div > small {
+  overflow: hidden;
+  min-width: 0;
+  padding-left: 33px;
+  color: rgb(120, 123, 125);
+  font-size: 9.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-real-ctx-results > footer {
+  overflow: hidden;
+  min-width: 0;
+  padding-top: 3px;
+  padding-left: 33px;
+  color: rgb(120, 123, 125);
+  font-size: 9.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a3s-real-notice {
+  display: grid;
+  min-width: 0;
+  min-height: 20px;
+  margin: 0;
+  color: rgb(120, 123, 125);
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 3px;
+  font-family: var(--a3s-mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  animation: a3s-real-row-in 180ms ease-out both;
+}
+
+.a3s-real-notice > i {
+  font-style: normal;
+  text-align: right;
+}
+
+.a3s-real-notice.is-success,
+.a3s-real-notice.is-success > i {
+  color: rgb(78, 201, 139);
+}
+
+@keyframes a3s-real-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes a3s-real-pulse {
+  from {
+    opacity: 0.42;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .a3s-real-user-message,
+  .a3s-real-tool-line,
+  .a3s-real-approval,
+  .a3s-real-open-view,
+  .a3s-real-ide,
+  .a3s-real-ctx-results,
+  .a3s-real-notice,
+  .a3s-real-tool-line.is-active > header > i {
+    animation: none;
+  }
+}

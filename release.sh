@@ -42,7 +42,7 @@ from pathlib import Path
 
 version = sys.argv[1]
 path = Path(sys.argv[2])
-data = json.loads(path.read_text())
+data = json.loads(path.read_text(encoding="utf-8"))
 
 if data.get("name") == "@a3s-lab/code":
     data["version"] = version
@@ -56,7 +56,7 @@ for package in data.get("packages", {}).values():
             if name.startswith("@a3s-lab/code-"):
                 optional[name] = version
 
-path.write_text(json.dumps(data, indent=2) + "\n")
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
 }
 
@@ -89,6 +89,16 @@ echo "  Updating sdk/python/Cargo.toml..."
 sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" sdk/python/Cargo.toml
 sed -i.bak "s/a3s-code-core = { version = \"[^\"]*\"/a3s-code-core = { version = \"${VERSION}\"/" sdk/python/Cargo.toml
 rm -f sdk/python/Cargo.toml.bak
+
+echo "  Updating sdk/go/bridge/Cargo.toml..."
+sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" sdk/go/bridge/Cargo.toml
+sed -i.bak "s/a3s-code-core = { version = \"[^\"]*\"/a3s-code-core = { version = \"${VERSION}\"/" sdk/go/bridge/Cargo.toml
+rm -f sdk/go/bridge/Cargo.toml.bak
+
+GO_MAJOR="${VERSION%%.*}"
+echo "  Updating sdk/go/go.mod major path..."
+sed -i.bak "s#^module github.com/A3S-Lab/Code/sdk/go/v[0-9][0-9]*#module github.com/A3S-Lab/Code/sdk/go/v${GO_MAJOR}#" sdk/go/go.mod
+rm -f sdk/go/go.mod.bak
 
 # Update Node SDK package.json
 echo "  Updating sdk/node/package.json..."
@@ -124,6 +134,12 @@ echo "----------------------------------------"
 cargo check --workspace
 cargo check --manifest-path sdk/node/Cargo.toml
 cargo check --manifest-path sdk/python/Cargo.toml
+cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+(
+    cd sdk/go
+    A3S_CODE_GO_BRIDGE_TEST_BINARY="$PWD/../../target/debug/a3s-code-go-bridge" \
+        go test ./...
+)
 echo "✅ Cargo.lock updated"
 echo ""
 
@@ -158,7 +174,7 @@ fi
 git add -A
 git commit -m "chore: bump version to ${VERSION}
 
-- Update Rust, Node.js, and Python package versions
+- Update Rust, Node.js, Python, and Go package versions
 - Refresh release validation for A3S Code
 - Require real-provider ACL env integration before tagging
 "
@@ -169,6 +185,7 @@ git tag -a "v${VERSION}" -m "Release v${VERSION}
 ## Tests
 - cargo test --workspace
 - cargo test --workspace --all-features --lib
+- go test ./...
 - git diff --check
 - scripts/check_release_versions.sh
 - REQUIRE_REAL_PROVIDER=1 scripts/release_preflight.sh
@@ -209,7 +226,8 @@ echo "  1. Run CI checks"
 echo "  2. Publish to crates.io"
 echo "  3. Publish Node SDK to npm"
 echo "  4. Build Python SDK wheels and attach to GitHub Release (PyPI no longer used)"
-echo "  5. Create GitHub Release"
+echo "  5. Publish the Go module tag and native bridge assets"
+echo "  6. Create GitHub Release"
 echo ""
 echo "Monitor progress at:"
 echo "  https://github.com/A3S-Lab/Code/actions"

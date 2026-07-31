@@ -17,6 +17,7 @@ mod rule;
 mod tests;
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub use interactive::{InteractiveApprovalMode, InteractiveToolGuardrail};
 pub use manager::{MatchingRules, PermissionManager};
@@ -33,6 +34,16 @@ pub use rule::PermissionRule;
 /// The built-in `PermissionPolicy` implements this trait using
 /// declarative allow/deny/ask rules with pattern matching.
 pub trait PermissionChecker: Send + Sync {
+    /// Freeze any mutable host policy for one agent run.
+    ///
+    /// Stateless checkers can keep the default and will be shared as-is.
+    /// Interactive hosts whose policy changes between turns should return an
+    /// immutable checker here so an in-flight or background child cannot gain
+    /// or lose authority when the next turn selects a different mode.
+    fn snapshot_for_run(&self) -> Option<Arc<dyn PermissionChecker>> {
+        None
+    }
+
     /// Whether a tool definition should be exposed to the model.
     ///
     /// This controls model-visible capabilities only. [`Self::check`] remains

@@ -1,4 +1,4 @@
-# A3S Code Python SDK 2.3 Quick Reference
+# A3S Code Python SDK Quick Reference
 
 This page is the short, current reference for the Python SDK.
 
@@ -13,14 +13,25 @@ session = agent.session(".")
 result = session.send({"prompt": "Find the code path that handles authentication."})
 print(result.text)
 
+active_turn = None
+attempt_text = []
 for event in session.stream({"prompt": "Refactor the tests around that code path."}):
-    if event.event_type == "text_delta":
-        print(event.text, end="", flush=True)
+    if event.event_type == "turn_start":
+        active_turn = event.turn
+        attempt_text.clear()
+    elif event.event_type == "text_delta":
+        attempt_text.append(event.text or "")
+    elif event.event_type == "turn_end" and event.turn == active_turn:
+        print("".join(attempt_text), end="", flush=True)
+        attempt_text.clear()
 ```
 
 Streaming events use envelope version `1`: `event.type` is the canonical open
 discriminant, `event.payload` is lossless, and `event.metadata` preserves
 optional protocol metadata. `event.event_type` is a compatibility alias.
+Repeated `turn_start` events with the same turn replace an interrupted stream
+attempt, so clear all provisional text, reasoning, and tool drafts for that
+turn before applying the replacement deltas.
 
 Use the short object-shaped request APIs first. They own normal model execution,
 built-in tools,
@@ -62,6 +73,29 @@ session.unregister_dynamic_tool("dynamic_workflow")
 
 Direct tools bypass the LLM and are useful for deterministic checks,
 diagnostics, and tests.
+
+## Skills
+
+```python
+session = agent.session(".", skill_dirs=["./skills"])
+
+matches = session.tool("search_skills", {
+    "query": "review database schema",
+    "limit": 5,
+})
+print(matches.output)
+
+result = session.tool("Skill", {
+    "skill_name": "db-review",
+    "prompt": "Review the migrations and summarize correctness risks.",
+})
+print(result.output)
+```
+
+`search_skills` is a deterministic direct tool. `Skill` loads the selected
+folder-style skill and then runs the configured model with that skill's
+temporary allowed-tools grant, so the session still needs a working provider
+configuration.
 
 ## Evidence
 

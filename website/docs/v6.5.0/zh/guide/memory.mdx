@@ -1,0 +1,82 @@
+---
+title: '记忆'
+description: 'Session memory store 与显式 recall'
+---
+
+# 记忆
+
+Memory 记录可复用事实，帮助驾驭层复用经验。
+
+## 默认 Store
+
+每个 session 默认都有 memory store。普通 SDK session 若不传入自定义 store，会使用
+`<workspace>/.a3s/memory` 下的文件存储。`a3s code` TUI 使用和 `/memory` 面板相同的
+`memory_dir`；默认是 `~/.a3s/memory`，所以不同项目会共享这份长期记忆，除非你配置
+项目本地路径。可以通过 config 的 `memory_dir` 移动默认位置，也可以给单个 session
+传入 typed store object 覆盖默认后端。若文件 store 初始化失败，session 会降级到
+in-memory store，并通过 init warning 暴露该问题。
+
+## LLM 抽取
+
+LLM memory extraction is enabled by default when memory is available. Every
+completed non-empty turn is submitted to the active model. The model, not a
+keyword list, tool type, or turn-length heuristic, decides whether anything can
+change a future answer or action. It must return an empty `items` array when
+nothing qualifies. Tool calls and results are judgment context and are never
+mechanically copied into long-term memory.
+
+Accepted output is limited to durable `semantic` or `procedural` memory with a
+validated source, importance, confidence, scope, and future-value reason. The
+runtime rejects malformed output and obvious credentials as structure and
+safety checks; these checks do not decide semantic value.
+
+The model receives a bounded set of related memories and may identify supplied
+IDs as `supersedes` or `conflicts_with`. The runtime validates those relations,
+removes accepted superseded items, and preserves conflicts. Streaming hosts
+register extraction before publishing the final event, process turns in FIFO
+order, and wait for already accepted extraction during graceful close.
+
+`rememberSuccess` and `rememberFailure` remain explicit SDK operations. The
+normal agent runtime does not invoke either operation for tool results.
+
+## Store 清理
+
+Default stores merge only normalized exact duplicate content. Punctuation
+remains significant, and distinct related wording remains separate unless the
+LLM explicitly consolidates it through `supersedes`. The storage layer does not
+infer semantic equivalence from keyword overlap.
+
+配置自动 pruning 后，系统会删除陈旧且低重要度的 memory；但 curated memory 会被硬保护：
+pinned/protected item、频繁召回 item、consolidated memory，以及带 `supersedes` 或
+`conflicts_with` 关系 metadata 的 item 都不会因为容量上限被直接裁掉。
+
+可以在 `config.acl` 中调整抽取上限：
+
+```text
+memory {
+  llmExtraction = true
+  llmExtractionMaxItems = 5
+  llmExtractionMaxInputChars = 8000
+}
+```
+
+## 手动写入与召回
+
+```ts
+import { FileMemoryStore } from '@a3s-lab/code';
+
+const session = agent.session('/repo', {
+  memoryStore: new FileMemoryStore('./.a3s/memory'),
+});
+
+await session.rememberSuccess(
+  'release preflight',
+  ['bash', 'grep'],
+  'provider 验证通过',
+);
+const related = await session.recallSimilar('release provider verification', 5);
+const recent = await session.memoryRecent(10);
+const tagged = await session.recallByTags(['grep'], 10);
+```
+
+Memory 是辅助上下文，当前任务的验证证据仍来自当前命令和 trace。

@@ -1,0 +1,173 @@
+---
+title: 'Auto Compact'
+description: 'Let the runtime keep long sessions inside the context budget automatically'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Auto Compact
+
+A3S Code can keep long conversations inside the model's context budget for you.
+Enable `autoCompact` and the runtime watches context usage; once it crosses
+`autoCompactThreshold`, older turns are compacted into a running summary so the
+agent stays coherent across many steps without you managing tokens by hand.
+Continuation handles the other direction: when a single response is truncated by
+length, the runtime automatically continues generating to assemble the full reply.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let options = SessionOptions::new()
+        .with_auto_compact(true)
+        .with_auto_compact_threshold(0.75)
+        .with_continuation(true)
+        .with_max_continuation_turns(3);
+    let session = agent
+        .session_builder("/repo")
+        .options(options)
+        .build()
+        .await?;
+
+    for step in 0..50 {
+        session
+            .send(
+                &format!("Step {step}: continue refactoring the parser"),
+                None,
+            )
+            .await?;
+    }
+
+    println!("history turns: {}", session.history().len());
+    if let Some(memory) = session.memory() {
+        println!("recent memory: {:#?}", memory.get_recent(5).await?);
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session('/repo', {
+  // Compact older turns once context fills past the threshold.
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  // Auto-continue a single response that the model truncates by length.
+  continuationEnabled: true,
+  maxContinuationTurns: 3,
+});
+
+// Run a long, multi-step task. The runtime compacts older turns as needed;
+// you never touch the token math.
+for (let i = 0; i < 50; i++) {
+  await session.send(`Step ${i}: continue refactoring the parser`);
+}
+
+// Inspect what the session is currently carrying.
+console.log('history turns:', session.history().length);
+console.log('recent memory:', await session.memoryRecent(5));
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+# Compact older turns once context fills past the threshold.
+opts.auto_compact = True
+opts.auto_compact_threshold = 0.75
+# Auto-continue a single response that the model truncates by length.
+opts.continuation_enabled = True
+opts.max_continuation_turns = 3
+session = agent.session("/repo", opts)
+
+# Run a long, multi-step task. The runtime compacts older turns as needed;
+# you never touch the token math.
+for i in range(50):
+    session.send(f"Step {i}: continue refactoring the parser")
+
+# Inspect what the session is currently carrying.
+print("history turns:", len(session.history()))
+print("recent memory:", session.memory_recent(5))
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	options := &code.SessionOptions{
+		AutoCompact:          code.Ptr(true),
+		AutoCompactThreshold: code.Ptr(float32(0.75)),
+		ContinuationEnabled:  code.Ptr(true),
+		MaxContinuationTurns: code.Ptr(uint32(3)),
+	}
+	session, err := agent.Session(ctx, "/repo", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	for step := 0; step < 50; step++ {
+		prompt := fmt.Sprintf("Step %d: continue refactoring the parser", step)
+		if _, err := session.Run(ctx, prompt); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	history, err := session.History(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("history turns:", len(history))
+}
+```
+
+</Tab>
+</Tabs>
+
+Use auto-compaction for long sessions where you want the runtime to manage context
+pressure for you. `autoCompactThreshold` / `auto_compact_threshold` is a fraction of
+the context window (0.0–1.0, default 0.8) at which compaction kicks in; lower it to
+compact earlier. Inspect the live session with the SDK's history API. Rust,
+Node.js, Python, and Go also expose direct recent-memory queries
+(`memoryRecent` / `memory_recent` / `MemoryRecent`).

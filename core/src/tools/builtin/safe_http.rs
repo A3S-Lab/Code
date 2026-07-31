@@ -6,6 +6,7 @@
 
 use reqwest::header::{HeaderMap, ACCEPT, ACCEPT_ENCODING, LOCATION, RANGE};
 use reqwest::{redirect::Policy, Url};
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(any(target_os = "macos", all(test, unix)))]
 use std::time::Duration;
@@ -27,6 +28,46 @@ pub(super) struct SafeHttpResponse {
     pub redirects: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SafeHttpErrorKind {
+    Invalid,
+    Transport,
+}
+
+#[derive(Debug)]
+pub(super) struct SafeHttpError {
+    kind: SafeHttpErrorKind,
+    message: String,
+}
+
+impl SafeHttpError {
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            kind: SafeHttpErrorKind::Invalid,
+            message: message.into(),
+        }
+    }
+
+    fn transport(message: impl Into<String>) -> Self {
+        Self {
+            kind: SafeHttpErrorKind::Transport,
+            message: message.into(),
+        }
+    }
+
+    pub(super) fn is_transport(&self) -> bool {
+        self.kind == SafeHttpErrorKind::Transport
+    }
+}
+
+impl fmt::Display for SafeHttpError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SafeHttpError {}
+
 pub(super) fn explicit_web_proxy_from_env() -> Option<String> {
     ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
         .iter()
@@ -40,7 +81,7 @@ pub(super) fn explicit_web_proxy_from_env() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 pub(super) async fn system_web_proxy() -> Option<String> {
-    let mut command = tokio::process::Command::new("scutil");
+    let mut command = tokio::process::Command::new("/usr/sbin/scutil");
     command.arg("--proxy");
     let output = command_output_with_timeout(command, SYSTEM_PROXY_LOOKUP_TIMEOUT).await?;
     output
@@ -55,11 +96,24 @@ pub(super) async fn command_output_with_timeout(
     mut command: tokio::process::Command,
     timeout: Duration,
 ) -> Option<std::process::Output> {
-    command.kill_on_drop(true);
-    tokio::time::timeout(timeout, command.output())
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    crate::tools::process::configure_process_group(&mut command);
+    let mut child = command.spawn().ok()?;
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let output = crate::tools::process::read_process_output(&mut child, timeout_ms, None)
         .await
-        .ok()?
-        .ok()
+        .ok()?;
+    if output.timed_out {
+        return None;
+    }
+    Some(std::process::Output {
+        status: output.status?,
+        stdout: output.stdout.into_bytes(),
+        stderr: output.stderr.into_bytes(),
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -99,14 +153,14 @@ pub(super) async fn get_with_redirects(
     mut headers: HeaderMap,
     max_redirects: usize,
     query_policy: RedirectQueryPolicy,
-) -> Result<SafeHttpResponse, String> {
+) -> Result<SafeHttpResponse, SafeHttpError> {
     for redirect_count in 0..=max_redirects {
-        validate_url_target(&url)?;
+        validate_url_target(&url).map_err(SafeHttpError::invalid)?;
         let client = match proxy_url {
-            Some(proxy_url) => build_proxy_client(proxy_url)?,
+            Some(proxy_url) => build_proxy_client(proxy_url).map_err(SafeHttpError::invalid)?,
             None => {
                 let target = resolve_public_target(&url).await?;
-                build_direct_client(&target)?
+                build_direct_client(&target).map_err(SafeHttpError::transport)?
             }
         };
         let response = client
@@ -116,11 +170,11 @@ pub(super) async fn get_with_redirects(
             .await
             .map_err(|error| {
                 let detail = error.without_url().to_string();
-                format!(
+                SafeHttpError::transport(format!(
                     "Failed to fetch URL {}: {}",
                     safe_url_for_diagnostic(&url),
                     detail
-                )
+                ))
             })?;
 
         let status = response.status();
@@ -132,18 +186,22 @@ pub(super) async fn get_with_redirects(
             });
         }
         if redirect_count == max_redirects {
-            return Err(format!(
+            return Err(SafeHttpError::invalid(format!(
                 "Too many redirects while fetching URL (max: {max_redirects})"
-            ));
+            )));
         }
 
         let location = response
             .headers()
             .get(LOCATION)
-            .ok_or_else(|| format!("HTTP {status} redirect is missing a Location header"))?
+            .ok_or_else(|| {
+                SafeHttpError::invalid(format!(
+                    "HTTP {status} redirect is missing a Location header"
+                ))
+            })?
             .to_str()
-            .map_err(|_| "Redirect Location header is not valid UTF-8".to_string())?;
-        let mut next = redirect_target(&url, location)?;
+            .map_err(|_| SafeHttpError::invalid("Redirect Location header is not valid UTF-8"))?;
+        let mut next = redirect_target(&url, location).map_err(SafeHttpError::invalid)?;
         if query_policy == RedirectQueryPolicy::RemoveSensitive {
             next = sanitize_fetch_url(next);
         }
@@ -187,26 +245,28 @@ struct ResolvedTarget {
 
 /// Resolve the target and reject the whole result if any address is non-public.
 /// Rejecting mixed public/private answers avoids resolver-order dependent bypasses.
-async fn resolve_public_target(url: &Url) -> Result<ResolvedTarget, String> {
-    validate_url_target(url)?;
+async fn resolve_public_target(url: &Url) -> Result<ResolvedTarget, SafeHttpError> {
+    validate_url_target(url).map_err(SafeHttpError::invalid)?;
 
     let serialized_host = url
         .host_str()
-        .ok_or_else(|| "URL must include a host".to_string())?;
+        .ok_or_else(|| SafeHttpError::invalid("URL must include a host"))?;
     let host = serialized_host
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
         .unwrap_or(serialized_host);
     let port = url
         .port_or_known_default()
-        .ok_or_else(|| "URL must include a valid port".to_string())?;
+        .ok_or_else(|| SafeHttpError::invalid("URL must include a valid port"))?;
     let mut addresses: Vec<_> = tokio::net::lookup_host((host, port))
         .await
-        .map_err(|error| format!("Failed to resolve URL host {host}: {error}"))?
+        .map_err(|error| {
+            SafeHttpError::transport(format!("Failed to resolve URL host {host}: {error}"))
+        })?
         .collect();
     addresses.sort_unstable();
     addresses.dedup();
-    validate_resolved_addresses(host, &addresses)?;
+    validate_resolved_addresses(host, &addresses).map_err(SafeHttpError::invalid)?;
 
     Ok(ResolvedTarget {
         host: serialized_host.to_string(),

@@ -1,0 +1,797 @@
+---
+title: 'Orchestration'
+description: 'Fan out independent work with session.parallel, build per-item chains with session.pipeline, and resume journaled runs with session.parallelResumable.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Orchestration
+
+This page shows the programmable orchestration primitives in A3S Code: `session.parallel` for fan-out, `session.pipeline` for per-item multi-stage chains, and `session.parallelResumable` for journaled runs that survive a crash. `parallel` also takes an optional token budget so a whole fan-out shares one ledger. Use orchestration when you have several independent subagent tasks (parallel), or one transformation that flows through ordered stages per input (pipeline).
+
+For the conceptual model behind these primitives, see [Orchestration](/guide/orchestration).
+
+## Fan-out with `session.parallel`
+
+`parallel` takes an array of `AgentStepSpec` and runs them concurrently, returning one `StepOutcome` per spec **in input order** (not completion order). Each spec routes to a named subagent (`explore`, `plan`, `review`, `verification`, `general`, ...). Set `outputSchema` / `output_schema` on a spec to get a schema-validated `structured` result back.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, AgentStepSpec};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+    let workflow = session.workflow();
+
+    let outcomes = workflow
+        .parallel(vec![
+            AgentStepSpec::new(
+                "langs",
+                "general",
+                "list languages",
+                "Name three systems programming languages.",
+            )
+            .with_max_steps(2),
+            AgentStepSpec::new(
+                "verdict",
+                "general",
+                "classify",
+                "Is Rust memory-safe without a GC? Answer yes or no.",
+            )
+            .with_max_steps(2),
+        ])
+        .await;
+
+    for outcome in outcomes {
+        println!(
+            "[parallel] {}: success={}",
+            outcome.task_id, outcome.success
+        );
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.', {});
+
+// Independent steps; outcomes come back in input order, not completion order.
+const outcomes = await session.parallel([
+  {
+    taskId: 'langs',
+    agent: 'general',
+    description: 'list',
+    prompt: 'Name three systems languages.',
+    maxSteps: 2,
+  },
+  {
+    taskId: 'safe',
+    agent: 'general',
+    description: 'classify',
+    prompt: 'Is Rust memory-safe without a GC? yes/no.',
+    maxSteps: 2,
+  },
+]);
+
+for (const o of outcomes) {
+  console.log(`[parallel] ${o.taskId}: success=${o.success}`);
+}
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session(".", SessionOptions())
+
+# Independent steps; outcomes come back in input order, not completion order.
+outcomes = session.parallel([
+    {
+        "task_id": "langs",
+        "agent": "general",
+        "description": "list languages",
+        "prompt": "Name three systems programming languages, comma-separated.",
+        "max_steps": 2,
+    },
+    {
+        "task_id": "verdict",
+        "agent": "general",
+        "description": "classify",
+        "prompt": "Is Rust memory-safe without a GC? Answer yes or no.",
+        "max_steps": 2,
+        # Schema-validated structured output for this step.
+        "output_schema": {
+            "type": "object",
+            "properties": {"memory_safe": {"type": "boolean"}},
+            "required": ["memory_safe"],
+        },
+    },
+])
+
+for o in outcomes:
+    print(f"[parallel] {o['task_id']}: success={o['success']} structured={o.get('structured')}")
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	maxSteps := uint(2)
+	result, err := session.Parallel(ctx, []code.AgentStepSpec{
+		{
+			TaskID:      "langs",
+			Description: "list languages",
+			Agent:       "general",
+			Prompt:      "Name three systems programming languages, comma-separated.",
+			MaxSteps:    &maxSteps,
+		},
+		{
+			TaskID:      "verdict",
+			Description: "classify",
+			Agent:       "general",
+			Prompt:      "Is Rust memory-safe without a GC? Answer yes or no.",
+			MaxSteps:    &maxSteps,
+			OutputSchema: json.RawMessage(`{
+				"type":"object",
+				"properties":{"memory_safe":{"type":"boolean"}},
+				"required":["memory_safe"]
+			}`),
+		},
+	}, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, outcome := range result.Outcomes {
+		fmt.Printf(
+			"[parallel] %s: success=%t structured=%s\n",
+			outcome.TaskID,
+			outcome.Success,
+			outcome.Structured,
+		)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+Outcomes are dictionaries in Python, objects in Node, and `StepOutcome` values
+in Go. The `maxParallelTasks` / `max_parallel_tasks` / `MaxParallelTasks`
+session option caps concurrency; extra specs queue, and the outcome array is
+still returned in full, in order.
+
+## Per-item chains with `session.pipeline`
+
+`pipeline` takes a list of input `items` and an ordered list of `stages`. Each item flows through the stages independently — there is **no barrier between stages**, so a fast item can reach stage 2 while a slow item is still in stage 1. A stage callback receives a `ctx`: the first stage sees `ctx.item`, later stages see `ctx.previous` (the prior `StepOutcome`, whose `.output` you build on). Return the next spec to continue, or `null` / `None` to stop that item's chain early.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::{Agent, AgentStepSpec, PipelineStage};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+    let workflow = session.workflow();
+
+    let stages: Vec<PipelineStage<String>> = vec![
+        Arc::new(|_, item| {
+            Some(
+                AgentStepSpec::new(
+                    "summarize",
+                    "general",
+                    "summarize",
+                    format!("In one sentence, what is {item}?"),
+                )
+                .with_max_steps(2),
+            )
+        }),
+        Arc::new(|previous, _| {
+            previous.map(|outcome| {
+                AgentStepSpec::new(
+                    "classify",
+                    "general",
+                    "classify",
+                    format!(
+                        "Reply YES or NO: does this describe a programming language?\n\n{}",
+                        outcome.output
+                    ),
+                )
+                .with_max_steps(2)
+            })
+        }),
+    ];
+
+    let results = workflow
+        .pipeline(vec!["the Rust programming language".to_string()], stages)
+        .await;
+    for result in results.into_iter().flatten() {
+        println!("[pipeline] {}", result.output);
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.', {});
+
+// Stage 2 builds on stage 1's output. A stage callback MUST NOT throw —
+// return null to stop this item's chain.
+const results = await session.pipeline(
+  ['the Rust programming language'],
+  [
+    (ctx) => ({
+      taskId: 'sum',
+      agent: 'general',
+      description: 'summarize',
+      prompt: `In one sentence, what is ${ctx.item}?`,
+      maxSteps: 2,
+    }),
+    (ctx) => ({
+      taskId: 'cls',
+      agent: 'general',
+      description: 'classify',
+      prompt: `Reply YES or NO: does this describe a programming language?\n\n${ctx.previous.output}`,
+      maxSteps: 2,
+    }),
+  ],
+);
+
+for (const r of results) {
+  console.log(
+    `[pipeline] final=${r === null ? null : JSON.stringify(r.output.slice(0, 60))}`,
+  );
+}
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session(".", SessionOptions())
+
+# Each item chains through stages; stage 2 builds on stage 1. Return None from a
+# stage (or raise — caught and treated as None) to stop that item's chain.
+results = session.pipeline(
+    ["the Rust programming language"],
+    [
+        lambda ctx: {
+            "task_id": "summarize",
+            "agent": "general",
+            "description": "summarize",
+            "prompt": f"In one sentence, what is {ctx['item']}?",
+            "max_steps": 2,
+        },
+        lambda ctx: {
+            "task_id": "classify",
+            "agent": "general",
+            "description": "classify",
+            "prompt": "Reply with one word YES or NO: does this describe a "
+            f"programming language?\n\n{ctx['previous']['output']}",
+            "max_steps": 2,
+        },
+    ],
+)
+
+for r in results:
+    print(f"[pipeline] final={None if r is None else r['output'][:60]!r}")
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	maxSteps := uint(2)
+	results, err := session.Pipeline(
+		ctx,
+		[]any{"the Rust programming language"},
+		[]code.PipelineStage{
+			func(
+				_ context.Context,
+				stage code.PipelineContext,
+			) (*code.AgentStepSpec, error) {
+				return &code.AgentStepSpec{
+					TaskID:      "summarize",
+					Agent:       "general",
+					Description: "summarize",
+					Prompt: fmt.Sprintf(
+						"In one sentence, what is %v?",
+						stage.Item,
+					),
+					MaxSteps: &maxSteps,
+				}, nil
+			},
+			func(
+				_ context.Context,
+				stage code.PipelineContext,
+			) (*code.AgentStepSpec, error) {
+				return &code.AgentStepSpec{
+					TaskID:      "classify",
+					Agent:       "general",
+					Description: "classify",
+					Prompt: "Reply YES or NO: does this describe a programming language?\n\n" +
+						stage.Previous.Output,
+					MaxSteps: &maxSteps,
+				}, nil
+			},
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, outcome := range results {
+		if outcome != nil {
+			fmt.Println(outcome.Output)
+		}
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+Key difference from `parallel`: stages are ordered and dependent, but items do
+**not** wait for each other between stages. Node stage callbacks must never
+throw — return `null` on error; Python stages may raise (caught as `None`); Go
+stages return `(*AgentStepSpec, error)`.
+
+## Resumable runs with `session.parallelResumable`
+
+`parallelResumable` is `parallel` with a journal. It takes the `specs` first and
+a stable `workflowId` second; each step's outcome is journaled to the session's
+store, so if the process crashes mid-run you can call it again with the same
+`workflowId` and completed steps are replayed from the journal instead of
+re-executed. It **requires a session store** — pass `sessionStore`,
+`session_store`, or Go's `FileSessionStoreDir` when opening the session.
+
+<Tabs>
+<Tab label="Rust">
+
+Rust exposes the same checkpoint behavior through a named `workflow.phase`.
+When a session store is configured, every phase is a resumable barrier.
+
+```rust
+use a3s_code_core::{Agent, AgentStepSpec, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_file_session_store("./.a3s/sessions")
+                .with_session_id("nightly-audit-session"),
+        )
+        .build()
+        .await?;
+    let workflow = session.workflow();
+
+    let outcomes = workflow
+        .phase(
+            "nightly-audit",
+            vec![
+                AgentStepSpec::new(
+                    "deps",
+                    "general",
+                    "audit dependencies",
+                    "Check manifests for outdated dependencies.",
+                )
+                .with_max_steps(2),
+                AgentStepSpec::new(
+                    "tests",
+                    "verification",
+                    "run tests",
+                    "Run the test suite and summarize failures.",
+                )
+                .with_max_steps(2),
+            ],
+        )
+        .await;
+
+    for outcome in outcomes {
+        println!("{}:{}", outcome.task_id, outcome.success);
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, FileSessionStore } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+// parallelResumable journals to the session store; it throws without one.
+const session = agent.session('.', {
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+});
+
+// Signature is (specs, workflowId): specs first, stable workflowId second.
+const outcomes = await session.parallelResumable(
+  [
+    {
+      taskId: 'deps',
+      agent: 'general',
+      description: 'audit deps',
+      prompt: 'Check manifests for outdated dependencies.',
+      maxSteps: 2,
+    },
+    {
+      taskId: 'tests',
+      agent: 'verification',
+      description: 'run tests',
+      prompt: 'Run the test suite and summarize failures.',
+      maxSteps: 2,
+    },
+  ],
+  'nightly-audit',
+);
+
+// After an interrupted run, restart with the same workflowId. Completed steps
+// are loaded from the journal; a fully successful run removes its checkpoint.
+console.log(outcomes.map((o) => `${o.taskId}:${o.success}`).join(' '));
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, FileSessionStore
+
+agent = Agent.create("agent.acl")
+# parallel_resumable journals to the session store; it raises without one.
+opts = SessionOptions()
+opts.session_store = FileSessionStore("./.a3s/sessions")
+session = agent.session(".", opts)
+
+# Signature is (specs, workflow_id): specs first, stable workflow_id second.
+outcomes = session.parallel_resumable(
+    [
+        {"task_id": "deps", "agent": "general", "description": "audit deps", "prompt": "Check manifests for outdated dependencies.", "max_steps": 2},
+        {"task_id": "tests", "agent": "verification", "description": "run tests", "prompt": "Run the test suite and summarize failures.", "max_steps": 2},
+    ],
+    "nightly-audit",
+)
+
+# After an interruption, restart with the same workflow_id. Completed steps
+# are loaded from the journal; a fully successful run removes its checkpoint.
+print(" ".join(f"{o['task_id']}:{o['success']}" for o in outcomes))
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	options := &code.SessionOptions{
+		SessionID:           "nightly-audit-session",
+		FileSessionStoreDir: "./.a3s/sessions",
+	}
+	session, err := agent.Session(ctx, ".", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	maxSteps := uint(2)
+	outcomes, err := session.ParallelResumable(ctx, []code.AgentStepSpec{
+		{
+			TaskID:      "deps",
+			Agent:       "general",
+			Description: "audit deps",
+			Prompt:      "Check manifests for outdated dependencies.",
+			MaxSteps:    &maxSteps,
+		},
+		{
+			TaskID:      "tests",
+			Agent:       "verification",
+			Description: "run tests",
+			Prompt:      "Run the test suite and summarize failures.",
+			MaxSteps:    &maxSteps,
+		},
+	}, "nightly-audit")
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, outcome := range outcomes {
+		fmt.Printf("%s:%t ", outcome.TaskID, outcome.Success)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+## Budgeted fan-out with `session.parallel`
+
+Pass a token budget and every child agent feeds **one shared ledger**. With a
+budget, `parallel` resolves to `{ outcomes, budget }`
+(the ledger snapshot) instead of the plain outcomes array; once the cap is hit, a
+step that starts afterwards is denied (`success: false`). It is a soft cap — a
+wide fan-out can race a few in-flight turns past it; the in-flight work is never
+force-killed.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, AgentStepSpec};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+    let workflow = session.workflow_with_token_budget(Some(50_000));
+
+    let outcomes = workflow
+        .parallel(vec![
+            AgentStepSpec::new("a", "general", "question one", "Reply: ready.")
+                .with_max_steps(2),
+            AgentStepSpec::new("b", "general", "question two", "Reply: go.")
+                .with_max_steps(2),
+        ])
+        .await;
+    for outcome in outcomes {
+        println!("{}: success={}", outcome.task_id, outcome.success);
+    }
+
+    if let Some(budget) = workflow.budget_snapshot() {
+        println!(
+            "spent {} / {} tokens",
+            budget.consumed_tokens,
+            budget.limit_tokens.unwrap_or_default()
+        );
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.', {});
+
+const specs = [
+  {
+    taskId: 'a',
+    agent: 'general',
+    description: 'q1',
+    prompt: 'Reply with one word: ready.',
+    maxSteps: 2,
+  },
+  {
+    taskId: 'b',
+    agent: 'general',
+    description: 'q2',
+    prompt: 'Reply with one word: go.',
+    maxSteps: 2,
+  },
+];
+
+// With a budget, parallel() resolves to { outcomes, budget } — all children
+// share one ledger. (Without it, parallel(specs) returns the plain array.)
+const { outcomes, budget } = await session.parallel(specs, 50_000);
+for (const o of outcomes)
+  console.log(`[budget] ${o.taskId}: success=${o.success}`);
+console.log(`spent ${budget.consumedTokens} / ${budget.limitTokens} tokens`);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session(".", SessionOptions())
+
+specs = [
+    {"task_id": "a", "agent": "general", "description": "q1", "prompt": "Reply with one word: ready.", "max_steps": 2},
+    {"task_id": "b", "agent": "general", "description": "q2", "prompt": "Reply with one word: go.", "max_steps": 2},
+]
+
+# With a budget, parallel() returns {"outcomes", "budget"} (a shared ledger).
+res = session.parallel(specs, budget_tokens=50_000)
+for o in res["outcomes"]:
+    print(f"[budget] {o['task_id']}: success={o['success']}")
+print(f"spent {res['budget']['consumed_tokens']} / {res['budget']['limit_tokens']} tokens")
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	maxSteps := uint(2)
+	budgetTokens := uint64(50_000)
+	result, err := session.Parallel(ctx, []code.AgentStepSpec{
+		{TaskID: "a", Agent: "general", Description: "q1", Prompt: "Reply with one word: ready.", MaxSteps: &maxSteps},
+		{TaskID: "b", Agent: "general", Description: "q2", Prompt: "Reply with one word: go.", MaxSteps: &maxSteps},
+	}, &budgetTokens)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, outcome := range result.Outcomes {
+		fmt.Printf("[budget] %s: success=%t\n", outcome.TaskID, outcome.Success)
+	}
+	if result.Budget != nil && result.Budget.LimitTokens != nil {
+		fmt.Printf(
+			"spent %d / %d tokens\n",
+			result.Budget.ConsumedTokens,
+			*result.Budget.LimitTokens,
+		)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+Notes:
+
+- All three primitives return outcomes aligned to input order. Go uses
+  `StepOutcome`; Node uses objects; Python uses dictionaries.
+- Set `outputSchema` / `output_schema` / `OutputSchema` on a spec to get a
+  parsed result back in `structured` / `Structured`.
+- `maxSteps` / `max_steps` / `MaxSteps` caps the steps per subagent;
+  `maxParallelTasks` / `max_parallel_tasks` / `MaxParallelTasks` caps fan-out
+  concurrency.
+- Pass a token budget to `parallel` to cap a whole fan-out against one shared
+  ledger. In Go, pass `*uint64` as the third `Parallel` argument and read
+  `ParallelResult.Budget`. It is a soft cap (usage is recorded after each call).
+- Node pipeline stage callbacks must never throw — return `null` on error.
+  Python stages may raise (caught as `None`); Go stages return an error.
+
+Runnable Node.js and Python versions ship at
+`sdk/node/examples/orchestration/parallel-pipeline.mjs` and
+`sdk/python/examples/orchestration_workflow.py`; the Rust and Go tabs above are
+self-contained.

@@ -11,6 +11,63 @@
 //! user installs `a3s-box`). This crate defines only the trait contract.
 
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::workspace::CommandOutputObserver;
+
+pub mod srt;
+
+/// Workspace-relative directories whose contents can change the agent,
+/// repository, editor, or tool control plane.
+///
+/// Ordinary sandboxed commands and quiet workspace file mutations must not
+/// write these paths. An interactive host may expose an explicit, auditable
+/// escalation path instead.
+pub const PROTECTED_WORKSPACE_DIRECTORIES: &[&str] = &[
+    ".git", ".a3s", ".agents", ".codex", ".claude", ".vscode", ".idea",
+];
+
+/// Workspace-relative files that can change command discovery or repository
+/// behavior even though they are not contained in a protected directory.
+pub const PROTECTED_WORKSPACE_FILES: &[&str] = &[
+    ".gitmodules",
+    ".mcp.json",
+    ".ripgreprc",
+    ".bashrc",
+    ".bash_profile",
+    ".zshrc",
+    ".zprofile",
+    ".profile",
+];
+
+/// Return whether a workspace-relative path targets protected control
+/// metadata.
+///
+/// Both separators are recognized so policy decisions are stable before a
+/// platform-specific workspace resolver consumes the path. Boundary traversal
+/// is handled separately by the workspace guardrail and is never treated as a
+/// protected-path approval request.
+pub fn is_protected_workspace_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let mut components = normalized
+        .split('/')
+        .filter(|component| !component.is_empty() && *component != ".");
+    let Some(first) = components.next() else {
+        return false;
+    };
+    if first == ".." || components.clone().any(|component| component == "..") {
+        return false;
+    }
+
+    PROTECTED_WORKSPACE_DIRECTORIES
+        .iter()
+        .any(|protected| first.eq_ignore_ascii_case(protected))
+        || PROTECTED_WORKSPACE_FILES
+            .iter()
+            .any(|protected| first.eq_ignore_ascii_case(protected))
+}
+
 /// Output from running a command inside a sandbox.
 pub struct SandboxOutput {
     /// Standard output bytes decoded as UTF-8.
@@ -19,6 +76,53 @@ pub struct SandboxOutput {
     pub stderr: String,
     /// Process exit code (0 = success).
     pub exit_code: i32,
+}
+
+/// Complete request passed to sandbox implementations that support the
+/// execution controls used by the built-in `bash` tool.
+///
+/// The legacy [`BashSandbox::exec_command`] method remains the minimum
+/// compatibility contract. New implementations should override
+/// [`BashSandbox::exec`] so command timeouts, streaming output, and explicit
+/// host-provided environment values are preserved inside the sandbox.
+#[derive(Clone)]
+pub struct SandboxCommandRequest {
+    pub command: String,
+    pub guest_workspace: String,
+    pub timeout_ms: u64,
+    pub output_observer: Option<Arc<dyn CommandOutputObserver>>,
+    pub env: Option<Arc<HashMap<String, String>>>,
+}
+
+impl std::fmt::Debug for SandboxCommandRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SandboxCommandRequest")
+            .field("command", &self.command)
+            .field("guest_workspace", &self.guest_workspace)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("output_observer", &self.output_observer.is_some())
+            .field("env", &self.env.as_ref().map(|env| env.len()))
+            .finish()
+    }
+}
+
+/// Output from the extended sandbox execution contract.
+pub struct SandboxExecutionOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+    pub timed_out: bool,
+}
+
+impl From<SandboxOutput> for SandboxExecutionOutput {
+    fn from(output: SandboxOutput) -> Self {
+        Self {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: output.exit_code,
+            timed_out: false,
+        }
+    }
 }
 
 // ============================================================================
@@ -42,6 +146,18 @@ pub trait BashSandbox: Send + Sync {
         command: &str,
         guest_workspace: &str,
     ) -> anyhow::Result<SandboxOutput>;
+
+    /// Execute a command with the complete host tool contract.
+    ///
+    /// Existing implementations inherit a compatibility adapter that delegates
+    /// to [`Self::exec_command`]. Sandboxes that spawn a real process should
+    /// override this method so timeout and output-stream semantics are not
+    /// silently lost.
+    async fn exec(&self, request: SandboxCommandRequest) -> anyhow::Result<SandboxExecutionOutput> {
+        self.exec_command(&request.command, &request.guest_workspace)
+            .await
+            .map(Into::into)
+    }
 
     /// Shut down the sandbox (best-effort, infallible from caller's perspective).
     async fn shutdown(&self);
@@ -114,5 +230,36 @@ mod tests {
         });
         let result = sandbox.exec_command("true", "/workspace").await.unwrap();
         assert_eq!(result.exit_code, 0);
+    }
+
+    #[test]
+    fn protected_workspace_paths_cover_control_metadata_cross_platform() {
+        for path in [
+            ".git/config",
+            "./.a3s/permissions.acl",
+            ".AGENTS/worker.acl",
+            ".codex\\config",
+            ".Claude/settings.json",
+            ".vscode/tasks.json",
+            ".idea/workspace.xml",
+            ".gitmodules",
+            ".MCP.JSON",
+        ] {
+            assert!(
+                is_protected_workspace_path(path),
+                "{path} should require explicit host authorization"
+            );
+        }
+        for path in [
+            "src/lib.rs",
+            "nested/.git/config",
+            "AGENTS.md",
+            "../.git/config",
+        ] {
+            assert!(
+                !is_protected_workspace_path(path),
+                "{path} should be handled by another boundary or remain ordinary"
+            );
+        }
     }
 }

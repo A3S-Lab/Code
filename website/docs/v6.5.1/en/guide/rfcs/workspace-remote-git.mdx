@@ -1,0 +1,537 @@
+---
+title: 'RFC: Remote Workspace Git Backend'
+description: 'HTTP/JSON protocol for serving git operations to non-local workspace backends'
+---
+
+# RFC: Remote Workspace Git Backend
+
+| Field   | Value                                                                      |
+| ------- | -------------------------------------------------------------------------- |
+| Status  | **Implemented** in v2.6.x (`crates/code/core/src/workspace/remote_git.rs`) |
+| Owner   | `crates/code` workspace subsystem                                          |
+| Tracks  | Phase 4.1 of S3 / non-local workspace hardening                            |
+| Related | `S3WorkspaceBackend`, `WorkspaceGit*` trait family                         |
+
+This document is retained as the protocol specification — clients and
+servers speaking this surface should match the wire shapes defined
+below. Subsequent revisions should land as separate amendment documents
+rather than editing this one in place, so the "what was shipped" history
+stays auditable.
+
+This RFC proposes a protocol and a Rust client that let `a3s-code` run the
+built-in `git` tool against workspaces backed by something other than a local
+filesystem — most importantly S3 and future container / DFS backends, which
+cannot host a `.git` directory directly.
+
+## 1. Motivation
+
+The workspace abstraction already lets the built-in tools talk to any
+filesystem implementation via `WorkspaceFileSystem`. For `bash`, `grep`,
+`glob`, and `git` we use **capability gating**: if the backend cannot
+service the operation, the corresponding tool is not registered and the
+model never sees it.
+
+That works for `bash` (object storage really cannot run a shell) and is
+acceptable for `grep` (we added a degraded `LIST + GET + regex` path). It is
+**painful for `git`**: many a3s-code workflows expect to query branch /
+commit state, diff working tree, create branches, and stash changes. Hiding
+`git` everywhere except local sessions splits the user experience and
+prevents cloud workspaces from being first-class.
+
+The proposal is to introduce a **remote `WorkspaceGit` backend** that
+delegates these operations over the network to an external service the host
+operates. The service owns a real working tree (or a libgit2-backed
+implementation) and exposes a small HTTP API. The a3s-code client speaks
+that API and presents it to tools as just another `WorkspaceGit` provider.
+
+```text
+                ┌──────────────────┐
+                │   a3s-code       │
+   model        │                  │
+   ──────►      │  git tool        │       HTTP/JSON
+                │      │           │   ┌────────────────┐
+                │      ▼           │   │                │
+                │  WorkspaceGit ───┼──►│  gitserver     │
+                │  (RemoteGit…)    │   │  (libgit2 / sh)│
+                │                  │   │                │
+                │  WorkspaceFs ────┼──►│  (S3, etc.)    │
+                └──────────────────┘   └────────────────┘
+```
+
+## 2. Non-Goals
+
+- **Hosting a gitserver.** This RFC defines a client and a protocol the
+  client speaks. Implementations of the server side (libgit2 wrapper,
+  shell-out, Gitea-API adapter, ...) are out of scope.
+- **Replacing local git.** When `WorkspaceFs` is `LocalWorkspaceBackend`,
+  the existing `LocalWorkspaceBackend` `WorkspaceGit` impl remains the
+  default. Hosts mix and match per session.
+- **Push / pull.** The `WorkspaceGit` trait surface is read-only against
+  remotes (`list_remotes` returns the configured set; no `git push` /
+  `git fetch`). A future RFC may add those if a tool needs them.
+- **Worktrees.** Worktrees are a local-filesystem concept; the remote
+  backend will **not** implement `WorkspaceGitWorktreeProvider`. See §8.
+
+## 3. Protocol Choice — HTTP/JSON
+
+**Decision:** HTTP/JSON, not gRPC.
+
+| Criterion              | HTTP/JSON                             | gRPC                           |
+| ---------------------- | ------------------------------------- | ------------------------------ |
+| Existing deps          | `reqwest` already in tree             | `tonic` + proto toolchain new  |
+| Schema strictness      | manual `serde` types                  | `.proto` typed                 |
+| Mocking in tests       | trivial (`wiremock`)                  | needs gRPC mock infra          |
+| Operator debuggability | `curl` works                          | `grpcurl` (less ubiquitous)    |
+| Streaming              | chunked / SSE                         | native bidi streams            |
+| Operation count        | ~12 ops, all req/resp                 | small; streaming rarely needed |
+| Server impl freedom    | trivial wrapper around `git`, `gitea` | requires a gRPC server         |
+
+The operation set is small (~12 RPCs) and the request/response shapes are
+flat. Streaming would only meaningfully help `log` and `diff`, both of
+which are bounded by client-side limits already. The mocking and operator
+debuggability wins of HTTP/JSON outweigh the schema benefits of gRPC at
+this scale. If the operation surface grows substantially or streaming
+becomes load-bearing, gRPC can be revisited.
+
+We use **`POST` for every operation**. Git operations are imperative, not
+resource-CRUD, and request bodies make versioning trivial (add optional
+fields, ignore unknown). `GET` would force everything into query strings.
+
+## 4. Repository Identity
+
+The client knows it is talking about a specific repository; the server
+needs to route. We encode the repo identity in the **URL path**:
+
+```
+POST /v1/repos/{repo_id}/git/<operation>
+```
+
+`repo_id` is an opaque, URL-safe string negotiated out of band between the
+host that configures the client and the gitserver operator. Typical values:
+
+- `users/{user_id}/sessions/{session_id}` (1:1 with an S3 workspace prefix)
+- A UUID
+- A path to a working tree on the gitserver
+
+The client treats `repo_id` as opaque; the server is responsible for
+mapping it to an actual working tree / bare repo.
+
+## 5. Endpoint Reference
+
+All endpoints are `POST`. All requests and responses are `application/json`.
+Field naming is `snake_case` to match Rust serde defaults.
+
+### 5.1 Status — `WorkspaceGit::status`
+
+```
+POST /v1/repos/{repo_id}/git/status
+→ 200 {
+    "branch":       "main",
+    "commit":       "abc123...",
+    "is_worktree":  false,
+    "is_dirty":     true,
+    "dirty_count":  3
+  }
+→ 404 {"error":{"code":"REPO_NOT_FOUND", ...}}
+```
+
+### 5.2 Log — `WorkspaceGit::log`
+
+```
+POST /v1/repos/{repo_id}/git/log
+{"max_count": 10}
+→ 200 {
+    "commits": [
+      {"id":"abc...", "message":"feat: ...", "author":"Alice <a@b>", "date":"2026-05-19T..."}
+    ]
+  }
+```
+
+### 5.3 List Branches — `WorkspaceGit::list_branches`
+
+```
+POST /v1/repos/{repo_id}/git/branches
+→ 200 {"branches":[{"name":"main", "is_current":true}, ...]}
+```
+
+### 5.4 Create Branch — `WorkspaceGit::create_branch`
+
+```
+POST /v1/repos/{repo_id}/git/branches/create
+{"name":"feat/x", "base":"main"}
+→ 201 {}
+→ 409 {"error":{"code":"BRANCH_EXISTS", ...}}
+→ 404 {"error":{"code":"BASE_NOT_FOUND", ...}}
+```
+
+### 5.5 Checkout — `WorkspaceGit::checkout`
+
+```
+POST /v1/repos/{repo_id}/git/checkout
+{"refspec":"feat/x", "force":false}
+→ 200 {"stdout":"Switched to branch 'feat/x'"}
+→ 409 {"error":{"code":"WORKING_TREE_DIRTY", ...}}
+```
+
+### 5.6 Diff — `WorkspaceGit::diff`
+
+```
+POST /v1/repos/{repo_id}/git/diff
+{"target": null}            // null = working tree vs index
+{"target": "main"}           // diff against ref
+→ 200 {"diff":"<unified diff text>", "truncated": false}
+```
+
+`truncated` is `true` when the server clipped the body — see §9. The
+client surfaces this in the `git diff` tool result.
+
+### 5.7 List Remotes — `WorkspaceGit::list_remotes`
+
+```
+POST /v1/repos/{repo_id}/git/remotes
+→ 200 {"remotes":[{"name":"origin", "url":"git@github.com:...", "direction":"fetch"}]}
+```
+
+### 5.8 Is Repository — `WorkspaceGit::is_repository`
+
+```
+POST /v1/repos/{repo_id}/git/exists
+→ 200 {"is_repository": true}
+```
+
+Distinct from "repo not found" (404): the server may be configured to
+serve repo IDs that map to non-git directories; `is_repository` lets the
+client probe without inferring intent from a 404.
+
+### 5.9 List Stashes — `WorkspaceGitStashProvider::list_stashes`
+
+```
+POST /v1/repos/{repo_id}/git/stashes
+→ 200 {"stashes":[{"index":0, "message":"WIP on main: ..."}]}
+```
+
+### 5.10 Stash — `WorkspaceGitStashProvider::stash`
+
+```
+POST /v1/repos/{repo_id}/git/stashes/create
+{"message":"wip", "include_untracked":true}
+→ 201 {}
+→ 409 {"error":{"code":"NOTHING_TO_STASH", ...}}
+```
+
+## 6. Authentication
+
+The client supports two transport modes, configurable per-session:
+
+1. **Bearer token (default).** `Authorization: Bearer <token>`. Token
+   provisioning is the host's responsibility (e.g. short-lived JWT minted
+   by the same identity layer that gates S3 access).
+2. **mTLS.** Pass both `client_cert_pem` and `client_key_pem` paths via
+   the backend config. The client reads both files at construction,
+   concatenates them, and hands the result to `reqwest::Identity::from_pem`.
+   The `rustls-tls` backend expects the key in PKCS#8 PEM format.
+   Setting only one of the pair fails at construction with a clear error.
+
+Both are mutually compatible — a deployment that uses both for defence in
+depth simply sets both.
+
+No-auth mode (for localhost development) is supported by configuring an
+empty bearer token (and no mTLS); the client emits a `tracing::warn!`
+on construction to make this visible.
+
+## 7. Error Model
+
+HTTP status code is the **transport** signal. The error **kind** is in
+the JSON body:
+
+```json
+{
+  "error": {
+    "code": "BRANCH_EXISTS",
+    "message": "branch 'feat/x' already exists"
+  }
+}
+```
+
+Client mapping:
+
+| HTTP    | Default outcome                             |
+| ------- | ------------------------------------------- |
+| 200/201 | `Ok(...)`                                   |
+| 400     | `Err(anyhow!("bad request: {message}"))`    |
+| 401/403 | `Err(anyhow!("auth failed: {message}"))`    |
+| 404     | `Err(anyhow!("not found: {message}"))`      |
+| 409     | typed conflict — see below                  |
+| 5xx     | `Err(anyhow!("gitserver internal: {...}"))` |
+
+The client introduces one typed error for backwards-compatible recovery:
+
+```rust
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("remote git conflict: {code}: {message}")]
+pub struct RemoteGitConflict {
+    pub code: String,
+    pub message: String,
+}
+```
+
+Tools that want to recover from `BRANCH_EXISTS` / `WORKING_TREE_DIRTY` /
+`NOTHING_TO_STASH` downcast `anyhow::Error::downcast_ref::<RemoteGitConflict>()`,
+the same pattern `edit` / `patch` use for `WorkspaceVersionConflict` on
+S3 compare-and-swap writes.
+
+Error codes documented in the public schema (extensible):
+
+| Code                 | Origin                                               |
+| -------------------- | ---------------------------------------------------- |
+| `REPO_NOT_FOUND`     | `repo_id` not served                                 |
+| `NOT_A_REPOSITORY`   | path exists but is not a git repo                    |
+| `BRANCH_EXISTS`      | `create_branch` with existing name                   |
+| `BRANCH_NOT_FOUND`   | checkout / diff target missing                       |
+| `BASE_NOT_FOUND`     | `create_branch` base ref missing                     |
+| `WORKING_TREE_DIRTY` | `checkout` would lose changes (and `force` is false) |
+| `NOTHING_TO_STASH`   | stash on a clean tree                                |
+| `RATE_LIMITED`       | per-tenant throttle hit (server-defined)             |
+
+## 8. Optional Traits
+
+`WorkspaceGit` is implemented in full.
+`WorkspaceGitStashProvider` is implemented.
+`WorkspaceGitWorktreeProvider` is **deliberately not implemented** by the
+remote backend. Worktrees are a local-filesystem concept that map poorly
+onto a remote service:
+
+- "Create a worktree at path X" — the client has no path concept; the
+  server's path layout is opaque.
+- The local tool flow that uses worktrees (parallel agent runs against
+  isolated copies) is better served on cloud workspaces by spinning up
+  **separate sessions with separate `repo_id`s**, not by emulating a
+  filesystem feature.
+
+Tools that depend on `WorkspaceGitWorktreeProvider` see `None` from
+`services.git_worktree()` and emit a clear "worktrees unavailable on
+remote git workspaces" error.
+
+## 9. Size and Cost Bounds
+
+Following the S3 backend's pattern, the remote git client enforces
+client-side ceilings so the model cannot trigger unbounded responses:
+
+| Setting                  | Default | Applies to                                           |
+| ------------------------ | ------- | ---------------------------------------------------- |
+| `max_diff_bytes`         | 1 MiB   | `diff` response body                                 |
+| `max_log_entries`        | 200     | `log` `max_count` cap                                |
+| `request_timeout`        | 30 s    | every HTTP call                                      |
+| `operation_timeout` (WS) | 60 s    | the `WorkspaceServices`-level wrapper applies on top |
+
+The server is expected to honour these too — the client passes the relevant
+caps in the request where applicable (`max_log_entries`), and surfaces
+`truncated: bool` returned by the server on `diff` so the tool can hint
+"large diff truncated; narrow your target".
+
+## 10. Rust Client Design
+
+```rust
+// crates/code/core/src/workspace/remote_git.rs   (feature = "remote-git")
+
+#[derive(Debug, Clone)]
+pub struct RemoteGitBackendConfig {
+    pub base_url:        String,           // https://git.example.invalid
+    pub repo_id:         String,           // path-segment safe
+    pub bearer_token:    Option<String>,
+    pub client_cert_pem: Option<PathBuf>,  // mTLS
+    pub client_key_pem:  Option<PathBuf>,
+    pub request_timeout: Option<Duration>, // default 30s
+    pub max_diff_bytes:  Option<u64>,      // default 1 MiB
+    pub max_log_entries: Option<usize>,    // default 200
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteGitBackend {
+    http:           reqwest::Client,
+    base_url:       String,
+    repo_id:        String,
+    max_diff_bytes: u64,
+    max_log_entries: usize,
+}
+
+#[async_trait]
+impl WorkspaceGit for RemoteGitBackend { /* see §5 */ }
+
+#[async_trait]
+impl WorkspaceGitStashProvider for RemoteGitBackend { /* see §5 */ }
+```
+
+Composition factory mirrors the S3 path:
+
+```rust
+impl WorkspaceServices {
+    /// Attach a remote git provider to an existing filesystem backend.
+    pub fn with_remote_git(
+        self: Arc<Self>,
+        cfg: RemoteGitBackendConfig,
+    ) -> Arc<Self> { ... }
+}
+```
+
+Or as a top-level convenience for an S3 + remote-git workspace:
+
+```rust
+pub fn s3_with_remote_git(
+    s3:  S3BackendConfig,
+    git: RemoteGitBackendConfig,
+) -> Arc<WorkspaceServices> { ... }
+```
+
+Wiring follows the existing builder pattern:
+
+```rust
+let backend = Arc::new(RemoteGitBackend::new(cfg));
+let git:   Arc<dyn WorkspaceGit>              = backend.clone();
+let stash: Arc<dyn WorkspaceGitStashProvider> = backend;
+
+WorkspaceServices::builder(workspace_ref, fs)
+    .file_system_ext(fs_ext)        // S3 ETag CAS
+    .git(git)
+    .git_stash(stash)
+    // no git_worktree — see §8
+    .operation_timeout(Duration::from_secs(60))
+    .build()
+```
+
+Capability gating then registers the `git` tool automatically.
+
+## 11. Per-Call Observability
+
+Every HTTP call emits a `tracing::debug!` event with the same field
+shape `S3WorkspaceBackend` uses for its per-call metering (see
+`emit_s3_call_event` in `crates/code/core/src/workspace/s3.rs`):
+
+| Field         | Example                       |
+| ------------- | ----------------------------- |
+| `op`          | `git.status`, `git.diff`, ... |
+| `repo_id`     | `sessions/example`            |
+| `outcome`     | `ok` \| `error`               |
+| `status`      | HTTP status code              |
+| `bytes`       | response body length          |
+| `duration_ms` | wall-clock                    |
+
+Hosts that already meter S3 cost can extend the same subscriber to meter
+gitserver cost; no new dependency or hook surface is needed.
+
+## 12. Composition Examples
+
+### S3 workspace + remote git
+
+```rust
+let ws = WorkspaceServices::s3_with_remote_git(
+    S3BackendConfig::new("workspace", "sessions/example", access_key, secret_key)
+        .endpoint("https://s3.example.invalid")
+        .force_path_style(true)
+        .enable_search(true),
+    RemoteGitBackendConfig::new(
+        "https://git.example.invalid",
+        "sessions/example",
+    )
+    .bearer_token(token),
+);
+
+let session = agent
+    .session_builder("s3://workspace/sessions/example")
+    .options(SessionOptions::new().with_workspace_backend(ws))
+    .build()
+    .await?;
+```
+
+Tools registered for this session: `read`, `write`, `edit`, `patch`, `ls`,
+`grep`, `glob`, `git`. (`bash` remains hidden — object storage cannot
+host a shell.)
+
+### Local filesystem + remote git (mixed)
+
+Useful when CI runs against a local checkout but the host wants to route
+git operations through a sandboxed service (e.g. for audit / rate limiting).
+
+```rust
+let local = WorkspaceServices::local("/workspaces/repo");
+let ws    = local.with_remote_git(remote_cfg);   // overrides local git provider
+```
+
+## 13. Open Questions
+
+These should be resolved before Phase 4.2 (implementation) starts.
+
+1. **Diff format pinning.** The local backend returns raw `git diff`
+   stdout. Should the remote API guarantee a specific diff dialect (POSIX
+   `diff -u`? libgit2's variant?) or pass through whatever the server
+   produces? Recommendation: pass through, document that the server
+   should produce unified diff.
+
+2. **Concurrent operations.** If two clients hit the same `repo_id`
+   simultaneously (one running `checkout`, one running `diff`), is the
+   server expected to serialise? Recommendation: server-side serialisation
+   per `repo_id`. Document the expectation; do not retry on conflict in
+   the client.
+
+3. **Long-running operations.** `checkout` against a large tree could
+   exceed `request_timeout`. Should the protocol support a polling /
+   async-job mode? Recommendation: defer. Set realistic timeouts; the
+   working-tree sizes we target (per-session sandboxes) are small.
+
+4. **Hooks.** The server may have pre-commit / pre-push hooks installed.
+   Do we surface a "hook output" channel in responses? Recommendation:
+   include hook stderr in the `checkout` / `stash` response when
+   non-empty; document that hook failures map to HTTP 422 with a
+   `HOOK_FAILED` code.
+
+5. **Schema versioning.** First-cut endpoints are under `/v1/`. When
+   should we bump to `/v2/`? Recommendation: only on incompatible
+   request/response shape changes; additive fields stay under `/v1/`
+   (clients ignore unknown fields).
+
+6. **Reference RFC.** Should a reference implementation (e.g. a minimal
+   libgit2-backed gitserver written in Rust) live in this repo, or stay
+   out-of-tree? Recommendation: out-of-tree. The client and protocol are
+   sufficient; reference servers belong with operators.
+
+## 14. Out of Scope (Future RFCs)
+
+- **Push / fetch from upstreams.** Needed for "agent commits and pushes
+  changes back to origin" workflows. Will need credential delegation.
+- **Sparse / partial checkout.** Useful for huge monorepos; the current
+  surface assumes the entire repo is materialised on the server.
+- **Streaming `log` and `diff`.** Required if response bodies routinely
+  exceed `max_diff_bytes`. Would motivate revisiting the gRPC decision.
+- **Hooks management.** Listing / configuring server-side hooks from the
+  client.
+
+## 15. Implementation Notes (shipped in v2.6.x)
+
+The original draft sketched an 8-step implementation plan; what
+actually shipped (Phase 4.2 plus Phase 5.x follow-ups) is:
+
+1. `RemoteGitBackend` / `RemoteGitBackendConfig` / `RemoteGitConflict`
+   live in `crates/code/core/src/workspace/remote_git.rs`. No
+   `remote-git` feature was added — `reqwest` was already a hard
+   dependency for the LLM clients, so the module compiles
+   unconditionally.
+2. `WorkspaceGit` and `WorkspaceGitStashProvider` implemented in full.
+   `WorkspaceGitWorktreeProvider` deliberately omitted (see §8).
+3. `WorkspaceServices::with_remote_git` is the public attachment
+   point. The internal helper `with_git_provider` (added in v2.6.x
+   follow-up) handles the actual struct-literal copy so future fields
+   on `WorkspaceServices` cannot be silently dropped by the decorator.
+4. mTLS is supported in addition to bearer token (`client_cert_pem`
+   - `client_key_pem`), shipped in a Phase 5.2 follow-up that also
+     updated §6 above.
+5. `diff` is hardened against unbounded responses: HTTP body is
+   streamed with a hard cap of `max_diff_bytes * 4` (Phase 6.2). The
+   soft `max_diff_bytes` display truncation continues to apply
+   post-decode.
+6. Test surface: 25+ wiremock-backed unit tests in `remote_git.rs`,
+   one end-to-end test driving the `git` built-in tool through the
+   remote backend, plus the workspace-wide conformance suite added
+   in Phase 6.3.
+7. README and CHANGELOG updated; rustls-tls backend selected to match
+   the AWS SDK.
+8. SDK exposure landed in Phase 5.1 (Node + Python).

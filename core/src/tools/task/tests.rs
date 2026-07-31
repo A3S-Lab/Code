@@ -857,7 +857,7 @@ fn test_parallel_task_params_schema() {
         schema["properties"]["tasks"]["maxItems"],
         MAX_PARALLEL_TASKS_PER_CALL
     );
-    assert_eq!(schema["properties"]["tasks"]["minItems"], 1);
+    assert_eq!(schema["properties"]["tasks"]["minItems"], 2);
     assert_eq!(
         schema["properties"]["allow_partial_failure"]["type"],
         "boolean"
@@ -887,8 +887,7 @@ fn test_parallel_task_params_schema_items() {
     assert!(item_required.contains(&serde_json::json!("agent")));
     assert!(item_required.contains(&serde_json::json!("description")));
     assert!(item_required.contains(&serde_json::json!("prompt")));
-    assert_eq!(items["properties"]["background"]["type"], "boolean");
-    assert_eq!(items["properties"]["background"]["default"], false);
+    assert!(items["properties"].get("background").is_none());
     assert_eq!(items["properties"]["max_steps"]["type"], "integer");
     assert_eq!(items["properties"]["output_schema"]["type"], "object");
 }
@@ -1021,10 +1020,10 @@ fn test_task_params_schema_hides_permissive_field() {
 use crate::agent::tests::MockLlmClient;
 use crate::budget::{BudgetDecision, BudgetGuard};
 use crate::llm::{ContentBlock, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition};
-use crate::permissions::PermissionPolicy;
+use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
 use crate::subagent::AgentRegistry;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::{mpsc, Barrier, Notify};
@@ -1284,6 +1283,7 @@ fn child_context_with_budget(
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        sandbox_handle: None,
         budget_guard: Some(budget_guard),
     }
 }
@@ -2022,6 +2022,7 @@ fn redacting_parent_context() -> crate::child_run::ChildRunContext {
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        sandbox_handle: None,
         budget_guard: None,
     }
 }
@@ -2029,6 +2030,94 @@ fn redacting_parent_context() -> crate::child_run::ChildRunContext {
 struct BlockingTaskClient {
     started: Arc<Notify>,
     calls: Arc<AtomicUsize>,
+}
+
+struct DelayedBackgroundWriteClient {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+    calls: AtomicUsize,
+}
+
+impl DelayedBackgroundWriteClient {
+    async fn next_response(&self) -> LlmResponse {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            let release = self.release.notified();
+            self.started.notify_one();
+            release.await;
+            MockLlmClient::tool_call_response(
+                "background-write",
+                "write",
+                serde_json::json!({
+                    "file_path": "run-snapshot.txt",
+                    "content": "kept-original-run-authority"
+                }),
+            )
+        } else {
+            MockLlmClient::text_response("Background write completed.")
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for DelayedBackgroundWriteClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        Ok(self.next_response().await)
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        let response = self.next_response().await;
+        let (tx, rx) = mpsc::channel(2);
+        tokio::spawn(async move {
+            let _ = tx.send(StreamEvent::Done(response)).await;
+        });
+        Ok(rx)
+    }
+}
+
+struct MutableRunBoundary {
+    deny_writes: Arc<AtomicBool>,
+}
+
+struct FrozenRunBoundary {
+    deny_writes: bool,
+}
+
+impl PermissionChecker for MutableRunBoundary {
+    fn snapshot_for_run(&self) -> Option<Arc<dyn PermissionChecker>> {
+        Some(Arc::new(FrozenRunBoundary {
+            deny_writes: self.deny_writes.load(Ordering::SeqCst),
+        }))
+    }
+
+    fn check(&self, tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+        if tool_name.eq_ignore_ascii_case("write") && self.deny_writes.load(Ordering::SeqCst) {
+            PermissionDecision::Deny
+        } else {
+            PermissionDecision::Allow
+        }
+    }
+}
+
+impl PermissionChecker for FrozenRunBoundary {
+    fn check(&self, tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+        if tool_name.eq_ignore_ascii_case("write") && self.deny_writes {
+            PermissionDecision::Deny
+        } else {
+            PermissionDecision::Allow
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -2170,6 +2259,108 @@ async fn background_task_updates_shared_tracker_without_an_event_receiver() {
             tool: "read".to_string(),
             url_or_path: "source.md".to_string(),
         }]
+    );
+}
+
+#[tokio::test]
+async fn background_task_keeps_the_admitted_run_permission_snapshot_across_turn_changes() {
+    use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let deny_writes = Arc::new(AtomicBool::new(false));
+    let live_boundary = Arc::new(MutableRunBoundary {
+        deny_writes: Arc::clone(&deny_writes),
+    });
+    let admitted_boundary = live_boundary
+        .snapshot_for_run()
+        .expect("mutable host boundary must produce a run snapshot");
+    let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+    let parent_context = crate::child_run::ChildRunContext {
+        security_provider: None,
+        hook_engine: None,
+        skill_registry: None,
+        permission_checker: Some(live_boundary.clone()),
+        permission_policy: None,
+        tool_timeout_ms: None,
+        llm_api_timeout_ms: None,
+        max_parallel_tasks: None,
+        max_execution_time_ms: None,
+        circuit_breaker_threshold: None,
+        duplicate_tool_call_threshold: None,
+        confirmation_manager: None,
+        enforce_active_skill_tool_restrictions: None,
+        workspace_services: None,
+        sandbox_handle: None,
+        budget_guard: None,
+    };
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_writer(),
+            Arc::new(DelayedBackgroundWriteClient {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+                calls: AtomicUsize::new(0),
+            }),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_parent_context(parent_context)
+        .with_subagent_tracker(Arc::clone(&tracker)),
+    );
+    let tool = TaskTool::new(executor);
+    let context = ToolContext::new(workspace.path().to_path_buf())
+        .with_session_id("auto-turn")
+        .with_run_governance(Some(admitted_boundary), None);
+    let started_wait = started.notified();
+
+    let launch = tool
+        .execute(
+            &serde_json::json!({
+                "agent": "writer",
+                "description": "continue after parent turn",
+                "prompt": "Write run-snapshot.txt after the parent turn ends.",
+                "background": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    let task_id = launch
+        .content
+        .split("Task ID: ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    tokio::time::timeout(Duration::from_secs(1), started_wait)
+        .await
+        .expect("background child should reach the delayed model response");
+    deny_writes.store(true, Ordering::SeqCst);
+    assert_eq!(
+        live_boundary.check("write", &serde_json::json!({})),
+        PermissionDecision::Deny
+    );
+    release.notify_waiters();
+
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(snapshot) = tracker.get(&task_id).await {
+                if snapshot.status != SubagentStatus::Running {
+                    break snapshot;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background child should finish");
+
+    assert_eq!(snapshot.status, SubagentStatus::Completed);
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("run-snapshot.txt")).unwrap(),
+        "kept-original-run-authority"
     );
 }
 
@@ -2414,7 +2605,30 @@ async fn task_child_run_permission_deny() {
 
 #[tokio::test]
 async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
+    struct RecordingSandbox {
+        called: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::sandbox::BashSandbox for RecordingSandbox {
+        async fn exec_command(
+            &self,
+            command: &str,
+            _guest_workspace: &str,
+        ) -> anyhow::Result<crate::sandbox::SandboxOutput> {
+            self.called.store(true, Ordering::SeqCst);
+            Ok(crate::sandbox::SandboxOutput {
+                stdout: format!("sandboxed: {command}"),
+                stderr: String::new(),
+                exit_code: 0,
+            })
+        }
+
+        async fn shutdown(&self) {}
+    }
+
     let workspace = tempfile::tempdir().unwrap();
+    let sandbox_called = Arc::new(AtomicBool::new(false));
     let mock = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::tool_call_response(
             "t1",
@@ -2439,6 +2653,9 @@ async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        sandbox_handle: Some(Arc::new(RecordingSandbox {
+            called: Arc::clone(&sandbox_called),
+        })),
         budget_guard: None,
     };
 
@@ -2474,6 +2691,10 @@ async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
         !result.output.contains("Permission denied"),
         "no inherited child permission denial: {}",
         result.output
+    );
+    assert!(
+        sandbox_called.load(Ordering::SeqCst),
+        "delegated bash must retain the parent sandbox instead of using the host runner"
     );
 }
 
@@ -2772,6 +2993,70 @@ async fn concurrent_parallel_batches_share_eight_slots_and_execute_each_branch_o
 }
 
 #[tokio::test]
+async fn parallel_task_tool_rejects_arguments_that_conflict_with_its_contract() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = Arc::new(TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("must not be used")),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let tool = ParallelTaskTool::new(executor);
+    let ctx = ToolContext::new(workspace.path().to_path_buf());
+    let task = |description: &str| {
+        serde_json::json!({
+            "agent": "worker",
+            "description": description,
+            "prompt": format!("Run {description}")
+        })
+    };
+
+    let invalid_arguments = [
+        serde_json::json!({"tasks": [task("only branch")]}),
+        serde_json::json!({
+            "tasks": [
+                task("foreground branch"),
+                {
+                    "agent": "worker",
+                    "description": "background branch",
+                    "prompt": "Run independently",
+                    "background": true
+                }
+            ]
+        }),
+        serde_json::json!({
+            "min_success_count": 1,
+            "tasks": [task("first branch"), task("second branch")]
+        }),
+        serde_json::json!({
+            "allow_partial_failure": true,
+            "min_success_count": 3,
+            "tasks": [task("first branch"), task("second branch")]
+        }),
+        serde_json::json!({
+            "allow_partial_failure": true,
+            "min_success_count": 0,
+            "tasks": [task("first branch"), task("second branch")]
+        }),
+        serde_json::json!({
+            "timeout_ms": 0,
+            "tasks": [task("first branch"), task("second branch")]
+        }),
+    ];
+
+    for args in invalid_arguments {
+        let output = tool.execute(&args, &ctx).await.unwrap();
+        assert!(!output.success, "arguments should fail: {args:#}");
+        assert!(
+            matches!(
+                output.error_kind,
+                Some(crate::tools::ToolErrorKind::InvalidArgument { .. })
+            ),
+            "expected InvalidArgument for {args:#}, got {output:#?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn cancelling_a_batch_waiting_for_provider_capacity_returns_promptly() {
     let workspace = tempfile::tempdir().unwrap();
     let client = Arc::new(BlockingCapacityLlmClient::new());
@@ -2791,11 +3076,19 @@ async fn cancelling_a_batch_waiting_for_provider_capacity_returns_promptly() {
         first_tool
             .execute(
                 &serde_json::json!({
-                    "tasks": [{
-                        "agent": "worker",
-                        "description": "Hold provider capacity",
-                        "prompt": "blocking branch"
-                    }]
+                    "allow_partial_failure": true,
+                    "tasks": [
+                        {
+                            "agent": "worker",
+                            "description": "Hold provider capacity",
+                            "prompt": "blocking branch"
+                        },
+                        {
+                            "agent": "missing-agent",
+                            "description": "Control branch",
+                            "prompt": "Return without using provider capacity"
+                        }
+                    ]
                 }),
                 &first_context,
             )
@@ -2814,11 +3107,18 @@ async fn cancelling_a_batch_waiting_for_provider_capacity_returns_promptly() {
         second_tool
             .execute(
                 &serde_json::json!({
-                    "tasks": [{
-                        "agent": "worker",
-                        "description": "Wait for provider capacity",
-                        "prompt": "waiting branch"
-                    }]
+                    "tasks": [
+                        {
+                            "agent": "worker",
+                            "description": "Wait for provider capacity",
+                            "prompt": "waiting branch"
+                        },
+                        {
+                            "agent": "missing-agent",
+                            "description": "Cancelled control branch",
+                            "prompt": "Return without using provider capacity"
+                        }
+                    ]
                 }),
                 &second_context,
             )
@@ -2854,7 +3154,7 @@ async fn cancelling_a_batch_waiting_for_provider_capacity_returns_promptly() {
 }
 
 #[tokio::test]
-async fn parallel_task_retries_only_the_failed_read_only_branch() {
+async fn parallel_task_does_not_replay_a_read_only_branch_from_error_prose() {
     let workspace = tempfile::tempdir().unwrap();
     let client = Arc::new(TransientThenSuccessLlmClient::new(2));
     let executor = Arc::new(TaskExecutor::new(
@@ -2868,11 +3168,19 @@ async fn parallel_task_retries_only_the_failed_read_only_branch() {
     let output = tool
         .execute(
             &serde_json::json!({
-                "tasks": [{
-                    "agent": "explore",
-                    "description": "Inspect retry behavior",
-                    "prompt": "Read the relevant files and report evidence."
-                }]
+                "allow_partial_failure": true,
+                "tasks": [
+                    {
+                        "agent": "explore",
+                        "description": "Inspect retry behavior",
+                        "prompt": "Read the relevant files and report evidence."
+                    },
+                    {
+                        "agent": "missing-agent",
+                        "description": "Independent control branch",
+                        "prompt": "Return a control result."
+                    }
+                ]
             }),
             &ctx,
         )
@@ -2880,20 +3188,23 @@ async fn parallel_task_retries_only_the_failed_read_only_branch() {
         .unwrap();
 
     assert!(
-        output.success,
-        "retry should recover the branch: {output:?}"
+        !output.success,
+        "untyped failure must remain failed: {output:?}"
     );
-    assert!(output.content.contains("recovered:"), "{output:?}");
     let metadata = output.metadata.expect("parallel metadata");
-    assert_eq!(metadata["retry_attempt_count"], 1);
-    assert_eq!(metadata["retried_task_count"], 1);
-    assert_eq!(metadata["recovered_task_count"], 1);
-    assert_eq!(metadata["results"][0]["retry_attempts"], 1);
-    assert_eq!(client.calls(), 3, "two child attempts plus one retry");
+    assert!(metadata.get("retry_attempt_count").is_none());
+    assert!(metadata.get("retried_task_count").is_none());
+    assert!(metadata.get("recovered_task_count").is_none());
+    assert!(metadata["results"][0].get("retry_attempts").is_none());
+    assert_eq!(
+        client.calls(),
+        2,
+        "only the child LLM boundary may consume its configured attempt budget"
+    );
 }
 
 #[tokio::test]
-async fn parallel_retry_preserves_successful_siblings_without_replaying_them() {
+async fn parallel_task_preserves_successful_siblings_without_prose_driven_replay() {
     let workspace = tempfile::tempdir().unwrap();
     let client = Arc::new(SelectiveTransientLlmClient::new());
     let executor = Arc::new(TaskExecutor::new(
@@ -2926,21 +3237,19 @@ async fn parallel_retry_preserves_successful_siblings_without_replaying_them() {
         .unwrap();
 
     assert!(
-        output.success,
-        "the isolated retry should recover: {output:#?}"
+        !output.success,
+        "one branch must remain failed: {output:#?}"
     );
     let metadata = output.metadata.expect("parallel metadata");
-    assert_eq!(metadata["retry_attempt_count"], 1);
-    assert_eq!(metadata["retried_task_count"], 1);
-    assert_eq!(metadata["recovered_task_count"], 1);
-    assert_eq!(metadata["results"][0]["retry_attempts"], 0);
-    assert_eq!(metadata["results"][1]["retry_attempts"], 1);
+    assert!(metadata.get("retry_attempt_count").is_none());
+    assert!(metadata.get("retried_task_count").is_none());
+    assert!(metadata.get("recovered_task_count").is_none());
+    assert!(metadata["results"][0].get("retry_attempts").is_none());
+    assert!(metadata["results"][1].get("retry_attempts").is_none());
     assert!(metadata["results"][0]["output_excerpt"]
         .as_str()
         .is_some_and(|output| output.contains("stable branch")));
-    assert!(metadata["results"][1]["output_excerpt"]
-        .as_str()
-        .is_some_and(|output| output.contains("flaky branch")));
+    assert_eq!(metadata["results"][1]["success"], false);
     assert_eq!(
         client.attempts_for("stable"),
         1,
@@ -2948,8 +3257,8 @@ async fn parallel_retry_preserves_successful_siblings_without_replaying_them() {
     );
     assert_eq!(
         client.attempts_for("flaky"),
-        3,
-        "the child circuit breaker may try twice before one bounded branch retry"
+        2,
+        "the task layer must not create an extra attempt from rendered error text"
     );
 }
 
@@ -2968,11 +3277,18 @@ async fn parallel_task_does_not_retry_a_mutating_branch() {
     let output = tool
         .execute(
             &serde_json::json!({
-                "tasks": [{
-                    "agent": "general",
-                    "description": "Potentially mutate the workspace",
-                    "prompt": "Implement the requested change."
-                }]
+                "tasks": [
+                    {
+                        "agent": "general",
+                        "description": "Potentially mutate the workspace",
+                        "prompt": "Implement the requested change."
+                    },
+                    {
+                        "agent": "missing-agent",
+                        "description": "Independent failed control",
+                        "prompt": "Return a control result."
+                    }
+                ]
             }),
             &ctx,
         )
@@ -2981,10 +3297,10 @@ async fn parallel_task_does_not_retry_a_mutating_branch() {
 
     assert!(!output.success, "a mutating branch must not be replayed");
     let metadata = output.metadata.expect("parallel metadata");
-    assert_eq!(metadata["retry_attempt_count"], 0);
-    assert_eq!(metadata["retried_task_count"], 0);
-    assert_eq!(metadata["recovered_task_count"], 0);
-    assert_eq!(metadata["results"][0]["retry_attempts"], 0);
+    assert!(metadata.get("retry_attempt_count").is_none());
+    assert!(metadata.get("retried_task_count").is_none());
+    assert!(metadata.get("recovered_task_count").is_none());
+    assert!(metadata["results"][0].get("retry_attempts").is_none());
     assert_eq!(
         client.calls(),
         2,
@@ -3387,12 +3703,19 @@ async fn parallel_task_tool_returns_structured_child_output_when_schema_requeste
     let output = tool
         .execute(
             &serde_json::json!({
-                "tasks": [{
-                    "agent": "worker",
-                    "description": "Structured verdict",
-                    "prompt": "Return a verdict.",
-                    "output_schema": verdict_schema()
-                }]
+                "tasks": [
+                    {
+                        "agent": "worker",
+                        "description": "Structured verdict",
+                        "prompt": "Return a verdict.",
+                        "output_schema": verdict_schema()
+                    },
+                    {
+                        "agent": "worker",
+                        "description": "Independent plain result",
+                        "prompt": "Return a plain result."
+                    }
+                ]
             }),
             &ctx,
         )
@@ -3617,23 +3940,34 @@ async fn parallel_task_metadata_carries_successful_child_read_anchor() {
             serde_json::json!({"file_path": "source.md"}),
         ),
         MockLlmClient::text_response("Evidence came from source.md."),
+        MockLlmClient::text_response("Independent source review complete."),
     ]));
-    let executor = Arc::new(TaskExecutor::new(
-        test_registry_with_writer(),
-        llm,
-        workspace.path().to_string_lossy().to_string(),
-    ));
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_writer(),
+            llm,
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_max_parallel_tasks(1),
+    );
     let tool = ParallelTaskTool::new(executor);
     let ctx = ToolContext::new(workspace.path().to_path_buf());
 
     let output = tool
         .execute(
             &serde_json::json!({
-                "tasks": [{
-                    "agent": "writer",
-                    "description": "Read source",
-                    "prompt": "Read source.md and report what it says."
-                }]
+                "tasks": [
+                    {
+                        "agent": "writer",
+                        "description": "Read source",
+                        "prompt": "Read source.md and report what it says."
+                    },
+                    {
+                        "agent": "writer",
+                        "description": "Review source independently",
+                        "prompt": "Return a short independent review."
+                    }
+                ]
             }),
             &ctx,
         )
@@ -3682,6 +4016,7 @@ async fn child_source_anchor_is_sanitized_before_task_metadata_persistence() {
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        sandbox_handle: None,
         budget_guard: None,
     };
     let executor = TaskExecutor::new(

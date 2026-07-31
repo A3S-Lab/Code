@@ -32,7 +32,8 @@ pub(super) fn build_agent_loop(session: &AgentSession) -> AgentLoop {
         session.tool_executor.clone(),
         session.tool_context.clone(),
         config,
-    );
+    )
+    .with_model_generation_admission(session.model_generation_admission.clone());
     if let Some(queue) = &session.command_queue {
         agent_loop = agent_loop.with_queue(Arc::clone(queue));
     }

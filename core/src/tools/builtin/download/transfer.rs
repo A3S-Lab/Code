@@ -648,7 +648,9 @@ async fn send_get(
             headers,
             MAX_REDIRECTS,
             RedirectQueryPolicy::Preserve,
-        ) => result.map_err(|message| DownloadFailure::new(FailureKind::Network, message)),
+        ) => result.map_err(|error| {
+            DownloadFailure::new(FailureKind::Network, error.to_string())
+        }),
     }
 }
 

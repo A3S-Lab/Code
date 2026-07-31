@@ -778,12 +778,13 @@ impl WorkspaceSearch for S3WorkspaceBackend {
         let mut total_size = 0usize;
         let mut output_truncated = false;
         let mut matched_paths = Vec::new();
+        let metadata_only = request.max_output_size == 0;
 
         'outer: for (workspace_path, display_str, lines, file_matches) in hits {
             file_count += 1;
             let mut path_recorded = false;
             for &match_idx in &file_matches {
-                if total_size > request.max_output_size {
+                if !metadata_only && total_size > request.max_output_size {
                     output_truncated = true;
                     break 'outer;
                 }
@@ -792,6 +793,9 @@ impl WorkspaceSearch for S3WorkspaceBackend {
                     path_recorded = true;
                 }
                 match_count += 1;
+                if metadata_only {
+                    continue;
+                }
 
                 let start = match_idx.saturating_sub(request.context_lines);
                 let end = (match_idx + request.context_lines + 1).min(lines.len());
