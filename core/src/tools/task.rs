@@ -108,6 +108,14 @@ pub struct TaskExecutor {
     mcp_managers: Vec<Arc<McpManager>>,
     /// Parent capabilities to inherit into child runs.
     parent_context: Option<crate::child_run::ChildRunContext>,
+    /// Search configuration captured from the invoking parent context.
+    search_config: Option<Arc<crate::config::SearchConfig>>,
+    /// Agent-scoped search admission shared with delegated child runs.
+    search_bulkhead: Option<a3s_search::Bulkhead>,
+    /// Agent-scoped headless retry allowance shared with delegated child runs.
+    search_retry_budget: Option<a3s_search::RetryBudget>,
+    /// Parent-session request flights shared with delegated child runs.
+    search_request_coalescer: Option<a3s_search::SearchCoalescer>,
     /// Optional lifetime boundary inherited from the session that created this
     /// executor. Keeping it on the executor prevents cached workflow/executor
     /// handles from starting new child runs after their session is closed.
@@ -135,6 +143,10 @@ impl TaskExecutor {
             workspace,
             mcp_managers: Vec::new(),
             parent_context: None,
+            search_config: None,
+            search_bulkhead: None,
+            search_retry_budget: None,
+            search_request_coalescer: None,
             parent_cancellation: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
             parallel_permits: Arc::new(tokio::sync::Semaphore::new(
@@ -167,6 +179,10 @@ impl TaskExecutor {
             workspace,
             mcp_managers,
             parent_context: None,
+            search_config: None,
+            search_bulkhead: None,
+            search_retry_budget: None,
+            search_request_coalescer: None,
             parent_cancellation: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
             parallel_permits: Arc::new(tokio::sync::Semaphore::new(
@@ -188,14 +204,42 @@ impl TaskExecutor {
     }
 
     fn scoped_for_invocation(self: &Arc<Self>, ctx: &ToolContext) -> Arc<Self> {
-        if !ctx.has_run_governance() {
-            return Arc::clone(self);
-        }
         let mut scoped = self.as_ref().clone();
-        scoped.parent_context = scoped.parent_context.take().map(|parent| {
-            parent.with_run_governance(ctx.run_permission_checker(), ctx.run_confirmation_manager())
-        });
+        scoped.search_config = ctx.search_config.clone();
+        scoped.search_bulkhead = Some(ctx.search_bulkhead());
+        scoped.search_retry_budget = Some(ctx.search_retry_budget());
+        scoped.search_request_coalescer = Some(ctx.search_request_coalescer());
+        if ctx.has_run_governance() {
+            scoped.parent_context = scoped.parent_context.take().map(|parent| {
+                parent.with_run_governance(
+                    ctx.run_permission_checker(),
+                    ctx.run_confirmation_manager(),
+                )
+            });
+        }
         Arc::new(scoped)
+    }
+
+    fn child_tool_context(
+        &self,
+        session_id: String,
+        cancellation: CancellationToken,
+    ) -> ToolContext {
+        let mut context = ToolContext::new(PathBuf::from(&self.workspace))
+            .with_session_id(session_id)
+            .with_cancellation(cancellation);
+        if let (Some(bulkhead), Some(retry_budget)) =
+            (&self.search_bulkhead, &self.search_retry_budget)
+        {
+            context = context.with_search_runtime(bulkhead.clone(), retry_budget.clone());
+        }
+        if let Some(search_config) = &self.search_config {
+            context = context.with_search_config(search_config.as_ref().clone());
+        }
+        if let Some(coalescer) = &self.search_request_coalescer {
+            context = context.with_search_request_coalescer(coalescer.clone());
+        }
+        context
     }
 
     /// Bind every run started by this executor to a parent lifetime.
@@ -411,9 +455,7 @@ impl TaskExecutor {
         let cancel_token = parent_cancellation
             .map(CancellationToken::child_token)
             .unwrap_or_default();
-        let mut tool_context = ToolContext::new(PathBuf::from(&self.workspace))
-            .with_session_id(session_id.clone())
-            .with_cancellation(cancel_token.clone());
+        let mut tool_context = self.child_tool_context(session_id.clone(), cancel_token.clone());
         if let Some(ref parent_ctx) = self.parent_context {
             if let Some(ref services) = parent_ctx.workspace_services {
                 tool_context = tool_context.with_workspace_services(Arc::clone(services));

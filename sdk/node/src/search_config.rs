@@ -29,7 +29,7 @@ impl From<SearchEngineConfig> for RustSearchEngineConfig {
 pub enum BrowserBackend {
     /// Chrome/Chromium headless.
     Chrome,
-    /// Lightpanda headless browser (Linux/macOS only).
+    /// Lightpanda headless browser (native Linux/macOS; WSL2 on Windows hosts).
     Lightpanda,
 }
 

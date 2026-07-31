@@ -1,5 +1,7 @@
 //! Search-engine registry, aliases, and construction.
 
+#[cfg(feature = "headless-search")]
+use crate::config::BrowserBackend;
 use a3s_search::engines::{
     BingChina, BingParser, BraveParser, DuckDuckGoParser, So360Parser, SogouParser, Wikipedia,
 };
@@ -8,7 +10,7 @@ use a3s_search::providers::BuiltinProvider;
 use a3s_search::{
     a3s_use_browser::BrowserPool,
     engines::{Baidu, Google},
-    BrowserFetcher, WaitStrategy,
+    BrowserFetcher, RetryBudget, WaitStrategy,
 };
 use a3s_search::{EngineFailure, HtmlEngine, HttpFetcher, Search, SearchError};
 use std::sync::Arc;
@@ -159,24 +161,61 @@ pub(super) fn add_headless_engine(
     search: &mut Search,
     shortcut: &str,
     pool: &Arc<BrowserPool>,
+    backend: BrowserBackend,
+    retry_budget: &RetryBudget,
 ) -> bool {
     match canonical_engine_shortcut(shortcut) {
         "g" => {
-            let fetcher = BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
-                css: "div.g".to_string(),
-                timeout_ms: 5000,
-            });
+            let fetcher = BrowserFetcher::new(Arc::clone(pool))
+                .with_retry_budget(retry_budget.clone())
+                .with_wait(headless_wait_strategy(backend, "div.g"));
             search.add_engine(Google::new(Arc::new(fetcher)));
             true
         }
         "baidu" => {
-            let fetcher = BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
-                css: "div.c-container".to_string(),
-                timeout_ms: 5000,
-            });
+            let fetcher = BrowserFetcher::new(Arc::clone(pool))
+                .with_retry_budget(retry_budget.clone())
+                .with_wait(headless_wait_strategy(backend, "div.c-container"));
             search.add_engine(Baidu::new(Arc::new(fetcher)));
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(feature = "headless-search")]
+fn headless_wait_strategy(backend: BrowserBackend, selector: &str) -> WaitStrategy {
+    if backend.is_lightpanda() {
+        WaitStrategy::Load
+    } else {
+        WaitStrategy::Selector {
+            css: selector.to_string(),
+            timeout_ms: 5000,
+        }
+    }
+}
+
+#[cfg(all(test, feature = "headless-search"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chrome_keeps_selector_waits() {
+        let wait = headless_wait_strategy(BrowserBackend::Chrome, "main.result");
+        assert!(matches!(
+            wait,
+            WaitStrategy::Selector {
+                css,
+                timeout_ms: 5000
+            } if css == "main.result"
+        ));
+    }
+
+    #[test]
+    fn lightpanda_uses_supported_load_wait() {
+        assert!(matches!(
+            headless_wait_strategy(BrowserBackend::Lightpanda, "main.result"),
+            WaitStrategy::Load
+        ));
     }
 }

@@ -16,7 +16,7 @@ path = "src/lib.rs"
 a3s-common = { version = "0.1.1", path = "../../common" }
 a3s-memory = { version = "0.1.2", path = "../../memory" }
 a3s-lane = { version = "0.5", path = "../../lane" }
-a3s-search = { version = "2.1.0", path = "../../search", default-features = false }
+a3s-search = { version = "2.1.2", path = "../../search", default-features = false }
 a3s-flow = "0.4.3"
 
 # Async runtime
@@ -128,9 +128,11 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [features]
-default = []
+default = ["headless-search"]
 # Enable browser-backed Google and Baidu search plus managed browser lifecycle
-# APIs. HTTP/RSS and native API search remain available without this feature.
+# APIs. Chrome/Chromium is the runtime default; Lightpanda remains selectable
+# through configuration. HTTP/RSS and native API search remain available when
+# default features are disabled.
 headless-search = ["a3s-search/lightpanda"]
 # Enable OpenTelemetry OTLP export for traces and metrics.
 # When active, `TelemetryConfig::init()` sets up OTLP exporter + tracing subscriber.

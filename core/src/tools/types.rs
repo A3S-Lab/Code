@@ -220,6 +220,12 @@ pub struct ToolContext {
     /// Session-scoped search circuit state shared by cloned tool contexts.
     pub(crate) search_circuit_breaker: a3s_search::CircuitBreaker,
     search_circuit_scope: Option<String>,
+    /// Agent-scoped per-engine admission shared by cloned tool contexts.
+    search_bulkhead: a3s_search::Bulkhead,
+    /// Agent-scoped retry allowance shared across browser requests.
+    search_retry_budget: a3s_search::RetryBudget,
+    /// Session-scoped identical-request flights shared by cloned tool contexts.
+    search_request_coalescer: a3s_search::SearchCoalescer,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
     /// Optional command environment overrides for subprocess-based tools.
@@ -363,6 +369,9 @@ impl ToolContext {
             search_config: None,
             search_circuit_breaker: search_circuit_breaker(None),
             search_circuit_scope: None,
+            search_bulkhead: a3s_search::Bulkhead::default(),
+            search_retry_budget: a3s_search::RetryBudget::default(),
+            search_request_coalescer: a3s_search::SearchCoalescer::default(),
             sandbox: None,
             command_env: None,
             workspace_services: crate::workspace::WorkspaceServices::local(workspace),
@@ -385,6 +394,7 @@ impl ToolContext {
         let session_id = session_id.into();
         if self.search_circuit_scope.as_deref() != Some(session_id.as_str()) {
             self.search_circuit_breaker = search_circuit_breaker(self.search_config.as_deref());
+            self.search_request_coalescer = a3s_search::SearchCoalescer::default();
             self.search_circuit_scope = Some(session_id.clone());
         }
         self.session_id = Some(session_id);
@@ -422,12 +432,43 @@ impl ToolContext {
     /// Set the search configuration
     pub fn with_search_config(mut self, config: crate::config::SearchConfig) -> Self {
         self.search_circuit_breaker = search_circuit_breaker(Some(&config));
+        self.search_request_coalescer = a3s_search::SearchCoalescer::default();
         self.search_config = Some(Arc::new(config));
         self
     }
 
     pub(crate) fn search_circuit_breaker(&self) -> a3s_search::CircuitBreaker {
         self.search_circuit_breaker.clone()
+    }
+
+    pub(crate) fn search_bulkhead(&self) -> a3s_search::Bulkhead {
+        self.search_bulkhead.clone()
+    }
+
+    pub(crate) fn with_search_runtime(
+        mut self,
+        bulkhead: a3s_search::Bulkhead,
+        retry_budget: a3s_search::RetryBudget,
+    ) -> Self {
+        self.search_bulkhead = bulkhead;
+        self.search_retry_budget = retry_budget;
+        self
+    }
+
+    pub(crate) fn search_retry_budget(&self) -> a3s_search::RetryBudget {
+        self.search_retry_budget.clone()
+    }
+
+    pub(crate) fn with_search_request_coalescer(
+        mut self,
+        coalescer: a3s_search::SearchCoalescer,
+    ) -> Self {
+        self.search_request_coalescer = coalescer;
+        self
+    }
+
+    pub(crate) fn search_request_coalescer(&self) -> a3s_search::SearchCoalescer {
+        self.search_request_coalescer.clone()
     }
 
     /// Set a sandbox executor for the `bash` tool.

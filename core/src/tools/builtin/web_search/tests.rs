@@ -7,8 +7,8 @@ use std::path::PathBuf;
 #[tokio::test]
 async fn headless_browser_pool_is_scoped_to_one_tool_execution() {
     let config = HeadlessConfig::default();
-    let first = WebSearchTool::create_pool(Some(&config)).expect("first pool");
-    let second = WebSearchTool::create_pool(Some(&config)).expect("second pool");
+    let first = WebSearchTool::create_pool(&config);
+    let second = WebSearchTool::create_pool(&config);
 
     assert!(
         !Arc::ptr_eq(&first, &second),
@@ -22,7 +22,7 @@ async fn headless_browser_pool_is_scoped_to_one_tool_execution() {
 #[tokio::test]
 async fn dropped_cleanup_guard_schedules_background_shutdown() {
     let config = HeadlessConfig::default();
-    let pool = WebSearchTool::create_pool(Some(&config)).expect("pool");
+    let pool = WebSearchTool::create_pool(&config);
     drop(BrowserPoolCleanup::new(Some(Arc::clone(&pool))));
 
     tokio::task::yield_now().await;
@@ -30,6 +30,31 @@ async fn dropped_cleanup_guard_schedules_background_shutdown() {
     assert!(
         error.message.contains("shut down"),
         "dropping a cancelled tool future must schedule pool shutdown: {error:?}"
+    );
+}
+
+#[cfg(feature = "headless-search")]
+#[test]
+fn default_headless_backend_is_cross_platform_chrome() {
+    assert_eq!(HeadlessConfig::default().backend, BrowserBackend::Chrome);
+}
+
+#[cfg(feature = "headless-search")]
+#[test]
+fn request_proxy_is_applied_to_the_headless_tier() {
+    let configured = HeadlessConfig {
+        proxy_url: Some("http://configured.example:8080".to_string()),
+        ..HeadlessConfig::default()
+    };
+
+    let effective =
+        effective_headless_config(Some(&configured), Some("socks5://request.example:1080"))
+            .expect("configured headless runtime");
+
+    assert_eq!(effective.backend, BrowserBackend::Chrome);
+    assert_eq!(
+        effective.proxy_url.as_deref(),
+        Some("socks5://request.example:1080")
     );
 }
 
@@ -51,6 +76,77 @@ fn latest_search_metrics_are_exposed_as_stable_metadata() {
     assert_eq!(metadata["transient_failure_rate"], 100.0);
     assert_eq!(metadata["error_counts"]["timeout"], 1);
     assert_eq!(metadata["latency_p99_ms"], 30);
+}
+
+#[test]
+fn latest_request_coalescing_state_is_exposed_as_stable_metadata() {
+    let mut snapshot = a3s_search::SearchCoalescerSnapshot::default();
+    snapshot.max_in_flight = 128;
+    snapshot.in_flight = 2;
+    snapshot.leader_requests = 7;
+    snapshot.shared_requests = 5;
+    snapshot.bypassed_requests = 1;
+    snapshot.abandoned_requests = 1;
+
+    let metadata = search_coalescer_json(&snapshot);
+
+    assert_eq!(metadata["max_in_flight"], 128);
+    assert_eq!(metadata["in_flight"], 2);
+    assert_eq!(metadata["leader_requests"], 7);
+    assert_eq!(metadata["shared_requests"], 5);
+    assert_eq!(metadata["bypassed_requests"], 1);
+    assert_eq!(metadata["abandoned_requests"], 1);
+}
+
+struct CoalescingProbeEngine {
+    config: a3s_search::EngineConfig,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl a3s_search::Engine for CoalescingProbeEngine {
+    fn config(&self) -> &a3s_search::EngineConfig {
+        &self.config
+    }
+
+    async fn search(
+        &self,
+        query: &a3s_search::SearchQuery,
+    ) -> a3s_search::Result<Vec<a3s_search::SearchResult>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        Ok(vec![a3s_search::SearchResult::new(
+            "https://example.test/coalesced",
+            query.query.clone(),
+            "shared result",
+        )])
+    }
+}
+
+#[tokio::test]
+async fn tier_searches_share_the_session_request_coalescer() {
+    let context = ToolContext::new(PathBuf::from("."));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut first = tier_search(&context, Arc::new(Metrics::new()));
+    let mut second = tier_search(&context, Arc::new(Metrics::new()));
+    for search in [&mut first, &mut second] {
+        search.add_engine(CoalescingProbeEngine {
+            config: a3s_search::EngineConfig {
+                name: "Coalescing Probe".to_string(),
+                shortcut: "coalescing_probe".to_string(),
+                ..a3s_search::EngineConfig::default()
+            },
+            calls: Arc::clone(&calls),
+        });
+    }
+    let query = SearchQuery::new("same concurrent request");
+
+    let (first_result, second_result) =
+        tokio::join!(first.search(query.clone()), second.search(query));
+
+    assert!(first_result.is_ok());
+    assert!(second_result.is_ok());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 fn search_config(engines: HashMap<String, SearchEngineConfig>) -> SearchConfig {
@@ -730,13 +826,32 @@ fn test_add_headless_engine_valid() {
     let pool_config = BrowserPoolConfig::default();
     let pool = Arc::new(BrowserPool::new(pool_config));
 
-    assert!(add_headless_engine(&mut search, "google", &pool));
+    let retry_budget = a3s_search::RetryBudget::default();
+    assert!(add_headless_engine(
+        &mut search,
+        "google",
+        &pool,
+        BrowserBackend::Chrome,
+        &retry_budget,
+    ));
     assert_eq!(search.engine_count(), 1);
 
-    assert!(add_headless_engine(&mut search, "baidu", &pool));
+    assert!(add_headless_engine(
+        &mut search,
+        "baidu",
+        &pool,
+        BrowserBackend::Chrome,
+        &retry_budget,
+    ));
     assert_eq!(search.engine_count(), 2);
 
-    assert!(!add_headless_engine(&mut search, "bing_cn", &pool));
+    assert!(!add_headless_engine(
+        &mut search,
+        "bing_cn",
+        &pool,
+        BrowserBackend::Chrome,
+        &retry_budget,
+    ));
     assert_eq!(search.engine_count(), 2);
 }
 
@@ -747,7 +862,14 @@ fn test_add_headless_engine_aliases() {
     let pool_config = BrowserPoolConfig::default();
     let pool = Arc::new(BrowserPool::new(pool_config));
 
-    assert!(add_headless_engine(&mut search, "g", &pool));
+    let retry_budget = a3s_search::RetryBudget::default();
+    assert!(add_headless_engine(
+        &mut search,
+        "g",
+        &pool,
+        BrowserBackend::Chrome,
+        &retry_budget,
+    ));
     assert_eq!(search.engine_count(), 1);
 }
 
@@ -758,8 +880,21 @@ fn test_add_headless_engine_unknown() {
     let pool_config = BrowserPoolConfig::default();
     let pool = Arc::new(BrowserPool::new(pool_config));
 
-    assert!(!add_headless_engine(&mut search, "ddg", &pool));
-    assert!(!add_headless_engine(&mut search, "nonexistent", &pool));
+    let retry_budget = a3s_search::RetryBudget::default();
+    assert!(!add_headless_engine(
+        &mut search,
+        "ddg",
+        &pool,
+        BrowserBackend::Chrome,
+        &retry_budget,
+    ));
+    assert!(!add_headless_engine(
+        &mut search,
+        "nonexistent",
+        &pool,
+        BrowserBackend::Chrome,
+        &retry_budget,
+    ));
 }
 
 #[tokio::test]
@@ -826,7 +961,7 @@ fn test_web_search_schema_has_all_valid_fields() {
 
 #[test]
 fn json_search_result_preserves_published_date() {
-    let result = SearchResult::new(
+    let mut result = SearchResult::new(
             "https://result-user:result-password@example.com/release?tracking=secret#fragment",
             "Release notes https://title-user:title-password@example.com/title?title_token=secret#title-fragment",
             "Current release evidence at https://content-user:content-password@example.com/evidence?content_token=secret#content-fragment.",
@@ -834,10 +969,12 @@ fn json_search_result_preserves_published_date() {
         .with_engine("ddg", 2)
         .with_engine("brave", 1)
         .with_published_date("2026-07-11");
+    result.query_match_score = Some(0.875);
 
     let json = search_result_json(&result, None);
 
     assert_eq!(json["published_date"], "2026-07-11");
+    assert_eq!(json["query_match_score"], 0.875);
     assert_eq!(json["url"], "https://example.com/release");
     assert_eq!(json["title"], "Release notes https://example.com/title");
     assert_eq!(
@@ -863,6 +1000,47 @@ fn json_search_result_preserves_published_date() {
             "leaked {secret}: {serialized}"
         );
     }
+}
+
+#[test]
+fn json_search_payload_preserves_the_array_contract_when_quality_is_met() {
+    let mut quality = a3s_search::SearchQuality::default();
+    quality.usable_result_count = 1;
+    quality.unique_host_count = 1;
+    quality.contributing_engine_count = 1;
+    quality.aligned_result_count = 1;
+    quality.mean_query_match = 1.0;
+    let floor = SearchQualityFloor::for_limit(1);
+    let results = vec![serde_json::json!({
+        "title": "Portable evidence",
+        "url": "https://example.test/evidence"
+    })];
+
+    let payload = json_search_payload(results.clone(), true, &quality, &floor);
+
+    assert_eq!(payload, serde_json::Value::Array(results));
+}
+
+#[test]
+fn json_search_payload_is_diagnostic_and_fail_closed_below_quality_floor() {
+    let quality = a3s_search::SearchQuality::default();
+    let floor = SearchQualityFloor::for_limit(1);
+    assert!(!floor.is_met(&quality), "an empty result set cannot pass");
+
+    let payload = json_search_payload(
+        vec![serde_json::json!({
+            "title": "Weak candidate",
+            "url": "https://example.test/candidate"
+        })],
+        false,
+        &quality,
+        &floor,
+    );
+
+    assert_eq!(payload["status"], "quality_not_met");
+    assert_eq!(payload["search_quality"]["usable_result_count"], 0);
+    assert_eq!(payload["search_quality_floor"]["min_usable_results"], 1);
+    assert_eq!(payload["results"].as_array().map(Vec::len), Some(1));
 }
 
 #[test]

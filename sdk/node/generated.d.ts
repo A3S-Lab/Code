@@ -666,7 +666,7 @@ export interface SearchEngineConfig {
 export const enum BrowserBackend {
   /** Chrome/Chromium headless. */
   Chrome = 0,
-  /** Lightpanda headless browser (Linux/macOS only). */
+  /** Lightpanda headless browser (native Linux/macOS; WSL2 on Windows hosts). */
   Lightpanda = 1
 }
 /** Headless browser configuration. */
