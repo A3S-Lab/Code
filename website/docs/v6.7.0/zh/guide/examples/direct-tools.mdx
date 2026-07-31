@@ -1,0 +1,297 @@
+---
+title: '直接工具'
+description: '不消耗大语言模型回合即可运行确定性宿主工具'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 直接工具
+
+`session.tool(name, args)`（以及 `glob`、`grep`、`readFile` 等类型化辅助方法）会直接运行宿主工具，循环中不发起任何模型调用。它们适用于测试、迁移以及宿主驱动的工作流——你需要确定性结果，而不是一次智能体回合。
+
+直接调用是宿主控制面调用。调用前请先执行你的产品授权逻辑；`permissionPolicy`
+管控的是 agent turn 内由模型选择的工具调用，不是你的应用代码是否可以调用 SDK helper。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+use serde_json::{json, Value};
+use std::collections::HashSet;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let allowed = HashSet::from(["glob", "grep", "read", "generate_object"]);
+    let check = |name: &str| -> a3s_code_core::Result<()> {
+        allowed
+            .contains(name)
+            .then_some(())
+            .ok_or_else(|| {
+                a3s_code_core::CodeError::Security(format!(
+                    "此处不允许直接调用工具：{name}"
+                ))
+            })
+    };
+
+    check("glob")?;
+    let files = session.glob("**/*.rs").await?;
+    println!("glob 找到 {} 个 Rust 文件", files.len());
+
+    check("grep")?;
+    let matches = session.grep("Agent::new").await?;
+    println!("grep 找到 {} 行匹配", matches.lines().count());
+
+    check("read")?;
+    let readme = session.read_file("README.md").await?;
+    println!("README 大小为 {} 字节", readme.len());
+
+    let raw = session
+        .tool("read", json!({ "file_path": "Cargo.toml" }))
+        .await?;
+    println!("通过 tool() 读取了 {} 字节", raw.output.len());
+    println!("会话暴露了 {} 个工具", session.tool_definitions().len());
+
+    check("generate_object")?;
+    let structured = session
+        .tool(
+            "generate_object",
+            json!({
+                "schema": {
+                    "type": "object",
+                    "required": ["count", "language"],
+                    "properties": {
+                        "count": { "type": "integer" },
+                        "language": { "type": "string" }
+                    }
+                },
+                "prompt": "这个项目中有多少个 Rust 文件？",
+                "schema_name": "file_stats"
+            }),
+        )
+        .await?;
+    if structured.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "generate_object".into(),
+            message: structured.output,
+        });
+    }
+    let generated: Value = serde_json::from_str(&structured.output)?;
+    println!("结构化输出：{}", generated["object"]);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.');
+
+const allowedDirectTools = new Set(['glob', 'grep', 'read', 'generate_object']);
+function assertDirectToolAllowed(name: string) {
+  if (!allowedDirectTools.has(name)) {
+    throw new Error(`direct tool not allowed here: ${name}`);
+  }
+}
+
+// Glob：按模式列出文件
+assertDirectToolAllowed('glob');
+const files = await session.glob('**/*.ts');
+console.log(`glob found ${files.length} TypeScript files`);
+
+// Grep：搜索文件内容
+assertDirectToolAllowed('grep');
+const matches = await session.grep('Agent.create');
+const matchCount = matches.split('\n').filter(Boolean).length;
+console.log(`grep found ${matchCount} matching lines`);
+
+// 读取文件
+assertDirectToolAllowed('read');
+const readme = await session.readFile('README.md');
+console.log(`README is ${readme.length} bytes`);
+
+// 按名称直接调用工具
+assertDirectToolAllowed('read');
+const raw = await session.tool('read', { file_path: 'package.json' });
+console.log(`package.json via tool(): ${raw.output.length} bytes`);
+
+// 查看可用的工具模式
+const schemas = session.toolDefinitions();
+console.log(`session exposes ${schemas.length} tools`);
+
+// 结构化输出：生成通过模式校验的 JSON 对象
+assertDirectToolAllowed('generate_object');
+const structured = await session.tool('generate_object', {
+  schema: {
+    type: 'object',
+    required: ['count', 'language'],
+    properties: {
+      count: { type: 'integer' },
+      language: { type: 'string' },
+    },
+  },
+  prompt: 'How many TypeScript files are in this project?',
+  schema_name: 'file_stats',
+});
+if (structured.exitCode !== 0) {
+  throw new Error(structured.output);
+}
+console.log('structured output:', JSON.parse(structured.output).object);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import json
+
+from a3s_code import Agent
+
+agent = Agent.create("agent.acl")
+session = agent.session('.')
+
+ALLOWED_DIRECT_TOOLS = {'glob', 'grep', 'read', 'generate_object'}
+
+
+def assert_direct_tool_allowed(name: str) -> None:
+    if name not in ALLOWED_DIRECT_TOOLS:
+        raise RuntimeError(f'direct tool not allowed here: {name}')
+
+# Glob：按模式列出文件
+assert_direct_tool_allowed('glob')
+files = session.glob('**/*.py')
+print(f'glob found {len(files)} Python files')
+
+# Grep：搜索文件内容
+assert_direct_tool_allowed('grep')
+matches = session.grep('Agent.create')
+match_count = len([line for line in matches.splitlines() if line])
+print(f'grep found {match_count} matching lines')
+
+# 读取文件
+assert_direct_tool_allowed('read')
+readme = session.read_file('README.md')
+print(f'README is {len(readme)} bytes')
+
+# 按名称直接调用工具
+assert_direct_tool_allowed('read')
+raw = session.tool('read', {'file_path': 'pyproject.toml'})
+print(f'pyproject.toml via tool(): {len(raw.output)} bytes')
+
+# 查看可用的工具模式
+schemas = session.tool_definitions()
+print(f'session exposes {len(schemas)} tools')
+
+# 结构化输出：生成通过模式校验的 JSON 对象
+assert_direct_tool_allowed('generate_object')
+structured = session.tool('generate_object', {
+    'schema': {
+        'type': 'object',
+        'required': ['count', 'language'],
+        'properties': {
+            'count': {'type': 'integer'},
+            'language': {'type': 'string'},
+        },
+    },
+    'prompt': 'How many Python files are in this project?',
+    'schema_name': 'file_stats',
+})
+if structured.exit_code != 0:
+    raise RuntimeError(structured.output)
+print('structured output:', json.loads(structured.output)['object'])
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func must[T any](value T, err error) T {
+	if err != nil {
+		log.Fatal(err)
+	}
+	return value
+}
+
+func main() {
+	ctx := context.Background()
+	agent := must(code.Create(ctx, "agent.acl"))
+	defer agent.Close(context.Background())
+	session := must(agent.Session(ctx, ".", nil))
+	defer session.Close(context.Background())
+
+	files := must(session.Glob(ctx, "**/*.go"))
+	fmt.Printf("glob 找到 %d 个 Go 文件\n", len(files))
+
+	matches := must(session.Grep(ctx, "code.Create"))
+	fmt.Printf("grep 找到 %d 行结果\n", len(strings.Split(matches, "\n")))
+
+	readme := must(session.ReadFile(ctx, "README.md", nil))
+	fmt.Printf("README 大小为 %d 字节\n", len(readme))
+
+	raw := must(session.Tool(ctx, "read", map[string]any{
+		"file_path": "go.mod",
+	}))
+	fmt.Printf("通过 Tool() 读取 go.mod：%d 字节\n", len(raw.Output))
+
+	schemas := must(session.ToolDefinitions(ctx))
+	fmt.Printf("Session 提供 %d 个工具\n", len(schemas))
+
+	structured := must(session.Tool(ctx, "generate_object", map[string]any{
+		"schema": map[string]any{
+			"type":     "object",
+			"required": []string{"count", "language"},
+			"properties": map[string]any{
+				"count":    map[string]any{"type": "integer"},
+				"language": map[string]any{"type": "string"},
+			},
+		},
+		"prompt":      "这个项目中有多少个 Go 文件？",
+		"schema_name": "file_stats",
+	}))
+	if structured.ExitCode != 0 {
+		log.Fatal(structured.Output)
+	}
+	var generated struct {
+		Object map[string]any `json:"object"`
+	}
+	if err := json.Unmarshal([]byte(structured.Output), &generated); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("结构化输出：", generated.Object)
+}
+```
+
+</Tab>
+</Tabs>
+
+直接工具在 session 工作区下执行，应视为宿主侧的特权操作。大多数调用（`read`、`glob`、`grep`）是纯确定性的；`generate_object` 是个例外——它仍会调用模型来填充经过 schema 校验的 JSON 对象，但由你显式驱动，而非通过自由形式的智能体回合。
+
+可运行版本位于 `sdk/node/examples/basic/test_generate_object.ts`
+（Python：`sdk/python/examples/test_generate_object.py`）。Go 的直接
+工具契约由 `sdk/go/session_test.go` 覆盖。

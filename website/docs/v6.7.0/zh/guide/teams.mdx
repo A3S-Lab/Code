@@ -1,0 +1,127 @@
+---
+title: '团队'
+description: '用智能体定义、task 工具和自动委派构建团队'
+---
+
+# 团队
+
+团队是一种驾驭层模式：命名智能体定义加上 `task` 与 `parallel_task` 委派核心。
+A3S Code 不再暴露单独的团队运行器 API；父会话仍负责合成、策略和最终验证。
+
+## 推荐形态
+
+1. 把长期角色放在 `.a3s/agents`，或配置额外 `agentDirs`。
+2. 每个角色保持聚焦：description、prompt、allowed tools、denied tools。
+3. 需要运行时选择高置信 subagent 时启用 `autoDelegation`。
+4. 宿主已知 lane 时直接调用 `session.task(...)` 或 `session.tasks(...)`。
+5. 父 agent 合并子摘要、证据引用和风险。
+
+```ts
+const session = agent.session('/repo', {
+  agentDirs: ['./.a3s/agents'],
+  planningMode: 'auto',
+  autoDelegation: { enabled: true, maxTasks: 4 },
+  maxParallelTasks: 8,
+  autoParallel: false,
+});
+
+await session.send(`
+Build a release-readiness team:
+- explorer: find risky changed areas
+- tester: identify missing verification
+- security: review side-effect paths
+
+Use independent subagents where useful and return a single prioritized report.
+`);
+```
+
+## 自定义智能体文件
+
+Markdown agent 文件使用 Claude 兼容 frontmatter，但 A3S 原生位置是 `.a3s/agents`：
+
+```markdown
+---
+name: release-reviewer
+description: Use proactively after release or CI changes
+tools: Read, Grep, Glob, Bash(cargo test*)
+disallowedTools:
+  - Write
+  - Bash(git push*)
+---
+
+Review release blockers first, then risks, then follow-up work.
+```
+
+A3S 也读取 `.claude/agents` 作为迁移来源。新项目优先使用 `.a3s/agents`。
+
+## 内置团队角色
+
+无需创建文件即可使用：
+
+- `explore`：只读仓库探索
+- `plan`：只读实现计划
+- `general` / `general-purpose`：多步骤实现
+- `verification`：检查、复现和回归验证
+- `review`：findings-first 代码审查
+
+## 手动执行通道
+
+宿主已经知道 lane 时，可直接调用 SDK helper：
+
+```ts
+const result = await session.tasks([
+  {
+    agent: 'explore',
+    description: 'Changed files',
+    prompt: 'Find risky changed files.',
+  },
+  {
+    agent: 'verification',
+    description: 'Test gaps',
+    prompt: 'Find missing verification.',
+  },
+  {
+    agent: 'review',
+    description: 'Regression review',
+    prompt: 'Review correctness risks.',
+  },
+]);
+
+if (result.exitCode !== 0) throw new Error(result.output);
+console.log(result.output);
+```
+
+`session.tasks(...)` 是 `parallel_task` 的宿主侧封装；它返回 `ToolResult`，
+而不是 `StepOutcome[]`。当你需要每条 lane 都有独立结构化 outcome 时，使用
+`session.parallel(...)`。
+
+当团队的 lane 结构固定、应当可复现且可恢复而非由模型选择时，使用 [编排](/guide/orchestration) 中的可编程组合子（`session.parallel` / `session.pipeline` / `session.parallelResumable`）。
+
+## 工作智能体
+
+当角色由宿主动态构造而不是存储在磁盘上时，通过 `workerAgents` 或 `registerWorkerAgent()` 注册一次性 worker agents：
+
+```ts
+const session = agent.session('/repo', {
+  workerAgents: [
+    {
+      name: 'frontend-worker',
+      description: 'Small verified frontend fixes',
+      kind: 'implementer',
+      model: 'provider/model-id',
+      maxSteps: 24,
+      confirmationInheritance: 'auto_approve',
+    },
+  ],
+});
+```
+
+通过 `confirmationInheritance` 控制子运行如何处理 Ask 决策：
+
+- `'auto_approve'`（默认）：子运行自动批准所有 Ask 决策
+- `'deny_on_ask'`：子运行遇到 Ask 时立即失败
+- `'inherit_parent'`：子运行继承父级的确认策略
+
+## 运行状态
+
+应用应通过 streaming events 和 run replay 快照展示状态，Node 侧需要取消时使用 `cancelRun(runId)`。

@@ -4,6 +4,15 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.7.0] - 2026-07-31
+
+### Changed
+
+- Updated the bundled Core with the workspace-confined `download` tool, the
+  default lazy Chrome/Chromium search tier, fail-closed search quality
+  enforcement, shared search bulkheads and request coalescing, and bounded
+  browser retry budgets.
+
 ## [6.6.0] - 2026-07-29
 
 ### Added

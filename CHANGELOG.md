@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.7.0] - 2026-07-31
+
 ### Added
 
 - Added a local-workspace `download` tool with SSRF-safe redirects, strict HTTP
@@ -28,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coalescing across delegated research contexts. Request-scoped proxies now
   reach the lazy browser tier, and coalescing diagnostics are included in tool
   metadata.
+
+### Fixed
+
+- Updated standalone CI dependency rewriting for the default Core search
+  feature boundary so source checkouts resolve the published `a3s-search`
+  package on Linux and Windows.
 
 ## [6.6.0] - 2026-07-29
 

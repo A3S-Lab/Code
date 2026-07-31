@@ -1,0 +1,132 @@
+---
+title: '遥测与可观测性'
+description: '追踪事件、验证摘要与运行时可观测性'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 遥测与可观测性
+
+A3S Code 通过事件、追踪、验证报告和结果元数据提供运行证据。
+
+## 结果元数据
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+let result = session.send("运行发布检查", None).await?;
+
+println!("{}", result.usage.prompt_tokens);
+println!("{}", result.usage.completion_tokens);
+println!("{}", result.usage.total_tokens);
+println!("{}", result.tool_calls_count);
+println!("{:?}", result.verification_summary().status);
+println!("{}", result.verification_summary_text());
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+const result = await session.send('运行发布检查');
+
+console.log(result.promptTokens);
+console.log(result.completionTokens);
+console.log(result.totalTokens);
+console.log(result.toolCallsCount);
+console.log(result.verificationStatus);
+console.log(result.verificationSummaryText);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+result = session.send('运行发布检查')
+
+print(result.prompt_tokens)
+print(result.completion_tokens)
+print(result.total_tokens)
+print(result.tool_calls_count)
+print(result.verification_status)
+print(result.verification_summary_text)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Run(ctx, "运行发布检查")
+if err != nil {
+	return err
+}
+
+fmt.Println(result.Usage.PromptTokens)
+fmt.Println(result.Usage.CompletionTokens)
+fmt.Println(result.Usage.TotalTokens)
+fmt.Println(result.ToolCallsCount)
+fmt.Println(result.VerificationSummary.Status)
+fmt.Println(result.VerificationSummaryText)
+```
+
+</Tab>
+</Tabs>
+
+## 追踪与验证
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+let trace = session.trace_events();
+let reports = session.verification_reports();
+let summary = session.verification_summary();
+let text = session.verification_summary_text();
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+const trace = session.traceEvents();
+const reports = session.verificationReports();
+const summary = session.verificationSummary();
+const text = session.verificationSummaryText();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+trace = session.trace_events()
+reports = session.verification_reports()
+summary = session.verification_summary()
+text = session.verification_summary_text()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+trace, traceErr := session.TraceEvents(ctx)
+reports, reportsErr := session.VerificationReports(ctx)
+summary, summaryErr := session.VerificationSummary(ctx)
+text, textErr := session.VerificationSummaryText(ctx)
+```
+
+</Tab>
+</Tabs>
+
+Go 方法需要跨越原生桥接边界，因此会返回 `error`；Rust、Node.js 与 Python 的
+这些进程内观察读取器是同步接口。
+
+## 流式事件
+
+流式输出返回带版本号的 `AgentEvent` 信封。`version`、`type`、`payload` 和可选
+的 `metadata` 是稳定且无损的字段；文本、工具名、工具输出、错误、令牌总数和
+验证摘要则是便捷投影。未来新增的未知 `type` 及其载荷仍会完整提供给宿主。
+
+## 日志
+
+产品遥测应优先使用结构化追踪事件和验证报告，不要解析控制台输出。

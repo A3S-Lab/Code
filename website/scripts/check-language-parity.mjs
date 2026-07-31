@@ -24,6 +24,8 @@ const currentPageMarkers = new Map([
       'files_with_matches',
       'expected_replacements',
       'Retry-After',
+      'download',
+      'expected_sha256',
       'has_distinct_non_streaming_transport',
       'maxConcurrentGenerations',
       'recover_dynamic_workflow_step_output',

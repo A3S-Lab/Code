@@ -1,0 +1,238 @@
+---
+title: 'Security'
+description: 'Permission policy, HITL, hooks, and verification gates'
+---
+
+# Security
+
+A3S Code exposes security controls at session creation time and through
+session lifecycle hooks. Treat direct host calls such as `session.tool()` and
+`session.bash()` as privileged host operations: the application that calls them
+is responsible for deciding whether to expose that power to a user.
+
+Delegated child runs intersect their local permissions with the parent
+permission checker and inherit the parent process sandbox. A child can narrow
+its capabilities but cannot replace the host boundary. Child-local approval
+behavior applies only to an `Ask` introduced by the child policy; a parent
+`Ask`, or a tool-owned escalation after both policies allow, remains under the
+parent confirmation provider. Missing providers fail closed before a HITL
+request is emitted. Keep high-risk release or publish commands behind explicit
+policy.
+
+A permission prompt should explain the operation, reason, scope, and risk—not
+just present two buttons.
+
+## Enforced Execution Boundary
+
+Permission policy decides whether an operation is allowed, denied, or needs
+approval. It does not, by itself, confine a process. Hosts that expose model
+Bash should attach a concrete `BashSandbox`; otherwise an approved command runs
+through the host workspace runner.
+
+The Code TUI uses an SRT-backed local process sandbox from a verified user-wide
+installation or the support tree shipped in the CLI release. It checks the
+exact package graph, registry lock, file types, size bounds, complete normalized
+tree digest, Node.js 20.11-or-newer executable, and Core capability handshake.
+Official archives, Homebrew, and standalone self-update preserve that payload.
+Source and Cargo installs may use a fixed npm development bootstrap with
+lifecycle scripts disabled. A global `srt` installation is neither required
+nor selected.
+
+Package verification is necessary but not sufficient for readiness. macOS
+requires `sandbox-exec` and `ripgrep`; Linux requires `bubblewrap`, `socat`,
+`ripgrep`, and permitted unprivileged user namespaces. Homebrew declares those
+dependencies, while direct-archive users provide them. Windows requires its
+one-time elevated machine sandbox setup. The TUI runs a bounded command through
+the actual OS boundary before attaching it. Failure leaves the sandbox absent,
+so Default can request one exact host invocation and Auto denies Bash.
+
+The adapter fails closed and never silently retries on the host. It denies
+network egress, local binding, and Unix sockets; limits writes to the workspace
+and a private scratch directory; protects `.git`, `.a3s`, `.agents`, `.codex`,
+`.claude`, `.vscode`, `.idea`, and control files; masks common credential
+stores; and scrubs ambient secrets. Delegated tasks, Skills, and workflow steps
+retain the same handle.
+
+Because built-in file tools execute in-process, the TUI separately enables
+Core's local workspace credential policy. It covers direct and range reads,
+writes, edits, patches, and both manifest-backed and fallback grep. Explicit
+sensitive paths fail closed, broad grep omits protected candidates, and
+source-tree hardlink aliases are denied before mutation. Ordinary
+package-store hardlinks remain usable unless they alias a discovered
+credential inode. Read-only Git diff regenerates output only for allowed
+changed paths, option-like revisions cannot become Git flags, and displayed
+remotes omit embedded HTTP credentials and query tokens.
+
+The release gate exercises the exact generated support tree on macOS and Linux.
+It proves normal workspace writes and offline toolchain commands remain usable,
+while outside and symlink writes, protected metadata mutations, credential
+reads, network egress, local listeners, and Unix sockets remain blocked.
+
+The terminal execution modes apply this boundary as follows:
+
+| Mode    | Process behavior                                  | Approval behavior                                                                                                                      |
+| ------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Default | Ordinary Bash runs in the installed sandbox.      | Only an explicit host escape, missing sandbox, protected metadata mutation, mutating Git call, or annotated external side effect asks. |
+| Plan    | Bash and mutations are unavailable.               | Boundary crossings are denied, not queued for later execution.                                                                         |
+| Auto    | Ordinary Bash runs only in the installed sandbox. | HITL is disabled; any operation that cannot stay inside the boundary is denied.                                                        |
+
+## Threat Model
+
+The protected assets are host files outside the active workspace, repository
+and agent-control metadata, credential stores, host network and listener
+capabilities, process lifetime, and the user's authority to approve a specific
+operation. Model output, repository content, command output, fetched content,
+Skill instructions, and MCP results are untrusted inputs. A malicious
+dependency or child process is assumed able to close output pipes early, fork
+descendants, create symlinks, inspect its environment, and attempt filesystem,
+socket, or network escapes.
+
+The trusted computing base is the running CLI/Core binary, the verified
+release support tree, the exact resolved Node executable, the selected sandbox
+provider and operating-system enforcement, and host code that invokes direct
+SDK helpers. A configured MCP server or native integration is a separately
+trusted extension; missing or unsafe behavior annotations cause confirmation
+rather than granting read-only status.
+
+Trust does not waive process ownership. Each local stdio MCP server leads a
+dedicated Unix process group. Closing or dropping its transport stops pipe
+tasks, clears pending requests, reaps the leader, and terminates descendants.
+The stderr pipe is drained independently so diagnostics cannot stall protocol
+traffic.
+
+This local boundary does not claim kernel-level protection against a compromised
+sandbox provider, Node runtime, CLI binary, or operating system. It also does
+not turn the privileged host-direct SDK into end-user authorization. Use a
+stronger workload provider for hostile multi-tenant code, kernel attack
+resistance, or OCI-level isolation.
+
+## Invocation Ingress
+
+Every session-owned path enters one scoped invocation kernel:
+
+| Ingress                                                               | Effective origin                             | Trust handling                                                                                            |
+| --------------------------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Model tool call                                                       | Agent                                        | Mode policy, permission, tool-owned escalation, and HITL apply.                                           |
+| Model-owned `batch`, `program`, workflow, or public custom nesting    | Governed nested                              | Re-enters the same policy for every child.                                                                |
+| Direct host call to an ordinary custom tool                           | Host direct at the top level                 | The selected top-level call is trusted; public nested calls become governed nested calls.                 |
+| Direct host call to built-in `batch`, `program`, or dynamic workflow  | Host direct, then trusted host-direct nested | Only host-selected built-in children retain control-plane authority.                                      |
+| Skill, Task, worker, or other model sub-run created from host context | Agent in the child                           | Ambient host-direct authority is removed before model dispatch.                                           |
+| Delegated child permission or confirmation                            | Governed nested/Agent                        | Child policy intersects the parent; parent `Ask` and tool-owned escalation stay with the parent provider. |
+| Tool behavior metadata                                                | Escalation on the current origin             | It can require confirmation but cannot weaken `Ask` or `Deny`.                                            |
+
+Low-level `ToolRegistry` and standalone `ProgramExecutor` APIs are deliberately
+ungoverned building blocks for hosts that own the registry. AgentSession and
+the TUI do not use those APIs as a fallback.
+
+## Complete TUI Decision Matrix
+
+The cells below are the terminal outcomes for model and ordinary governed
+nested invocations. “Deny” means no confirmation event is created. “Confirm
+once” means one exact invocation ID is pending; cancelling or expiring it
+cannot settle another prompt.
+
+| Mode    | Sandbox     | Ordinary Bash                                             | Explicit host Bash                                        | Protected metadata mutation | Tool-owned confirmation | Annotated external side effect |
+| ------- | ----------- | --------------------------------------------------------- | --------------------------------------------------------- | --------------------------- | ----------------------- | ------------------------------ |
+| Default | Ready       | Execute in sandbox                                        | Confirm exact call once; execute on host only if approved | Confirm exact mutation once | Confirm once            | Confirm once                   |
+| Default | Unavailable | Confirm exact call once; execute on host only if approved | Confirm exact call once; execute on host only if approved | Confirm exact mutation once | Confirm once            | Confirm once                   |
+| Plan    | Ready       | Deny                                                      | Deny                                                      | Deny                        | Deny                    | Deny                           |
+| Plan    | Unavailable | Deny                                                      | Deny                                                      | Deny                        | Deny                    | Deny                           |
+| Auto    | Ready       | Execute in sandbox                                        | Deny                                                      | Deny                        | Deny                    | Deny                           |
+| Auto    | Unavailable | Deny                                                      | Deny                                                      | Deny                        | Deny                    | Deny                           |
+
+Origin modifies that matrix only as follows:
+
+| Origin/call shape                              | Matrix relationship                                                                                                                                                                                                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Agent or ordinary governed nested              | Uses the matrix exactly.                                                                                                                                                                                           |
+| Direct host call to a custom tool              | The selected top-level call skips model-facing permission/HITL; every public nested call returns to the matrix.                                                                                                    |
+| Trusted built-in host-direct nested            | Skips model-facing permission/HITL because the host supplied the built-in orchestration and its children. Hooks, budget, timeout, cancellation, recursion checks, sandbox selection, and sanitization still apply. |
+| Model sub-run born inside any host-direct call | Returns to the Agent row and uses the matrix exactly.                                                                                                                                                              |
+
+Decision precedence is fail-closed: active-Skill restrictions and hard
+guardrails first, then hook blocks, origin authority, mode/permission policy,
+tool-owned escalation, confirmation availability, and finally execution.
+Terminal policies always use `TimeoutAction::Reject`; Core's generic
+`AutoApprove` option is not accepted by the TUI.
+
+Treat the current SRT integration as a local enforcement provider, not as the
+stack-wide execution contract. A3S Code owns agent policy and its
+`BashSandbox` interface. A3S Runtime owns durable, provider-neutral Task and
+Service lifecycle and placement. A3S Box owns OCI and stronger isolation. A
+release-owned support payload keeps those boundaries and leaves the existing
+capability/version handshake and Core contract unchanged. A3S Observer and A3S
+Sentry can add execution evidence and adaptive runtime enforcement as defense
+in depth; they do not replace the deterministic per-process sandbox boundary.
+
+## Secure Downloads
+
+`download` is a bounded workspace mutation, not an unrestricted network or
+filesystem primitive. It is registered only when the session has a writable
+local workspace. Model-selected calls pass through the same permission policy,
+HITL confirmation, hooks, timeout, cancellation, and workspace checks as other
+mutations. Direct `session.tool('download', ...)` calls remain privileged host
+operations and require authorization in the embedding application.
+
+Its network boundary accepts only HTTP(S), rejects user information and
+non-public targets, and revalidates every bounded redirect hop. Direct
+connections reject DNS answers containing any private or otherwise reserved
+address and pin the validated public addresses for that hop. Cross-origin
+redirects drop credentials and resource validators. Explicit proxy mode leaves
+hostname resolution to the configured proxy but retains literal-host and
+redirect checks.
+
+Signed query parameters are preserved because object stores and release systems
+need them to authorize the request. They are removed from diagnostics and
+`source_anchors`, so successful and failed tool results do not expose those
+secrets in metadata.
+
+The destination must remain below the local workspace and may not cross
+symlinks. Content is streamed to an adjacent temporary file under byte and time
+limits. Strict Range validation, optional `expected_sha256`, sync-before-promote,
+and atomic replacement keep incomplete or unverified data away from the final
+path. Cancellation and failure remove the temporary file; `overwrite` defaults
+to `false`.
+
+See [Tools](/guide/tools#binary-safe-local-downloads) for the complete parameter
+contract.
+
+## Permission Policy
+
+```ts title=permissions.ts
+const session = agent.session('/repo', {
+  // !callout(1:7) Applied before execution
+  permissionPolicy: {
+    deny: ['bash(rm -rf*)', 'write(**/.env*)'],
+    ask: ['bash(git push*)', 'bash(npm publish*)'],
+    allow: ['read(*)', 'grep(*)', 'glob(*)', 'bash(cargo test*)'],
+    defaultDecision: 'ask',
+    enabled: true,
+  },
+});
+```
+
+Avoid permissive defaults for release or production sessions. Make dangerous commands explicit and auditable.
+
+## Hooks
+
+Hooks are registered on a session with an event type, matcher, optional config,
+and handler:
+
+```ts
+session.registerHook(
+  'observe-secret-read',
+  'pre_tool_use',
+  { pathPattern: '**/.env*' },
+  { priority: 100 },
+  () => ({ action: 'continue' }),
+);
+
+console.log(session.hookCount());
+session.unregisterHook('observe-secret-read');
+```
+
+## Verification
+
+Verification reports and summaries are available from the session and selected
+result fields. Release workflows should require tests, package checks, CI
+checks, and provider evidence.

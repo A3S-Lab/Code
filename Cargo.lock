@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "6.6.0"
+version = "6.7.0"
 dependencies = [
  "a3s-acl 0.3.0",
  "a3s-common",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-go-bridge"
-version = "6.6.0"
+version = "6.7.0"
 dependencies = [
  "a3s-code-core",
  "anyhow",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-search"
-version = "2.1.2"
+version = "2.2.0"
 dependencies = [
  "a3s-acl 0.2.1",
  "a3s-updater",
@@ -188,6 +188,7 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -214,8 +215,8 @@ dependencies = [
 
 [[package]]
 name = "a3s-use-browser"
-version = "0.3.0"
-source = "git+https://github.com/A3S-Lab/Browser?rev=1830c7b6896b0a38637eba2b61a386bf8a36eada#1830c7b6896b0a38637eba2b61a386bf8a36eada"
+version = "0.3.2"
+source = "git+https://github.com/A3S-Lab/Browser?rev=a4a270f9ca335ceee60c5d9e086ae05005fb7abf#a4a270f9ca335ceee60c5d9e086ae05005fb7abf"
 dependencies = [
  "a3s-use-core",
  "async-trait",

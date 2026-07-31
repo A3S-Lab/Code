@@ -1,0 +1,853 @@
+---
+title: 'API Contract'
+description: 'SDK mechanisms covered by the local integration check'
+---
+
+# API Contract
+
+This page documents only the A3S Code Node SDK behavior covered by
+`scripts/docs_api_contract_smoke.mjs`. The script starts a temporary
+OpenAI-compatible local test server, creates real SDK sessions, calls the native
+binding, and asserts the returned values. It does not require a docs build.
+
+Run the contract from the repository root:
+
+```bash
+node scripts/docs_api_contract_smoke.mjs
+```
+
+## Agent
+
+Verified entry points:
+
+```ts
+const agent = await Agent.create(aclSource);
+await agent.refreshMcpTools();
+
+const session = agent.session(workspace, options);
+const named = agent.sessionForAgent(workspace, 'explore', [], options);
+```
+
+`Agent.create()` accepts ACL source text or an `.acl` file path. JSON config is
+not part of the verified contract. The integration check covers both
+`apiKey`/`baseUrl` and `api_key`/`base_url` provider aliases against the local
+OpenAI-compatible test server.
+`sessionForAgent()` was verified with the built-in `explore` agent.
+
+The Node factory names remain synchronous at the JavaScript surface, but their
+native implementation delegates resource resolution to the core async session
+construction path. Rust embedders should use `SessionBuilder::build().await` or
+the async factories; the synchronous Rust compatibility factory requires an
+explicit pre-initialized memory store.
+
+The integration check also covers the ACL field that creates a file-backed
+session store:
+
+```acl
+storage_backend = "file"
+sessions_dir = "/tmp/a3s-doc-stores/acl-storage"
+```
+
+This contract does not cover `storage_url`. It is not the local file-session
+persistence path; use `sessions_dir` in ACL or pass `sessionStore` in SDK
+options.
+
+## Session Options
+
+The integration check covers this option shape:
+
+```ts
+const session = agent.session(workspace, {
+  model: 'openai/docs-alt',
+  builtinSkills: true,
+  planningMode: 'disabled',
+  memoryStore: new FileMemoryStore(memoryDir),
+  sessionStore: new FileSessionStore(sessionDir),
+  sessionId: 'docs-contract',
+  autoSave: true,
+  securityProvider: new DefaultSecurityProvider(),
+  skillDirs: [path.join(workspace, 'skills')],
+  inlineSkills: [
+    {
+      name: 'strict-release-review',
+      kind: 'instruction',
+      content: 'Always separate blockers from nice-to-have improvements.',
+    },
+  ],
+  maxToolRounds: 24,
+  maxParseRetries: 3,
+  toolTimeoutMs: 120000,
+  circuitBreakerThreshold: 4,
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  continuationEnabled: true,
+  maxContinuationTurns: 3,
+  maxExecutionTimeMs: 300000, // 5 minutes timeout
+  confirmationPolicy: {
+    enabled: true,
+    defaultTimeoutMs: 60000,
+    timeoutAction: 'reject',
+  },
+});
+```
+
+`model` is a per-session override. The check verifies that a session created
+with `model: 'openai/docs-alt'` sends `docs-alt` to the local provider.
+
+Basic session accessors are verified:
+
+```ts
+console.log(session.sessionId);
+console.log(session.workspace);
+console.log(session.initWarning);
+console.log(session.history());
+console.log(session.cancel());
+```
+
+`workspace` is returned as the SDK's canonical workspace path.
+
+`planningMode` accepts the explicit modes documented elsewhere: `'auto'`,
+`'enabled'`, and `'disabled'`.
+
+The check also verifies that this `permissionPolicy` shape is accepted at
+session creation:
+
+```ts
+agent.session(workspace, {
+  permissionPolicy: {
+    deny: ['write(**/.env*)', 'bash(rm -rf*)'],
+    ask: ['bash(git push*)', 'bash(npm publish*)'],
+    allow: ['read(*)', 'grep(*)', 'glob(*)', 'bash(npm run build*)'],
+    defaultDecision: 'ask',
+    enabled: true,
+  },
+});
+```
+
+Prompt slot options are strings:
+
+```ts
+agent.session(workspace, {
+  role: 'release-readiness reviewer',
+  guidelines:
+    'Find blockers before improvements. Require command evidence for done claims.',
+  responseStyle: 'concise, findings first',
+  goalTracking: true,
+});
+```
+
+## Result Shape
+
+`session.send()` returns `AgentResult` fields on the result object itself:
+
+```ts
+const result = await session.send('Return a short answer');
+
+console.log(result.text);
+console.log(result.toolCallsCount);
+console.log(result.promptTokens);
+console.log(result.completionTokens);
+console.log(result.totalTokens);
+console.log(result.verificationStatus);
+console.log(result.pendingVerificationCount);
+console.log(result.failedVerificationCount);
+console.log(result.verificationReportCount);
+console.log(result.verificationSummaryJson);
+console.log(result.verificationSummaryText);
+```
+
+Trace events and verification reports are session APIs, not fields on
+`AgentResult`.
+
+## Streaming
+
+`session.stream()` returns `EventStream`. The verified consumption contract is
+`.next()`:
+
+```ts
+const stream = await session.stream('Stream one sentence');
+
+while (true) {
+  const { value: event, done } = await stream.next();
+  if (done) break;
+  if (!event) continue;
+  if (event.text) process.stdout.write(event.text);
+}
+```
+
+The smoke check starts another `send()` immediately after this loop. Exhaustion
+therefore verifies both event delivery and release of the stream's single-flight
+admission lease; no retry delay is required.
+
+Each SDK event is an envelope-v1 projection with `version === 1`, an open
+`type` string, a complete `payload`, and optional `metadata`. Consumers must
+retain a default branch for future event types. Node exposes `payloadJson` and
+`metadataJson` string views; Python exposes `payload_json` and `metadata_json`
+and retains `event_type` as an alias for `type`.
+
+Do not depend on `for await` unless your installed SDK version has separately
+validated async iteration support.
+
+## Direct Tools
+
+> Full guide: [Tools](/guide/tools).
+
+The integration check covers these host-driven direct calls:
+
+```ts
+await session.readFile('README.md');
+await session.glob('src/*.rs');
+await session.grep('PermissionPolicy');
+await session.bash('printf docs-bash');
+await session.tool('read', { file_path: 'README.md' });
+await session.git('status');
+await session.git('diff');
+await session.git(
+  'log',
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  5,
+);
+await session.tool('search_skills', { query: 'release blockers', limit: 5 });
+
+session.toolNames();
+session.toolDefinitions();
+session.registerAgentDir(path.join(workspace, 'agents'));
+```
+
+The verified local-workspace `toolNames()` set includes `read`, `write`, `edit`,
+`patch`, `download`, `grep`, `glob`, `ls`, `bash`, `task`, `parallel_task`,
+`search_skills`, `Skill`, `program`, `git`, `batch`, `web_fetch`, and
+`web_search`.
+
+Direct host calls are privileged. Gate them in the host application before
+exposing them to end users.
+
+`download` is invoked through the generic direct-tool API:
+
+```ts
+const result = await session.tool('download', {
+  url: 'https://example.com/archive.tar.zst',
+  file_path: 'artifacts/archive.tar.zst',
+  overwrite: false,
+  connections: 4,
+  max_bytes: 536870912,
+  timeout: 300,
+  expected_sha256:
+    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+});
+```
+
+Only `url` is required. `connections` is limited to 1–4, `max_bytes` defaults
+to 512 MiB with an 8 GiB maximum, `timeout` defaults to 300 seconds with a
+3600-second maximum, and `expected_sha256` must contain exactly 64 hexadecimal
+characters. `file_path` is workspace-relative and may be omitted for safe
+filename inference; `overwrite` defaults to `false`.
+
+The tool exists only for writable local workspaces. Model-driven calls remain
+permission- and HITL-governed workspace mutations. The transfer preserves
+signed query parameters for requests but removes them from result metadata,
+validates every redirect and direct DNS target against SSRF, verifies strict
+Range responses, retries only within fixed bounds, falls back sequentially
+when needed, and promotes an adjacent temporary file only after completion and
+optional digest verification.
+
+## AGENTS.md
+
+The script writes an `AGENTS.md` file in the workspace and asserts that its
+instruction token appears in the local provider request body:
+
+```md
+# Project Instructions
+
+Always mention docs-contract-agents-md-token when asked for project instructions.
+```
+
+Keep project instructions operational and free of secrets.
+
+## Programmatic Tool Calling
+
+`session.program()` runs bounded JavaScript in the embedded QuickJS runtime:
+
+```ts
+const result = await session.program({
+  source: `
+    export default async function run(ctx, inputs) {
+      const text = await ctx.readFile('README.md');
+      const hits = await ctx.grep(inputs.q, { glob: '*.md' });
+      return { summary: 'ok', hasHits: text.includes(inputs.q) && hits.includes(inputs.q) };
+    }
+  `,
+  inputs: { q: 'planningMode' },
+  allowedTools: ['read', 'grep'],
+  limits: { timeoutMs: 30000, maxToolCalls: 12, maxOutputBytes: 65536 },
+});
+
+const meta = JSON.parse(result.metadataJson);
+console.log(meta.script_result);
+console.log(meta.program.tool_calls);
+```
+
+Verified `ctx` helpers: `readFile`, `read`, `grep`, `glob`, `ls`, `bash`,
+`git`, and generic `tool(name, args)`. `allowedTools` limits which registered
+tools the script may call. The `program` tool is not included in its own default
+tool set.
+
+## Verification
+
+> Full guide: [Verification](/guide/verification).
+
+Verification is session-scoped:
+
+```ts
+const report = await session.verifyCommands('docs api check', [
+  {
+    id: 'echo',
+    kind: 'command',
+    description: 'echo works',
+    command: 'printf verify',
+    required: true,
+  },
+]);
+
+console.log(report.subject);
+console.log(session.verificationReports());
+console.log(session.verificationSummary());
+console.log(session.verificationSummaryText());
+console.log(session.verificationPresets());
+console.log(formatVerificationSummary(session.verificationSummary()));
+```
+
+## Memory
+
+> Full guide: [Memory](/guide/memory).
+
+Node memory was verified with `FileMemoryStore`:
+
+```ts
+const session = agent.session(workspace, {
+  memoryStore: new FileMemoryStore(memoryDir),
+});
+
+console.log(session.hasMemory);
+await session.rememberSuccess('docs memory success', ['grep'], 'remembered');
+await session.rememberFailure('docs memory failure', 'expected failure', [
+  'bash',
+]);
+await session.memoryRecent(10);
+await session.recallSimilar('docs memory', 5);
+await session.recallByTags(['grep'], 10);
+```
+
+The verified recent-memory method is `memoryRecent()`. `recallRecent()` is not
+present on the current Node SDK surface.
+
+## Skills
+
+> Full guide: [Skills](/guide/skills).
+
+File-backed and inline skills are verified through `search_skills`:
+
+```ts
+const session = agent.session(workspace, {
+  skillDirs: [path.join(workspace, 'skills')],
+  inlineSkills: [
+    {
+      name: 'strict-release-review',
+      kind: 'instruction',
+      content: 'Always separate blockers from nice-to-have improvements.',
+    },
+  ],
+});
+
+await session.tool('search_skills', { query: 'release blockers', limit: 5 });
+await session.tool('search_skills', {
+  query: 'strict release review',
+  limit: 5,
+});
+```
+
+The skill-file check uses Markdown with YAML frontmatter and the
+`allowed-tools` key.
+
+## Side Questions
+
+> Full guide: [Sessions](/guide/sessions).
+
+The current SDK surface has no dedicated ephemeral-question helper. Use
+explicit history when the call must not mutate the session transcript:
+
+```ts
+const snapshot = session.history();
+const side = await session.send('What is this test?', snapshot);
+
+console.log(side.text);
+console.log(session.history().length === snapshot.length);
+```
+
+## Runs And Cancellation
+
+> Full guide: [Sessions](/guide/sessions).
+
+Each `send()` or `stream()` records replayable run state:
+
+```ts
+const runs = await session.runs();
+const latest = runs.at(-1);
+
+if (latest) {
+  console.log(await session.runSnapshot(latest.id));
+  console.log(await session.runEvents(latest.id));
+}
+
+const current = await session.currentRun();
+if (current?.id && current.status === 'running') {
+  await session.cancelRun(current.id);
+}
+
+console.log(session.traceEvents());
+```
+
+`currentRun()` is for the current operation. When idle, it may return
+`null` or a retained snapshot depending on the preceding control flow. Use
+`runs()` for completed history.
+
+Transcript-affecting operations are single-flight per session. An overlapping
+send, stream, attachment call, slash command, or `resumeRun` fails immediately
+with `SessionBusy`; it is not queued. A stream retains admission until its
+producer has stopped, even when its public handle is dropped.
+
+## Persistence
+
+> Full guide: [Persistence](/guide/persistence) and [Sessions](/guide/sessions).
+
+File-backed session persistence was verified with stable `sessionId`,
+`autoSave`, explicit `save()`, and `resumeSession()`:
+
+```ts
+const session = agent.session(workspace, {
+  sessionStore: new FileSessionStore(sessionDir),
+  sessionId: 'docs-contract',
+  autoSave: true,
+});
+
+await session.save();
+
+const resumed = agent.resumeSession('docs-contract', {
+  sessionStore: new FileSessionStore(sessionDir),
+});
+console.log(resumed.history());
+```
+
+Core persistence commits the conversation and its artifacts, traces, run
+records, verification reports, and subagent task snapshots together as one
+versioned `SessionSnapshotV1`. File and memory stores publish that aggregate
+atomically. Legacy fragmented records remain loadable, while custom stores must
+implement aggregate save explicitly.
+
+Use `session.close()` when a Node process should release session-scoped
+background resources promptly. `close()` is the full graceful-stop entry
+point: it flips `session.isClosed` to `true` (further `send` / `stream`
+calls reject with a `Session closed` error), fires the session-level
+`CancellationToken` so every in-flight run, delegated subagent task, and
+HITL confirmation aborts. Subsequent `close()` calls are no-ops.
+
+For control-plane callers that only know the session ID, the same cleanup
+is reachable from the agent:
+
+```ts
+await agent.listSessions(); // ['session-a', 'session-b']
+await agent.closeSession('session-a'); // true if it was open
+await agent.close(); // close every live session + disconnect global MCP
+```
+
+After `agent.close()`, subsequent `agent.session(...)` and
+`agent.resumeSession(...)` calls reject with a `Session closed` error.
+Idempotent. Use this in process-shutdown handlers to guarantee no
+session-scoped workers outlive the agent.
+
+## Delegation
+
+> Full guide: [Tasks](/guide/tasks) and [Orchestration](/guide/orchestration).
+
+The direct helpers for the core delegation tools were verified:
+
+```ts
+await session.task({
+  agent: 'general',
+  description: 'docs delegated check',
+  prompt: 'Return a short response.',
+  maxSteps: 1,
+});
+
+await session.tasks([
+  {
+    agent: 'general',
+    description: 'one',
+    prompt: 'Return one response.',
+    maxSteps: 1,
+  },
+  {
+    agent: 'general',
+    description: 'two',
+    prompt: 'Return another response.',
+    maxSteps: 1,
+  },
+]);
+```
+
+They return `ToolResult` values from `task` and `parallel_task`.
+
+## Hooks
+
+> Full guide: [Hooks](/guide/hooks).
+
+The verified hook management surface is:
+
+```ts
+session.registerHook(
+  'docs-observer',
+  'pre_tool_use',
+  { tool: 'bash' },
+  { priority: 1, timeoutMs: 1000 },
+  () => ({ action: 'continue' }),
+);
+
+console.log(session.hookCount());
+session.unregisterHook('docs-observer');
+```
+
+Validate the specific event path you depend on before using hook behavior as a
+production enforcement gate.
+
+## Slash Commands
+
+> Full guide: [Commands](/guide/commands).
+
+Custom slash commands are invoked through `session.send()`:
+
+```ts
+session.registerCommand(
+  'docs_status',
+  'Return docs command status',
+  (args, ctx) => {
+    return `status args=${args}; session=${ctx.sessionId}; workspace=${ctx.workspace}`;
+  },
+);
+
+console.log(session.listCommands());
+const result = await session.send('/docs_status check');
+console.log(result.text);
+```
+
+## Lane Queue
+
+> Full guide: [Lane Queue](/guide/lane-queue).
+
+Queue infrastructure is opt-in:
+
+```ts
+const queued = agent.session(workspace, {
+  queueConfig: { enableDlq: true, enableMetrics: true },
+});
+
+console.log(queued.hasQueue());
+await queued.setLaneHandler('execute', { mode: 'external', timeoutMs: 1000 });
+await queued.pendingExternalTasks();
+await queued.completeExternalTask('missing', {
+  success: true,
+  result: { ok: true },
+});
+await queued.queueStats();
+await queued.queueMetrics();
+await queued.deadLetters();
+```
+
+Ordinary sessions are queue-free unless `queueConfig` is provided.
+
+## MCP
+
+> Full guide: [MCP](/guide/mcp). Idle disconnect: [Cluster Extension Points](/guide/cluster-extension-points).
+
+The integration check covers a live stdio MCP server:
+
+```ts
+const count = await session.addMcp({
+  name: 'echo',
+  transport: {
+    type: 'stdio',
+    command: process.execPath,
+    args: ['tools/mcp_echo_server.mjs', 'example-value'],
+  },
+  timeoutMs: 30000,
+});
+
+console.log(count);
+console.log(await session.mcpStatus());
+console.log(
+  session.toolNames().filter((name) => name.startsWith('mcp__echo__')),
+);
+
+await session.tool('mcp__echo__echo', { message: 'docs mcp ok' });
+await session.removeMcpServer('echo');
+```
+
+Tools from the server are named `mcp__<server>__<tool>`.
+`addMcpServer(...)` and `addMcpServerConfig(...)` remain compatibility aliases;
+new examples use the compact object-shaped `addMcp(...)` API.
+
+Live add/remove operations target a private manager owned by this session.
+Agent-global and host-supplied managers are inherited read-only capability
+sources, so a session cannot mutate a sibling or global MCP configuration.
+
+## Cluster-grade extension points
+
+> Full guide: [Cluster Extension Points](/guide/cluster-extension-points) (identity labels, budget guard, cluster events, deterministic IDs/replay, loop checkpoints, retention caps).
+
+These contracts let a cluster control plane wire
+multi-tenancy, cost governance, and crash-tolerant runs **without
+forking the framework**. The framework defines decision points and
+emits structured events; the host supplies the policy implementations.
+
+### Identity labels
+
+Four optional `SessionOptions` slots are propagated through hooks,
+traces, and `SessionData` but never interpreted by the framework:
+
+```ts
+const session = agent.session(workspace, {
+  tenantId: 'tenant-example',
+  principal: 'principal-example',
+  agentTemplateId: 'agent-template-example',
+  correlationId: 'trace-example',
+  sessionStore: new FileSessionStore('./sessions'),
+});
+session.tenantId; // -> 'tenant-example'
+session.correlationId; // -> 'trace-example'
+```
+
+`apply_persisted_runtime_options` restores them on resume; caller-
+supplied options on resume take precedence so you can relabel.
+
+### Budget / cost guard
+
+`BudgetGuard` is consulted before every run-owned provider call (and after a
+successful response for usage accounting) and before every governed tool call,
+including nested and trusted host-direct calls. `Deny` returns
+`CodeError::BudgetExhausted { resource, reason }`; `SoftLimit` emits
+an `AgentEvent::BudgetThresholdHit { kind: "soft", .. }` and proceeds.
+
+Rust hosts inject the trait directly. Node.js, Python, and Go expose callback
+bridges later in this section:
+
+```rust
+let guard: Arc<dyn BudgetGuard> = /* host-supplied impl */;
+let opts = SessionOptions::new().with_budget_guard(guard);
+```
+
+### Cluster event vocabulary
+
+`AgentEvent` (non-exhaustive) carries platform-level events the host
+emits via `HookExecutor`:
+
+- `BudgetThresholdHit { resource, kind, consumed, limit, message? }`
+- `PassivationRequested { reason, deadline_ms? }`
+- `PeerInvocation { from_session_id, from_tenant_id?, correlation_id? }`
+
+In-session hooks subscribe to these to react uniformly regardless of
+how the host's transport delivers them.
+
+### Deterministic IDs / time
+
+`HostEnv { id_generator, clock }` replaces the default
+`uuid::Uuid::new_v4()` + wall-clock pair. Replay tooling configures
+`SequentialIdGenerator` + `FixedClock` to recreate a run bit-identical
+on another node.
+
+### Loop checkpoints + run resumption
+
+When a `SessionStore` is configured, the agent loop persists a
+`LoopCheckpoint` after each completed tool round, keyed by `run_id`.
+Any node holding the same store can rehydrate a run from its last
+boundary:
+
+```ts
+// Node — host detected node A died mid-run; on node B:
+const session = agentB.session(workspace, {
+  sessionStore: new FileSessionStore('./sessions'),
+  sessionId: 'session-from-node-a',
+});
+const result = await session.resumeRun('run-id-from-node-a');
+```
+
+```python
+# Python equivalent
+opts = SessionOptions()
+opts.session_store = FileSessionStore('./sessions')
+opts.session_id = 'session-from-node-a'
+session = agent_b.session(workspace, opts)
+result = session.resume_run('run-id-from-node-a')
+```
+
+```go
+// Go equivalent
+session, err := agent.Session(ctx, workspace, &code.SessionOptions{
+	FileSessionStoreDir: "./.a3s/sessions",
+	SessionID:           "session-from-node-a",
+})
+if err != nil {
+	return err
+}
+result, err := session.ResumeRun(ctx, "run-id-from-node-a")
+```
+
+A **new** run id is allocated for the resumed work — the framework
+does not pretend the old run continues. Two distinguishable error
+paths:
+
+- `"resume_run requires a session_store"` — host should fall back to
+  a fresh session.
+- `"no loop checkpoint found for run 'X'"` — host can retry later
+  (race against checkpoint write) or treat the run as lost.
+
+Boundary policy: checkpoints are taken **only between tool rounds**,
+never mid-tool. If a process dies mid-tool the work of that round is
+lost; the LLM re-deliberates from the previous boundary. This trades
+retry cost for correctness — re-executing a non-idempotent tool
+across the boundary is worse than re-asking the LLM.
+
+### Retention caps for long-running sessions
+
+`SessionRetentionLimits` lets the host cap the four in-memory stores
+that grow with session age: the run records, per-run event buffers,
+trace events, and **terminal** subagent task snapshots. Each cap is
+optional (omission keeps the finite framework default; `unbounded: true`
+deliberately restores unlimited retention). Eviction is
+strict FIFO; running subagent tasks are never dropped.
+
+```rust
+use a3s_code_core::retention::SessionRetentionLimits;
+
+let limits = SessionRetentionLimits::new()
+    .with_max_runs(100)
+    .with_max_events_per_run(5_000)
+    .with_max_trace_events(10_000)
+    .with_max_terminal_subagent_tasks(1_000);
+
+let opts = SessionOptions::new().with_retention_limits(limits);
+```
+
+The host should pick caps from the same observability budget that caps the rest
+of its in-memory state (Prometheus carries history anyway). Node exposes this
+as `retentionLimits`; Python as `opts.retention_limits`; Go as
+`SessionOptions.RetentionLimits`.
+
+### MCP idle disconnect
+
+`Agent::disconnect_idle_mcp(threshold_ms)` walks the connected MCP
+servers and drops any whose last activity is older than
+`now - threshold_ms`. The server's _registered config_ stays — a
+later tool call will reconnect on demand. Returns the names of
+disconnected servers.
+
+```ts
+// Node — periodically reap quiet MCP subprocesses.
+setInterval(async () => {
+  const dropped = await agent.disconnectIdleMcp(5 * 60 * 1000); // 5 min
+  if (dropped.length) {
+    console.log('reaped idle MCP servers:', dropped);
+  }
+}, 60_000);
+```
+
+```python
+# Python — same shape.
+dropped = agent.disconnect_idle_mcp(5 * 60 * 1000)
+```
+
+```go
+// Go — milliseconds, matching the other SDKs.
+dropped, err := agent.DisconnectIdleMCP(ctx, 5*60*1000)
+```
+
+Activity is stamped on `connect` and on every successful `call_tool`.
+Hosts that route tool traffic through a side channel can call
+`McpManager.touch(name)` to manually keep a server warm.
+
+### BudgetGuard SDK bridges
+
+All callback-capable SDKs accept the same decision shape:
+
+| Return                                                   | Effect                                                               |
+| -------------------------------------------------------- | -------------------------------------------------------------------- |
+| `None` / `null` / `{decision:'allow'}`                   | proceed silently                                                     |
+| `{decision:'soft', resource, consumed, limit, message?}` | emit `BudgetThresholdHit('soft')` event, proceed                     |
+| `{decision:'deny',  resource, reason}`                   | abort the call, throw `RuntimeError("Budget exhausted...")` (Python) |
+|                                                          | / reject with `"Budget exhausted..."` (Node)                         |
+
+Missing methods on the guard object are treated as a permissive default
+(Allow / no-op). Python callback errors fall back to Allow. Go callback errors,
+timeouts, and malformed decisions fail closed as Deny.
+
+```python
+# Python — attach via SessionOptions before agent.session(...)
+class MyGuard:
+    def check_before_llm(self, session_id, estimated_tokens):
+        return {"decision": "deny", "resource": "llm_tokens", "reason": "cap"}
+    def record_after_llm(self, session_id, usage):
+        track(session_id, usage["total_tokens"])
+
+opts = SessionOptions()
+opts.budget_guard = MyGuard()
+session = agent.session(workspace, opts)
+```
+
+```ts
+// Node — attach via session.setBudgetGuard after construction.
+// JsFunction values can't live inside the value-typed SessionOptions,
+// so the guard is installed on the Session itself; takes effect on
+// the next send/stream.
+session.setBudgetGuard({
+  checkBeforeLlm: (ctx) => {
+    if (overBudget(ctx.sessionId)) {
+      return { decision: 'deny', resource: 'llm_tokens', reason: 'cap' };
+    }
+    return null;
+  },
+  recordAfterLlm: (ctx) => {
+    track(ctx.sessionId, ctx.usage.totalTokens);
+  },
+});
+```
+
+```go
+err := session.SetBudgetGuard(ctx, &code.BudgetGuardHandlers{
+	CheckBeforeLLM: func(
+		_ context.Context,
+		call code.BudgetLLMContext,
+	) (*code.BudgetDecision, error) {
+		if overBudget(call.SessionID) {
+			return &code.BudgetDecision{
+				Decision: "deny",
+				Resource: "llm_tokens",
+				Reason:   "cap",
+			}, nil
+		}
+		return &code.BudgetDecision{Decision: "allow"}, nil
+	},
+})
+```
+
+Node callbacks receive a single `ctx` object and must not throw; wrap handler
+logic in `try/catch` and return an explicit decision. Hung or unreadable
+`check*` callbacks fail closed as `deny`. Python callbacks use positional
+arguments and catch exceptions as Allow. Go handlers receive typed contexts;
+callback errors and timeouts fail closed.
+
+Pass `null` to `setBudgetGuard` (Node) or set `opts.budget_guard =
+None` and re-create the session (Python) to clear. Call
+`session.SetBudgetGuard(ctx, nil)` in Go.
