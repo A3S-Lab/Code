@@ -444,9 +444,10 @@ impl ToolExecutor {
     ///
     /// This API intentionally does not install agent/session permission, HITL,
     /// hook, budget, queue, timeout, cancellation, or sanitization policy.
-    /// Session hosts should use [`crate::AgentSession::tool`] (or its typed
-    /// helpers), and agent runtimes must dispatch through their scoped tool
-    /// invocation gateway.
+    /// Session hosts should use [`crate::AgentSession::tool`] only for already
+    /// authorized control-plane calls, or [`crate::AgentSession::governed_tool`]
+    /// when permission and HITL must still apply. Agent runtimes must dispatch
+    /// through their scoped tool invocation gateway.
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
         let ctx = self.registry.context();
         if let Err(e) = Self::check_workspace_boundary(name, args, &ctx) {

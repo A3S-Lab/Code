@@ -459,12 +459,16 @@ impl AgentLoop {
         base_context: &ToolContext,
     ) -> ToolResult {
         debug_assert!(matches!(invocation.origin, InvocationOrigin::HostDirect(_)));
+        let host_direct_policy = match invocation.origin {
+            InvocationOrigin::HostDirect(policy) => policy,
+            _ => HostDirectPolicy::GovernedControlPlane,
+        };
         let invoker = self.scoped_tool_invoker(Some(session_id), event_tx);
         let ctx = base_context
             .clone()
             .with_session_id(session_id)
             .with_cancellation(cancel_token.clone())
-            .with_host_direct_policy(HostDirectPolicy::TrustedControlPlane)
+            .with_host_direct_policy(host_direct_policy)
             .with_tool_invoker(Arc::clone(&invoker));
         invoker.invoke(invocation, &ctx).await
     }

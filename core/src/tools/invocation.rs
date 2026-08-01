@@ -7,14 +7,16 @@ use serde_json::Value;
 use std::sync::Arc;
 
 /// Policy for explicit host control-plane tool calls.
-///
-/// The host is already the authority that configured the session, so direct
-/// calls do not ask model-facing permission/HITL gates for approval. They do
-/// remain subject to lifecycle hooks, budget, queue/timeout, cancellation,
-/// recursive invocation protection, and output sanitization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HostDirectPolicy {
+    /// The host has already authorized the invocation, so model-facing
+    /// permission and HITL gates are bypassed. Lifecycle hooks, budgets,
+    /// queue/timeout, cancellation, recursive-invocation protection, and
+    /// output sanitization still apply.
     TrustedControlPlane,
+    /// Re-enter the same permission and HITL gate used by model and nested
+    /// invocations before executing the host-requested tool.
+    GovernedControlPlane,
 }
 
 /// Identifies which runtime path requested a tool invocation.
@@ -86,6 +88,20 @@ impl ToolInvocation {
             name: name.into(),
             args,
             origin: InvocationOrigin::HostDirect(HostDirectPolicy::TrustedControlPlane),
+            recent_tools: Vec::new(),
+        }
+    }
+
+    pub(crate) fn host_governed(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        args: Value,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            args,
+            origin: InvocationOrigin::HostDirect(HostDirectPolicy::GovernedControlPlane),
             recent_tools: Vec::new(),
         }
     }

@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 mod event_stream;
+#[cfg(test)]
+mod governed_tests;
 
 pub(super) struct DirectToolRuntime {
     tool_executor: Arc<ToolExecutor>,
@@ -122,16 +124,34 @@ impl DirectToolRuntime {
     }
 
     pub(super) async fn call(&self, name: &str, args: serde_json::Value) -> Result<ToolCallResult> {
+        self.call_invocation(ToolInvocation::host_direct(
+            format!("host-{name}-{}", uuid::Uuid::new_v4()),
+            name,
+            args,
+        ))
+        .await
+    }
+
+    pub(super) async fn call_governed(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<ToolCallResult> {
+        self.call_invocation(ToolInvocation::host_governed(
+            format!("host-governed-{name}-{}", uuid::Uuid::new_v4()),
+            name,
+            args,
+        ))
+        .await
+    }
+
+    async fn call_invocation(&self, invocation: ToolInvocation) -> Result<ToolCallResult> {
         self.ensure_open()?;
         let cancel = self.session_cancel.child_token();
         let result = self
             .agent_loop
             .invoke_host_tool(
-                ToolInvocation::host_direct(
-                    format!("host-{name}-{}", uuid::Uuid::new_v4()),
-                    name,
-                    args,
-                ),
+                invocation,
                 &self.session_id,
                 &None,
                 &cancel,

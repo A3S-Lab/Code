@@ -69,9 +69,30 @@ impl AgentSession {
         DirectToolRuntime::from_session(self).grep(pattern).await
     }
 
-    /// Execute a tool by name, bypassing the LLM.
+    /// Execute a tool by name, bypassing the LLM and treating the host as the
+    /// authority that already approved permission and HITL requirements.
+    ///
+    /// Use [`Self::governed_tool`] when the host is coordinating an invocation
+    /// that must still pass the session's permission and confirmation gates.
     pub async fn tool(&self, name: &str, args: serde_json::Value) -> Result<ToolCallResult> {
         DirectToolRuntime::from_session(self).call(name, args).await
+    }
+
+    /// Execute a tool by name without an LLM while retaining the session's
+    /// permission and HITL gates.
+    ///
+    /// Use this entry point when the host coordinates work but has not already
+    /// authorized the tool invocation. Unlike [`Self::tool`], a permission
+    /// `Ask` decision or a registered tool's `requires_confirmation` hook must
+    /// resolve through the session confirmation provider before execution.
+    pub async fn governed_tool(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<ToolCallResult> {
+        DirectToolRuntime::from_session(self)
+            .call_governed(name, args)
+            .await
     }
 
     /// Execute a tool by name and expose high-level agent events emitted by that
