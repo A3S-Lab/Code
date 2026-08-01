@@ -105,6 +105,8 @@ dependencies = [
 [[package]]
 name = "a3s-common"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40cd6201d7bcccd75f7719d5f3054c275dc31d0f406eab40d591d2c907f4fc60"
 dependencies = [
  "async-trait",
  "bytes",
@@ -138,6 +140,8 @@ dependencies = [
 [[package]]
 name = "a3s-lane"
 version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d1893dcc53093f705a21a7b5160509af3ddf5c872391e65509b9c944129cb46"
 dependencies = [
  "async-trait",
  "chrono",
@@ -159,6 +163,8 @@ dependencies = [
 [[package]]
 name = "a3s-memory"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10288750681acd08de9a4d7daef80550d72017dc4aef00256c8aad44c55e35e6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -172,6 +178,7 @@ dependencies = [
 [[package]]
 name = "a3s-search"
 version = "2.2.0"
+source = "git+https://github.com/A3S-Lab/Search.git?rev=e3b29386f652953cb645f50cd3998d9d8b45a05a#e3b29386f652953cb645f50cd3998d9d8b45a05a"
 dependencies = [
  "a3s-acl 0.2.1",
  "a3s-updater",
