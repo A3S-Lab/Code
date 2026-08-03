@@ -18,6 +18,7 @@ var RequiredOperations = []string{
 	"agent_close_session",
 	"agent_disconnect_idle_mcp",
 	"agent_serve_agent_dir",
+	"agent_serve_status",
 	"agent_stop_serve",
 	"agent_is_closed",
 	"agent_close",

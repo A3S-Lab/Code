@@ -31,7 +31,6 @@ tokio = { version = "1.35", features = [
     "sync",
     "time",
 ] }
-tokio-util = { version = "0.7" }
 
 [dev-dependencies]
 tempfile = "3.10"

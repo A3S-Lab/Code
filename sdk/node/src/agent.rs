@@ -355,9 +355,11 @@ impl Agent {
     /// the agent dir's tools installed; each schedule fires as a FULL harness turn
     /// (context, tool visibility, safety gate, verification), never a raw model call.
     ///
-    /// Returns immediately with a {@link ServeHandle}; the daemon runs in the
-    /// background until `handle.stop()` is called. The handle MUST be kept and
-    /// stopped explicitly — dropping it does NOT cancel the daemon.
+    /// Resolves with a {@link ServeHandle} only after all enabled schedule
+    /// sessions and tools have been prepared. Startup failures reject this call,
+    /// so the returned handle is ready to accept scheduled work. The daemon then
+    /// runs in the background until `handle.stop()` is called. The handle MUST be
+    /// kept and stopped explicitly — dropping it does NOT cancel the daemon.
     ///
     /// ```js
     /// const handle = await agent.serveAgentDir('./my-agent', '/my-project');
@@ -382,26 +384,25 @@ impl Agent {
             .map_err(|e| napi::Error::from_reason(format!("Failed to load agent dir: {e}")))?;
         let extra = js_session_options_to_rust(options)?;
 
-        // The daemon runs until cancelled; spawn it so control returns to JS
-        // immediately and the event loop is not blocked. The token, owned by the
-        // returned ServeHandle, drives graceful shutdown.
-        let cancel = CancellationToken::new();
         let agent = self.inner.clone();
-        let handle_token = cancel.clone();
-
-        get_runtime().spawn(async move {
-            // Spawned task bodies are NOT panic-safe (a panic here is swallowed,
-            // never surfaced). `serve_agent_dir` returns Result and never panics
-            // by construction; a scheduling error is reported, not propagated.
-            if let Err(e) =
-                rust_serve_agent_dir(&agent, &agent_dir, workspace, Some(extra), cancel).await
-            {
-                eprintln!("a3s-code: serve_agent_dir daemon exited with error: {e}");
-            }
-        });
+        let handle = get_runtime()
+            .spawn(async move {
+                let handle =
+                    match rust_spawn_agent_dir_daemon(agent, agent_dir, workspace, Some(extra)) {
+                        Ok(handle) => handle,
+                        Err(error) => return Err((None, error)),
+                    };
+                if let Err(error) = handle.wait_ready().await {
+                    return Err((handle.failure_code(), error));
+                }
+                Ok(handle)
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|(failure_code, error)| node_serve_error_code(failure_code, error))?;
 
         Ok(ServeHandle {
-            cancel: handle_token,
+            inner: Arc::new(handle),
         })
     }
 }

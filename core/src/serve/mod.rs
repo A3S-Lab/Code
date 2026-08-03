@@ -13,9 +13,14 @@
 //! model call.
 
 pub mod daemon;
+mod lifecycle;
 pub mod schedule;
 pub mod tools;
 
 pub use daemon::serve_agent_dir;
+pub use lifecycle::{
+    spawn_agent_dir_daemon, ServeDaemonFailure, ServeDaemonHandle, ServeDaemonPhase,
+    ServeDaemonStatus, DEFAULT_SERVE_SHUTDOWN_TIMEOUT,
+};
 pub use schedule::{ScheduleSink, ScheduledJob, Scheduler};
 pub use tools::install_agent_dir_tools;

@@ -10,6 +10,7 @@ import type {
   Agent,
   AgentEvent,
   EventStream,
+  ServeHandle,
   StateGraphRuntime,
   ToolResult,
   ReadFileOptions,
@@ -34,6 +35,7 @@ declare const _session: Session
 declare const _agent: Agent
 declare const _event: AgentEvent
 declare const _eventStream: EventStream
+declare const _serveHandle: ServeHandle
 declare const _stateGraph: StateGraphRuntime
 declare const _result: ToolResult
 declare const _readOptions: ReadFileOptions
@@ -49,6 +51,7 @@ declare const _envelope: EventEnvelopeV1<{ opaque: Array<number> }>
 const _knownEventType: KnownAgentEventTypeV1 = 'tool_execution_start'
 const _futureEventType: AgentEventTypeV1 = 'future_event'
 const _busyCode: A3sCodeErrorCode = 'SESSION_BUSY'
+const _serveFailureCode: A3sCodeErrorCode = 'SERVE_STARTUP_FAILED'
 
 void _session.readFile('notes.txt', _readOptions)
 void _session.readFile('notes.txt', { offset: 1, limit: 1 })
@@ -70,12 +73,17 @@ void _agent.session('repo', {
   manualDelegationEnabled: false,
   retentionLimits: { unbounded: true },
 })
+void _serveHandle.isReady()
+void _serveHandle.state()
+void _serveHandle.failureCode()
+void _serveHandle.isStopped()
 void _versionedEvent.payload
 void _envelope.payload.opaque
 void _knownEventType
 void _futureEventType
 void _codeError.code
 void _busyCode
+void _serveFailureCode
 
 async function _consumeRunReplay(): Promise<void> {
   const events = await _session.runEvents('run-1')
@@ -109,6 +117,8 @@ async function _consumeAsyncLifecycle(): Promise<void> {
   await resumed.closeAsync()
   const replacement = await _agent.replaceSessionAsync(session, {})
   await replacement.closeAsync()
+  const serveHandle = await _agent.serveAgentDir('./agent', '.', {})
+  await serveHandle.stop()
 }
 
 void _consumeAsyncLifecycle

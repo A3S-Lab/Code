@@ -1,27 +1,5 @@
 use super::*;
 
-/// Lifetime handle for a running serve daemon (see `Agent.serve_agent_dir`).
-///
-/// The daemon keeps running until `stop()` is called. Dropping the handle does
-/// NOT cancel the daemon — call `stop()` explicitly for graceful shutdown.
-#[pyclass(name = "ServeHandle")]
-pub(super) struct PyServeHandle {
-    cancel: CancellationToken,
-}
-
-#[pymethods]
-impl PyServeHandle {
-    /// Request graceful shutdown of the serve daemon. Idempotent.
-    fn stop(&self) {
-        self.cancel.cancel();
-    }
-
-    /// Whether `stop()` has been called on this handle.
-    fn is_stopped(&self) -> bool {
-        self.cancel.is_cancelled()
-    }
-}
-
 /// AI coding agent. Create with `Agent.create()`, then call `agent.session()`.
 #[pyclass(name = "Agent")]
 pub(super) struct PyAgent {
@@ -70,9 +48,11 @@ impl PyAgent {
     /// the agent dir's tools installed; each schedule fires as a FULL harness turn
     /// (context, tool visibility, safety gate, verification), never a raw model call.
     ///
-    /// Returns immediately with a `ServeHandle`; the daemon runs in the
-    /// background until `handle.stop()` is called. Dropping the handle does NOT
-    /// cancel the daemon.
+    /// Returns a `ServeHandle` only after all enabled schedule sessions and
+    /// tools have been prepared. Startup failures raise from this call, so the
+    /// returned handle is ready to accept scheduled work. The daemon then runs
+    /// in the background until `handle.stop()` is called. Dropping the handle
+    /// does NOT cancel the daemon.
     ///
     /// Args:
     ///     dir: Path to the agent directory (prompt/skills/schedules/tools)
@@ -82,6 +62,7 @@ impl PyAgent {
     #[pyo3(signature = (dir, workspace, options=None))]
     fn serve_agent_dir(
         &self,
+        py: Python<'_>,
         dir: String,
         workspace: String,
         options: Option<PySessionOptions>,
@@ -93,25 +74,24 @@ impl PyAgent {
             None => None,
         };
 
-        // The daemon runs until cancelled; spawn it on the shared runtime so the
-        // call returns to Python immediately. The token, owned by the returned
-        // ServeHandle, drives graceful shutdown.
-        let cancel = CancellationToken::new();
         let agent = self.inner.clone();
-        let handle_token = cancel.clone();
-
-        get_runtime().spawn(async move {
-            // serve_agent_dir returns Result and never panics by construction; a
-            // scheduling error is reported, not propagated (spawned task bodies
-            // are not panic-safe).
-            if let Err(e) = rust_serve_agent_dir(&agent, &agent_dir, workspace, extra, cancel).await
-            {
-                eprintln!("a3s-code: serve_agent_dir daemon exited with error: {e}");
-            }
+        let started = py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                let handle = match rust_spawn_agent_dir_daemon(agent, agent_dir, workspace, extra) {
+                    Ok(handle) => handle,
+                    Err(error) => return Err((None, error)),
+                };
+                if let Err(error) = handle.wait_ready().await {
+                    return Err((handle.failure_code(), error));
+                }
+                Ok(handle)
+            })
         });
+        let handle =
+            started.map_err(|(failure_code, error)| py_serve_error(failure_code, error))?;
 
         Ok(PyServeHandle {
-            cancel: handle_token,
+            inner: Arc::new(handle),
         })
     }
 

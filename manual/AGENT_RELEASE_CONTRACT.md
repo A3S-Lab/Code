@@ -13,10 +13,33 @@ The `release` module owns:
 - deriving a schema-aware canonical ACL document and release identity; and
 - checking the declared protocol and capability requirements before activation.
 
-It does not build an OCI image, start an Agent daemon, implement the declared
-health endpoints, enforce the shutdown deadline, or certify a deployment as a
-Runtime Service. Those runtime pieces must be implemented and tested before an
-Agent release is considered deployable.
+It does not build an OCI image, launch the manifest's declared entrypoint,
+implement the declared HTTP health endpoints or Agent request protocol, bind
+the manifest grace period to a process supervisor, or certify a deployment as
+a Runtime Service. Those runtime pieces must be implemented and tested before
+an Agent release is considered deployable.
+
+## Current serve lifecycle building block
+
+With the `serve` feature, `serve::spawn_agent_dir_daemon` provides an observable
+lifecycle for the existing filesystem-first cron daemon. Its state progresses
+through `starting`, `ready`, `draining`, and `stopped`, or terminates as
+`failed`. Readiness is published only after every cron expression is validated
+and every enabled schedule session and tool is prepared. Invalid schedules and
+tool/session setup failures therefore fail before activation.
+
+`ServeDaemonHandle::stop` cancels sleepers and in-flight schedule turns, closes
+daemon-owned sessions, and joins the task within a 30-second default deadline.
+Terminal failures expose stable `SERVE_*` codes. Node.js, Python, and Go SDK
+serve calls wait for readiness before returning and expose status through their
+serve handles.
+
+This is a lifecycle primitive, not the v1 release runtime. It does not read or
+bind `.a3s/asset.acl`, listen on the declared readiness/liveness paths, accept a
+headless Agent request protocol, launch the declared artifact entrypoint, or
+prove Runtime Service deployment. The declared `health.shutdown_grace_seconds`
+also remains distinct from the daemon's library default until a release-aware
+supervisor owns that mapping.
 
 The repository fixture at
 [`fixtures/agent-release-contract/.a3s/asset.acl`](../fixtures/agent-release-contract/.a3s/asset.acl)

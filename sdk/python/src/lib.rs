@@ -77,14 +77,22 @@ use std::sync::{
 };
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 const MEMORY_UNAVAILABLE_MESSAGE: &str =
     "Memory unavailable for this session; check session init_warning";
 
 fn py_code_error(error: a3s_code_core::CodeError) -> PyErr {
     let code = error.code();
-    let py_error = PyRuntimeError::new_err(error.to_string());
+    py_error_with_code(code, error.to_string())
+}
+
+fn py_serve_error(failure_code: Option<&'static str>, error: a3s_code_core::CodeError) -> PyErr {
+    let code = failure_code.unwrap_or(error.code());
+    py_error_with_code(code, error.to_string())
+}
+
+fn py_error_with_code(code: &str, message: String) -> PyErr {
+    let py_error = PyRuntimeError::new_err(message);
     Python::with_gil(|py| {
         let _ = py_error.value(py).setattr("code", code);
     });
@@ -121,7 +129,10 @@ fn inline_skill_to_rust(name: String, content: String, kind: &str) -> PyResult<A
 }
 
 use a3s_code_core::config::AgentDir as RustAgentDir;
-use a3s_code_core::serve::serve_agent_dir as rust_serve_agent_dir;
+use a3s_code_core::serve::{
+    spawn_agent_dir_daemon as rust_spawn_agent_dir_daemon,
+    ServeDaemonHandle as RustServeDaemonHandle,
+};
 
 // ============================================================================
 // Utilities
@@ -325,8 +336,11 @@ mod search_config;
 use async_bridge::*;
 use search_config::*;
 
+mod serve_handle;
+use serve_handle::PyServeHandle;
+
 mod agent;
-use agent::{PyAgent, PyServeHandle};
+use agent::PyAgent;
 
 mod session;
 use session::*;

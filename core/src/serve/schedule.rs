@@ -81,16 +81,46 @@ impl Scheduler {
     }
 
     /// Run until `cancel` fires; one independent loop per job.
+    ///
+    /// This compatibility entry point preserves the original fire-and-forget
+    /// error semantics and returns immediately when there are no jobs. Daemon
+    /// hosts that need observable failures should call [`Self::run_observed`].
     pub async fn run(self, sink: Arc<dyn ScheduleSink>, cancel: CancellationToken) {
-        let mut handles = Vec::new();
+        if self.jobs.is_empty() {
+            return;
+        }
+        let _ = self.run_jobs(sink, cancel).await;
+    }
+
+    /// Run until cancellation while preserving worker failures for the host.
+    ///
+    /// An empty scheduler remains alive until cancellation so a successfully
+    /// prepared daemon does not exit merely because it has no cron jobs.
+    pub async fn run_observed(
+        self,
+        sink: Arc<dyn ScheduleSink>,
+        cancel: CancellationToken,
+    ) -> Result<()> {
+        if self.jobs.is_empty() {
+            cancel.cancelled().await;
+            return Ok(());
+        }
+        self.run_jobs(sink, cancel).await
+    }
+
+    async fn run_jobs(self, sink: Arc<dyn ScheduleSink>, cancel: CancellationToken) -> Result<()> {
+        let mut workers = tokio::task::JoinSet::new();
         for job in self.jobs {
             let sink = Arc::clone(&sink);
             let cancel = cancel.clone();
-            handles.push(tokio::spawn(run_job(job, sink, cancel)));
+            workers.spawn(run_job(job, sink, cancel));
         }
-        for h in handles {
-            let _ = h.await;
+        while let Some(joined) = workers.join_next().await {
+            joined.map_err(|error| {
+                CodeError::Context(format!("schedule worker terminated unexpectedly: {error}"))
+            })?;
         }
+        Ok(())
     }
 }
 
@@ -104,7 +134,12 @@ async fn run_job(job: ScheduledJob, sink: Arc<dyn ScheduleSink>, cancel: Cancell
             .to_std()
             .unwrap_or(std::time::Duration::from_secs(0));
         tokio::select! {
-            _ = tokio::time::sleep(wait) => sink.fire(&job.spec).await,
+            _ = tokio::time::sleep(wait) => {
+                tokio::select! {
+                    _ = sink.fire(&job.spec) => {}
+                    _ = cancel.cancelled() => return,
+                }
+            }
             _ = cancel.cancelled() => return,
         }
     }
@@ -114,6 +149,7 @@ async fn run_job(job: ScheduledJob, sink: Arc<dyn ScheduleSink>, cancel: Cancell
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
 
     fn spec(name: &str, cron: &str, enabled: bool) -> ScheduleSpec {
         ScheduleSpec {
@@ -177,6 +213,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compatibility_run_with_no_jobs_returns_immediately() {
+        struct NoopSink;
+
+        #[async_trait::async_trait]
+        impl ScheduleSink for NoopSink {
+            async fn fire(&self, _spec: &ScheduleSpec) {}
+        }
+
+        let scheduler = Scheduler::new(Vec::<ScheduleSpec>::new()).unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            scheduler.run(Arc::new(NoopSink), CancellationToken::new()),
+        )
+        .await
+        .expect("the compatibility API must keep its empty-scheduler behavior");
+    }
+
+    #[tokio::test]
     async fn fires_at_least_once_then_stops_on_cancel() {
         struct CountSink(Arc<AtomicUsize>);
         #[async_trait::async_trait]
@@ -191,14 +245,75 @@ mod tests {
         let s = Scheduler::new([spec("sec", "* * * * * *", true)]).unwrap();
         let cancel = CancellationToken::new();
         let sink = Arc::new(CountSink(Arc::clone(&fires)));
-        let handle = tokio::spawn(s.run(sink, cancel.clone()));
+        let handle = tokio::spawn(s.run_observed(sink, cancel.clone()));
         tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
         cancel.cancel();
-        let _ = handle.await;
+        handle.await.unwrap().unwrap();
         assert!(
             fires.load(Ordering::SeqCst) >= 1,
             "expected at least one fire in ~2.2s, got {}",
             fires.load(Ordering::SeqCst)
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_an_in_flight_schedule_fire() {
+        struct BlockingSink(Arc<Notify>);
+
+        #[async_trait::async_trait]
+        impl ScheduleSink for BlockingSink {
+            async fn fire(&self, _spec: &ScheduleSpec) {
+                self.0.notify_one();
+                std::future::pending::<()>().await;
+            }
+        }
+
+        let started = Arc::new(Notify::new());
+        let scheduler = Scheduler::new([spec("blocked", "* * * * * *", true)]).unwrap();
+        let cancel = CancellationToken::new();
+        let run_cancel = cancel.clone();
+        let sink: Arc<dyn ScheduleSink> = Arc::new(BlockingSink(Arc::clone(&started)));
+        let run = tokio::spawn(scheduler.run_observed(sink, run_cancel));
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .expect("schedule fire must start");
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_millis(250), run)
+            .await
+            .expect("cancellation must interrupt the in-flight fire")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn observed_run_surfaces_any_worker_panic_without_waiting_for_earlier_workers() {
+        struct PanicSink;
+
+        #[async_trait::async_trait]
+        impl ScheduleSink for PanicSink {
+            async fn fire(&self, spec: &ScheduleSpec) {
+                if spec.name == "blocked" {
+                    std::future::pending::<()>().await;
+                }
+                panic!("worker panic");
+            }
+        }
+
+        let scheduler = Scheduler::new([
+            spec("blocked", "* * * * * *", true),
+            spec("panics", "* * * * * *", true),
+        ])
+        .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            scheduler.run_observed(Arc::new(PanicSink), CancellationToken::new()),
+        )
+        .await
+        .expect("a later worker panic must not be hidden by an earlier worker")
+        .unwrap_err();
+        assert!(result
+            .to_string()
+            .contains("schedule worker terminated unexpectedly"));
     }
 }

@@ -70,7 +70,10 @@ use a3s_code_core::queue::{
     MetricsSnapshot as RustMetricsSnapshot, SessionLane as RustSessionLane,
     SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
 };
-use a3s_code_core::serve::serve_agent_dir as rust_serve_agent_dir;
+use a3s_code_core::serve::{
+    spawn_agent_dir_daemon as rust_spawn_agent_dir_daemon,
+    ServeDaemonHandle as RustServeDaemonHandle,
+};
 use a3s_code_core::skills::{
     builtin_skills as rust_builtin_skills, Skill as RustSkill, SkillKind as RustSkillKind,
 };
@@ -92,13 +95,27 @@ use a3s_code_core::{
 };
 use napi::Either;
 use napi::Env;
-use tokio_util::sync::CancellationToken;
 
 const MEMORY_UNAVAILABLE_MESSAGE: &str =
     "Memory unavailable for this session; check session initWarning";
 
 fn node_code_error(error: a3s_code_core::CodeError) -> napi::Error {
     napi::Error::from_reason(format!("[A3S_CODE_ERROR:{}] {}", error.code(), error))
+}
+
+fn node_serve_error(
+    handle: &RustServeDaemonHandle,
+    error: a3s_code_core::CodeError,
+) -> napi::Error {
+    node_serve_error_code(handle.failure_code(), error)
+}
+
+fn node_serve_error_code(
+    failure_code: Option<&'static str>,
+    error: a3s_code_core::CodeError,
+) -> napi::Error {
+    let code = failure_code.unwrap_or(error.code());
+    napi::Error::from_reason(format!("[A3S_CODE_ERROR:{code}] {error}"))
 }
 
 use std::future::Future;
@@ -736,38 +753,6 @@ fn verification_reports_from_value(
 }
 
 // ============================================================================
-// ServeHandle
-// ============================================================================
-
-/// Lifetime handle for a running serve daemon (see {@link Agent.serveAgentDir}).
-///
-/// The daemon keeps running until `stop()` is called. Dropping the handle does
-/// NOT cancel the daemon — call `stop()` explicitly for graceful shutdown.
-#[napi]
-pub struct ServeHandle {
-    cancel: CancellationToken,
-}
-
-#[napi]
-impl ServeHandle {
-    /// Request graceful shutdown of the serve daemon.
-    ///
-    /// Signals every per-schedule job to stop after its current fire. Idempotent:
-    /// calling `stop()` more than once is a no-op. Resolves once the cancellation
-    /// has been signalled.
-    #[napi]
-    pub async fn stop(&self) {
-        self.cancel.cancel();
-    }
-
-    /// Whether `stop()` has been called on this handle.
-    #[napi]
-    pub fn is_stopped(&self) -> bool {
-        self.cancel.is_cancelled()
-    }
-}
-
-// ============================================================================
 // McpServerStatusEntry
 // ============================================================================
 
@@ -795,6 +780,9 @@ mod session_governance;
 mod session_capabilities;
 
 mod agent;
+
+mod serve_handle;
+pub use serve_handle::ServeHandle;
 
 mod event_protocol;
 pub use event_protocol::*;

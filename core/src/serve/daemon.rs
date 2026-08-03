@@ -69,25 +69,68 @@ pub async fn serve_agent_dir(
     extra: Option<SessionOptions>,
     cancel: CancellationToken,
 ) -> Result<()> {
-    let extra = extra.unwrap_or_default();
+    prepare_agent_dir(agent, agent_dir, workspace, extra)
+        .await?
+        .run(cancel)
+        .await
+}
 
-    let mut sessions = HashMap::new();
+pub(crate) struct PreparedAgentDirDaemon {
+    scheduler: Scheduler,
+    sink: Arc<dyn ScheduleSink>,
+    sessions: Vec<Arc<AgentSession>>,
+}
+
+impl PreparedAgentDirDaemon {
+    pub(crate) async fn run(self, cancel: CancellationToken) -> Result<()> {
+        let scheduler_result = self.scheduler.run_observed(self.sink, cancel).await;
+        for session in self.sessions {
+            session.close().await;
+        }
+        scheduler_result
+    }
+}
+
+pub(crate) async fn prepare_agent_dir(
+    agent: &Agent,
+    agent_dir: &AgentDir,
+    workspace: impl Into<String> + Clone,
+    extra: Option<SessionOptions>,
+) -> Result<PreparedAgentDirDaemon> {
+    let extra = extra.unwrap_or_default();
+    // Validate all cron expressions before allocating sessions or connecting
+    // tools so malformed schedules fail before the daemon can become active.
+    let scheduler = Scheduler::new(agent_dir.schedules.clone())?;
+
+    let mut sessions: HashMap<String, Arc<AgentSession>> = HashMap::new();
     for spec in agent_dir.schedules.iter().filter(|s| s.enabled) {
-        let session = build_session(
+        let session = match build_session(
             agent,
             agent_dir,
             format!("schedule:{}", spec.name),
             workspace.clone(),
             &extra,
         )
-        .await?;
+        .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                for session in sessions.into_values() {
+                    session.close().await;
+                }
+                return Err(error);
+            }
+        };
         sessions.insert(spec.name.clone(), Arc::new(session));
     }
 
-    let scheduler = Scheduler::new(agent_dir.schedules.clone())?;
+    let owned_sessions = sessions.values().cloned().collect();
     let sink: Arc<dyn ScheduleSink> = Arc::new(SessionScheduleSink { sessions });
-    scheduler.run(sink, cancel).await;
-    Ok(())
+    Ok(PreparedAgentDirDaemon {
+        scheduler,
+        sink,
+        sessions: owned_sessions,
+    })
 }
 
 /// Build one durable serve session under the explicit `session_id`
@@ -134,7 +177,10 @@ async fn build_session(
     // session, so a triggered turn can call them. Connection is fallible and
     // surfaces here (fail at startup, not at first call). Done for both fresh and
     // resumed sessions — tools are not persisted, they are re-installed each boot.
-    super::tools::install_agent_dir_tools(&session, &agent_dir.tools).await?;
+    if let Err(error) = super::tools::install_agent_dir_tools(&session, &agent_dir.tools).await {
+        session.close().await;
+        return Err(error);
+    }
     Ok(session)
 }
 
@@ -169,14 +215,18 @@ providers "anthropic" {
     }
 
     #[tokio::test]
-    async fn serve_with_no_schedules_returns_immediately() {
+    async fn serve_with_no_schedules_stays_ready_until_cancelled() {
         let agent = Agent::from_config(test_agent_config()).await.unwrap();
         let dir = agent_dir_with(vec![]);
         let cancel = CancellationToken::new();
-        // No schedules → no sessions, no jobs; returns Ok without blocking.
-        serve_agent_dir(&agent, &dir, "/tmp/ws".to_string(), None, cancel)
-            .await
-            .unwrap();
+        let run_cancel = cancel.clone();
+        let run = tokio::spawn(async move {
+            serve_agent_dir(&agent, &dir, "/tmp/ws".to_string(), None, run_cancel).await
+        });
+        tokio::task::yield_now().await;
+        assert!(!run.is_finished());
+        cancel.cancel();
+        run.await.unwrap().unwrap();
     }
 
     #[tokio::test]

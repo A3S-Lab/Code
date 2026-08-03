@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added permission/HITL-aware governed direct-tool calls across the Node,
   Python, and Go SDKs, preserving `tool` as the explicit trusted
   host-control-plane API and restoring the cross-SDK alignment gate.
+- Added an observable filesystem-first serve lifecycle with post-preparation
+  readiness, stable terminal failure codes, and status access in the Node.js,
+  Python, and Go SDK handles.
+
+### Changed
+
+- Serve startup now validates schedules before allocating sessions, and SDK
+  start calls return only after session/tool preparation. Graceful stop cancels
+  in-flight schedule work, closes owned sessions, and joins within a bounded
+  deadline.
 
 ### Fixed
 

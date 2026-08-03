@@ -87,10 +87,10 @@ async fn schedule_fires_a_real_harness_turn() {
     .expect("scheduler");
 
     let cancel = CancellationToken::new();
-    let handle = tokio::spawn(scheduler.run(sink, cancel.clone()));
+    let handle = tokio::spawn(scheduler.run_observed(sink, cancel.clone()));
     tokio::time::sleep(Duration::from_secs(12)).await;
     cancel.cancel();
-    let _ = handle.await;
+    handle.await.unwrap().unwrap();
 
     let recorded = fires.lock().unwrap();
     assert!(

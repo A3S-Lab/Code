@@ -1109,12 +1109,18 @@ export declare class ServeHandle {
   /**
    * Request graceful shutdown of the serve daemon.
    *
-   * Signals every per-schedule job to stop after its current fire. Idempotent:
-   * calling `stop()` more than once is a no-op. Resolves once the cancellation
-   * has been signalled.
+   * Cancels in-flight schedule work and closes daemon-owned sessions.
+   * Idempotent; resolves only after the daemon task has settled, or rejects
+   * when the bounded shutdown deadline is exceeded.
    */
   stop(): Promise<void>
-  /** Whether `stop()` has been called on this handle. */
+  /** Whether preparation completed and the daemon currently accepts work. */
+  isReady(): boolean
+  /** Current lifecycle state: starting, ready, draining, stopped, or failed. */
+  state(): string
+  /** Stable terminal failure code, or null while no failure is present. */
+  failureCode(): string | null
+  /** Whether the daemon has stopped or failed. */
   isStopped(): boolean
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
@@ -1849,9 +1855,11 @@ export declare class Agent {
    * the agent dir's tools installed; each schedule fires as a FULL harness turn
    * (context, tool visibility, safety gate, verification), never a raw model call.
    *
-   * Returns immediately with a {@link ServeHandle}; the daemon runs in the
-   * background until `handle.stop()` is called. The handle MUST be kept and
-   * stopped explicitly — dropping it does NOT cancel the daemon.
+   * Resolves with a {@link ServeHandle} only after all enabled schedule
+   * sessions and tools have been prepared. Startup failures reject this call,
+   * so the returned handle is ready to accept scheduled work. The daemon then
+   * runs in the background until `handle.stop()` is called. The handle MUST be
+   * kept and stopped explicitly — dropping it does NOT cancel the daemon.
    *
    * ```js
    * const handle = await agent.serveAgentDir('./my-agent', '/my-project');

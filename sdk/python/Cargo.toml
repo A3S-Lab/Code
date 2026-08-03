@@ -20,7 +20,6 @@ serde = "1.0"
 anyhow = "1.0"
 async-trait = "0.1"
 num_cpus = "1.16"
-tokio-util = "0.7"
 
 [features]
 extension-module = ["pyo3/extension-module"]

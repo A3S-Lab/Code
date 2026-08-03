@@ -174,6 +174,69 @@ func TestCreateValidatesInputs(t *testing.T) {
 	}
 }
 
+func TestServeAgentDirWaitsForReadyAndExposesStatus(t *testing.T) {
+	if !errors.Is(
+		&Error{Code: CodeServeStartupFailed},
+		ErrServeStartupFailed,
+	) {
+		t.Fatal("serve startup failures must have a stable Go sentinel")
+	}
+	runtime := &fakeRuntime{
+		request: func(
+			_ context.Context,
+			operation string,
+			_ map[string]any,
+		) (any, error) {
+			switch operation {
+			case "agent_create":
+				return map[string]any{"agent_id": "agent-1"}, nil
+			case "agent_serve_agent_dir":
+				return map[string]any{"serve_handle": "serve-1"}, nil
+			case "agent_serve_status":
+				return ServeStatus{Phase: "ready", Ready: true}, nil
+			case "agent_stop_serve":
+				return map[string]any{"stopped": true}, nil
+			default:
+				t.Fatalf("unexpected operation %q", operation)
+				return nil, nil
+			}
+		},
+	}
+	ctx := context.Background()
+	agent, err := Create(ctx, "inline acl", WithRuntime(runtime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := agent.ServeAgentDir(ctx, "agent-dir", "workspace", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := handle.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Phase != "ready" || !status.Ready || status.Stopped {
+		t.Fatalf("unexpected serve status: %#v", status)
+	}
+	if err := handle.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{
+		"sdk_capabilities",
+		"agent_create",
+		"agent_serve_agent_dir",
+		"agent_serve_status",
+		"agent_stop_serve",
+	}
+	if got := runtime.operations(); !slices.Equal(got, want) {
+		t.Fatalf("operations = %v, want %v", got, want)
+	}
+}
+
 func TestEventTypeCatalogReturnsACopy(t *testing.T) {
 	first := AgentEventTypesV1()
 	if len(first) == 0 {

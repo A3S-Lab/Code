@@ -169,6 +169,11 @@ serializable Agent and Session capabilities, including:
   remote Git, permission/confirmation policies, retention, trajectory,
   deterministic ID/clock replay, delegation, and prompt-slot configuration.
 
+`Agent.ServeAgentDir` returns only after schedule validation and session/tool
+preparation. `ServeHandle.Status` reports `starting`, `ready`, `draining`,
+`stopped`, or `failed`; `ServeHandle.Stop` cancels in-flight work and waits for
+bounded, joined shutdown.
+
 Rust trait-object injections such as a custom `LlmClient`, arbitrary workspace
 implementation, or custom memory store implementation remain Rust-native
 extension points. The Go SDK exposes every corresponding serializable

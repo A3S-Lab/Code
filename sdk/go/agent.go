@@ -353,6 +353,7 @@ func (agent *Agent) DisconnectIdleMCP(
 	return result.Names, err
 }
 
+// ServeHandle observes and stops one filesystem-first serve daemon.
 type ServeHandle struct {
 	runtime  Runtime
 	handle   string
@@ -360,6 +361,16 @@ type ServeHandle struct {
 	stopErr  error
 }
 
+// ServeStatus is the latest observable lifecycle state of a serve daemon.
+type ServeStatus struct {
+	Phase       string  `json:"phase"`
+	FailureCode *string `json:"failure_code"`
+	Ready       bool    `json:"ready"`
+	Stopped     bool    `json:"stopped"`
+}
+
+// ServeAgentDir starts a filesystem-first daemon and returns only after its
+// schedules, sessions, and tools are prepared and ready.
 func (agent *Agent) ServeAgentDir(
 	ctx context.Context,
 	dir string,
@@ -393,6 +404,23 @@ func (agent *Agent) ServeAgentDir(
 	return &ServeHandle{runtime: agent.runtime, handle: result.Handle}, nil
 }
 
+// Status returns the daemon's current readiness and terminal failure state.
+func (handle *ServeHandle) Status(ctx context.Context) (ServeStatus, error) {
+	const op = "agent_serve_status"
+	if ctx == nil {
+		return ServeStatus{}, invalid(op, "context cannot be nil")
+	}
+	if handle == nil || handle.runtime == nil || strings.TrimSpace(handle.handle) == "" {
+		return ServeStatus{}, invalid(op, "serve handle is not initialized")
+	}
+	var status ServeStatus
+	err := handle.runtime.Request(ctx, op, map[string]any{
+		"serve_handle": handle.handle,
+	}, &status)
+	return status, err
+}
+
+// Stop requests graceful shutdown and waits for the daemon task to settle.
 func (handle *ServeHandle) Stop(ctx context.Context) error {
 	const op = "agent_stop_serve"
 	if handle == nil {
@@ -400,6 +428,9 @@ func (handle *ServeHandle) Stop(ctx context.Context) error {
 	}
 	if ctx == nil {
 		return invalid(op, "context cannot be nil")
+	}
+	if handle.runtime == nil || strings.TrimSpace(handle.handle) == "" {
+		return invalid(op, "serve handle is not initialized")
 	}
 	handle.stopOnce.Do(func() {
 		handle.stopErr = handle.runtime.Request(ctx, op, map[string]any{

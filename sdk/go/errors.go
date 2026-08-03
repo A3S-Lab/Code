@@ -36,6 +36,13 @@ const (
 	CodeUnsupportedOperation  ErrorCode = "UNSUPPORTED_OPERATION"
 )
 
+const (
+	CodeServeStartupFailed            ErrorCode = "SERVE_STARTUP_FAILED"
+	CodeServeRuntimeFailed            ErrorCode = "SERVE_RUNTIME_FAILED"
+	CodeServeDaemonPanicked           ErrorCode = "SERVE_DAEMON_PANICKED"
+	CodeServeShutdownDeadlineExceeded ErrorCode = "SERVE_SHUTDOWN_DEADLINE_EXCEEDED"
+)
+
 var (
 	ErrInvalidRequest        = &Error{Code: CodeInvalidRequest}
 	ErrNotFound              = &Error{Code: CodeNotFound}
@@ -62,6 +69,13 @@ var (
 	ErrSerialization         = &Error{Code: CodeSerialization}
 	ErrInternal              = &Error{Code: CodeInternal}
 	ErrUnsupportedOperation  = &Error{Code: CodeUnsupportedOperation}
+)
+
+var (
+	ErrServeStartupFailed            = &Error{Code: CodeServeStartupFailed}
+	ErrServeRuntimeFailed            = &Error{Code: CodeServeRuntimeFailed}
+	ErrServeDaemonPanicked           = &Error{Code: CodeServeDaemonPanicked}
+	ErrServeShutdownDeadlineExceeded = &Error{Code: CodeServeShutdownDeadlineExceeded}
 )
 
 type Error struct {

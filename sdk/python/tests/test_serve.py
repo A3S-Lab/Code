@@ -2,6 +2,7 @@
 
 Verifies the PyO3 serve binding added alongside the Rust serve daemon:
 - `agent.serve_agent_dir(dir, workspace[, options]) -> ServeHandle`
+- `handle.is_ready()` / `handle.state()` / `handle.failure_code()`
 - `handle.stop()` / `handle.is_stopped()`
 
 Unit (hermetic, inline ACL, no provider credentials): the ServeHandle lifecycle.
@@ -34,7 +35,9 @@ providers "anthropic" {
 """.strip()
 
 
-def _write_agent_dir(*, with_schedule: bool, with_tools: bool = False) -> str:
+def _write_agent_dir(
+    *, with_schedule: bool, with_tools: bool = False, invalid_cron: bool = False
+) -> str:
     base = tempfile.mkdtemp(prefix="a3s-code-serve-")
     pathlib.Path(base, "instructions.md").write_text(
         "You are a terse test agent. Answer in one word."
@@ -42,8 +45,9 @@ def _write_agent_dir(*, with_schedule: bool, with_tools: bool = False) -> str:
     if with_schedule:
         sched = pathlib.Path(base, "schedules")
         sched.mkdir()
+        cron = "not a cron" if invalid_cron else "* * * * * *"
         (sched / "tick.md").write_text(
-            '---\ncron: "* * * * * *"\nname: tick\n---\nReply with exactly one word: PONG'
+            f'---\ncron: "{cron}"\nname: tick\n---\nReply with exactly one word: PONG'
         )
     if with_tools:
         tools = pathlib.Path(base, "tools")
@@ -79,14 +83,33 @@ def test_serve_handle_lifecycle() -> None:
     workspace = tempfile.mkdtemp(prefix="a3s-code-serve-ws-")
 
     handle = agent.serve_agent_dir(agent_dir, workspace)
+    assert handle.is_ready() is True
+    assert handle.state() == "ready"
+    assert handle.failure_code() is None
     assert handle.is_stopped() is False, "handle should not be stopped before stop()"
 
     handle.stop()
     assert handle.is_stopped() is True, "stop() must set is_stopped() to True"
+    assert handle.is_ready() is False
+    assert handle.state() == "stopped"
     handle.stop()  # idempotent — must not raise
     assert handle.is_stopped() is True
 
     print("python sdk serve handle lifecycle ok")
+
+
+def test_serve_startup_failure() -> None:
+    """Invalid schedules fail before a ready handle is returned."""
+    agent = Agent.create(INLINE_CONFIG)
+    agent_dir = _write_agent_dir(with_schedule=True, invalid_cron=True)
+    workspace = tempfile.mkdtemp(prefix="a3s-code-serve-invalid-ws-")
+
+    try:
+        agent.serve_agent_dir(agent_dir, workspace)
+    except RuntimeError as error:
+        assert getattr(error, "code", None) == "SERVE_STARTUP_FAILED"
+    else:
+        raise AssertionError("invalid schedule must fail before activation")
 
 
 def _repo_config() -> str | None:
@@ -127,6 +150,7 @@ def test_serve_real_schedule() -> None:
 
 def main() -> None:
     test_serve_handle_lifecycle()
+    test_serve_startup_failure()
     test_serve_with_script_tool()
     test_serve_real_schedule()
 

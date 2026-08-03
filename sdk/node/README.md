@@ -490,8 +490,10 @@ inherited tools again. Sibling sessions and the global manager are unchanged.
 Define a durable agent as a **directory** — `instructions.md` (required) plus
 optional `agent.acl`, `skills/`, `schedules/` (cron), and `tools/` (`kind: mcp` or
 `kind: script` sandboxed QuickJS) — and serve its schedules. Each fire is a full
-harness turn (context, tool visibility, safety gate, verification). Returns a
-handle you must keep and stop explicitly.
+harness turn (context, tool visibility, safety gate, verification).
+`serveAgentDir` resolves only after schedule validation and session/tool
+preparation, so the returned handle is already ready. Startup failures reject
+the call with a stable code.
 
 ```js
 const handle = await agent.serveAgentDir('./my-agent', './workspace', {
@@ -499,10 +501,15 @@ const handle = await agent.serveAgentDir('./my-agent', './workspace', {
   // context across daemon restarts.
   sessionStore: new FileSessionStore('./sessions'),
 })
+console.log(handle.isReady(), handle.state()) // true, "ready"
 // ... runs in the background until:
 await handle.stop()
-console.log(handle.isStopped()) // true
+console.log(handle.isStopped(), handle.state()) // true, "stopped"
 ```
+
+`stop()` cancels in-flight schedule work, closes daemon-owned sessions, and
+waits for the bounded shutdown deadline. `failureCode()` exposes a stable code
+when the daemon reaches `failed`.
 
 ## HITL Confirmations
 

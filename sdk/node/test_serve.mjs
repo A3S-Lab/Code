@@ -2,6 +2,7 @@
 //
 // Verifies the napi serve binding added alongside the Rust serve daemon:
 //   agent.serveAgentDir(dir, workspace[, options]) -> ServeHandle
+//   handle.isReady() / handle.state() / handle.failureCode()
 //   handle.stop() / handle.isStopped()
 //
 // Unit (hermetic, inline ACL via temp file, no provider credentials): the
@@ -36,14 +37,14 @@ function mkConfigFile() {
   return p
 }
 
-function writeAgentDir({ withSchedule, withTools }) {
+function writeAgentDir({ withSchedule, withTools, invalidCron = false }) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-node-serve-'))
   fs.writeFileSync(path.join(base, 'instructions.md'), 'You are a terse test agent. Answer in one word.')
   if (withSchedule) {
     fs.mkdirSync(path.join(base, 'schedules'))
     fs.writeFileSync(
       path.join(base, 'schedules', 'tick.md'),
-      '---\ncron: "* * * * * *"\nname: tick\n---\nReply with exactly one word: PONG',
+      `---\ncron: "${invalidCron ? 'not a cron' : '* * * * * *'}"\nname: tick\n---\nReply with exactly one word: PONG`,
     )
   }
   if (withTools) {
@@ -81,12 +82,30 @@ assert.equal(typeof Agent.prototype.serveAgentDir, 'function', 'Agent.serveAgent
   const dir = writeAgentDir({ withSchedule: false })
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-node-serve-ws-'))
   const handle = await agent.serveAgentDir(dir, ws)
+  assert.equal(handle.isReady(), true, 'serveAgentDir must resolve only after readiness')
+  assert.equal(handle.state(), 'ready')
+  assert.equal(handle.failureCode(), null)
   assert.equal(handle.isStopped(), false, 'handle should not be stopped before stop()')
   await handle.stop()
   assert.equal(handle.isStopped(), true, 'stop() must set isStopped() true')
+  assert.equal(handle.isReady(), false)
+  assert.equal(handle.state(), 'stopped')
   await handle.stop() // idempotent — must not throw
   assert.equal(handle.isStopped(), true)
   console.log('node sdk serve handle lifecycle ok')
+}
+
+// ── Unit (hermetic): startup failure is propagated before activation ───────
+{
+  const agent = await Agent.create(mkConfigFile())
+  const dir = writeAgentDir({ withSchedule: true, invalidCron: true })
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-node-serve-invalid-ws-'))
+  await assert.rejects(
+    () => agent.serveAgentDir(dir, ws),
+    /SERVE_STARTUP_FAILED/,
+    'invalid schedules must reject before a handle is returned',
+  )
+  console.log('node sdk serve startup failure propagation ok')
 }
 
 // ── Unit (hermetic): an agent dir with a kind:script tool loads + serves ─────

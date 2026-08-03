@@ -134,7 +134,7 @@ telemetry remain opt-in.
 | Agent release contract | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks | Baseline admission API |
 | Headless web search | Lazy Chrome/Chromium-backed Google/Baidu engines and managed browser lifecycle APIs; Lightpanda remains configurable | Default Cargo feature `headless-search`; disable with `default-features = false` |
 | S3 workspace | S3-compatible object backend | Cargo feature `s3` |
-| Filesystem agent server | Agent-directory serving and cron schedules | Cargo feature `serve` |
+| Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown | Cargo feature `serve` |
 | OpenTelemetry | OTLP export in addition to baseline `tracing` | Cargo feature `telemetry` |
 
 Availability never bypasses policy. Auto-save, automatic compaction, goals,
@@ -437,8 +437,10 @@ agent-dir/
 
 Tool specifications can connect MCP servers or bounded PTC scripts. With the
 `serve` feature, a host can serve an agent directory and run cron schedules.
-Files never bypass workspace, permission, confirmation, or verification
-policy.
+The observable daemon handle becomes ready only after schedules, sessions, and
+tools are prepared; shutdown cancels in-flight work, closes owned sessions, and
+joins within a bounded deadline. Files never bypass workspace, permission,
+confirmation, or verification policy.
 
 `AgentReleaseManifest` admits the versioned `.a3s/asset.acl` contract, derives
 schema-aware canonical ACL and a SHA-256 identity, and verifies runtime
