@@ -128,12 +128,19 @@ pub(super) struct AsyncSessionSendCall {
     pub(super) attachments: Option<Vec<a3s_code_core::llm::Attachment>>,
 }
 
-/// One-shot governed direct-tool call executed by asyncio's default executor.
+#[derive(Clone, Copy)]
+pub(super) enum AsyncSessionToolMode {
+    Trusted,
+    Governed,
+}
+
+/// One-shot direct-tool call executed by asyncio's default executor.
 #[pyclass]
 pub(super) struct AsyncSessionToolCall {
     pub(super) session: Arc<RustAgentSession>,
     pub(super) name: Option<String>,
     pub(super) args: Option<serde_json::Value>,
+    pub(super) mode: AsyncSessionToolMode,
 }
 
 #[pymethods]
@@ -145,8 +152,16 @@ impl AsyncSessionToolCall {
             .ok_or_else(|| PyRuntimeError::new_err("async tool call already consumed"))?;
         let args = self.args.take().unwrap_or(serde_json::Value::Null);
         let session = Arc::clone(&self.session);
+        let mode = self.mode;
         let result = py
-            .allow_threads(move || get_runtime().block_on(session.tool(&name, args)))
+            .allow_threads(move || match mode {
+                AsyncSessionToolMode::Trusted => {
+                    get_runtime().block_on(session.tool(&name, args))
+                }
+                AsyncSessionToolMode::Governed => {
+                    get_runtime().block_on(session.governed_tool(&name, args))
+                }
+            })
             .map_err(py_code_error)?;
         Ok(Py::new(py, PyToolResult::from(result))?.into_any())
     }

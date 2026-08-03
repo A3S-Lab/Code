@@ -472,6 +472,7 @@ assertContainsAll('Go Session', goSession, [
   'Close',
   'Save',
   'Tool',
+  'GovernedTool',
   'Task',
   'DelegateTask',
   'Tasks',

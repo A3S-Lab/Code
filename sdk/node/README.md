@@ -383,6 +383,17 @@ remain active. Authenticate and authorize end users before exposing these
 helpers. Direct tools do not mutate transcript history and therefore do not
 claim the conversation gate.
 
+When the host coordinates a call but has not already authorized it, use
+`governedTool(name, args)`. It follows the same direct path while reapplying
+the session permission policy and HITL confirmation gate:
+
+```js
+const result = await session.governedTool('write', {
+  file_path: 'notes.txt',
+  content: 'reviewed content',
+})
+```
+
 ## Disposable Worker Agents
 
 A3S Code treats subagents as cattle, not pets: define reproducible worker specs

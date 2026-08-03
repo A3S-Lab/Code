@@ -52,6 +52,7 @@ const _busyCode: A3sCodeErrorCode = 'SESSION_BUSY'
 
 void _session.readFile('notes.txt', _readOptions)
 void _session.readFile('notes.txt', { offset: 1, limit: 1 })
+void _session.governedTool('read', { file_path: 'notes.txt' })
 void _session.registerDynamicWorkflowRuntime()
 void _session.unregisterDynamicTool('dynamic_workflow')
 void _session.sessionId

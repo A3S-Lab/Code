@@ -5,7 +5,8 @@ use super::*;
 
 #[pymethods]
 impl PySession {
-    /// Execute a tool by name, bypassing the LLM.
+    /// Execute a tool by name, bypassing the LLM and treating the host as the
+    /// authority that already approved permission and HITL requirements.
     fn tool(
         &self,
         py: Python<'_>,
@@ -24,8 +25,29 @@ impl PySession {
         Ok(PyToolResult::from(result))
     }
 
-    /// Return an asyncio Future that executes a direct tool through the same
-    /// governed Core gateway as ``tool()``.
+    /// Execute a tool without an LLM while retaining the session's permission
+    /// and HITL gates.
+    fn governed_tool(
+        &self,
+        py: Python<'_>,
+        name: String,
+        args: &Bound<'_, pyo3::types::PyDict>,
+    ) -> PyResult<PyToolResult> {
+        let json_str = py_dict_to_json(args)?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| PyValueError::new_err(format!("Invalid JSON args: {e}")))?;
+
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || {
+                get_runtime().block_on(session.governed_tool(&name, json_value))
+            })
+            .map_err(py_code_error)?;
+
+        Ok(PyToolResult::from(result))
+    }
+
+    /// Return an asyncio Future for a trusted host direct-tool call.
     fn tool_async<'py>(
         &self,
         py: Python<'py>,
@@ -41,6 +63,30 @@ impl PySession {
                 session: Arc::clone(&self.inner),
                 name: Some(name),
                 args: Some(args),
+                mode: AsyncSessionToolMode::Trusted,
+            },
+        )?;
+        run_in_asyncio_executor(py, callable.into_any())
+    }
+
+    /// Return an asyncio Future for a direct-tool call that retains the
+    /// session's permission and HITL gates.
+    fn governed_tool_async<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        args: &Bound<'_, PyDict>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let json = py_dict_to_json(args)?;
+        let args = serde_json::from_str(&json)
+            .map_err(|error| PyValueError::new_err(format!("Invalid JSON args: {error}")))?;
+        let callable = Bound::new(
+            py,
+            AsyncSessionToolCall {
+                session: Arc::clone(&self.inner),
+                name: Some(name),
+                args: Some(args),
+                mode: AsyncSessionToolMode::Governed,
             },
         )?;
         run_in_asyncio_executor(py, callable.into_any())

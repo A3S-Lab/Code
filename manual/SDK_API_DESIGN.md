@@ -134,6 +134,10 @@ Rules:
   model-facing permission/HITL decisions but still pass through pre/post hooks,
   budget, queue/timeout handling, cancellation, recursion protection, and
   output sanitization. The embedding application owns end-user authorization.
+- `governed_tool(name, args)` (`governedTool` in Node and
+  `GovernedTool` in Go) is the explicit alternative for host-coordinated
+  calls that have not already been authorized. It retains the direct
+  no-transcript path while reapplying session permission and HITL gates.
 - When output sanitization is enabled, delta events are sanitized over the
   complete consumer-visible concatenation domain rather than independently per
   provider chunk. Text/reasoning may therefore arrive at the run boundary, and

@@ -67,6 +67,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_glob",
     "session_grep",
     "session_tool",
+    "session_governed_tool",
     "session_runs",
     "session_run_snapshot",
     "session_run_events",
@@ -768,6 +769,20 @@ impl BridgeState {
                     .request_session(&request.params)
                     .await?
                     .tool(&name, args)
+                    .await?;
+                tool_result_value(result)
+            }
+            "session_governed_tool" => {
+                let name: String = required(&request.params, "name")?;
+                let args = request
+                    .params
+                    .get("args")
+                    .cloned()
+                    .unwrap_or_else(empty_object);
+                let result = self
+                    .request_session(&request.params)
+                    .await?
+                    .governed_tool(&name, args)
                     .await?;
                 tool_result_value(result)
             }
@@ -2848,6 +2863,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(closed["closed"], Value::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn governed_direct_tool_applies_session_permission_policy() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state = BridgeState::new();
+        let created = state
+            .dispatch(&request(
+                "agent_create",
+                json!({ "config_source": test_acl() }),
+            ))
+            .await
+            .unwrap();
+        let agent_id = created["agent_id"].as_str().unwrap();
+        let created = state
+            .dispatch(&request(
+                "session_create",
+                json!({
+                    "agent_id": agent_id,
+                    "workspace": workspace.path(),
+                    "options": {
+                        "session_id": "go-governed-tool-test",
+                        "permission_policy": {
+                            "deny": ["write"],
+                            "default_decision": "allow"
+                        }
+                    }
+                }),
+            ))
+            .await
+            .unwrap();
+        let session_handle = created["session_handle"].as_str().unwrap();
+
+        let trusted = state
+            .dispatch(&request(
+                "session_tool",
+                json!({
+                    "session_handle": session_handle,
+                    "name": "write",
+                    "args": {
+                        "file_path": "trusted-host-write.txt",
+                        "content": "trusted"
+                    }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(trusted["exit_code"], Value::from(0));
+        assert!(workspace.path().join("trusted-host-write.txt").exists());
+
+        let governed = state
+            .dispatch(&request(
+                "session_governed_tool",
+                json!({
+                    "session_handle": session_handle,
+                    "name": "write",
+                    "args": {
+                        "file_path": "denied-governed-write.txt",
+                        "content": "must not exist"
+                    }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(governed["exit_code"], Value::from(0));
+        assert!(!workspace.path().join("denied-governed-write.txt").exists());
     }
 
     #[tokio::test]

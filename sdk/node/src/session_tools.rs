@@ -5,12 +5,30 @@ use super::*;
 
 #[napi]
 impl Session {
-    /// Execute a tool by name, bypassing the LLM.
+    /// Execute a tool by name, bypassing the LLM and treating the host as the
+    /// authority that already approved permission and HITL requirements.
     #[napi]
     pub async fn tool(&self, name: String, args: serde_json::Value) -> napi::Result<ToolResult> {
         let session = self.inner.clone();
         let result = get_runtime()
             .spawn(async move { session.tool(&name, args).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(node_code_error)?;
+        Ok(tool_result_from_core(result))
+    }
+
+    /// Execute a tool without an LLM while retaining the session's permission
+    /// and HITL gates.
+    #[napi]
+    pub async fn governed_tool(
+        &self,
+        name: String,
+        args: serde_json::Value,
+    ) -> napi::Result<ToolResult> {
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.governed_tool(&name, args).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;

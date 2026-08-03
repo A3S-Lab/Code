@@ -1475,8 +1475,16 @@ export declare class Session {
    * Removes all session-scoped memory items without affecting long-term or working memory.
    */
   clearShortTerm(): Promise<void>
-  /** Execute a tool by name, bypassing the LLM. */
+  /**
+   * Execute a tool by name, bypassing the LLM and treating the host as the
+   * authority that already approved permission and HITL requirements.
+   */
   tool(name: string, args: any): Promise<ToolResult>
+  /**
+   * Execute a tool without an LLM while retaining the session's permission
+   * and HITL gates.
+   */
+  governedTool(name: string, args: any): Promise<ToolResult>
   /** Delegate a bounded task to a child agent through the built-in `task` tool. */
   task(options: DelegateTaskOptions): Promise<ToolResult>
   /** Delegate a bounded task to a child agent through the built-in `task` tool. */

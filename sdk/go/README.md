@@ -119,13 +119,21 @@ for control-plane code.
 
 ## Direct tools and observation
 
-Direct tool calls bypass the LLM but still use the session's workspace,
-permissions, tracing, artifacts, timeouts, and cancellation path:
+Direct tool calls bypass the LLM. `Tool` and the typed convenience methods
+are trusted host-control-plane operations: they skip session permission/HITL
+because the embedding application already authorized the call, while retaining
+workspace boundaries, hooks, budgets, tracing, artifacts, timeouts,
+cancellation, and output sanitization. Use `GovernedTool` when the host has
+not already authorized the operation and session permission/HITL must apply:
 
 ```go
 content, err := session.ReadFile(ctx, "go.mod", nil)
 result, err := session.Git(ctx, code.GitOptions{Command: "status"})
 matches, err := session.Glob(ctx, "**/*.go")
+governed, err := session.GovernedTool(ctx, "write", map[string]any{
+	"file_path": "reviewed.txt",
+	"content":   "reviewed content",
+})
 report, err := session.VerifyCommands(ctx, "release", []code.VerificationCommand{
 	{
 		ID:          "go:test",
@@ -135,7 +143,7 @@ report, err := session.VerifyCommands(ctx, "release", []code.VerificationCommand
 		Required:    true,
 	},
 })
-_, _, _, _ = content, result, matches, report
+_, _, _, _, _ = content, result, matches, governed, report
 ```
 
 The stable surface is aligned with the Node.js and Python SDKs for
@@ -146,8 +154,9 @@ serializable Agent and Session capabilities, including:
 - `Send`, `Run`, `Stream`, attachments, checkpoint resume, history, save,
   cancellation, and close.
 - Parallel, resumable parallel, workflow-step, and pipeline orchestration.
-- Generic `Tool` plus file, shell, search, Git, web, QuickJS program, and
-  delegated-task conveniences.
+- Generic trusted `Tool`, permission/HITL-aware `GovernedTool`, plus
+  file, shell, search, Git, web, QuickJS program, and delegated-task
+  conveniences.
 - Run snapshots and replay events, active tools, traces, artifacts, pending
   confirmations, subagent tasks, and verification reports.
 - Memory recall/recording, lane queues, external tasks, dead letters, and

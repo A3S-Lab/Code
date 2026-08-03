@@ -159,6 +159,36 @@ func TestDirectToolConveniencesUseStableOperations(t *testing.T) {
 	}
 }
 
+func TestGovernedToolUsesGovernedBridgeOperation(t *testing.T) {
+	runtime := &fakeRuntime{
+		request: func(
+			_ context.Context,
+			operation string,
+			params map[string]any,
+		) (any, error) {
+			if operation != "session_governed_tool" {
+				t.Fatalf("operation = %q, want session_governed_tool", operation)
+			}
+			if params["name"] != "write" {
+				t.Fatalf("tool name = %#v, want write", params["name"])
+			}
+			return ToolCallResult{Name: "write", Output: "denied", ExitCode: 1}, nil
+		},
+	}
+
+	result, err := testSession(runtime).GovernedTool(
+		context.Background(),
+		"write",
+		map[string]any{"file_path": "denied.txt"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode == 0 {
+		t.Fatalf("GovernedTool result = %#v, want denied result", result)
+	}
+}
+
 func TestSessionCloseValidatesBeforeConsumingClose(t *testing.T) {
 	var nilSession *Session
 	if err := nilSession.Close(context.Background()); err != nil {

@@ -10,12 +10,41 @@ type ReadFileOptions struct {
 	Limit  *uint `json:"limit,omitempty"`
 }
 
+// Tool executes a trusted host-control-plane tool call without reapplying the
+// session permission or HITL gates.
 func (session *Session) Tool(
 	ctx context.Context,
 	name string,
 	args any,
 ) (*ToolCallResult, error) {
 	const op = "session_tool"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil, invalid(op, "tool name cannot be empty")
+	}
+	params := session.params()
+	params["name"] = name
+	if args == nil {
+		args = map[string]any{}
+	}
+	params["args"] = args
+	var result ToolCallResult
+	if err := session.runtime.Request(ctx, op, params, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GovernedTool executes a tool without an LLM while retaining the session's
+// permission and HITL gates.
+func (session *Session) GovernedTool(
+	ctx context.Context,
+	name string,
+	args any,
+) (*ToolCallResult, error) {
+	const op = "session_governed_tool"
 	if err := validateSession(session, ctx, op); err != nil {
 		return nil, err
 	}

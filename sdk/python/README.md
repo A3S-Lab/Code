@@ -58,6 +58,9 @@ result = await session.send_async("Inspect the authentication flow")
 tool_result = await session.tool_async(
     "read", {"file_path": "src/auth.py", "offset": 0, "limit": 200}
 )
+governed_result = await session.governed_tool_async(
+    "write", {"file_path": "notes.txt", "content": "reviewed content"}
+)
 runs = await session.runs_async()
 events = await session.run_events_async(run_id)
 page = await session.run_event_page_async(run_id, after_sequence=cursor, limit=256)
@@ -76,11 +79,12 @@ returns the same session ID and closes the previous object.
 of the legacy collection of primitive keyword overrides. The synchronous
 methods remain available for compatibility.
 
-`tool_async(name, args)` is the generic asynchronous direct-tool API. It uses
-the same governed Core gateway as `tool()`, including hooks, budgets,
-permissions, output sanitization, timeouts, and session cancellation. The
-synchronous convenience methods remain useful outside asyncio; async hosts can
-call their underlying tool names through `tool_async()`.
+`tool_async(name, args)` is the generic trusted-host direct-tool API. Like
+`tool()`, it treats the embedding application as the permission/HITL authority
+while retaining hooks, budgets, output sanitization, timeouts, and session
+cancellation. Use `governed_tool_async(name, args)` when the host coordinates a
+call that must still pass the session permission and confirmation gates.
+Synchronous callers can use `governed_tool(name, args)`.
 
 ## Session Operation Concurrency
 
@@ -269,6 +273,11 @@ artifact = session.get_artifact("a3s://tool-output/read/abc123")
 # cancellation, recursion protection, and output sanitization remain active.
 # Authorize end users before exposing them. They do not claim the
 # transcript-operation gate.
+#
+# Use governed_tool() when the host has not already authorized the operation.
+governed = session.governed_tool(
+    "write", {"file_path": "reviewed.txt", "content": "reviewed content"}
+)
 
 # Dynamic workflow is opt-in for SDK sessions.
 session.register_dynamic_workflow_runtime()

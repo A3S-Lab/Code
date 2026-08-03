@@ -67,12 +67,17 @@ session.bash("cargo test -p a3s-code-core --lib")
 session.glob("**/*.py")
 session.grep("TODO")
 session.git({"command": "status"})
+session.governed_tool(
+    "write", {"file_path": "reviewed.txt", "content": "reviewed content"}
+)
 session.register_dynamic_workflow_runtime()
 session.unregister_dynamic_tool("dynamic_workflow")
 ```
 
 Direct tools bypass the LLM and are useful for deterministic checks,
-diagnostics, and tests.
+diagnostics, and tests. The typed helpers and `tool()` are trusted
+host-control-plane calls; use `governed_tool()` when session permission and
+HITL must still apply.
 
 ## Skills
 

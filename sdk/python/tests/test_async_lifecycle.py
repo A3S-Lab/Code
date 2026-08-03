@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from a3s_code import Agent, MemorySessionStore, SessionOptions
+from a3s_code import Agent, MemorySessionStore, PermissionPolicy, SessionOptions
 
 
 INLINE_CONFIG = """
@@ -58,6 +58,31 @@ def test_async_session_lifecycle_and_event_loop_progress() -> None:
             )
             assert tool_result.exit_code == 0
             assert Path(workspace, "async-tool.txt").read_text() == "async tool output\n"
+
+            governed_options = SessionOptions()
+            governed_options.permission_policy = PermissionPolicy(
+                deny=["write"], default_decision="allow"
+            )
+            governed_session = await agent.session_async(workspace, governed_options)
+            trusted_result = await governed_session.tool_async(
+                "write",
+                {
+                    "file_path": "trusted-host-write.txt",
+                    "content": "trusted\n",
+                },
+            )
+            assert trusted_result.exit_code == 0
+            governed_result = await governed_session.governed_tool_async(
+                "write",
+                {
+                    "file_path": "denied-governed-write.txt",
+                    "content": "must not exist\n",
+                },
+            )
+            assert governed_result.exit_code != 0
+            assert not Path(workspace, "denied-governed-write.txt").exists()
+            await governed_session.close_async()
+
             assert await session.cancel_async() is False
             await session.save_async()
 

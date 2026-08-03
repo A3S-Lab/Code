@@ -122,6 +122,32 @@ const session = agent.session(workspace, {
   workspaceBackend: new mod.LocalWorkspaceBackend(workspace),
 })
 
+const governedSession = agent.session(workspace, {
+  permissionPolicy: { deny: ['write'], defaultDecision: 'allow' },
+  workspaceBackend: new mod.LocalWorkspaceBackend(workspace),
+})
+const trustedWrite = await governedSession.tool('write', {
+  file_path: 'trusted-host-write.txt',
+  content: 'trusted\n',
+})
+assert.equal(trustedWrite.exitCode, 0, trustedWrite.output)
+assert.equal(
+  fs.existsSync(path.join(workspace, 'trusted-host-write.txt')),
+  true,
+  'tool() should preserve trusted host authority',
+)
+const deniedGovernedWrite = await governedSession.governedTool('write', {
+  file_path: 'denied-governed-write.txt',
+  content: 'must not exist\n',
+})
+assert.notEqual(deniedGovernedWrite.exitCode, 0, deniedGovernedWrite.output)
+assert.equal(
+  fs.existsSync(path.join(workspace, 'denied-governed-write.txt')),
+  false,
+  'governedTool() must apply the session permission policy before side effects',
+)
+await governedSession.closeAsync()
+
 const write = await session.writeFile('notes.txt', 'one\ntwo\n')
 assert.equal(write.exitCode, 0, write.output)
 

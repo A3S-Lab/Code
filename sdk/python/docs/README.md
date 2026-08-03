@@ -42,9 +42,11 @@ Model requests and run observability also provide `session.send_async()`,
 `run_event_page_async()` with the same result shapes as their synchronous
 counterparts.
 
-Use `session.tool_async(name, args)` for governed direct-tool execution from an
-asyncio host. It preserves the synchronous `ToolResult` shape and fails closed
-after session shutdown.
+Use `session.tool_async(name, args)` for trusted host-control-plane
+direct-tool execution from an asyncio host. Use
+`session.governed_tool_async(name, args)` when session permission and HITL
+must still apply. Both preserve the synchronous `ToolResult` shape and fail
+closed after session shutdown.
 
 ## Documentation Boundary
 

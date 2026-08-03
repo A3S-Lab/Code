@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added permission/HITL-aware governed direct-tool calls across the Node,
+  Python, and Go SDKs, preserving `tool` as the explicit trusted
+  host-control-plane API and restoring the cross-SDK alignment gate.
+
 ### Fixed
 
 - Upgraded the Core HTTP transport to `reqwest` 0.12 so the Windows Bash curl

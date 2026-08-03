@@ -51,6 +51,7 @@ var RequiredOperations = []string{
 	"session_glob",
 	"session_grep",
 	"session_tool",
+	"session_governed_tool",
 	"session_runs",
 	"session_run_snapshot",
 	"session_run_events",
