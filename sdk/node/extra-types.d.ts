@@ -22,6 +22,7 @@ export type ToolErrorKind =
   | { type: 'remote_git_conflict'; code: string; message: string }
   | { type: 'not_found'; path: string }
   | { type: 'invalid_argument'; message: string }
+  | { type: 'hook_denied'; reason: string; retryable: boolean; retry_after_ms: number | null }
   | { type: 'unsupported'; message: string }
   | { type: 'timeout'; op: string; duration_ms: number }
   | { type: 'transport'; op: string }

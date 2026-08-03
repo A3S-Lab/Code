@@ -192,6 +192,10 @@ Notes:
 - A hook callback returns a decision. Return `{ action: "continue" }`
   (Node) / `{"action": "continue"}` (Python) /
   `&code.HookResponse{Action: "continue"}` (Go) to let the agent proceed.
+- Permanent denials return `block` with a reason. Temporary denials return
+  `retry` with a reason and `delayMs` (Node), `delay_ms` (Python), or `DelayMS`
+  (Go). The denied tool result exposes `error_kind.type = "hook_denied"`, plus
+  `retryable` and `retry_after_ms`, so hosts do not need to parse output text.
 - The matcher (`{ pathPattern: '**/.env*' }`) scopes the hook to events whose
   path matches the pattern, and `{ priority: 100 }` orders hooks on the same
   event (lower values run first).

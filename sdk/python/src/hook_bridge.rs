@@ -85,6 +85,7 @@ impl RustHookHandler for PythonCallbackHandler {
 /// - `{"action": "block", "reason": "…"}`     → block
 /// - `{"action": "skip"}`                     → skip
 /// - `{"action": "retry", "delay_ms": N}`     → retry
+/// Retry dictionaries may include `reason`; the bridge preserves it with the delay.
 pub(super) fn parse_py_hook_response(
     py: pyo3::Python,
     val: &pyo3::Bound<pyo3::PyAny>,
@@ -123,11 +124,17 @@ pub(super) fn parse_py_hook_response(
         }
         "skip" => Ok(RustHookResponse::skip()),
         "retry" => {
+            let reason = dict
+                .get_item("reason")?
+                .and_then(|v| v.extract::<String>().ok());
             let delay_ms = dict
                 .get_item("delay_ms")?
                 .and_then(|v| v.extract::<u64>().ok())
                 .unwrap_or(1000);
-            Ok(RustHookResponse::retry(delay_ms))
+            Ok(match reason {
+                Some(reason) => RustHookResponse::retry_with_reason(reason, delay_ms),
+                None => RustHookResponse::retry(delay_ms),
+            })
         }
         other => Err(PyValueError::new_err(format!(
             "unsupported hook action '{other}'"

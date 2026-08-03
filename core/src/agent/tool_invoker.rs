@@ -4,9 +4,7 @@
 use super::tool_result_runtime::NormalizedToolResult;
 use super::{AgentEvent, AgentLoop};
 use crate::budget::BudgetDecision;
-use crate::safety_gate::{
-    ToolGateApproval, ToolGateDecision, ToolGateDenial, ToolGateInput, ToolSafetyGate,
-};
+use crate::safety_gate::{ToolGateApproval, ToolGateDecision, ToolGateInput, ToolSafetyGate};
 use crate::tool_confirmation::{
     ToolConfirmationRequest, ToolConfirmationResolution, ToolConfirmationRuntime,
 };
@@ -39,7 +37,7 @@ impl ScopedToolInvoker {
     }
 
     async fn decide_gate(&self, invocation: &ToolInvocation) -> ToolGateDecision {
-        let pre_tool_block = match self
+        let pre_tool_denial = self
             .agent
             .fire_pre_tool_use(
                 &self.session_id,
@@ -47,11 +45,7 @@ impl ScopedToolInvoker {
                 &invocation.args,
                 invocation.recent_tools.clone(),
             )
-            .await
-        {
-            Some(crate::hooks::HookResult::Block(reason)) => Some(reason),
-            _ => None,
-        };
+            .await;
 
         let host_direct_policy = match invocation.origin {
             InvocationOrigin::HostDirect(policy) | InvocationOrigin::HostDirectNested(policy) => {
@@ -63,12 +57,8 @@ impl ScopedToolInvoker {
             host_direct_policy,
             Some(HostDirectPolicy::TrustedControlPlane)
         ) {
-            return match pre_tool_block {
-                Some(reason) => ToolGateDecision::Deny {
-                    output: format!("Tool '{}' blocked by hook: {}", invocation.name, reason),
-                    event_reason: reason,
-                    reason: ToolGateDenial::HookBlock,
-                },
+            return match pre_tool_denial {
+                Some(feedback) => feedback.into_gate_decision(&invocation.name),
                 None => ToolGateDecision::Execute {
                     reason: ToolGateApproval::HostDirectTrusted,
                 },
@@ -79,7 +69,7 @@ impl ScopedToolInvoker {
             .decide(ToolGateInput {
                 tool_name: &invocation.name,
                 args: &invocation.args,
-                pre_tool_block,
+                pre_tool_denial,
                 tool_requires_confirmation: self
                     .agent
                     .tool_executor
@@ -100,6 +90,7 @@ impl ScopedToolInvoker {
                 output,
                 event_reason,
                 reason,
+                error_kind,
             } => {
                 tracing::info!(
                     tool_name = invocation.name.as_str(),
@@ -108,7 +99,7 @@ impl ScopedToolInvoker {
                     "Tool denied by invocation gateway"
                 );
                 self.emit_permission_denied(invocation, event_reason).await;
-                NormalizedToolResult::denied(output)
+                NormalizedToolResult::denied_with_error_kind(output, error_kind)
             }
             ToolGateDecision::Execute { reason } => {
                 tracing::info!(
@@ -312,6 +303,10 @@ impl ScopedToolInvoker {
         let mut result = normalized.into_tool_result(invocation.name.clone());
         if let Some(provider) = &self.agent.config.security_provider {
             result.output = provider.sanitize_output(&result.output);
+            result.error_kind = result
+                .error_kind
+                .as_ref()
+                .map(|kind| crate::security::sanitize_tool_error_kind(provider.as_ref(), kind));
         }
 
         let post_hook = self.agent.fire_post_tool_use(

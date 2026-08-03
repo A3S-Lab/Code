@@ -14,6 +14,61 @@ pub(crate) use event_sanitizer::AgentEventStreamSanitizer;
 
 use crate::hooks::HookEngine;
 
+/// Sanitize string fields carried by a structured tool error while preserving
+/// its machine-readable discriminant and numeric retry metadata.
+pub(crate) fn sanitize_tool_error_kind(
+    provider: &dyn SecurityProvider,
+    kind: &crate::tools::ToolErrorKind,
+) -> crate::tools::ToolErrorKind {
+    use crate::tools::ToolErrorKind;
+
+    let text = |value: &str| provider.sanitize_output(value);
+    match kind {
+        ToolErrorKind::VersionConflict {
+            path,
+            expected,
+            actual,
+        } => ToolErrorKind::VersionConflict {
+            path: text(path),
+            expected: text(expected),
+            actual: actual.as_deref().map(text),
+        },
+        ToolErrorKind::RemoteGitConflict { code, message } => ToolErrorKind::RemoteGitConflict {
+            code: text(code),
+            message: text(message),
+        },
+        ToolErrorKind::NotFound { path } => ToolErrorKind::NotFound { path: text(path) },
+        ToolErrorKind::InvalidArgument { message } => ToolErrorKind::InvalidArgument {
+            message: text(message),
+        },
+        ToolErrorKind::HookDenied {
+            reason,
+            retryable,
+            retry_after_ms,
+        } => ToolErrorKind::HookDenied {
+            reason: text(reason),
+            retryable: *retryable,
+            retry_after_ms: *retry_after_ms,
+        },
+        ToolErrorKind::Unsupported { message } => ToolErrorKind::Unsupported {
+            message: text(message),
+        },
+        ToolErrorKind::Timeout { op, duration_ms } => ToolErrorKind::Timeout {
+            op: text(op),
+            duration_ms: *duration_ms,
+        },
+        ToolErrorKind::Transport { op } => ToolErrorKind::Transport { op: text(op) },
+        ToolErrorKind::Cancelled { op } => ToolErrorKind::Cancelled { op: text(op) },
+        ToolErrorKind::PartialFailure { failed, total } => ToolErrorKind::PartialFailure {
+            failed: *failed,
+            total: *total,
+        },
+        ToolErrorKind::RateLimited { retry_after_ms } => ToolErrorKind::RateLimited {
+            retry_after_ms: *retry_after_ms,
+        },
+    }
+}
+
 /// Sanitize every data-bearing field of an agent event while preserving the
 /// identifiers and discriminants used to correlate the event stream.
 ///
@@ -59,57 +114,6 @@ pub fn sanitize_agent_event(
         value: &Option<serde_json::Value>,
     ) -> Option<serde_json::Value> {
         value.as_ref().map(|value| json(provider, value))
-    }
-
-    fn tool_error_kind(
-        provider: &dyn SecurityProvider,
-        value: &Option<crate::tools::ToolErrorKind>,
-    ) -> Option<crate::tools::ToolErrorKind> {
-        use crate::tools::ToolErrorKind;
-
-        value.as_ref().map(|kind| match kind {
-            ToolErrorKind::VersionConflict {
-                path,
-                expected,
-                actual,
-            } => ToolErrorKind::VersionConflict {
-                path: text(provider, path),
-                expected: text(provider, expected),
-                actual: optional_text(provider, actual),
-            },
-            ToolErrorKind::RemoteGitConflict { code, message } => {
-                ToolErrorKind::RemoteGitConflict {
-                    code: text(provider, code),
-                    message: text(provider, message),
-                }
-            }
-            ToolErrorKind::NotFound { path } => ToolErrorKind::NotFound {
-                path: text(provider, path),
-            },
-            ToolErrorKind::InvalidArgument { message } => ToolErrorKind::InvalidArgument {
-                message: text(provider, message),
-            },
-            ToolErrorKind::Unsupported { message } => ToolErrorKind::Unsupported {
-                message: text(provider, message),
-            },
-            ToolErrorKind::Timeout { op, duration_ms } => ToolErrorKind::Timeout {
-                op: text(provider, op),
-                duration_ms: *duration_ms,
-            },
-            ToolErrorKind::Transport { op } => ToolErrorKind::Transport {
-                op: text(provider, op),
-            },
-            ToolErrorKind::Cancelled { op } => ToolErrorKind::Cancelled {
-                op: text(provider, op),
-            },
-            ToolErrorKind::PartialFailure { failed, total } => ToolErrorKind::PartialFailure {
-                failed: *failed,
-                total: *total,
-            },
-            ToolErrorKind::RateLimited { retry_after_ms } => ToolErrorKind::RateLimited {
-                retry_after_ms: *retry_after_ms,
-            },
-        })
     }
 
     fn task(
@@ -206,7 +210,9 @@ pub fn sanitize_agent_event(
             output: text(provider, output),
             exit_code: *exit_code,
             metadata: optional_json(provider, metadata),
-            error_kind: tool_error_kind(provider, error_kind),
+            error_kind: error_kind
+                .as_ref()
+                .map(|kind| sanitize_tool_error_kind(provider, kind)),
         },
         AgentEvent::ToolOutputDelta { id, name, delta } => AgentEvent::ToolOutputDelta {
             id: id.clone(),
@@ -605,6 +611,18 @@ mod tests {
                 },
                 ToolErrorKind::InvalidArgument {
                     message: format!("message: {redacted}"),
+                },
+            ),
+            (
+                ToolErrorKind::HookDenied {
+                    reason: format!("reason: {secret}"),
+                    retryable: true,
+                    retry_after_ms: Some(250),
+                },
+                ToolErrorKind::HookDenied {
+                    reason: format!("reason: {redacted}"),
+                    retryable: true,
+                    retry_after_ms: Some(250),
                 },
             ),
             (

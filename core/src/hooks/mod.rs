@@ -40,7 +40,9 @@ mod engine;
 mod events;
 mod matcher;
 
-pub use engine::{Hook, HookConfig, HookEngine, HookExecutor, HookHandler, HookResult};
+pub use engine::{
+    Hook, HookConfig, HookEngine, HookExecutor, HookHandler, HookOutcome, HookResult,
+};
 pub use events::{
     ConfirmationType, ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, HookEventType,
     IntentDetectionEvent, OnConfirmationEvent, OnErrorEvent, OnRateLimitEvent, OnSuccessEvent,
@@ -72,7 +74,7 @@ pub struct HookResponse {
     pub hook_id: String,
     /// Action to take
     pub action: HookAction,
-    /// Reason for blocking (if action is Block)
+    /// Reason for blocking or retrying (if action is Block or Retry)
     pub reason: Option<String>,
     /// Modified data (if action is Continue with modifications)
     pub modified: Option<serde_json::Value>,
@@ -120,6 +122,17 @@ impl HookResponse {
             hook_id: String::new(),
             action: HookAction::Retry,
             reason: None,
+            modified: None,
+            retry_delay_ms: Some(delay_ms),
+        }
+    }
+
+    /// Create a retry response with actionable context.
+    pub fn retry_with_reason(reason: impl Into<String>, delay_ms: u64) -> Self {
+        Self {
+            hook_id: String::new(),
+            action: HookAction::Retry,
+            reason: Some(reason.into()),
             modified: None,
             retry_delay_ms: Some(delay_ms),
         }
@@ -175,6 +188,14 @@ mod tests {
         let response = HookResponse::retry(1000);
         assert_eq!(response.action, HookAction::Retry);
         assert_eq!(response.retry_delay_ms, Some(1000));
+    }
+
+    #[test]
+    fn test_hook_response_retry_with_reason() {
+        let response = HookResponse::retry_with_reason("temporary outage", 750);
+        assert_eq!(response.action, HookAction::Retry);
+        assert_eq!(response.reason.as_deref(), Some("temporary outage"));
+        assert_eq!(response.retry_delay_ms, Some(750));
     }
 
     #[test]

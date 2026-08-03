@@ -283,7 +283,7 @@ async fn child_deny_on_ask_fails_closed_without_parent_prompt() {
             .decide(crate::safety_gate::ToolGateInput {
                 tool_name: "write",
                 args: &args,
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: false,
             })
             .await,

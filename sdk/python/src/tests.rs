@@ -134,6 +134,30 @@ fn python_hook_response_parser_rejects_ambiguous_actions() {
 }
 
 #[test]
+fn python_hook_response_parser_preserves_retry_reason() {
+    pyo3::prepare_freethreaded_python();
+    Python::with_gil(|py| {
+        let retry = PyDict::new(py);
+        retry.set_item("action", "retry").unwrap();
+        retry
+            .set_item("reason", "policy backend is warming up")
+            .unwrap();
+        retry.set_item("delay_ms", 400_u64).unwrap();
+
+        let response = parse_py_hook_response(py, retry.as_any()).unwrap();
+        assert!(matches!(
+            response.action,
+            a3s_code_core::hooks::HookAction::Retry
+        ));
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("policy backend is warming up")
+        );
+        assert_eq!(response.retry_delay_ms, Some(400));
+    });
+}
+
+#[test]
 fn planning_mode_parser_accepts_explicit_tristate() {
     assert!(matches!(
         parse_planning_mode("auto").unwrap(),

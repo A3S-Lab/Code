@@ -179,6 +179,17 @@ impl HookHandler for BlockHandler {
     }
 }
 
+struct RetryHandler {
+    reason: String,
+    delay_ms: u64,
+}
+
+impl HookHandler for RetryHandler {
+    fn handle(&self, _event: &HookEvent) -> HookResponse {
+        HookResponse::retry_with_reason(&self.reason, self.delay_ms)
+    }
+}
+
 #[tokio::test]
 async fn test_engine_fire_with_continue_handler() {
     let engine = HookEngine::new();
@@ -209,6 +220,31 @@ async fn test_engine_fire_with_block_handler() {
     if let HookResult::Block(reason) = result {
         assert_eq!(reason, "Dangerous command");
     }
+}
+
+#[tokio::test]
+async fn retry_outcome_preserves_reason_without_breaking_legacy_result() {
+    let engine = HookEngine::new();
+    engine.register(Hook::new("retry-hook", HookEventType::PreToolUse));
+    engine.register_handler(
+        "retry-hook",
+        Arc::new(RetryHandler {
+            reason: "temporary policy backend outage".to_string(),
+            delay_ms: 750,
+        }),
+    );
+
+    let event = make_pre_tool_event("s1", "Bash");
+    let outcome = engine.fire_outcome(&event).await;
+    assert!(matches!(
+        outcome,
+        HookOutcome::Retry {
+            reason,
+            retry_after_ms: 750,
+        } if reason == "temporary policy backend outage"
+    ));
+
+    assert!(matches!(engine.fire(&event).await, HookResult::Retry(750)));
 }
 
 #[tokio::test]

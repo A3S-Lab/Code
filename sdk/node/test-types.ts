@@ -146,5 +146,9 @@ function _describe(err: ToolErrorKind): string {
       return `${err.failed}/${err.total} failed`
     case 'rate_limited':
       return err.retry_after_ms === null ? 'rate limited' : `retry after ${err.retry_after_ms}ms`
+    case 'hook_denied':
+      return err.retryable && err.retry_after_ms !== null
+        ? `retry after ${err.retry_after_ms}ms`
+        : err.reason
   }
 }

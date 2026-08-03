@@ -750,6 +750,14 @@ pub enum ToolErrorKind {
     /// Caller passed an argument the tool / backend cannot honour
     /// (malformed pattern, parent-traversal path, ...).
     InvalidArgument { message: String },
+    /// A pre-tool governance hook denied the invocation. `retryable` and
+    /// `retry_after_ms` let SDK callers distinguish temporary policy state
+    /// from a permanent denial without parsing the rendered tool output.
+    HookDenied {
+        reason: String,
+        retryable: bool,
+        retry_after_ms: Option<u64>,
+    },
     /// The backend explicitly does not support this operation
     /// (e.g. worktree on a remote-git workspace).
     Unsupported { message: String },

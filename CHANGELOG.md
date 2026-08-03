@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserved Hook retry reasons across Rust, Node, Python, and Go callbacks and
+  surfaced pre-tool denials as structured `hook_denied` tool errors with
+  explicit retryability and retry delay guidance for both models and hosts.
 - Upgraded the Core HTTP transport to `reqwest` 0.12 so the Windows Bash curl
   compatibility path sends its normalized JSON body without leading CRLF
   bytes, while preserving stable retryable timeout diagnostics.

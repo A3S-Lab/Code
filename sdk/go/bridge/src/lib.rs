@@ -1673,13 +1673,17 @@ fn parse_hook_response(value: Value) -> Result<a3s_code_core::hooks::HookRespons
                 .and_then(Value::as_str)
                 .unwrap_or("Blocked by Go hook"),
         )),
-        "retry" => Ok(HookResponse::retry(
-            object
+        "retry" => {
+            let delay_ms = object
                 .get("delay_ms")
                 .or_else(|| object.get("delayMs"))
                 .and_then(Value::as_u64)
-                .unwrap_or(1_000),
-        )),
+                .unwrap_or(1_000);
+            Ok(match object.get("reason").and_then(Value::as_str) {
+                Some(reason) => HookResponse::retry_with_reason(reason, delay_ms),
+                None => HookResponse::retry(delay_ms),
+            })
+        }
         "skip" => Ok(HookResponse::skip()),
         other => Err(format!("unknown hook action {other:?}")),
     }
@@ -2759,6 +2763,26 @@ fn agent_definition_value(definition: a3s_code_core::AgentDefinition) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hook_retry_response_preserves_reason_and_delay() {
+        let response = parse_hook_response(json!({
+            "action": "retry",
+            "reason": "approval service is temporarily unavailable",
+            "delay_ms": 625,
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            response.action,
+            a3s_code_core::hooks::HookAction::Retry
+        ));
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("approval service is temporarily unavailable")
+        );
+        assert_eq!(response.retry_delay_ms, Some(625));
+    }
 
     fn request(operation: &str, params: Value) -> BridgeRequest {
         BridgeRequest {

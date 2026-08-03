@@ -1,24 +1,25 @@
 use super::AgentLoop;
 use crate::hooks::{
-    ErrorType, HookEvent, HookResult, OnErrorEvent, PlanningStrategy, PostPlanningEvent,
+    ErrorType, HookEvent, HookOutcome, OnErrorEvent, PlanningStrategy, PostPlanningEvent,
     PostResponseEvent, PostToolUseEvent, PrePlanningEvent, PreToolUseEvent, TokenUsageInfo,
     ToolResultData,
 };
 use crate::llm::TokenUsage;
 use crate::planning::ExecutionPlan;
+use crate::safety_gate::HookDenialFeedback;
 use anyhow::{bail, Result};
 use std::sync::Arc;
 
 impl AgentLoop {
     /// Fire PreToolUse hook event before tool execution.
-    /// Returns the HookResult which may block the tool call.
+    /// Returns structured denial feedback when a hook gates the tool call.
     pub(super) async fn fire_pre_tool_use(
         &self,
         session_id: &str,
         tool_name: &str,
         args: &serde_json::Value,
         recent_tools: Vec<String>,
-    ) -> Option<HookResult> {
+    ) -> Option<HookDenialFeedback> {
         if let Some(he) = &self.config.hook_engine {
             // Convert null args to empty object so JS callbacks don't get null.input errors
             let safe_args = if args.is_null() {
@@ -33,7 +34,7 @@ impl AgentLoop {
                 working_directory: self.tool_context.workspace.to_string_lossy().to_string(),
                 recent_tools,
             });
-            return normalize_pre_tool_gate_result(he.fire(&event).await);
+            return normalize_pre_tool_gate_outcome(he.fire_outcome(&event).await);
         }
         None
     }
@@ -105,22 +106,25 @@ impl AgentLoop {
             })),
         });
 
-        match he.fire(&event).await {
-            HookResult::Block(reason) => bail!("Planning blocked by hook: {reason}"),
-            HookResult::Retry(delay_ms) => {
-                bail!("Planning hook requested retry after {delay_ms}ms")
+        match he.fire_outcome(&event).await {
+            HookOutcome::Block { reason } => bail!("Planning blocked by hook: {reason}"),
+            HookOutcome::Retry {
+                reason,
+                retry_after_ms,
+            } => {
+                bail!("Planning hook requested retry after {retry_after_ms}ms: {reason}")
             }
-            HookResult::Escalate { reason, target } => {
+            HookOutcome::Escalate { reason, target } => {
                 let target = target
                     .as_deref()
                     .map(|value| format!(" for {value}"))
                     .unwrap_or_default();
                 bail!("Planning hook escalated{target}: {reason}")
             }
-            HookResult::Continue(modified) => {
+            HookOutcome::Continue(modified) => {
                 Ok(apply_pre_planning_modifications(task_description, modified))
             }
-            HookResult::Skip => Ok(task_description.to_string()),
+            HookOutcome::Skip => Ok(task_description.to_string()),
         }
     }
 
@@ -218,19 +222,20 @@ impl AgentLoop {
 /// The gateway has no retry scheduler or human-escalation wait state. Allowing
 /// either outcome to fall through would execute the protected tool without the
 /// requested policy action, so both fail closed until such a path exists.
-fn normalize_pre_tool_gate_result(result: HookResult) -> Option<HookResult> {
-    match result {
-        HookResult::Continue(_) | HookResult::Skip => None,
-        block @ HookResult::Block(_) => Some(block),
-        HookResult::Retry(delay_ms) => Some(HookResult::Block(format!(
-            "Pre-tool hook requested retry after {delay_ms} ms, but tool-hook retries are not supported"
-        ))),
-        HookResult::Escalate { reason, target } => {
+fn normalize_pre_tool_gate_outcome(outcome: HookOutcome) -> Option<HookDenialFeedback> {
+    match outcome {
+        HookOutcome::Continue(_) | HookOutcome::Skip => None,
+        HookOutcome::Block { reason } => Some(HookDenialFeedback::blocked(reason)),
+        HookOutcome::Retry {
+            reason,
+            retry_after_ms,
+        } => Some(HookDenialFeedback::retry(reason, retry_after_ms)),
+        HookOutcome::Escalate { reason, target } => {
             let target = target
                 .as_deref()
                 .map(|value| format!(" to {value}"))
                 .unwrap_or_default();
-            Some(HookResult::Block(format!(
+            Some(HookDenialFeedback::blocked(format!(
                 "Pre-tool hook escalated{target}: {reason}"
             )))
         }
@@ -317,37 +322,39 @@ fn planning_hints(value: Option<&serde_json::Value>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_pre_tool_gate_result;
-    use crate::hooks::HookResult;
+    use super::normalize_pre_tool_gate_outcome;
+    use crate::hooks::HookOutcome;
 
     #[test]
-    fn pre_tool_retry_fails_closed_without_retry_runtime() {
-        let result = normalize_pre_tool_gate_result(HookResult::Retry(250));
+    fn pre_tool_retry_preserves_reason_and_retryability() {
+        let result = normalize_pre_tool_gate_outcome(HookOutcome::Retry {
+            reason: "temporary policy outage".to_string(),
+            retry_after_ms: 250,
+        })
+        .unwrap();
 
-        assert!(matches!(
-            result,
-            Some(HookResult::Block(reason))
-                if reason.contains("retry after 250 ms") && reason.contains("not supported")
-        ));
+        assert_eq!(result.reason, "temporary policy outage");
+        assert!(result.retryable);
+        assert_eq!(result.retry_after_ms, Some(250));
     }
 
     #[test]
     fn pre_tool_escalation_fails_closed_without_escalation_runtime() {
-        let result = normalize_pre_tool_gate_result(HookResult::Escalate {
+        let result = normalize_pre_tool_gate_outcome(HookOutcome::Escalate {
             reason: "approval required".to_string(),
             target: Some("security-team".to_string()),
-        });
+        })
+        .unwrap();
 
-        assert!(matches!(
-            result,
-            Some(HookResult::Block(reason))
-                if reason.contains("security-team") && reason.contains("approval required")
-        ));
+        assert!(result.reason.contains("security-team"));
+        assert!(result.reason.contains("approval required"));
+        assert!(!result.retryable);
+        assert_eq!(result.retry_after_ms, None);
     }
 
     #[test]
     fn explicit_pre_tool_continue_and_skip_remain_non_blocking() {
-        assert!(normalize_pre_tool_gate_result(HookResult::Continue(None)).is_none());
-        assert!(normalize_pre_tool_gate_result(HookResult::Skip).is_none());
+        assert!(normalize_pre_tool_gate_outcome(HookOutcome::Continue(None)).is_none());
+        assert!(normalize_pre_tool_gate_outcome(HookOutcome::Skip).is_none());
     }
 }

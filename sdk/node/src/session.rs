@@ -527,7 +527,8 @@ impl Session {
     ///   reason?: string, delayMs?: number, modified?: any } | null`. When provided, the function is
     ///   called for every matching event and its return value controls execution. Return
     ///   `{ action: 'block', reason: '...' }` to cancel the operation, `{ action: 'skip' }` to skip
-    ///   remaining hooks, `{ action: 'retry', delayMs: 1000 }` to request a retry, or
+    ///   remaining hooks, `{ action: 'retry', reason: 'temporarily unavailable', delayMs: 1000 }`
+    ///   to return a retryable denial with context, or
     ///   `{ action: 'continue', modified: {...} }` to continue with modified data. Hooks with no
     ///   handler still fire (observable via stream events) but always continue.
     #[napi]

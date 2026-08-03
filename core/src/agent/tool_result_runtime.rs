@@ -30,13 +30,20 @@ impl NormalizedToolResult {
     }
 
     pub(super) fn denied(output: String) -> Self {
+        Self::denied_with_error_kind(output, None)
+    }
+
+    pub(super) fn denied_with_error_kind(
+        output: String,
+        error_kind: Option<ToolErrorKind>,
+    ) -> Self {
         Self {
             output,
             exit_code: 1,
             is_error: true,
             metadata: None,
             images: Vec::new(),
-            error_kind: None,
+            error_kind,
         }
     }
 

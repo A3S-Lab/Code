@@ -6,6 +6,7 @@
 use crate::agent::AgentConfig;
 use crate::hitl::TimeoutAction;
 use crate::permissions::PermissionDecision;
+use crate::tools::ToolErrorKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolGateApproval {
@@ -58,13 +59,77 @@ pub(crate) enum ToolGateDecision {
         output: String,
         event_reason: String,
         reason: ToolGateDenial,
+        error_kind: Option<ToolErrorKind>,
     },
+}
+
+/// Actionable feedback produced when a pre-tool hook denies an invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HookDenialFeedback {
+    pub(crate) reason: String,
+    pub(crate) retryable: bool,
+    pub(crate) retry_after_ms: Option<u64>,
+}
+
+impl HookDenialFeedback {
+    pub(crate) fn blocked(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            retryable: false,
+            retry_after_ms: None,
+        }
+    }
+
+    pub(crate) fn retry(reason: impl Into<String>, retry_after_ms: u64) -> Self {
+        Self {
+            reason: reason.into(),
+            retryable: true,
+            retry_after_ms: Some(retry_after_ms),
+        }
+    }
+
+    pub(crate) fn into_gate_decision(self, tool_name: &str) -> ToolGateDecision {
+        let Self {
+            reason,
+            retryable,
+            retry_after_ms,
+        } = self;
+        let guidance = match retry_after_ms {
+            Some(delay_ms) if retryable => format!(
+                "Hook feedback: retryable=true; retry_after_ms={delay_ms}. Retry only after the requested delay."
+            ),
+            _ if retryable => {
+                "Hook feedback: retryable=true. Retry only after the temporary condition changes."
+                    .to_string()
+            }
+            _ => "Hook feedback: retryable=false. Do not repeat this tool call unchanged; choose another action or change the arguments or context.".to_string(),
+        };
+        let qualifier = if retryable {
+            "temporarily denied"
+        } else {
+            "denied"
+        };
+        let output =
+            format!("Tool '{tool_name}' {qualifier} by pre-tool hook: {reason}\n\n{guidance}");
+        let error_kind = ToolErrorKind::HookDenied {
+            reason: reason.clone(),
+            retryable,
+            retry_after_ms,
+        };
+
+        ToolGateDecision::Deny {
+            output,
+            event_reason: reason,
+            reason: ToolGateDenial::HookBlock,
+            error_kind: Some(error_kind),
+        }
+    }
 }
 
 pub(crate) struct ToolGateInput<'a> {
     pub(crate) tool_name: &'a str,
     pub(crate) args: &'a serde_json::Value,
-    pub(crate) pre_tool_block: Option<String>,
+    pub(crate) pre_tool_denial: Option<HookDenialFeedback>,
     /// Escalation-only requirement supplied by the registered tool.
     pub(crate) tool_requires_confirmation: bool,
 }
@@ -83,12 +148,8 @@ impl<'a> ToolSafetyGate<'a> {
             return decision;
         }
 
-        if let Some(reason) = input.pre_tool_block {
-            return ToolGateDecision::Deny {
-                output: format!("Tool '{}' blocked by hook: {}", input.tool_name, reason),
-                event_reason: reason,
-                reason: ToolGateDenial::HookBlock,
-            };
+        if let Some(feedback) = input.pre_tool_denial {
+            return feedback.into_gate_decision(input.tool_name);
         }
 
         match self.permission_decision(input.tool_name, input.args) {
@@ -99,6 +160,7 @@ impl<'a> ToolSafetyGate<'a> {
                 ),
                 event_reason: "Blocked by deny rule in permission policy".to_string(),
                 reason: ToolGateDenial::PermissionDeny,
+                error_kind: None,
             },
             PermissionDecision::Allow if input.tool_requires_confirmation => {
                 self.confirmation_decision(input.tool_name, input.args)
@@ -137,6 +199,7 @@ impl<'a> ToolSafetyGate<'a> {
             output: msg.clone(),
             event_reason: msg,
             reason: ToolGateDenial::SkillRestriction,
+            error_kind: None,
         })
     }
 
@@ -189,6 +252,7 @@ fn missing_confirmation_manager(tool_name: &str) -> ToolGateDecision {
         output: msg.clone(),
         event_reason: msg,
         reason: ToolGateDenial::MissingConfirmationManager,
+        error_kind: None,
     }
 }
 
@@ -202,6 +266,7 @@ fn confirmation_unavailable(tool_name: &str) -> ToolGateDecision {
         output: msg.clone(),
         event_reason: msg,
         reason: ToolGateDenial::ConfirmationUnavailable,
+        error_kind: None,
     }
 }
 
@@ -252,7 +317,7 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "write",
                 args: &json!({"file_path": "x"}),
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: false,
             })
             .await;
@@ -279,7 +344,7 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "write",
                 args: &json!({"file_path": "x"}),
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: false,
             })
             .await;
@@ -306,7 +371,7 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "write",
                 args: &json!({"file_path": "x"}),
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: false,
             })
             .await;
@@ -333,7 +398,7 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "write",
                 args: &json!({"file_path": "x"}),
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: false,
             })
             .await;
@@ -359,18 +424,70 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "bash",
                 args: &json!({"command": "echo ok"}),
-                pre_tool_block: Some("blocked by policy".to_string()),
+                pre_tool_denial: Some(HookDenialFeedback::blocked("blocked by policy")),
                 tool_requires_confirmation: false,
             })
             .await;
 
-        assert!(matches!(
-            decision,
+        match decision {
             ToolGateDecision::Deny {
+                output,
+                event_reason,
                 reason: ToolGateDenial::HookBlock,
-                ..
+                error_kind:
+                    Some(ToolErrorKind::HookDenied {
+                        reason,
+                        retryable: false,
+                        retry_after_ms: None,
+                    }),
+            } => {
+                assert_eq!(event_reason, "blocked by policy");
+                assert_eq!(reason, "blocked by policy");
+                assert!(output.contains("retryable=false"));
+                assert!(output.contains("Do not repeat this tool call unchanged"));
             }
-        ));
+            other => panic!("unexpected gate decision: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn hook_retry_surfaces_temporary_denial_feedback() {
+        let config = AgentConfig {
+            permission_checker: Some(Arc::new(StaticPermission(PermissionDecision::Allow))),
+            ..Default::default()
+        };
+        let gate = ToolSafetyGate::new(&config);
+
+        let decision = gate
+            .decide(ToolGateInput {
+                tool_name: "bash",
+                args: &json!({"command": "echo ok"}),
+                pre_tool_denial: Some(HookDenialFeedback::retry(
+                    "policy backend is recovering",
+                    900,
+                )),
+                tool_requires_confirmation: false,
+            })
+            .await;
+
+        match decision {
+            ToolGateDecision::Deny {
+                output,
+                reason: ToolGateDenial::HookBlock,
+                error_kind:
+                    Some(ToolErrorKind::HookDenied {
+                        reason,
+                        retryable: true,
+                        retry_after_ms: Some(900),
+                    }),
+                ..
+            } => {
+                assert_eq!(reason, "policy backend is recovering");
+                assert!(output.contains("temporarily denied"));
+                assert!(output.contains("retryable=true; retry_after_ms=900"));
+            }
+            other => panic!("unexpected gate decision: {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -387,7 +504,7 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "bash",
                 args: &json!({"command": "echo ok"}),
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: false,
             })
             .await;
@@ -419,7 +536,7 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "bash",
                 args: &json!({"command": "echo ok"}),
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: false,
             })
             .await;
@@ -451,7 +568,7 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "mcp__use_fixture__submit",
                 args: &json!({}),
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: true,
             })
             .await;
@@ -478,7 +595,7 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "mcp__use_ocr__ocr_extract",
                 args: &json!({"file": "scan.png"}),
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: true,
             })
             .await;
@@ -504,7 +621,7 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "mcp__use_fixture__read",
                 args: &json!({}),
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: false,
             })
             .await;
@@ -536,7 +653,7 @@ mod tests {
             .decide(ToolGateInput {
                 tool_name: "read",
                 args: &json!({"file_path": "README.md"}),
-                pre_tool_block: None,
+                pre_tool_denial: None,
                 tool_requires_confirmation: false,
             })
             .await;

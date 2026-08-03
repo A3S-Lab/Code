@@ -173,6 +173,56 @@ impl HookResult {
     }
 }
 
+/// Rich hook execution outcome used by governance-aware callers.
+///
+/// [`HookResult`] remains the compatibility surface for existing executors.
+/// This outcome additionally preserves the explanation attached to a retry so
+/// callers can distinguish a temporary denial from a permanent block.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum HookOutcome {
+    /// Continue execution (with optional modified data).
+    Continue(Option<serde_json::Value>),
+    /// Permanently block the current operation.
+    Block { reason: String },
+    /// Temporarily block the operation and suggest when it may be retried.
+    Retry { reason: String, retry_after_ms: u64 },
+    /// Skip remaining hooks but continue execution.
+    Skip,
+    /// Escalate to human review.
+    Escalate {
+        reason: String,
+        target: Option<String>,
+    },
+}
+
+impl From<HookResult> for HookOutcome {
+    fn from(result: HookResult) -> Self {
+        match result {
+            HookResult::Continue(modified) => Self::Continue(modified),
+            HookResult::Block(reason) => Self::Block { reason },
+            HookResult::Retry(retry_after_ms) => Self::Retry {
+                reason: "Hook requested a retry".to_string(),
+                retry_after_ms,
+            },
+            HookResult::Skip => Self::Skip,
+            HookResult::Escalate { reason, target } => Self::Escalate { reason, target },
+        }
+    }
+}
+
+impl From<HookOutcome> for HookResult {
+    fn from(outcome: HookOutcome) -> Self {
+        match outcome {
+            HookOutcome::Continue(modified) => Self::Continue(modified),
+            HookOutcome::Block { reason } => Self::Block(reason),
+            HookOutcome::Retry { retry_after_ms, .. } => Self::Retry(retry_after_ms),
+            HookOutcome::Skip => Self::Skip,
+            HookOutcome::Escalate { reason, target } => Self::Escalate { reason, target },
+        }
+    }
+}
+
 /// Hook handler trait
 pub trait HookHandler: Send + Sync {
     /// Handle a hook event
@@ -196,6 +246,14 @@ pub trait HookHandler: Send + Sync {
 pub trait HookExecutor: Send + Sync + std::fmt::Debug {
     /// Fire a hook event and get the result
     async fn fire(&self, event: &HookEvent) -> HookResult;
+
+    /// Fire a hook event while preserving denial context and retryability.
+    ///
+    /// Existing custom executors can rely on this compatibility projection.
+    /// Executors with richer callback responses should override it.
+    async fn fire_outcome(&self, event: &HookEvent) -> HookOutcome {
+        self.fire(event).await.into()
+    }
 
     /// Observe a product/runtime event emitted by the agent loop.
     ///
@@ -297,6 +355,11 @@ impl HookEngine {
 
     /// Fire an event and get the result
     pub async fn fire(&self, event: &HookEvent) -> HookResult {
+        self.fire_outcome(event).await.into()
+    }
+
+    /// Fire an event while preserving retry explanations.
+    pub async fn fire_outcome(&self, event: &HookEvent) -> HookOutcome {
         // Send event to channel if available
         if let Some(ref tx) = self.event_tx {
             let _ = tx.send(event.clone()).await;
@@ -306,7 +369,7 @@ impl HookEngine {
         let matching_hooks = self.matching_hooks(event);
 
         if matching_hooks.is_empty() {
-            return HookResult::continue_();
+            return HookOutcome::Continue(None);
         }
 
         // Execute each hook
@@ -315,32 +378,24 @@ impl HookEngine {
             let result = self.execute_hook(&hook, event).await;
 
             match result {
-                HookResult::Continue(modified) => {
+                HookOutcome::Continue(modified) => {
                     // Track the last modification — continue to subsequent hooks
                     if modified.is_some() {
                         last_modified = modified;
                     }
                 }
-                HookResult::Block(reason) => {
-                    return HookResult::Block(reason);
-                }
-                HookResult::Retry(delay) => {
-                    return HookResult::Retry(delay);
-                }
-                HookResult::Skip => {
-                    return HookResult::Continue(None);
-                }
-                HookResult::Escalate { reason, target } => {
-                    return HookResult::Escalate { reason, target };
-                }
+                block @ HookOutcome::Block { .. } => return block,
+                retry @ HookOutcome::Retry { .. } => return retry,
+                HookOutcome::Skip => return HookOutcome::Continue(None),
+                escalate @ HookOutcome::Escalate { .. } => return escalate,
             }
         }
 
-        HookResult::Continue(last_modified)
+        HookOutcome::Continue(last_modified)
     }
 
     /// Execute a single hook
-    async fn execute_hook(&self, hook: &Hook, event: &HookEvent) -> HookResult {
+    async fn execute_hook(&self, hook: &Hook, event: &HookEvent) -> HookOutcome {
         let is_gate = Self::is_gating_event(event);
 
         // Find handler
@@ -378,7 +433,7 @@ impl HookEngine {
                             ),
                         }
                     });
-                    return HookResult::continue_();
+                    return HookOutcome::Continue(None);
                 }
 
                 let timeout = std::time::Duration::from_millis(hook.config.timeout_ms);
@@ -387,7 +442,7 @@ impl HookEngine {
                     tokio::task::spawn_blocking(move || h.try_handle(&event_for_handler));
 
                 match tokio::time::timeout(timeout, &mut task).await {
-                    Ok(Ok(Ok(response))) => self.response_to_result(response),
+                    Ok(Ok(Ok(response))) => self.response_to_outcome(response),
                     Ok(Ok(Err(error))) => self.handler_failure(hook, event, error),
                     Ok(Err(error)) => self.handler_failure(
                         hook,
@@ -409,7 +464,7 @@ impl HookEngine {
             }
             // Hooks may be registered only to select events for an SDK listener.
             // Without an actual handler there is no gating policy to fail.
-            None => HookResult::continue_(),
+            None => HookOutcome::Continue(None),
         }
     }
 
@@ -423,7 +478,7 @@ impl HookEngine {
     }
 
     /// Map handler infrastructure failures according to the hook point's role.
-    fn handler_failure(&self, hook: &Hook, event: &HookEvent, failure: String) -> HookResult {
+    fn handler_failure(&self, hook: &Hook, event: &HookEvent, failure: String) -> HookOutcome {
         tracing::warn!(
             hook_id = %hook.id,
             event_type = %event.event_type(),
@@ -433,21 +488,28 @@ impl HookEngine {
         );
 
         if Self::is_gating_event(event) {
-            HookResult::Block(format!("Required hook '{}' failed: {}", hook.id, failure))
+            HookOutcome::Block {
+                reason: format!("Required hook '{}' failed: {}", hook.id, failure),
+            }
         } else {
-            HookResult::continue_()
+            HookOutcome::Continue(None)
         }
     }
 
-    /// Convert HookResponse to HookResult
-    fn response_to_result(&self, response: HookResponse) -> HookResult {
+    /// Convert HookResponse to the lossless internal outcome.
+    fn response_to_outcome(&self, response: HookResponse) -> HookOutcome {
         match response.action {
-            HookAction::Continue => HookResult::Continue(response.modified),
-            HookAction::Block => {
-                HookResult::Block(response.reason.unwrap_or_else(|| "Blocked".to_string()))
-            }
-            HookAction::Retry => HookResult::Retry(response.retry_delay_ms.unwrap_or(1000)),
-            HookAction::Skip => HookResult::Skip,
+            HookAction::Continue => HookOutcome::Continue(response.modified),
+            HookAction::Block => HookOutcome::Block {
+                reason: response.reason.unwrap_or_else(|| "Blocked".to_string()),
+            },
+            HookAction::Retry => HookOutcome::Retry {
+                reason: response
+                    .reason
+                    .unwrap_or_else(|| "Hook requested a retry".to_string()),
+                retry_after_ms: response.retry_delay_ms.unwrap_or(1000),
+            },
+            HookAction::Skip => HookOutcome::Skip,
         }
     }
 
@@ -471,7 +533,11 @@ impl HookEngine {
 #[async_trait]
 impl HookExecutor for HookEngine {
     async fn fire(&self, event: &HookEvent) -> HookResult {
-        self.fire(event).await
+        HookEngine::fire(self, event).await
+    }
+
+    async fn fire_outcome(&self, event: &HookEvent) -> HookOutcome {
+        HookEngine::fire_outcome(self, event).await
     }
 }
 

@@ -201,7 +201,7 @@ mod tests {
     use crate::security::SecurityProvider;
     use crate::session_lane_queue::SessionLaneQueue;
     use crate::subagent::{AgentRegistry, WorkerAgentSpec};
-    use crate::tools::{register_task, Tool, ToolOutput, ToolStreamEvent};
+    use crate::tools::{register_task, Tool, ToolErrorKind, ToolOutput, ToolStreamEvent};
     use anyhow::Result;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -893,7 +893,51 @@ mod tests {
 
         assert_ne!(result.exit_code, 0);
         assert!(result.output.contains("blocked direct tool in test"));
+        assert!(matches!(
+            result.error_kind,
+            Some(ToolErrorKind::HookDenied {
+                reason,
+                retryable: false,
+                retry_after_ms: None,
+            }) if reason == "blocked direct tool in test"
+        ));
         assert_eq!(hooks.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn host_direct_hook_denial_sanitizes_structured_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hooks = Arc::new(BlockingPreToolHook::default());
+        let tool_executor = Arc::new(ToolExecutor::new(dir.path().to_string_lossy().to_string()));
+        tool_executor.register_dynamic_tool(Arc::new(CountingTool {
+            calls: Arc::clone(&calls),
+        }));
+        let runtime = direct_runtime_with_config(
+            tool_executor,
+            ToolContext::new(dir.path().to_path_buf()).with_session_id("session-hook-sanitize"),
+            AgentConfig {
+                hook_engine: Some(hooks),
+                security_provider: Some(Arc::new(RedactingSecurity)),
+                ..AgentConfig::default()
+            },
+        );
+
+        let result = runtime
+            .call("counting", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert_eq!(result.output, "[sanitized]");
+        assert!(matches!(
+            result.error_kind,
+            Some(ToolErrorKind::HookDenied {
+                reason,
+                retryable: false,
+                retry_after_ms: None,
+            }) if reason == "[sanitized]"
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
