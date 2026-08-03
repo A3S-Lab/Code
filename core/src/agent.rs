@@ -854,3 +854,6 @@ pub(crate) mod tests;
 
 #[cfg(test)]
 mod extra_agent_tests;
+
+#[cfg(test)]
+mod agent_dir_governance_tests;

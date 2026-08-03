@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgraded the Core HTTP transport to `reqwest` 0.12 so the Windows Bash curl
   compatibility path sends its normalized JSON body without leading CRLF
   bytes, while preserving stable retryable timeout diagnostics.
+- Added regression coverage proving that project-defined script tools re-apply
+  session permission and HITL gates to nested `ctx.tool` calls, and corrected
+  stale pre-5.0 documentation that described the former direct-registry path.
 
 ## [6.7.0] - 2026-07-31
 
@@ -930,14 +933,15 @@ to existing APIs; the new surface is additive and gated behind the `serve` featu
   - New `AgentDirScriptTool` registers through the same non-shadowing
     `register_dynamic_tool` path as builtins/MCP, so a `tools/` entry can add a
     name but never replace a builtin. The model's call to the script tool is
-    permission-gated like any tool; the script's *inner* `ctx.tool` calls are
-    bounded by the pinned `allowed_tools` list + the QuickJS sandbox (no
-    fs/net/proc/env), but are NOT re-checked against the session permission policy.
-    The complement to `kind: mcp` (both now ship).
-  - The `allowed_tools` list is the security boundary for a directory script, so
-    the loader **fails it closed**: an omitted list grants NO tools (not all of
-    them); list only the minimum, and avoid high-authority tools unless the
-    directory is fully trusted.
+    permission-gated like any tool. At the time of this release, the script's
+    *inner* `ctx.tool` calls were bounded only by the pinned `allowed_tools` list
+    + QuickJS sandbox (no fs/net/proc/env); since 5.0.0 they also re-enter the
+    session's governed permission/HITL path. The complement to `kind: mcp` (both
+    now ship).
+  - The `allowed_tools` list is an independent security boundary for a directory
+    script, so the loader **fails it closed**: an omitted list grants NO tools
+    (not all of them); list only the minimum, and avoid high-authority tools unless
+    the directory is fully trusted.
   - Fails closed at load (not at first call): a non-`.js`/`.mjs` `path`, a path
     that escapes the workspace (absolute / `..`), an out-of-range sandbox limit
     (zero, or an effectively-unbounded `timeoutMs`), an unknown `kind`, or a

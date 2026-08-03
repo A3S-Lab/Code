@@ -240,21 +240,20 @@ chokepoint is why "tool definition from the dir" cannot smuggle past
    - `script`: the QuickJS VM has no fs/net/proc/env; the *only* outbound
      capability is `ctx.tool(...)`, and `execute_host_tool_json`
      (`program_tool.rs:436`) enforces the per-script `allowed_tools` set and the
-     `maxToolCalls` counter on every hop. Note the boundary precisely: those inner
-     `ctx` calls go through `ToolRegistry::execute_with_context` directly — they
-     are NOT re-evaluated against the session `PermissionChecker`/HITL (that gate
-     runs in the agent loop for the model-selected `program`/script call, not for
-     the script's internal hops). So the **allow-list is the boundary** for what a
-     directory script may reach, and the loader fails it closed (empty by default).
+     `maxToolCalls` counter on every hop. In a session, those inner `ctx` calls use
+     the scoped governed invoker and are re-evaluated against the session
+     `PermissionChecker`/HITL before execution. The pinned allow-list remains an
+     independent, fail-closed boundary: both it and session governance must permit
+     a nested call.
    - `mcp`: A3S never runs the server's code; it exchanges JSON-RPC. The server
      is a separate process/endpoint owned by the transport layer.
 
 Net: a `tools/` file can *add a callable name*. The model-selected call to it is
 permission-gated like any tool, and the name is non-shadowing and
-harness-namespaced (`mcp__…` for MCP). A `script`'s inner tool calls are bounded
-by its pinned allow-list + the QuickJS sandbox rather than the permission policy.
-There is no path by which a directory file executes arbitrary host JS or an
-arbitrary host process.
+harness-namespaced (`mcp__…` for MCP). A `script`'s inner tool calls must pass
+both its pinned allow-list/QuickJS limits and the session's permission/HITL
+gateway. There is no path by which a directory file executes arbitrary host JS
+or an arbitrary host process.
 
 ```text
 tools/<name>.md
@@ -271,7 +270,7 @@ ToolSpec ──┬─ Mcp(McpServerConfig)  ─► session.add_mcp_server ─►
                           MCP: JSON-RPC to server  │  script: QuickJS VM,
                                                    │  frozen ctx, allow-list,
                                                    ▼  limits — ctx.tool allow-list
-                                                      (NOT the permission policy)
+                                                      + governed permission/HITL
 ```
 
 ---

@@ -95,9 +95,9 @@ pub struct ScriptToolSpec {
     /// Tools the script may call through `ctx`. The agent-dir loader fails closed:
     /// an omitted list becomes `Some(vec![])` (the script may call NO tools), so a
     /// directory author must opt each tool in explicitly. `program` is always
-    /// excluded (no script-launches-script). This allow-list — not the session
-    /// permission policy — is what bounds a script's inner `ctx.tool` calls, so it
-    /// is the security boundary for directory-authored scripts.
+    /// excluded (no script-launches-script). The session's governed invoker still
+    /// applies permission/HITL and the remaining lifecycle guards to every allowed
+    /// inner call, so this list is an additional fail-closed boundary.
     pub allowed_tools: Option<Vec<String>>,
     /// Sandbox limits (timeout / tool-call / output caps); defaults apply when unset.
     pub limits: ScriptToolLimits,
@@ -334,11 +334,11 @@ fn load_tools(dir: &Path) -> Result<Vec<ToolSpec>> {
                     name: meta.name.unwrap_or_else(|| file_stem(&path)),
                     description,
                     path: meta.path,
-                    // Fail closed: a directory-authored script is semi-trusted and
-                    // its inner `ctx.tool` calls are NOT re-checked by the session
-                    // permission policy (only by this allow-list + the sandbox), so
-                    // an omitted list grants NO tools rather than all of them. The
-                    // author must opt each tool in explicitly.
+                    // Fail closed: the governed session invoker re-checks each
+                    // inner `ctx.tool` call, while this allow-list independently
+                    // caps the script's reachable tools. An omitted list grants NO
+                    // tools rather than all of them, so the author must opt each
+                    // tool in explicitly.
                     allowed_tools: Some(meta.allowed_tools.unwrap_or_default()),
                     limits,
                 })
@@ -618,9 +618,9 @@ mod tests {
     #[test]
     fn script_tool_omitted_allow_list_fails_closed_to_empty() {
         // A directory script with no `allowed_tools` must default to an EMPTY
-        // allow-list (no tools), not "all tools" — its inner ctx.tool calls are
-        // not re-checked by the session permission policy, so the allow-list is
-        // the boundary and an omission must grant nothing.
+        // allow-list (no tools), not "all tools". Session governance remains in
+        // force, but the independent script boundary must not grant a tool merely
+        // because the session policy would allow it.
         let base =
             std::env::temp_dir().join(format!("a3s-agentdir-noallow-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
