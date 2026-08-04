@@ -261,11 +261,20 @@ pub struct AgentProtocolCommandReceiptV1 {
 impl AgentProtocolCommandReceiptV1 {
     pub const SCHEMA: &'static str = "a3s.code.agent-command-receipt.v1";
 
-    pub fn validate_for(&self, command: &AgentProtocolCommandV1) -> Result<(), AgentProtocolError> {
-        command.validate()?;
+    pub fn validate(&self) -> Result<(), AgentProtocolError> {
         validate_schema(&self.schema, Self::SCHEMA)?;
+        validate_id("request_id", &self.request_id)?;
         self.identity.validate()?;
         validate_lower_sha256("command_digest", &self.command_digest)?;
+        if self.observed_at_ms == 0 {
+            return Err(AgentProtocolError::InvalidField("observed_at_ms"));
+        }
+        Ok(())
+    }
+
+    pub fn validate_for(&self, command: &AgentProtocolCommandV1) -> Result<(), AgentProtocolError> {
+        command.validate()?;
+        self.validate()?;
         if self.action != command.action()
             || self.request_id != command.request_id()
             || self.identity != *command.identity()

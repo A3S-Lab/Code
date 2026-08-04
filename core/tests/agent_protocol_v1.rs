@@ -260,6 +260,7 @@ fn command_receipts_settle_only_the_exact_code_command() {
         observed_at_ms: 1_723_000_000_000,
         replayed: false,
     };
+    receipt.validate().expect("valid standalone receipt");
     receipt.validate_for(&command).expect("matching receipt");
 
     let mut wrong = receipt;
