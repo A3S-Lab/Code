@@ -317,7 +317,11 @@ impl AgentProtocolEventRecordV1 {
         Ok(projected)
     }
 
-    fn validate_for(
+    /// Validate this exact record against its Code-owned run identity.
+    ///
+    /// Hosts use this at durable ingestion boundaries instead of copying the
+    /// event metadata and sequence rules into their own protocol layer.
+    pub fn validate_for(
         &self,
         identity: &AgentProtocolRunIdentityV1,
     ) -> Result<(), AgentProtocolError> {
