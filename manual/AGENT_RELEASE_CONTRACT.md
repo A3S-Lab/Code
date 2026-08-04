@@ -13,11 +13,19 @@ The `release` module owns:
 - deriving a schema-aware canonical ACL document and release identity; and
 - checking the declared protocol and capability requirements before activation.
 
+The `agent_protocol` module owns the matching `a3s.code.agent.v1` host
+contract. It defines exact release/session/run start, cancellation, and
+checkpoint-recovery commands; digest-bound receipts; and bounded cursor pages
+that carry the existing lossless `EventEnvelopeV1` values directly. A host may
+wrap these values in its own authenticated delivery envelope, but it must not
+replace Code's run lifecycle, event names, event sequence, or checkpoint
+semantics.
+
 It does not build an OCI image, launch the manifest's declared entrypoint,
-implement the declared HTTP health endpoints or Agent request protocol, bind
-the manifest grace period to a process supervisor, or certify a deployment as
-a Runtime Service. Those runtime pieces must be implemented and tested before
-an Agent release is considered deployable.
+implement the declared HTTP health endpoints or a network listener for the
+Agent protocol, bind the manifest grace period to a process supervisor, or
+certify a deployment as a Runtime Service. Those runtime pieces must be
+implemented and tested before an Agent release is considered deployable.
 
 ## Current serve lifecycle building block
 

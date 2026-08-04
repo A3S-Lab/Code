@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the canonical bounded `a3s.code.agent.v1` headless protocol for exact
+  release/session/run start, cancellation, checkpoint recovery, command
+  receipts, and direct projection of the existing `EventEnvelopeV1` run-event
+  pages. Hosts may transport these contracts without creating another Agent
+  lifecycle or event model.
 - Added permission/HITL-aware governed direct-tool calls across the Node,
   Python, and Go SDKs, preserving `tool` as the explicit trusted
   host-control-plane API and restoring the cross-SDK alignment gate.

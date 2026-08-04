@@ -76,6 +76,7 @@
 
 pub(crate) mod agent;
 pub(crate) mod agent_api;
+pub mod agent_protocol;
 pub mod budget;
 pub(crate) mod child_run;
 pub mod code_intelligence;
@@ -136,6 +137,16 @@ pub mod workspace;
 pub use agent::{AgentEvent, AgentResult};
 pub use agent_api::{
     Agent, AgentSession, ReadFileOptions, SessionBuilder, SessionOptions, ToolCallResult,
+};
+pub use agent_protocol::{
+    AgentProtocolCommandActionV1, AgentProtocolCommandReceiptV1, AgentProtocolCommandV1,
+    AgentProtocolError, AgentProtocolEventPageV1, AgentProtocolEventRecordV1,
+    AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1, AgentProtocolRunRecoverV1,
+    AgentProtocolRunStartV1, AgentProtocolRunStateV1, AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE,
+    AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES, AGENT_PROTOCOL_MAX_EVENT_PAGE_BYTES,
+    AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES, AGENT_PROTOCOL_MAX_EVENT_TYPE_BYTES,
+    AGENT_PROTOCOL_MAX_ID_BYTES, AGENT_PROTOCOL_MAX_PROMPT_BYTES, AGENT_PROTOCOL_MAX_REASON_BYTES,
+    AGENT_PROTOCOL_V1,
 };
 pub use code_intelligence::{
     CodeDiagnostic, CodeDiagnosticSeverity, CodeIntelligenceCapabilities, CodeIntelligenceError,
