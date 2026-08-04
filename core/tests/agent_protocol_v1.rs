@@ -4,7 +4,7 @@ use a3s_code_core::{
     AgentProtocolEventRecordV1, AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1,
     AgentProtocolRunRecoverV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1, EventEnvelopeV1,
     InMemoryRunStore, AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1, AGENT_PROTOCOL_EVENT_PAGE_HTTP_PATH_V1,
-    AGENT_PROTOCOL_V1,
+    AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES, AGENT_PROTOCOL_V1,
 };
 use serde_json::json;
 
@@ -181,6 +181,32 @@ fn event_pages_carry_code_event_envelopes_without_a_second_event_model() {
         "timestamp_ms": 1_723_000_000_000_u64,
     }));
     assert!(mismatched_metadata.validate().is_err());
+}
+
+#[test]
+fn event_records_fit_one_bounded_durable_projection() {
+    let identity = identity("run-execution-018f4f86-attempt-1");
+    let normal = event_record(
+        &identity,
+        0,
+        1_723_000_000_000,
+        "text_delta",
+        json!({"text": "bounded"}),
+    );
+    normal.validate_for(&identity).expect("bounded record");
+    assert!(
+        serde_json::to_vec(&normal).expect("encode record").len()
+            <= AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES
+    );
+
+    let oversized = event_record(
+        &identity,
+        0,
+        1_723_000_000_000,
+        "text_delta",
+        json!({"text": "x".repeat(AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES)}),
+    );
+    assert!(oversized.validate_for(&identity).is_err());
 }
 
 #[test]

@@ -18,6 +18,7 @@ pub const AGENT_PROTOCOL_MAX_PROMPT_BYTES: usize = 64 * 1024;
 pub const AGENT_PROTOCOL_MAX_EVENT_TYPE_BYTES: usize = 128;
 pub const AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES: usize = 16 * 1024;
+pub const AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES: usize = 64 * 1024;
 pub const AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE: usize = 64;
 pub const AGENT_PROTOCOL_MAX_EVENT_PAGE_BYTES: usize = 6 * 1024 * 1024;
 
@@ -374,6 +375,10 @@ impl AgentProtocolEventRecordV1 {
                 == Some(self.occurred_at_ms);
         if !exact {
             return Err(AgentProtocolError::IdentityMismatch);
+        }
+        let encoded = serde_json::to_vec(self).map_err(|_| AgentProtocolError::Encoding)?;
+        if encoded.len() > AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES {
+            return Err(AgentProtocolError::InvalidField("event"));
         }
         Ok(())
     }
