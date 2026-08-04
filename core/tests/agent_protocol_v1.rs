@@ -8,6 +8,24 @@ use a3s_code_core::{
 };
 use serde_json::json;
 
+#[test]
+fn run_state_names_are_the_exact_serde_wire_values() {
+    for state in [
+        AgentProtocolRunStateV1::Created,
+        AgentProtocolRunStateV1::Planning,
+        AgentProtocolRunStateV1::Executing,
+        AgentProtocolRunStateV1::Verifying,
+        AgentProtocolRunStateV1::Completed,
+        AgentProtocolRunStateV1::Failed,
+        AgentProtocolRunStateV1::Cancelled,
+    ] {
+        assert_eq!(
+            serde_json::to_value(state).expect("serialize Code run state"),
+            serde_json::Value::String(state.as_str().into())
+        );
+    }
+}
+
 fn digest(byte: char) -> String {
     format!("sha256:{}", byte.to_string().repeat(64))
 }

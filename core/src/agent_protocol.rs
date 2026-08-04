@@ -224,6 +224,18 @@ pub enum AgentProtocolRunStateV1 {
 }
 
 impl AgentProtocolRunStateV1 {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Planning => "planning",
+            Self::Executing => "executing",
+            Self::Verifying => "verifying",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
