@@ -7,8 +7,8 @@
 use crate::agent_api::{AgentRunSpawn, AgentSession};
 use crate::agent_protocol::{
     validate_lower_sha256, AgentProtocolCommandReceiptV1, AgentProtocolCommandV1,
-    AgentProtocolError, AgentProtocolEventPageV1, AgentProtocolRunIdentityV1,
-    AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE,
+    AgentProtocolError, AgentProtocolEventPageRequestV1, AgentProtocolEventPageV1,
+    AgentProtocolRunIdentityV1, AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE,
 };
 use crate::error::CodeError;
 use crate::release::{AgentReleaseManifest, AGENT_PROTOCOL_V1};
@@ -191,6 +191,20 @@ impl AgentProtocolHost {
             &page,
         )
         .map_err(Into::into)
+    }
+
+    /// Execute the canonical transport-facing event page query.
+    pub async fn event_page_for(
+        &self,
+        request: &AgentProtocolEventPageRequestV1,
+    ) -> Result<AgentProtocolEventPageV1, AgentProtocolHostError> {
+        request.validate()?;
+        self.event_page(
+            &request.identity,
+            request.after_event_sequence,
+            usize::from(request.limit),
+        )
+        .await
     }
 
     fn validate_identity(

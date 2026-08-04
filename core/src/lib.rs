@@ -142,13 +142,14 @@ pub use agent_api::{
 };
 pub use agent_protocol::{
     AgentProtocolCommandActionV1, AgentProtocolCommandReceiptV1, AgentProtocolCommandV1,
-    AgentProtocolError, AgentProtocolEventPageV1, AgentProtocolEventRecordV1,
-    AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1, AgentProtocolRunRecoverV1,
-    AgentProtocolRunStartV1, AgentProtocolRunStateV1, AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE,
-    AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES, AGENT_PROTOCOL_MAX_EVENT_PAGE_BYTES,
-    AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES, AGENT_PROTOCOL_MAX_EVENT_TYPE_BYTES,
-    AGENT_PROTOCOL_MAX_ID_BYTES, AGENT_PROTOCOL_MAX_PROMPT_BYTES, AGENT_PROTOCOL_MAX_REASON_BYTES,
-    AGENT_PROTOCOL_V1,
+    AgentProtocolError, AgentProtocolEventPageRequestV1, AgentProtocolEventPageV1,
+    AgentProtocolEventRecordV1, AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1,
+    AgentProtocolRunRecoverV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1,
+    AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1, AGENT_PROTOCOL_EVENT_PAGE_HTTP_PATH_V1,
+    AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE, AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES,
+    AGENT_PROTOCOL_MAX_EVENT_PAGE_BYTES, AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES,
+    AGENT_PROTOCOL_MAX_EVENT_TYPE_BYTES, AGENT_PROTOCOL_MAX_ID_BYTES,
+    AGENT_PROTOCOL_MAX_PROMPT_BYTES, AGENT_PROTOCOL_MAX_REASON_BYTES, AGENT_PROTOCOL_V1,
 };
 pub use agent_protocol_host::{AgentProtocolHost, AgentProtocolHostError};
 pub use code_intelligence::{

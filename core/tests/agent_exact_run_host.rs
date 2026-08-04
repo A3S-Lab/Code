@@ -1,9 +1,9 @@
 use a3s_code_core::config::{CodeConfig, ModelConfig, ModelModalities, ProviderConfig};
 use a3s_code_core::llm::{ContentBlock, LlmClient, LlmResponse, Message, StreamEvent, TokenUsage};
 use a3s_code_core::{
-    Agent, AgentProtocolCommandV1, AgentProtocolHost, AgentProtocolRunCancelV1,
-    AgentProtocolRunIdentityV1, AgentProtocolRunRecoverV1, AgentProtocolRunStartV1, AgentRunSpawn,
-    CodeError, SessionOptions, AGENT_PROTOCOL_V1,
+    Agent, AgentProtocolCommandV1, AgentProtocolEventPageRequestV1, AgentProtocolHost,
+    AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1, AgentProtocolRunRecoverV1,
+    AgentProtocolRunStartV1, AgentRunSpawn, CodeError, SessionOptions, AGENT_PROTOCOL_V1,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -230,7 +230,15 @@ async fn protocol_host_executes_and_observes_the_code_owned_run() {
 
     let page = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            let page = host.event_page(&identity, None, 64).await.unwrap();
+            let page = host
+                .event_page_for(&AgentProtocolEventPageRequestV1 {
+                    schema: AgentProtocolEventPageRequestV1::SCHEMA.into(),
+                    identity: identity.clone(),
+                    after_event_sequence: None,
+                    limit: 64,
+                })
+                .await
+                .unwrap();
             if page.state.is_terminal() {
                 break page;
             }

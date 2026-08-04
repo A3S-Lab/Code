@@ -1,8 +1,9 @@
 use a3s_code_core::{
     AgentEvent, AgentProtocolCommandActionV1, AgentProtocolCommandReceiptV1,
-    AgentProtocolCommandV1, AgentProtocolEventPageV1, AgentProtocolEventRecordV1,
-    AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1, AgentProtocolRunRecoverV1,
-    AgentProtocolRunStartV1, AgentProtocolRunStateV1, EventEnvelopeV1, InMemoryRunStore,
+    AgentProtocolCommandV1, AgentProtocolEventPageRequestV1, AgentProtocolEventPageV1,
+    AgentProtocolEventRecordV1, AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1,
+    AgentProtocolRunRecoverV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1, EventEnvelopeV1,
+    InMemoryRunStore, AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1, AGENT_PROTOCOL_EVENT_PAGE_HTTP_PATH_V1,
     AGENT_PROTOCOL_V1,
 };
 use serde_json::json;
@@ -164,6 +165,30 @@ fn event_pages_carry_code_event_envelopes_without_a_second_event_model() {
     assert!(mismatched_metadata.validate().is_err());
 }
 
+#[test]
+fn event_page_queries_and_http_paths_are_code_owned() {
+    assert_eq!(AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1, "/v1/agent/commands");
+    assert_eq!(
+        AGENT_PROTOCOL_EVENT_PAGE_HTTP_PATH_V1,
+        "/v1/agent/events:page"
+    );
+    let request = AgentProtocolEventPageRequestV1 {
+        schema: AgentProtocolEventPageRequestV1::SCHEMA.into(),
+        identity: identity("run-execution-018f4f86-attempt-1"),
+        after_event_sequence: Some(7),
+        limit: 64,
+    };
+    request.validate().expect("valid event page query");
+    assert!(request
+        .digest()
+        .expect("query digest")
+        .starts_with("sha256:"));
+
+    let mut unbounded = request;
+    unbounded.limit = 65;
+    assert!(unbounded.validate().is_err());
+}
+
 #[tokio::test]
 async fn event_pages_project_the_authoritative_code_run_store() {
     let identity = identity("run-execution-018f4f86-attempt-1");
@@ -266,5 +291,6 @@ fn the_protocol_is_closed_bounded_and_send_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<AgentProtocolCommandV1>();
     assert_send_sync::<AgentProtocolCommandReceiptV1>();
+    assert_send_sync::<AgentProtocolEventPageRequestV1>();
     assert_send_sync::<AgentProtocolEventPageV1>();
 }

@@ -28,6 +28,11 @@ replayed commands never create a second run. The executable service boundary
 belongs to `a3s code`; Cloud and node software transport its values and do not
 implement another Harness.
 
+The version-one process transport uses Code-owned paths: commands are posted to
+`/v1/agent/commands`, while bounded `AgentProtocolEventPageRequestV1` values are
+posted to `/v1/agent/events:page`. Hosts must forward the corresponding Code
+types intact rather than translating them into another lifecycle protocol.
+
 The Core crate does not build an OCI image, launch the manifest's declared
 entrypoint, implement the declared HTTP health endpoints or a network listener,
 bind the manifest grace period to a process supervisor, or certify a deployment

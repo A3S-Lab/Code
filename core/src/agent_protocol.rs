@@ -21,6 +21,12 @@ pub const AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES: usize = 16 * 1024;
 pub const AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE: usize = 64;
 pub const AGENT_PROTOCOL_MAX_EVENT_PAGE_BYTES: usize = 6 * 1024 * 1024;
 
+/// Canonical HTTP endpoint served by `a3s code harness` for v1 commands.
+pub const AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1: &str = "/v1/agent/commands";
+
+/// Canonical HTTP endpoint served by `a3s code harness` for v1 event pages.
+pub const AGENT_PROTOCOL_EVENT_PAGE_HTTP_PATH_V1: &str = "/v1/agent/events:page";
+
 /// Stable validation failures for the headless Agent protocol.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum AgentProtocolError {
@@ -345,6 +351,33 @@ impl AgentProtocolEventRecordV1 {
             return Err(AgentProtocolError::IdentityMismatch);
         }
         Ok(())
+    }
+}
+
+/// Bounded cursor query accepted by the A3S Code Harness event endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProtocolEventPageRequestV1 {
+    pub schema: String,
+    pub identity: AgentProtocolRunIdentityV1,
+    pub after_event_sequence: Option<u64>,
+    pub limit: u16,
+}
+
+impl AgentProtocolEventPageRequestV1 {
+    pub const SCHEMA: &'static str = "a3s.code.agent-event-page-request.v1";
+
+    pub fn validate(&self) -> Result<(), AgentProtocolError> {
+        validate_schema(&self.schema, Self::SCHEMA)?;
+        self.identity.validate()?;
+        if self.limit == 0 || usize::from(self.limit) > AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE {
+            return Err(AgentProtocolError::InvalidField("limit"));
+        }
+        Ok(())
+    }
+
+    pub fn digest(&self) -> Result<String, AgentProtocolError> {
+        digest_validated(self, || self.validate())
     }
 }
 
