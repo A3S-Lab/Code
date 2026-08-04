@@ -5,7 +5,8 @@ use super::types::{
     AgentReleaseWorkspaceMode,
 };
 use super::{
-    AgentReleaseError, AgentReleaseField, AGENT_RELEASE_OCI_MEDIA_TYPE, MAX_CAPABILITY_LEVEL,
+    AgentReleaseError, AgentReleaseField, AGENT_RELEASE_ENTRYPOINT_ARGS_V1,
+    AGENT_RELEASE_ENTRYPOINT_COMMAND_V1, AGENT_RELEASE_OCI_MEDIA_TYPE, MAX_CAPABILITY_LEVEL,
     MAX_ENTRYPOINT_ARGS, MAX_SHUTDOWN_GRACE_SECONDS,
 };
 use a3s_acl::{Block, Value};
@@ -44,6 +45,11 @@ pub(crate) fn parse_entrypoint(block: &Block) -> Result<AgentReleaseEntrypoint, 
             AgentReleaseField::EntrypointCommand,
         ));
     }
+    if command != AGENT_RELEASE_ENTRYPOINT_COMMAND_V1 {
+        return Err(AgentReleaseError::InvalidField(
+            AgentReleaseField::EntrypointCommand,
+        ));
+    }
 
     let args = match block.attributes.get("args") {
         Some(Value::List(values)) if values.len() <= MAX_ENTRYPOINT_ARGS => values
@@ -66,6 +72,15 @@ pub(crate) fn parse_entrypoint(block: &Block) -> Result<AgentReleaseEntrypoint, 
             ))
         }
     };
+    if !args
+        .iter()
+        .map(String::as_str)
+        .eq(AGENT_RELEASE_ENTRYPOINT_ARGS_V1)
+    {
+        return Err(AgentReleaseError::InvalidField(
+            AgentReleaseField::EntrypointArgument,
+        ));
+    }
     Ok(AgentReleaseEntrypoint { command, args })
 }
 

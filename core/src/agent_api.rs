@@ -123,6 +123,33 @@ pub struct ToolCallResult {
     pub error_kind: Option<crate::tools::ToolErrorKind>,
 }
 
+/// Result of admitting a host-selected run identity for detached execution.
+///
+/// `Started` owns a supervisor task that drains the ordinary Code event stream
+/// into the authoritative run store. Dropping the handle detaches the task;
+/// call [`AgentSession::close`] for graceful cancellation and cleanup.
+pub enum AgentRunSpawn {
+    Started {
+        snapshot: crate::run::RunSnapshot,
+        worker: JoinHandle<()>,
+    },
+    Replayed {
+        snapshot: crate::run::RunSnapshot,
+    },
+}
+
+impl AgentRunSpawn {
+    pub const fn replayed(&self) -> bool {
+        matches!(self, Self::Replayed { .. })
+    }
+
+    pub fn snapshot(&self) -> &crate::run::RunSnapshot {
+        match self {
+            Self::Started { snapshot, .. } | Self::Replayed { snapshot } => snapshot,
+        }
+    }
+}
+
 // ============================================================================
 // ReadFileOptions
 // ============================================================================

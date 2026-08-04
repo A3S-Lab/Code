@@ -3,7 +3,8 @@ use a3s_code_core::release::{
     AgentReleaseEntrypoint, AgentReleaseError, AgentReleaseField, AgentReleaseHealth,
     AgentReleaseManifest, AgentReleasePersistentDataMode, AgentReleaseProvenance,
     AgentReleaseSecretRequirement, AgentReleaseSecretTarget, AgentReleaseStorage,
-    AgentReleaseWorkspaceMode, AGENT_PROTOCOL_V1, AGENT_RELEASE_CONTRACT_V1, AGENT_RELEASE_LIMITS,
+    AgentReleaseWorkspaceMode, AGENT_PROTOCOL_V1, AGENT_RELEASE_CONTRACT_V1,
+    AGENT_RELEASE_ENTRYPOINT_ARGS_V1, AGENT_RELEASE_ENTRYPOINT_COMMAND_V1, AGENT_RELEASE_LIMITS,
 };
 use std::path::Path;
 
@@ -35,10 +36,13 @@ fn fixture_is_typed_canonical_and_digest_bound() {
         manifest.artifact().media_type(),
         "application/vnd.oci.image.manifest.v1+json"
     );
-    assert_eq!(manifest.entrypoint().command(), "/usr/bin/a3s-code-agent");
+    assert_eq!(
+        manifest.entrypoint().command(),
+        AGENT_RELEASE_ENTRYPOINT_COMMAND_V1
+    );
     assert_eq!(
         manifest.entrypoint().args(),
-        ["serve", "--manifest", "/app/.a3s/asset.acl"]
+        AGENT_RELEASE_ENTRYPOINT_ARGS_V1
     );
     assert_eq!(manifest.health().transport(), "http");
     assert_eq!(manifest.health().port(), 8080);
@@ -96,7 +100,7 @@ fn fixture_is_typed_canonical_and_digest_bound() {
     assert_eq!(manifest.identity().len(), 71);
     assert_eq!(
         manifest.identity(),
-        "sha256:18a6f165a9dce546db0cc61402f9a55d9be138e5f4e52a7649e0935c51bd504b"
+        "sha256:d0f1bb153933320102b36703731096ea3030a949f9305a5f9837e7a4ba52e095"
     );
     assert!(manifest.canonical_acl().ends_with('\n'));
 
@@ -154,18 +158,30 @@ fn identity_ignores_formatting_and_set_like_block_order_only() {
         AgentReleaseManifest::parse(&changed).unwrap().identity(),
         first.identity()
     );
+}
+
+#[test]
+fn entrypoint_is_locked_to_the_a3s_code_harness() {
+    let separate_harness = FIXTURE.replace("/usr/bin/a3s", "/usr/bin/custom-agent-harness");
+    let error = AgentReleaseManifest::parse(&separate_harness)
+        .expect_err("a separate Harness executable must not be admitted");
+    assert_eq!(error.field(), Some(AgentReleaseField::EntrypointCommand));
+
+    let bypassed_code = FIXTURE.replace(
+        "args = [\"code\", \"harness\", \"--manifest\", \"/app/.a3s/asset.acl\"]",
+        "args = [\"harness\", \"--manifest\", \"/app/.a3s/asset.acl\"]",
+    );
+    let error = AgentReleaseManifest::parse(&bypassed_code)
+        .expect_err("the release must select the Code-owned Harness");
+    assert_eq!(error.field(), Some(AgentReleaseField::EntrypointArgument));
 
     let reordered_args = FIXTURE.replace(
-        "args = [\"serve\", \"--manifest\", \"/app/.a3s/asset.acl\"]",
-        "args = [\"--manifest\", \"serve\", \"/app/.a3s/asset.acl\"]",
+        "args = [\"code\", \"harness\", \"--manifest\", \"/app/.a3s/asset.acl\"]",
+        "args = [\"harness\", \"code\", \"--manifest\", \"/app/.a3s/asset.acl\"]",
     );
-    assert_ne!(
-        AgentReleaseManifest::parse(&reordered_args)
-            .unwrap()
-            .identity(),
-        first.identity(),
-        "ordered entrypoint arguments must retain their semantics"
-    );
+    let error = AgentReleaseManifest::parse(&reordered_args)
+        .expect_err("entrypoint arguments must preserve the canonical command path");
+    assert_eq!(error.field(), Some(AgentReleaseField::EntrypointArgument));
 }
 
 #[test]

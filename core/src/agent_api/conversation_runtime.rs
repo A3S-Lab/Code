@@ -5,8 +5,8 @@
 //! Lower-level runtime modules own run lifecycle and event forwarding.
 
 use super::{
-    command_runtime, run_admission, runtime::BlockingRunContext, runtime::ConversationInput,
-    runtime::StreamRunContext, AgentSession,
+    command_runtime, run_admission, run_lifecycle::RunControlState, runtime::BlockingRunContext,
+    runtime::ConversationInput, runtime::StreamRunContext, AgentRunSpawn, AgentSession,
 };
 use crate::agent::{AgentEvent, AgentResult};
 use crate::error::{CodeError, Result};
@@ -110,6 +110,76 @@ pub(super) async fn stream(
     ))
 }
 
+/// Start one detached Code run at an exact host-selected identity.
+pub(super) async fn spawn_run_with_id(
+    session: &AgentSession,
+    run_id: &str,
+    prompt: &str,
+) -> Result<AgentRunSpawn> {
+    if let Some(replay) = exact_run_replay(session, run_id, prompt).await? {
+        return Ok(replay);
+    }
+    let lease = admit(session)?;
+    let input = ConversationInput::from_history(session, None);
+    let reservation = RunControlState::from_session(session)
+        .reserve_run_with_id(run_id, prompt)
+        .await?;
+    let snapshot = reservation.snapshot().clone();
+    if reservation.replayed() {
+        return Ok(AgentRunSpawn::Replayed { snapshot });
+    }
+
+    let stream_run =
+        StreamRunContext::for_run(session, run_id.to_string(), input.persistence).await;
+    let (events, worker, worker_aborts) =
+        stream_run.spawn_with_prompt(input.messages, prompt.to_string());
+    let worker = run_admission::guard_stream_handle(worker, worker_aborts, lease);
+    Ok(AgentRunSpawn::Started {
+        snapshot,
+        worker: drain_detached_events(events, worker),
+    })
+}
+
+/// Resume one durable loop checkpoint into an exact fresh run identity.
+pub(super) async fn spawn_recovery_with_run_id(
+    session: &AgentSession,
+    checkpoint_run_id: &str,
+    run_id: &str,
+) -> Result<AgentRunSpawn> {
+    let prompt = format!("<resume run={checkpoint_run_id}>");
+    if let Some(replay) = exact_run_replay(session, run_id, &prompt).await? {
+        return Ok(replay);
+    }
+
+    let lease = admit(session)?;
+    let checkpoint = load_resume_checkpoint(session, checkpoint_run_id).await?;
+    let reservation = RunControlState::from_session(session)
+        .reserve_run_with_id(run_id, &prompt)
+        .await?;
+    let snapshot = reservation.snapshot().clone();
+    if reservation.replayed() {
+        return Ok(AgentRunSpawn::Replayed { snapshot });
+    }
+
+    let persistence =
+        Some(super::session_persistence::SessionPersistenceContext::from_session(session));
+    let stream_run = StreamRunContext::for_run(session, run_id.to_string(), persistence).await;
+    let seed = crate::agent::ExecutionSeed {
+        turn: checkpoint.turn,
+        total_usage: checkpoint.total_usage.clone(),
+        tool_calls_count: checkpoint.tool_calls_count,
+        verification_reports: checkpoint.verification_reports.clone(),
+        convergence: checkpoint.convergence.clone(),
+    };
+    let (events, worker, worker_aborts) =
+        stream_run.spawn_from_messages_seeded(checkpoint.messages, Some(seed));
+    let worker = run_admission::guard_stream_handle(worker, worker_aborts, lease);
+    Ok(AgentRunSpawn::Started {
+        snapshot,
+        worker: drain_detached_events(events, worker),
+    })
+}
+
 /// Resume a previously-checkpointed run on this session (P3 cut 2).
 ///
 /// Loads the latest [`LoopCheckpoint`](crate::loop_checkpoint::LoopCheckpoint)
@@ -125,31 +195,7 @@ pub(super) async fn resume_run(
     checkpoint_run_id: &str,
 ) -> Result<crate::agent::AgentResult> {
     let _lease = admit(session)?;
-
-    let store = session.session_store.as_ref().ok_or_else(|| {
-        CodeError::Session("resume_run requires a session_store on this session".to_string())
-    })?;
-
-    let checkpoint = store
-        .load_loop_checkpoint(checkpoint_run_id)
-        .await
-        .map_err(|e| {
-            CodeError::Session(format!(
-                "load_loop_checkpoint('{checkpoint_run_id}') failed: {e}"
-            ))
-        })?
-        .ok_or_else(|| {
-            CodeError::Session(format!(
-                "no loop checkpoint found for run '{checkpoint_run_id}'"
-            ))
-        })?;
-    checkpoint
-        .ensure_owned_by(checkpoint_run_id, &session.session_id)
-        .map_err(|error| {
-            CodeError::Session(format!(
-                "refusing to resume checkpoint '{checkpoint_run_id}': {error:#}"
-            ))
-        })?;
+    let checkpoint = load_resume_checkpoint(session, checkpoint_run_id).await?;
 
     let persistence =
         Some(super::session_persistence::SessionPersistenceContext::from_session(session));
@@ -173,6 +219,62 @@ pub(super) async fn resume_run(
     blocking_run
         .execute_from_messages_seeded(checkpoint.messages, &session.session_id, Some(seed))
         .await
+}
+
+async fn load_resume_checkpoint(
+    session: &AgentSession,
+    checkpoint_run_id: &str,
+) -> Result<crate::loop_checkpoint::LoopCheckpoint> {
+    let store = session.session_store.as_ref().ok_or_else(|| {
+        CodeError::Session("resume_run requires a session_store on this session".to_string())
+    })?;
+    let checkpoint = store
+        .load_loop_checkpoint(checkpoint_run_id)
+        .await
+        .map_err(|error| {
+            CodeError::Session(format!(
+                "load_loop_checkpoint('{checkpoint_run_id}') failed: {error}"
+            ))
+        })?
+        .ok_or_else(|| {
+            CodeError::Session(format!(
+                "no loop checkpoint found for run '{checkpoint_run_id}'"
+            ))
+        })?;
+    checkpoint
+        .ensure_owned_by(checkpoint_run_id, &session.session_id)
+        .map_err(|error| {
+            CodeError::Session(format!(
+                "refusing to resume checkpoint '{checkpoint_run_id}': {error:#}"
+            ))
+        })?;
+    Ok(checkpoint)
+}
+
+fn drain_detached_events(
+    mut events: mpsc::Receiver<AgentEvent>,
+    worker: JoinHandle<()>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        while events.recv().await.is_some() {}
+        let _ = worker.await;
+    })
+}
+
+async fn exact_run_replay(
+    session: &AgentSession,
+    run_id: &str,
+    prompt: &str,
+) -> Result<Option<AgentRunSpawn>> {
+    let Some(snapshot) = session.run_snapshot(run_id).await else {
+        return Ok(None);
+    };
+    if snapshot.session_id != session.session_id || snapshot.prompt != prompt {
+        return Err(CodeError::RunIdentityConflict {
+            run_id: run_id.to_string(),
+        });
+    }
+    Ok(Some(AgentRunSpawn::Replayed { snapshot }))
 }
 
 fn warn_deferred_init(session: &AgentSession) {

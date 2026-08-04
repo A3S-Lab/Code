@@ -21,11 +21,18 @@ wrap these values in its own authenticated delivery envelope, but it must not
 replace Code's run lifecycle, event names, event sequence, or checkpoint
 semantics.
 
-It does not build an OCI image, launch the manifest's declared entrypoint,
-implement the declared HTTP health endpoints or a network listener for the
-Agent protocol, bind the manifest grace period to a process supervisor, or
-certify a deployment as a Runtime Service. Those runtime pieces must be
-implemented and tested before an Agent release is considered deployable.
+`AgentProtocolHost` is the canonical adapter from that contract into an
+`AgentSession`. Exact run IDs are admitted atomically in Code's existing run
+store, detached work uses the ordinary Code event and checkpoint pipeline, and
+replayed commands never create a second run. The executable service boundary
+belongs to `a3s code`; Cloud and node software transport its values and do not
+implement another Harness.
+
+The Core crate does not build an OCI image, launch the manifest's declared
+entrypoint, implement the declared HTTP health endpoints or a network listener,
+bind the manifest grace period to a process supervisor, or certify a deployment
+as a Runtime Service. The `a3s code` executable and Runtime integration own
+those process and transport pieces.
 
 ## Current serve lifecycle building block
 
@@ -56,7 +63,7 @@ test values, not published OCI or provenance digests, so the fixture is not a
 deployable release.
 
 Its expected schema-aware identity is
-`sha256:18a6f165a9dce546db0cc61402f9a55d9be138e5f4e52a7649e0935c51bd504b`.
+`sha256:d0f1bb153933320102b36703731096ea3030a949f9305a5f9837e7a4ba52e095`.
 Cross-repository parser tests may use that value to detect canonicalization
 drift, but must not treat it as an artifact digest or deployment certification.
 
@@ -76,8 +83,8 @@ agent_release {
   }
 
   entrypoint {
-    command = "/usr/bin/a3s-code-agent"
-    args = ["serve", "--manifest", "/app/.a3s/asset.acl"]
+    command = "/usr/bin/a3s"
+    args = ["code", "harness", "--manifest", "/app/.a3s/asset.acl"]
   }
 
   health {
@@ -120,12 +127,14 @@ runtime supplies.
 | --- | --- |
 | `artifact.digest` | Lowercase `sha256:` plus exactly 64 hexadecimal characters |
 | `artifact.media_type` | Exactly `application/vnd.oci.image.manifest.v1+json` |
-| `entrypoint.command` | Absolute container path, at most 1,024 bytes, with no whitespace or control characters |
-| `entrypoint.args` | Ordered list of at most 64 strings; each is at most 4,096 bytes and contains no control characters |
+| `entrypoint.command` | Exactly `/usr/bin/a3s` |
+| `entrypoint.args` | Exactly `["code", "harness", "--manifest", "/app/.a3s/asset.acl"]` |
 
 The artifact digest is immutable input to the declared release identity. A tag,
 branch, mutable workspace, or registry label is not accepted as an artifact
-reference.
+reference. The fixed entrypoint makes the umbrella `a3s code` command the sole
+v1 Harness process; release images cannot substitute a parallel Harness
+implementation.
 
 ### Health and shutdown declaration
 

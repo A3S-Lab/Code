@@ -96,6 +96,11 @@ pub enum CodeError {
     #[error("Session '{session_id}' already has an active operation")]
     SessionBusy { session_id: String },
 
+    /// A host replayed a run id with different immutable session or input
+    /// identity. The existing run is preserved and no work is started.
+    #[error("Run '{run_id}' is already bound to different immutable input")]
+    RunIdentityConflict { run_id: String },
+
     /// A host-supplied [`BudgetGuard`](crate::budget::BudgetGuard) denied
     /// the operation. The session is not closed — callers can re-try
     /// after the host has re-allocated budget.
@@ -148,6 +153,7 @@ impl CodeError {
             Self::AsyncSessionBuildRequired { .. } => "ASYNC_SESSION_BUILD_REQUIRED",
             Self::SessionClosed { .. } => "SESSION_CLOSED",
             Self::SessionBusy { .. } => "SESSION_BUSY",
+            Self::RunIdentityConflict { .. } => "RUN_IDENTITY_CONFLICT",
             Self::BudgetExhausted { .. } => "BUDGET_EXHAUSTED",
             Self::Security(_) => "SECURITY_ERROR",
             Self::Context(_) => "CONTEXT_ERROR",
@@ -297,6 +303,13 @@ mod tests {
             }
             .code(),
             "SESSION_CLOSED"
+        );
+        assert_eq!(
+            CodeError::RunIdentityConflict {
+                run_id: "run-1".to_string(),
+            }
+            .code(),
+            "RUN_IDENTITY_CONFLICT"
         );
         assert_eq!(
             CodeError::BudgetExhausted {

@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receipts, and direct projection of the existing `EventEnvelopeV1` run-event
   pages. Hosts may transport these contracts without creating another Agent
   lifecycle or event model.
+- Added `AgentProtocolHost` and exact detached-run admission. Replayed run IDs
+  reuse the authoritative `AgentSession` run, conflicting immutable input is
+  rejected, recovery keeps Code's checkpoint semantics, and event pages read
+  the existing Code run store rather than a parallel Harness journal.
 - Added permission/HITL-aware governed direct-tool calls across the Node,
   Python, and Go SDKs, preserving `tool` as the explicit trusted
   host-control-plane API and restoring the cross-SDK alignment gate.

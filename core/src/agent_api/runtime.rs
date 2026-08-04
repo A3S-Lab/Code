@@ -157,13 +157,20 @@ impl StreamRunContext {
         prompt: &str,
         persistence: Option<SessionPersistenceContext>,
     ) -> Self {
-        let (tx, rx) = mpsc::channel(256);
-        let (runtime_tx, runtime_rx) = mpsc::channel(256);
-        let mut agent_loop = build_agent_loop(session);
         let run = RunControlState::from_session(session)
             .start_run(prompt)
             .await;
-        let run_id = run.id().to_string();
+        Self::for_run(session, run.id().to_string(), persistence).await
+    }
+
+    pub(super) async fn for_run(
+        session: &AgentSession,
+        run_id: String,
+        persistence: Option<SessionPersistenceContext>,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel(256);
+        let (runtime_tx, runtime_rx) = mpsc::channel(256);
+        let mut agent_loop = build_agent_loop(session);
         agent_loop.set_checkpoint_run(&run_id);
         let lifecycle = StreamRunLifecycle::from_session(session, &run_id, persistence);
         let cancel_token = session.session_cancel.child_token();
@@ -229,6 +236,18 @@ impl StreamRunContext {
         JoinHandle<()>,
         Vec<tokio::task::AbortHandle>,
     ) {
+        self.spawn_from_messages_seeded(messages, None)
+    }
+
+    pub(super) fn spawn_from_messages_seeded(
+        self,
+        messages: Vec<Message>,
+        seed: Option<crate::agent::ExecutionSeed>,
+    ) -> (
+        mpsc::Receiver<AgentEvent>,
+        JoinHandle<()>,
+        Vec<tokio::task::AbortHandle>,
+    ) {
         let Self {
             agent_loop,
             invocation,
@@ -239,7 +258,7 @@ impl StreamRunContext {
         } = self;
         let handle = tokio::spawn(async move {
             let result = agent_loop
-                .execute_from_messages_with_invocation_seeded(messages, &invocation, None)
+                .execute_from_messages_with_invocation_seeded(messages, &invocation, seed)
                 .await;
             worker_state.complete(result).await;
         });

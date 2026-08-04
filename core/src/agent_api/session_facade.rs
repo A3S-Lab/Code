@@ -134,6 +134,29 @@ impl AgentSession {
         conversation_runtime::resume_run(self, checkpoint_run_id).await
     }
 
+    /// Start one detached run with an exact host-selected run id.
+    ///
+    /// Replaying the same id, session, and prompt returns the existing run
+    /// without executing it again. Reusing the id for different immutable
+    /// input fails with [`crate::error::CodeError::RunIdentityConflict`].
+    /// This is the canonical entry point for headless `a3s code` hosts.
+    pub async fn spawn_run_with_id(&self, run_id: &str, prompt: &str) -> Result<AgentRunSpawn> {
+        conversation_runtime::spawn_run_with_id(self, run_id, prompt).await
+    }
+
+    /// Resume a durable checkpoint into one exact, fresh host-selected run id.
+    ///
+    /// The checkpoint run remains immutable. Replaying the same recovery run
+    /// id returns its existing snapshot and never executes the checkpoint
+    /// twice.
+    pub async fn spawn_recovery_with_run_id(
+        &self,
+        checkpoint_run_id: &str,
+        run_id: &str,
+    ) -> Result<AgentRunSpawn> {
+        conversation_runtime::spawn_recovery_with_run_id(self, checkpoint_run_id, run_id).await
+    }
+
     /// Send a prompt with image attachments and wait for the complete response.
     ///
     /// Images are included as multi-modal content blocks in the user message.

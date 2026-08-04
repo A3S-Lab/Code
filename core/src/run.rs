@@ -63,6 +63,25 @@ pub struct RunRecord {
     pub events: Vec<RunEventRecord>,
 }
 
+/// Outcome of atomically reserving one host-selected run identity.
+#[derive(Debug, Clone)]
+pub enum RunReservation {
+    Created(RunSnapshot),
+    Existing(RunSnapshot),
+}
+
+impl RunReservation {
+    pub fn snapshot(&self) -> &RunSnapshot {
+        match self {
+            Self::Created(snapshot) | Self::Existing(snapshot) => snapshot,
+        }
+    }
+
+    pub const fn replayed(&self) -> bool {
+        matches!(self, Self::Existing(_))
+    }
+}
+
 /// Cursor-based view over the retained event window for one run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunEventPage {
@@ -191,6 +210,40 @@ impl InMemoryRunStore {
             }
         }
         snapshot
+    }
+
+    /// Atomically reserve a caller-supplied run id without replacing an
+    /// existing run. Headless hosts use this as the Code-owned idempotency
+    /// boundary when an external command is replayed after a lost receipt.
+    pub async fn reserve_run_with_id(
+        &self,
+        id: String,
+        session_id: &str,
+        prompt: &str,
+    ) -> RunReservation {
+        // Keep the same canonical lock order as create/read paths. Checking
+        // and inserting while all three guards are held prevents concurrent
+        // command replays from both claiming the same exact run id.
+        let mut order = self.insertion_order.write().await;
+        let mut events = self.events.write().await;
+        let mut runs = self.runs.write().await;
+        if let Some(existing) = runs.get(&id) {
+            return RunReservation::Existing(existing.clone());
+        }
+
+        let snapshot = RunSnapshot::new(id.clone(), session_id.to_string(), prompt.to_string());
+        runs.insert(id.clone(), snapshot.clone());
+        events.insert(id.clone(), RetainedRunEvents::default());
+        order.push_back(id);
+        if let Some(cap) = self.max_runs {
+            while order.len() > cap {
+                if let Some(victim) = order.pop_front() {
+                    runs.remove(&victim);
+                    events.remove(&victim);
+                }
+            }
+        }
+        RunReservation::Created(snapshot)
     }
 
     pub async fn record_event(&self, run_id: &str, event: AgentEvent) -> Option<RunSnapshot> {
@@ -429,6 +482,45 @@ fn trim_retained_events(
 #[cfg(test)]
 mod retention_tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn exact_run_reservation_is_atomic_and_never_replaces_the_winner() {
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut reservations = Vec::new();
+        for index in 0..32 {
+            let store = Arc::clone(&store);
+            reservations.push(tokio::spawn(async move {
+                store
+                    .reserve_run_with_id(
+                        "run-cloud-1".to_string(),
+                        "session-cloud-1",
+                        &format!("prompt-{index}"),
+                    )
+                    .await
+            }));
+        }
+
+        let mut created = 0;
+        for reservation in reservations {
+            if !reservation.await.unwrap().replayed() {
+                created += 1;
+            }
+        }
+        assert_eq!(created, 1);
+
+        let winner = store.snapshot("run-cloud-1").await.unwrap();
+        let replay = store
+            .reserve_run_with_id(
+                "run-cloud-1".to_string(),
+                "another-session",
+                "replacement prompt",
+            )
+            .await;
+        assert!(replay.replayed());
+        assert_eq!(replay.snapshot().session_id, winner.session_id);
+        assert_eq!(replay.snapshot().prompt, winner.prompt);
+        assert_eq!(store.list().await.len(), 1);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_create_and_record_under_cap_does_not_deadlock() {

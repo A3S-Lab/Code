@@ -8,8 +8,8 @@ agent_release {
   }
 
   entrypoint {
-    command = "/usr/bin/a3s-code-agent"
-    args = ["serve", "--manifest", "/app/.a3s/asset.acl"]
+    command = "/usr/bin/a3s"
+    args = ["code", "harness", "--manifest", "/app/.a3s/asset.acl"]
   }
 
   health {

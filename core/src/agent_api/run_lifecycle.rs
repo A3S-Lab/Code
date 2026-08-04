@@ -96,6 +96,32 @@ impl RunControlState {
         self.run_handle(snapshot.id, self.session_id.clone())
     }
 
+    pub(super) async fn reserve_run_with_id(
+        &self,
+        run_id: &str,
+        prompt: &str,
+    ) -> Result<crate::run::RunReservation> {
+        if run_id.trim().is_empty() || run_id.contains('\0') || run_id.contains(['\r', '\n']) {
+            return Err(CodeError::RunIdentityConflict {
+                run_id: run_id.to_string(),
+            });
+        }
+        let reservation = self
+            .run_store
+            .reserve_run_with_id(run_id.to_string(), &self.session_id, prompt)
+            .await;
+        let snapshot = reservation.snapshot();
+        if snapshot.session_id != self.session_id || snapshot.prompt != prompt {
+            return Err(CodeError::RunIdentityConflict {
+                run_id: run_id.to_string(),
+            });
+        }
+        if !reservation.replayed() {
+            *self.current_run_id.lock().await = Some(run_id.to_string());
+        }
+        Ok(reservation)
+    }
+
     pub(super) async fn cancel(&self) -> bool {
         let token = self.cancel_token.lock().await.clone();
         if let Some(token) = token {

@@ -77,6 +77,7 @@
 pub(crate) mod agent;
 pub(crate) mod agent_api;
 pub mod agent_protocol;
+pub mod agent_protocol_host;
 pub mod budget;
 pub(crate) mod child_run;
 pub mod code_intelligence;
@@ -136,7 +137,8 @@ pub mod workspace;
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentEvent, AgentResult};
 pub use agent_api::{
-    Agent, AgentSession, ReadFileOptions, SessionBuilder, SessionOptions, ToolCallResult,
+    Agent, AgentRunSpawn, AgentSession, ReadFileOptions, SessionBuilder, SessionOptions,
+    ToolCallResult,
 };
 pub use agent_protocol::{
     AgentProtocolCommandActionV1, AgentProtocolCommandReceiptV1, AgentProtocolCommandV1,
@@ -148,6 +150,7 @@ pub use agent_protocol::{
     AGENT_PROTOCOL_MAX_ID_BYTES, AGENT_PROTOCOL_MAX_PROMPT_BYTES, AGENT_PROTOCOL_MAX_REASON_BYTES,
     AGENT_PROTOCOL_V1,
 };
+pub use agent_protocol_host::{AgentProtocolHost, AgentProtocolHostError};
 pub use code_intelligence::{
     CodeDiagnostic, CodeDiagnosticSeverity, CodeIntelligenceCapabilities, CodeIntelligenceError,
     CodeIntelligenceLanguageStatus, CodeIntelligenceResult, CodeIntelligenceState,
@@ -192,8 +195,8 @@ pub use orchestration::{
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
 pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecorder};
 pub use run::{
-    ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunSnapshot,
-    RunStatus,
+    ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunReservation,
+    RunSnapshot, RunStatus,
 };
 pub use state_graph::{
     graph_event_head, Behavior, BehaviorContext, BehaviorError, EventFilter, ExternalEvent,

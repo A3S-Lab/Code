@@ -521,7 +521,10 @@ fn validate_single_line(
     }
 }
 
-fn validate_lower_sha256(field: &'static str, value: &str) -> Result<(), AgentProtocolError> {
+pub(crate) fn validate_lower_sha256(
+    field: &'static str,
+    value: &str,
+) -> Result<(), AgentProtocolError> {
     let valid = value.strip_prefix("sha256:").is_some_and(|hex| {
         hex.len() == 64
             && hex
