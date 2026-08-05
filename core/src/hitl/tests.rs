@@ -7,7 +7,7 @@ use super::*;
 #[test]
 fn test_session_lane() {
     assert_eq!(SessionLane::from_tool_name("read"), SessionLane::Query);
-    assert_eq!(SessionLane::from_tool_name("grep"), SessionLane::Query);
+    assert_eq!(SessionLane::from_tool_name("search"), SessionLane::Query);
     assert_eq!(
         SessionLane::from_tool_name("code_navigation"),
         SessionLane::Query
@@ -37,9 +37,7 @@ fn test_session_lane_priority() {
 fn test_session_lane_all_query() {
     let query_tools = [
         "read",
-        "glob",
         "ls",
-        "grep",
         "list_files",
         "search",
         "code_symbols",
@@ -97,7 +95,7 @@ fn test_confirmation_policy_enabled() {
     assert!(policy.requires_confirmation("bash"));
     assert!(policy.requires_confirmation("write"));
     assert!(policy.requires_confirmation("read"));
-    assert!(policy.requires_confirmation("grep"));
+    assert!(policy.requires_confirmation("search"));
 }
 
 #[test]
@@ -117,7 +115,7 @@ fn test_confirmation_policy_yolo_multiple_lanes() {
     // All tools in YOLO lanes should be auto-approved
     assert!(!policy.requires_confirmation("bash")); // Execute
     assert!(!policy.requires_confirmation("read")); // Query
-    assert!(!policy.requires_confirmation("grep")); // Query
+    assert!(!policy.requires_confirmation("search")); // Query
 }
 
 #[test]

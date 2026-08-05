@@ -39,9 +39,7 @@ impl PySession {
 
         let session = self.inner.clone();
         let result = py
-            .allow_threads(move || {
-                get_runtime().block_on(session.governed_tool(&name, json_value))
-            })
+            .allow_threads(move || get_runtime().block_on(session.governed_tool(&name, json_value)))
             .map_err(py_code_error)?;
 
         Ok(PyToolResult::from(result))
@@ -98,6 +96,7 @@ impl PySession {
         let args: serde_json::Value = serde_json::from_str(&json_str)
             .map_err(|e| PyValueError::new_err(format!("Invalid task options: {e}")))?;
         let args = normalize_task_options(args)?;
+        let args = delegated_tasks_args(serde_json::json!([args]))?;
 
         let session = self.inner.clone();
         let result = py
@@ -119,6 +118,7 @@ impl PySession {
         max_steps: Option<u32>,
     ) -> PyResult<PyToolResult> {
         let args = delegate_task_args(agent, description, prompt, background, max_steps);
+        let args = delegated_tasks_args(serde_json::json!([args]))?;
 
         let session = self.inner.clone();
         let result = py
@@ -134,7 +134,24 @@ impl PySession {
         let json_str: String = json_mod.call_method1("dumps", (tasks,))?.extract()?;
         let task_values: serde_json::Value = serde_json::from_str(&json_str)
             .map_err(|e| PyValueError::new_err(format!("Invalid task list: {e}")))?;
-        let args = parallel_task_args(task_values)?;
+        let args = delegated_tasks_args(task_values)?;
+
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.tool("task", args)))
+            .map_err(py_code_error)?;
+
+        Ok(PyToolResult::from(result))
+    }
+
+    /// Compatibility helper for the legacy hidden ``parallel_task`` host tool.
+    /// Prefer ``tasks()`` for new code.
+    fn parallel_task(&self, py: Python<'_>, tasks: &Bound<'_, PyAny>) -> PyResult<PyToolResult> {
+        let json_mod = py.import("json")?;
+        let json_str: String = json_mod.call_method1("dumps", (tasks,))?.extract()?;
+        let task_values: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| PyValueError::new_err(format!("Invalid task list: {e}")))?;
+        let args = delegated_tasks_args(task_values)?;
 
         let session = self.inner.clone();
         let result = py
@@ -142,11 +159,6 @@ impl PySession {
             .map_err(py_code_error)?;
 
         Ok(PyToolResult::from(result))
-    }
-
-    /// Execute several delegated child-agent tasks concurrently through ``parallel_task``.
-    fn parallel_task(&self, py: Python<'_>, tasks: &Bound<'_, PyAny>) -> PyResult<PyToolResult> {
-        self.tasks(py, tasks)
     }
 
     /// Run a bounded JavaScript script through the embedded QuickJS `program` tool.

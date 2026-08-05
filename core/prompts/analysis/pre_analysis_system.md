@@ -16,7 +16,7 @@ Schema:
       {
         "id": "step-1",
         "description": "what to do",
-        "tool": "bash|read|write|edit|grep|glob|program|task|parallel_task|web_search|...",
+        "tool": "bash|read|write|edit|search|program|task|web_search|...",
         "dependencies": [],
         "success_criteria": "what counts as done"
       }
@@ -41,8 +41,9 @@ Rules:
   Medium = a few related edits or checks;
   Complex = multiple modules, SDKs, docs, or integration tests;
   VeryComplex = release, migration, security-sensitive, or broad architecture work.
-- Prefer `program` for repeated structured repository analysis; prefer
-  `task`/`parallel_task` for delegated agent work.
+- Prefer `program` for repeated structured repository analysis. Use `task` for
+  delegated agent work: one `tasks` item for a focused child, or several
+  independent items for concurrent fan-out.
 - `optimized_input` must preserve every concrete constraint, path, name, branch,
   environment variable, metric, and negative instruction from the original user
   message. Do not replace the task with a short summary.

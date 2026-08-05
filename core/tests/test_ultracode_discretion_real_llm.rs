@@ -4,7 +4,7 @@
 //! directions instead of unconditionally planning + fanning out every turn:
 //!
 //!   * a trivial greeting ("hi")        -> NO planning, NO parallel fan-out
-//!   * a genuinely parallel task        -> still fans out via `parallel_task`
+//!   * a genuinely parallel task        -> still fans out via unified `task`
 //!
 //! This mirrors what the cli now sends in ultracode mode
 //! (`crates/cli/src/tui/panels/model.rs::effort_session_opts`): message-gated
@@ -34,9 +34,9 @@ const ULTRACODE_GUIDELINES: &str = "\
 it. Match the effort to the task: answer trivial or conversational input (a \
 greeting, a single question, a one-step edit) directly, with no plan and no \
 fan-out. When a task genuinely splits into independent branches, decompose it, \
-run those branches as parallel background subagents via `parallel_task` (keep \
-each child prompt bounded and evidence-oriented), then synthesize their results \
-before continuing dependent work.";
+run those branches as one `task` call with multiple independent `tasks` items \
+(keep each child prompt bounded and evidence-oriented), then synthesize their \
+results before continuing dependent work.";
 
 fn repo_config_path() -> PathBuf {
     std::env::var_os("A3S_CONFIG_FILE")
@@ -172,8 +172,14 @@ async fn ultracode_parallel_task_still_fans_out() {
     let fanned_out = tokio::time::timeout(Duration::from_secs(300), async {
         while let Some(event) = rx.recv().await {
             match event {
-                AgentEvent::ToolExecutionStart { name, .. } if name == "parallel_task" => {
-                    return true;
+                AgentEvent::ToolExecutionStart { name, args, .. } if name == "task" => {
+                    if args
+                        .get("tasks")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|tasks| tasks.len() > 1)
+                    {
+                        return true;
+                    }
                 }
                 AgentEvent::SubagentStart { .. } => return true,
                 AgentEvent::End { .. } => return false,
@@ -196,7 +202,7 @@ async fn ultracode_parallel_task_still_fans_out() {
     );
 }
 
-// Live end-to-end proof that parallel_task / parallel-subagents actually work:
+// Live end-to-end proof that unified task fan-out / parallel subagents work:
 // the model fans out, children run, results merge, and the turn completes.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires real provider credentials and network access"]
@@ -219,22 +225,28 @@ async fn ultracode_parallel_fans_out_runs_and_completes() {
         not one by one. Do not modify any files.";
     let (mut rx, handle) = session.stream(prompt, None).await.unwrap();
 
-    // The reliable signals: the model invokes parallel_task, its ToolEnd carries
-    // the merged child results ("Executed N tasks in parallel:\n..."), and the
+    // The reliable signals: the model invokes task with multiple items, its
+    // ToolEnd carries the merged child results, and the
     // turn completes. (How many children the *model* puts in each call is
     // model-dependent; the executor's actual concurrency is proven deterministically
     // by `parallel_task_executor_runs_children_concurrently_and_preserves_input_order`.)
-    let mut parallel_calls = 0usize;
+    let mut task_fanout_calls = 0usize;
     let mut merged = String::new();
     let mut reached_end = false;
 
     let _ = tokio::time::timeout(std::time::Duration::from_secs(360), async {
         while let Some(ev) = rx.recv().await {
             match ev {
-                AgentEvent::ToolExecutionStart { name, .. } if name == "parallel_task" => {
-                    parallel_calls += 1
+                AgentEvent::ToolExecutionStart { name, args, .. } if name == "task" => {
+                    if args
+                        .get("tasks")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|tasks| tasks.len() > 1)
+                    {
+                        task_fanout_calls += 1;
+                    }
                 }
-                AgentEvent::ToolEnd { name, output, .. } if name == "parallel_task" => {
+                AgentEvent::ToolEnd { name, output, .. } if name == "task" => {
                     merged.push_str(&output);
                     merged.push('\n');
                 }
@@ -254,12 +266,12 @@ async fn ultracode_parallel_fans_out_runs_and_completes() {
     let _ = handle.await;
 
     let first_line = merged.lines().next().unwrap_or("");
-    eprintln!("PARALLEL_TRACE calls={parallel_calls} reached_end={reached_end} merged_first_line={first_line:?}");
+    eprintln!("TASK_FANOUT_TRACE calls={task_fanout_calls} reached_end={reached_end} merged_first_line={first_line:?}");
 
-    assert!(parallel_calls >= 1, "model never called parallel_task");
+    assert!(task_fanout_calls >= 1, "model never called task fan-out");
     assert!(
-        merged.contains("Executed") && merged.contains("parallel"),
-        "parallel_task did not return a merged result: {merged:?}"
+        merged.contains("Executed") && merged.contains("concurrent"),
+        "task fan-out did not return a merged result: {merged:?}"
     );
     assert!(reached_end, "turn never completed after fan-out");
 }

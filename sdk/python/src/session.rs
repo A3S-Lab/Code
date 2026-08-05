@@ -93,6 +93,82 @@ impl PySession {
         Ok(PyAgentResult::from(result))
     }
 
+    /// Admit an exact host-selected run ID and execute it in the background.
+    ///
+    /// Reusing a compatible run ID returns its existing snapshot with
+    /// ``replayed=True`` instead of starting duplicate work.
+    fn spawn_run_with_id(
+        &self,
+        py: Python<'_>,
+        run_id: String,
+        prompt: String,
+    ) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let spawn = py
+            .allow_threads(move || {
+                get_runtime().block_on(session.spawn_run_with_id(&run_id, &prompt))
+            })
+            .map_err(py_code_error)?;
+        agent_run_spawn_to_py(py, &spawn)
+    }
+
+    /// Return an asyncio Future for ``spawn_run_with_id()``.
+    fn spawn_run_with_id_async<'py>(
+        &self,
+        py: Python<'py>,
+        run_id: String,
+        prompt: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let callable = Bound::new(
+            py,
+            AsyncAgentRunSpawnCall {
+                session: Arc::clone(&self.inner),
+                operation: Some(AsyncAgentRunSpawnOperation::Run { run_id, prompt }),
+            },
+        )?;
+        run_in_asyncio_executor(py, callable.into_any())
+    }
+
+    /// Resume a checkpoint under an exact host-selected run ID in the background.
+    ///
+    /// Reusing a compatible run ID returns its existing snapshot with
+    /// ``replayed=True`` instead of starting duplicate recovery work.
+    fn spawn_recovery_with_run_id(
+        &self,
+        py: Python<'_>,
+        checkpoint_run_id: String,
+        run_id: String,
+    ) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let spawn = py
+            .allow_threads(move || {
+                get_runtime()
+                    .block_on(session.spawn_recovery_with_run_id(&checkpoint_run_id, &run_id))
+            })
+            .map_err(py_code_error)?;
+        agent_run_spawn_to_py(py, &spawn)
+    }
+
+    /// Return an asyncio Future for ``spawn_recovery_with_run_id()``.
+    fn spawn_recovery_with_run_id_async<'py>(
+        &self,
+        py: Python<'py>,
+        checkpoint_run_id: String,
+        run_id: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let callable = Bound::new(
+            py,
+            AsyncAgentRunSpawnCall {
+                session: Arc::clone(&self.inner),
+                operation: Some(AsyncAgentRunSpawnOperation::Recovery {
+                    checkpoint_run_id,
+                    run_id,
+                }),
+            },
+        )?;
+        run_in_asyncio_executor(py, callable.into_any())
+    }
+
     /// Run `specs` as a fan-out of agent steps and return each step's outcome
     /// (a dict) in input order. Each spec is a dict with snake_case keys:
     /// `task_id`, `agent`, `description`, `prompt`, optional `max_steps`,

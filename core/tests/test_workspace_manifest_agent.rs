@@ -191,9 +191,10 @@ async fn run_glob_agent_task(
     let client = Arc::new(ScriptedLlmClient::new(vec![
         tool_response(
             "call-glob",
-            "glob",
+            "search",
             serde_json::json!({
-                "pattern": pattern
+                "mode": "glob",
+                "query": pattern
             }),
         ),
         text_response("Workspace manifest agent task completed."),

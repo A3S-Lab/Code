@@ -17,6 +17,16 @@ pub(super) struct EngineTierPlan {
     pub headless: Vec<String>,
 }
 
+#[cfg(feature = "headless-search")]
+pub(super) fn automatic_tier_order() -> [EngineTier; 3] {
+    [EngineTier::Headless, EngineTier::Http, EngineTier::Api]
+}
+
+#[cfg(not(feature = "headless-search"))]
+pub(super) fn automatic_tier_order() -> [EngineTier; 2] {
+    [EngineTier::Http, EngineTier::Api]
+}
+
 impl EngineTierPlan {
     pub fn is_empty(&self) -> bool {
         self.api.is_empty() && self.http.is_empty() && self.headless.is_empty()

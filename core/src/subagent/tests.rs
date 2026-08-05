@@ -149,7 +149,10 @@ permissions:
     assert_eq!(agent.permissions.deny.len(), 1);
     // Verify that deserialized rules actually match (tool_name populated)
     assert!(agent.permissions.allow[0].matches("read", &serde_json::json!({})));
-    assert!(agent.permissions.allow[1].matches("grep", &serde_json::json!({})));
+    assert!(agent.permissions.allow[1].matches(
+        "search",
+        &serde_json::json!({"mode": "grep", "query": "TODO"})
+    ));
     assert!(agent.permissions.deny[0].matches("write", &serde_json::json!({})));
 }
 
@@ -173,7 +176,10 @@ permissions:
     assert_eq!(agent.permissions.deny.len(), 1);
     // Verify rules are functional
     assert!(agent.permissions.allow[0].matches("read", &serde_json::json!({})));
-    assert!(agent.permissions.allow[1].matches("grep", &serde_json::json!({})));
+    assert!(agent.permissions.allow[1].matches(
+        "search",
+        &serde_json::json!({"mode": "grep", "query": "TODO"})
+    ));
     assert!(
         agent.permissions.allow[2].matches("Bash", &serde_json::json!({"command": "cargo build"}))
     );
@@ -201,11 +207,10 @@ Review the changed code and return prioritized findings.
         .allow
         .iter()
         .any(|r| r.matches("read", &serde_json::json!({}))));
-    assert!(agent
-        .permissions
-        .allow
-        .iter()
-        .any(|r| r.matches("grep", &serde_json::json!({}))));
+    assert!(agent.permissions.allow.iter().any(|r| r.matches(
+        "search",
+        &serde_json::json!({"mode": "grep", "query": "TODO"})
+    )));
     assert!(agent
         .permissions
         .allow
@@ -283,8 +288,8 @@ Plan without editing.
     );
     assert_eq!(
         agent.permissions.check(
-            "grep",
-            &serde_json::json!({"pattern": "secret", "path": "src"})
+            "search",
+            &serde_json::json!({"mode": "grep", "query": "secret", "path": "src"})
         ),
         PermissionDecision::Deny
     );

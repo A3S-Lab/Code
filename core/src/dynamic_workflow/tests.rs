@@ -137,6 +137,33 @@ impl Tool for FakeParallelTaskTool {
     }
 }
 
+struct FakeTaskTool;
+
+#[async_trait]
+impl Tool for FakeTaskTool {
+    fn name(&self) -> &str {
+        TASK_TOOL
+    }
+
+    fn description(&self) -> &str {
+        "Fake unified task tool for DynamicWorkflowRuntime tests."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({ "type": "object" })
+    }
+
+    async fn execute(&self, args: &Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        let count = args
+            .get("tasks")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        Ok(ToolOutput::success(format!("task:{count}"))
+            .with_metadata(json!({ "task_count": count })))
+    }
+}
+
 struct FakeRuntimeTool;
 
 #[async_trait]
@@ -658,7 +685,60 @@ return await ctx.read(inputs.input.path);
 }
 
 #[tokio::test]
-async fn dynamic_workflow_step_can_call_host_parallel_task_without_ptc_parallel_task() {
+async fn dynamic_workflow_step_can_call_host_task_without_ptc_task_fanout() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    executor.register_dynamic_tool(Arc::new(FakeTaskTool));
+    register_dynamic_workflow(executor.registry());
+
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+const fanout = inputs.step_outputs.fanout;
+if (fanout) {
+  return { type: "complete", output: { fanout } };
+}
+return {
+  type: "schedule_step",
+  step_id: "fanout",
+  step_name: "task",
+  input: {
+    tasks: [
+      { agent: "explore", description: "alpha", prompt: "research alpha" },
+      { agent: "explore", description: "beta", prompt: "research beta" },
+    ],
+  },
+};
+  }
+
+  return { error: "ptc step handler should not run for task fan-out" };
+}
+"#;
+
+    let result = executor
+        .execute(
+            DYNAMIC_WORKFLOW_TOOL,
+            &json!({
+                "source": source,
+                "run_id": "test-dynamic-workflow-task-step",
+                "allowed_tools": [],
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.exit_code, 0, "{}", result.output);
+    assert!(result.output.contains("task:2"), "{}", result.output);
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["dynamic_workflow"]["status"], "Completed");
+    let step = &metadata["dynamic_workflow"]["snapshot"]["steps"]["fanout"];
+    assert_eq!(step["status"], "completed");
+    assert_eq!(step["output"]["tool"], TASK_TOOL);
+    assert_eq!(step["output"]["metadata"]["task_count"], 2);
+}
+
+#[tokio::test]
+async fn dynamic_workflow_legacy_parallel_task_step_remains_readable() {
     let dir = tempfile::tempdir().unwrap();
     let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
     executor.register_dynamic_tool(Arc::new(FakeParallelTaskTool));

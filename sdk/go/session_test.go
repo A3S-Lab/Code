@@ -96,6 +96,65 @@ func TestSessionSendCancelsRemoteRunWhenContextEnds(t *testing.T) {
 	}
 }
 
+func TestSessionHostSelectedRunSpawnsUseStableOperations(t *testing.T) {
+	runtime := &fakeRuntime{
+		request: func(
+			_ context.Context,
+			operation string,
+			params map[string]any,
+		) (any, error) {
+			switch operation {
+			case "session_spawn_run_with_id":
+				if params["run_id"] != "run-1" || params["prompt"] != "inspect" {
+					t.Fatalf("unexpected run params: %#v", params)
+				}
+			case "session_spawn_recovery_with_run_id":
+				if params["checkpoint_run_id"] != "checkpoint-1" || params["run_id"] != "run-2" {
+					t.Fatalf("unexpected recovery params: %#v", params)
+				}
+			default:
+				t.Fatalf("unexpected operation %q", operation)
+			}
+			return map[string]any{
+				"snapshot": map[string]any{
+					"id":            params["run_id"],
+					"session_id":    "session-id",
+					"status":        "created",
+					"prompt":        "inspect",
+					"created_at_ms": 10,
+					"updated_at_ms": 20,
+					"event_count":   0,
+				},
+				"replayed": operation == "session_spawn_recovery_with_run_id",
+			}, nil
+		},
+	}
+	session := testSession(runtime)
+	spawned, err := session.SpawnRunWithID(context.Background(), "run-1", "inspect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spawned.Replayed || spawned.Snapshot.ID != "run-1" {
+		t.Fatalf("spawn result = %#v", spawned)
+	}
+	recovered, err := session.SpawnRecoveryWithRunID(
+		context.Background(),
+		"checkpoint-1",
+		"run-2",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovered.Replayed || recovered.Snapshot.ID != "run-2" {
+		t.Fatalf("recovery result = %#v", recovered)
+	}
+
+	want := []string{"session_spawn_run_with_id", "session_spawn_recovery_with_run_id"}
+	if got := runtime.operations(); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("operations = %v, want %v", got, want)
+	}
+}
+
 func TestDirectToolConveniencesUseStableOperations(t *testing.T) {
 	runtime := &fakeRuntime{
 		request: func(

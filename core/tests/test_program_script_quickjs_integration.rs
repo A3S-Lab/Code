@@ -81,8 +81,10 @@ export default async function run(ctx, inputs) {
         .iter()
         .filter_map(|call| call["tool_name"].as_str())
         .collect::<Vec<_>>();
-    assert!(tool_names.contains(&"grep"));
-    assert!(tool_names.contains(&"glob"));
+    assert_eq!(
+        tool_names.iter().filter(|name| **name == "search").count(),
+        2
+    );
     assert!(tool_names.contains(&"read"));
     assert_eq!(
         metadata["script_result"]["evidence"][0]["hasDefaultDecision"],

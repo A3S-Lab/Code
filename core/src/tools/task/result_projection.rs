@@ -92,7 +92,7 @@ pub(super) fn normalize_tool_source_anchor(
         "web_fetch" | "web_search" | "download" => {
             crate::tools::builtin::safe_http_source_url(value)
         }
-        "read" | "grep" => {
+        "read" | "search" => {
             let path = ctx.resolve_workspace_path(value.trim()).ok()?;
             (!path.is_root()).then(|| path.as_str().to_string())
         }
@@ -146,7 +146,7 @@ pub(super) fn collect_tool_source_anchors(
         || name.len() > MAX_TASK_SOURCE_TOOL_BYTES
         || !matches!(
             name.as_str(),
-            "web_fetch" | "web_search" | "download" | "read" | "grep"
+            "web_fetch" | "web_search" | "download" | "read" | "search"
         )
         || anchors.len() >= MAX_TASK_SOURCE_ANCHORS
         || *scanned_candidates >= MAX_TASK_SOURCE_CANDIDATES

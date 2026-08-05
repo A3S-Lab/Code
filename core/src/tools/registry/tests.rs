@@ -6,6 +6,8 @@ struct MockTool {
     name: String,
 }
 
+struct HiddenMockTool;
+
 #[async_trait]
 impl Tool for MockTool {
     fn name(&self) -> &str {
@@ -27,6 +29,33 @@ impl Tool for MockTool {
 
     async fn execute(&self, _args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
         Ok(ToolOutput::success("mock output"))
+    }
+}
+
+#[async_trait]
+impl Tool for HiddenMockTool {
+    fn name(&self) -> &str {
+        "compatibility_alias"
+    }
+
+    fn description(&self) -> &str {
+        "A runtime-only compatibility alias"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+        })
+    }
+
+    fn is_model_visible(&self) -> bool {
+        false
+    }
+
+    async fn execute(&self, _args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        Ok(ToolOutput::success("compatibility output"))
     }
 }
 
@@ -255,6 +284,26 @@ fn test_registry_definitions() {
         .map(|definition| definition.name.as_str())
         .collect();
     assert_eq!(names, vec!["tool1", "tool2"]);
+}
+
+#[tokio::test]
+async fn hidden_tools_remain_registered_and_executable_without_model_schema_cost() {
+    let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+    registry.register_builtin(Arc::new(HiddenMockTool));
+
+    assert!(registry.contains("compatibility_alias"));
+    assert!(registry.list().contains(&"compatibility_alias".to_string()));
+    assert!(!registry
+        .definitions()
+        .iter()
+        .any(|definition| definition.name == "compatibility_alias"));
+
+    let result = registry
+        .execute("compatibility_alias", &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.output, "compatibility output");
 }
 
 #[tokio::test]

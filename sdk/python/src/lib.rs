@@ -62,9 +62,10 @@ use a3s_code_core::verification::{
 use a3s_code_core::{
     run_event_envelope_v1 as rust_run_event_envelope_v1, Agent as RustAgent,
     AgentEvent as RustAgentEvent, AgentEventProjectionV1 as RustAgentEventProjectionV1,
-    AgentResult as RustAgentResult, AgentSession as RustAgentSession,
-    EventProtocolError as RustEventProtocolError, PlanningMode as RustPlanningMode,
-    SessionOptions as RustSessionOptions, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
+    AgentResult as RustAgentResult, AgentRunSpawn as RustAgentRunSpawn,
+    AgentSession as RustAgentSession, EventProtocolError as RustEventProtocolError,
+    PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions, AGENT_EVENT_TYPES_V1,
+    EVENT_ENVELOPE_V1_VERSION,
 };
 use pyo3::exceptions::{
     PyRuntimeError, PyStopAsyncIteration, PyStopIteration, PyTypeError, PyValueError,
@@ -171,6 +172,15 @@ fn json_string_to_py(py: Python<'_>, json: &str) -> PyResult<PyObject> {
     let json_module = py.import("json")?;
     let parsed = json_module.call_method1("loads", (json,))?;
     Ok(parsed.into())
+}
+
+fn agent_run_spawn_to_py(py: Python<'_>, spawn: &RustAgentRunSpawn) -> PyResult<PyObject> {
+    let json = serde_json::to_string(&serde_json::json!({
+        "snapshot": spawn.snapshot(),
+        "replayed": spawn.replayed(),
+    }))
+    .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize run spawn: {e}")))?;
+    json_string_to_py(py, &json)
 }
 
 // ============================================================================
@@ -509,7 +519,7 @@ fn delegate_task_args(
     args
 }
 
-fn parallel_task_args(tasks: serde_json::Value) -> PyResult<serde_json::Value> {
+fn delegated_tasks_args(tasks: serde_json::Value) -> PyResult<serde_json::Value> {
     if !tasks.is_array() {
         return Err(PyValueError::new_err(
             "tasks must be a list of dictionaries",

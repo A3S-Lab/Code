@@ -82,7 +82,7 @@ impl Tool for ProgramTool {
                 },
                 "allowed_tools": {
                     "type": "array",
-                    "description": "Tool names the script may call through ctx. Defaults to all registered tools except program.",
+                    "description": "Tool names the script may call through ctx. Defaults to all registered tools except program, dynamic_workflow, and the legacy parallel_task alias.",
                     "items": { "type": "string" }
                 },
                 "limits": {
@@ -217,8 +217,10 @@ fn script_allowed_tools(args: &serde_json::Value, available_tools: Vec<String>) 
 
     allowed.remove("program");
     // QuickJS is a single-threaded embedded VM, so PTC scripts must not expose
-    // `parallel_task` directly. Dynamic workflows can still schedule a Flow
-    // step whose host-side implementation calls `parallel_task`.
+    // recursive orchestrators or the legacy fan-out alias directly. Unified
+    // `task` calls are checked per invocation below; Dynamic Workflows can
+    // schedule host-side task fan-out.
+    allowed.remove("dynamic_workflow");
     allowed.remove("parallel_task");
     allowed
 }
@@ -485,13 +487,27 @@ const __a3sTools = Object.freeze(new Proxy({{}}, {{
 }}));
 
 const __a3sReadArgs = (path, options = {{}}) => ({{ ...(options ?? {{}}), file_path: path }});
+const __a3sLegacySearchArgs = (mode, query, options = {{}}) => {{
+  const args = {{ ...(options ?? {{}}), mode, query }};
+  if (Object.prototype.hasOwnProperty.call(args, "glob")) {{
+    args.include = args.glob;
+    delete args.glob;
+  }}
+  if (Object.prototype.hasOwnProperty.call(args, "-i")) {{
+    args.case_sensitive = !args["-i"];
+    delete args["-i"];
+  }}
+  return args;
+}};
 const __a3sCtx = Object.freeze({{
   tool: __a3sCallTool,
   tools: __a3sTools,
   readFile: (path, options = {{}}) => __a3sCallTool("read", __a3sReadArgs(path, options)).then((r) => r.output),
   read: (path, options = {{}}) => __a3sCallTool("read", __a3sReadArgs(path, options)),
-  grep: (pattern, options = {{}}) => __a3sCallTool("grep", {{ pattern, ...options }}).then((r) => r.output),
-  glob: (pattern, options = {{}}) => __a3sCallTool("glob", {{ pattern, ...options }}).then((r) => r.output),
+  search: (query, options = {{}}) => __a3sCallTool("search", {{ ...options, query }}).then((r) => r.output),
+  grep: (query, options = {{}}) => __a3sCallTool("search", __a3sLegacySearchArgs("grep", query, options)).then((r) => r.output),
+  bm25: (query, options = {{}}) => __a3sCallTool("search", __a3sLegacySearchArgs("bm25", query, options)).then((r) => r.output),
+  glob: (query, options = {{}}) => __a3sCallTool("search", {{ ...options, mode: "glob", query }}).then((r) => r.output),
   ls: (path = ".") => __a3sCallTool("ls", {{ path }}).then((r) => r.output),
   bash: (command) => __a3sCallTool("bash", {{ command }}).then((r) => r.output),
   git: (args = {{}}) => __a3sCallTool("git", args),
@@ -518,7 +534,7 @@ async fn execute_host_tool_json(
     })?;
     let (invoker, ctx, max_output_bytes, outer) = {
         let mut script = state.lock().await;
-        if !script.allowed_tools.contains(&tool) {
+        if !script_tool_is_allowed(&script.allowed_tools, &tool, &args) {
             return Err(JsError::new_from_js_message(
                 "tool",
                 "allowed tool",
@@ -580,6 +596,29 @@ async fn execute_host_tool_json(
         "metadata": metadata,
     }))
     .map_err(|err| JsError::new_from_js_message("tool result", "json", err.to_string()))
+}
+
+fn script_tool_is_allowed(
+    allowed_tools: &HashSet<String>,
+    tool: &str,
+    args: &serde_json::Value,
+) -> bool {
+    if tool == "task"
+        && args
+            .get("tasks")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|tasks| tasks.len() > 1)
+    {
+        return false;
+    }
+    if allowed_tools.contains(tool) {
+        return true;
+    }
+    tool == "search"
+        && args
+            .get("mode")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|mode| allowed_tools.contains(mode))
 }
 
 fn is_quickjs_timeout(err: &anyhow::Error) -> bool {

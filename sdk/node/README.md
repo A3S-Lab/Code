@@ -281,7 +281,9 @@ overloads remain for compatibility.
 
 ## Delegation And Tool Introspection
 
-The SDK exposes the core `task` / `parallel_task` tools as direct helpers:
+The SDK exposes the unified core `task` tool as direct helpers. `task(...)`
+submits one `tasks` item; `tasks(...)` submits several independent items in one
+concurrent fan-out call:
 
 ```js
 await session.task({
@@ -297,8 +299,9 @@ await session.tasks([
 ```
 
 For automatic subagent delegation, `autoParallel: false` disables automatic
-parallel fan-out while keeping manual `parallel_task` / `session.tasks(...)`
-available:
+parallel fan-out while keeping manual `task` / `session.tasks(...)` calls
+available. `session.parallelTask(...)` remains an explicit compatibility helper
+for persisted integrations that still call the hidden `parallel_task` alias:
 
 ```js
 const session = agent.session('/my-project', {
@@ -308,8 +311,9 @@ const session = agent.session('/my-project', {
 })
 ```
 
-Use `session.toolNames()` for names and `session.toolDefinitions()` when a UI
-needs the full model-visible schemas.
+Use `session.toolNames()` for model-visible names and `session.toolDefinitions()`
+when a UI needs the full schemas. Hidden compatibility aliases are executable
+by explicit name but omitted from both introspection methods.
 
 Dynamic workflow is opt-in for SDK sessions. Register it when the host wants the
 A3S Flow-backed `dynamic_workflow` tool to join the normal tool registry:
@@ -551,6 +555,25 @@ for (const event of replay) {
 }
 console.log(await session.activeTools())
 ```
+
+Headless hosts can admit their own immutable run IDs without waiting for the
+run to finish:
+
+```js
+const admitted = await session.spawnRunWithId('release-42/run-7', 'Verify the release')
+console.log(admitted.snapshot.id, admitted.replayed)
+
+const recovered = await session.spawnRecoveryWithRunId(
+  'checkpoint-run-6',
+  'release-42/recovery-7',
+)
+console.log(recovered.snapshot.status, recovered.replayed)
+```
+
+Repeating the same ID with compatible immutable input returns
+`replayed: true` and never starts duplicate work. Reusing an ID with different
+input rejects with `RUN_IDENTITY_CONFLICT`. Detached workers remain owned by
+the session and are cancelled by `closeAsync()`.
 
 `runEvents()` returns the same `{ version, type, payload, metadata }` v1
 envelope as live streams. Replay metadata includes `run_id`, `session_id`,

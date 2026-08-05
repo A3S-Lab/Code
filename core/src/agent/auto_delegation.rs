@@ -41,18 +41,10 @@ impl AgentLoop {
             return Ok(None);
         };
 
-        let tool_name = if plan.tasks.len() == 1 {
-            "task"
-        } else {
-            "parallel_task"
-        };
-        let args = if tool_name == "task" {
-            task_to_args(&plan.tasks[0])
-        } else {
-            json!({
-                "tasks": plan.tasks.iter().map(task_to_args).collect::<Vec<_>>()
-            })
-        };
+        let tool_name = "task";
+        let args = json!({
+            "tasks": plan.tasks.iter().map(task_to_args).collect::<Vec<_>>()
+        });
 
         let (output, _exit_code, is_error, metadata) = self
             .execute_delegated_plan_tool(tool_name, &args, session_id, event_tx, cancel_token)
@@ -125,10 +117,6 @@ impl AgentLoop {
         if candidates.is_empty() {
             return None;
         }
-        if candidates.len() > 1 && !self.tool_executor.registry().contains("parallel_task") {
-            candidates.truncate(1);
-        }
-
         Some(AutoDelegationPlan {
             reason: if candidates.len() > 1 {
                 "multiple high-confidence independent specialist matches".to_string()

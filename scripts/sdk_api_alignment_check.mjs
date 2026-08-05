@@ -465,6 +465,8 @@ assertContainsAll('Go Agent', goAgent, [
 assertContainsAll('Go Session', goSession, [
   'Run',
   'Send',
+  'SpawnRunWithID',
+  'SpawnRecoveryWithRunID',
   'Stream',
   'Cancel',
   'CancelAndSettle',

@@ -53,9 +53,11 @@ pub(super) struct PySessionOptions {
     pub(super) auto_delegation: Option<PyAutoDelegationConfig>,
     /// Global session-level kill switch for automatic parallel child-agent fan-out.
     ///
-    /// Manual ``parallel_task`` calls remain available when this is false.
+    /// Manual ``task`` fan-out and legacy ``parallel_task`` calls remain
+    /// available when this is false.
     pub(super) auto_parallel: Option<bool>,
-    /// Session-level switch for model-visible manual ``task`` / ``parallel_task`` tools.
+    /// Session-level switch for the model-visible ``task`` tool and hidden
+    /// ``parallel_task`` compatibility alias.
     pub(super) manual_delegation_enabled: Option<bool>,
     /// Explicit planning mode: "auto", "enabled", or "disabled".
     ///
@@ -627,7 +629,8 @@ impl PySessionOptions {
 
     /// Global session-level kill switch for automatic parallel child-agent fan-out.
     ///
-    /// Manual ``parallel_task`` calls remain available when this is false.
+    /// Manual ``task`` fan-out and legacy ``parallel_task`` calls remain
+    /// available when this is false.
     #[getter]
     fn get_auto_parallel(&self) -> Option<bool> {
         self.auto_parallel
@@ -638,7 +641,8 @@ impl PySessionOptions {
         self.auto_parallel = value;
     }
 
-    /// Session-level switch for model-visible manual ``task`` / ``parallel_task`` tools.
+    /// Session-level switch for the model-visible ``task`` tool and hidden
+    /// ``parallel_task`` compatibility alias.
     #[getter]
     fn get_manual_delegation_enabled(&self) -> Option<bool> {
         self.manual_delegation_enabled

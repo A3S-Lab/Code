@@ -121,6 +121,12 @@ const session = agent.session(workspace, {
   permissionPolicy: { defaultDecision: 'allow' },
   workspaceBackend: new mod.LocalWorkspaceBackend(workspace),
 })
+assert.equal(typeof session.spawnRunWithId, 'function', 'exact run admission must be exported')
+assert.equal(
+  typeof session.spawnRecoveryWithRunId,
+  'function',
+  'exact recovery admission must be exported',
+)
 
 const governedSession = agent.session(workspace, {
   permissionPolicy: { deny: ['write'], defaultDecision: 'allow' },

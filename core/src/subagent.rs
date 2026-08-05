@@ -806,7 +806,7 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
 /// Permission policy for explore agent (read-only)
 fn explore_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "grep", "glob", "ls", "web_fetch", "web_search"])
+        .allow_all(&["read", "search", "ls", "web_fetch", "web_search"])
         .deny_all(&["write", "edit", "download", "task", "parallel_task"])
         .allow("Bash(ls:*)")
         .allow("Bash(cat:*)")
@@ -828,8 +828,7 @@ fn general_permissions() -> PermissionPolicy {
             "read",
             "write",
             "edit",
-            "grep",
-            "glob",
+            "search",
             "ls",
             "bash",
             "web_fetch",
@@ -847,7 +846,7 @@ fn general_permissions() -> PermissionPolicy {
 /// Permission policy for plan agent (read-only)
 fn plan_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "grep", "glob", "ls"])
+        .allow_all(&["read", "search", "ls"])
         .deny_all(&["write", "edit", "download", "bash", "task", "parallel_task"]);
     policy.default_decision = PermissionDecision::Deny;
     policy
@@ -856,15 +855,7 @@ fn plan_permissions() -> PermissionPolicy {
 /// Permission policy for verification agent (read-heavy with runtime checks)
 fn verification_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
-        .allow_all(&[
-            "read",
-            "grep",
-            "glob",
-            "ls",
-            "bash",
-            "web_fetch",
-            "web_search",
-        ])
+        .allow_all(&["read", "search", "ls", "bash", "web_fetch", "web_search"])
         .deny_all(&["write", "edit", "download", "task", "parallel_task"]);
     policy.default_decision = PermissionDecision::Deny;
     policy
@@ -873,15 +864,7 @@ fn verification_permissions() -> PermissionPolicy {
 /// Permission policy for review agent (read-heavy with optional lightweight checks)
 fn review_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
-        .allow_all(&[
-            "read",
-            "grep",
-            "glob",
-            "ls",
-            "bash",
-            "web_fetch",
-            "web_search",
-        ])
+        .allow_all(&["read", "search", "ls", "bash", "web_fetch", "web_search"])
         .deny_all(&["write", "edit", "download", "task", "parallel_task"]);
     policy.default_decision = PermissionDecision::Deny;
     policy

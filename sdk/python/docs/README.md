@@ -260,11 +260,13 @@ For the streaming event-driven loop used by UIs, see
 
 ## Delegation
 
-Routine multi-agent work uses the model-visible `task` and `parallel_task`
-tools. Automatic subagent delegation can be enabled with
+Routine multi-agent work uses the model-visible `task` tool. One `tasks` item
+runs a focused child; several independent items fan out concurrently. Automatic
+subagent delegation can be enabled with
 `opts.auto_delegation = AutoDelegationConfig(enabled=True)`. Set
 `opts.auto_parallel = False` to globally disable only automatic parallel
-fan-out; manual `parallel_task` / `session.tasks(...)` stays available.
+fan-out; manual `task` / `session.tasks(...)` stays available. The explicit
+`session.parallel_task(...)` helper remains only for legacy compatibility.
 The old standalone lifecycle control-plane API is intentionally removed from
 the 2.0 SDK surface.
 

@@ -185,7 +185,7 @@ pub struct SearchEngineConfig {
 }
 
 pub(crate) fn default_search_timeout() -> u64 {
-    10
+    20
 }
 
 pub(crate) fn default_headless_max_tabs() -> usize {

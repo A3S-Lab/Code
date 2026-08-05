@@ -4,6 +4,18 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Added synchronous and asyncio exact-run admission helpers for detached starts
+  and checkpoint recovery, returning the authoritative run snapshot and replay
+  state.
+
+### Changed
+
+- Updated the bundled Core with the unified model-visible `search` and `task`
+  contracts, including dependency-free bounded BM25 workspace ranking while
+  preserving the direct `parallel_task` compatibility helper.
+
 ## [6.8.0] - 2026-08-05
 
 ### Changed

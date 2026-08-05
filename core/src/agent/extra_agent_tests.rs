@@ -2506,7 +2506,7 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
 
     assert_eq!(
         result.tool_calls_count, 1,
-        "independent delegated wave should be collapsed into one parallel_task call"
+        "independent delegated wave should be collapsed into one task fan-out call"
     );
     assert!(
         result.text.contains("delegated docs complete"),
@@ -2519,14 +2519,14 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
         result.text
     );
 
-    let mut parallel_task_starts = 0;
+    let mut task_fanout_args = Vec::new();
     let mut completed_steps = Vec::new();
     let mut task_snapshots = Vec::new();
     rx.close();
     while let Some(event) = rx.recv().await {
         match event {
-            AgentEvent::ToolExecutionStart { name, .. } if name == "parallel_task" => {
-                parallel_task_starts += 1;
+            AgentEvent::ToolExecutionStart { name, args, .. } if name == "task" => {
+                task_fanout_args.push(args);
             }
             AgentEvent::StepEnd {
                 step_id,
@@ -2539,7 +2539,19 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
     }
 
     completed_steps.sort();
-    assert_eq!(parallel_task_starts, 1);
+    assert_eq!(task_fanout_args.len(), 1);
+    let delegated_tasks = task_fanout_args[0]["tasks"]
+        .as_array()
+        .expect("task fan-out args");
+    assert_eq!(delegated_tasks.len(), 2);
+    assert_eq!(
+        delegated_tasks[0]["description"],
+        "Summarize delegated documentation"
+    );
+    assert_eq!(
+        delegated_tasks[1]["description"],
+        "Summarize delegated checks"
+    );
     assert_eq!(completed_steps, vec!["s1".to_string(), "s2".to_string()]);
     assert!(task_snapshots.iter().any(|tasks| tasks
         .iter()
@@ -2602,18 +2614,18 @@ async fn test_execute_plan_auto_delegates_unmarked_parallel_wave_when_enabled() 
 
     assert_eq!(
         result.tool_calls_count, 1,
-        "auto-parallel plan wave should collapse into one parallel_task call"
+        "auto-parallel plan wave should collapse into one task fan-out call"
     );
     assert!(result.text.contains("auth exploration complete"));
     assert!(result.text.contains("docs exploration complete"));
 
-    let mut parallel_task_starts = 0;
+    let mut task_fanout_args = Vec::new();
     let mut completed_steps = Vec::new();
     rx.close();
     while let Some(event) = rx.recv().await {
         match event {
-            AgentEvent::ToolExecutionStart { name, .. } if name == "parallel_task" => {
-                parallel_task_starts += 1;
+            AgentEvent::ToolExecutionStart { name, args, .. } if name == "task" => {
+                task_fanout_args.push(args);
             }
             AgentEvent::StepEnd {
                 step_id,
@@ -2625,7 +2637,13 @@ async fn test_execute_plan_auto_delegates_unmarked_parallel_wave_when_enabled() 
     }
 
     completed_steps.sort();
-    assert_eq!(parallel_task_starts, 1);
+    assert_eq!(task_fanout_args.len(), 1);
+    let delegated_tasks = task_fanout_args[0]["tasks"]
+        .as_array()
+        .expect("task fan-out args");
+    assert_eq!(delegated_tasks.len(), 2);
+    assert_eq!(delegated_tasks[0]["description"], "Find auth code");
+    assert_eq!(delegated_tasks[1]["description"], "Find documentation");
     assert_eq!(completed_steps, vec!["s1".to_string(), "s2".to_string()]);
 }
 
@@ -2777,16 +2795,23 @@ async fn test_auto_delegation_runs_parallel_specialists_when_enabled() {
     assert_eq!(result.tool_calls_count, 1);
     assert!(result.text.contains("final answer"));
 
-    let mut parallel_task_starts = 0;
+    let mut task_starts = Vec::new();
     rx.close();
     while let Some(event) = rx.recv().await {
-        if let AgentEvent::ToolExecutionStart { name, .. } = event {
-            if name == "parallel_task" {
-                parallel_task_starts += 1;
+        if let AgentEvent::ToolExecutionStart { name, args, .. } = event {
+            if name == "task" {
+                task_starts.push(args);
             }
         }
     }
-    assert_eq!(parallel_task_starts, 1);
+    assert_eq!(task_starts.len(), 1);
+    assert_eq!(
+        task_starts[0]["tasks"]
+            .as_array()
+            .expect("automatic task fan-out args")
+            .len(),
+        2
+    );
 }
 
 #[tokio::test]

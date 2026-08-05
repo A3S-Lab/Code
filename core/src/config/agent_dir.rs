@@ -451,7 +451,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             base.join("tools/search.md"),
-            "---\nkind: script\nname: search-auth\npath: scripts/search.js\nallowed_tools: [grep, read]\nlimits:\n  timeoutMs: 30000\n  maxToolCalls: 10\n---\nFind auth-related files.\n",
+            "---\nkind: script\nname: search-auth\npath: scripts/search.js\nallowed_tools: [search, read]\nlimits:\n  timeoutMs: 30000\n  maxToolCalls: 10\n---\nFind auth-related files.\n",
         )
         .unwrap();
         base
@@ -499,7 +499,7 @@ mod tests {
         assert_eq!(s.description, "Find auth-related files.");
         assert_eq!(
             s.allowed_tools.as_deref(),
-            Some(["grep".to_string(), "read".to_string()].as_slice())
+            Some(["search".to_string(), "read".to_string()].as_slice())
         );
         assert_eq!(s.limits.timeout_ms, Some(30000));
         assert_eq!(s.limits.max_tool_calls, Some(10));

@@ -491,8 +491,8 @@ fn test_rule_parse_with_pattern() {
 #[test]
 fn test_rule_parse_wildcard() {
     let rule = PermissionRule::new("Grep(*)");
-    assert_eq!(rule.tool_name, Some("Grep".to_string()));
-    assert_eq!(rule.arg_pattern, Some("*".to_string()));
+    assert_eq!(rule.tool_name, Some("search".to_string()));
+    assert_eq!(rule.arg_pattern, Some("grep **".to_string()));
 }
 
 #[test]
@@ -506,8 +506,11 @@ fn test_rule_match_tool_only() {
 #[test]
 fn test_rule_match_wildcard() {
     let rule = PermissionRule::new("Grep(*)");
-    assert!(rule.matches("Grep", &json!({"pattern": "foo", "path": "/tmp"})));
-    assert!(rule.matches("grep", &json!({"pattern": "bar"})));
+    assert!(rule.matches(
+        "search",
+        &json!({"mode": "grep", "query": "foo", "path": "src"})
+    ));
+    assert!(!rule.matches("search", &json!({"mode": "glob", "query": "**/*.rs"})));
 }
 
 #[test]
@@ -777,7 +780,8 @@ fn test_policy_allow_all() {
     assert_eq!(policy.allow.len(), 3);
     assert!(policy.is_allowed("Bash", &json!({"command": "cargo build"})));
     assert!(policy.is_allowed("Bash", &json!({"command": "npm run test"})));
-    assert!(policy.is_allowed("Grep", &json!({"pattern": "foo"})));
+    assert!(policy.is_allowed("search", &json!({"mode": "grep", "query": "foo"})));
+    assert!(!policy.is_allowed("search", &json!({"mode": "glob", "query": "**/*.rs"})));
 }
 
 // ========================================================================
@@ -825,7 +829,7 @@ deny:
     assert_eq!(policy.deny.len(), 1);
     assert!(policy.is_allowed("read", &json!({})));
     assert!(policy.is_allowed("Bash", &json!({"command": "cargo build"})));
-    assert!(policy.is_allowed("grep", &json!({})));
+    assert!(policy.is_allowed("search", &json!({"mode": "grep", "query": "TODO"})));
     assert!(policy.is_denied("write", &json!({})));
 }
 
@@ -937,7 +941,8 @@ fn test_realistic_dev_policy() {
     // Allowed
     assert!(policy.is_allowed("Bash", &json!({"command": "cargo build"})));
     assert!(policy.is_allowed("Bash", &json!({"command": "npm run test"})));
-    assert!(policy.is_allowed("Grep", &json!({"pattern": "TODO"})));
+    assert!(policy.is_allowed("search", &json!({"mode": "grep", "query": "TODO"})));
+    assert!(policy.is_allowed("search", &json!({"mode": "glob", "query": "**/*.rs"})));
 
     // Denied
     assert!(policy.is_denied("Bash", &json!({"command": "rm -rf /"})));

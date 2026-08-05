@@ -1,17 +1,17 @@
 //! Task tools for delegated child runs.
 //!
-//! The Task tool allows the main agent to delegate specialized work to focused
-//! child runs. Each child run gets bounded context and the permissions declared
-//! by its agent definition.
+//! The Task tool allows the main agent to delegate one or more specialized
+//! tasks to focused child runs. Each child run gets bounded context and the
+//! permissions declared by its agent definition.
 //!
 //! ## Usage
 //!
 //! ```json
-//! {
+//! {"tasks": [{
 //!   "agent": "explore",
 //!   "description": "Find authentication code",
 //!   "prompt": "Search for files related to user authentication..."
-//! }
+//! }]}
 //! ```
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
@@ -43,7 +43,7 @@ const MAX_TASK_SOURCE_CANDIDATES: usize = MAX_TASK_SOURCE_ANCHORS * 4;
 const MAX_TASK_SOURCE_TOOL_BYTES: usize = 64;
 const MAX_TASK_SOURCE_VALUE_BYTES: usize = 4 * 1024;
 const MAX_PARALLEL_TASK_SOURCE_ANCHORS: usize = MAX_TASK_SOURCE_ANCHORS;
-const TASK_TOOL_DESCRIPTION: &str = "Delegate a bounded task to a specialized child run. Choose the canonical worker name from the live agent catalog. Custom agents from agent_dirs and .a3s/agents are supported; .claude/agents is read for compatibility.";
+const TASK_TOOL_DESCRIPTION: &str = "Delegate one or more bounded tasks to specialized child runs. Pass one item for a focused child run or multiple INDEPENDENT items for concurrent fan-out. A single item may run in the background; multi-item calls are collected by the parent. By default any failed child makes a multi-item call fail; evidence-gathering callers may set allow_partial_failure=true. Choose canonical worker names from the live agent catalog. Custom agents from agent_dirs and .a3s/agents are supported; .claude/agents is read for compatibility.";
 const PARALLEL_TASK_TOOL_DESCRIPTION: &str = "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. By default any failed child makes the tool fail; evidence-gathering callers may set allow_partial_failure=true to continue when at least one child succeeds. Child output never authorizes branch replay; provider and child runtimes own any typed retry policy below this boundary. Use this only when the work genuinely splits into branches that can be investigated or implemented separately. Do not use it for trivial, conversational, single-step, or dependent work. Choose canonical worker names from the live agent catalog.";
 
 /// Task tool parameters
@@ -828,53 +828,97 @@ pub(super) fn task_agent_parameter_schema(agents: &[AgentDefinition]) -> serde_j
     })
 }
 
-/// Get the JSON schema for TaskParams using the built-in agent catalog.
+/// Get the compatibility JSON schema accepted by the `task` executor.
+///
+/// The model sees the more compact array-only schema. This public schema also
+/// accepts the pre-6.8 single-task object so persisted and host-direct calls do
+/// not break during the tool-surface migration.
 pub fn task_params_schema() -> serde_json::Value {
     task_params_schema_for_agents(&AgentRegistry::new().list_visible())
 }
 
 fn task_params_schema_for_agents(agents: &[AgentDefinition]) -> serde_json::Value {
     serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "agent": task_agent_parameter_schema(agents),
-            "description": {
+        "oneOf": [
+            legacy_task_params_schema_for_agents(agents),
+            task_model_params_schema_for_agents(agents)
+        ]
+    })
+}
+
+fn legacy_task_params_schema_for_agents(agents: &[AgentDefinition]) -> serde_json::Value {
+    let mut schema = task_item_params_schema_for_agents(agents, true);
+    schema["examples"] = serde_json::json!([
+        {
+            "agent": "explore",
+            "description": "Find Rust files",
+            "prompt": "Search the workspace for Rust files and summarize the layout."
+        },
+        {
+            "agent": "general",
+            "description": "Investigate test failure",
+            "prompt": "Inspect the failing tests and explain the root cause.",
+            "max_steps": 6
+        }
+    ]);
+    schema
+}
+
+fn task_model_params_schema_for_agents(agents: &[AgentDefinition]) -> serde_json::Value {
+    parallel_params::task_tool_params_schema_for_agents(agents)
+}
+
+pub(super) fn task_item_params_schema_for_agents(
+    agents: &[AgentDefinition],
+    include_background: bool,
+) -> serde_json::Value {
+    let mut properties = serde_json::Map::from_iter([
+        ("agent".to_string(), task_agent_parameter_schema(agents)),
+        (
+            "description".to_string(),
+            serde_json::json!({
                 "type": "string",
                 "description": "Required. Short task label for display and tracking. Always provide this exact field name: 'description'."
-            },
-            "prompt": {
+            }),
+        ),
+        (
+            "prompt".to_string(),
+            serde_json::json!({
                 "type": "string",
                 "description": "Required. Detailed instruction for the delegated child run. Always provide this exact field name: 'prompt'."
-            },
-            "background": {
-                "type": "boolean",
-                "description": "Optional. Run the task in the background. Default: false.",
-                "default": false
-            },
-            "max_steps": {
+            }),
+        ),
+        (
+            "max_steps".to_string(),
+            serde_json::json!({
                 "type": "integer",
                 "description": "Optional. Maximum number of steps for this task."
-            },
-            "output_schema": {
+            }),
+        ),
+        (
+            "output_schema".to_string(),
+            serde_json::json!({
                 "type": "object",
                 "description": "Optional. JSON Schema object the delegated result must satisfy. When provided, the child output is coerced into a validated structured object and returned in metadata."
-            }
-        },
-        "required": ["agent", "description", "prompt"],
-        "examples": [
-            {
-                "agent": "explore",
-                "description": "Find Rust files",
-                "prompt": "Search the workspace for Rust files and summarize the layout."
-            },
-            {
-                "agent": "general",
-                "description": "Investigate test failure",
-                "prompt": "Inspect the failing tests and explain the root cause.",
-                "max_steps": 6
-            }
-        ]
+            }),
+        ),
+    ]);
+    if include_background {
+        properties.insert(
+            "background".to_string(),
+            serde_json::json!({
+                "type": "boolean",
+                "description": "Optional. Run this task in the background. Only valid when the outer tasks array contains one item. Default: false.",
+                "default": false
+            }),
+        );
+    }
+
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": properties,
+        "required": ["agent", "description", "prompt"]
     })
 }
 
@@ -889,34 +933,8 @@ impl TaskTool {
     pub fn new(executor: Arc<TaskExecutor>) -> Self {
         Self { executor }
     }
-}
 
-#[async_trait]
-impl Tool for TaskTool {
-    fn name(&self) -> &str {
-        "task"
-    }
-
-    fn description(&self) -> &str {
-        TASK_TOOL_DESCRIPTION
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        task_params_schema_for_agents(&self.executor.visible_agents())
-    }
-
-    fn definition(&self) -> ToolDefinition {
-        let agents = self.executor.visible_agents();
-        ToolDefinition {
-            name: self.name().to_string(),
-            description: delegation_tool_description(self.description(), &agents),
-            parameters: task_params_schema_for_agents(&agents),
-        }
-    }
-
-    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
-        let params: TaskParams =
-            serde_json::from_value(args.clone()).context("Invalid task parameters")?;
+    async fn execute_single(&self, params: TaskParams, ctx: &ToolContext) -> Result<ToolOutput> {
         let parent_cancellation = ctx.cancellation_token();
         let executor = self.executor.scoped_for_invocation(ctx);
 
@@ -963,6 +981,69 @@ impl Tool for TaskTool {
     }
 }
 
+#[async_trait]
+impl Tool for TaskTool {
+    fn name(&self) -> &str {
+        "task"
+    }
+
+    fn description(&self) -> &str {
+        TASK_TOOL_DESCRIPTION
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        task_params_schema_for_agents(&self.executor.visible_agents())
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        let agents = self.executor.visible_agents();
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: delegation_tool_description(self.description(), &agents),
+            parameters: task_model_params_schema_for_agents(&agents),
+        }
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        if args.get("tasks").is_some() {
+            let mut params: ParallelTaskParams = match serde_json::from_value(args.clone()) {
+                Ok(params) => params,
+                Err(error) => {
+                    return Ok(invalid_delegation_argument(format!(
+                        "Invalid task parameters: {error}"
+                    )));
+                }
+            };
+            if params.tasks.is_empty() {
+                return Ok(invalid_delegation_argument(
+                    "task requires at least 1 task".to_string(),
+                ));
+            }
+
+            let has_fanout_options = params.allow_partial_failure
+                || params.timeout_ms.is_some()
+                || params.min_success_count.is_some();
+            if params.tasks.len() == 1 && !has_fanout_options {
+                return self.execute_single(params.tasks.remove(0), ctx).await;
+            }
+
+            return ParallelTaskTool::new(Arc::clone(&self.executor))
+                .execute_params(params, ctx, "task", 1)
+                .await;
+        }
+
+        let params: TaskParams = match serde_json::from_value(args.clone()) {
+            Ok(params) => params,
+            Err(error) => {
+                return Ok(invalid_delegation_argument(format!(
+                    "Invalid task parameters: {error}"
+                )));
+            }
+        };
+        self.execute_single(params, ctx).await
+    }
+}
+
 mod parallel_params;
 pub use parallel_params::{parallel_task_params_schema, ParallelTaskParams};
 
@@ -978,52 +1059,27 @@ impl ParallelTaskTool {
     pub fn new(executor: Arc<TaskExecutor>) -> Self {
         Self { executor }
     }
-}
 
-#[async_trait]
-impl Tool for ParallelTaskTool {
-    fn name(&self) -> &str {
-        "parallel_task"
-    }
-
-    fn description(&self) -> &str {
-        PARALLEL_TASK_TOOL_DESCRIPTION
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        parallel_params::parallel_task_params_schema_for_agents(&self.executor.visible_agents())
-    }
-
-    fn definition(&self) -> ToolDefinition {
-        let agents = self.executor.visible_agents();
-        ToolDefinition {
-            name: self.name().to_string(),
-            description: delegation_tool_description(self.description(), &agents),
-            parameters: parallel_params::parallel_task_params_schema_for_agents(&agents),
-        }
-    }
-
-    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+    async fn execute_params(
+        &self,
+        params: ParallelTaskParams,
+        ctx: &ToolContext,
+        tool_name: &str,
+        min_tasks: usize,
+    ) -> Result<ToolOutput> {
         let started_at = std::time::Instant::now();
-        let params: ParallelTaskParams = match serde_json::from_value(args.clone()) {
-            Ok(params) => params,
-            Err(error) => {
-                return Ok(invalid_parallel_task_argument(format!(
-                    "Invalid parallel_task parameters: {error}"
-                )));
-            }
-        };
         let parent_cancellation = ctx.cancellation_token();
         let executor = self.executor.scoped_for_invocation(ctx);
 
-        if params.tasks.len() < 2 {
-            return Ok(invalid_parallel_task_argument(
-                "parallel_task requires at least 2 independent tasks".to_string(),
-            ));
+        if params.tasks.len() < min_tasks {
+            return Ok(invalid_delegation_argument(format!(
+                "{tool_name} requires at least {min_tasks} task{}",
+                if min_tasks == 1 { "" } else { "s" }
+            )));
         }
         if params.tasks.len() > MAX_PARALLEL_TASKS_PER_CALL {
-            return Ok(invalid_parallel_task_argument(format!(
-                "parallel_task accepts at most {MAX_PARALLEL_TASKS_PER_CALL} tasks"
+            return Ok(invalid_delegation_argument(format!(
+                "{tool_name} accepts at most {MAX_PARALLEL_TASKS_PER_CALL} tasks"
             )));
         }
         if let Some((index, _)) = params
@@ -1032,26 +1088,25 @@ impl Tool for ParallelTaskTool {
             .enumerate()
             .find(|(_, task)| task.background)
         {
-            return Ok(invalid_parallel_task_argument(format!(
-                "parallel_task task {} cannot set background=true; every branch is already executed concurrently and collected by the parent call",
+            return Ok(invalid_delegation_argument(format!(
+                "{tool_name} task {} cannot set background=true when fan-out options are used or multiple tasks are submitted; every branch is collected by the parent call",
                 index + 1
             )));
         }
         if params.timeout_ms == Some(0) {
-            return Ok(invalid_parallel_task_argument(
-                "parallel_task timeout_ms must be at least 1".to_string(),
-            ));
+            return Ok(invalid_delegation_argument(format!(
+                "{tool_name} timeout_ms must be at least 1"
+            )));
         }
         if let Some(min_success_count) = params.min_success_count {
             if !params.allow_partial_failure {
-                return Ok(invalid_parallel_task_argument(
-                    "parallel_task min_success_count requires allow_partial_failure=true"
-                        .to_string(),
-                ));
+                return Ok(invalid_delegation_argument(format!(
+                    "{tool_name} min_success_count requires allow_partial_failure=true"
+                )));
             }
             if min_success_count == 0 || min_success_count > params.tasks.len() {
-                return Ok(invalid_parallel_task_argument(format!(
-                    "parallel_task min_success_count must be between 1 and the task count ({})",
+                return Ok(invalid_delegation_argument(format!(
+                    "{tool_name} min_success_count must be between 1 and the task count ({})",
                     params.tasks.len()
                 )));
             }
@@ -1073,8 +1128,7 @@ impl Tool for ParallelTaskTool {
             .await;
         let results = run.results;
 
-        // Format results with compact per-task excerpts for parent context.
-        let mut output = format!("Executed {} tasks in parallel:\n\n", task_count);
+        let mut output = format!("Executed {} tasks concurrently:\n\n", task_count);
         let mut metadata_results = Vec::new();
         let source_anchor_counts = parallel_source_anchor_counts(&results);
         for (i, result) in results.iter().enumerate() {
@@ -1118,12 +1172,12 @@ impl Tool for ParallelTaskTool {
         }
         if run.timed_out {
             output.push_str(&format!(
-                "Parallel task timed out after {} ms; returned completed child results and marked unfinished children failed.\n",
+                "Task fan-out timed out after {} ms; returned completed child results and marked unfinished children failed.\n",
                 run.timeout_ms.unwrap_or_default()
             ));
         } else if run.returned_early {
             output.push_str(&format!(
-                "Parallel task returned after reaching min_success_count={}; unfinished children were marked failed.\n",
+                "Task fan-out returned after reaching min_success_count={}; unfinished children were marked failed.\n",
                 run.min_success_count.unwrap_or_default()
             ));
         }
@@ -1159,7 +1213,47 @@ impl Tool for ParallelTaskTool {
     }
 }
 
-fn invalid_parallel_task_argument(message: String) -> ToolOutput {
+#[async_trait]
+impl Tool for ParallelTaskTool {
+    fn name(&self) -> &str {
+        "parallel_task"
+    }
+
+    fn description(&self) -> &str {
+        PARALLEL_TASK_TOOL_DESCRIPTION
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        parallel_params::parallel_task_params_schema_for_agents(&self.executor.visible_agents())
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        let agents = self.executor.visible_agents();
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: delegation_tool_description(self.description(), &agents),
+            parameters: parallel_params::parallel_task_params_schema_for_agents(&agents),
+        }
+    }
+
+    fn is_model_visible(&self) -> bool {
+        false
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let params: ParallelTaskParams = match serde_json::from_value(args.clone()) {
+            Ok(params) => params,
+            Err(error) => {
+                return Ok(invalid_delegation_argument(format!(
+                    "Invalid parallel_task parameters: {error}"
+                )));
+            }
+        };
+        self.execute_params(params, ctx, "parallel_task", 2).await
+    }
+}
+
+fn invalid_delegation_argument(message: String) -> ToolOutput {
     ToolOutput::error(&message)
         .with_error_kind(crate::tools::ToolErrorKind::InvalidArgument { message })
 }

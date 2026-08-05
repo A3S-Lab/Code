@@ -1,6 +1,13 @@
 {
-  "current": "v6.7.0",
+  "current": "v6.8.0",
   "archives": [
+    {
+      "version": "v6.7.0",
+      "sourceTag": "v6.7.0",
+      "sourceTree": "3bd33a0ae03ac9f6404fe09c9fd56763c5bc4eae",
+      "files": 128,
+      "sha256": "51f793cda7214ec0e5af1498fab22f65751e87498c644abd4899807b322f7cbd"
+    },
     {
       "version": "v6.6.0",
       "sourceTag": "v6.6.0",

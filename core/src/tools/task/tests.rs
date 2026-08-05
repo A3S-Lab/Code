@@ -623,25 +623,28 @@ fn failed_source_tool_exit_remains_excluded() {
 #[test]
 fn test_task_params_schema() {
     let schema = task_params_schema();
-    assert_eq!(schema["type"], "object");
-    assert_eq!(schema["additionalProperties"], false);
-    assert!(schema["properties"]["agent"].is_object());
-    assert!(schema["properties"]["prompt"].is_object());
+    let variants = schema["oneOf"].as_array().unwrap();
+    assert_eq!(variants.len(), 2);
+    assert_eq!(variants[0]["type"], "object");
+    assert_eq!(variants[0]["additionalProperties"], false);
+    assert!(variants[0]["properties"]["agent"].is_object());
+    assert_eq!(variants[1]["properties"]["tasks"]["minItems"], 1);
 }
 
 #[test]
 fn test_task_params_schema_required_fields() {
     let schema = task_params_schema();
-    let required = schema["required"].as_array().unwrap();
+    let required = schema["oneOf"][0]["required"].as_array().unwrap();
     assert!(required.contains(&serde_json::json!("agent")));
     assert!(required.contains(&serde_json::json!("description")));
     assert!(required.contains(&serde_json::json!("prompt")));
+    assert_eq!(schema["oneOf"][1]["required"], serde_json::json!(["tasks"]));
 }
 
 #[test]
 fn test_task_params_schema_properties() {
     let schema = task_params_schema();
-    let props = &schema["properties"];
+    let props = &schema["oneOf"][0]["properties"];
 
     assert_eq!(props["agent"]["type"], "string");
     assert_eq!(props["description"]["type"], "string");
@@ -655,7 +658,7 @@ fn test_task_params_schema_properties() {
 #[test]
 fn test_task_params_schema_descriptions() {
     let schema = task_params_schema();
-    let props = &schema["properties"];
+    let props = &schema["oneOf"][0]["properties"];
 
     assert!(props["agent"]["description"].is_string());
     assert!(props["description"]["description"].is_string());
@@ -1021,13 +1024,44 @@ fn test_parallel_task_params_schema_items() {
 #[test]
 fn test_task_schema_examples_use_delegation_core() {
     let task = task_params_schema();
-    let task_examples = task["examples"].as_array().unwrap();
+    let task_examples = task["oneOf"][0]["examples"].as_array().unwrap();
     assert_eq!(task_examples[0]["agent"], "explore");
     assert!(task_examples[0].get("task").is_none());
 
     let parallel = parallel_task_params_schema();
     let parallel_examples = parallel["examples"].as_array().unwrap();
     assert!(!parallel_examples[0]["tasks"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn task_tool_exposes_one_compact_model_schema_and_hides_parallel_alias() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = Arc::new(TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("done")),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let task = TaskTool::new(Arc::clone(&executor));
+    let parallel = ParallelTaskTool::new(executor);
+
+    let definition = task.definition();
+    assert_eq!(definition.name, "task");
+    assert_eq!(
+        definition.parameters["required"],
+        serde_json::json!(["tasks"])
+    );
+    assert_eq!(definition.parameters["properties"]["tasks"]["minItems"], 1);
+    assert_eq!(
+        definition.parameters["properties"]["tasks"]["maxItems"],
+        MAX_PARALLEL_TASKS_PER_CALL
+    );
+    assert!(definition.parameters["properties"].get("agent").is_none());
+    assert!(
+        definition.parameters["properties"]["tasks"]["items"]["properties"]
+            .get("background")
+            .is_some()
+    );
+    assert!(!parallel.is_model_visible());
 }
 
 #[test]
@@ -1134,9 +1168,9 @@ fn test_task_params_rejects_permissive_field() {
 #[test]
 fn test_task_params_schema_hides_permissive_field() {
     let schema = task_params_schema();
-    let props = &schema["properties"];
-
-    assert!(props.get("permissive").is_none());
+    for variant in schema["oneOf"].as_array().unwrap() {
+        assert!(variant["properties"].get("permissive").is_none());
+    }
 }
 
 // ========================================================================
@@ -3183,6 +3217,74 @@ async fn parallel_task_tool_rejects_arguments_that_conflict_with_its_contract() 
 }
 
 #[tokio::test]
+async fn task_tool_executes_the_unified_single_task_shape() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = Arc::new(TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("single result")),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let tool = TaskTool::new(executor);
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "tasks": [{
+                    "agent": "worker",
+                    "description": "Single child",
+                    "prompt": "Return one result"
+                }]
+            }),
+            &ToolContext::new(workspace.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+    assert!(output.success, "unexpected output: {output:#?}");
+    assert!(output.content.contains("single result"));
+    let metadata = output.metadata.unwrap();
+    assert!(metadata["task_id"].is_string());
+    assert!(metadata.get("task_count").is_none());
+}
+
+#[tokio::test]
+async fn task_tool_executes_multiple_unified_tasks_concurrently() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = Arc::new(TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("branch result")),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let tool = TaskTool::new(executor);
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "tasks": [
+                    {
+                        "agent": "worker",
+                        "description": "First child",
+                        "prompt": "Return the first result"
+                    },
+                    {
+                        "agent": "worker",
+                        "description": "Second child",
+                        "prompt": "Return the second result"
+                    }
+                ]
+            }),
+            &ToolContext::new(workspace.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+    assert!(output.success, "unexpected output: {output:#?}");
+    assert!(output.content.contains("Executed 2 tasks concurrently"));
+    let metadata = output.metadata.unwrap();
+    assert_eq!(metadata["task_count"], 2);
+    assert_eq!(metadata["success_count"], 2);
+    assert_eq!(metadata["results"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn cancelling_a_batch_waiting_for_provider_capacity_returns_promptly() {
     let workspace = tempfile::tempdir().unwrap();
     let client = Arc::new(BlockingCapacityLlmClient::new());
@@ -3693,7 +3795,7 @@ async fn parallel_task_tool_timeout_returns_completed_partial_results() {
         "parallel_task should return completed evidence on timeout: {}",
         output.content
     );
-    assert!(output.content.contains("Parallel task timed out"));
+    assert!(output.content.contains("Task fan-out timed out"));
     assert!(client.max_active() >= 2);
     let metadata = output.metadata.expect("metadata");
     assert_eq!(metadata["timed_out"], true);

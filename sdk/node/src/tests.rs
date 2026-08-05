@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn agent_run_spawn_object_preserves_snapshot_and_replay_state() {
+    let spawn = RustAgentRunSpawn::Replayed {
+        snapshot: a3s_code_core::run::RunSnapshot {
+            id: "host-run-1".to_string(),
+            session_id: "session-1".to_string(),
+            status: a3s_code_core::run::RunStatus::Created,
+            prompt: "inspect the workspace".to_string(),
+            created_at_ms: 10,
+            updated_at_ms: 20,
+            result_text: None,
+            error: None,
+            event_count: 0,
+        },
+    };
+
+    let object = agent_run_spawn_to_object(&spawn).unwrap();
+    assert!(object.replayed);
+    assert_eq!(object.snapshot["id"], "host-run-1");
+    assert_eq!(object.snapshot["status"], "created");
+}
+
+#[test]
 fn inline_skill_conversion_is_typed_and_rejects_invalid_input() {
     let skill = inline_skill_to_rust(InlineSkill {
         name: "  live-review  ".to_string(),
@@ -784,25 +806,26 @@ fn program_options_normalize_to_script_tool_contract() {
 
 #[test]
 fn delegate_task_options_use_core_task_schema() {
-    let args = delegate_task_options_to_args(DelegateTaskOptions {
+    let args = delegated_tasks_options_to_args(vec![DelegateTaskOptions {
         agent: "explore".to_string(),
         description: "Find auth files".to_string(),
         prompt: "Inspect auth files".to_string(),
         background: Some(false),
         max_steps: Some(3),
-    });
+    }]);
 
-    assert_eq!(args["agent"], "explore");
-    assert_eq!(args["description"], "Find auth files");
-    assert_eq!(args["prompt"], "Inspect auth files");
-    assert_eq!(args["background"], false);
-    assert_eq!(args["max_steps"], 3);
-    assert!(args.get("role").is_none());
+    assert_eq!(args["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(args["tasks"][0]["agent"], "explore");
+    assert_eq!(args["tasks"][0]["description"], "Find auth files");
+    assert_eq!(args["tasks"][0]["prompt"], "Inspect auth files");
+    assert_eq!(args["tasks"][0]["background"], false);
+    assert_eq!(args["tasks"][0]["max_steps"], 3);
+    assert!(args["tasks"][0].get("role").is_none());
 }
 
 #[test]
-fn parallel_task_options_use_core_parallel_task_schema() {
-    let args = parallel_task_options_to_args(vec![
+fn delegated_tasks_options_use_unified_task_schema() {
+    let args = delegated_tasks_options_to_args(vec![
         DelegateTaskOptions {
             agent: "explore".to_string(),
             description: "Find tests".to_string(),

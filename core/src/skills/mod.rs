@@ -9,7 +9,7 @@
 //! ---
 //! name: my-skill
 //! description: What the skill does
-//! allowed-tools: "read(*), grep(*)"
+//! allowed-tools: "read(*), search(*)"
 //! kind: instruction  # or "persona" or "tool"
 //! ---
 //! # Skill Instructions
@@ -137,7 +137,7 @@ impl Skill {
     /// ---
     /// name: skill-name
     /// description: What it does
-    /// allowed-tools: "read(*), grep(*)"
+    /// allowed-tools: "read(*), search(*)"
     /// ---
     /// # Instructions
     /// ...

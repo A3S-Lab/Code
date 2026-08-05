@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added dependency-free BM25 lexical ranking as a bounded mode of the unified
+  workspace `search` tool, alongside regular-expression content search and
+  path globbing.
+- Added a unified model-visible `task` contract for either one focused child
+  task or a bounded 1-32 item concurrent fan-out.
+- Added exact detached run admission to the Node.js, Python, and Go SDKs. Each
+  host-selected start or checkpoint recovery returns the authoritative run
+  snapshot plus an explicit replay flag without exposing runtime task handles.
+
+### Changed
+
+- Consolidated model-facing workspace discovery under `search` and delegation
+  under `task`. The registered `parallel_task` implementation remains as a
+  hidden compatibility alias for direct SDK callers and persisted workflows.
+- Reordered the automatic `web_search` cascade to use an available managed
+  headless runtime first, then bounded HTTP/RSS engines, and native APIs only
+  when earlier evidence remains insufficient.
+
+### Fixed
+
+- Prevented sandboxed `program` scripts from recursively invoking
+  `dynamic_workflow`; the program itself and the hidden `parallel_task` alias
+  remain excluded from both default and explicit script allow-lists.
+
 ## [6.8.0] - 2026-08-05
 
 ### Added

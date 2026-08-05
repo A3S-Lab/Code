@@ -137,7 +137,7 @@ impl AgentSession {
     /// Build the [`ChildRunContext`](crate::child_run::ChildRunContext) that
     /// orchestrated / delegated child runs inherit from this session.
     ///
-    /// Mirrors the context the model-driven `task` / `parallel_task` path
+    /// Mirrors the context the model-driven `task` path
     /// installs (see `register_task_capability` in `agent_api/capabilities.rs`)
     /// so a step run through [`agent_executor`](Self::agent_executor) carries the
     /// SAME governance — hooks, security provider, skill restrictions,

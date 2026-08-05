@@ -1,0 +1,42 @@
+[
+  {
+    "text": "Docs",
+    "link": "/guide/",
+    "activeMatch": "^/guide/(?!examples/)"
+  },
+  {
+    "text": "Examples",
+    "link": "/guide/examples/",
+    "activeMatch": "^/guide/examples/"
+  },
+  {
+    "text": "API",
+    "link": "/api/",
+    "activeMatch": "^/api/"
+  },
+  {
+    "text": "Resources",
+    "items": [
+      {
+        "text": "GitHub",
+        "link": "https://github.com/A3S-Lab/Code"
+      },
+      {
+        "text": "Changelog",
+        "link": "https://github.com/A3S-Lab/Code/blob/main/CHANGELOG.md"
+      },
+      {
+        "text": "Rust API",
+        "link": "https://docs.rs/a3s-code-core"
+      },
+      {
+        "text": "npm",
+        "link": "https://www.npmjs.com/package/@a3s-lab/code"
+      },
+      {
+        "text": "PyPI",
+        "link": "https://pypi.org/project/a3s-code/"
+      }
+    ]
+  }
+]

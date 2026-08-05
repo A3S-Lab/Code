@@ -437,8 +437,7 @@ async fn custom_workspace_file_tools_do_not_touch_local_filesystem() {
     assert!(definitions.iter().any(|tool| tool.name == "patch"));
     assert!(!definitions.iter().any(|tool| tool.name == "download"));
     assert!(!definitions.iter().any(|tool| tool.name == "bash"));
-    assert!(!definitions.iter().any(|tool| tool.name == "grep"));
-    assert!(!definitions.iter().any(|tool| tool.name == "glob"));
+    assert!(!definitions.iter().any(|tool| tool.name == "search"));
     assert!(!definitions.iter().any(|tool| tool.name == "git"));
 
     let read = executor
@@ -555,7 +554,7 @@ async fn custom_workspace_runner_drives_bash_tool() {
 }
 
 #[tokio::test]
-async fn custom_workspace_search_provider_drives_grep_and_glob_tools() {
+async fn custom_workspace_search_provider_drives_search_modes() {
     let fs = Arc::new(MemoryWorkspace::default());
     fs.insert("src/main.rs", "fn main() {\n    println!(\"Hello\");\n}\n");
     fs.insert("src/lib.rs", "pub fn helper() {}\n");
@@ -567,12 +566,17 @@ async fn custom_workspace_search_provider_drives_grep_and_glob_tools() {
     );
 
     let definitions = executor.definitions();
-    assert!(definitions.iter().any(|tool| tool.name == "grep"));
-    assert!(definitions.iter().any(|tool| tool.name == "glob"));
+    assert!(definitions.iter().any(|tool| tool.name == "search"));
+    assert!(!definitions.iter().any(|tool| tool.name == "grep"));
+    assert!(!definitions.iter().any(|tool| tool.name == "bm25"));
+    assert!(!definitions.iter().any(|tool| tool.name == "glob"));
     assert!(!definitions.iter().any(|tool| tool.name == "git"));
 
     let glob = executor
-        .execute("glob", &json!({ "pattern": "*.rs", "path": "src" }))
+        .execute(
+            "search",
+            &json!({ "mode": "glob", "query": "*.rs", "path": "src" }),
+        )
         .await
         .expect("glob tool");
     assert_eq!(glob.exit_code, 0, "{}", glob.output);
@@ -582,8 +586,14 @@ async fn custom_workspace_search_provider_drives_grep_and_glob_tools() {
 
     let grep = executor
         .execute(
-            "grep",
-            &json!({ "pattern": "hello", "path": ".", "glob": "**/*.rs", "-i": true }),
+            "search",
+            &json!({
+                "mode": "grep",
+                "query": "hello",
+                "path": ".",
+                "include": "**/*.rs",
+                "case_sensitive": false
+            }),
         )
         .await
         .expect("grep tool");
@@ -591,6 +601,22 @@ async fn custom_workspace_search_provider_drives_grep_and_glob_tools() {
     assert!(grep.output.contains("src/main.rs:2"));
     assert!(grep.output.contains("1 match(es) in 1 file(s)"));
     assert!(!grep.output.contains("README.md"));
+
+    let bm25 = executor
+        .execute(
+            "search",
+            &json!({
+                "mode": "bm25",
+                "query": "hello main",
+                "path": ".",
+                "include": "**/*.rs"
+            }),
+        )
+        .await
+        .expect("bm25 tool");
+    assert_eq!(bm25.exit_code, 0, "{}", bm25.output);
+    assert!(bm25.output.contains("src/main.rs"));
+    assert!(!bm25.output.contains("README.md"));
 }
 
 #[tokio::test]

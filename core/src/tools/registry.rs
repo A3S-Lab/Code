@@ -234,6 +234,7 @@ impl ToolRegistry {
         let tools = self.tools.read().unwrap();
         let mut definitions = tools
             .values()
+            .filter(|tool| tool.is_model_visible())
             .map(|tool| tool.definition())
             .collect::<Vec<_>>();
         definitions.sort_by(|a, b| a.name.cmp(&b.name));

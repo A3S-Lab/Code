@@ -46,6 +46,8 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_is_closed",
     "session_send",
     "session_resume_run",
+    "session_spawn_run_with_id",
+    "session_spawn_recovery_with_run_id",
     "session_send_with_attachments",
     "session_stream",
     "session_stream_with_attachments",
@@ -529,6 +531,26 @@ impl BridgeState {
                     .resume_run(&checkpoint_run_id)
                     .await?;
                 agent_result_value(result)
+            }
+            "session_spawn_run_with_id" => {
+                let run_id: String = required(&request.params, "run_id")?;
+                let prompt: String = required(&request.params, "prompt")?;
+                let spawn = self
+                    .request_session(&request.params)
+                    .await?
+                    .spawn_run_with_id(&run_id, &prompt)
+                    .await?;
+                run_spawn_value(&spawn)
+            }
+            "session_spawn_recovery_with_run_id" => {
+                let checkpoint_run_id: String = required(&request.params, "checkpoint_run_id")?;
+                let run_id: String = required(&request.params, "run_id")?;
+                let spawn = self
+                    .request_session(&request.params)
+                    .await?
+                    .spawn_recovery_with_run_id(&checkpoint_run_id, &run_id)
+                    .await?;
+                run_spawn_value(&spawn)
             }
             "session_send_with_attachments" => {
                 let session = self.request_session(&request.params).await?;
@@ -2710,6 +2732,13 @@ fn agent_result_value(result: AgentResult) -> Result<Value, BridgeFailure> {
         "verification_summary": result.verification_summary(),
         "verification_summary_text": result.verification_summary_text(),
         "has_pending_verification": result.has_pending_verification(),
+    }))
+}
+
+fn run_spawn_value(spawn: &a3s_code_core::AgentRunSpawn) -> Result<Value, BridgeFailure> {
+    encode(json!({
+        "snapshot": spawn.snapshot(),
+        "replayed": spawn.replayed(),
     }))
 }
 

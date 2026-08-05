@@ -13,6 +13,7 @@ import type {
   ServeHandle,
   StateGraphRuntime,
   ToolResult,
+  AgentRunSpawnObject,
   ReadFileOptions,
   SessionOptions,
   // From extra-types.d.ts (hand-authored):
@@ -38,6 +39,7 @@ declare const _eventStream: EventStream
 declare const _serveHandle: ServeHandle
 declare const _stateGraph: StateGraphRuntime
 declare const _result: ToolResult
+declare const _runSpawn: AgentRunSpawnObject
 declare const _readOptions: ReadFileOptions
 declare const _sessionOptions: SessionOptions
 declare const _err: ToolErrorKind
@@ -82,10 +84,18 @@ void _envelope.payload.opaque
 void _knownEventType
 void _futureEventType
 void _codeError.code
+void _runSpawn.snapshot
+void _runSpawn.replayed
 void _busyCode
 void _serveFailureCode
 
 async function _consumeRunReplay(): Promise<void> {
+  const started: AgentRunSpawnObject = await _session.spawnRunWithId('run-1', 'inspect')
+  void started.snapshot
+  void started.replayed
+  const recovered = await _session.spawnRecoveryWithRunId('checkpoint-1', 'run-2')
+  void recovered.snapshot
+  void recovered.replayed
   const events = await _session.runEvents('run-1')
   const event = events[0]
   if (event) {

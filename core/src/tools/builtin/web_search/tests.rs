@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::{SearchConfig, SearchEngineConfig};
 use std::collections::HashMap;
+#[cfg(feature = "headless-search")]
 use std::path::PathBuf;
 
 #[cfg(feature = "headless-search")]
@@ -55,6 +56,41 @@ fn request_proxy_is_applied_to_the_headless_tier() {
     assert_eq!(
         effective.proxy_url.as_deref(),
         Some("socks5://request.example:1080")
+    );
+}
+
+#[cfg(feature = "headless-search")]
+#[test]
+fn managed_headless_discovery_uses_lightpanda_when_chrome_is_unavailable() {
+    use crate::search_runtime::{BrowserInstallSource, BrowserRuntimeStatus, ManagedBrowser};
+
+    let statuses = [
+        BrowserRuntimeStatus {
+            browser: ManagedBrowser::Chrome,
+            available: false,
+            source: BrowserInstallSource::Missing,
+            path: None,
+            version: None,
+            cache_dir: None,
+            detail: "not installed".to_string(),
+        },
+        BrowserRuntimeStatus {
+            browser: ManagedBrowser::Lightpanda,
+            available: true,
+            source: BrowserInstallSource::System,
+            path: Some(PathBuf::from("/diagnostic/lightpanda")),
+            version: None,
+            cache_dir: None,
+            detail: "ready".to_string(),
+        },
+    ];
+
+    let config = managed_headless_config_from_statuses(&statuses)
+        .expect("Lightpanda should satisfy automatic headless discovery");
+    assert_eq!(config.backend, BrowserBackend::Lightpanda);
+    assert_eq!(
+        config.browser_path.as_deref(),
+        Some("/diagnostic/lightpanda")
     );
 }
 
@@ -220,6 +256,15 @@ fn automatic_tier_plan_is_stable_and_deduplicated() {
     assert_eq!(plan.headless, ["g", "baidu"]);
     #[cfg(not(feature = "headless-search"))]
     assert!(plan.headless.is_empty());
+}
+
+#[cfg(feature = "headless-search")]
+#[test]
+fn automatic_search_route_prefers_headless_discovery() {
+    assert_eq!(
+        automatic_tier_order(),
+        [EngineTier::Headless, EngineTier::Http, EngineTier::Api]
+    );
 }
 
 #[test]
@@ -961,7 +1006,7 @@ fn test_web_search_schema_has_all_valid_fields() {
 
 #[test]
 fn json_search_result_preserves_published_date() {
-    let mut result = SearchResult::new(
+    let result = SearchResult::new(
             "https://result-user:result-password@example.com/release?tracking=secret#fragment",
             "Release notes https://title-user:title-password@example.com/title?title_token=secret#title-fragment",
             "Current release evidence at https://content-user:content-password@example.com/evidence?content_token=secret#content-fragment.",
@@ -969,12 +1014,10 @@ fn json_search_result_preserves_published_date() {
         .with_engine("ddg", 2)
         .with_engine("brave", 1)
         .with_published_date("2026-07-11");
-    result.query_match_score = Some(0.875);
-
     let json = search_result_json(&result, None);
 
     assert_eq!(json["published_date"], "2026-07-11");
-    assert_eq!(json["query_match_score"], 0.875);
+    assert!(json.get("query_match_score").is_none());
     assert_eq!(json["url"], "https://example.com/release");
     assert_eq!(json["title"], "Release notes https://example.com/title");
     assert_eq!(
@@ -1003,29 +1046,30 @@ fn json_search_result_preserves_published_date() {
 }
 
 #[test]
-fn json_search_payload_preserves_the_array_contract_when_quality_is_met() {
-    let mut quality = a3s_search::SearchQuality::default();
-    quality.usable_result_count = 1;
-    quality.unique_host_count = 1;
-    quality.contributing_engine_count = 1;
-    quality.aligned_result_count = 1;
-    quality.mean_query_match = 1.0;
-    let floor = SearchQualityFloor::for_limit(1);
+fn json_search_payload_preserves_the_array_contract_when_requirements_are_met() {
+    let mut health = RetrievalHealth::default();
+    health.usable_result_count = 1;
+    health.unique_host_count = 1;
+    health.contributing_engine_count = 1;
+    let requirements = RetrievalRequirements::for_limit(1);
     let results = vec![serde_json::json!({
         "title": "Portable evidence",
         "url": "https://example.test/evidence"
     })];
 
-    let payload = json_search_payload(results.clone(), true, &quality, &floor);
+    let payload = json_search_payload(results.clone(), true, &health, &requirements);
 
     assert_eq!(payload, serde_json::Value::Array(results));
 }
 
 #[test]
-fn json_search_payload_is_diagnostic_and_fail_closed_below_quality_floor() {
-    let quality = a3s_search::SearchQuality::default();
-    let floor = SearchQualityFloor::for_limit(1);
-    assert!(!floor.is_met(&quality), "an empty result set cannot pass");
+fn json_search_payload_is_diagnostic_below_retrieval_requirements() {
+    let health = RetrievalHealth::default();
+    let requirements = RetrievalRequirements::for_limit(1);
+    assert!(
+        !requirements.is_met(&health),
+        "an empty result set cannot pass"
+    );
 
     let payload = json_search_payload(
         vec![serde_json::json!({
@@ -1033,13 +1077,13 @@ fn json_search_payload_is_diagnostic_and_fail_closed_below_quality_floor() {
             "url": "https://example.test/candidate"
         })],
         false,
-        &quality,
-        &floor,
+        &health,
+        &requirements,
     );
 
-    assert_eq!(payload["status"], "quality_not_met");
-    assert_eq!(payload["search_quality"]["usable_result_count"], 0);
-    assert_eq!(payload["search_quality_floor"]["min_usable_results"], 1);
+    assert_eq!(payload["status"], "retrieval_requirements_not_met");
+    assert_eq!(payload["retrieval_health"]["usable_result_count"], 0);
+    assert_eq!(payload["retrieval_requirements"]["min_usable_results"], 1);
     assert_eq!(payload["results"].as_array().map(Vec::len), Some(1));
 }
 

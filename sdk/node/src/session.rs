@@ -58,6 +58,48 @@ impl Session {
         Ok(AgentResult::from(result))
     }
 
+    /// Admit an exact host-selected run ID and execute it in the background.
+    ///
+    /// Reusing a compatible run ID returns its existing snapshot with
+    /// `replayed: true` instead of starting duplicate work.
+    #[napi]
+    pub async fn spawn_run_with_id(
+        &self,
+        run_id: String,
+        prompt: String,
+    ) -> napi::Result<AgentRunSpawnObject> {
+        let session = self.inner.clone();
+        let spawn = get_runtime()
+            .spawn(async move { session.spawn_run_with_id(&run_id, &prompt).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(node_code_error)?;
+        agent_run_spawn_to_object(&spawn)
+    }
+
+    /// Resume a checkpoint under an exact host-selected run ID in the background.
+    ///
+    /// Reusing a compatible run ID returns its existing snapshot with
+    /// `replayed: true` instead of starting duplicate recovery work.
+    #[napi]
+    pub async fn spawn_recovery_with_run_id(
+        &self,
+        checkpoint_run_id: String,
+        run_id: String,
+    ) -> napi::Result<AgentRunSpawnObject> {
+        let session = self.inner.clone();
+        let spawn = get_runtime()
+            .spawn(async move {
+                session
+                    .spawn_recovery_with_run_id(&checkpoint_run_id, &run_id)
+                    .await
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(node_code_error)?;
+        agent_run_spawn_to_object(&spawn)
+    }
+
     /// Run `specs` as a fan-out of agent steps, bounded by the session's
     /// configured parallelism, and resolve with each step's outcome in input
     /// order. A failed step surfaces as `success: false` without failing the

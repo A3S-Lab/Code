@@ -28,6 +28,8 @@ var RequiredOperations = []string{
 	"session_is_closed",
 	"session_send",
 	"session_resume_run",
+	"session_spawn_run_with_id",
+	"session_spawn_recovery_with_run_id",
 	"session_send_with_attachments",
 	"session_stream",
 	"session_stream_with_attachments",

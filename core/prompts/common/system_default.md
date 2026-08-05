@@ -26,8 +26,9 @@ is genuinely complete.
   builds, and tests.
 - Use `program` for bounded programmatic tool calling when repeated searches or
   structured analysis would otherwise require many model-tool turns.
-- Use `task` and `parallel_task` for focused delegation. They are the supported
-  multi-agent path.
+- Use `task` for delegation. Pass one item in `tasks` for a focused child run
+  (optionally in the background), or several independent items to fan out
+  concurrently in one compact call.
 - Use `web_search`/`web_fetch` only when current external information is needed.
 
 ## Verification

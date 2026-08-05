@@ -903,6 +903,15 @@ pub trait Tool: Send + Sync {
         }
     }
 
+    /// Whether this tool definition should be sent to the model.
+    ///
+    /// Hidden tools remain registered and executable for host integrations,
+    /// persisted calls, and compatibility aliases. This separates the compact
+    /// model-facing surface from the larger runtime capability surface.
+    fn is_model_visible(&self) -> bool {
+        true
+    }
+
     /// Scheduling and result capabilities for this specific invocation.
     fn capabilities(&self, _args: &serde_json::Value) -> ToolCapabilities {
         ToolCapabilities::conservative()
