@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sole `a3s code harness` process. It resumes complete persisted sessions before
   replay, creates sessions only for start/recovery admission, bounds retained
   conversations, and never introduces another run store or event journal.
+- Bound protocol `agent_release_identity` to the manifest-declared immutable OCI
+  artifact digest, while retaining the canonical ACL digest as the distinct
+  complete-manifest admission identity.
 - Added permission/HITL-aware governed direct-tool calls across the Node,
   Python, and Go SDKs, preserving `tool` as the explicit trusted
   host-control-plane API and restoring the cross-SDK alignment gate.

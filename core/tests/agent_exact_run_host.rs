@@ -203,7 +203,9 @@ async fn protocol_host_executes_and_observes_the_code_owned_run() {
     ))
     .unwrap();
     let host = AgentProtocolHost::from_manifest(&manifest, Arc::clone(&session)).unwrap();
-    let release_identity = manifest.identity().to_string();
+    let release_identity = manifest.artifact().digest().to_string();
+    assert_eq!(host.agent_release_identity(), release_identity);
+    assert_ne!(host.agent_release_identity(), manifest.identity());
     let identity = AgentProtocolRunIdentityV1 {
         schema: AgentProtocolRunIdentityV1::SCHEMA.into(),
         protocol: AGENT_PROTOCOL_V1.into(),

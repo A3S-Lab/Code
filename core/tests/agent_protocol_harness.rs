@@ -147,7 +147,7 @@ async fn wait_for_terminal(
 async fn harness_multiplexes_sessions_through_code_owned_hosts() {
     let workspace = tempfile::tempdir().unwrap();
     let manifest = manifest();
-    let identity = manifest.identity().to_string();
+    let identity = manifest.artifact().digest().to_string();
     let agent = Arc::new(Agent::from_config(offline_config()).await.unwrap());
     let harness = AgentProtocolHarness::new(
         manifest,
@@ -187,7 +187,7 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
     let workspace = tempfile::tempdir().unwrap();
     let store = Arc::new(MemorySessionStore::new());
     let release = manifest();
-    let release_identity = release.identity().to_string();
+    let release_identity = release.artifact().digest().to_string();
     let command = start(
         &release_identity,
         "durable-conversation",
@@ -258,7 +258,7 @@ async fn harness_does_not_create_a_session_for_an_unknown_observation() {
     let workspace = tempfile::tempdir().unwrap();
     let manifest = manifest();
     let command = start(
-        manifest.identity(),
+        manifest.artifact().digest(),
         "missing-conversation",
         "missing-execution",
     );
@@ -287,7 +287,7 @@ async fn harness_does_not_create_a_session_for_an_unknown_observation() {
 async fn harness_fails_closed_at_its_retained_session_limit() {
     let workspace = tempfile::tempdir().unwrap();
     let manifest = manifest();
-    let release_identity = manifest.identity().to_string();
+    let release_identity = manifest.artifact().digest().to_string();
     let harness = AgentProtocolHarness::new(
         manifest,
         Arc::new(Agent::from_config(offline_config()).await.unwrap()),

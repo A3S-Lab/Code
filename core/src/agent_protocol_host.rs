@@ -87,7 +87,7 @@ impl AgentProtocolHost {
             return Err(AgentProtocolHostError::ReleaseProtocolMismatch);
         }
         Ok(Self {
-            agent_release_identity: manifest.identity().to_string(),
+            agent_release_identity: manifest.artifact().digest().to_string(),
             session,
         })
     }

@@ -78,7 +78,8 @@ impl std::fmt::Debug for AgentProtocolHarness {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("AgentProtocolHarness")
-            .field("agent_release_identity", &self.manifest.identity())
+            .field("agent_release_identity", &self.manifest.artifact().digest())
+            .field("manifest_identity", &self.manifest.identity())
             .field("workspace", &self.workspace)
             .field("max_sessions", &self.max_sessions)
             .field("closed", &self.closed.load(Ordering::Acquire))
@@ -137,7 +138,7 @@ impl AgentProtocolHarness {
     }
 
     pub fn agent_release_identity(&self) -> &str {
-        self.manifest.identity()
+        self.manifest.artifact().digest()
     }
 
     pub fn max_sessions(&self) -> usize {
@@ -192,7 +193,7 @@ impl AgentProtocolHarness {
         create_if_missing: bool,
     ) -> Result<Arc<AgentProtocolHost>, AgentProtocolHarnessError> {
         identity.validate()?;
-        if identity.agent_release_identity != self.manifest.identity() {
+        if identity.agent_release_identity != self.manifest.artifact().digest() {
             return Err(AgentProtocolHostError::ReleaseMismatch.into());
         }
         if self.is_closed() {

@@ -37,6 +37,14 @@ its own. Start and recovery may create a missing session; cancellation and
 event observation never allocate an unknown conversation. Closing the kernel
 closes the same `Agent` and sessions through their existing lifecycle.
 
+The protocol field `agent_release_identity` is the immutable OCI digest from
+`AgentReleaseManifest::artifact().digest()`. It identifies the executable
+release already pinned by Cloud and Runtime. It is intentionally distinct from
+`AgentReleaseManifest::identity()`, which identifies the complete canonical ACL
+admission document, including health, storage, capability, secret-slot, and
+provenance declarations. A native Harness validates both by admitting the
+manifest first and then accepting commands only for its declared artifact.
+
 The version-one process transport uses Code-owned paths: commands are posted to
 `/v1/agent/commands`, while bounded `AgentProtocolEventPageRequestV1` values are
 posted to `/v1/agent/events:page`. Hosts must forward the corresponding Code
@@ -282,8 +290,10 @@ produce the same declared identity. Changing the artifact digest, entrypoint,
 health declaration, storage boundary, capability, secret slot, or provenance
 changes the identity.
 
-Callers should persist and compare `AgentReleaseManifest::identity()`, not a
-digest of the original source formatting.
+Callers comparing complete manifest documents should persist and compare
+`AgentReleaseManifest::identity()`, not a digest of the original source
+formatting. Protocol commands use the separately documented immutable artifact
+digest as `agent_release_identity`.
 
 ## Pre-activation compatibility
 
