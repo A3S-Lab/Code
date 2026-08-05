@@ -489,7 +489,7 @@ impl AgentProtocolEventPageV1 {
             return Err(AgentProtocolError::InvalidField("retention_gap"));
         }
 
-        let mut previous = None;
+        let mut previous: Option<(u64, u64)> = None;
         for event in &self.events {
             event.validate_for(&self.identity)?;
             if event.occurred_at_ms > self.observed_at_ms
