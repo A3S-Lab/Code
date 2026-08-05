@@ -45,6 +45,8 @@ jobs:
 
       - name: Install protobuf compiler
         uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build bridge
         run: >-
