@@ -4,6 +4,15 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.8.0] - 2026-08-05
+
+### Changed
+
+- Updated the bundled Core with the native multi-session Agent Harness protocol
+  kernel, exact release/session/run admission, durable event-page projection,
+  and persisted-session replay. The SDK bindings and public Python API are
+  otherwise unchanged.
+
 ## [6.7.0] - 2026-07-31
 
 ### Changed
