@@ -3280,11 +3280,14 @@ async fn test_duplicate_tool_guard_reports_tool_end_without_stream_error() {
     let temp_dir = tempfile::tempdir().unwrap();
     std::fs::write(temp_dir.path().join("note.txt"), "small searchable fixture").unwrap();
     let workspace = temp_dir.path().to_string_lossy().to_string();
-    let args = serde_json::json!({"pattern": "a3s-duplicate-guard-never-matches"});
+    let args = serde_json::json!({
+        "mode": "grep",
+        "query": "a3s-duplicate-guard-never-matches"
+    });
     let mock_client = Arc::new(MockLlmClient::new(vec![
-        MockLlmClient::tool_call_response("grep-1", "grep", args.clone()),
-        MockLlmClient::tool_call_response("grep-2", "grep", args.clone()),
-        MockLlmClient::tool_call_response("grep-3", "grep", args),
+        MockLlmClient::tool_call_response("grep-1", "search", args.clone()),
+        MockLlmClient::tool_call_response("grep-2", "search", args.clone()),
+        MockLlmClient::tool_call_response("grep-3", "search", args),
         MockLlmClient::text_response("Recovered after duplicate grep guard."),
     ]));
 
@@ -3294,7 +3297,7 @@ async fn test_duplicate_tool_guard_reports_tool_end_without_stream_error() {
         tool_executor,
         ToolContext::new(PathBuf::from(workspace)),
         AgentConfig {
-            permission_checker: Some(Arc::new(PermissionPolicy::new().allow("grep(*)"))),
+            permission_checker: Some(Arc::new(PermissionPolicy::new().allow("search(*)"))),
             duplicate_tool_call_threshold: 2,
             ..Default::default()
         },
@@ -3319,7 +3322,7 @@ async fn test_duplicate_tool_guard_reports_tool_end_without_stream_error() {
             metadata,
             ..
         } if id == "grep-3"
-            && name == "grep"
+            && name == "search"
             && output.contains("identical arguments")
             && metadata
                 .as_ref()
@@ -3333,10 +3336,10 @@ async fn test_duplicate_tool_guard_reports_tool_end_without_stream_error() {
 async fn test_agent_aborts_after_ignoring_duplicate_guard_feedback_twice() {
     let temp_dir = tempfile::tempdir().unwrap();
     let workspace = temp_dir.path().to_string_lossy().to_string();
-    let args = serde_json::json!({"pattern": "never-matches"});
+    let args = serde_json::json!({"mode": "grep", "query": "never-matches"});
     let responses = (1..=5)
         .map(|index| {
-            MockLlmClient::tool_call_response(&format!("grep-{index}"), "grep", args.clone())
+            MockLlmClient::tool_call_response(&format!("grep-{index}"), "search", args.clone())
         })
         .collect();
     let mock_client = Arc::new(MockLlmClient::new(responses));
@@ -3345,7 +3348,7 @@ async fn test_agent_aborts_after_ignoring_duplicate_guard_feedback_twice() {
         Arc::new(ToolExecutor::new(workspace.clone())),
         ToolContext::new(PathBuf::from(workspace)),
         AgentConfig {
-            permission_checker: Some(Arc::new(PermissionPolicy::new().allow("grep(*)"))),
+            permission_checker: Some(Arc::new(PermissionPolicy::new().allow("search(*)"))),
             duplicate_tool_call_threshold: 2,
             max_tool_rounds: 100,
             ..Default::default()

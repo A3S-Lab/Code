@@ -225,7 +225,11 @@ async fn successful_tool_task(agent: &Agent) -> Result<CaseResult> {
     let workspace = tempfile::tempdir()?;
     std::fs::write(workspace.path().join("target.txt"), "benchmark evidence\n")?;
     let client = Arc::new(ScriptedClient::new(vec![
-        tool_response("glob-1", "glob", json!({"pattern": "**/*.txt"})),
+        tool_response(
+            "glob-1",
+            "search",
+            json!({"mode": "glob", "query": "**/*.txt"}),
+        ),
         text_response("Task completed with workspace evidence."),
     ]));
     let session = agent
@@ -288,14 +292,14 @@ async fn incomplete_response_converges(agent: &Agent) -> Result<CaseResult> {
 
 async fn duplicate_tool_converges(agent: &Agent) -> Result<CaseResult> {
     let workspace = tempfile::tempdir()?;
-    let input = json!({"pattern": "never-matches"});
+    let input = json!({"mode": "grep", "query": "never-matches"});
     let client = Arc::new(ScriptedClient::new(
         (1..=6)
-            .map(|index| tool_response(&format!("grep-{index}"), "grep", input.clone()))
+            .map(|index| tool_response(&format!("grep-{index}"), "search", input.clone()))
             .collect(),
     ));
     let options = base_options(client.clone())
-        .with_permission_policy(PermissionPolicy::new().allow("grep(*)"))
+        .with_permission_policy(PermissionPolicy::new().allow("search(*)"))
         .with_duplicate_tool_call_threshold(2)
         .with_max_tool_rounds(100);
     let session = agent

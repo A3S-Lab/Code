@@ -36,43 +36,62 @@ pub fn parallel_task_params_schema() -> serde_json::Value {
 pub(super) fn parallel_task_params_schema_for_agents(
     agents: &[AgentDefinition],
 ) -> serde_json::Value {
+    delegated_tasks_params_schema_for_agents(agents, 2, false, "parallel_task")
+}
+
+pub(super) fn task_tool_params_schema_for_agents(agents: &[AgentDefinition]) -> serde_json::Value {
+    let mut schema = delegated_tasks_params_schema_for_agents(agents, 1, true, "task");
+    schema["examples"] = serde_json::json!([
+        {
+            "tasks": [{
+                "agent": "explore",
+                "description": "Find Rust files",
+                "prompt": "Search the workspace for Rust files and summarize the layout."
+            }]
+        },
+        {
+            "tasks": [
+                {
+                    "agent": "explore",
+                    "description": "Find implementation",
+                    "prompt": "Locate and summarize the implementation."
+                },
+                {
+                    "agent": "review",
+                    "description": "Check risks",
+                    "prompt": "Review the relevant code for regression risks."
+                }
+            ]
+        }
+    ]);
+    schema
+}
+
+fn delegated_tasks_params_schema_for_agents(
+    agents: &[AgentDefinition],
+    min_items: usize,
+    include_background: bool,
+    tool_name: &str,
+) -> serde_json::Value {
+    let task_description = if min_items == 1 {
+        "One or more delegated tasks. One item runs as a focused child; multiple independent items execute concurrently."
+    } else {
+        "List of tasks to execute in parallel. Each task runs as an independent delegated child run concurrently."
+    };
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
             "tasks": {
                 "type": "array",
-                "description": "List of tasks to execute in parallel. Each task runs as an independent delegated child run concurrently.",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "agent": task_agent_parameter_schema(agents),
-                        "description": {
-                            "type": "string",
-                            "description": "Required. Short task label for display and tracking."
-                        },
-                        "prompt": {
-                            "type": "string",
-                            "description": "Required. Detailed instruction for the delegated child run."
-                        },
-                        "max_steps": {
-                            "type": "integer",
-                            "description": "Optional. Maximum number of tool/model steps for this delegated child task."
-                        },
-                        "output_schema": {
-                            "type": "object",
-                            "description": "Optional. JSON Schema object the delegated child result must satisfy. When provided, the validated object is returned in each result's metadata."
-                        }
-                    },
-                    "required": ["agent", "description", "prompt"]
-                },
-                "minItems": 2,
+                "description": task_description,
+                "items": task_item_params_schema_for_agents(agents, include_background),
+                "minItems": min_items,
                 "maxItems": MAX_PARALLEL_TASKS_PER_CALL
             },
             "allow_partial_failure": {
                 "type": "boolean",
-                "description": "Optional. Defaults to false. When true, the parallel_task tool succeeds if at least one child task succeeds, while preserving failed child results in the output and metadata.",
+                "description": format!("Optional. Defaults to false. When true, the {tool_name} tool succeeds if at least one child task succeeds, while preserving failed child results in the output and metadata."),
                 "default": false
             },
             "timeout_ms": {
@@ -87,21 +106,19 @@ pub(super) fn parallel_task_params_schema_for_agents(
             }
         },
         "required": ["tasks"],
-        "examples": [
-            {
-                "tasks": [
-                    {
-                        "agent": "explore",
-                        "description": "Find Rust files",
-                        "prompt": "List Rust files under src/."
-                    },
-                    {
-                        "agent": "explore",
-                        "description": "Find tests",
-                        "prompt": "List test files and summarize their purpose."
-                    }
-                ]
-            }
-        ]
+        "examples": [{
+            "tasks": [
+                {
+                    "agent": "explore",
+                    "description": "Find Rust files",
+                    "prompt": "List Rust files under src/."
+                },
+                {
+                    "agent": "explore",
+                    "description": "Find tests",
+                    "prompt": "List test files and summarize their purpose."
+                }
+            ]
+        }]
     })
 }

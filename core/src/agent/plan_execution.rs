@@ -64,7 +64,7 @@ impl AgentLoop {
             && config.auto_parallel
             && config.max_tasks > 0
             && self.config.agent_registry.is_some()
-            && self.tool_executor.registry().contains("parallel_task")
+            && self.tool_executor.registry().contains("task")
             && steps.iter().all(|(step, _)| {
                 Self::normalized_plan_tool(step).is_none() || Self::should_delegate_plan_step(step)
             })
@@ -314,23 +314,17 @@ impl AgentLoop {
                 }
 
                 if Self::should_delegate_plan_step(&step) {
-                    let tool_name = match Self::normalized_plan_tool(&step) {
-                        Some("parallel_task") => "parallel_task",
-                        _ => "task",
-                    };
-                    let args = if tool_name == "parallel_task" {
-                        json!({ "tasks": [Self::delegated_task_args_with_goal(Some(&plan.goal), &step, step_number, total_steps)] })
-                    } else {
-                        Self::delegated_task_args_with_goal(
+                    let args = json!({
+                        "tasks": [Self::delegated_task_args_with_goal(
                             Some(&plan.goal),
                             &step,
                             step_number,
                             total_steps,
-                        )
-                    };
+                        )]
+                    });
                     let (output, _exit_code, is_error, _metadata) = self
                         .execute_delegated_plan_tool(
-                            tool_name,
+                            "task",
                             &args,
                             session_id,
                             &event_tx,
@@ -520,7 +514,7 @@ impl AgentLoop {
                     );
                     let (output, _exit_code, is_error, metadata) = self
                         .execute_delegated_plan_tool(
-                            "parallel_task",
+                            "task",
                             &args,
                             session_id,
                             &event_tx,

@@ -21,7 +21,7 @@ fn repo_config_path() -> PathBuf {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires real provider credentials and network access"]
-async fn auto_delegation_triggers_builtin_parallel_task_with_real_provider() {
+async fn auto_delegation_triggers_unified_task_fanout_with_real_provider() {
     let config_path = repo_config_path();
     let config = CodeConfig::from_file(&config_path)
         .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
@@ -59,46 +59,42 @@ async fn auto_delegation_triggers_builtin_parallel_task_with_real_provider() {
         This is a smoke test; keep every specialist result compact and do not modify files.";
     let (mut rx, handle) = session.stream(prompt, None).await.expect("stream starts");
 
-    let (parallel_task_starts, task_starts) =
-        tokio::time::timeout(Duration::from_secs(240), async {
-            let mut parallel_task_starts = 0_usize;
-            let mut task_starts = 0_usize;
+    let fanout_task_starts = tokio::time::timeout(Duration::from_secs(240), async {
+        let mut fanout_task_starts = 0_usize;
 
-            while let Some(event) = rx.recv().await {
-                match event {
-                    AgentEvent::ToolExecutionStart { name, .. } if name == "parallel_task" => {
-                        parallel_task_starts += 1;
-                        return (parallel_task_starts, task_starts);
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::ToolExecutionStart { name, args, .. } if name == "task" => {
+                    if args
+                        .get("tasks")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|tasks| tasks.len() > 1)
+                    {
+                        fanout_task_starts += 1;
+                        return fanout_task_starts;
                     }
-                    AgentEvent::ToolExecutionStart { name, .. } if name == "task" => {
-                        task_starts += 1;
-                    }
-                    AgentEvent::Error { message } => {
-                        panic!("stream failed before parallel_task started: {message}");
-                    }
-                    _ => {}
                 }
+                AgentEvent::Error { message } => {
+                    panic!("stream failed before task fan-out started: {message}");
+                }
+                _ => {}
             }
+        }
 
-            panic!("stream ended before parallel_task started")
-        })
-        .await
-        .expect("timed out waiting for automatic parallel_task start");
+        panic!("stream ended before task fan-out started")
+    })
+    .await
+    .expect("timed out waiting for automatic task fan-out start");
 
     let _ = session.cancel().await;
     handle.abort();
     let _ = handle.await;
 
-    println!("parallel_task starts: {parallel_task_starts}");
-    println!("task starts: {task_starts}");
+    println!("task fan-out starts: {fanout_task_starts}");
 
     assert_eq!(
-        parallel_task_starts, 1,
-        "auto delegation should collapse multiple specialist matches into one parallel_task"
-    );
-    assert_eq!(
-        task_starts, 0,
-        "auto_parallel=true should not fall back to a single task"
+        fanout_task_starts, 1,
+        "auto delegation should collapse multiple specialist matches into one task call"
     );
 }
 

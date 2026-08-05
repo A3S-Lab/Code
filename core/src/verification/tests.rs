@@ -5,7 +5,7 @@ fn report_from_required_program_hint_needs_review() {
     let hints = vec![
         ProgramVerificationHint::new("inspect_matches", "Review matched files")
             .required()
-            .with_suggested_tools(["read", "grep"])
+            .with_suggested_tools(["read", "search"])
             .with_evidence_uris(["a3s://tool-output/grep/abc"]),
     ];
 
@@ -16,7 +16,7 @@ fn report_from_required_program_hint_needs_review() {
     assert_eq!(report.status, VerificationStatus::NeedsReview);
     assert!(!report.is_complete());
     assert_eq!(report.checks[0].kind, "inspect_matches");
-    assert_eq!(report.checks[0].suggested_tools, vec!["read", "grep"]);
+    assert_eq!(report.checks[0].suggested_tools, vec!["read", "search"]);
     assert_eq!(
         report.checks[0].evidence_uris,
         vec!["a3s://tool-output/grep/abc"]

@@ -210,12 +210,12 @@ the model.
 
 | Concern | Built-in surface |
 | --- | --- |
-| Files and directories | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, order-selectable paginated `glob`, and mode-selectable `grep` |
+| Files and directories | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, and native BM25 modes |
 | Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination |
 | Code intelligence | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools |
-| Web evidence | Fail-closed native API → HTTP/RSS → lazy Chrome/Chromium `web_search` with quality gates, shared admission, circuits, and request coalescing; plus bounded `web_fetch`, source normalization, and SSRF protections |
+| Web evidence | Quality-gated headless → HTTP/RSS → API `web_search` with shared admission, session circuits, and request coalescing; plus bounded `web_fetch`, source normalization, and SSRF protections |
 | Downloads | Workspace-confined binary `download` with strict range validation, bounded parallelism, retries, checksums, and atomic publication |
-| Composition | Safe `batch`, sandboxed QuickJS `program`, structured `generate_object`, `task`, and `parallel_task` |
+| Composition | Safe `batch`, sandboxed QuickJS `program`, structured `generate_object`, and unified `task` delegation; the hidden `parallel_task` alias remains host-compatible |
 | Extensibility | `Skill`, `search_skills`, namespaced `mcp__<server>__<tool>`, and explicit `dynamic_workflow` |
 
 Every invocation declares `ToolCapabilities`, including read-only,
@@ -244,7 +244,8 @@ Offsets and remaining per-file limits are advanced without repeating completed
 lines. One missing or unreadable member is reported in its own segment while
 the other files continue.
 
-`grep.output_mode` controls how much evidence enters the context:
+For `search` calls with `mode: "grep"`, `output_mode` controls how much
+evidence enters the context:
 
 | Mode | Result |
 | --- | --- |
@@ -254,9 +255,10 @@ the other files continue.
 | `summary` | Full-scan line and file totals without rendered matches |
 
 The non-content modes ask built-in workspace backends to count matches without
-constructing discarded match text. `glob` retains a backend's recency or
-relevance order by default; request `sort: "path"` when cursor pages require
-stable lexical ordering.
+constructing discarded match text. In `mode: "glob"`, `search` retains a
+backend's recency or relevance order by default; request `sort: "path"` when
+cursor pages require stable lexical ordering. Use `mode: "bm25"` for bounded
+dependency-free lexical ranking over workspace text chunks.
 
 Use `edit` with `dry_run: true` to receive the exact before/after diff without
 writing. The dry run is declared read-only and can be safely batched. Apply the

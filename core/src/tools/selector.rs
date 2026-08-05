@@ -9,14 +9,12 @@ const CORE_TOOLS: &[&str] = &[
     "edit",
     "patch",
     "bash",
-    "grep",
-    "glob",
+    "search",
     "ls",
     "code_symbols",
     "code_navigation",
     "code_diagnostics",
     "task",
-    "parallel_task",
     "Skill",
     "search_skills",
 ];
@@ -347,7 +345,7 @@ mod tests {
 
     #[test]
     fn standalone_greetings_do_not_expose_tools() {
-        let tools = defs(&["read", "grep", "bash", "web_search", "task"]);
+        let tools = defs(&["read", "search", "bash", "web_search", "task"]);
 
         for prompt in [
             "hi",
@@ -368,25 +366,25 @@ mod tests {
     #[test]
     fn greeting_with_an_action_keeps_relevant_tools() {
         let selected = select_tools_for_prompt(
-            &defs(&["read", "grep", "web_search"]),
+            &defs(&["read", "search", "web_search"]),
             "Hello! Inspect this repository for the parser implementation.",
         );
         let names: Vec<_> = selected.iter().map(|tool| tool.name.as_str()).collect();
 
         assert!(names.contains(&"read"));
-        assert!(names.contains(&"grep"));
+        assert!(names.contains(&"search"));
     }
 
     #[test]
     fn program_terms_enable_program_tool() {
         let selected = select_tools_for_prompt(
-            &defs(&["read", "grep", "program"]),
+            &defs(&["read", "search", "program"]),
             "build a repo map before changing the module",
         );
         let names: Vec<_> = selected.iter().map(|t| t.name.as_str()).collect();
 
         assert!(names.contains(&"read"));
-        assert!(names.contains(&"grep"));
+        assert!(names.contains(&"search"));
         assert!(names.contains(&"program"));
     }
 

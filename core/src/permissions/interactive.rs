@@ -179,7 +179,7 @@ fn invocation_crosses_local_symlink(
     }
     let field = match tool.as_str() {
         "read" | "write" | "edit" | "patch" | "download" => "file_path",
-        "grep" | "glob" | "ls" | "code_symbols" | "code_navigation" | "code_diagnostics" => "path",
+        "search" | "ls" | "code_symbols" | "code_navigation" | "code_diagnostics" => "path",
         _ => return false,
     };
     let Some(path) = args.get(field).and_then(serde_json::Value::as_str) else {
@@ -283,7 +283,7 @@ pub(super) fn classify_atomic_tool(
 ) -> PermissionDecision {
     match tool_name.to_ascii_lowercase().as_str() {
         "read" => classify_scoped_path(args, "file_path", PermissionDecision::Allow),
-        "grep" | "glob" | "ls" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
+        "search" | "ls" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
             classify_scoped_path(args, "path", PermissionDecision::Allow)
         }
         "web_search" | "web_fetch" | "search_skills" | "generate_object" => {

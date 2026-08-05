@@ -5,6 +5,7 @@
 
 pub(crate) mod bash;
 pub mod batch;
+mod bm25;
 mod code_intelligence;
 mod download;
 mod edit;
@@ -16,6 +17,7 @@ mod ls;
 mod patch;
 mod read;
 mod safe_http;
+mod search;
 mod web_fetch;
 mod web_search;
 mod write;
@@ -69,8 +71,7 @@ pub fn register_builtins(
         registry.register_builtin(Arc::new(bash::BashTool));
     }
     if capabilities.search {
-        registry.register_builtin(Arc::new(grep::GrepTool));
-        registry.register_builtin(Arc::new(glob_tool::GlobTool));
+        registry.register_builtin(Arc::new(search::SearchTool::new(capabilities.read)));
     }
     if workspace_services.code_intelligence().is_some() {
         code_intelligence::register(registry);
@@ -87,13 +88,11 @@ pub(crate) fn repository_tool_parameter_schemas() -> Vec<(String, serde_json::Va
     use crate::tools::Tool;
 
     let read = read::ReadTool;
-    let grep = grep::GrepTool;
-    let glob = glob_tool::GlobTool;
+    let search = search::SearchTool::new(true);
     let edit = edit::EditTool;
     vec![
         (read.name().to_string(), read.parameters()),
-        (grep.name().to_string(), grep.parameters()),
-        (glob.name().to_string(), glob.parameters()),
+        (search.name().to_string(), search.parameters()),
         (edit.name().to_string(), edit.parameters()),
     ]
 }
@@ -122,7 +121,7 @@ pub fn register_program_with_catalog(
     )));
 }
 
-/// Register the task delegation tools (task, parallel_task).
+/// Register the canonical `task` tool and hidden `parallel_task` compatibility alias.
 ///
 /// Must be called after the registry is wrapped in Arc. Requires an LLM client
 /// and the workspace path so child agent loops can be spawned inline.

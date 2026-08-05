@@ -112,14 +112,14 @@ impl DirectToolRuntime {
     }
 
     pub(super) async fn glob(&self, pattern: &str) -> Result<Vec<String>> {
-        let args = serde_json::json!({ "pattern": pattern });
-        let result = self.call("glob", args).await?;
+        let args = serde_json::json!({ "mode": "glob", "query": pattern });
+        let result = self.call("search", args).await?;
         Ok(parse_glob_output(&result.output))
     }
 
     pub(super) async fn grep(&self, pattern: &str) -> Result<String> {
-        let args = serde_json::json!({ "pattern": pattern });
-        let result = self.call("grep", args).await?;
+        let args = serde_json::json!({ "mode": "grep", "query": pattern });
+        let result = self.call("search", args).await?;
         Ok(result.output)
     }
 

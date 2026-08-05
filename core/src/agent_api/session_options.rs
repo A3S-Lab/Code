@@ -589,12 +589,12 @@ impl SessionOptions {
         self
     }
 
-    /// Enable or disable model-visible manual child-agent tools for this session.
+    /// Enable or disable manual child-agent tools for this session.
     ///
-    /// When false, `task` and `parallel_task` are not registered in the session
-    /// tool surface. Worker agents remain registered for introspection and hosts
-    /// that manage them directly. This is for cost control or debugging; it is
-    /// not a security sandbox for the parent agent.
+    /// When false, the model-visible `task` tool and the hidden `parallel_task`
+    /// compatibility alias are not registered. Worker agents remain registered
+    /// for introspection and hosts that manage them directly. This is for cost
+    /// control or debugging; it is not a security sandbox for the parent agent.
     pub fn with_manual_delegation_enabled(mut self, enabled: bool) -> Self {
         if let Some(config) = &mut self.auto_delegation {
             config.allow_manual_delegation = enabled;
@@ -605,7 +605,8 @@ impl SessionOptions {
 
     /// Globally enable or disable automatic parallel child-agent fan-out.
     ///
-    /// Manual `parallel_task` calls remain available when this is false.
+    /// Manual `task` fan-out and legacy `parallel_task` calls remain available
+    /// when this is false.
     pub fn with_auto_parallel_delegation(mut self, enabled: bool) -> Self {
         if let Some(config) = &mut self.auto_delegation {
             config.auto_parallel = enabled;

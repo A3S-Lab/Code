@@ -9,16 +9,15 @@ continuations.
   `files=[{path, offset?, limit?}]` and optional `max_output_bytes`; never send
   `file_path` and `files` together. If `metadata.batch.continuation` is non-empty,
   copy that exact array into the next call's `files` and stop when it is empty.
-- `grep`: pass `pattern` and, when useful, `path`, `glob`, `context`, and `-i`.
-  Choose the smallest useful `output_mode`: `content` for matching evidence,
-  `files_with_matches` for paths, `count` for matching-line counts per file, or
-  `summary` for totals only. Only `files_with_matches` and `count` accept
-  pagination `limit`/`cursor`; copy `metadata.page.next_cursor` exactly and stop
-  when it is absent.
-- `glob`: pass `pattern` and optional `path`, `limit`, `cursor`, and `sort`.
-  Keep the default `sort: "backend"` when backend relevance or recency matters;
-  use `sort: "path"` for deterministic lexical pagination. Copy
-  `metadata.page.next_cursor` exactly and stop when it is absent.
+- `search`: always pass `mode` and `query`. Use `mode: "grep"` for regular
+  expressions, `mode: "glob"` for path discovery, and `mode: "bm25"` for
+  ranked multi-term or natural-language retrieval. `path` is shared;
+  `include` filters candidate files in grep/BM25 modes. Grep also accepts
+  `context`, `case_sensitive`, and `output_mode`; only `files_with_matches` and
+  `count` use `limit`/`cursor`. Glob accepts `limit`/`cursor` and `sort`; use
+  `sort: "path"` for deterministic pages. BM25 accepts `limit` and `context`.
+  Copy `metadata.page.next_cursor` exactly and
+  stop when it is absent.
 - `edit`: pass `file_path`, `old_string`, and `new_string`; set `replace_all`
   only when every occurrence should change. For `replace_all` or any mechanical
   change whose scope is uncertain, first use `dry_run`, inspect the diff and

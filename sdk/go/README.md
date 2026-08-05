@@ -151,8 +151,8 @@ serializable Agent and Session capabilities, including:
 
 - Agent creation, session creation/resume/replace/list/close, worker sessions,
   MCP refresh/idle disconnect, and agent-directory serving.
-- `Send`, `Run`, `Stream`, attachments, checkpoint resume, history, save,
-  cancellation, and close.
+- `Send`, `Run`, `Stream`, attachments, checkpoint resume, exact detached run
+  admission/replay, history, save, cancellation, and close.
 - Parallel, resumable parallel, workflow-step, and pipeline orchestration.
 - Generic trusted `Tool`, permission/HITL-aware `GovernedTool`, plus
   file, shell, search, Git, web, QuickJS program, and delegated-task
@@ -173,6 +173,21 @@ serializable Agent and Session capabilities, including:
 preparation. `ServeHandle.Status` reports `starting`, `ready`, `draining`,
 `stopped`, or `failed`; `ServeHandle.Stop` cancels in-flight work and waits for
 bounded, joined shutdown.
+
+Headless hosts can start detached work under immutable IDs and receive the
+authoritative snapshot immediately:
+
+```go
+admitted, err := session.SpawnRunWithID(ctx, "release-42/run-7", "Verify the release")
+if err != nil {
+	return err
+}
+fmt.Println(admitted.Snapshot.ID, admitted.Replayed)
+```
+
+`SpawnRecoveryWithRunID` applies the same replay-safe contract to checkpoint
+recovery. Reusing compatible immutable input sets `Replayed`; conflicting input
+returns `RUN_IDENTITY_CONFLICT`. Closing the session cancels detached workers.
 
 Rust trait-object injections such as a custom `LlmClient`, arbitrary workspace
 implementation, or custom memory store implementation remain Rust-native

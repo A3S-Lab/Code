@@ -271,16 +271,17 @@ impl AgentSession {
         self.session_store.clone()
     }
 
-    /// Return the definitions of all tools currently registered in this session.
+    /// Return the model-visible definitions for this session.
     ///
     /// The list reflects the live state of the tool executor — tools added via
     /// `add_mcp_server()` appear immediately; tools removed via
-    /// `remove_mcp_server()` disappear immediately.
+    /// `remove_mcp_server()` disappear immediately. Hidden host compatibility
+    /// aliases remain executable by name but are omitted to avoid schema cost.
     pub fn tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
         DirectToolRuntime::from_session(self).definitions()
     }
 
-    /// Return the names of all tools currently registered on this session.
+    /// Return the names of all model-visible tools on this session.
     ///
     /// Equivalent to `tool_definitions().into_iter().map(|t| t.name).collect()`.
     /// Tools added via [`Self::add_mcp_server`] appear immediately; tools

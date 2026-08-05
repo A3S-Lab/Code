@@ -348,7 +348,7 @@ impl ToolExecutor {
     ) -> Result<()> {
         let path_field = match name {
             "read" | "write" | "edit" | "patch" | "download" => Some("file_path"),
-            "ls" | "grep" | "glob" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
+            "ls" | "search" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
                 Some("path")
             }
             _ => None,

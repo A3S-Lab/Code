@@ -89,9 +89,10 @@ use a3s_code_core::verification::{
 use a3s_code_core::{
     run_event_envelope_v1 as rust_run_event_envelope_v1, Agent as RustAgent,
     AgentEvent as RustAgentEvent, AgentEventProjectionV1 as RustAgentEventProjectionV1,
-    AgentResult as RustAgentResult, AgentSession as RustAgentSession,
-    EventProtocolError as RustEventProtocolError, PlanningMode as RustPlanningMode,
-    SessionOptions as RustSessionOptions, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
+    AgentResult as RustAgentResult, AgentRunSpawn as RustAgentRunSpawn,
+    AgentSession as RustAgentSession, EventProtocolError as RustEventProtocolError,
+    PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions, AGENT_EVENT_TYPES_V1,
+    EVENT_ENVELOPE_V1_VERSION,
 };
 use napi::Either;
 use napi::Env;
@@ -171,6 +172,22 @@ fn get_runtime() -> NapiRuntime {
 // ============================================================================
 // ToolResult
 // ============================================================================
+
+/// Result of admitting a host-selected run ID for detached execution.
+#[napi(object)]
+pub struct AgentRunSpawnObject {
+    pub snapshot: serde_json::Value,
+    pub replayed: bool,
+}
+
+fn agent_run_spawn_to_object(spawn: &RustAgentRunSpawn) -> napi::Result<AgentRunSpawnObject> {
+    let snapshot = serde_json::to_value(spawn.snapshot())
+        .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))?;
+    Ok(AgentRunSpawnObject {
+        snapshot,
+        replayed: spawn.replayed(),
+    })
+}
 
 #[napi(object)]
 #[derive(Clone)]
@@ -364,7 +381,7 @@ fn normalize_program_script_options(options: serde_json::Value) -> napi::Result<
     Ok(serde_json::Value::Object(args))
 }
 
-fn delegate_task_options_to_args(options: DelegateTaskOptions) -> serde_json::Value {
+fn delegate_task_item_to_args(options: DelegateTaskOptions) -> serde_json::Value {
     let mut args = serde_json::json!({
         "agent": options.agent,
         "description": options.description,
@@ -379,10 +396,10 @@ fn delegate_task_options_to_args(options: DelegateTaskOptions) -> serde_json::Va
     args
 }
 
-fn parallel_task_options_to_args(tasks: Vec<DelegateTaskOptions>) -> serde_json::Value {
+fn delegated_tasks_options_to_args(tasks: Vec<DelegateTaskOptions>) -> serde_json::Value {
     let task_values = tasks
         .into_iter()
-        .map(delegate_task_options_to_args)
+        .map(delegate_task_item_to_args)
         .collect::<Vec<_>>();
     serde_json::json!({ "tasks": task_values })
 }

@@ -69,11 +69,32 @@ impl PermissionRule {
             if rule.ends_with(')') {
                 let tool_name = rule[..paren_start].to_string();
                 let pattern = rule[paren_start + 1..rule.len() - 1].to_string();
-                return (Some(tool_name), Some(pattern));
+                return Self::canonicalize_search_rule(tool_name, Some(pattern));
             }
         }
         // No parentheses - tool name only, matches all args
-        (Some(rule.to_string()), None)
+        Self::canonicalize_search_rule(rule.to_string(), None)
+    }
+
+    /// Keep persisted policies from before the unified `search` tool working
+    /// without reserving the retired tool names in the registry. The mode is
+    /// included in the argument pattern so a legacy `grep(*)` grant does not
+    /// silently authorize glob or BM25 searches.
+    fn canonicalize_search_rule(
+        tool_name: String,
+        arg_pattern: Option<String>,
+    ) -> (Option<String>, Option<String>) {
+        let mode = match tool_name.to_ascii_lowercase().as_str() {
+            "grep" => "grep",
+            "glob" => "glob",
+            "bm25" => "bm25",
+            _ => return (Some(tool_name), arg_pattern),
+        };
+        let pattern = match arg_pattern.as_deref() {
+            None | Some("*") => format!("{mode} **"),
+            Some(pattern) => format!("{mode} {pattern}"),
+        };
+        (Some("search".to_string()), Some(pattern))
     }
 
     /// Check if this rule matches a tool invocation
@@ -156,18 +177,12 @@ impl PermissionRule {
                     .unwrap_or("")
                     .to_string()
             }
-            "glob" => {
-                // For glob, use the pattern field
-                args.get("pattern")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            }
-            "grep" => {
-                // For grep, combine pattern and path
-                let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            "search" => {
+                // For repository search, combine the mode, query, and path.
+                let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
                 let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                format!("{} {}", pattern, path)
+                format!("{} {} {}", mode, query, path)
             }
             "ls" => {
                 // For ls, use the path field

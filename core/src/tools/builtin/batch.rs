@@ -84,7 +84,7 @@ impl Tool for BatchTool {
                 {
                     "invocations": [
                         { "tool": "read", "args": { "file_path": "README.md" } },
-                        { "tool": "glob", "args": { "pattern": "**/*.rs" } }
+                        { "tool": "search", "args": { "mode": "glob", "query": "**/*.rs" } }
                     ]
                 }
             ]

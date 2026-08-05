@@ -10,8 +10,8 @@ use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider};
 use a3s_search::proxy::ProxyConfig;
 use a3s_search::{
-    EngineFailure, Metrics, MetricsSnapshot, Search, SearchCascade, SearchCoalescerSnapshot,
-    SearchQualityFloor, SearchQuery, SearchResult, SearchResults,
+    EngineFailure, Metrics, MetricsSnapshot, RetrievalHealth, RetrievalRequirements, Search,
+    SearchCascade, SearchCoalescerSnapshot, SearchQuery, SearchResult, SearchResults,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -29,15 +29,15 @@ const MAX_JSON_OUTPUT_BYTES: usize = crate::tools::MAX_OUTPUT_SIZE - JSON_OUTPUT
 
 #[cfg(feature = "headless-search")]
 const WEB_SEARCH_DESCRIPTION: &str =
-    "Search the web through a quality-gated cascade: native APIs first, HTTP/RSS engines only \
-     when needed, and headless Google/Baidu only when earlier tiers remain insufficient. \
+    "Search the web through a structurally gated cascade: headless Google/Baidu first, HTTP/RSS engines \
+     only when needed, and native APIs only when earlier tiers remain insufficient. \
      Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
      are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
      Supports proxy configuration for conventional and headless search transports.";
 
 #[cfg(not(feature = "headless-search"))]
 const WEB_SEARCH_DESCRIPTION: &str =
-    "Search the web through a quality-gated cascade of native APIs and HTTP/RSS engines. \
+    "Search the web through a structurally gated cascade of HTTP/RSS engines and native APIs. \
      Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
      are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
      Supports proxy configuration for conventional search transports.";
@@ -61,10 +61,10 @@ const ENGINE_CATALOG_DESCRIPTION: &str =
 
 #[cfg(feature = "headless-search")]
 use engines::add_headless_engine;
-use engines::{add_http_engine, default_engine_selection};
+use engines::{add_http_engine, default_engine_selection, EngineTier};
 use fallback::{
-    failure_metadata, failure_summary, outcome_metadata, text_notice_note, tier_timeout,
-    tiered_engine_plan, tool_error_kind_for_failures, usable_result_count,
+    automatic_tier_order, failure_metadata, failure_summary, outcome_metadata, text_notice_note,
+    tier_timeout, tiered_engine_plan, tool_error_kind_for_failures, usable_result_count,
 };
 
 pub struct WebSearchTool;
@@ -157,12 +157,26 @@ impl Drop for BrowserPoolCleanup {
 
 #[cfg(feature = "headless-search")]
 fn managed_headless_config() -> Option<HeadlessConfig> {
-    let status =
-        crate::search_runtime::browser_status(crate::search_runtime::ManagedBrowser::Chrome);
-    let path = status.available.then_some(status.path).flatten()?;
+    managed_headless_config_from_statuses(&crate::search_runtime::browser_statuses())
+}
+
+#[cfg(feature = "headless-search")]
+fn managed_headless_config_from_statuses(
+    statuses: &[crate::search_runtime::BrowserRuntimeStatus],
+) -> Option<HeadlessConfig> {
+    let status = statuses
+        .iter()
+        .find(|status| status.available && status.path.is_some())?;
+    let backend = match status.browser {
+        crate::search_runtime::ManagedBrowser::Chrome => BrowserBackend::Chrome,
+        crate::search_runtime::ManagedBrowser::Lightpanda => BrowserBackend::Lightpanda,
+    };
     Some(HeadlessConfig {
-        backend: BrowserBackend::Chrome,
-        browser_path: Some(path.to_string_lossy().into_owned()),
+        backend,
+        browser_path: status
+            .path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
         ..HeadlessConfig::default()
     })
 }
@@ -192,7 +206,6 @@ fn search_result_json(result: &SearchResult, full_text_bytes: Option<usize>) -> 
         "content": safe_content,
         "engines": engines,
         "score": result.score,
-        "query_match_score": result.query_match_score,
         "published_date": result.published_date,
     });
     if let (Some(maximum), Some(full_text)) = (full_text_bytes, result.full_text.as_deref()) {
@@ -224,18 +237,18 @@ fn bounded_json_search_results(
 
 fn json_search_payload(
     results: Vec<serde_json::Value>,
-    quality_met: bool,
-    quality: &a3s_search::SearchQuality,
-    quality_floor: &SearchQualityFloor,
+    requirements_met: bool,
+    health: &RetrievalHealth,
+    requirements: &RetrievalRequirements,
 ) -> serde_json::Value {
-    if quality_met {
+    if requirements_met {
         serde_json::Value::Array(results)
     } else {
         serde_json::json!({
-            "status": "quality_not_met",
-            "message": "Search exhausted the available tiers without meeting the generic quality floor; reformulate the query before treating these candidates as evidence.",
-            "search_quality": quality,
-            "search_quality_floor": quality_floor,
+            "status": "retrieval_requirements_not_met",
+            "message": "Search exhausted the available tiers without meeting the structural retrieval requirements; reformulate the query before treating these candidates as evidence.",
+            "retrieval_health": health,
+            "retrieval_requirements": requirements,
             "results": results,
         })
     }
@@ -453,6 +466,75 @@ async fn execute_network_stage(
     .await
 }
 
+#[cfg(feature = "headless-search")]
+async fn execute_headless_stage(
+    context: &SearchStageContext<'_>,
+    shortcuts: &[String],
+    config: Option<&crate::config::SearchConfig>,
+    remaining_tiers: usize,
+) -> SearchResults {
+    let mut results = SearchResults::new();
+    if context
+        .deadline
+        .saturating_duration_since(Instant::now())
+        .is_zero()
+    {
+        results.add_failure(
+            EngineFailure::new(
+                "Headless search tier",
+                "timeout",
+                "search deadline was exhausted before the headless tier could start",
+            )
+            .with_transient(true),
+        );
+        return results;
+    }
+
+    let headless_config = effective_headless_config(
+        config.and_then(|config| config.headless.as_ref()),
+        context.proxy_url,
+    );
+    let Some(headless_config) = headless_config else {
+        results.add_failure(EngineFailure::new(
+            "Headless search tier",
+            "headless_unavailable",
+            "no managed headless browser is available",
+        ));
+        return results;
+    };
+
+    let pool = WebSearchTool::create_pool(&headless_config);
+    let mut cleanup = BrowserPoolCleanup::new(Some(Arc::clone(&pool)));
+    let mut search = tier_search(context.tool_context, Arc::clone(context.metrics));
+    let retry_budget = context.tool_context.search_retry_budget();
+    for shortcut in shortcuts {
+        if !add_headless_engine(
+            &mut search,
+            shortcut,
+            &pool,
+            headless_config.backend,
+            &retry_budget,
+        ) {
+            results.add_failure(EngineFailure::new(
+                shortcut,
+                "unsupported_engine",
+                "headless engine is not available",
+            ));
+        }
+    }
+    results = execute_search_stage(
+        search,
+        results,
+        context.query,
+        "Headless search tier",
+        context.deadline,
+        remaining_tiers,
+    )
+    .await;
+    cleanup.shutdown().await;
+    results
+}
+
 #[async_trait]
 impl Tool for WebSearchTool {
     fn name(&self) -> &str {
@@ -485,7 +567,7 @@ impl Tool for WebSearchTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Optional. Search timeout in seconds. Default: 10. Maximum: 60."
+                    "description": "Optional. Search timeout in seconds. Default: 20. Maximum: 60."
                 },
                 "proxy": {
                     "type": "string",
@@ -671,8 +753,8 @@ impl Tool for WebSearchTool {
                 })));
         }
 
-        let quality_floor = SearchQualityFloor::for_limit(limit);
-        let mut cascade = SearchCascade::new(SearchQuery::new(&query_str), quality_floor);
+        let retrieval_requirements = RetrievalRequirements::for_limit(limit);
+        let mut cascade = SearchCascade::new(SearchQuery::new(&query_str), retrieval_requirements);
         let stage_context = SearchStageContext {
             tool_context: ctx,
             query: &query_str,
@@ -681,96 +763,59 @@ impl Tool for WebSearchTool {
             deadline: search_deadline,
         };
 
-        if !tier_plan.api.is_empty() {
-            let remaining_tiers = usize::from(!tier_plan.http.is_empty())
-                + usize::from(!tier_plan.headless.is_empty());
-            let results = execute_network_stage(
-                &stage_context,
-                &tier_plan.api,
-                "API search tier",
-                remaining_tiers,
-            )
-            .await;
-            cascade.push_tier("api", results);
-        }
+        let active_tiers = automatic_tier_order()
+            .into_iter()
+            .filter(|tier| match tier {
+                #[cfg(feature = "headless-search")]
+                EngineTier::Headless => !tier_plan.headless.is_empty(),
+                EngineTier::Http => !tier_plan.http.is_empty(),
+                EngineTier::Api => !tier_plan.api.is_empty(),
+            })
+            .collect::<Vec<_>>();
 
-        if cascade.needs_next_tier() && !tier_plan.http.is_empty() {
-            let results = execute_network_stage(
-                &stage_context,
-                &tier_plan.http,
-                "HTTP search tier",
-                usize::from(!tier_plan.headless.is_empty()),
-            )
-            .await;
-            cascade.push_tier("http", results);
-        }
-
-        #[cfg(feature = "headless-search")]
-        {
-            if cascade.needs_next_tier() && !tier_plan.headless.is_empty() {
-                let mut results = SearchResults::new();
-                if search_deadline
-                    .saturating_duration_since(Instant::now())
-                    .is_zero()
-                {
-                    results.add_failure(
-                        EngineFailure::new(
-                            "Headless search tier",
-                            "timeout",
-                            "search deadline was exhausted before the headless tier could start",
-                        )
-                        .with_transient(true),
-                    );
-                } else {
-                    let headless_config = effective_headless_config(
-                        config.and_then(|config| config.headless.as_ref()),
-                        proxy_url.as_deref(),
-                    );
-                    match headless_config {
-                        Some(headless_config) => {
-                            let pool = Self::create_pool(&headless_config);
-                            let mut cleanup = BrowserPoolCleanup::new(Some(Arc::clone(&pool)));
-                            let mut search = tier_search(ctx, Arc::clone(&search_metrics));
-                            let retry_budget = ctx.search_retry_budget();
-                            for shortcut in &tier_plan.headless {
-                                if !add_headless_engine(
-                                    &mut search,
-                                    shortcut,
-                                    &pool,
-                                    headless_config.backend,
-                                    &retry_budget,
-                                ) {
-                                    results.add_failure(EngineFailure::new(
-                                        shortcut,
-                                        "unsupported_engine",
-                                        "headless engine is not available",
-                                    ));
-                                }
-                            }
-                            results = execute_search_stage(
-                                search,
-                                results,
-                                &query_str,
-                                "Headless search tier",
-                                search_deadline,
-                                0,
-                            )
-                            .await;
-                            cleanup.shutdown().await;
-                        }
-                        None => results.add_failure(EngineFailure::new(
-                            "Headless search tier",
-                            "headless_unavailable",
-                            "no managed headless browser is available",
-                        )),
-                    }
-                }
-                cascade.push_tier("headless", results);
+        for (index, tier) in active_tiers.iter().copied().enumerate() {
+            if !cascade.needs_next_tier() {
+                break;
             }
+            let remaining_tiers = active_tiers.len().saturating_sub(index + 1);
+            let (name, results) = match tier {
+                #[cfg(feature = "headless-search")]
+                EngineTier::Headless => (
+                    "headless",
+                    execute_headless_stage(
+                        &stage_context,
+                        &tier_plan.headless,
+                        config.map(Arc::as_ref),
+                        remaining_tiers,
+                    )
+                    .await,
+                ),
+                EngineTier::Http => (
+                    "http",
+                    execute_network_stage(
+                        &stage_context,
+                        &tier_plan.http,
+                        "HTTP search tier",
+                        remaining_tiers,
+                    )
+                    .await,
+                ),
+                EngineTier::Api => (
+                    "api",
+                    execute_network_stage(
+                        &stage_context,
+                        &tier_plan.api,
+                        "API search tier",
+                        remaining_tiers,
+                    )
+                    .await,
+                ),
+            };
+            cascade.push_tier(name, results);
         }
 
-        let final_quality = cascade.quality();
-        let quality_met = quality_floor.is_met(&final_quality);
+        let retrieval_health = cascade.health();
+        let requirements_met = retrieval_requirements.is_met(&retrieval_health);
         let tier_reports = cascade.reports().to_vec();
         let mut search_results = cascade.into_results();
         search_results
@@ -783,9 +828,9 @@ impl Tool for WebSearchTool {
                 "Search completed with degraded engines: {failure_summary}."
             ));
         }
-        if !quality_met {
+        if !requirements_met {
             notices.push(
-                "Search exhausted the available tiers before the result quality floor was met."
+                "Search exhausted the available tiers before the structural retrieval requirements were met."
                     .to_string(),
             );
         }
@@ -795,11 +840,11 @@ impl Tool for WebSearchTool {
             .map(|outcome| outcome.shortcut.clone())
             .collect::<Vec<_>>();
         let search_fallback = serde_json::json!({
-            "trigger": "quality_floor",
+            "trigger": "retrieval_requirements",
             "mode": "tiered",
             "attempted": tier_reports.len() > 1,
             "engines": executed_engines,
-            "successful": quality_met,
+            "successful": requirements_met,
             "failures": failure_metadata(search_results.failures()),
         });
         let metrics = search_metrics.snapshot().await;
@@ -841,14 +886,14 @@ impl Tool for WebSearchTool {
 
         if results.is_empty() {
             let metadata = serde_json::json!({
-                "status": if quality_met && errors.is_empty() { "complete" } else { "failed" },
+                "status": if requirements_met && errors.is_empty() { "complete" } else { "failed" },
                 "engine_selection_source": engine_selection_source,
                 "selected_engines": &selected_engines,
-                "engine_fallback": (tier_reports.len() > 1).then_some("quality_gated_tiers"),
+                "engine_fallback": (tier_reports.len() > 1).then_some("structurally_gated_tiers"),
                 "notices": &notices,
                 "search_fallback": &search_fallback,
-                "search_quality": &final_quality,
-                "search_quality_floor": &quality_floor,
+                "retrieval_health": &retrieval_health,
+                "retrieval_requirements": &retrieval_requirements,
                 "search_tiers": &tier_reports,
                 "engine_outcomes": outcome_metadata(search_results.outcomes()),
                 "search_metrics": metrics_json,
@@ -860,7 +905,7 @@ impl Tool for WebSearchTool {
                 "No results found for query: \"{}\"{}{}",
                 query_str, notice_note, error_note
             );
-            if quality_met && errors.is_empty() {
+            if requirements_met && errors.is_empty() {
                 return Ok(ToolOutput::success(message).with_metadata(metadata));
             }
             let mut output = ToolOutput::error(message).with_metadata(metadata);
@@ -889,9 +934,9 @@ impl Tool for WebSearchTool {
             (
                 serde_json::to_string_pretty(&json_search_payload(
                     json_results,
-                    quality_met,
-                    &final_quality,
-                    &quality_floor,
+                    requirements_met,
+                    &retrieval_health,
+                    &retrieval_requirements,
                 ))
                 .unwrap_or_default(),
                 source_anchors,
@@ -921,22 +966,22 @@ impl Tool for WebSearchTool {
             (text, source_anchors, results.len())
         };
 
-        let tool_output = if quality_met {
+        let tool_output = if requirements_met {
             ToolOutput::success(output)
         } else {
             ToolOutput::error(output)
         };
         Ok(
             tool_output.with_metadata(serde_json::json!({
-                "status": if !quality_met { "failed" } else if errors.is_empty() { "complete" } else { "partial" },
+                "status": if !requirements_met { "failed" } else if errors.is_empty() { "complete" } else { "partial" },
                 "engine_selection_source": engine_selection_source,
                 "selected_engines": &selected_engines,
                 "source_anchors": source_anchors,
-                "engine_fallback": (tier_reports.len() > 1).then_some("quality_gated_tiers"),
+                "engine_fallback": (tier_reports.len() > 1).then_some("structurally_gated_tiers"),
                 "notices": &notices,
                 "search_fallback": &search_fallback,
-                "search_quality": &final_quality,
-                "search_quality_floor": &quality_floor,
+                "retrieval_health": &retrieval_health,
+                "retrieval_requirements": &retrieval_requirements,
                 "search_tiers": &tier_reports,
                 "engine_outcomes": outcome_metadata(search_results.outcomes()),
                 "search_metrics": metrics_json,

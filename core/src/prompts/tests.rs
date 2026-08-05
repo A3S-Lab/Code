@@ -489,5 +489,7 @@ fn test_prompts_do_not_reference_removed_surfaces() {
 
     assert!(SYSTEM_DEFAULT.contains("program"));
     assert!(SYSTEM_DEFAULT.contains("task"));
-    assert!(SYSTEM_DEFAULT.contains("parallel_task"));
+    assert!(SYSTEM_DEFAULT.contains("tasks"));
+    assert!(!SYSTEM_DEFAULT.contains("parallel_task"));
+    assert!(!PRE_ANALYSIS_SYSTEM.contains("parallel_task"));
 }

@@ -106,7 +106,8 @@ pub struct AutoDelegationOptions {
     pub enabled: Option<bool>,
     /// Allow automatic delegation to launch multiple child agents in parallel.
     ///
-    /// Manual `parallel_task` calls remain available when this is false.
+    /// Manual `task` fan-out and legacy `parallel_task` calls remain available
+    /// when this is false.
     pub auto_parallel: Option<bool>,
     /// Minimum local confidence required to auto-delegate a child task.
     pub min_confidence: Option<f64>,
@@ -256,9 +257,11 @@ pub struct SessionOptions {
     pub auto_delegation: Option<AutoDelegationOptions>,
     /// Global session-level kill switch for automatic parallel child-agent fan-out.
     ///
-    /// Manual `parallel_task` calls remain available when this is false.
+    /// Manual `task` fan-out and legacy `parallel_task` calls remain available
+    /// when this is false.
     pub auto_parallel: Option<bool>,
-    /// Session-level switch for model-visible manual `task` / `parallel_task` tools.
+    /// Session-level switch for the model-visible `task` tool and hidden
+    /// `parallel_task` compatibility alias.
     pub manual_delegation_enabled: Option<bool>,
     /// Sampling temperature (0.0–1.0). Overrides the provider default.
     /// Only applied when `model` is also set.

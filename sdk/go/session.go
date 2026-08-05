@@ -172,6 +172,61 @@ func (session *Session) ResumeRun(
 	return &result, nil
 }
 
+// SpawnRunWithID admits an exact host-selected run ID and executes it in the
+// background. A compatible existing ID is replayed without duplicate work.
+func (session *Session) SpawnRunWithID(
+	ctx context.Context,
+	runID string,
+	prompt string,
+) (*RunSpawn, error) {
+	const op = "session_spawn_run_with_id"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(runID) == "" {
+		return nil, invalid(op, "run id cannot be empty")
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return nil, invalid(op, "prompt cannot be empty")
+	}
+	params := session.params()
+	params["run_id"] = runID
+	params["prompt"] = prompt
+	var result RunSpawn
+	if err := session.runtime.Request(ctx, op, params, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// SpawnRecoveryWithRunID resumes a checkpoint under an exact host-selected
+// run ID in the background. A compatible existing ID is replayed without
+// duplicate recovery work.
+func (session *Session) SpawnRecoveryWithRunID(
+	ctx context.Context,
+	checkpointRunID string,
+	runID string,
+) (*RunSpawn, error) {
+	const op = "session_spawn_recovery_with_run_id"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(checkpointRunID) == "" {
+		return nil, invalid(op, "checkpoint run id cannot be empty")
+	}
+	if strings.TrimSpace(runID) == "" {
+		return nil, invalid(op, "run id cannot be empty")
+	}
+	params := session.params()
+	params["checkpoint_run_id"] = checkpointRunID
+	params["run_id"] = runID
+	var result RunSpawn
+	if err := session.runtime.Request(ctx, op, params, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (session *Session) SendWithAttachments(
 	ctx context.Context,
 	prompt string,

@@ -201,6 +201,14 @@ type RunSnapshot struct {
 	EventCount  uint      `json:"event_count"`
 }
 
+// RunSpawn is the result of admitting an exact host-selected run ID.
+// Replayed is true when the compatible run already existed and no duplicate
+// worker was started.
+type RunSpawn struct {
+	Snapshot RunSnapshot `json:"snapshot"`
+	Replayed bool        `json:"replayed"`
+}
+
 type CurrentRun struct {
 	ID        string       `json:"id"`
 	SessionID string       `json:"session_id"`

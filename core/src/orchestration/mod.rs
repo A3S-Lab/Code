@@ -1,7 +1,7 @@
 //! Programmable, deterministic multi-agent orchestration.
 //!
 //! Today an agent fans work out only by *model-driven* delegation (the LLM
-//! decides to call the `task` / `parallel_task` tool). This module adds a
+//! decides to call the unified `task` tool). This module adds a
 //! *programmable* layer: a developer expresses fan-out / pipelines /
 //! verification panels as code, so the orchestration is reproducible,
 //! testable, budget-bounded, and (later) resumable — independent of what the

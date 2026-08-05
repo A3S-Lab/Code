@@ -287,14 +287,14 @@ async fn real_llm_grep_uses_all_output_modes_and_lexical_pages() {
         .session_async(
             workspace.path().display().to_string(),
             Some(restricted_options(
-                &["grep(*)"],
+                &["search(*)"],
                 12,
                 "context-tools-grep-modes",
             )),
         )
         .await
         .expect("grep session");
-    let prompt = r#"Use only grep for pattern NEEDLE, path '.', and glob '*.txt'. Execute these steps in order, one call per result:
+    let prompt = r#"Use only search with mode='grep', query='NEEDLE', path '.', and include='*.txt'. Execute these steps in order, one call per result:
 1. output_mode='content' with no limit or cursor.
 2. output_mode='files_with_matches' with limit=2 and no cursor; if a cursor is returned, make exactly one continuation call with the same fields and that exact cursor.
 3. output_mode='count' with limit=2 and no cursor; if a cursor is returned, make exactly one continuation call with the same fields and that exact cursor.
@@ -303,7 +303,7 @@ After all calls, end with the token GREP_SEQUENCE_OK. Do not use read or any oth
     let trace = run_prompt(&session, prompt, None).await;
 
     assert_eq!(trace.calls.len(), 6, "unexpected grep sequence: {trace:?}");
-    assert!(trace.calls.iter().all(|call| call.name == "grep"));
+    assert!(trace.calls.iter().all(|call| call.name == "search"));
     let modes = trace.calls.iter().map(output_mode).collect::<Vec<_>>();
     assert_eq!(
         modes,
@@ -449,14 +449,14 @@ async fn real_llm_glob_preserves_backend_default_and_uses_stable_path_pages() {
         .session_async(
             workspace.path().display().to_string(),
             Some(restricted_options(
-                &["glob(*)"],
+                &["search(*)"],
                 8,
                 "context-tools-glob-sorting",
             )),
         )
         .await
         .expect("glob session");
-    let prompt = r#"Use only glob with pattern '*.item' and path '.'. Execute in order:
+    let prompt = r#"Use only search with mode='glob', query='*.item', and path '.'. Execute in order:
 1. Call with limit=10 and OMIT the sort and cursor fields, so the backend default is exercised.
 2. Call with sort='path', limit=2, and no cursor.
 3. If step 2 returns a cursor, call again with sort='path', limit=2, and that exact cursor. Continue only until the cursor is absent.
@@ -464,7 +464,7 @@ Then end with GLOB_SEQUENCE_OK and make no extra calls."#;
     let trace = run_prompt(&session, prompt, None).await;
 
     assert_eq!(trace.calls.len(), 3, "unexpected glob sequence: {trace:?}");
-    assert!(trace.calls.iter().all(|call| call.name == "glob"));
+    assert!(trace.calls.iter().all(|call| call.name == "search"));
     let backend = &trace.calls[0];
     assert!(
         backend.args.get("sort").is_none()

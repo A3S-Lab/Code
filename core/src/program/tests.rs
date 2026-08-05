@@ -73,11 +73,12 @@ fn code_search_program_uses_query_path_and_glob() {
         .unwrap();
 
     assert_eq!(program.steps.len(), 1);
-    assert_eq!(program.steps[0].tool_name, "grep");
+    assert_eq!(program.steps[0].tool_name, "search");
     assert_eq!(program.steps[0].label.as_deref(), Some("search_code"));
-    assert_eq!(program.steps[0].args["pattern"], "ContextAssembler");
+    assert_eq!(program.steps[0].args["mode"], "grep");
+    assert_eq!(program.steps[0].args["query"], "ContextAssembler");
     assert_eq!(program.steps[0].args["path"], "core/src");
-    assert_eq!(program.steps[0].args["glob"], "*.rs");
+    assert_eq!(program.steps[0].args["include"], "*.rs");
 }
 
 #[test]
@@ -92,10 +93,13 @@ fn repo_map_program_uses_bounded_root_steps() {
     assert_eq!(program.steps[0].label.as_deref(), Some("list_root"));
     assert!(program.steps[1..]
         .iter()
-        .all(|step| step.tool_name == "glob"));
+        .all(|step| step.tool_name == "search"));
+    assert!(program.steps[1..]
+        .iter()
+        .all(|step| step.args["mode"] == "glob"));
     assert_eq!(program.steps[1].label.as_deref(), Some("find_Cargo.toml"));
-    assert_eq!(program.steps[1].args["pattern"], "Cargo.toml");
-    assert_eq!(program.steps[6].args["pattern"], "AGENTS.md");
+    assert_eq!(program.steps[1].args["query"], "Cargo.toml");
+    assert_eq!(program.steps[6].args["query"], "AGENTS.md");
 }
 
 #[test]
@@ -165,7 +169,7 @@ fn program_trace_serializes_with_stable_schema() {
         success: true,
         summary: "done".to_string(),
         steps: vec![ProgramStepResult {
-            tool_name: "grep".to_string(),
+            tool_name: "search".to_string(),
             label: Some("search_code".to_string()),
             success: true,
             output: "match".to_string(),
@@ -215,7 +219,7 @@ fn program_verification_hints_include_program_contract() {
     assert_eq!(hints.len(), 1);
     assert_eq!(hints[0].kind, "inspect_project_files");
     assert!(hints[0].required);
-    assert_eq!(hints[0].suggested_tools, vec!["read", "glob"]);
+    assert_eq!(hints[0].suggested_tools, vec!["read", "search"]);
 }
 
 #[test]
@@ -225,7 +229,7 @@ fn program_verification_hints_include_failures_and_artifacts() {
         success: false,
         summary: "stopped".to_string(),
         steps: vec![ProgramStepResult {
-            tool_name: "grep".to_string(),
+            tool_name: "search".to_string(),
             label: Some("scan".to_string()),
             success: false,
             output: "failed".to_string(),
@@ -237,7 +241,7 @@ fn program_verification_hints_include_failures_and_artifacts() {
         vec![ProgramTraceStep {
             index: 0,
             label: "scan".to_string(),
-            tool_name: "grep".to_string(),
+            tool_name: "search".to_string(),
             success: false,
             output_bytes: 6,
             compacted: true,

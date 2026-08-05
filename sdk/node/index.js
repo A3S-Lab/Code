@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { StateGraphRuntime, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, BrowserBackend, ServeHandle, Session, Agent, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, builtinSkills } = nativeBinding
+const { StateGraphRuntime, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, BrowserBackend, Session, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, builtinSkills } = nativeBinding
 
 module.exports.StateGraphRuntime = StateGraphRuntime
 module.exports.EventStream = EventStream
@@ -321,9 +321,9 @@ module.exports.DefaultSecurityProvider = DefaultSecurityProvider
 module.exports.LocalWorkspaceBackend = LocalWorkspaceBackend
 module.exports.S3WorkspaceBackend = S3WorkspaceBackend
 module.exports.BrowserBackend = BrowserBackend
-module.exports.ServeHandle = ServeHandle
 module.exports.Session = Session
 module.exports.Agent = Agent
+module.exports.ServeHandle = ServeHandle
 
 // a3s-code: EventStream async iterator bridge
 // napi-rs exposes the async `next()` method but does not install the symbol

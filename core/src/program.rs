@@ -591,13 +591,13 @@ pub fn program_verification_hints(
             "Review matched files before editing or drawing conclusions.",
         )
         .required()
-        .with_suggested_tools(["read", "grep"])],
+        .with_suggested_tools(["read", "search"])],
         "program_repo_map" => vec![ProgramVerificationHint::new(
             "inspect_project_files",
             "Use detected project files to choose build, test, and lint commands.",
         )
         .required()
-        .with_suggested_tools(["read", "glob"])],
+        .with_suggested_tools(["read", "search"])],
         _ => Vec::new(),
     };
 
@@ -619,7 +619,7 @@ pub fn program_verification_hints(
         hints.push(
             ProgramVerificationHint::new("investigate_failed_steps", message)
                 .required()
-                .with_suggested_tools(["read", "grep"]),
+                .with_suggested_tools(["read", "search"]),
         );
     }
 
@@ -783,11 +783,12 @@ pub fn program_code_search() -> ProgramTemplate {
     ))
     .with_step(
         ProgramStepTemplate::new(
-            "grep",
+            "search",
             serde_json::json!({
-                "pattern": "{{query}}",
+                "mode": "grep",
+                "query": "{{query}}",
                 "path": "{{path}}",
-                "glob": "{{glob}}",
+                "include": "{{glob}}",
                 "context": 2
             }),
         )
@@ -820,10 +821,11 @@ pub fn program_repo_map() -> ProgramTemplate {
     ] {
         template = template.with_step(
             ProgramStepTemplate::new(
-                "glob",
+                "search",
                 serde_json::json!({
+                    "mode": "glob",
                     "path": "{{path}}",
-                    "pattern": pattern
+                    "query": pattern
                 }),
             )
             .with_label(format!("find_{pattern}")),

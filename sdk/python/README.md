@@ -64,6 +64,10 @@ governed_result = await session.governed_tool_async(
 runs = await session.runs_async()
 events = await session.run_events_async(run_id)
 page = await session.run_event_page_async(run_id, after_sequence=cursor, limit=256)
+admitted = await session.spawn_run_with_id_async(run_id, "Verify the release")
+recovered = await session.spawn_recovery_with_run_id_async(
+    checkpoint_run_id, recovery_run_id
+)
 
 await session.save_async()
 await session.cancel_async()
@@ -221,6 +225,11 @@ if runs:
     # Cancels only if that run is still active; stale IDs are ignored.
     session.cancel_run(runs[-1]["id"])
 
+# Headless hosts can start detached work under immutable run IDs. Repeating a
+# compatible ID returns replayed=True instead of starting duplicate work.
+admitted = session.spawn_run_with_id("release-42/run-7", "Verify the release")
+print(admitted["snapshot"]["id"], admitted["replayed"])
+
 # run_events() uses the same versioned envelope as live streams. Replay
 # metadata carries run_id, session_id, sequence, and timestamp_ms.
 
@@ -346,7 +355,7 @@ program = session.program({
 })
 print(program.output)
 
-# Delegation helpers (wrappers around task / parallel_task)
+# Delegation helpers (both use the unified task tool)
 session.task({
     "agent": "explore",
     "description": "Find auth entry points",
@@ -484,9 +493,11 @@ For the streaming event-driven loop used by UIs, see
 
 ## Delegation
 
-Routine multi-agent work uses the model-visible `task` and `parallel_task`
-tools. Use `session.task(...)` and `session.tasks(...)` for SDK-native calls,
-or `session.tool("task", {...})` when you need raw access.
+Routine multi-agent work uses the model-visible `task` tool. Use
+`session.task(...)` for one `tasks` item and `session.tasks(...)` for concurrent
+fan-out, or `session.tool("task", {"tasks": [...]})` when you need raw access.
+`session.parallel_task(...)` remains an explicit compatibility helper for the
+hidden legacy alias.
 The old standalone lifecycle control-plane API is intentionally removed from
 the 2.0 SDK surface.
 

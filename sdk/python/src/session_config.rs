@@ -503,7 +503,8 @@ impl PyAutoDelegationConfig {
 
     /// Allow automatic delegation to launch multiple child agents in parallel.
     ///
-    /// Manual ``parallel_task`` calls remain available when this is false.
+    /// Manual ``task`` fan-out and legacy ``parallel_task`` calls remain
+    /// available when this is false.
     #[getter]
     fn get_auto_parallel(&self) -> bool {
         self.auto_parallel

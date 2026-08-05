@@ -156,10 +156,11 @@ the SDK does not auto-run project checks.
 
 ## Routine Delegation
 
-Use the model-visible `task` and `parallel_task` tools for ordinary delegation.
-They are the default multi-agent composition path in 2.0.
+Use the model-visible `task` tool for ordinary delegation. Pass one `tasks` item
+for a focused child or several independent items for concurrent fan-out.
 For automatic subagent delegation, set `opts.auto_parallel = False` to disable
-automatic parallel fan-out while keeping manual `parallel_task` available.
+automatic parallel fan-out while keeping manual `task` fan-out available. The
+explicit `session.parallel_task(...)` helper is retained for legacy compatibility.
 
 ## MCP
 

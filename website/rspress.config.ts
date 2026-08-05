@@ -42,8 +42,8 @@ export default defineConfig({
     ],
   },
   multiVersion: {
-    default: 'v6.7.0',
-    versions: ['v6.7.0', 'v6.6.0', 'v6.5.2', 'v6.5.1', 'v6.5.0'],
+    default: 'v6.8.0',
+    versions: ['v6.8.0', 'v6.7.0', 'v6.6.0', 'v6.5.2', 'v6.5.1', 'v6.5.0'],
   },
   locales: [
     {

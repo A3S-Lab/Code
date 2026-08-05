@@ -71,7 +71,8 @@ const session = agent.session(workspace, {
 const toolNames = await step('toolNames', () => session.toolNames());
 assert.ok(toolNames.includes('program'), 'program tool should be registered');
 assert.ok(toolNames.includes('task'), 'task tool should be registered');
-assert.ok(toolNames.includes('parallel_task'), 'parallel_task tool should be registered');
+assert.ok(toolNames.includes('task'), 'task tool should be model-visible');
+assert.ok(!toolNames.includes('parallel_task'), 'parallel_task compatibility alias should stay hidden');
 
 const toolDefinitions = await step('toolDefinitions', () => session.toolDefinitions());
 assert.ok(Array.isArray(toolDefinitions), 'toolDefinitions() should return an array');

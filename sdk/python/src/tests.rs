@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn agent_run_spawn_dict_preserves_snapshot_and_replay_state() {
+    pyo3::prepare_freethreaded_python();
+    let spawn = RustAgentRunSpawn::Replayed {
+        snapshot: a3s_code_core::run::RunSnapshot {
+            id: "host-run-1".to_string(),
+            session_id: "session-1".to_string(),
+            status: a3s_code_core::run::RunStatus::Created,
+            prompt: "inspect the workspace".to_string(),
+            created_at_ms: 10,
+            updated_at_ms: 20,
+            result_text: None,
+            error: None,
+            event_count: 0,
+        },
+    };
+
+    Python::with_gil(|py| {
+        let object = agent_run_spawn_to_py(py, &spawn).unwrap();
+        let dict = object.bind(py).downcast::<PyDict>().unwrap();
+        assert!(dict
+            .get_item("replayed")
+            .unwrap()
+            .unwrap()
+            .extract::<bool>()
+            .unwrap());
+        let snapshot_object = dict.get_item("snapshot").unwrap().unwrap();
+        let snapshot = snapshot_object.downcast::<PyDict>().unwrap();
+        assert_eq!(
+            snapshot
+                .get_item("id")
+                .unwrap()
+                .unwrap()
+                .extract::<String>()
+                .unwrap(),
+            "host-run-1"
+        );
+        assert_eq!(
+            snapshot
+                .get_item("status")
+                .unwrap()
+                .unwrap()
+                .extract::<String>()
+                .unwrap(),
+            "created"
+        );
+    });
+}
+
+#[test]
 fn inline_skill_conversion_is_typed_and_rejects_invalid_input() {
     pyo3::prepare_freethreaded_python();
     let skill = inline_skill_to_rust(
@@ -626,25 +675,27 @@ fn remote_git_without_workspace_backend_errors_clearly() {
 
 #[test]
 fn delegate_task_args_use_core_task_schema() {
-    let args = delegate_task_args(
+    let item = delegate_task_args(
         "explore".to_string(),
         "Find auth files".to_string(),
         "Inspect auth files".to_string(),
         true,
         Some(3),
     );
+    let args = delegated_tasks_args(serde_json::json!([item])).unwrap();
 
-    assert_eq!(args["agent"], "explore");
-    assert_eq!(args["description"], "Find auth files");
-    assert_eq!(args["prompt"], "Inspect auth files");
-    assert_eq!(args["background"], true);
-    assert_eq!(args["max_steps"], 3);
-    assert!(args.get("role").is_none());
+    assert_eq!(args["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(args["tasks"][0]["agent"], "explore");
+    assert_eq!(args["tasks"][0]["description"], "Find auth files");
+    assert_eq!(args["tasks"][0]["prompt"], "Inspect auth files");
+    assert_eq!(args["tasks"][0]["background"], true);
+    assert_eq!(args["tasks"][0]["max_steps"], 3);
+    assert!(args["tasks"][0].get("role").is_none());
 }
 
 #[test]
-fn parallel_task_args_use_core_parallel_task_schema() {
-    let args = parallel_task_args(serde_json::json!([
+fn delegated_tasks_args_use_unified_task_schema() {
+    let args = delegated_tasks_args(serde_json::json!([
         { "agent": "explore", "description": "Find tests", "prompt": "Locate tests" },
         { "agent": "verification", "description": "Check risks", "prompt": "Review risks" }
     ]))
@@ -653,7 +704,7 @@ fn parallel_task_args_use_core_parallel_task_schema() {
     assert_eq!(args["tasks"].as_array().unwrap().len(), 2);
     assert_eq!(args["tasks"][0]["agent"], "explore");
     assert_eq!(args["tasks"][1]["agent"], "verification");
-    assert!(parallel_task_args(serde_json::json!({ "agent": "explore" })).is_err());
+    assert!(delegated_tasks_args(serde_json::json!({ "agent": "explore" })).is_err());
 }
 
 #[test]

@@ -46,6 +46,10 @@ def test_async_session_lifecycle_and_event_loop_progress() -> None:
             create_options.session_store = store
 
             session = await agent.session_async(workspace, create_options)
+            assert callable(session.spawn_run_with_id)
+            assert callable(session.spawn_run_with_id_async)
+            assert callable(session.spawn_recovery_with_run_id)
+            assert callable(session.spawn_recovery_with_run_id_async)
             result = await session.send_async("/help")
             assert "/help" in result.text
             assert await session.runs_async() == []

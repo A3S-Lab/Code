@@ -34,6 +34,8 @@ impl Tool for EchoTool {
 
 struct ParallelTaskProbeTool;
 
+struct TaskProbeTool;
+
 #[async_trait]
 impl Tool for ParallelTaskProbeTool {
     fn name(&self) -> &str {
@@ -42,6 +44,25 @@ impl Tool for ParallelTaskProbeTool {
 
     fn description(&self) -> &str {
         "Probe tool used to verify PTC sandbox filtering."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object" })
+    }
+
+    async fn execute(&self, _args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        Ok(ToolOutput::success("should-not-run"))
+    }
+}
+
+#[async_trait]
+impl Tool for TaskProbeTool {
+    fn name(&self) -> &str {
+        "task"
+    }
+
+    fn description(&self) -> &str {
+        "Probe tool used to verify unified task fan-out filtering."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -210,13 +231,20 @@ fn program_tool_default_allowed_tools_include_registry_tools_except_program() {
 }
 
 #[test]
-fn program_tool_forbids_parallel_task_in_scripts() {
+fn program_tool_forbids_recursive_or_legacy_orchestrators_in_scripts() {
     let registry = ToolRegistry::new(PathBuf::from("/tmp"));
     let args = serde_json::json!({
-        "allowed_tools": ["parallel_task", "task", "program", "echo"]
+        "allowed_tools": [
+            "parallel_task",
+            "dynamic_workflow",
+            "task",
+            "program",
+            "echo"
+        ]
     });
     let allowed = script_allowed_tools(&args, registry.list());
     assert!(!allowed.contains("parallel_task"));
+    assert!(!allowed.contains("dynamic_workflow"));
     assert!(allowed.contains("task"));
     assert!(allowed.contains("echo"));
     assert!(!allowed.contains("program"));
@@ -249,6 +277,50 @@ async fn program_tool_rejects_parallel_task_even_when_explicitly_allowed() {
         .content
         .contains("tool 'parallel_task' is not allowed"));
     assert!(!output.content.contains("should-not-run"));
+}
+
+#[tokio::test]
+async fn program_tool_rejects_unified_task_fanout_but_keeps_single_delegation() {
+    let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+    registry.register(Arc::new(TaskProbeTool));
+    let tool = ProgramTool::new(Arc::clone(&registry));
+
+    let rejected = tool
+        .execute(
+            &serde_json::json!({
+                "type": "script",
+                "source": r#"
+                    async function run(ctx) {
+                        return await ctx.tool("task", { tasks: [{}, {}] });
+                    }
+                "#,
+                "allowed_tools": ["task"]
+            }),
+            &ToolContext::new(PathBuf::from("/tmp")),
+        )
+        .await
+        .unwrap();
+    assert!(!rejected.success);
+    assert!(rejected.content.contains("tool 'task' is not allowed"));
+    assert!(!rejected.content.contains("should-not-run"));
+
+    let allowed = tool
+        .execute(
+            &serde_json::json!({
+                "type": "script",
+                "source": r#"
+                    async function run(ctx) {
+                        return await ctx.tool("task", { tasks: [{}] });
+                    }
+                "#,
+                "allowed_tools": ["task"]
+            }),
+            &ToolContext::new(PathBuf::from("/tmp")),
+        )
+        .await
+        .unwrap();
+    assert!(allowed.success, "{}", allowed.content);
+    assert!(allowed.content.contains("should-not-run"));
 }
 
 #[tokio::test]

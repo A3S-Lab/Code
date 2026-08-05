@@ -34,6 +34,7 @@ use tokio::sync::{broadcast, Mutex};
 const DYNAMIC_WORKFLOW_TOOL: &str = "dynamic_workflow";
 const GENERATE_OBJECT_TOOL: &str = "generate_object";
 const PROGRAM_TOOL: &str = "program";
+const TASK_TOOL: &str = "task";
 const PARALLEL_TASK_TOOL: &str = "parallel_task";
 const MAX_INLINE_RETRY_RESUMES: usize = 8;
 const MAX_INLINE_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -289,9 +290,12 @@ impl FlowRuntime for DynamicWorkflowRuntime {
     }
 
     async fn run_step(&self, invocation: StepInvocation) -> a3s_flow::Result<Value> {
-        if invocation.step_name == PARALLEL_TASK_TOOL {
+        if matches!(
+            invocation.step_name.as_str(),
+            TASK_TOOL | PARALLEL_TASK_TOOL
+        ) {
             return self
-                .run_tool_step(PARALLEL_TASK_TOOL, invocation.input)
+                .run_tool_step(&invocation.step_name, invocation.input)
                 .await;
         }
 
@@ -482,7 +486,7 @@ impl FlowEventObserver for AgentEventFlowObserver {
 }
 
 fn workflow_step_description(step_id: &str, step_name: &str, input: Option<&Value>) -> String {
-    if step_name == PARALLEL_TASK_TOOL {
+    if matches!(step_name, TASK_TOOL | PARALLEL_TASK_TOOL) {
         let count = input
             .and_then(|value| value.get("tasks"))
             .and_then(Value::as_array)
@@ -545,7 +549,7 @@ impl Tool for DynamicWorkflowTool {
             "properties": {
                 "source": {
                     "type": "string",
-                    "description": "JavaScript PTC source defining async function run(ctx, inputs). For inputs.kind='workflow', return a Flow command: {type:'complete', output}, {type:'fail', error}, {type:'schedule_step', step_id, step_name, input, retry?}, or {type:'schedule_steps', steps:[...]}. For inputs.kind='step', return the step JSON output. A scheduled step with step_name='parallel_task' bypasses QuickJS and calls the host parallel_task tool directly with input as its arguments."
+                    "description": "JavaScript PTC source defining async function run(ctx, inputs). For inputs.kind='workflow', return a Flow command: {type:'complete', output}, {type:'fail', error}, {type:'schedule_step', step_id, step_name, input, retry?}, or {type:'schedule_steps', steps:[...]}. For inputs.kind='step', return the step JSON output. A scheduled step with step_name='task' bypasses QuickJS and calls the host task tool directly with input as its arguments; legacy parallel_task steps remain readable."
                 },
                 "input": {
                     "type": "object",
@@ -557,7 +561,7 @@ impl Tool for DynamicWorkflowTool {
                 },
                 "allowed_tools": {
                     "type": "array",
-                    "description": "Tool names the workflow script may call through ctx. Defaults to all registered tools except program, dynamic_workflow, and parallel_task. Login-registered tools such as runtime are allowed when present.",
+                    "description": "Tool names the workflow script may call through ctx. Defaults to all registered tools except program, dynamic_workflow, and the legacy parallel_task alias. Direct task fan-out is blocked inside QuickJS; schedule a host task step instead. Login-registered tools such as runtime are allowed when present.",
                     "items": { "type": "string" }
                 },
                 "limits": {

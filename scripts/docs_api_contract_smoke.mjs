@@ -112,7 +112,7 @@ max_steps: 3
 permissions:
   allow:
     - read
-    - grep
+    - search
   deny:
     - write
 `,
@@ -122,7 +122,7 @@ permissions:
     `---
 name: release-review
 description: Review release blockers and verification evidence
-allowed-tools: "read(*), grep(*)"
+allowed-tools: "read(*), search(*)"
 tags: ["release", "docs"]
 ---
 
@@ -298,7 +298,7 @@ sessions_dir = "${aclSessionDir}"
     permissionPolicy: {
       deny: ['write(**/.env*)', 'bash(rm -rf*)'],
       ask: ['bash(git push*)', 'bash(npm publish*)'],
-      allow: ['read(*)', 'grep(*)', 'glob(*)', 'bash(npm run build*)'],
+      allow: ['read(*)', 'search(*)', 'bash(npm run build*)'],
       defaultDecision: 'ask',
       enabled: true,
     },
@@ -370,12 +370,10 @@ sessions_dir = "${aclSessionDir}"
     'write',
     'edit',
     'patch',
-    'grep',
-    'glob',
+    'search',
     'ls',
     'bash',
     'task',
-    'parallel_task',
     'search_skills',
     'Skill',
     'program',
@@ -386,6 +384,8 @@ sessions_dir = "${aclSessionDir}"
   ]) {
     assert.ok(initialToolNames.includes(name), `toolNames() should include ${name}`);
   }
+  assert.ok(!initialToolNames.includes('parallel_task'));
+  assert.ok(!session.toolDefinitions().some(tool => tool.name === 'parallel_task'));
   assert.ok(session.toolDefinitions().some(tool => tool.name === 'program'));
   const fileSkillSearch = await session.tool('search_skills', { query: 'release blockers', limit: 5 });
   assert.equal(fileSkillSearch.exitCode, 0);
@@ -432,12 +432,12 @@ sessions_dir = "${aclSessionDir}"
         const readText = await ctx.readFile("README.md");
         const readWindow = await ctx.readFile("read-window.txt", { offset: 1, limit: 1 });
         const readResult = await ctx.read("read-window.txt", { offset: 1, limit: 1 });
-        const hits = await ctx.grep(inputs.q, { glob: "*.md" });
-        const globText = await ctx.glob("src/*.rs");
+        const hits = await ctx.search(inputs.q, { mode: "grep", include: "*.md" });
+        const globText = await ctx.search("src/*.rs", { mode: "glob" });
         const lsText = await ctx.ls(".");
         const bashText = await ctx.bash("printf ptc-bash");
         const gitStatus = await ctx.git({ command: "status" });
-        const explicitTool = await ctx.tool("grep", { pattern: inputs.q, glob: "*.md" });
+        const explicitTool = await ctx.tool("search", { mode: "grep", query: inputs.q, include: "*.md" });
         const readWindowOk = readWindow.includes("needle") && !readWindow.includes("alpha") && !readWindow.includes("omega");
         return {
           summary: "ok",
@@ -455,7 +455,7 @@ sessions_dir = "${aclSessionDir}"
       }
     `,
     inputs: { q: 'planningMode' },
-    allowedTools: ['read', 'grep', 'glob', 'ls', 'bash', 'git'],
+    allowedTools: ['read', 'search', 'ls', 'bash', 'git'],
     limits: { timeoutMs: 30000, maxToolCalls: 12, maxOutputBytes: 65536 },
   });
   assert.equal(program.exitCode, 0);
@@ -472,7 +472,7 @@ sessions_dir = "${aclSessionDir}"
   assert.equal(programMetadata.script_result.explicitToolOk, true);
   assert.deepEqual(
     programMetadata.program.tool_calls.map(call => call.tool_name),
-    ['read', 'read', 'read', 'grep', 'glob', 'ls', 'bash', 'git', 'grep'],
+    ['read', 'read', 'read', 'search', 'search', 'ls', 'bash', 'git', 'search'],
   );
 
   const verification = await session.verifyCommands('docs smoke', [
@@ -484,11 +484,11 @@ sessions_dir = "${aclSessionDir}"
   assert.equal(typeof session.verificationSummaryText(), 'string');
   assert.equal(typeof formatVerificationSummary(session.verificationSummary()), 'string');
 
-  await session.rememberSuccess('docs memory success', ['grep'], 'remembered');
+  await session.rememberSuccess('docs memory success', ['search'], 'remembered');
   await session.rememberFailure('docs memory failure', 'expected failure', ['bash']);
   assert.ok((await session.memoryRecent(10)).length >= 2);
   assert.ok((await session.recallSimilar('docs memory', 5)).length >= 1);
-  assert.ok(Array.isArray(await session.recallByTags(['grep'], 10)));
+  assert.ok(Array.isArray(await session.recallByTags(['search'], 10)));
   assert.equal(typeof session.recallRecent, 'undefined');
 
   const result = await session.send('Return a short docs smoke response.');
@@ -527,8 +527,25 @@ sessions_dir = "${aclSessionDir}"
       maxSteps: 1,
     },
   ]);
-  assert.equal(parallel.name, 'parallel_task');
+  assert.equal(parallel.name, 'task');
   assert.equal(parallel.exitCode, 0);
+
+  const legacyParallel = await session.parallelTask([
+    {
+      agent: 'general',
+      description: 'legacy compatibility one',
+      prompt: 'Return one short response.',
+      maxSteps: 1,
+    },
+    {
+      agent: 'general',
+      description: 'legacy compatibility two',
+      prompt: 'Return another short response.',
+      maxSteps: 1,
+    },
+  ]);
+  assert.equal(legacyParallel.name, 'parallel_task');
+  assert.equal(legacyParallel.exitCode, 0);
 
   assert.ok((await session.runs()).length >= 2);
   assert.equal(Array.isArray(session.traceEvents()), true);
@@ -544,10 +561,6 @@ sessions_dir = "${aclSessionDir}"
   assert.equal(await session.cancelRun('not-active'), false);
 
   await session.save();
-  const resumed = agent.resumeSession('docs-contract', {
-    sessionStore: new FileSessionStore(path.join(stores, 'sessions')),
-  });
-  assert.equal(resumed.history().length >= 1, true);
 
   const queued = agent.session(workspace, {
     queueConfig: { enableDlq: true, enableMetrics: true },
@@ -583,6 +596,10 @@ sessions_dir = "${aclSessionDir}"
 
   assert.equal(new MemorySessionStore().backend, 'memory');
   session.close();
+  const resumed = agent.resumeSession('docs-contract', {
+    sessionStore: new FileSessionStore(path.join(stores, 'sessions')),
+  });
+  assert.equal(resumed.history().length >= 1, true);
   resumed.close();
   queued.close();
 

@@ -1,0 +1,424 @@
+---
+title: '工具'
+description: '工具选择、直接工具调用与验证证据'
+---
+
+# 工具
+
+A3S Code 会保留工具注册表。`toolNames()` 返回当前会话的工具表面。这个表面由
+工作区能力与会话级集成共同组装；因此非本地工作区可以有意隐藏它无法提供服务的工具。
+
+工具活动通过会话事件流传给客户端。界面可以直接展示开始、输出、错误和完成状态，
+不需要解析终端文本。
+
+## 工具表面
+
+| 层级                       | 工具                                                                        | 注册规则                                                                                                                                      |
+| -------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 受工作区能力限制的内置工具 | `read`、`write`、`edit`、`patch`、`download`、`search`、`ls`、`bash`、`git` | 仅在 `WorkspaceServices` 声明具备所需能力时注册；`search` 提供 grep/glob 模式，并在可读取文件时增加 BM25；`download` 还要求可写的本地工作区。 |
+| 运行时内置工具             | `web_fetch`、`web_search`、`batch`、`program`                               | 由核心工具执行器注册。`batch` 和 `program` 接收当前有作用域的调用器，因此内部工具既受会话表面限制，也继承调用方的治理作用域。                 |
+| 会话启动工具               | `task`、`generate_object`、`search_skills`、`Skill`                         | 构建 `AgentSession` 时加入。`task` 是唯一模型可见的委派 schema；已注册的 `parallel_task` 兼容别名会被隐藏。关闭手动委派后会移除委派能力。     |
+| TUI 工作流工具             | `dynamic_workflow`，以及 `/login` 后可选的宿主运行时工具                    | 由 `a3s code` 宿主注册。`dynamic_workflow` 通过 A3S Flow 回放支撑 `ultracode` 和 DeepResearch；宿主运行时工具属于登录后集成。                 |
+| 动态集成                   | `mcp__<server>__<tool>` 与宿主注册工具                                      | 从 MCP 管理器或宿主代码发现后加入。                                                                                                           |
+
+当某个工作流依赖特定模型工具可见时，在测试或应用诊断中使用 `toolNames()` /
+`toolDefinitions()` 验证。隐藏的宿主兼容别名仍可显式调用，但不会消耗模型 schema
+Token。工具可见性不是安全授权。`send`、`run`、`stream`
+中的模型选择工具调用会经过当前技能限制、权限策略、确认、钩子、预算、队列与超时、
+取消、递归调用保护、输出净化、制品上限与工作区路径检查。`session.tool(...)`
+这类直接 SDK 调用使用另一条显式策略，见下文。`activeTools()` 回答的是另一个问题：
+当前操作中有哪些工具调用正在运行。
+
+## 统一调用内核
+
+运行时会为每次调用标记来源：
+
+| 来源                 | 示例                                                                                        | 权限与确认策略                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| 智能体               | 模型在 `send` 或 `stream` 中发出工具调用                                                    | 应用完整的模型侧策略与人工确认。                                                                       |
+| 受治理嵌套调用       | 模型拥有的 `batch`、`program`、工作流或公开 `InvocationRuntime` 的内部调用                  | 再次进入模型侧策略，并继承调用栈、取消、预算、钩子和沙箱；环境中的宿主直接调用上下文不能改变这个来源。 |
+| 宿主直接调用         | `session.tool(...)`、带类型的读写及 Git 辅助方法、`session.program(...)` 与直接任务辅助方法 | 可信控制面：宿主已经选择该调用，因此跳过模型侧权限与人工确认。                                         |
+| 可信宿主直接嵌套调用 | 宿主直接调用内置 `batch`、`program` 或动态工作流后，由它执行宿主选定的子调用                | 仅为该内置嵌套操作保留可信控制面权限；第三方工具不能通过公开 API 构造此来源。                          |
+
+宿主直接调用的 Skill、Task 或自定义工具所创建的模型子运行会重新从“智能体”来源开始。
+公开自定义工具只能通过 `InvocationRuntime` 发起嵌套调用，而这条路径始终创建受治理
+嵌套来源；一次直接调用不会变成扩展代码可复用的授权令牌。
+
+所有来源都经过同一个调用内核。前置钩子可以阻止调用；预算检查在产生副作用前执行；
+队列与超时、取消、递归保护、后置钩子以及安全提供程序的输出净化仍然有效。安装
+有作用域的调用器后，嵌套调用不能回退到原始注册表。
+
+宿主直接调用策略不是面向终端用户的授权系统。嵌入式应用必须先完成用户身份认证和
+授权，再把请求翻译成直接 SDK 辅助方法。关闭会话会通过会话取消作用域中止正在执行的
+宿主直接调用工具。
+
+## 有边界的工具契约
+
+受治理的智能体、嵌套调用和会话调用会先根据工具缓存的 JSON Schema 校验参数，再进入
+确认或副作用阶段。工具还会声明每次调用的调度能力，包括只读、幂等、可恢复、取消安全、
+分页、最大并行度和输出类型。
+
+`read`、`ls`、支持分页的 `search` 模式、Git 日志/列表/差异和 `web_fetch` 会返回明确的续传游标或偏移量。
+Shell 会对两个输出流执行字节上限，同时保留开头、结尾和精确计数；沙箱宿主仍能分别
+读取 stdout 与 stderr。命令截止时间同时覆盖输出排空与 `child.wait()`，关闭输出管道
+不能绕过超时。超时和取消会终止完整的 Unix 进程组。大文件修改不会把完整前后内容塞入
+事件，而是返回有边界的预览、统一差异、哈希、大小与制品引用。
+
+### 二进制安全的本地下载
+
+`download` 把 HTTP(S) 资源写入可写的本地工作区。S3、浏览器和其他非本地后端不会
+注册它。模型选择的调用属于工作区修改操作，会进入正常权限策略与 HITL 路径；直接调用
+`session.tool(...)` 则是宿主明确做出的特权决定。
+
+```ts
+const result = await session.tool('download', {
+  url: 'https://downloads.example.com/model.bin?signature=...',
+  file_path: 'artifacts/model.bin',
+  overwrite: false,
+  connections: 4,
+  max_bytes: 536870912,
+  timeout: 300,
+  expected_sha256:
+    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+});
+```
+
+| 参数              | 必填 | 契约                                                                                                                         |
+| ----------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `url`             | 是   | 公网 `http://` 或 `https://` URL。拒绝用户信息并移除 fragment；实际请求会保留签名查询参数。                                  |
+| `file_path`       | 否   | 工作区相对目标路径。省略时依次从 `Content-Disposition`、URL 的 `file` / `filename`、路径或 `download.bin` 推断并净化文件名。 |
+| `overwrite`       | 否   | 仅在替换文件完整并通过校验后覆盖已有普通文件；默认 `false`。                                                                 |
+| `connections`     | 否   | 1–4 个 Range 并发连接。省略时按大小自适应选择；小文件或没有稳定校验器的资源只使用一个一致响应。                              |
+| `max_bytes`       | 否   | 声明大小和实际流式字节的上限；默认 512 MiB（`536870912`），硬上限 8 GiB（`8589934592`）。                                    |
+| `timeout`         | 否   | 总截止时间（秒），覆盖重试、哈希和原子提升；默认 300，硬上限 3600。                                                          |
+| `expected_sha256` | 否   | 必须正好是 64 位十六进制字符；不匹配时不改变目标文件。                                                                       |
+
+共享安全 HTTP 传输会在每次重定向前检查目标，阻止 SSRF 敏感地址。直接连接会拒绝混合
+公网/私网 DNS 结果，并把该跳已验证地址固定给请求。重定向次数有上限且逐跳重新校验；
+跨源重定向不会继承凭据或 `If-Range`。显式代理负责解析域名时，URL 字面地址检查仍然执行。
+
+下载器会探测 Range 支持，严格校验 `Content-Range` 与响应体边界，并且只有稳定校验器
+存在时才并发获取独立分段。传输、限流和服务端失败只会有限重试；并发协议或网络尝试
+不安全时回退到单个顺序响应。数据先写入目标旁的临时文件。取消、超时、超限或摘要校验
+失败都会清理残留；只有完整同步并完成可选校验后才原子提升为目标文件。
+
+结果元数据包含工作区路径、字节数、内容类型、策略、连接数、Range 支持、覆盖状态、
+安全来源锚点，以及请求校验时的摘要。签名查询参数只用于请求，在来源锚点和诊断中会被
+移除，因此不会通过工具元数据泄露。
+
+### 仓库上下文模式
+
+已知相关路径时，使用 `read.files` 在一次有边界的响应中批量读取，减少工具回合：
+
+```json
+{
+  "files": [
+    { "path": "src/lib.rs" },
+    { "path": "src/config.rs", "offset": 40, "limit": 80 }
+  ],
+  "max_output_bytes": 65536
+}
+```
+
+共享字节预算包含文件头和续传信息。结果保持请求顺序，单个文件不可读不会丢弃其他
+成功结果。当 `metadata.batch.truncated` 为 `true` 时，把
+`metadata.batch.continuation` 原样放入下一次调用的 `files`；其中的偏移量和剩余额度
+会从未完成位置继续，不重复已经返回的行。
+
+`search` 是模型侧唯一的工作区搜索工具，必须传入 `mode` 和 `query`：正则内容搜索使用
+`grep`，路径发现使用 `glob`，原生词汇相关性排序使用 `bm25`。三个模式共用 `path`；
+grep 与 BM25 使用 `include` 过滤候选文件。
+
+在 `mode: "grep"` 下，`output_mode` 用于选择满足任务所需的最小结果形状：
+
+| 模式                 | 结果                                       |
+| -------------------- | ------------------------------------------ |
+| `content`            | 匹配行与可选上下文（默认）                 |
+| `files_with_matches` | 按词法顺序、使用游标分页的匹配路径         |
+| `count`              | 按词法顺序、使用游标分页的每文件匹配行计数 |
+| `summary`            | 完整扫描后的行数与文件数，不渲染匹配内容   |
+
+内置工作区后端在非内容模式下不会构造随后被丢弃的匹配文本。S3 结果会设置
+`metadata.search.truncated`；当对象扫描上限导致总数或路径不完整时还会给出警告。
+
+在 `mode: "glob"` 下，`query` 就是 glob 表达式。默认保留后端的相关性或最近使用顺序；
+需要稳定的词法分页时，在游标分页前设置 `sort: "path"`。
+
+在 `mode: "bm25"` 下，`query` 是普通文本。纯 Rust 的有界评分器会拆分代码标识符和
+CJK 文本，对 80 行分块排序，只返回 top-k 片段与来源锚点。它先用工作区搜索缩小候选，
+最多处理 256 个文件、每文件 512 KiB、总计 16 MiB；无需数据库、嵌入模型或外部
+reranker。
+
+```ts
+const ranked = await session.tool('search', {
+  mode: 'bm25',
+  query: 'workspace permission policy',
+  path: 'core/src',
+  include: '*.rs',
+  limit: 8,
+  context: 2,
+});
+```
+
+对固定字符串修改，先以 `dry_run: true` 调用 `edit`，获取与真实写入相同的前后差异
+元数据，但不写文件。应用修改时，把预览得到的数量放入 `expected_replacements`，并可用
+`max_replacements` 设置独立上限。Dry run 会声明为只读，可安全参与 `batch` 并行执行。
+
+`batch` 最多接受 32 个调用，并行度最高为 16。只有全部子调用都声明为安全、只读且幂等
+时才会扇出；修改型或能力未知的工具会串行执行。部分失败会标出失败索引，并把编排本身
+视为已完成，调用方只需重试失败项。多任务 `task` 扇出同样最多接受 32 个任务，并会先
+结算已经取消的子任务，再发布终止状态。
+
+模型侧 `task` schema 始终使用包含 1–32 项的 `tasks`。一项代表聚焦子运行且可设置
+`background`；多个相互独立的项会并发执行，不能设置 `background: true`。每项接受
+`agent`、`description`、`prompt`，以及可选的 `max_steps` 和 `output_schema`。
+`min_success_count` 仅能与 `allow_partial_failure: true` 一起使用，并且必须介于 1 和
+提交任务数之间。Provider 和子运行时拥有类型化重试策略，扇出层不会根据错误文本重放
+分支。隐藏的 `parallel_task` 宿主别名继续接受旧的 2–32 个前台分支 schema，以读取
+持久化调用。
+
+### 结构门控的网页搜索
+
+`web_search` 会在元数据中报告 `complete`、`partial` 或 `failed`。默认路径先执行
+无头浏览器引擎；只有合并结果未达到结构化检索要求时，才运行普通 HTTP/RSS 引擎；
+前两层仍不足时，才运行原生 API。因此浏览器发现和池创建都是惰性的。会话级
+Core 默认 feature 已包含这一浏览器层，并在各平台使用 Chrome/Chromium。精简 Rust
+嵌入可以关闭 default features；Lightpanda 仍是需要显式配置的可选后端。
+
+如果完整级联仍未达到结构化检索要求，最终结果会失败关闭。成功的 JSON 输出保持结果
+数组契约；要求未满足的 JSON 输出是错误，并携带类型化
+`retrieval_requirements_not_met` envelope、候选行、观测到的检索健康度和结构阈值。
+Search 不依赖外部语义验证器或重排序 API。
+
+会话级 closed/open/half-open 熔断状态会跳过已知的配额、权限、限流、传输、重复空结果
+和超时故障，避免每个请求都重试；服务端的 `Retry-After` 会被保留。委派研究上下文共享
+搜索 bulkhead、有限浏览器重试预算和相同请求合并。请求级代理会到达惰性浏览器层，
+`search_coalescing` 元数据会报告 leader、共享、绕过和放弃请求。显式传入 `engines`
+时只执行请求的层级。含引擎错误的空结果属于失败，而不是成功的空搜索。超时、取消、
+无效参数、部分失败和限流会携带结构化错误类型；层级决策、检索健康度、引擎结果、尝试
+耗时和重试上下文保留在元数据中。
+
+`web_fetch` 同样保留失败语义，不从渲染后的文本推断是否重试。请求或响应体 I/O 失败、
+HTTP 408 和 HTTP 5xx 使用类型化 `transport`；HTTP 429 使用 `rate_limited`，并在
+服务端提供时携带解析后的 `Retry-After` 延迟；工具外层截止时间使用 `timeout`。其他
+HTTP 状态错误保持普通状态失败，除非运行时掌握可以安全重试的类型化证据。
+
+## 直接工具调用
+
+```ts
+const files = await session.glob('src/**/*.rs');
+const hits = await session.grep('PermissionPolicy');
+const status = await session.git('status');
+const output = await session.bash('cargo test -p a3s-code-core');
+const raw = await session.tool('read', { file_path: 'README.md' });
+const schemas = session.toolDefinitions();
+const hitLines = hits.split('\n').filter(Boolean).length;
+
+console.log(files.length, hitLines, output.length, schemas.length);
+console.log(status.output);
+console.log(raw.output);
+```
+
+直接工具调用在会话工作区下执行，应视为宿主侧特权操作。它们不更新对话记录，
+因此不占用会话的单任务对话租约。`session.tool(...)`、
+`session.program(...)`、`session.git(...)`、`session.writeFile(...)`、
+`session.ls(...)`、`session.editFile(...)` 和 `session.patchFile(...)` 返回
+`ToolResult`，读取 `output`、`exitCode` 和可选的 `metadataJson`。类型化
+读取、搜索和命令行辅助方法返回更简单的值：`readFile`、`grep`、`bash` 返回字符串，
+`glob` 返回字符串数组。长输出应在进入提示词前先摘要。
+
+## 结构化输出：`generate_object`
+
+`generate_object` 工具会让配置的大语言模型生成 JSON 值，对响应执行 JSON Schema
+校验，并且只在零退出码结果中返回校验后的值。它支持根对象、数组、枚举、常量、组合
+关键字和本地 `$ref` 定义。有效超时从获得模型生成准入后开始；支持活动传输预算的
+客户端会收到这份超时，并且有边界的 Schema 修复过程始终受同一个截止时间约束。
+它有两种使用方式：
+
+1. **智能体自主调用**：大语言模型在工具列表中看到 `generate_object`，在需要结构化输出时自行决定调用。
+2. **直接调用**：应用通过 `session.tool('generate_object', ...)` 绕过模型驱动的工具选择步骤；工具内部仍会调用配置的 LLM。
+
+```ts
+const result = await session.tool('generate_object', {
+  schema: {
+    type: 'object',
+    required: ['sentiment', 'confidence'],
+    properties: {
+      sentiment: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+    },
+  },
+  prompt: '分类: "这个产品太棒了！"',
+  schema_name: 'sentiment',
+  mode: 'tool',
+  max_repair_attempts: 2,
+});
+
+if (result.exitCode !== 0) {
+  throw new Error(result.output);
+}
+
+const { object } = JSON.parse(result.output);
+// object = { sentiment: "positive", confidence: 0.95 }
+```
+
+### 参数
+
+| 参数                  | 类型   | 必填 | 说明                                                                    |
+| --------------------- | ------ | ---- | ----------------------------------------------------------------------- |
+| `schema`              | 对象   | 是   | 用于校验输出值的 JSON Schema                                            |
+| `prompt`              | 字符串 | 是   | 非空白的生成或提取指令                                                  |
+| `schema_name`         | 字符串 | 否   | 1–59 个 ASCII 字母、数字、`_` 或 `-`（默认 `result`）                   |
+| `schema_description`  | 字符串 | 否   | 合成工具描述，最多 4,096 字节                                           |
+| `system`              | 字符串 | 否   | 可选系统提示，最多 32,768 字节                                          |
+| `mode`                | 字符串 | 否   | `"auto"` / `"strict"` / `"json"` / `"tool"` / `"prompt"`（默认 `auto`） |
+| `max_repair_attempts` | 整数   | 否   | 0–5（默认 2）                                                           |
+| `include_raw_text`    | 布尔值 | 否   | 返回用于提取的 Provider 文本或工具参数（默认 `false`）                  |
+| `timeout_ms`          | 整数   | 否   | 活动生成截止时间，1,000–600,000 毫秒（默认 120,000）                    |
+
+### 模式
+
+- **`tool`**：Provider 支持强制工具调用时，要求调用一个参数符合 Schema 的合成工具。
+- **`prompt`**：将 Schema 指令追加到提示词中。它适合作为纯提示词回退路径，但更依赖模型遵循指令。
+- **`auto`**：优先选择强制工具模式，不支持时退回提示词模式。
+- **`strict`**：Provider 支持时使用原生严格 JSON Schema，否则安全退回强制工具或提示词模式。
+- **`json`**：Provider 支持时使用原生 JSON 对象模式，否则安全退回强制工具或提示词模式。
+
+每一种解析后的模式都会把面向 Provider 的响应 Schema 保留为仅宿主可见的校验元数据；
+它不会作为额外字段序列化进 Provider 请求。Rust 组合客户端可以使用
+`structured::is_complete_streamed_value(...)`，只接受完整且通过该 Schema 校验的
+JSON 值，包括缺少终止流事件的端点。客户端还可以先检查
+`LlmClient::has_distinct_non_streaming_transport()`，再决定阻塞调用能否作为独立回退，
+避免把同一种流式故障换一个方法名后再次执行。
+
+### 流式
+
+通过 `session.stream()` 调用时，部分对象以 `tool_output_delta` 事件发出。快照最多每
+100 毫秒发送一次；对象超过事件预算时，事件只发送字节计数，不重复携带完整值：
+
+```ts
+const stream = await session.stream('提取所有发票...');
+
+while (true) {
+  const { value: ev, done } = await stream.next();
+  if (done) break;
+  if (!ev) continue;
+
+  if (ev.type === 'tool_output_delta' && ev.toolName === 'generate_object') {
+    const { object_partial } = JSON.parse(ev.text);
+    renderProgress(object_partial);
+  }
+}
+```
+
+### 修复重试
+
+如果大语言模型输出未通过模式校验，工具会自动将校验错误反馈给模型并重试。这能处理缺少必填字段、枚举值错误等边界情况，无需应用层重试逻辑。
+
+委派子任务可以直接使用 SDK 辅助方法，它们底层仍是同一组核心工具：
+
+```ts
+await session.task({
+  agent: 'explore',
+  description: '查找认证文件',
+  prompt: '检查认证相关文件，并返回紧凑证据列表。',
+});
+
+await session.tasks([
+  { agent: 'explore', description: '查找测试', prompt: '定位认证测试。' },
+  {
+    agent: 'verification',
+    description: '检查风险',
+    prompt: '审查认证边界情况。',
+  },
+]);
+```
+
+自动子智能体委派也使用同一组核心工具。`autoParallel: false` 只关闭自动并行扇出，
+不会移除手动 `task` 扇出或 `session.tasks(...)`。
+
+## 程序化工具调用
+
+程序化工具调用不是单次直接工具调用。`program` 工具会在内嵌 QuickJS 虚拟机中运行
+受限 JavaScript 脚本；脚本定义 `async function run(ctx, inputs)`，用一个有边界的
+程序替代多轮模型工具调用。
+
+不要让模型反复消耗工具回合：
+
+```text
+grep -> read -> grep -> read -> summarize
+```
+
+可以让模型请求 `program` 运行一个脚本：
+
+```js
+// search-auth.js
+export default async function run(ctx, inputs) {
+  const hits = await ctx.grep(inputs.query, { glob: '*.rs' });
+  const files = await ctx.glob('crates/**/*.rs');
+  const snippets = [];
+
+  for (const file of files.slice(0, 20)) {
+    const content = await ctx.readFile(file);
+    if (content.includes(inputs.query)) {
+      snippets.push({ file, preview: content.slice(0, 1200) });
+    }
+  }
+
+  return {
+    summary: `找到 ${snippets.length} 个与 ${inputs.query} 相关的候选文件`,
+    evidence: snippets,
+    rawSearch: hits,
+  };
+}
+```
+
+SDK 的 `session.program(...)` 支持内联 `source`，也支持 workspace 相对路径 `.js` 或 `.mjs` 文件：
+
+```js
+await session.program({
+  path: 'scripts/ptc/search-auth.js',
+  inputs: { query: 'PermissionPolicy' },
+  allowedTools: ['grep', 'glob', 'read'],
+  limits: {
+    timeoutMs: 30000,
+    maxToolCalls: 30,
+    maxOutputBytes: 65536,
+  },
+});
+```
+
+`session.program(...)` 等价于 `session.tool('program', { type: 'script', language: 'javascript', ... })`，只是使用 SDK 原生命名。如果省略 `allowedTools` / `allowed_tools`，脚本可以调用除 `program` 之外的所有已注册工具。需要更小能力面时，再显式传入 allow-list。
+
+QuickJS VM 不获得文件系统、网络、子进程或环境变量权限。脚本唯一有用的能力来自 `ctx`，这些方法会回到 A3S Code 的受控工具执行路径。PTC 会返回可读的 `ToolResult.output`，结构化数据位于 `ToolResult.metadataJson`。原始大输出不应反复塞进 prompt；应先总结发现、证据引用、风险和建议下一步。
+
+在 `a3s code` 中，`DynamicWorkflowRuntime` 也会使用 PTC。默认 TUI PTC allow-list
+不会允许递归调用 `program`、`dynamic_workflow` 和隐藏的 `parallel_task` 别名。
+QuickJS 可以用单个 `tasks` 项调用 `task`，但会阻止直接多任务扇出。动态工作流需要本地
+并行子智能体时，会调度名为 `task` 的 Flow 步骤，由 TUI 宿主在 QuickJS 外执行；旧的
+持久化 `parallel_task` 步骤仍可读取。完成 `/login` 且会话中已经注册宿主运行时工具后，动态工作流的
+PTC 步骤还可以调用 `ctx.tool("runtime", ...)`。
+
+动态工作流的结构化生成默认单路执行。只有相互独立的 `generate_object` 步骤需要扇出
+时，才把 `limits.maxConcurrentGenerations` 设置为 2–4；每个获得准入的步骤都会得到
+绑定到精确运行和步骤身份的客户端 fork。无法 fork 会话的 Provider 仍保持单路执行。
+Rust 辅助函数 `dynamic_workflow::recover_dynamic_workflow_step_output(...)` 只有在运行
+标识、原始查询和步骤标识全部匹配时，才会恢复一个已经完成的持久化步骤。它不是跨运行
+查询缓存，也不会把未完成步骤提升为成功结果。
+
+## 验证
+
+使用验证命令把“已经完成”转换成可检查的证据：
+
+```ts
+const report = await session.verifyCommands('发布就绪检查', [
+  {
+    id: 'unit',
+    kind: 'test',
+    description: '运行核心测试',
+    command: 'cargo test -p a3s-code-core',
+    required: true,
+    timeoutMs: 120000,
+  },
+]);
+```

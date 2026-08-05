@@ -612,7 +612,10 @@ mod tests {
             PermissionDecision::Allow
         );
         assert_eq!(
-            policy.check("grep", &serde_json::json!({})),
+            policy.check(
+                "search",
+                &serde_json::json!({"mode": "grep", "query": "TODO"}),
+            ),
             PermissionDecision::Allow
         );
 
@@ -668,7 +671,7 @@ mod tests {
             PermissionDecision::Allow
         );
         assert_eq!(
-            policy.check("grep", &serde_json::json!({"pattern": "x"})),
+            policy.check("search", &serde_json::json!({"mode": "grep", "query": "x"}),),
             PermissionDecision::Deny
         );
     }

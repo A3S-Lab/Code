@@ -54,7 +54,8 @@ session = agent.session(workspace, opts)
 tool_names = step("tool_names", session.tool_names)
 assert "program" in tool_names
 assert "task" in tool_names
-assert "parallel_task" in tool_names
+assert "task" in tool_names
+assert "parallel_task" not in tool_names
 
 tool_definitions = step("tool_definitions", session.tool_definitions)
 assert isinstance(tool_definitions, list)

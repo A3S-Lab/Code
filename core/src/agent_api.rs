@@ -354,16 +354,16 @@ pub struct SessionOptions {
     pub max_tool_rounds: Option<usize>,
     /// Per-session parallel fan-out limit override.
     ///
-    /// Applies to delegated `parallel_task`, plan wave execution, and safe
-    /// parallel write batches.
+    /// Applies to delegated `task` fan-out, the legacy `parallel_task` alias,
+    /// plan wave execution, and safe parallel write batches.
     pub max_parallel_tasks: Option<usize>,
     /// Per-session automatic subagent delegation override.
     pub auto_delegation: Option<crate::config::AutoDelegationConfig>,
     /// Per-session switch for model-visible manual child-agent tools.
     ///
     /// This overlays the effective automatic delegation config instead of
-    /// replacing it, so callers can hide `task` / `parallel_task` while
-    /// preserving other delegation settings.
+    /// replacing it, so callers can hide `task` and its compatibility alias
+    /// while preserving other delegation settings.
     pub manual_delegation_enabled: Option<bool>,
     /// Per-session kill switch for automatic parallel child-agent fan-out.
     ///

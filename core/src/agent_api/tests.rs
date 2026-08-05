@@ -819,8 +819,7 @@ async fn test_session_uses_workspace_backend_for_direct_tools() {
     assert!(tool_names.contains(&"write".to_string()));
     assert!(tool_names.contains(&"ls".to_string()));
     assert!(tool_names.contains(&"bash".to_string()));
-    assert!(!tool_names.contains(&"grep".to_string()));
-    assert!(!tool_names.contains(&"glob".to_string()));
+    assert!(!tool_names.contains(&"search".to_string()));
     assert!(!tool_names.contains(&"git".to_string()));
 
     let read = session.read_file("app.txt").await.unwrap();
@@ -3214,7 +3213,8 @@ async fn test_session_uses_single_delegation_tool_surface() {
     let names = session.tool_names();
 
     assert!(names.contains(&"task".to_string()));
-    assert!(names.contains(&"parallel_task".to_string()));
+    assert!(!names.contains(&"parallel_task".to_string()));
+    assert!(session.tool_executor.registry().contains("parallel_task"));
     assert!(!names.contains(&"run_team".to_string()));
 }
 
@@ -5055,38 +5055,34 @@ async fn test_live_worker_catalog_is_model_visible_and_tracks_registry_changes()
         )
         .unwrap();
 
-    for tool_name in ["task", "parallel_task"] {
-        let definition = session
-            .tool_definitions()
-            .into_iter()
-            .find(|tool| tool.name == tool_name)
-            .expect("delegation tool definition");
-        let agent_schema = if tool_name == "task" {
-            &definition.parameters["properties"]["agent"]
-        } else {
-            &definition.parameters["properties"]["tasks"]["items"]["properties"]["agent"]
-        };
-        let examples = agent_schema["examples"]
-            .as_array()
-            .expect("live canonical agent examples");
+    let definitions = session.tool_definitions();
+    let definition = definitions
+        .iter()
+        .find(|tool| tool.name == "task")
+        .expect("unified delegation tool definition");
+    assert!(!definitions.iter().any(|tool| tool.name == "parallel_task"));
+    let agent_schema =
+        &definition.parameters["properties"]["tasks"]["items"]["properties"]["agent"];
+    let examples = agent_schema["examples"]
+        .as_array()
+        .expect("live canonical agent examples");
 
-        assert!(examples.contains(&serde_json::json!("use")));
-        assert!(!examples.contains(&serde_json::json!("hidden-use-helper")));
-        assert!(agent_schema["description"]
-            .as_str()
-            .unwrap()
-            .contains("use: Operate Browser and Office through A3S Use"));
-        assert!(definition
-            .description
-            .contains("use: Operate Browser and Office through A3S Use"));
-        assert!(!definition.description.contains("hidden-use-helper"));
-    }
+    assert!(examples.contains(&serde_json::json!("use")));
+    assert!(!examples.contains(&serde_json::json!("hidden-use-helper")));
+    assert!(agent_schema["description"]
+        .as_str()
+        .unwrap()
+        .contains("use: Operate Browser and Office through A3S Use"));
+    assert!(definition
+        .description
+        .contains("use: Operate Browser and Office through A3S Use"));
+    assert!(!definition.description.contains("hidden-use-helper"));
 
     assert!(session.agent_registry.unregister("use"));
     for definition in session
         .tool_definitions()
         .into_iter()
-        .filter(|tool| matches!(tool.name.as_str(), "task" | "parallel_task"))
+        .filter(|tool| tool.name == "task")
     {
         assert!(!definition
             .description
@@ -5138,11 +5134,12 @@ Review the changed code and return prioritized findings.
         .allow
         .iter()
         .any(|rule| { rule.matches("read", &serde_json::json!({"file_path": "README.md"})) }));
-    assert!(loaded
-        .permissions
-        .allow
-        .iter()
-        .any(|rule| { rule.matches("grep", &serde_json::json!({"pattern": "TODO"})) }));
+    assert!(loaded.permissions.allow.iter().any(|rule| {
+        rule.matches(
+            "search",
+            &serde_json::json!({"mode": "grep", "query": "TODO"}),
+        )
+    }));
 }
 
 #[tokio::test(flavor = "multi_thread")]

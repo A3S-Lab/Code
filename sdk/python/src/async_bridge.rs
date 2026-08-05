@@ -128,6 +128,24 @@ pub(super) struct AsyncSessionSendCall {
     pub(super) attachments: Option<Vec<a3s_code_core::llm::Attachment>>,
 }
 
+pub(super) enum AsyncAgentRunSpawnOperation {
+    Run {
+        run_id: String,
+        prompt: String,
+    },
+    Recovery {
+        checkpoint_run_id: String,
+        run_id: String,
+    },
+}
+
+/// One-shot detached run admission executed by asyncio's default executor.
+#[pyclass]
+pub(super) struct AsyncAgentRunSpawnCall {
+    pub(super) session: Arc<RustAgentSession>,
+    pub(super) operation: Option<AsyncAgentRunSpawnOperation>,
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum AsyncSessionToolMode {
     Trusted,
@@ -155,9 +173,7 @@ impl AsyncSessionToolCall {
         let mode = self.mode;
         let result = py
             .allow_threads(move || match mode {
-                AsyncSessionToolMode::Trusted => {
-                    get_runtime().block_on(session.tool(&name, args))
-                }
+                AsyncSessionToolMode::Trusted => get_runtime().block_on(session.tool(&name, args)),
                 AsyncSessionToolMode::Governed => {
                     get_runtime().block_on(session.governed_tool(&name, args))
                 }
@@ -191,6 +207,30 @@ impl AsyncSessionSendCall {
             })
             .map_err(py_code_error)?;
         Ok(Py::new(py, PyAgentResult::from(result))?.into_any())
+    }
+}
+
+#[pymethods]
+impl AsyncAgentRunSpawnCall {
+    fn __call__(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let operation = self
+            .operation
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("async run spawn already consumed"))?;
+        let session = Arc::clone(&self.session);
+        let spawn = py
+            .allow_threads(move || match operation {
+                AsyncAgentRunSpawnOperation::Run { run_id, prompt } => {
+                    get_runtime().block_on(session.spawn_run_with_id(&run_id, &prompt))
+                }
+                AsyncAgentRunSpawnOperation::Recovery {
+                    checkpoint_run_id,
+                    run_id,
+                } => get_runtime()
+                    .block_on(session.spawn_recovery_with_run_id(&checkpoint_run_id, &run_id)),
+            })
+            .map_err(py_code_error)?;
+        agent_run_spawn_to_py(py, &spawn)
     }
 }
 

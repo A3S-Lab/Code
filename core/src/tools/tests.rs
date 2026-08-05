@@ -184,8 +184,9 @@ impl WorkspaceCommandRunner for MockCommandRunner {
 #[tokio::test]
 async fn test_tool_executor_creation() {
     let executor = ToolExecutor::new("/tmp".to_string());
-    // Baseline tools on a raw local ToolExecutor: 14
-    assert_eq!(executor.registry.len(), 14);
+    // Baseline tools on a raw local ToolExecutor: 13. Workspace search is one
+    // model-facing tool with three internal modes.
+    assert_eq!(executor.registry.len(), 13);
 }
 
 #[tokio::test]
@@ -208,8 +209,10 @@ async fn test_builtin_tools_registered() {
     assert!(definitions.iter().any(|t| t.name == "read"));
     assert!(definitions.iter().any(|t| t.name == "write"));
     assert!(definitions.iter().any(|t| t.name == "edit"));
-    assert!(definitions.iter().any(|t| t.name == "grep"));
-    assert!(definitions.iter().any(|t| t.name == "glob"));
+    assert!(definitions.iter().any(|t| t.name == "search"));
+    assert!(!definitions.iter().any(|t| t.name == "grep"));
+    assert!(!definitions.iter().any(|t| t.name == "bm25"));
+    assert!(!definitions.iter().any(|t| t.name == "glob"));
     assert!(definitions.iter().any(|t| t.name == "ls"));
     assert!(definitions.iter().any(|t| t.name == "patch"));
     assert!(definitions.iter().any(|t| t.name == "web_fetch"));
@@ -237,7 +240,7 @@ async fn test_builtin_file_tools_use_workspace_services() {
     assert!(definitions.iter().any(|tool| tool.name == "write"));
     assert!(definitions.iter().any(|tool| tool.name == "ls"));
     assert!(!definitions.iter().any(|tool| tool.name == "bash"));
-    assert!(!definitions.iter().any(|tool| tool.name == "grep"));
+    assert!(!definitions.iter().any(|tool| tool.name == "search"));
     assert!(definitions.iter().any(|tool| tool.name == "edit"));
     assert!(definitions.iter().any(|tool| tool.name == "patch"));
     assert!(!definitions.iter().any(|tool| tool.name == "download"));
@@ -341,9 +344,10 @@ async fn test_execute_applies_workspace_boundary_for_default_context() {
     let executor = ToolExecutor::new(workspace.path().to_string_lossy().to_string());
     let result = executor
         .execute(
-            "grep",
+            "search",
             &serde_json::json!({
-                "pattern": "secret",
+                "mode": "grep",
+                "query": "secret",
                 "path": outside.path().to_string_lossy()
             }),
         )
@@ -424,8 +428,8 @@ fn test_tool_executor_workspace() {
 fn test_tool_executor_registry() {
     let executor = ToolExecutor::new("/tmp".to_string());
     let registry = executor.registry();
-    // Baseline tools on a raw local ToolExecutor: 14
-    assert_eq!(registry.len(), 14);
+    // Baseline tools on a raw local ToolExecutor: 13.
+    assert_eq!(registry.len(), 13);
 }
 
 #[tokio::test]

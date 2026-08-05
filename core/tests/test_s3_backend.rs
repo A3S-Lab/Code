@@ -73,7 +73,7 @@ async fn s3_backend_roundtrips_via_session_executor() {
     let backend = Arc::new(S3WorkspaceBackend::new(cfg));
     let services = WorkspaceServices::from_s3_backend(Arc::clone(&backend));
 
-    // Capability gating must hide bash/git/grep/glob.
+    // Capability gating must hide bash/git/search.
     let executor = ToolExecutor::new_with_workspace_services_and_artifact_limits(
         format!("s3://{}/{}", backend.bucket(), backend.prefix()),
         Arc::clone(&services),
@@ -91,12 +91,8 @@ async fn s3_backend_roundtrips_via_session_executor() {
         "bash must NOT be registered for S3 backend"
     );
     assert!(
-        !names.contains(&"grep"),
-        "grep must NOT be registered for S3 backend"
-    );
-    assert!(
-        !names.contains(&"glob"),
-        "glob must NOT be registered for S3 backend"
+        !names.contains(&"search"),
+        "search must NOT be registered for S3 backend"
     );
     assert!(
         !names.contains(&"git"),
