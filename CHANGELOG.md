@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.8.0] - 2026-08-05
+
 ### Added
 
 - Added dependency-free BM25 lexical ranking as a bounded mode of the unified
@@ -17,26 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added exact detached run admission to the Node.js, Python, and Go SDKs. Each
   host-selected start or checkpoint recovery returns the authoritative run
   snapshot plus an explicit replay flag without exposing runtime task handles.
-
-### Changed
-
-- Consolidated model-facing workspace discovery under `search` and delegation
-  under `task`. The registered `parallel_task` implementation remains as a
-  hidden compatibility alias for direct SDK callers and persisted workflows.
-- Reordered the automatic `web_search` cascade to use an available managed
-  headless runtime first, then bounded HTTP/RSS engines, and native APIs only
-  when earlier evidence remains insufficient.
-
-### Fixed
-
-- Prevented sandboxed `program` scripts from recursively invoking
-  `dynamic_workflow`; the program itself and the hidden `parallel_task` alias
-  remain excluded from both default and explicit script allow-lists.
-
-## [6.8.0] - 2026-08-05
-
-### Added
-
 - Added the canonical bounded `a3s.code.agent.v1` headless protocol for exact
   release/session/run start, cancellation, checkpoint recovery, command
   receipts, and direct projection of the existing `EventEnvelopeV1` run-event
@@ -62,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Consolidated model-facing workspace discovery under `search` and delegation
+  under `task`. The registered `parallel_task` implementation remains as a
+  hidden compatibility alias for direct SDK callers and persisted workflows.
+- Reordered the automatic `web_search` cascade to use an available managed
+  headless runtime first, then bounded HTTP/RSS engines, and native APIs only
+  when earlier evidence remains insufficient.
 - Serve startup now validates schedules before allocating sessions, and SDK
   start calls return only after session/tool preparation. Graceful stop cancels
   in-flight schedule work, closes owned sessions, and joins within a bounded
@@ -69,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevented sandboxed `program` scripts from recursively invoking
+  `dynamic_workflow`; the program itself and the hidden `parallel_task` alias
+  remain excluded from both default and explicit script allow-lists.
 - Preserved Hook retry reasons across Rust, Node, Python, and Go callbacks and
   surfaced pre-tool denials as structured `hook_denied` tool errors with
   explicit retryability and retry delay guidance for both models and hosts.
