@@ -77,6 +77,7 @@
 pub(crate) mod agent;
 pub(crate) mod agent_api;
 pub mod agent_protocol;
+pub mod agent_protocol_harness;
 pub mod agent_protocol_host;
 pub mod budget;
 pub(crate) mod child_run;
@@ -151,6 +152,9 @@ pub use agent_protocol::{
     AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES, AGENT_PROTOCOL_MAX_EVENT_TYPE_BYTES,
     AGENT_PROTOCOL_MAX_ID_BYTES, AGENT_PROTOCOL_MAX_PROMPT_BYTES, AGENT_PROTOCOL_MAX_REASON_BYTES,
     AGENT_PROTOCOL_V1,
+};
+pub use agent_protocol_harness::{
+    AgentProtocolHarness, AgentProtocolHarnessError, AGENT_PROTOCOL_HARNESS_MAX_SESSIONS,
 };
 pub use agent_protocol_host::{AgentProtocolHost, AgentProtocolHostError};
 pub use code_intelligence::{

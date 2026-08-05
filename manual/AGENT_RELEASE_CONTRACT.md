@@ -28,6 +28,15 @@ replayed commands never create a second run. The executable service boundary
 belongs to `a3s code`; Cloud and node software transport its values and do not
 implement another Harness.
 
+`AgentProtocolHarness` is the matching Code-owned multi-session kernel for that
+single executable. One long-lived release process may serve several Cloud
+conversations, so it binds each protocol `session_id` to an ordinary
+`AgentSession`, resumes a complete configured session-store snapshot before
+replay, and retains a finite session set. It does not store runs or events of
+its own. Start and recovery may create a missing session; cancellation and
+event observation never allocate an unknown conversation. Closing the kernel
+closes the same `Agent` and sessions through their existing lifecycle.
+
 The version-one process transport uses Code-owned paths: commands are posted to
 `/v1/agent/commands`, while bounded `AgentProtocolEventPageRequestV1` values are
 posted to `/v1/agent/events:page`. Hosts must forward the corresponding Code

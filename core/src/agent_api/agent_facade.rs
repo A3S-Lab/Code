@@ -119,6 +119,23 @@ impl Agent {
         agent_sessions::create_session_async(self, workspace, options).await
     }
 
+    /// Open a protocol-owned session, resuming its complete persisted snapshot
+    /// when one exists and optionally creating a fresh session otherwise.
+    ///
+    /// This remains crate-private because public SDK callers should choose
+    /// explicitly between `session_async` and `resume_session_async`. The
+    /// native headless Harness needs the atomic policy so process restarts do
+    /// not bypass Code's existing session/run store.
+    pub(crate) async fn open_protocol_session_async(
+        &self,
+        workspace: impl Into<String>,
+        options: SessionOptions,
+        create_if_missing: bool,
+    ) -> Result<Option<AgentSession>> {
+        agent_sessions::open_protocol_session_async(self, workspace, options, create_if_missing)
+            .await
+    }
+
     /// Bind to a workspace directory, returning an [`AgentSession`].
     ///
     /// This compatibility entry point never starts or blocks an async runtime.

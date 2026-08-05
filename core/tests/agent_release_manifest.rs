@@ -1,9 +1,9 @@
 use a3s_code_core::release::{
-    AgentReleaseArtifact, AgentReleaseCacheMode, AgentReleaseCapability, AgentReleaseCompatibility,
-    AgentReleaseEntrypoint, AgentReleaseError, AgentReleaseField, AgentReleaseHealth,
-    AgentReleaseManifest, AgentReleasePersistentDataMode, AgentReleaseProvenance,
-    AgentReleaseSecretRequirement, AgentReleaseSecretTarget, AgentReleaseStorage,
-    AgentReleaseWorkspaceMode, AGENT_PROTOCOL_V1, AGENT_RELEASE_CONTRACT_V1,
+    agent_harness_compatibility_v1, AgentReleaseArtifact, AgentReleaseCacheMode,
+    AgentReleaseCapability, AgentReleaseCompatibility, AgentReleaseEntrypoint, AgentReleaseError,
+    AgentReleaseField, AgentReleaseHealth, AgentReleaseManifest, AgentReleasePersistentDataMode,
+    AgentReleaseProvenance, AgentReleaseSecretRequirement, AgentReleaseSecretTarget,
+    AgentReleaseStorage, AgentReleaseWorkspaceMode, AGENT_PROTOCOL_V1, AGENT_RELEASE_CONTRACT_V1,
     AGENT_RELEASE_ENTRYPOINT_ARGS_V1, AGENT_RELEASE_ENTRYPOINT_COMMAND_V1, AGENT_RELEASE_LIMITS,
 };
 use std::path::Path;
@@ -20,6 +20,28 @@ fn compatibility() -> AgentReleaseCompatibility {
         ],
     )
     .unwrap()
+}
+
+#[test]
+fn native_harness_compatibility_is_code_owned_and_exact() {
+    let compatibility = agent_harness_compatibility_v1();
+    assert_eq!(compatibility.protocol(), AGENT_PROTOCOL_V1);
+    assert_eq!(
+        compatibility
+            .capabilities()
+            .iter()
+            .map(|capability| (capability.name(), capability.level()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("runtime.service", 1),
+            ("secrets.external", 1),
+            ("workspace.local", 1),
+        ]
+    );
+    AgentReleaseManifest::parse(FIXTURE)
+        .unwrap()
+        .verify_compatibility(&compatibility)
+        .unwrap();
 }
 
 #[test]

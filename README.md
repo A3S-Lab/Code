@@ -132,7 +132,7 @@ telemetry remain opt-in.
 | Persistence | Atomic snapshots, run events, traces, artifacts, verification, checkpoints, and optional RL trajectories | Configured store and host policy |
 | State graph | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow projection | Explicit application use |
 | Agent release contract | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks | Baseline admission API |
-| Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, and bounded pages of the existing `EventEnvelopeV1` stream | `AgentProtocolHost` executes through `AgentSession`; the `a3s code` process supplies service transport |
+| Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, and bounded pages of the existing `EventEnvelopeV1` stream | `AgentProtocolHarness` multiplexes ordinary Code sessions and `AgentProtocolHost` executes through each `AgentSession`; the `a3s code` process supplies service transport |
 | Headless web search | Lazy Chrome/Chromium-backed Google/Baidu engines and managed browser lifecycle APIs; Lightpanda remains configurable | Default Cargo feature `headless-search`; disable with `default-features = false` |
 | S3 workspace | S3-compatible object backend | Cargo feature `s3` |
 | Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown | Cargo feature `serve` |

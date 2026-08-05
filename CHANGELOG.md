@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reuse the authoritative `AgentSession` run, conflicting immutable input is
   rejected, recovery keeps Code's checkpoint semantics, and event pages read
   the existing Code run store rather than a parallel Harness journal.
+- Added the Code-owned `AgentProtocolHarness` multi-session kernel used by the
+  sole `a3s code harness` process. It resumes complete persisted sessions before
+  replay, creates sessions only for start/recovery admission, bounds retained
+  conversations, and never introduces another run store or event journal.
 - Added permission/HITL-aware governed direct-tool calls across the Node,
   Python, and Go SDKs, preserving `tool` as the explicit trusted
   host-control-plane API and restoring the cross-SDK alignment gate.

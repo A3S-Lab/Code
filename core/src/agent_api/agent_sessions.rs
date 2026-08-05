@@ -288,6 +288,42 @@ pub(super) async fn create_session_async(
     Ok(session)
 }
 
+pub(super) async fn open_protocol_session_async(
+    agent: &Agent,
+    workspace: impl Into<String>,
+    mut options: SessionOptions,
+    create_if_missing: bool,
+) -> Result<Option<AgentSession>> {
+    bail_if_agent_closed(agent)?;
+    let session_id = options
+        .session_id
+        .clone()
+        .ok_or_else(|| CodeError::SessionConfiguration {
+            field: "session_id",
+            message: "protocol sessions require a host-selected session ID".to_string(),
+        })?;
+    let store = session_config::resolve_session_store(&agent.code_config, &options).await?;
+    let persisted = match &store {
+        Some(store) => store.exists(&session_id).await?,
+        None => false,
+    };
+    if !persisted && !create_if_missing {
+        return Ok(None);
+    }
+    if let Some(store) = store {
+        options = options.with_session_store(store);
+    }
+    if persisted {
+        resume_session_async(agent, &session_id, options)
+            .await
+            .map(Some)
+    } else {
+        create_session_async(agent, workspace, Some(options))
+            .await
+            .map(Some)
+    }
+}
+
 fn reserve_session(agent: &Agent, session_id: &str) -> Result<SessionReservation> {
     let registry = Arc::clone(&agent.sessions);
     let agent_closed = Arc::clone(&agent.closed);
