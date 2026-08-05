@@ -274,11 +274,8 @@ impl Tool for Bm25Tool {
         let mut seen_anchors = HashSet::new();
         let source_anchors = rendered
             .iter()
-            .filter_map(|result| {
-                seen_anchors
-                    .insert(result.source_anchor.clone())
-                    .then(|| result.source_anchor.clone())
-            })
+            .filter(|result| seen_anchors.insert(result.source_anchor.clone()))
+            .map(|result| result.source_anchor.clone())
             .collect::<Vec<_>>();
         let results = rendered
             .into_iter()
