@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.8.1] - 2026-08-09
+
+### Changed
+
+- Upgraded the shared A3S Flow dependency to 0.11.0 so embedders can compose
+  Code's dynamic workflows with the current durable runtime without loading a
+  second, incompatible Flow engine.
+- Projected Flow cancellation requests, timeouts, retry exhaustion, host
+  shutdown, progress updates, and child-operation links into the State Graph
+  with explicit terminal outcomes and cancellation of open projected work.
+- Made the release preflight use an explicit `CARGO_TARGET_DIR` when locating
+  the Go bridge integration binary.
+
 ## [6.8.0] - 2026-08-05
 
 ### Added

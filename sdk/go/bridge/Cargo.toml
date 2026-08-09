@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-go-bridge"
-version = "6.8.0"
+version = "6.8.1"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -17,7 +17,7 @@ name = "a3s-code-go-bridge"
 path = "src/main.rs"
 
 [dependencies]
-a3s-code-core = { version = "6.8.0", path = "../../../core", features = ["s3", "serve"] }
+a3s-code-core = { version = "6.8.1", path = "../../../core", features = ["s3", "serve"] }
 async-trait = "0.1"
 anyhow = "1.0"
 base64 = "0.22"

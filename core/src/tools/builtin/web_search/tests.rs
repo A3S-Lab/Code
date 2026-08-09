@@ -1,7 +1,6 @@
 use super::*;
 use crate::config::{SearchConfig, SearchEngineConfig};
 use std::collections::HashMap;
-#[cfg(feature = "headless-search")]
 use std::path::PathBuf;
 
 #[cfg(feature = "headless-search")]

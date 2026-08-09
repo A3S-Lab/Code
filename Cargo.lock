@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "6.8.0"
+version = "6.8.1"
 dependencies = [
  "a3s-acl 0.3.0",
  "a3s-common",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-go-bridge"
-version = "6.8.0"
+version = "6.8.1"
 dependencies = [
  "a3s-code-core",
  "anyhow",
@@ -121,9 +121,8 @@ dependencies = [
 
 [[package]]
 name = "a3s-flow"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b677f241a52dad96e636d8ca88bd0e303428a11c02b4f0acfe646349b7a4852c"
+version = "0.11.0"
+source = "git+https://github.com/A3S-Lab/Flow.git?rev=280e470563996203b176a4fb5a2fdf7e96a7b1f2#280e470563996203b176a4fb5a2fdf7e96a7b1f2"
 dependencies = [
  "async-trait",
  "chrono",

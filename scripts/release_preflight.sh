@@ -49,9 +49,13 @@ PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/private/tmp/a3s-code-pycache}" \
 
 echo "[10/13] Running Go SDK bridge integration"
 cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+TARGET_ROOT="${CARGO_TARGET_DIR:-$WORKSPACE/target}"
+if [[ "$TARGET_ROOT" != /* ]]; then
+  TARGET_ROOT="$WORKSPACE/$TARGET_ROOT"
+fi
 (
   cd sdk/go
-  A3S_CODE_GO_BRIDGE_TEST_BINARY="$PWD/../../target/debug/a3s-code-go-bridge" \
+  A3S_CODE_GO_BRIDGE_TEST_BINARY="$TARGET_ROOT/debug/a3s-code-go-bridge" \
     go test ./...
 )
 
