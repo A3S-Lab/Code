@@ -350,11 +350,137 @@ fn projection_patch(
             [("status", json!("failed")), ("error", json!(error))],
             &mut operations,
         )?,
+        FlowEvent::RunCancellationRequested { request } => {
+            cancel_open_subjects(graph, &run_id, envelope.sequence, &mut operations)?;
+            update_object(
+                graph,
+                &run_id,
+                envelope.sequence,
+                [
+                    ("status", json!("cancelling")),
+                    (
+                        "cancellation",
+                        json!({
+                            "request": request,
+                            "requested_at": envelope.timestamp,
+                            "sequence": envelope.sequence,
+                        }),
+                    ),
+                ],
+                &mut operations,
+            )?;
+        }
         FlowEvent::RunCancelled { reason } => update_object(
             graph,
             &run_id,
             envelope.sequence,
             [("status", json!("cancelled")), ("reason", json!(reason))],
+            &mut operations,
+        )?,
+        FlowEvent::RunTimedOut { deadline, reason } => {
+            let error = reason
+                .clone()
+                .unwrap_or_else(|| format!("workflow timed out at {deadline}"));
+            update_object(
+                graph,
+                &run_id,
+                envelope.sequence,
+                [
+                    ("status", json!("failed")),
+                    ("error", json!(error)),
+                    ("deadline", json!(deadline)),
+                    ("reason", json!(reason)),
+                    (
+                        "terminal_outcome",
+                        json!({
+                            "type": "timed_out",
+                            "deadline": deadline,
+                            "reason": reason,
+                        }),
+                    ),
+                ],
+                &mut operations,
+            )?;
+        }
+        FlowEvent::RunRetryExhausted {
+            step_id,
+            attempt,
+            error,
+        } => update_object(
+            graph,
+            &run_id,
+            envelope.sequence,
+            [
+                ("status", json!("failed")),
+                ("error", json!(error)),
+                ("step_id", json!(step_id)),
+                ("attempt", json!(attempt)),
+                (
+                    "terminal_outcome",
+                    json!({
+                        "type": "retry_exhausted",
+                        "step_id": step_id,
+                        "attempt": attempt,
+                        "error": error,
+                    }),
+                ),
+            ],
+            &mut operations,
+        )?,
+        FlowEvent::RunHostShutdown { reason } => {
+            let error = reason
+                .clone()
+                .unwrap_or_else(|| "workflow terminated by host shutdown".to_string());
+            update_object(
+                graph,
+                &run_id,
+                envelope.sequence,
+                [
+                    ("status", json!("failed")),
+                    ("error", json!(error)),
+                    ("reason", json!(reason)),
+                    (
+                        "terminal_outcome",
+                        json!({"type": "host_shutdown", "reason": reason}),
+                    ),
+                ],
+                &mut operations,
+            )?;
+        }
+        FlowEvent::RunProgressRecorded { progress } => add_subject(
+            graph,
+            SubjectProjection {
+                run_object_id: &run_id,
+                raw_run_id: &envelope.run_id,
+                kind: "progress",
+                id_field: "progress_id",
+                id: &progress.progress_id,
+                object_type: "workflow_progress",
+                sequence: envelope.sequence,
+                extra: serde_json::to_value(progress).map_err(|error| {
+                    RuntimeError::InvalidExternalProjection(format!(
+                        "failed to serialize workflow progress: {error}"
+                    ))
+                })?,
+            },
+            &mut operations,
+        )?,
+        FlowEvent::ChildOperationLinked { child } => add_subject(
+            graph,
+            SubjectProjection {
+                run_object_id: &run_id,
+                raw_run_id: &envelope.run_id,
+                kind: "child_operation",
+                id_field: "reference_id",
+                id: &child.reference_id,
+                object_type: "workflow_child_operation",
+                sequence: envelope.sequence,
+                extra: serde_json::to_value(child).map_err(|error| {
+                    RuntimeError::InvalidExternalProjection(format!(
+                        "failed to serialize child operation reference: {error}"
+                    ))
+                })?,
+            },
             &mut operations,
         )?,
         FlowEvent::StepCreated {
@@ -435,6 +561,7 @@ fn projection_patch(
                 run_object_id: &run_id,
                 raw_run_id: &envelope.run_id,
                 kind: "wait",
+                id_field: "wait_id",
                 id: wait_id,
                 object_type: "workflow_wait",
                 sequence: envelope.sequence,
@@ -460,6 +587,7 @@ fn projection_patch(
                 run_object_id: &run_id,
                 raw_run_id: &envelope.run_id,
                 kind: "hook",
+                id_field: "hook_id",
                 id: hook_id,
                 object_type: "workflow_hook",
                 sequence: envelope.sequence,
@@ -503,6 +631,7 @@ struct SubjectProjection<'a> {
     run_object_id: &'a str,
     raw_run_id: &'a str,
     kind: &'a str,
+    id_field: &'a str,
     id: &'a str,
     object_type: &'a str,
     sequence: u64,
@@ -517,7 +646,7 @@ fn add_subject(
     let object_id = subject_object_id(subject.raw_run_id, subject.kind, subject.id);
     let mut data = subject.extra.as_object().cloned().unwrap_or_default();
     data.insert("run_id".to_string(), json!(subject.raw_run_id));
-    data.insert(format!("{}_id", subject.kind), json!(subject.id));
+    data.insert(subject.id_field.to_string(), json!(subject.id));
     data.insert("last_sequence".to_string(), json!(subject.sequence));
     operations.push(PatchOperation::AddObject {
         id: object_id.clone(),
@@ -532,6 +661,46 @@ fn add_subject(
         data: json!({"kind": subject.kind}),
     });
     touch_run(graph, subject.run_object_id, subject.sequence, operations)
+}
+
+fn cancel_open_subjects(
+    graph: &crate::StateGraph,
+    run_id: &str,
+    sequence: u64,
+    operations: &mut Vec<PatchOperation>,
+) -> Result<(), RuntimeError> {
+    for relation in graph.relations_from(run_id) {
+        if relation.relation_type != "contains" {
+            continue;
+        }
+        let subject = graph.object(&relation.target).ok_or_else(|| {
+            RuntimeError::InvalidExternalProjection(format!(
+                "projected relation `{}` references missing object `{}`",
+                relation.id, relation.target
+            ))
+        })?;
+        let status = subject.data.get("status").and_then(Value::as_str);
+        match (subject.object_type.as_str(), status) {
+            ("workflow_step", Some("created" | "running" | "retrying")) => update_object(
+                graph,
+                &subject.id,
+                sequence,
+                [("status", json!("cancelled")), ("retry_after", Value::Null)],
+                operations,
+            )?,
+            ("workflow_wait", Some("waiting")) | ("workflow_hook", Some("waiting" | "active")) => {
+                update_object(
+                    graph,
+                    &subject.id,
+                    sequence,
+                    [("status", json!("cancelled"))],
+                    operations,
+                )?
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn touch_run(

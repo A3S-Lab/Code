@@ -4,6 +4,8 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.8.1] - 2026-08-09
+
 ### Added
 
 - Added synchronous and asyncio exact-run admission helpers for detached starts
@@ -15,6 +17,8 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 - Updated the bundled Core with the unified model-visible `search` and `task`
   contracts, including dependency-free bounded BM25 workspace ranking while
   preserving the direct `parallel_task` compatibility helper.
+- Updated the bundled Core to A3S Flow 0.11.0 and its complete durable event
+  projection contract. The Python API is unchanged.
 
 ## [6.8.0] - 2026-08-05
 

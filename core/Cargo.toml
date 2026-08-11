@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "6.8.0"
+version = "6.8.1"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -17,7 +17,7 @@ a3s-common = "0.1.1"
 a3s-memory = "0.1.2"
 a3s-lane = "0.5"
 a3s-search = { version = "3.0.9", git = "https://github.com/A3S-Lab/Search.git", rev = "2b7ec07d9a1b99758a3e8c950c6d4b6ca5b51fa9", default-features = false }
-a3s-flow = "0.4.3"
+a3s-flow = { version = "=0.11.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "280e470563996203b176a4fb5a2fdf7e96a7b1f2", default-features = false }
 
 # Async runtime
 tokio = { version = "1.35", features = [
