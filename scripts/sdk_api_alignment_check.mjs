@@ -42,6 +42,10 @@ const INTENTIONAL_SESSION_OMISSIONS = new Map([
     'register_dynamic_tool',
     'Requires a Rust Tool trait object; SDK-safe dynamic tools need typed provider APIs.',
   ],
+  [
+    'cognitive_package_binding',
+    'Rust-host cognitive context is injected through a trait object; SDKs cannot create or resume these sessions until a typed callback adapter exists.',
+  ],
 ]);
 
 const AGENT_ALIASES = new Map([
@@ -77,6 +81,10 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
   ['sandbox_handle', 'Rust BashSandbox trait object; no SDK-safe sandbox provider yet.'],
   ['mcp_manager', 'Rust McpManager handle; SDKs expose add_mcp/remove_mcp runtime APIs.'],
   ['hook_executor', 'Rust HookExecutor trait object; SDKs expose register_hook instead.'],
+  [
+    'cognitive_context',
+    'Rust CognitiveContextProvider trait object; cross-language hosts need a typed callback adapter before this can be value-typed.',
+  ],
 ]);
 
 const SESSION_OPTION_ALIASES = new Map([

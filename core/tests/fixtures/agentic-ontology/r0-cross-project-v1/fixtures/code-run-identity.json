@@ -1,0 +1,7 @@
+{
+  "agent_release_identity": "sha256:4be0c29b983f7b2fe0caed9c670aff2bd27b904c9ebc461a3de1dc3168289e8a",
+  "protocol": "a3s.code.agent.v1",
+  "run_id": "run-execution-018f4f86-attempt-1",
+  "schema": "a3s.code.agent-run-identity.v1",
+  "session_id": "conversation-018f4f86"
+}

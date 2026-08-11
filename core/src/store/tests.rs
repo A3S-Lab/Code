@@ -79,6 +79,7 @@ fn create_test_session_data() -> SessionData {
         principal: None,
         agent_template_id: None,
         correlation_id: None,
+        cognitive_package_binding: None,
         total_cost: 0.0,
         model_name: None,
         cost_records: Vec::new(),

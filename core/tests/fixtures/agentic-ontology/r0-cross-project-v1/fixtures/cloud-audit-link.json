@@ -1,0 +1,11 @@
+{
+  "schema": "agentic.ontology.r0-cloud-audit-link.v1",
+  "organizationId": "018f4f86-0000-7000-8000-000000000001",
+  "workspaceId": "018f4f86-0000-7000-8000-000000000002",
+  "packageReleaseId": "018f4f86-0000-7000-8000-000000000003",
+  "agentExecutionId": "018f4f86-0000-7000-8000-000000000004",
+  "handoffDigest": "sha256:c92f8bfdb4435ceeeeb76f32d89edf054782e9a7f286e1aa9a9647a0513ff779",
+  "generationReceiptDigest": "sha256:c121af75cfff61274980ba78757db9bdcbafedae59efba846f691e3c65167cb1",
+  "taskProofDigest": "sha256:2c8adb3f4d86f36b82d2ad74ff370dcb3d7920ac2cb26efd909193d8272c6b3e",
+  "auditDigest": "sha256:a0784bec8384d8c681b29436c4e61ccefa85be1143f92b7b6e2389bbcf0e66c5"
+}

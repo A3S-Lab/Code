@@ -103,6 +103,7 @@ pub(super) struct SessionPersistenceContext {
     principal: Option<String>,
     agent_template_id: Option<String>,
     correlation_id: Option<String>,
+    cognitive_package_binding: Option<crate::cognitive_context::CognitivePackageBindingV1>,
     auto_save: bool,
 }
 
@@ -125,6 +126,10 @@ impl SessionPersistenceContext {
             principal: session.principal.clone(),
             agent_template_id: session.agent_template_id.clone(),
             correlation_id: session.correlation_id.clone(),
+            cognitive_package_binding: session
+                .cognitive_context
+                .as_ref()
+                .map(|context| context.binding().clone()),
             auto_save: session.auto_save,
         }
     }
@@ -156,6 +161,7 @@ impl SessionPersistenceContext {
             principal: self.principal.as_deref(),
             agent_template_id: self.agent_template_id.as_deref(),
             correlation_id: self.correlation_id.as_deref(),
+            cognitive_package_binding: self.cognitive_package_binding.as_ref(),
             seed,
         })
         .await;
@@ -236,7 +242,7 @@ pub(super) async fn load_session_snapshot(
 pub(super) fn apply_persisted_runtime_options(
     mut opts: SessionOptions,
     data: &SessionData,
-) -> SessionOptions {
+) -> Result<SessionOptions> {
     let model_was_explicit = opts.model.is_some();
     opts.session_id = Some(data.id.clone());
 
@@ -287,7 +293,33 @@ pub(super) fn apply_persisted_runtime_options(
         opts.correlation_id = data.correlation_id.clone();
     }
 
-    opts
+    match (
+        data.cognitive_package_binding.as_ref(),
+        opts.cognitive_context.as_ref(),
+    ) {
+        (Some(persisted), Some(injected)) if injected.binding() == persisted => {}
+        (Some(_), Some(_)) => {
+            return Err(CodeError::SessionConfiguration {
+                field: "cognitive_context",
+                message: "resume provider binding differs from the exact cognitive package retained by the session snapshot".to_string(),
+            });
+        }
+        (Some(_), None) => {
+            return Err(CodeError::SessionConfiguration {
+                field: "cognitive_context",
+                message: "resuming a cognitive-package session requires the host to re-inject a provider for the persisted exact generation".to_string(),
+            });
+        }
+        (None, Some(_)) => {
+            return Err(CodeError::SessionConfiguration {
+                field: "cognitive_context",
+                message: "an existing unbound session cannot acquire a cognitive package during resume; create a new bound session".to_string(),
+            });
+        }
+        (None, None) => {}
+    }
+
+    Ok(opts)
 }
 
 pub(super) fn ensure_artifact_restore_capacity(
@@ -350,6 +382,7 @@ struct SessionDataSnapshotInput<'a> {
     principal: Option<&'a str>,
     agent_template_id: Option<&'a str>,
     correlation_id: Option<&'a str>,
+    cognitive_package_binding: Option<&'a crate::cognitive_context::CognitivePackageBindingV1>,
     seed: SessionPersistenceSeed,
 }
 
@@ -382,6 +415,7 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
         principal: None,
         agent_template_id: None,
         correlation_id: None,
+        cognitive_package_binding: None,
     });
 
     data.id = input.session_id.to_string();
@@ -410,6 +444,7 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
     data.principal = input.principal.map(str::to_string);
     data.agent_template_id = input.agent_template_id.map(str::to_string);
     data.correlation_id = input.correlation_id.map(str::to_string);
+    data.cognitive_package_binding = input.cognitive_package_binding.cloned();
     data
 }
 
@@ -556,6 +591,7 @@ mod tests {
             principal: None,
             agent_template_id: None,
             correlation_id: None,
+            cognitive_package_binding: None,
         }
     }
 
@@ -732,7 +768,7 @@ mod tests {
     #[test]
     fn persisted_runtime_options_prefer_llm_config() {
         let data = persisted_data(Some("anthropic/old"), Some(("openai", "gpt-4o")));
-        let opts = apply_persisted_runtime_options(SessionOptions::new(), &data);
+        let opts = apply_persisted_runtime_options(SessionOptions::new(), &data).unwrap();
         assert_eq!(opts.session_id.as_deref(), Some("session-1"));
         assert_eq!(opts.model.as_deref(), Some("openai/gpt-4o"));
     }
@@ -740,7 +776,7 @@ mod tests {
     #[test]
     fn persisted_runtime_options_fall_back_to_model_name() {
         let data = persisted_data(Some("openai/gpt-4o"), None);
-        let opts = apply_persisted_runtime_options(SessionOptions::new(), &data);
+        let opts = apply_persisted_runtime_options(SessionOptions::new(), &data).unwrap();
         assert_eq!(opts.model.as_deref(), Some("openai/gpt-4o"));
     }
 
@@ -749,19 +785,21 @@ mod tests {
         let mut data = persisted_data(Some("openai/gpt-4o"), None);
         data.config.max_context_length = 128_000;
 
-        let restored = apply_persisted_runtime_options(SessionOptions::new(), &data);
+        let restored = apply_persisted_runtime_options(SessionOptions::new(), &data).unwrap();
         assert_eq!(restored.max_context_tokens, Some(128_000));
 
         let switched = apply_persisted_runtime_options(
             SessionOptions::new().with_model("anthropic/claude"),
             &data,
-        );
+        )
+        .unwrap();
         assert_eq!(switched.max_context_tokens, None);
 
         let overridden = apply_persisted_runtime_options(
             SessionOptions::new().with_max_context_tokens(64_000),
             &data,
-        );
+        )
+        .unwrap();
         assert_eq!(overridden.max_context_tokens, Some(64_000));
     }
 
@@ -797,6 +835,7 @@ mod tests {
             principal: None,
             agent_template_id: None,
             correlation_id: None,
+            cognitive_package_binding: None,
             auto_save: false,
         };
 
@@ -870,6 +909,7 @@ mod tests {
             principal: None,
             agent_template_id: None,
             correlation_id: None,
+            cognitive_package_binding: None,
             auto_save: false,
         };
 

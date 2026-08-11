@@ -124,6 +124,7 @@ telemetry remain opt-in.
 | Governed tools | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, and delegation | Exposed only when workspace and policy allow |
 | Code intelligence | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata | Host-selected local workspace |
 | Context and memory | Ranked context, repeated compaction, three-tier memory, typed stores, recall, extraction, relations, and pruning | Host-selected and configurable |
+| Cognitive packages | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages |
 | Model adapters | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations | Configuration or host injection |
 | Structured output | Native provider formats or schema-validated prompt, partial parse, and repair fallback | Baseline |
 | MCP and Skills | Isolated MCP transports plus filesystem, registry, inline, and live session Skills | Configuration or live registration |
@@ -201,6 +202,32 @@ async fn main() -> a3s_code_core::Result<()> {
 Typed session options accept custom model clients, context providers, memory
 stores, session stores, workspace backends, security providers, confirmation
 providers, permission checkers, and other host-owned extensions.
+
+### Bind one exact cognitive package
+
+`CognitiveContextSession` is the dedicated boundary for Agentic Ontology
+cognitive packages. The embedding host obtains and retains the A3S Use lease,
+then injects a provider together with the reviewed package, lifecycle
+generation, capability snapshot, and Knowledge-surface digests:
+
+```rust,ignore
+use a3s_code_core::{CognitiveContextSession, SessionOptions};
+
+// `binding` is reconstructed from the exact A3S Use capability snapshot.
+// `use_provider` implements CognitiveContextProvider and performs cited
+// search -> bounded Markdown read through the host-owned generation lease.
+let cognitive = CognitiveContextSession::new(binding, use_provider)?;
+let options = SessionOptions::new().with_cognitive_context(cognitive);
+```
+
+Code repeats the complete binding in every provider request, validates source
+and citation digests before prompt injection, persists the binding in
+`SessionSnapshotV1`, and emits `cognitive_context_bound` into the ordinary run
+event stream. A resumed session requires the host to inject the same binding.
+Provider failure, generation drift, a missing citation, or an attempt to add a
+general RAG/graph fallback aborts the turn; personal memory is not recalled for
+a cognitive-package-bound turn. Registry lookup, installation, lifecycle,
+package files, and the human-review ontology graph remain outside Code.
 
 ## Tools that respect the workspace
 

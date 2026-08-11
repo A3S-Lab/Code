@@ -563,6 +563,7 @@ fn gen_session_data(rng: &mut Rng) -> SessionData {
         principal: rng.opt_string(),
         agent_template_id: rng.opt_string(),
         correlation_id: rng.opt_string(),
+        cognitive_package_binding: None,
     }
 }
 

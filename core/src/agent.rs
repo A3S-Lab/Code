@@ -445,6 +445,13 @@ pub enum AgentEvent {
         total_tokens: usize,
     },
 
+    /// One run is using the exact cognitive-package generation retained by
+    /// the surrounding session snapshot.
+    #[serde(rename = "cognitive_context_bound")]
+    CognitiveContextBound {
+        binding: crate::cognitive_context::CognitivePackageBindingV1,
+    },
+
     // ========================================================================
     // a3s-lane integration events
     // ========================================================================

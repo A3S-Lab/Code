@@ -229,6 +229,28 @@ struct CapturingContextProvider {
     session_ids: std::sync::Mutex<Vec<Option<String>>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TestCognitiveProviderMode {
+    Valid,
+    DriftGeneration,
+    Fail,
+}
+
+#[derive(Debug)]
+struct TestCognitiveProvider {
+    mode: TestCognitiveProviderMode,
+    requests: std::sync::Mutex<Vec<crate::cognitive_context::CognitiveContextRequestV1>>,
+}
+
+impl TestCognitiveProvider {
+    fn new(mode: TestCognitiveProviderMode) -> Self {
+        Self {
+            mode,
+            requests: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
 #[derive(Default)]
 struct TestWorkspaceFs {
     files: std::sync::RwLock<std::collections::HashMap<String, String>>,
@@ -342,6 +364,90 @@ impl crate::context::ContextProvider for CapturingContextProvider {
             .push(query.session_id.clone());
         Ok(crate::context::ContextResult::new(self.name()))
     }
+}
+
+#[async_trait::async_trait]
+impl crate::cognitive_context::CognitiveContextProvider for TestCognitiveProvider {
+    fn name(&self) -> &str {
+        "test-a3s-use-cognitive-package"
+    }
+
+    async fn query(
+        &self,
+        request: &crate::cognitive_context::CognitiveContextRequestV1,
+    ) -> crate::cognitive_context::CognitiveContextResult<
+        crate::cognitive_context::CognitiveContextResponseV1,
+    > {
+        self.requests.lock().unwrap().push(request.clone());
+        if matches!(self.mode, TestCognitiveProviderMode::Fail) {
+            return Err(crate::cognitive_context::CognitiveContextError::Provider(
+                "exact generation lease is unavailable".to_string(),
+            ));
+        }
+
+        let citation = crate::cognitive_context::CognitiveKnowledgeCitationV1::new(
+            &request.binding,
+            "concepts/retry-policy.md",
+            "Retry policy",
+            vec![
+                "sha256:ce8af6b5fb9a69bc2de147dbb0fd8754c9e1b555a96002878560dd9f8914db73"
+                    .to_string(),
+            ],
+        )?;
+        let document = crate::cognitive_context::CognitiveContextDocumentV1::new(
+            citation,
+            "Retry only before an observable side effect.",
+        )?;
+        let mut response = crate::cognitive_context::CognitiveContextResponseV1::new(
+            request,
+            vec![document],
+            false,
+        )?;
+        if matches!(self.mode, TestCognitiveProviderMode::DriftGeneration) {
+            response.binding.lifecycle_generation += 1;
+        }
+        Ok(response)
+    }
+}
+
+fn test_cognitive_binding() -> crate::cognitive_context::CognitivePackageBindingV1 {
+    let generation_digest =
+        "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20";
+    let knowledge = crate::cognitive_context::CognitiveKnowledgeBindingV1::new(
+        "domain-knowledge",
+        "0.2",
+        "sha256:1def786da6d190b7b3ce0176e71d99ff1cac3f8c8cc7c0f8b76a893c544e7a90",
+        7,
+        generation_digest,
+    )
+    .unwrap();
+    crate::cognitive_context::CognitivePackageBindingV1::new(
+        "contra-sense/handbook",
+        "0.1.0",
+        7,
+        generation_digest,
+        "sha256:1e0f0a0162f5b290887ade8886af69fbba4548c863df026178e3550c77813455",
+        knowledge,
+        crate::cognitive_context::CognitiveContextLimits::default(),
+    )
+    .unwrap()
+}
+
+fn test_cognitive_context(
+    mode: TestCognitiveProviderMode,
+) -> (
+    crate::cognitive_context::CognitiveContextSession,
+    Arc<TestCognitiveProvider>,
+) {
+    let provider = Arc::new(TestCognitiveProvider::new(mode));
+    let provider_port: Arc<dyn crate::cognitive_context::CognitiveContextProvider> =
+        provider.clone();
+    let context = crate::cognitive_context::CognitiveContextSession::new(
+        test_cognitive_binding(),
+        provider_port,
+    )
+    .unwrap();
+    (context, provider)
 }
 
 #[async_trait::async_trait]
@@ -6775,4 +6881,225 @@ async fn blank_session_id_returns_typed_configuration_error() {
             ..
         }
     ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cognitive_package_binding_is_persisted_and_retained_by_run_events() {
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let (cognitive_context, provider) = test_cognitive_context(TestCognitiveProviderMode::Valid);
+    let expected = cognitive_context.binding().clone();
+    let opts = SessionOptions::new()
+        .with_session_id("cognitive-session")
+        .with_session_store(store.clone())
+        .with_llm_client(Arc::new(StaticStreamingClient::new("grounded response")))
+        .with_planning(false)
+        .with_cognitive_context(cognitive_context);
+    let session = agent
+        .session_async("/tmp/test-cognitive-session", Some(opts))
+        .await
+        .unwrap();
+
+    assert_eq!(session.cognitive_package_binding(), Some(&expected));
+    session
+        .send("What is the retry policy?", None)
+        .await
+        .unwrap();
+    session.save().await.unwrap();
+
+    let requests = provider.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].session_id, "cognitive-session");
+    assert_eq!(requests[0].binding, expected);
+
+    let snapshot = store
+        .load_snapshot("cognitive-session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        snapshot.session.cognitive_package_binding.as_ref(),
+        Some(&expected)
+    );
+    let bound_events = snapshot
+        .run_records
+        .iter()
+        .flat_map(|record| &record.events)
+        .filter_map(|record| match &record.event {
+            AgentEvent::CognitiveContextBound { binding } => Some(binding),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bound_events, vec![&expected]);
+    assert!(!snapshot
+        .run_records
+        .iter()
+        .flat_map(|record| &record.events)
+        .any(|record| matches!(record.event, AgentEvent::MemoryRecalled { .. })));
+    snapshot.validate_for_session("cognitive-session").unwrap();
+
+    let mut tampered = snapshot.clone();
+    let event_binding = tampered
+        .run_records
+        .iter_mut()
+        .flat_map(|record| &mut record.events)
+        .find_map(|record| match &mut record.event {
+            AgentEvent::CognitiveContextBound { binding } => Some(binding),
+            _ => None,
+        })
+        .unwrap();
+    event_binding.limits.max_results -= 1;
+    assert!(tampered.validate_for_session("cognitive-session").is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cognitive_provider_failure_and_generation_drift_fail_closed_without_fallback() {
+    for (session_id, mode) in [
+        (
+            "cognitive-provider-failure",
+            TestCognitiveProviderMode::Fail,
+        ),
+        (
+            "cognitive-provider-drift",
+            TestCognitiveProviderMode::DriftGeneration,
+        ),
+    ] {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let (cognitive_context, _) = test_cognitive_context(mode);
+        let opts = SessionOptions::new()
+            .with_session_id(session_id)
+            .with_llm_client(Arc::new(StaticStreamingClient::new(
+                "this response must never be reached",
+            )))
+            .with_planning(false)
+            .with_cognitive_context(cognitive_context);
+        let session = agent
+            .session_async(format!("/tmp/{session_id}"), Some(opts))
+            .await
+            .unwrap();
+
+        let error = session
+            .send("Use the package evidence", None)
+            .await
+            .expect_err("required cognitive context must not be omitted");
+        assert!(error.to_string().contains("failed closed"), "{error:#}");
+        let records = session.run_store.records().await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].snapshot.status, crate::run::RunStatus::Failed);
+        assert!(records[0]
+            .events
+            .iter()
+            .any(|record| matches!(record.event, AgentEvent::CognitiveContextBound { .. })));
+        assert!(!records[0].events.iter().any(|record| matches!(
+            record.event,
+            AgentEvent::MemoryRecalled { .. } | AgentEvent::End { .. }
+        )));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cognitive_session_rejects_general_rag_or_graph_provider_fallback() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let (cognitive_context, _) = test_cognitive_context(TestCognitiveProviderMode::Valid);
+    let error = agent
+        .session_async(
+            "/tmp/test-cognitive-no-generic-fallback",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("cognitive-no-generic-fallback")
+                    .with_llm_client(Arc::new(StaticStreamingClient::new("unused")))
+                    .with_cognitive_context(cognitive_context)
+                    .with_context_provider(Arc::new(CapturingContextProvider::default())),
+            ),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::CodeError::SessionConfiguration {
+            field: "cognitive_context",
+            ..
+        }
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cognitive_session_resume_requires_the_same_host_injected_binding() {
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let (cognitive_context, _) = test_cognitive_context(TestCognitiveProviderMode::Valid);
+    let expected = cognitive_context.binding().clone();
+    let session = agent
+        .session_async(
+            "/tmp/test-cognitive-resume",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("cognitive-resume")
+                    .with_session_store(store.clone())
+                    .with_llm_client(Arc::new(StaticStreamingClient::new("unused")))
+                    .with_cognitive_context(cognitive_context),
+            ),
+        )
+        .await
+        .unwrap();
+    session.save().await.unwrap();
+    session.close().await;
+    drop(session);
+
+    let missing = agent
+        .resume_session_async(
+            "cognitive-resume",
+            SessionOptions::new()
+                .with_session_store(store.clone())
+                .with_llm_client(Arc::new(StaticStreamingClient::new("unused"))),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        missing,
+        crate::error::CodeError::SessionConfiguration {
+            field: "cognitive_context",
+            ..
+        }
+    ));
+
+    let mut different_binding = expected.clone();
+    different_binding.limits.max_results -= 1;
+    different_binding.validate().unwrap();
+    let drift_provider: Arc<dyn crate::cognitive_context::CognitiveContextProvider> =
+        Arc::new(TestCognitiveProvider::new(TestCognitiveProviderMode::Valid));
+    let drift_context =
+        crate::cognitive_context::CognitiveContextSession::new(different_binding, drift_provider)
+            .unwrap();
+    let drift = agent
+        .resume_session_async(
+            "cognitive-resume",
+            SessionOptions::new()
+                .with_session_store(store.clone())
+                .with_llm_client(Arc::new(StaticStreamingClient::new("unused")))
+                .with_cognitive_context(drift_context),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        drift,
+        crate::error::CodeError::SessionConfiguration {
+            field: "cognitive_context",
+            ..
+        }
+    ));
+
+    let (exact_context, _) = test_cognitive_context(TestCognitiveProviderMode::Valid);
+    let resumed = agent
+        .resume_session_async(
+            "cognitive-resume",
+            SessionOptions::new()
+                .with_session_store(store)
+                .with_llm_client(Arc::new(StaticStreamingClient::new("unused")))
+                .with_cognitive_context(exact_context),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resumed.cognitive_package_binding(), Some(&expected));
 }

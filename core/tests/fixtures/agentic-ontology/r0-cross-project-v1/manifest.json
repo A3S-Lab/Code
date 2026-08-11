@@ -1,0 +1,130 @@
+{
+  "schema": "agentic.ontology.r0-contract-fixture-manifest.v1",
+  "package": "r0-cross-project-v1",
+  "contractSchema": "agentic.ontology.r0-cross-project-contract.v1",
+  "components": [
+    {
+      "component": "a3s-cloud-contracts",
+      "version": "0.1.0",
+      "boundary": "agentic.ontology.r0-cloud-audit-link.v1"
+    },
+    {
+      "component": "a3s-code-core",
+      "version": "6.8.0",
+      "boundary": "a3s.code.agent.v1"
+    },
+    {
+      "component": "a3s-use",
+      "version": "0.3.0",
+      "boundary": "agentic.ontology.a3s-use-generation-receipt.v1"
+    },
+    {
+      "component": "agentic-ontology-a3s",
+      "version": "0.1.0",
+      "boundary": "agentic.ontology.r0-cross-project-contract.v1"
+    }
+  ],
+  "packageDigest": "sha256:63c86b457c79a8ec153ecf5d13485cdbf4cff8e15c074614775197d7c0206016",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 2862,
+      "sha256": "sha256:85e3d70949fd0d0ffb627f4cfb9b3ab6f1dcb807e5c6d52918680dba7766a524"
+    },
+    {
+      "path": "fixtures/a3s-use-generation-receipt.json",
+      "bytes": 2137,
+      "sha256": "sha256:58b8177372a817b8c18460e03f861b2deb56523a36ccc4ae01aad805591aecfb"
+    },
+    {
+      "path": "fixtures/a3s-use-handoff.drift.json",
+      "bytes": 2045,
+      "sha256": "sha256:9cdee5482eb4f8beb4ee0e57bcebe7e5aa5076de3e40334e29f2fac82e36d09b"
+    },
+    {
+      "path": "fixtures/a3s-use-handoff.valid.json",
+      "bytes": 2045,
+      "sha256": "sha256:7dfa9b3800e135d3c9bce6d11d88935eb1f69482e327100d4d135bef350c3eb7"
+    },
+    {
+      "path": "fixtures/capability-snapshot.json",
+      "bytes": 551,
+      "sha256": "sha256:ed2ffc5952a67fd67aee92b56c90c28407f2ea492c432e834c8bac956cc93484"
+    },
+    {
+      "path": "fixtures/cloud-audit-link.json",
+      "bytes": 685,
+      "sha256": "sha256:2d909de5de135b38ed1d92ea4b8f1315d3a004f7c9d061e027495319d80cffd2"
+    },
+    {
+      "path": "fixtures/code-run-identity.json",
+      "bytes": 276,
+      "sha256": "sha256:183c2417d5b67553e14bf1ed8cadb31fc3427621cfd4f49f6052bcae344c6002"
+    },
+    {
+      "path": "fixtures/code-session-binding.json",
+      "bytes": 1040,
+      "sha256": "sha256:1abdc80079507b5270c0774f41be07ff34fb617b696cef2ee87c3fc8410415e7"
+    },
+    {
+      "path": "fixtures/code-task-result.json",
+      "bytes": 305,
+      "sha256": "sha256:82851da64a935e46f23acf1b7aac92b6e586782ee83562c5f32b141a143325a8"
+    },
+    {
+      "path": "fixtures/extension-receipt.json",
+      "bytes": 3985,
+      "sha256": "sha256:b79f54dd9b0b02d679975208b9cd23599f6c3e19e7d934cd7996e6b47b6f2c9f"
+    },
+    {
+      "path": "fixtures/knowledge-citation.json",
+      "bytes": 647,
+      "sha256": "sha256:3c0f763defbaaf42f0ad6913f8d6950849b1bc34ee9d9508477042ece3f5848a"
+    },
+    {
+      "path": "fixtures/knowledge-lease-binding.json",
+      "bytes": 520,
+      "sha256": "sha256:b1755b6c5a7789bd179cc3d99d2b1273c175aa320f9a225f99dbbe577094d990"
+    },
+    {
+      "path": "fixtures/plugin-package-lock.json",
+      "bytes": 3327,
+      "sha256": "sha256:048440edf978d680bcc0fcfbc8247ccecf2bbdca8829656cd798ee5b7a4ca8d6"
+    },
+    {
+      "path": "fixtures/r0-cross-project.drift-cloud-task-proof.json",
+      "bytes": 3878,
+      "sha256": "sha256:586cb77daf5d1f06a2a060bdc3a4585b2e80b34040408e711862b3492cee8d98"
+    },
+    {
+      "path": "fixtures/r0-cross-project.drift-generation.json",
+      "bytes": 3878,
+      "sha256": "sha256:b8a2066025fa0b3c57d9b038c6115ddbbb7c38dad18c6639b010a29f0af0fecd"
+    },
+    {
+      "path": "fixtures/r0-cross-project.drift-handoff-digest.json",
+      "bytes": 3878,
+      "sha256": "sha256:7e7c6fefb34db9a4cec89269552d537b6e699e0f737dd17ce008a2520ed3daff"
+    },
+    {
+      "path": "fixtures/r0-cross-project.drift-session.json",
+      "bytes": 3878,
+      "sha256": "sha256:5f74fd8a58b276768f85e1cc96ea7e44d165ed62902e33c4ee4f0ce7a7c38572"
+    },
+    {
+      "path": "fixtures/r0-cross-project.unknown-field.json",
+      "bytes": 3903,
+      "sha256": "sha256:99533ec14ff3d609c368c338e1d28a2256f9e905898074908b54dde5c3324a94"
+    },
+    {
+      "path": "fixtures/r0-cross-project.valid.json",
+      "bytes": 3878,
+      "sha256": "sha256:0a7b2b538851d0b8611e32bc21a53ad33c3e3573d2019e71003e3f29394628fd"
+    },
+    {
+      "path": "fixtures/registry-snapshot.json",
+      "bytes": 651,
+      "sha256": "sha256:859470630d3689febef60205045e024e8ac2bdbc4e95960c6011cbe8e7e00877"
+    }
+  ]
+}

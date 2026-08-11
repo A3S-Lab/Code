@@ -214,6 +214,14 @@ pub struct SessionData {
     /// in the host's observability pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
+
+    /// Exact A3S Use cognitive-package generation bound to this session.
+    ///
+    /// The provider/lease is intentionally not serialized. A resume host must
+    /// inject a provider with this byte-equivalent binding; Code never resolves
+    /// a replacement or `latest` generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cognitive_package_binding: Option<crate::cognitive_context::CognitivePackageBindingV1>,
 }
 
 /// Serializable LLM configuration

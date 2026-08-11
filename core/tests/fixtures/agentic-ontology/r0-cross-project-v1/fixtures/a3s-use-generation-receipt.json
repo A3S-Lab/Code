@@ -1,0 +1,47 @@
+{
+  "schema": "agentic.ontology.a3s-use-generation-receipt.v1",
+  "issuer": "a3s-use",
+  "hostTarget": "darwin-arm64",
+  "useVersion": "0.3.0",
+  "handoffDigest": "sha256:c92f8bfdb4435ceeeeb76f32d89edf054782e9a7f286e1aa9a9647a0513ff779",
+  "package": {
+    "name": "handbook",
+    "publisher": "contra-sense"
+  },
+  "version": "0.1.0",
+  "revision": {
+    "generation": 1,
+    "referenceDigest": "sha256:7afef23f602009096a853a28ad581abbab3d55f155a9f11c383a0827661aa619",
+    "revisionDigest": "sha256:a9062f672f407b4dad0eb417a23a61e5230bef7b5081f02bdf7c25129b3bad47",
+    "schema": "agentic.ontology.knowledge-revision-ref.v1",
+    "scope": {
+      "authorityGeneration": 1,
+      "organizationId": "test-org",
+      "revision": 1,
+      "scopeDigest": "sha256:dd55078071b6525e01d5052f1e532fa5eeb0357336a7e26b5985fbb5bf5f880c",
+      "scopeId": "handbook",
+      "workspaceId": "compiler-tests"
+    }
+  },
+  "draftDigest": "sha256:95178701b9bfe1cd89bbba9ba0afecd0b2ad9414fd79ae754bb7df9044cb56d5",
+  "channel": "stable",
+  "lifecycleGeneration": 7,
+  "packageLockDigest": "sha256:3c82b7aa9e743d4b31647522c9ece185aae0512a5ffe2caa09eedc7094e5aba0",
+  "registryGeneration": 9,
+  "registrySnapshotDigest": "sha256:d6651ddd64e5047aede35da3b31cc035b2eea3eec65a4df79659e65e066dfea2",
+  "closure": [
+    {
+      "packageId": "contra-sense/handbook",
+      "version": "0.1.0",
+      "lifecycleGeneration": 7,
+      "packageDigest": "sha256:e8cffdfa8b638fe2f1dc3db85a6e16ba850d3236766a63acbda167bdfe1f8ecc",
+      "manifestDigest": "sha256:986fa67c3a77d47898a6d5267c9108816510641974855e1ce0225d2d3e2d6147",
+      "catalogDigest": "sha256:430b6bea7e6d9e6677e563373f736037b5c7575a2b427adb81198b02fec30b2d",
+      "extensionReceiptDigest": "sha256:c679fa6417f32ce6b04f2567b31c90e561063df513876ea7b4cd4b11380f7437",
+      "registryName": "fixture",
+      "trustRootDigest": "sha256:4813494d137e1631bba301d5acab6e7bb7aa74ce1185d456565ef51d737677b2"
+    }
+  ],
+  "generationDigest": "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20",
+  "receiptDigest": "sha256:c121af75cfff61274980ba78757db9bdcbafedae59efba846f691e3c65167cb1"
+}

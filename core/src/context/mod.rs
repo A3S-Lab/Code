@@ -328,6 +328,19 @@ pub struct ContextResult {
     pub truncated: bool,
 }
 
+/// Runtime behavior when one context provider returns an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContextProviderFailureMode {
+    /// Preserve the existing general-purpose RAG behavior: log and omit the
+    /// failed provider while other sources may continue.
+    #[default]
+    BestEffort,
+    /// Abort the turn. Used by exact-generation cognitive packages so a
+    /// provider failure cannot silently fall back to memory, graph data, or an
+    /// unpinned package.
+    FailClosed,
+}
+
 impl ContextResult {
     /// Create a new empty result
     pub fn new(provider: impl Into<String>) -> Self {
@@ -365,6 +378,22 @@ impl ContextResult {
 pub trait ContextProvider: Send + Sync {
     /// Provider name (used for identification and logging)
     fn name(&self) -> &str;
+
+    /// Whether provider failure may be omitted or must abort the turn.
+    fn failure_mode(&self) -> ContextProviderFailureMode {
+        ContextProviderFailureMode::BestEffort
+    }
+
+    /// Exact cognitive-package identity, when this is Code's typed adapter.
+    ///
+    /// Hosts must install such an adapter through
+    /// [`SessionOptions::with_cognitive_context`](crate::SessionOptions::with_cognitive_context)
+    /// so the same value is persisted in the session snapshot.
+    fn cognitive_package_binding(
+        &self,
+    ) -> Option<&crate::cognitive_context::CognitivePackageBindingV1> {
+        None
+    }
 
     /// Query the provider for relevant context
     async fn query(&self, query: &ContextQuery) -> anyhow::Result<ContextResult>;

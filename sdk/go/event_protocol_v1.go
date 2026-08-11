@@ -28,6 +28,7 @@ const (
 	EventPermissionDenied      = "permission_denied"
 	EventContextResolving      = "context_resolving"
 	EventContextResolved       = "context_resolved"
+	EventCognitiveContextBound = "cognitive_context_bound"
 	EventCommandDeadLettered   = "command_dead_lettered"
 	EventCommandRetry          = "command_retry"
 	EventQueueAlert            = "queue_alert"
@@ -75,6 +76,7 @@ var agentEventTypesV1 = [...]string{
 	EventPermissionDenied,
 	EventContextResolving,
 	EventContextResolved,
+	EventCognitiveContextBound,
 	EventCommandDeadLettered,
 	EventCommandRetry,
 	EventQueueAlert,

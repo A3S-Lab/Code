@@ -2,7 +2,8 @@ use a3s_code_core::planning::{AgentGoal, Complexity, ExecutionPlan, TaskStatus};
 use a3s_code_core::queue::SessionLane;
 use a3s_code_core::verification::VerificationSummary;
 use a3s_code_core::{
-    run_event_envelope_v1, AgentEvent, AgentEventProjectionV1, EventEnvelopeV1, TokenUsage,
+    run_event_envelope_v1, AgentEvent, AgentEventProjectionV1, CognitiveContextLimits,
+    CognitiveKnowledgeBindingV1, CognitivePackageBindingV1, EventEnvelopeV1, TokenUsage,
     AGENT_EVENT_TYPES_V1,
 };
 use serde_json::json;
@@ -26,6 +27,29 @@ fn case(
         payload_key,
         payload_value,
     }
+}
+
+fn cognitive_binding() -> CognitivePackageBindingV1 {
+    let generation_digest =
+        "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20";
+    let knowledge = CognitiveKnowledgeBindingV1::new(
+        "domain-knowledge",
+        "0.2",
+        "sha256:1def786da6d190b7b3ce0176e71d99ff1cac3f8c8cc7c0f8b76a893c544e7a90",
+        7,
+        generation_digest,
+    )
+    .unwrap();
+    CognitivePackageBindingV1::new(
+        "contra-sense/handbook",
+        "0.1.0",
+        7,
+        generation_digest,
+        "sha256:1e0f0a0162f5b290887ade8886af69fbba4548c863df026178e3550c77813455",
+        knowledge,
+        CognitiveContextLimits::default(),
+    )
+    .unwrap()
 }
 
 fn representative_events() -> Vec<EventCase> {
@@ -238,6 +262,14 @@ fn representative_events() -> Vec<EventCase> {
             },
             "total_items",
             json!(3),
+        ),
+        case(
+            "cognitive_context_bound",
+            AgentEvent::CognitiveContextBound {
+                binding: cognitive_binding(),
+            },
+            "binding",
+            serde_json::to_value(cognitive_binding()).unwrap(),
         ),
         case(
             "command_dead_lettered",

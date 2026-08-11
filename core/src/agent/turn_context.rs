@@ -1,6 +1,7 @@
 use super::{context_perception, project_context, AgentEvent, AgentLoop};
 use crate::context::{
-    ContextAssembler, ContextAssembly, ContextItem, ContextQuery, ContextResult, ContextType,
+    ContextAssembler, ContextAssembly, ContextItem, ContextProviderFailureMode, ContextQuery,
+    ContextResult, ContextType,
 };
 use crate::hooks::{
     HookEvent, HookResult, IntentDetectionEvent, PreContextPerceptionEvent, PrePromptEvent,
@@ -21,7 +22,7 @@ impl AgentLoop {
         message_count: usize,
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
-    ) -> TurnContext {
+    ) -> anyhow::Result<TurnContext> {
         let built_system_prompt = Some(effective_system_prompt.to_string());
         let effective_prompt = self
             .fire_pre_prompt(
@@ -37,23 +38,35 @@ impl AgentLoop {
             sp.taint_input(&effective_prompt);
         }
 
+        if let Some(binding) = self.cognitive_package_binding() {
+            if let Some(tx) = event_tx {
+                tx.send(AgentEvent::CognitiveContextBound {
+                    binding: binding.clone(),
+                })
+                .await
+                .ok();
+            }
+        }
+
         let mut context_results = self
             .resolve_prompt_context(&effective_prompt, session_id, event_tx)
-            .await;
-        self.recall_memory_context(&effective_prompt, &mut context_results, event_tx)
-            .await;
+            .await?;
+        if self.cognitive_package_binding().is_none() {
+            self.recall_memory_context(&effective_prompt, &mut context_results, event_tx)
+                .await;
+        }
 
         let context_assembly = self.assemble_context_results(&context_results);
         self.emit_context_resolved(&context_assembly, event_tx)
             .await;
 
-        TurnContext {
+        Ok(TurnContext {
             augmented_system: self.build_augmented_system_prompt_with_base(
                 effective_system_prompt,
                 &context_assembly,
             ),
             effective_prompt,
-        }
+        })
     }
 
     async fn resolve_prompt_context(
@@ -61,9 +74,9 @@ impl AgentLoop {
         effective_prompt: &str,
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
-    ) -> Vec<ContextResult> {
+    ) -> anyhow::Result<Vec<ContextResult>> {
         if self.config.context_providers.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         if let Some(tx) = event_tx {
@@ -118,7 +131,12 @@ impl AgentLoop {
             HookResult::Continue(_) => self.resolve_context(effective_prompt, session_id).await,
             HookResult::Block(_) => {
                 tracing::info!("Context perception blocked by hook");
-                Vec::new()
+                if self.cognitive_package_binding().is_some() {
+                    anyhow::bail!(
+                        "required exact-generation cognitive context was blocked; refusing an ungrounded fallback"
+                    );
+                }
+                Ok(Vec::new())
             }
             _ => self.resolve_context(effective_prompt, session_id).await,
         }
@@ -199,9 +217,9 @@ impl AgentLoop {
         &self,
         prompt: &str,
         session_id: Option<&str>,
-    ) -> Vec<ContextResult> {
+    ) -> anyhow::Result<Vec<ContextResult>> {
         if self.config.context_providers.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let query = ContextQuery::new(prompt).with_session_id(session_id.unwrap_or(""));
@@ -213,22 +231,39 @@ impl AgentLoop {
             .map(|p| p.query(&query));
         let outcomes = join_all(futures).await;
 
-        outcomes
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, r)| match r {
-                Ok(result) if !result.is_empty() => Some(result),
-                Ok(_) => None,
-                Err(e) => {
+        let mut results = Vec::new();
+        for (index, outcome) in outcomes.into_iter().enumerate() {
+            match outcome {
+                Ok(result) if !result.is_empty() => results.push(result),
+                Ok(_) => {}
+                Err(error)
+                    if self.config.context_providers[index].failure_mode()
+                        == ContextProviderFailureMode::FailClosed =>
+                {
+                    anyhow::bail!(
+                        "required context provider '{}' failed closed: {error:#}",
+                        self.config.context_providers[index].name()
+                    );
+                }
+                Err(error) => {
                     tracing::warn!(
                         "Context provider '{}' failed: {}",
-                        self.config.context_providers[i].name(),
-                        e
+                        self.config.context_providers[index].name(),
+                        error
                     );
-                    None
                 }
-            })
-            .collect()
+            }
+        }
+        Ok(results)
+    }
+
+    fn cognitive_package_binding(
+        &self,
+    ) -> Option<&crate::cognitive_context::CognitivePackageBindingV1> {
+        self.config
+            .context_providers
+            .iter()
+            .find_map(|provider| provider.cognitive_package_binding())
     }
 
     /// Detect if context perception is needed based on user prompt.

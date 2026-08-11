@@ -622,7 +622,7 @@ async fn build_resumed_session(
     let snapshot = session_persistence::load_session_snapshot(&store, session_id).await?;
     let data = &snapshot.session;
     options = options.with_session_store(Arc::clone(&store));
-    let mut opts = session_persistence::apply_persisted_runtime_options(options, data);
+    let mut opts = session_persistence::apply_persisted_runtime_options(options, data)?;
     session_persistence::ensure_artifact_restore_capacity(&mut opts, &snapshot);
     let opts = session_builder::prepare_session_options(agent, opts);
     let workspace = data.config.workspace.clone();

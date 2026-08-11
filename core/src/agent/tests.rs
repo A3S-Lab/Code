@@ -3093,7 +3093,7 @@ async fn test_agent_build_augmented_system_prompt() {
     let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
 
     // Test building augmented prompt
-    let context_results = agent.resolve_context("test", None).await;
+    let context_results = agent.resolve_context("test", None).await.unwrap();
     let augmented = agent.build_augmented_system_prompt(&context_results);
 
     let augmented_str = augmented.unwrap();
