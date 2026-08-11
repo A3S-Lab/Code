@@ -560,6 +560,43 @@ fn test_truncate_tool_output_with_artifact_reference() {
 }
 
 #[test]
+fn tool_result_evidence_is_versioned_deterministic_and_byte_exact() {
+    let metadata = attach_tool_result_evidence(None, "éé", "é");
+    let value = &metadata["a3s_tool_result_evidence"];
+    let evidence: ToolResultEvidenceV1 = serde_json::from_value(value.clone()).unwrap();
+
+    assert_eq!(evidence.schema, TOOL_RESULT_EVIDENCE_SCHEMA_V1);
+    assert_eq!(evidence.original_bytes, 4);
+    assert_eq!(evidence.projected_bytes, 2);
+    assert_eq!(evidence.original_estimated_tokens, 1);
+    assert_eq!(evidence.projected_estimated_tokens, 1);
+    assert_eq!(evidence.token_estimator, TOOL_RESULT_TOKEN_ESTIMATOR_V1);
+    assert_eq!(evidence.content_digest, evidence.repeat_key);
+    assert!(evidence.content_digest.starts_with("sha256:"));
+    assert_eq!(
+        evidence.content_ref,
+        format!("inline:{}", evidence.content_digest)
+    );
+    assert_eq!(evidence.loss_mode, ToolResultLossModeV1::BoundedPreview);
+    assert_eq!(metadata, attach_tool_result_evidence(None, "éé", "é"));
+}
+
+#[test]
+fn tool_result_evidence_uses_the_immutable_artifact_reference() {
+    let metadata = serde_json::json!({
+        "artifact": {"artifact_uri": "a3s://tool-output/bash/abc"},
+        "a3s_tool_result_evidence": {"untrusted": true},
+    });
+    let metadata = attach_tool_result_evidence(Some(metadata), "full", "preview");
+    let evidence: ToolResultEvidenceV1 =
+        serde_json::from_value(metadata["a3s_tool_result_evidence"].clone()).unwrap();
+    assert_eq!(evidence.content_ref, "a3s://tool-output/bash/abc");
+    assert_eq!(evidence.original_bytes, 4);
+    assert_eq!(evidence.projected_bytes, 7);
+    assert_eq!(evidence.loss_mode, ToolResultLossModeV1::BoundedPreview);
+}
+
+#[test]
 fn test_tool_result_clone() {
     let result = ToolResult::success("test", "output".to_string());
     let cloned = result.clone();

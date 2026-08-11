@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added versioned `a3s.code.tool-result-evidence.v1` observations to every
+  Tool result, including original/projected byte and token estimates, exact
+  repeat digests, loss mode, and immutable inline or artifact references.
 - Added the Rust-host `CognitiveContextSession` boundary for one exact A3S Use
   cognitive-package generation. Typed requests and cited Markdown responses
   retain package/version, lifecycle generation, capability snapshot, Knowledge

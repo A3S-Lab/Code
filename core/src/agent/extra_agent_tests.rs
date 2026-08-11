@@ -2132,9 +2132,11 @@ async fn test_queued_tool_result_preserves_metadata() {
         .await
         .unwrap();
 
+    let metadata = result.metadata.expect("tool metadata");
+    assert_eq!(metadata["source"], "queue");
     assert_eq!(
-        result.metadata,
-        Some(serde_json::json!({"source": "queue"}))
+        metadata["a3s_tool_result_evidence"]["schema"],
+        crate::tools::TOOL_RESULT_EVIDENCE_SCHEMA_V1
     );
     assert_eq!(result.images.len(), 1);
     assert_eq!(result.images[0].media_type, "image/png");

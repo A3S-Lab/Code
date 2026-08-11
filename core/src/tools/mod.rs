@@ -51,6 +51,7 @@ use crate::llm::ToolDefinition;
 use crate::text::truncate_utf8;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -163,6 +164,108 @@ pub(crate) fn merge_tool_output_artifact_metadata(
             "artifact": artifact_json,
         }),
     }
+}
+
+pub const TOOL_RESULT_EVIDENCE_SCHEMA_V1: &str = "a3s.code.tool-result-evidence.v1";
+pub const TOOL_RESULT_TOKEN_ESTIMATOR_V1: &str = "utf8-bytes-ceil-div-4/v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolResultEvidenceV1 {
+    pub schema: String,
+    pub original_bytes: usize,
+    pub projected_bytes: usize,
+    pub original_estimated_tokens: usize,
+    pub projected_estimated_tokens: usize,
+    pub token_estimator: String,
+    pub content_digest: String,
+    pub repeat_key: String,
+    pub content_ref: String,
+    pub loss_mode: ToolResultLossModeV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolResultLossModeV1 {
+    None,
+    BoundedPreview,
+}
+
+pub(crate) fn attach_tool_result_evidence(
+    metadata: Option<serde_json::Value>,
+    original: &str,
+    projected: &str,
+) -> serde_json::Value {
+    let digest = format!("sha256:{:x}", Sha256::digest(original.as_bytes()));
+    let artifact_uri = metadata
+        .as_ref()
+        .and_then(|value| value.pointer("/artifact/artifact_uri"))
+        .and_then(serde_json::Value::as_str);
+    let evidence = ToolResultEvidenceV1 {
+        schema: TOOL_RESULT_EVIDENCE_SCHEMA_V1.to_string(),
+        original_bytes: original.len(),
+        projected_bytes: projected.len(),
+        original_estimated_tokens: estimated_text_tokens(original),
+        projected_estimated_tokens: estimated_text_tokens(projected),
+        token_estimator: TOOL_RESULT_TOKEN_ESTIMATOR_V1.to_string(),
+        content_digest: digest.clone(),
+        repeat_key: digest.clone(),
+        content_ref: artifact_uri
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("inline:{digest}")),
+        loss_mode: if original == projected {
+            ToolResultLossModeV1::None
+        } else {
+            ToolResultLossModeV1::BoundedPreview
+        },
+    };
+    let evidence = serde_json::json!({
+        "schema": evidence.schema,
+        "original_bytes": evidence.original_bytes,
+        "projected_bytes": evidence.projected_bytes,
+        "original_estimated_tokens": evidence.original_estimated_tokens,
+        "projected_estimated_tokens": evidence.projected_estimated_tokens,
+        "token_estimator": evidence.token_estimator,
+        "content_digest": evidence.content_digest,
+        "repeat_key": evidence.repeat_key,
+        "content_ref": evidence.content_ref,
+        "loss_mode": evidence.loss_mode,
+    });
+    match metadata {
+        Some(serde_json::Value::Object(mut object)) => {
+            object.insert("a3s_tool_result_evidence".to_string(), evidence);
+            serde_json::Value::Object(object)
+        }
+        Some(value) => serde_json::json!({
+            "a3s_tool_result_evidence": evidence,
+            "previous_metadata": value,
+        }),
+        None => serde_json::json!({"a3s_tool_result_evidence": evidence}),
+    }
+}
+
+pub(crate) fn ensure_tool_result_evidence(
+    metadata: Option<serde_json::Value>,
+    output: &str,
+) -> serde_json::Value {
+    match metadata {
+        Some(value) if value.get("a3s_tool_result_evidence").is_some() => value,
+        metadata => attach_tool_result_evidence(metadata, output, output),
+    }
+}
+
+pub(crate) fn has_tool_metadata_beyond_evidence(metadata: Option<&serde_json::Value>) -> bool {
+    match metadata {
+        None => false,
+        Some(serde_json::Value::Object(object)) => {
+            object.keys().any(|key| key != "a3s_tool_result_evidence")
+        }
+        Some(_) => true,
+    }
+}
+
+fn estimated_text_tokens(value: &str) -> usize {
+    value.len().saturating_add(3) / 4
 }
 
 /// Tool execution result returned by direct tool execution.

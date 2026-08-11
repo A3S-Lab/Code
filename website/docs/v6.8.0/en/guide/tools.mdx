@@ -80,6 +80,13 @@ evade it. Timeout and cancellation terminate the complete Unix process group.
 Large file changes replace full before/after event payloads with bounded
 previews and unified diff text plus hashes, sizes, and artifact references.
 
+Every Tool result includes `metadata.a3s_tool_result_evidence` with schema
+`a3s.code.tool-result-evidence.v1`. It records original and projected byte
+counts, deterministic token estimates, an exact SHA-256 repeat key, the loss
+mode, and an immutable inline or artifact content reference. These values are
+Harness observations rather than provider billing records, and this evidence
+does not itself transform the Tool result.
+
 ### Binary-safe local downloads
 
 The `download` tool writes an HTTP(S) resource into a writable local workspace.

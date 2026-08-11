@@ -250,6 +250,15 @@ idempotent, resumable, cancellation-safe, paginated, output-kind, and parallel
 limits. `batch` parallelizes only calls that declare safe read-only behavior;
 mutations and unknown tools are serialized.
 
+Every governed and direct Tool result also carries trusted
+`metadata.a3s_tool_result_evidence` using schema
+`a3s.code.tool-result-evidence.v1`. The bounded record distinguishes original
+and model-visible byte/token estimates, binds exact repeated content with a
+SHA-256 `repeat_key`, names the estimator, declares the loss mode, and points
+to either the persisted full-output artifact or the inline digest. It is
+observational evidence: Core does not claim provider billing usage and does not
+rewrite Tool content from these measurements.
+
 ### Context-efficient repository tools
 
 `read` can pack 1-32 known text files into one ordered response. The shared

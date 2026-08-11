@@ -410,7 +410,7 @@ impl ToolRegistry {
 
         let tool = self.get(name);
 
-        let result = match tool {
+        let mut result = match tool {
             Some(tool) => {
                 let mut output = tool.execute(args, ctx).await?;
                 self.compact_change_metadata(name, &mut output.metadata);
@@ -424,6 +424,11 @@ impl ToolRegistry {
                         &artifact,
                     ));
                 }
+                output.metadata = Some(super::attach_tool_result_evidence(
+                    output.metadata,
+                    &original_content,
+                    &output.content,
+                ));
                 Ok(ToolResult {
                     name: name.to_string(),
                     output: output.content,
@@ -435,6 +440,13 @@ impl ToolRegistry {
             }
             None => Ok(ToolResult::error(name, format!("Unknown tool: {}", name))),
         };
+
+        if let Ok(result) = &mut result {
+            result.metadata = Some(super::ensure_tool_result_evidence(
+                result.metadata.take(),
+                &result.output,
+            ));
+        }
 
         if let Ok(ref r) = result {
             crate::telemetry::record_tool_result(r.exit_code, start.elapsed());
@@ -477,6 +489,11 @@ impl ToolRegistry {
                         &artifact,
                     ));
                 }
+                output.metadata = Some(super::attach_tool_result_evidence(
+                    output.metadata,
+                    &original_content,
+                    &output.content,
+                ));
                 Ok(Some(output))
             }
             None => Ok(None),

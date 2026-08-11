@@ -24,7 +24,8 @@ impl NormalizedToolResult {
                 metadata: result.metadata,
                 images: result.images,
                 error_kind: result.error_kind,
-            },
+            }
+            .with_evidence(),
             Err(error) => Self::tool_error(error.to_string()),
         }
     }
@@ -45,6 +46,7 @@ impl NormalizedToolResult {
             images: Vec::new(),
             error_kind,
         }
+        .with_evidence()
     }
 
     pub(super) fn invalid_arguments(tool_name: &str, message: String) -> Self {
@@ -59,6 +61,7 @@ impl NormalizedToolResult {
             images: Vec::new(),
             error_kind: Some(ToolErrorKind::InvalidArgument { message }),
         }
+        .with_evidence()
     }
 
     pub(super) fn from_tool_result(result: ToolResult) -> Self {
@@ -70,6 +73,7 @@ impl NormalizedToolResult {
             images: result.images,
             error_kind: result.error_kind,
         }
+        .with_evidence()
     }
 
     pub(super) fn into_tool_result(self, name: impl Into<String>) -> ToolResult {
@@ -92,6 +96,15 @@ impl NormalizedToolResult {
             images: Vec::new(),
             error_kind: None,
         }
+        .with_evidence()
+    }
+
+    fn with_evidence(mut self) -> Self {
+        self.metadata = Some(crate::tools::ensure_tool_result_evidence(
+            self.metadata,
+            &self.output,
+        ));
+        self
     }
 }
 
@@ -148,5 +161,15 @@ mod tests {
         assert!(!result.output.contains("[transient"));
         assert!(!result.output.contains("[permanent"));
         assert_eq!(result.error_kind, None);
+        let evidence = result
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("a3s_tool_result_evidence"))
+            .expect("context evidence");
+        assert_eq!(
+            evidence["schema"],
+            crate::tools::TOOL_RESULT_EVIDENCE_SCHEMA_V1
+        );
+        assert_eq!(evidence["loss_mode"], "none");
     }
 }

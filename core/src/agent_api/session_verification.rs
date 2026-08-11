@@ -117,5 +117,7 @@ impl VerificationRuntime {
 /// A real bash exit carries execution metadata and remains reported as a command
 /// failure; pre-execution hook/budget/cancellation/queue failures do not.
 fn governed_execution_error(result: &crate::tools::ToolResult) -> Option<String> {
-    (result.exit_code != 0 && result.metadata.is_none()).then(|| result.output.clone())
+    (result.exit_code != 0
+        && !crate::tools::has_tool_metadata_beyond_evidence(result.metadata.as_ref()))
+    .then(|| result.output.clone())
 }

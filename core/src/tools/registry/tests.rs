@@ -476,8 +476,21 @@ async fn test_registry_truncates_large_tool_output() {
         .as_str()
         .unwrap()
         .starts_with("a3s://tool-output/large_output/"));
+    let evidence: super::super::ToolResultEvidenceV1 =
+        serde_json::from_value(metadata["a3s_tool_result_evidence"].clone()).unwrap();
+    assert_eq!(
+        evidence.schema,
+        super::super::TOOL_RESULT_EVIDENCE_SCHEMA_V1
+    );
+    assert_eq!(evidence.original_bytes, super::super::MAX_OUTPUT_SIZE + 1);
+    assert_eq!(evidence.projected_bytes, result.output.len());
+    assert_eq!(
+        evidence.loss_mode,
+        super::super::ToolResultLossModeV1::BoundedPreview
+    );
 
     let artifact_uri = metadata["artifact"]["artifact_uri"].as_str().unwrap();
+    assert_eq!(evidence.content_ref, artifact_uri);
     let artifact = registry
         .get_artifact(artifact_uri)
         .expect("full output artifact");
@@ -492,6 +505,24 @@ async fn test_registry_truncates_large_tool_output() {
     let events = trace_sink.events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].artifact_uris, vec![artifact_uri]);
+}
+
+#[tokio::test]
+async fn unknown_tool_result_still_carries_context_evidence() {
+    let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+    let result = registry
+        .execute("missing", &serde_json::json!({}))
+        .await
+        .unwrap();
+    let metadata = result.metadata.unwrap();
+    let evidence: super::super::ToolResultEvidenceV1 =
+        serde_json::from_value(metadata["a3s_tool_result_evidence"].clone()).unwrap();
+    assert_eq!(evidence.loss_mode, super::super::ToolResultLossModeV1::None);
+    assert_eq!(evidence.original_bytes, result.output.len());
+    assert_eq!(
+        evidence.content_ref,
+        format!("inline:{}", evidence.content_digest)
+    );
 }
 
 #[tokio::test]
