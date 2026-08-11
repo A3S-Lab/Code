@@ -452,6 +452,37 @@ async fn test_tool_executor_get_artifact() {
 }
 
 #[tokio::test]
+async fn context_efficient_policy_is_applied_with_replayable_evidence() {
+    let executor = ToolExecutor::new("/tmp".to_string());
+    executor
+        .registry()
+        .set_tool_result_transform_policy(ToolResultTransformPolicyV1::context_efficient())
+        .unwrap();
+    executor.register_dynamic_tool(Arc::new(LargeArtifactTool));
+
+    let result = executor
+        .execute("large_artifact", &serde_json::json!({}))
+        .await
+        .unwrap();
+    let metadata = result.metadata.as_ref().unwrap();
+    let evidence: ToolResultEvidenceV1 =
+        serde_json::from_value(metadata["a3s_tool_result_evidence"].clone()).unwrap();
+
+    assert_eq!(evidence.loss_mode, ToolResultLossModeV1::HeadTail);
+    assert_eq!(
+        evidence.transform_algorithm,
+        Some(TOOL_RESULT_TRANSFORM_ALGORITHM_V1.to_string())
+    );
+    assert_ne!(
+        Some(evidence.content_digest.clone()),
+        evidence.projected_digest
+    );
+    assert!(evidence.byte_delta.unwrap() < 0);
+    assert!(evidence.content_ref.starts_with("a3s://tool-output/"));
+    assert!(result.output.contains("omitted"));
+}
+
+#[tokio::test]
 async fn test_tool_executor_respects_artifact_limits() {
     let executor = ToolExecutor::new_with_artifact_limits(
         "/tmp".to_string(),
@@ -557,11 +588,15 @@ fn test_truncate_tool_output_with_artifact_reference() {
     assert!(artifact
         .artifact_uri
         .starts_with("a3s://tool-output/test_tool/"));
+    assert!(artifact
+        .artifact_uri
+        .ends_with(&format!("{:x}", sha2::Sha256::digest(output.as_bytes()))));
 }
 
 #[test]
 fn tool_result_evidence_is_versioned_deterministic_and_byte_exact() {
-    let metadata = attach_tool_result_evidence(None, "éé", "é");
+    let metadata =
+        attach_tool_result_evidence(None, "éé", "é", ToolResultLossModeV1::BoundedPreview);
     let value = &metadata["a3s_tool_result_evidence"];
     let evidence: ToolResultEvidenceV1 = serde_json::from_value(value.clone()).unwrap();
 
@@ -571,14 +606,54 @@ fn tool_result_evidence_is_versioned_deterministic_and_byte_exact() {
     assert_eq!(evidence.original_estimated_tokens, 1);
     assert_eq!(evidence.projected_estimated_tokens, 1);
     assert_eq!(evidence.token_estimator, TOOL_RESULT_TOKEN_ESTIMATOR_V1);
+    assert_eq!(
+        evidence.transform_algorithm,
+        Some(TOOL_RESULT_TRANSFORM_ALGORITHM_V1.to_string())
+    );
     assert_eq!(evidence.content_digest, evidence.repeat_key);
+    assert_ne!(
+        Some(evidence.content_digest.clone()),
+        evidence.projected_digest
+    );
     assert!(evidence.content_digest.starts_with("sha256:"));
     assert_eq!(
         evidence.content_ref,
         format!("inline:{}", evidence.content_digest)
     );
     assert_eq!(evidence.loss_mode, ToolResultLossModeV1::BoundedPreview);
-    assert_eq!(metadata, attach_tool_result_evidence(None, "éé", "é"));
+    assert_eq!(evidence.byte_delta, Some(-2));
+    assert_eq!(evidence.estimated_token_delta, Some(0));
+    assert_eq!(
+        metadata,
+        attach_tool_result_evidence(None, "éé", "é", ToolResultLossModeV1::BoundedPreview,)
+    );
+}
+
+#[test]
+fn tool_result_evidence_reads_pre_transform_v1_without_rewriting_it() {
+    let legacy = serde_json::json!({
+        "schema": TOOL_RESULT_EVIDENCE_SCHEMA_V1,
+        "original_bytes": 4,
+        "projected_bytes": 2,
+        "original_estimated_tokens": 1,
+        "projected_estimated_tokens": 1,
+        "token_estimator": TOOL_RESULT_TOKEN_ESTIMATOR_V1,
+        "content_digest": "sha256:source",
+        "repeat_key": "sha256:source",
+        "content_ref": "a3s://tool-output/test/source",
+        "loss_mode": "bounded_preview"
+    });
+    let evidence: ToolResultEvidenceV1 = serde_json::from_value(legacy.clone()).unwrap();
+
+    assert_eq!(evidence.transform_algorithm, None);
+    assert_eq!(evidence.projected_digest, None);
+    assert_eq!(evidence.byte_delta, None);
+    assert_eq!(evidence.estimated_token_delta, None);
+    assert_eq!(
+        serde_json::to_value(evidence).unwrap(),
+        legacy,
+        "reading retained evidence must not manufacture CAR-03 fields"
+    );
 }
 
 #[test]
@@ -587,7 +662,12 @@ fn tool_result_evidence_uses_the_immutable_artifact_reference() {
         "artifact": {"artifact_uri": "a3s://tool-output/bash/abc"},
         "a3s_tool_result_evidence": {"untrusted": true},
     });
-    let metadata = attach_tool_result_evidence(Some(metadata), "full", "preview");
+    let metadata = attach_tool_result_evidence(
+        Some(metadata),
+        "full",
+        "preview",
+        ToolResultLossModeV1::BoundedPreview,
+    );
     let evidence: ToolResultEvidenceV1 =
         serde_json::from_value(metadata["a3s_tool_result_evidence"].clone()).unwrap();
     assert_eq!(evidence.content_ref, "a3s://tool-output/bash/abc");

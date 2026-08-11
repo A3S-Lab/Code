@@ -17,6 +17,7 @@ mod pagination;
 pub(crate) mod process;
 mod program_tool;
 mod registry;
+mod result_transform;
 mod selector;
 pub mod skill;
 pub mod task;
@@ -35,6 +36,10 @@ pub(crate) use invocation::{
 };
 pub use program_tool::{ProgramTool, MAX_PROGRAM_SCRIPT_SOURCE_BYTES};
 pub use registry::ToolRegistry;
+pub use result_transform::{
+    ToolResultTransformPolicyV1, TOOL_RESULT_TRANSFORM_ALGORITHM_V1,
+    TOOL_RESULT_TRANSFORM_SCHEMA_V1,
+};
 pub(crate) use selector::is_standalone_conversation;
 pub use selector::{select_tools_for_messages, select_tools_for_prompt};
 pub use task::{
@@ -48,7 +53,6 @@ pub use types::{
 };
 
 use crate::llm::ToolDefinition;
-use crate::text::truncate_utf8;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -77,33 +81,45 @@ pub(crate) struct ToolOutputArtifact {
 pub(crate) struct TruncatedToolOutput {
     pub content: String,
     pub artifact: Option<ToolOutputArtifact>,
+    pub loss_mode: ToolResultLossModeV1,
 }
 
+#[cfg(test)]
 pub(crate) fn truncate_tool_output_with_artifact(
     tool_name: &str,
     output: &str,
 ) -> TruncatedToolOutput {
-    if output.len() <= MAX_OUTPUT_SIZE {
+    transform_tool_output_with_artifact(
+        tool_name,
+        output,
+        &ToolResultTransformPolicyV1::conservative(),
+    )
+}
+
+pub(crate) fn transform_tool_output_with_artifact(
+    tool_name: &str,
+    output: &str,
+    policy: &ToolResultTransformPolicyV1,
+) -> TruncatedToolOutput {
+    let transformed = result_transform::transform(output, policy);
+    if transformed.loss_mode == ToolResultLossModeV1::None {
         return TruncatedToolOutput {
-            content: output.to_string(),
+            content: transformed.content,
             artifact: None,
+            loss_mode: transformed.loss_mode,
         };
     }
-
-    let shown = truncate_utf8(output, MAX_OUTPUT_SIZE);
-    let artifact = tool_output_artifact(tool_name, output, shown.len());
+    let artifact = tool_output_artifact(tool_name, output, transformed.retained_original_bytes);
     let artifact_uri = artifact.artifact_uri.clone();
     let content = format!(
-        "{}\n\n[tool output truncated: showing the first {} of {} bytes. Full output artifact: {}. Use narrower arguments such as offset/limit or filtering when possible.]",
-        shown,
-        shown.len(),
-        output.len(),
-        artifact_uri,
+        "{}\n\n[Full output artifact: {artifact_uri}]",
+        transformed.content
     );
 
     TruncatedToolOutput {
         content,
         artifact: Some(artifact),
+        loss_mode: transformed.loss_mode,
     }
 }
 
@@ -112,13 +128,7 @@ pub(crate) fn tool_output_artifact(
     output: &str,
     shown_bytes: usize,
 ) -> ToolOutputArtifact {
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    tool_name.hash(&mut hasher);
-    output.len().hash(&mut hasher);
-    output.hash(&mut hasher);
-    let digest = hasher.finish();
+    let digest = format!("{:x}", Sha256::digest(output.as_bytes()));
     let sanitized_tool = tool_name
         .chars()
         .map(|ch| {
@@ -129,8 +139,8 @@ pub(crate) fn tool_output_artifact(
             }
         })
         .collect::<String>();
-    let artifact_id = format!("tool-output:{sanitized_tool}:{digest:016x}");
-    let artifact_uri = format!("a3s://tool-output/{sanitized_tool}/{digest:016x}");
+    let artifact_id = format!("tool-output:{sanitized_tool}:{digest}");
+    let artifact_uri = format!("a3s://tool-output/{sanitized_tool}/{digest}");
 
     ToolOutputArtifact {
         artifact_id,
@@ -178,10 +188,20 @@ pub struct ToolResultEvidenceV1 {
     pub original_estimated_tokens: usize,
     pub projected_estimated_tokens: usize,
     pub token_estimator: String,
+    /// Versioned transform algorithm. `None` is accepted only when reading
+    /// evidence emitted before CAR-03 extended the unreleased v1 schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_algorithm: Option<String>,
     pub content_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projected_digest: Option<String>,
     pub repeat_key: String,
     pub content_ref: String,
     pub loss_mode: ToolResultLossModeV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_delta: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_token_delta: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,14 +209,19 @@ pub struct ToolResultEvidenceV1 {
 pub enum ToolResultLossModeV1 {
     None,
     BoundedPreview,
+    HeadTail,
+    DeterministicTransform,
+    Composite,
 }
 
 pub(crate) fn attach_tool_result_evidence(
     metadata: Option<serde_json::Value>,
     original: &str,
     projected: &str,
+    loss_mode: ToolResultLossModeV1,
 ) -> serde_json::Value {
     let digest = format!("sha256:{:x}", Sha256::digest(original.as_bytes()));
+    let projected_digest = format!("sha256:{:x}", Sha256::digest(projected.as_bytes()));
     let artifact_uri = metadata
         .as_ref()
         .and_then(|value| value.pointer("/artifact/artifact_uri"))
@@ -208,16 +233,19 @@ pub(crate) fn attach_tool_result_evidence(
         original_estimated_tokens: estimated_text_tokens(original),
         projected_estimated_tokens: estimated_text_tokens(projected),
         token_estimator: TOOL_RESULT_TOKEN_ESTIMATOR_V1.to_string(),
+        transform_algorithm: Some(TOOL_RESULT_TRANSFORM_ALGORITHM_V1.to_string()),
         content_digest: digest.clone(),
+        projected_digest: Some(projected_digest),
         repeat_key: digest.clone(),
         content_ref: artifact_uri
             .map(str::to_owned)
             .unwrap_or_else(|| format!("inline:{digest}")),
-        loss_mode: if original == projected {
-            ToolResultLossModeV1::None
-        } else {
-            ToolResultLossModeV1::BoundedPreview
-        },
+        loss_mode,
+        byte_delta: Some(signed_delta(projected.len(), original.len())),
+        estimated_token_delta: Some(signed_delta(
+            estimated_text_tokens(projected),
+            estimated_text_tokens(original),
+        )),
     };
     let evidence = serde_json::json!({
         "schema": evidence.schema,
@@ -226,10 +254,14 @@ pub(crate) fn attach_tool_result_evidence(
         "original_estimated_tokens": evidence.original_estimated_tokens,
         "projected_estimated_tokens": evidence.projected_estimated_tokens,
         "token_estimator": evidence.token_estimator,
+        "transform_algorithm": evidence.transform_algorithm,
         "content_digest": evidence.content_digest,
+        "projected_digest": evidence.projected_digest,
         "repeat_key": evidence.repeat_key,
         "content_ref": evidence.content_ref,
         "loss_mode": evidence.loss_mode,
+        "byte_delta": evidence.byte_delta,
+        "estimated_token_delta": evidence.estimated_token_delta,
     });
     match metadata {
         Some(serde_json::Value::Object(mut object)) => {
@@ -250,7 +282,9 @@ pub(crate) fn ensure_tool_result_evidence(
 ) -> serde_json::Value {
     match metadata {
         Some(value) if value.get("a3s_tool_result_evidence").is_some() => value,
-        metadata => attach_tool_result_evidence(metadata, output, output),
+        metadata => {
+            attach_tool_result_evidence(metadata, output, output, ToolResultLossModeV1::None)
+        }
     }
 }
 
@@ -266,6 +300,14 @@ pub(crate) fn has_tool_metadata_beyond_evidence(metadata: Option<&serde_json::Va
 
 fn estimated_text_tokens(value: &str) -> usize {
     value.len().saturating_add(3) / 4
+}
+
+fn signed_delta(value: usize, baseline: usize) -> i64 {
+    if value >= baseline {
+        i64::try_from(value - baseline).unwrap_or(i64::MAX)
+    } else {
+        -i64::try_from(baseline - value).unwrap_or(i64::MAX)
+    }
 }
 
 /// Tool execution result returned by direct tool execution.

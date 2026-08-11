@@ -42,6 +42,7 @@ fn create_test_session_data() -> SessionData {
             hook_engine: None,
             planning_mode: PlanningMode::default(),
             goal_tracking: false,
+            tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1::default(),
         },
         state: SessionState::Active,
         messages: vec![

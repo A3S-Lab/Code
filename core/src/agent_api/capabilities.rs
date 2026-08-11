@@ -54,6 +54,16 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
             artifact_limits,
         ),
     );
+    tool_executor
+        .registry()
+        .set_tool_result_transform_policy(
+            input
+                .opts
+                .tool_result_transform_policy
+                .clone()
+                .unwrap_or_default(),
+        )
+        .expect("resolved Tool result transform policy must be valid");
     let trace_sink = match retention_limits.max_trace_events {
         Some(cap) => crate::trace::InMemoryTraceSink::with_max_events(cap),
         None => crate::trace::InMemoryTraceSink::new(),

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added host-pinned `a3s.code.tool-result-transform-policy.v1` policies for
+  deterministic Tool-result bounding, UTF-8-safe head/tail retention, exact
+  repeated-line folding, and structured JSON-array sampling. Policies persist
+  in session snapshots and resume rejects policy drift.
+- Added the same Tool-result transform policy surface to the Node.js, Python,
+  and Go SDKs.
 - Added versioned `a3s.code.tool-result-evidence.v1` observations to every
   Tool result, including original/projected byte and token estimates, exact
   repeat digests, loss mode, and immutable inline or artifact references.
@@ -22,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Tool-result evidence now records the versioned transform algorithm,
+  source/projected SHA-256 digests, signed byte/token deltas, exact loss mode,
+  and the immutable original artifact reference for every lossy projection.
+- Tool-output artifact identifiers now use the original content's SHA-256
+  digest instead of Rust's implementation-defined default hasher, making
+  references stable across processes and runtime upgrades.
 - Cognitive-package-bound turns now fail closed on provider or identity drift,
   require the same host-injected binding on resume, suppress personal-memory
   recall, and reject general RAG/graph providers instead of using them as a

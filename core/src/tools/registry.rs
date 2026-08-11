@@ -7,8 +7,8 @@ use super::artifacts::{ArtifactStore, ArtifactStoreLimits, ToolArtifact};
 use super::types::{Tool, ToolCapabilities, ToolContext, ToolOutput};
 use super::ToolResult;
 use super::{
-    merge_tool_output_artifact_metadata, tool_output_artifact, truncate_tool_output_with_artifact,
-    ToolOutputArtifact,
+    merge_tool_output_artifact_metadata, tool_output_artifact, transform_tool_output_with_artifact,
+    ToolOutputArtifact, ToolResultTransformPolicyV1,
 };
 use crate::llm::ToolDefinition;
 use crate::trace::{InMemoryTraceSink, TraceEvent, TraceSink};
@@ -47,6 +47,7 @@ pub struct ToolRegistry {
     artifact_store: ArtifactStore,
     trace_sink: RwLock<Arc<dyn TraceSink>>,
     argument_validators: RwLock<HashMap<String, ArgumentValidatorCacheEntry>>,
+    transform_policy: RwLock<ToolResultTransformPolicyV1>,
 }
 
 impl ToolRegistry {
@@ -78,7 +79,17 @@ impl ToolRegistry {
             artifact_store: ArtifactStore::with_limits(artifact_limits),
             trace_sink: RwLock::new(Arc::new(InMemoryTraceSink::default())),
             argument_validators: RwLock::new(HashMap::new()),
+            transform_policy: RwLock::new(ToolResultTransformPolicyV1::default()),
         }
+    }
+
+    pub(crate) fn set_tool_result_transform_policy(
+        &self,
+        policy: ToolResultTransformPolicyV1,
+    ) -> Result<()> {
+        policy.validate()?;
+        *self.transform_policy.write().unwrap() = policy;
+        Ok(())
     }
 
     /// Register a builtin tool (cannot be overridden by dynamic tools)
@@ -415,8 +426,10 @@ impl ToolRegistry {
                 let mut output = tool.execute(args, ctx).await?;
                 self.compact_change_metadata(name, &mut output.metadata);
                 let original_content = output.content.clone();
-                let truncated = truncate_tool_output_with_artifact(name, &output.content);
+                let policy = self.transform_policy.read().unwrap().clone();
+                let truncated = transform_tool_output_with_artifact(name, &output.content, &policy);
                 output.content = truncated.content;
+                let loss_mode = truncated.loss_mode;
                 if let Some(artifact) = truncated.artifact {
                     self.store_tool_artifact(name, &original_content, &artifact);
                     output.metadata = Some(merge_tool_output_artifact_metadata(
@@ -428,6 +441,7 @@ impl ToolRegistry {
                     output.metadata,
                     &original_content,
                     &output.content,
+                    loss_mode,
                 ));
                 Ok(ToolResult {
                     name: name.to_string(),
@@ -480,8 +494,10 @@ impl ToolRegistry {
                 let mut output = tool.execute(args, ctx).await?;
                 self.compact_change_metadata(name, &mut output.metadata);
                 let original_content = output.content.clone();
-                let truncated = truncate_tool_output_with_artifact(name, &output.content);
+                let policy = self.transform_policy.read().unwrap().clone();
+                let truncated = transform_tool_output_with_artifact(name, &output.content, &policy);
                 output.content = truncated.content;
+                let loss_mode = truncated.loss_mode;
                 if let Some(artifact) = truncated.artifact {
                     self.store_tool_artifact(name, &original_content, &artifact);
                     output.metadata = Some(merge_tool_output_artifact_metadata(
@@ -493,6 +509,7 @@ impl ToolRegistry {
                     output.metadata,
                     &original_content,
                     &output.content,
+                    loss_mode,
                 ));
                 Ok(Some(output))
             }

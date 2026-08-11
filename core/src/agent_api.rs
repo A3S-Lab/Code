@@ -289,6 +289,11 @@ pub struct SessionOptions {
     pub auto_save: bool,
     /// Optional artifact retention limits for large tool/program outputs.
     pub artifact_store_limits: Option<crate::tools::ArtifactStoreLimits>,
+    /// Host-pinned deterministic policy for projecting large tool results.
+    ///
+    /// `None` selects the conservative compatibility profile. The resolved
+    /// policy is persisted and cannot drift when the session is resumed.
+    pub tool_result_transform_policy: Option<crate::tools::ToolResultTransformPolicyV1>,
     /// Max consecutive parse errors before aborting (overrides default of 2).
     /// `None` uses the `AgentConfig` default.
     pub max_parse_retries: Option<u32>,
@@ -411,6 +416,7 @@ pub struct AgentSession {
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,
+    tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1,
     /// Host provider plus the durable exact-generation package binding.
     cognitive_context: Option<crate::cognitive_context::CognitiveContextSession>,
     workspace: PathBuf,

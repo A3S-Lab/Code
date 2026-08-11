@@ -408,6 +408,16 @@ fn artifact_store_limits_map_to_rust_session_options() {
 }
 
 #[test]
+fn tool_result_transform_policy_maps_to_rust_session_options() {
+    let policy = a3s_code_core::tools::ToolResultTransformPolicyV1::context_efficient();
+    let mut session_options = PySessionOptions::new();
+    session_options.tool_result_transform_policy = Some(policy.clone().into());
+
+    let opts = build_rust_session_options(session_options).unwrap();
+    assert_eq!(opts.tool_result_transform_policy, Some(policy));
+}
+
+#[test]
 fn verification_reports_from_value_accepts_array_and_single_report() {
     let single = verification_reports_from_value(verification_report_json()).unwrap();
     assert_eq!(single.len(), 1);

@@ -2359,6 +2359,7 @@ struct BridgeSessionOptions {
     auto_compact_threshold: Option<f32>,
     max_context_tokens: Option<usize>,
     artifact_store_limits: Option<BridgeArtifactStoreLimits>,
+    tool_result_transform_policy: Option<a3s_code_core::tools::ToolResultTransformPolicyV1>,
     continuation_enabled: Option<bool>,
     max_continuation_turns: Option<u32>,
     temperature: Option<f32>,
@@ -2557,6 +2558,9 @@ impl BridgeSessionOptions {
                     max_artifacts: value.max_artifacts,
                     max_bytes: value.max_bytes,
                 });
+        }
+        if let Some(value) = self.tool_result_transform_policy {
+            options = options.with_tool_result_transform_policy(value);
         }
         if let Some(value) = self.continuation_enabled {
             options = options.with_continuation(value);

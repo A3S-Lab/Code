@@ -183,6 +183,8 @@ pub struct SessionOptions {
     pub max_context_tokens: Option<f64>,
     /// Retention limits for large tool/program artifacts.
     pub artifact_store_limits: Option<ArtifactStoreLimits>,
+    /// Host-pinned deterministic policy for projecting large tool results.
+    pub tool_result_transform_policy: Option<ToolResultTransformPolicy>,
     /// Long-term memory store backend override.
     ///
     /// Sessions resolve a default store when this is not set.
@@ -360,6 +362,19 @@ pub struct ArtifactStoreLimits {
     /// Maximum total artifact content bytes retained by a session.
     pub max_bytes: Option<f64>,
 }
+
+/// Versioned deterministic Tool-result projection policy.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ToolResultTransformPolicy {
+    pub schema: String,
+    pub max_output_bytes: f64,
+    pub head_bytes: f64,
+    pub tail_bytes: f64,
+    pub fold_repeated_lines: bool,
+    pub repeated_line_threshold: f64,
+    pub structured_sample_items: f64,
+}
 #[napi(object)]
 #[derive(Clone, Default)]
 pub struct SessionQueueConfig {
@@ -519,6 +534,40 @@ pub(super) fn js_artifact_store_limits_to_rust(
         )?,
     })
 }
+
+pub(super) fn js_tool_result_transform_policy_to_rust(
+    policy: ToolResultTransformPolicy,
+) -> napi::Result<a3s_code_core::tools::ToolResultTransformPolicyV1> {
+    Ok(a3s_code_core::tools::ToolResultTransformPolicyV1 {
+        schema: policy.schema,
+        max_output_bytes: js_optional_usize(
+            Some(policy.max_output_bytes),
+            "toolResultTransformPolicy.maxOutputBytes",
+            0,
+        )?,
+        head_bytes: js_optional_usize(
+            Some(policy.head_bytes),
+            "toolResultTransformPolicy.headBytes",
+            0,
+        )?,
+        tail_bytes: js_optional_usize(
+            Some(policy.tail_bytes),
+            "toolResultTransformPolicy.tailBytes",
+            0,
+        )?,
+        fold_repeated_lines: policy.fold_repeated_lines,
+        repeated_line_threshold: js_optional_usize(
+            Some(policy.repeated_line_threshold),
+            "toolResultTransformPolicy.repeatedLineThreshold",
+            0,
+        )?,
+        structured_sample_items: js_optional_usize(
+            Some(policy.structured_sample_items),
+            "toolResultTransformPolicy.structuredSampleItems",
+            0,
+        )?,
+    })
+}
 pub(super) fn js_auto_delegation_to_rust(
     options: AutoDelegationOptions,
 ) -> a3s_code_core::AutoDelegationConfig {
@@ -612,6 +661,10 @@ pub(super) fn js_session_options_to_rust(
     }
     if let Some(limits) = o.artifact_store_limits {
         opts = opts.with_artifact_store_limits(js_artifact_store_limits_to_rust(limits)?);
+    }
+    if let Some(policy) = o.tool_result_transform_policy {
+        opts = opts
+            .with_tool_result_transform_policy(js_tool_result_transform_policy_to_rust(policy)?);
     }
     if let Some(ref store) = o.memory_store {
         if store.backend == "file" {

@@ -51,6 +51,10 @@ impl std::fmt::Debug for SessionOptions {
             .field("llm_top_logprobs", &self.llm_top_logprobs)
             .field("auto_save", &self.auto_save)
             .field("artifact_store_limits", &self.artifact_store_limits)
+            .field(
+                "tool_result_transform_policy",
+                &self.tool_result_transform_policy,
+            )
             .field("max_parse_retries", &self.max_parse_retries)
             .field("tool_timeout_ms", &self.tool_timeout_ms)
             .field("llm_api_timeout_ms", &self.llm_api_timeout_ms)
@@ -429,6 +433,15 @@ impl SessionOptions {
     /// Set artifact retention limits for this session.
     pub fn with_artifact_store_limits(mut self, limits: crate::tools::ArtifactStoreLimits) -> Self {
         self.artifact_store_limits = Some(limits);
+        self
+    }
+
+    /// Pin the deterministic projection policy for Tool results.
+    pub fn with_tool_result_transform_policy(
+        mut self,
+        policy: crate::tools::ToolResultTransformPolicyV1,
+    ) -> Self {
+        self.tool_result_transform_policy = Some(policy);
         self
     }
 

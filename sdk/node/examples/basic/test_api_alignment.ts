@@ -22,6 +22,7 @@ import type {
   AutoDelegationOptions,
   DelegateTaskOptions,
   SessionOptions,
+  ToolResultTransformPolicy,
   ToolArtifact,
   ToolResult,
   VerificationReport,
@@ -83,6 +84,7 @@ const opts: SessionOptions = {
   autoParallel: undefined,
   planningMode: undefined,
   artifactStoreLimits: undefined,
+  toolResultTransformPolicy: undefined,
   workspaceBackend: new LocalWorkspaceBackend(process.cwd()),
 };
 check('temperature field accepted', true);
@@ -94,9 +96,19 @@ check('autoDelegation field accepted', true);
 check('autoParallel field accepted', true);
 check('planningMode field accepted', true);
 check('artifactStoreLimits field accepted', true);
+check('toolResultTransformPolicy field accepted', true);
 check('workspaceBackend field accepted', true);
 
 const artifactLimits: ArtifactStoreLimits = { maxArtifacts: 4, maxBytes: 1024 * 1024 };
+const transformPolicy: ToolResultTransformPolicy = {
+  schema: 'a3s.code.tool-result-transform-policy.v1',
+  maxOutputBytes: 100 * 1024,
+  headBytes: 64 * 1024,
+  tailBytes: 32 * 1024,
+  foldRepeatedLines: true,
+  repeatedLineThreshold: 3,
+  structuredSampleItems: 32,
+};
 const opts2: SessionOptions = {
   temperature: 0.5,
   thinkingBudget: 8000,
@@ -107,6 +119,7 @@ const opts2: SessionOptions = {
   autoParallel: false,
   planningMode: 'disabled',
   artifactStoreLimits: artifactLimits,
+  toolResultTransformPolicy: transformPolicy,
 };
 check('temperature value 0.5', opts2.temperature === 0.5);
 check('thinkingBudget value 8000', opts2.thinkingBudget === 8000);
@@ -117,6 +130,7 @@ check('autoDelegation enabled value true', opts2.autoDelegation?.enabled === tru
 check('autoParallel value false', opts2.autoParallel === false);
 check('planningMode value disabled', opts2.planningMode === 'disabled');
 check('artifactStoreLimits maxArtifacts value 4', opts2.artifactStoreLimits?.maxArtifacts === 4);
+check('toolResultTransformPolicy tailBytes value', opts2.toolResultTransformPolicy?.tailBytes === 32 * 1024);
 
 const autoDelegationOpts: AutoDelegationOptions = {
   enabled: true,

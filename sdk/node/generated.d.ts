@@ -402,6 +402,8 @@ export interface SessionOptions {
   maxContextTokens?: number
   /** Retention limits for large tool/program artifacts. */
   artifactStoreLimits?: ArtifactStoreLimits
+  /** Host-pinned deterministic policy for projecting large tool results. */
+  toolResultTransformPolicy?: ToolResultTransformPolicy
   /**
    * Long-term memory store backend override.
    *
@@ -621,6 +623,16 @@ export interface ArtifactStoreLimits {
   maxArtifacts?: number
   /** Maximum total artifact content bytes retained by a session. */
   maxBytes?: number
+}
+/** Versioned deterministic Tool-result projection policy. */
+export interface ToolResultTransformPolicy {
+  schema: string
+  maxOutputBytes: number
+  headBytes: number
+  tailBytes: number
+  foldRepeatedLines: boolean
+  repeatedLineThreshold: number
+  structuredSampleItems: number
 }
 export interface SessionQueueConfig {
   /** Max concurrency for Query lane (default: 4). */

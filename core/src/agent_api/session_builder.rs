@@ -236,6 +236,10 @@ fn finish_agent_session(
         tool_context,
         memory: config.memory.clone(),
         config,
+        tool_result_transform_policy: opts
+            .tool_result_transform_policy
+            .clone()
+            .unwrap_or_default(),
         cognitive_context: opts.cognitive_context.clone(),
         workspace: canonical,
         session_id,

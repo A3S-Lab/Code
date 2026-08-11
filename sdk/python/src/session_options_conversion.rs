@@ -75,6 +75,9 @@ pub(super) fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustS
     if let Some(limits) = so.artifact_store_limits {
         o = o.with_artifact_store_limits(limits.into());
     }
+    if let Some(policy) = so.tool_result_transform_policy {
+        o = o.with_tool_result_transform_policy(policy.into());
+    }
     if let Some(ref store) = so.memory_store {
         let dir = Python::with_gil(|py| {
             store

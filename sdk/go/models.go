@@ -37,55 +37,56 @@ type HostEnvConfig struct {
 // SessionOptions contains the same value-shaped session configuration exposed
 // by the Rust, TypeScript, and Python SDKs.
 type SessionOptions struct {
-	Model                              string                  `json:"model,omitempty"`
-	BuiltinSkills                      *bool                   `json:"builtin_skills,omitempty"`
-	AgentDirs                          []string                `json:"agent_dirs,omitempty"`
-	SkillDirs                          []string                `json:"skill_dirs,omitempty"`
-	WorkerAgents                       []WorkerAgentSpec       `json:"worker_agents,omitempty"`
-	QueueConfig                        *SessionQueueConfig     `json:"queue_config,omitempty"`
-	PermissionPolicy                   *PermissionPolicy       `json:"permission_policy,omitempty"`
-	ConfirmationPolicy                 *ConfirmationPolicy     `json:"confirmation_policy,omitempty"`
-	EnforceActiveSkillToolRestrictions *bool                   `json:"enforce_active_skill_tool_restrictions,omitempty"`
-	FileMemoryDir                      string                  `json:"file_memory_dir,omitempty"`
-	FileSessionStoreDir                string                  `json:"file_session_store_dir,omitempty"`
-	DefaultSecurity                    *bool                   `json:"default_security,omitempty"`
-	WorkspaceBackend                   *WorkspaceBackendConfig `json:"workspace_backend,omitempty"`
-	RemoteGit                          *RemoteGitBackendConfig `json:"remote_git,omitempty"`
-	SessionID                          string                  `json:"session_id,omitempty"`
-	TenantID                           string                  `json:"tenant_id,omitempty"`
-	Principal                          string                  `json:"principal,omitempty"`
-	AgentTemplateID                    string                  `json:"agent_template_id,omitempty"`
-	CorrelationID                      string                  `json:"correlation_id,omitempty"`
-	HostEnv                            *HostEnvConfig          `json:"host_env,omitempty"`
-	PlanningMode                       PlanningMode            `json:"planning_mode,omitempty"`
-	GoalTracking                       *bool                   `json:"goal_tracking,omitempty"`
-	AutoSave                           *bool                   `json:"auto_save,omitempty"`
-	MaxParseRetries                    *uint32                 `json:"max_parse_retries,omitempty"`
-	ToolTimeoutMS                      *uint64                 `json:"tool_timeout_ms,omitempty"`
-	LLMAPITimeoutMS                    *uint64                 `json:"llm_api_timeout_ms,omitempty"`
-	CircuitBreakerThreshold            *uint32                 `json:"circuit_breaker_threshold,omitempty"`
-	DuplicateToolCallThreshold         *uint32                 `json:"duplicate_tool_call_threshold,omitempty"`
-	AutoCompact                        *bool                   `json:"auto_compact,omitempty"`
-	AutoCompactThreshold               *float32                `json:"auto_compact_threshold,omitempty"`
-	MaxContextTokens                   *uint                   `json:"max_context_tokens,omitempty"`
-	ArtifactStoreLimits                *ArtifactStoreLimits    `json:"artifact_store_limits,omitempty"`
-	ContinuationEnabled                *bool                   `json:"continuation_enabled,omitempty"`
-	MaxContinuationTurns               *uint32                 `json:"max_continuation_turns,omitempty"`
-	Temperature                        *float32                `json:"temperature,omitempty"`
-	ThinkingBudget                     *uint                   `json:"thinking_budget,omitempty"`
-	MaxToolRounds                      *uint                   `json:"max_tool_rounds,omitempty"`
-	MaxParallelTasks                   *uint                   `json:"max_parallel_tasks,omitempty"`
-	AutoDelegationEnabled              *bool                   `json:"auto_delegation_enabled,omitempty"`
-	AutoDelegation                     *AutoDelegationConfig   `json:"auto_delegation,omitempty"`
-	ManualDelegationEnabled            *bool                   `json:"manual_delegation_enabled,omitempty"`
-	AutoParallelDelegation             *bool                   `json:"auto_parallel_delegation,omitempty"`
-	LLMLogprobs                        *bool                   `json:"llm_logprobs,omitempty"`
-	LLMTopLogprobs                     *uint                   `json:"llm_top_logprobs,omitempty"`
-	MaxExecutionTimeMS                 *uint64                 `json:"max_execution_time_ms,omitempty"`
-	RetentionLimits                    *RetentionLimits        `json:"retention_limits,omitempty"`
-	Trajectory                         *TrajectoryConfig       `json:"trajectory,omitempty"`
-	InlineSkills                       []InlineSkill           `json:"inline_skills,omitempty"`
-	PromptSlots                        *PromptSlots            `json:"prompt_slots,omitempty"`
+	Model                              string                     `json:"model,omitempty"`
+	BuiltinSkills                      *bool                      `json:"builtin_skills,omitempty"`
+	AgentDirs                          []string                   `json:"agent_dirs,omitempty"`
+	SkillDirs                          []string                   `json:"skill_dirs,omitempty"`
+	WorkerAgents                       []WorkerAgentSpec          `json:"worker_agents,omitempty"`
+	QueueConfig                        *SessionQueueConfig        `json:"queue_config,omitempty"`
+	PermissionPolicy                   *PermissionPolicy          `json:"permission_policy,omitempty"`
+	ConfirmationPolicy                 *ConfirmationPolicy        `json:"confirmation_policy,omitempty"`
+	EnforceActiveSkillToolRestrictions *bool                      `json:"enforce_active_skill_tool_restrictions,omitempty"`
+	FileMemoryDir                      string                     `json:"file_memory_dir,omitempty"`
+	FileSessionStoreDir                string                     `json:"file_session_store_dir,omitempty"`
+	DefaultSecurity                    *bool                      `json:"default_security,omitempty"`
+	WorkspaceBackend                   *WorkspaceBackendConfig    `json:"workspace_backend,omitempty"`
+	RemoteGit                          *RemoteGitBackendConfig    `json:"remote_git,omitempty"`
+	SessionID                          string                     `json:"session_id,omitempty"`
+	TenantID                           string                     `json:"tenant_id,omitempty"`
+	Principal                          string                     `json:"principal,omitempty"`
+	AgentTemplateID                    string                     `json:"agent_template_id,omitempty"`
+	CorrelationID                      string                     `json:"correlation_id,omitempty"`
+	HostEnv                            *HostEnvConfig             `json:"host_env,omitempty"`
+	PlanningMode                       PlanningMode               `json:"planning_mode,omitempty"`
+	GoalTracking                       *bool                      `json:"goal_tracking,omitempty"`
+	AutoSave                           *bool                      `json:"auto_save,omitempty"`
+	MaxParseRetries                    *uint32                    `json:"max_parse_retries,omitempty"`
+	ToolTimeoutMS                      *uint64                    `json:"tool_timeout_ms,omitempty"`
+	LLMAPITimeoutMS                    *uint64                    `json:"llm_api_timeout_ms,omitempty"`
+	CircuitBreakerThreshold            *uint32                    `json:"circuit_breaker_threshold,omitempty"`
+	DuplicateToolCallThreshold         *uint32                    `json:"duplicate_tool_call_threshold,omitempty"`
+	AutoCompact                        *bool                      `json:"auto_compact,omitempty"`
+	AutoCompactThreshold               *float32                   `json:"auto_compact_threshold,omitempty"`
+	MaxContextTokens                   *uint                      `json:"max_context_tokens,omitempty"`
+	ArtifactStoreLimits                *ArtifactStoreLimits       `json:"artifact_store_limits,omitempty"`
+	ToolResultTransformPolicy          *ToolResultTransformPolicy `json:"tool_result_transform_policy,omitempty"`
+	ContinuationEnabled                *bool                      `json:"continuation_enabled,omitempty"`
+	MaxContinuationTurns               *uint32                    `json:"max_continuation_turns,omitempty"`
+	Temperature                        *float32                   `json:"temperature,omitempty"`
+	ThinkingBudget                     *uint                      `json:"thinking_budget,omitempty"`
+	MaxToolRounds                      *uint                      `json:"max_tool_rounds,omitempty"`
+	MaxParallelTasks                   *uint                      `json:"max_parallel_tasks,omitempty"`
+	AutoDelegationEnabled              *bool                      `json:"auto_delegation_enabled,omitempty"`
+	AutoDelegation                     *AutoDelegationConfig      `json:"auto_delegation,omitempty"`
+	ManualDelegationEnabled            *bool                      `json:"manual_delegation_enabled,omitempty"`
+	AutoParallelDelegation             *bool                      `json:"auto_parallel_delegation,omitempty"`
+	LLMLogprobs                        *bool                      `json:"llm_logprobs,omitempty"`
+	LLMTopLogprobs                     *uint                      `json:"llm_top_logprobs,omitempty"`
+	MaxExecutionTimeMS                 *uint64                    `json:"max_execution_time_ms,omitempty"`
+	RetentionLimits                    *RetentionLimits           `json:"retention_limits,omitempty"`
+	Trajectory                         *TrajectoryConfig          `json:"trajectory,omitempty"`
+	InlineSkills                       []InlineSkill              `json:"inline_skills,omitempty"`
+	PromptSlots                        *PromptSlots               `json:"prompt_slots,omitempty"`
 }
 
 // Ptr is a convenience for pointer-valued options that distinguish an
@@ -476,6 +477,18 @@ type AutoDelegationConfig struct {
 type ArtifactStoreLimits struct {
 	MaxArtifacts uint `json:"max_artifacts"`
 	MaxBytes     uint `json:"max_bytes"`
+}
+
+// ToolResultTransformPolicy is the exact versioned projection policy pinned
+// to a session and enforced unchanged across resume.
+type ToolResultTransformPolicy struct {
+	Schema                string `json:"schema"`
+	MaxOutputBytes        uint   `json:"max_output_bytes"`
+	HeadBytes             uint   `json:"head_bytes"`
+	TailBytes             uint   `json:"tail_bytes"`
+	FoldRepeatedLines     bool   `json:"fold_repeated_lines"`
+	RepeatedLineThreshold uint   `json:"repeated_line_threshold"`
+	StructuredSampleItems uint   `json:"structured_sample_items"`
 }
 
 type RetentionLimits struct {

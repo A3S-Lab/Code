@@ -104,6 +104,7 @@ pub(super) struct SessionPersistenceContext {
     agent_template_id: Option<String>,
     correlation_id: Option<String>,
     cognitive_package_binding: Option<crate::cognitive_context::CognitivePackageBindingV1>,
+    tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1,
     auto_save: bool,
 }
 
@@ -130,6 +131,7 @@ impl SessionPersistenceContext {
                 .cognitive_context
                 .as_ref()
                 .map(|context| context.binding().clone()),
+            tool_result_transform_policy: session.tool_result_transform_policy.clone(),
             auto_save: session.auto_save,
         }
     }
@@ -162,6 +164,7 @@ impl SessionPersistenceContext {
             agent_template_id: self.agent_template_id.as_deref(),
             correlation_id: self.correlation_id.as_deref(),
             cognitive_package_binding: self.cognitive_package_binding.as_ref(),
+            tool_result_transform_policy: &self.tool_result_transform_policy,
             seed,
         })
         .await;
@@ -276,6 +279,19 @@ pub(super) fn apply_persisted_runtime_options(
     {
         opts.max_context_tokens = Some(data.config.max_context_length as usize);
     }
+    match opts.tool_result_transform_policy.as_ref() {
+        Some(requested) if requested != &data.config.tool_result_transform_policy => {
+            return Err(CodeError::SessionConfiguration {
+                field: "tool_result_transform_policy",
+                message: "resume policy differs from the exact Tool result transform policy retained by the session snapshot".to_string(),
+            });
+        }
+        Some(_) => {}
+        None => {
+            opts.tool_result_transform_policy =
+                Some(data.config.tool_result_transform_policy.clone());
+        }
+    }
 
     // Identity labels: caller-supplied values take precedence (the resume
     // caller may want to relabel for a new tenant/principal). Otherwise
@@ -383,6 +399,7 @@ struct SessionDataSnapshotInput<'a> {
     agent_template_id: Option<&'a str>,
     correlation_id: Option<&'a str>,
     cognitive_package_binding: Option<&'a crate::cognitive_context::CognitivePackageBindingV1>,
+    tool_result_transform_policy: &'a crate::tools::ToolResultTransformPolicyV1,
     seed: SessionPersistenceSeed,
 }
 
@@ -433,6 +450,7 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
     data.config.auto_delegation = Some(input.config.auto_delegation.clone());
     data.config.planning_mode = input.config.planning_mode;
     data.config.goal_tracking = input.config.goal_tracking;
+    data.config.tool_result_transform_policy = input.tool_result_transform_policy.clone();
     data.messages = input.history;
     data.total_usage = input.seed.total_usage;
     data.model_name = model_name;
@@ -781,6 +799,41 @@ mod tests {
     }
 
     #[test]
+    fn persisted_tool_result_policy_is_inherited_and_cannot_drift() {
+        let mut data = persisted_data(Some("openai/gpt-4o"), None);
+        let policy = crate::tools::ToolResultTransformPolicyV1::context_efficient();
+        data.config.tool_result_transform_policy = policy.clone();
+
+        let inherited = apply_persisted_runtime_options(SessionOptions::new(), &data).unwrap();
+        assert_eq!(inherited.tool_result_transform_policy, Some(policy.clone()));
+
+        let matching = apply_persisted_runtime_options(
+            SessionOptions::new().with_tool_result_transform_policy(policy),
+            &data,
+        )
+        .unwrap();
+        assert_eq!(
+            matching.tool_result_transform_policy,
+            Some(crate::tools::ToolResultTransformPolicyV1::context_efficient())
+        );
+
+        let error = apply_persisted_runtime_options(
+            SessionOptions::new().with_tool_result_transform_policy(
+                crate::tools::ToolResultTransformPolicyV1::conservative(),
+            ),
+            &data,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CodeError::SessionConfiguration {
+                field: "tool_result_transform_policy",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn persisted_context_window_does_not_override_an_explicit_model_change() {
         let mut data = persisted_data(Some("openai/gpt-4o"), None);
         data.config.max_context_length = 128_000;
@@ -836,6 +889,7 @@ mod tests {
             agent_template_id: None,
             correlation_id: None,
             cognitive_package_binding: None,
+            tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1::default(),
             auto_save: false,
         };
 
@@ -910,6 +964,8 @@ mod tests {
             agent_template_id: None,
             correlation_id: None,
             cognitive_package_binding: None,
+            tool_result_transform_policy:
+                crate::tools::ToolResultTransformPolicyV1::context_efficient(),
             auto_save: false,
         };
 
@@ -940,5 +996,9 @@ mod tests {
         assert_eq!(saved.tasks[0].content, "preserve me");
         assert_eq!(saved.messages[0].text(), "new history");
         assert_eq!(saved.model_name.as_deref(), Some("openai/new-model"));
+        assert_eq!(
+            saved.config.tool_result_transform_policy,
+            crate::tools::ToolResultTransformPolicyV1::context_efficient()
+        );
     }
 }

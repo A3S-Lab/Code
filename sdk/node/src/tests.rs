@@ -213,6 +213,26 @@ fn artifact_store_limits_maps_to_rust_session_options() {
 }
 
 #[test]
+fn tool_result_transform_policy_maps_to_rust_session_options() {
+    let policy = a3s_code_core::tools::ToolResultTransformPolicyV1::context_efficient();
+    let opts = js_session_options_to_rust(Some(SessionOptions {
+        tool_result_transform_policy: Some(ToolResultTransformPolicy {
+            schema: policy.schema.clone(),
+            max_output_bytes: policy.max_output_bytes as f64,
+            head_bytes: policy.head_bytes as f64,
+            tail_bytes: policy.tail_bytes as f64,
+            fold_repeated_lines: policy.fold_repeated_lines,
+            repeated_line_threshold: policy.repeated_line_threshold as f64,
+            structured_sample_items: policy.structured_sample_items as f64,
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+
+    assert_eq!(opts.tool_result_transform_policy, Some(policy));
+}
+
+#[test]
 fn session_options_maps_model_context_window() {
     let opts = js_session_options_to_rust(Some(SessionOptions {
         auto_compact: Some(true),

@@ -210,6 +210,14 @@ async fn resolve_rl_trajectory_recorder(
 }
 
 fn validate_session_options(options: &SessionOptions) -> Result<String> {
+    if let Some(policy) = &options.tool_result_transform_policy {
+        policy
+            .validate()
+            .map_err(|error| CodeError::SessionConfiguration {
+                field: "tool_result_transform_policy",
+                message: error.to_string(),
+            })?;
+    }
     let session_id = options
         .session_id
         .clone()
@@ -824,6 +832,20 @@ mod tests {
             error,
             CodeError::SessionConfiguration {
                 field: "session_store",
+                ..
+            }
+        ));
+
+        let mut invalid_policy = crate::tools::ToolResultTransformPolicyV1::context_efficient();
+        invalid_policy.schema = "future".to_string();
+        let options = SessionOptions::new()
+            .with_session_id("invalid-transform-policy")
+            .with_tool_result_transform_policy(invalid_policy);
+        let error = validate_session_options(&options).unwrap_err();
+        assert!(matches!(
+            error,
+            CodeError::SessionConfiguration {
+                field: "tool_result_transform_policy",
                 ..
             }
         ));

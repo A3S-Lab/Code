@@ -254,6 +254,66 @@ impl From<PyArtifactStoreLimits> for a3s_code_core::tools::ArtifactStoreLimits {
     }
 }
 
+#[pyclass(name = "ToolResultTransformPolicy")]
+#[derive(Clone)]
+pub(super) struct PyToolResultTransformPolicy {
+    #[pyo3(get, set)]
+    pub schema: String,
+    #[pyo3(get, set)]
+    pub max_output_bytes: usize,
+    #[pyo3(get, set)]
+    pub head_bytes: usize,
+    #[pyo3(get, set)]
+    pub tail_bytes: usize,
+    #[pyo3(get, set)]
+    pub fold_repeated_lines: bool,
+    #[pyo3(get, set)]
+    pub repeated_line_threshold: usize,
+    #[pyo3(get, set)]
+    pub structured_sample_items: usize,
+}
+
+#[pymethods]
+impl PyToolResultTransformPolicy {
+    #[new]
+    fn new() -> Self {
+        Self::from(a3s_code_core::tools::ToolResultTransformPolicyV1::conservative())
+    }
+
+    #[staticmethod]
+    fn context_efficient() -> Self {
+        Self::from(a3s_code_core::tools::ToolResultTransformPolicyV1::context_efficient())
+    }
+}
+
+impl From<a3s_code_core::tools::ToolResultTransformPolicyV1> for PyToolResultTransformPolicy {
+    fn from(policy: a3s_code_core::tools::ToolResultTransformPolicyV1) -> Self {
+        Self {
+            schema: policy.schema,
+            max_output_bytes: policy.max_output_bytes,
+            head_bytes: policy.head_bytes,
+            tail_bytes: policy.tail_bytes,
+            fold_repeated_lines: policy.fold_repeated_lines,
+            repeated_line_threshold: policy.repeated_line_threshold,
+            structured_sample_items: policy.structured_sample_items,
+        }
+    }
+}
+
+impl From<PyToolResultTransformPolicy> for a3s_code_core::tools::ToolResultTransformPolicyV1 {
+    fn from(policy: PyToolResultTransformPolicy) -> Self {
+        Self {
+            schema: policy.schema,
+            max_output_bytes: policy.max_output_bytes,
+            head_bytes: policy.head_bytes,
+            tail_bytes: policy.tail_bytes,
+            fold_repeated_lines: policy.fold_repeated_lines,
+            repeated_line_threshold: policy.repeated_line_threshold,
+            structured_sample_items: policy.structured_sample_items,
+        }
+    }
+}
+
 /// Reproducible recipe for a disposable worker/subagent.
 #[pyclass(name = "WorkerAgentSpec")]
 #[derive(Clone)]
