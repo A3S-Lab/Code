@@ -1,0 +1,8 @@
+{
+  "citationDigests": [
+    "sha256:1c188e092ae62c5b07aee0c5015c4a728ecf5422ce1d7ee4d71c35b963851a4d"
+  ],
+  "resultDigest": "sha256:32926710ce39d5993da5095340b121144cb473147698a9b4c63defcbc67b411b",
+  "schema": "a3s.code.agent-task-result.v1",
+  "text": "Retry only before an observable side effect."
+}

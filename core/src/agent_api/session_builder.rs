@@ -236,6 +236,7 @@ fn finish_agent_session(
         tool_context,
         memory: config.memory.clone(),
         config,
+        cognitive_context: opts.cognitive_context.clone(),
         workspace: canonical,
         session_id,
         history: Arc::new(RwLock::new(Vec::new())),

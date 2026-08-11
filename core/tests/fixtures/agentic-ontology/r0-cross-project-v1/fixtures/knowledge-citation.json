@@ -1,0 +1,15 @@
+{
+  "citationDigest": "sha256:1c188e092ae62c5b07aee0c5015c4a728ecf5422ce1d7ee4d71c35b963851a4d",
+  "contentDigest": "sha256:1def786da6d190b7b3ce0176e71d99ff1cac3f8c8cc7c0f8b76a893c544e7a90",
+  "documentPath": "concepts/retry-policy.md",
+  "evidenceIds": [
+    "sha256:ce8af6b5fb9a69bc2de147dbb0fd8754c9e1b555a96002878560dd9f8914db73"
+  ],
+  "generationDigest": "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20",
+  "heading": "Retry policy",
+  "lifecycleGeneration": 7,
+  "packageId": "contra-sense/handbook",
+  "packageVersion": "0.1.0",
+  "schema": "a3s.use.okf-knowledge-citation.v1",
+  "surfaceId": "domain-knowledge"
+}

@@ -195,6 +195,12 @@ pub struct SessionOptions {
     pub llm_client: Option<Arc<dyn crate::llm::LlmClient>>,
     /// Optional context providers for RAG
     pub context_providers: Vec<Arc<dyn crate::context::ContextProvider>>,
+    /// One exact-generation cognitive package supplied by the embedding host.
+    ///
+    /// This is separate from general-purpose RAG providers: Code persists the
+    /// immutable package binding and treats provider failure as fatal. The host
+    /// retains A3S Use lease, Registry, installation, and lifecycle authority.
+    pub cognitive_context: Option<crate::cognitive_context::CognitiveContextSession>,
     /// Optional confirmation manager for HITL
     pub confirmation_manager: Option<Arc<dyn crate::hitl::ConfirmationProvider>>,
     /// Optional confirmation policy (will be used to create ConfirmationManager if confirmation_manager is not set)
@@ -405,6 +411,8 @@ pub struct AgentSession {
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,
+    /// Host provider plus the durable exact-generation package binding.
+    cognitive_context: Option<crate::cognitive_context::CognitiveContextSession>,
     workspace: PathBuf,
     /// Unique session identifier.
     session_id: String,

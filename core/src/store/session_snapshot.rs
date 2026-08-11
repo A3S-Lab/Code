@@ -121,6 +121,14 @@ impl SessionSnapshotV1 {
     /// retained length. It must, however, remain a valid next-sequence cursor
     /// for every retained event.
     pub fn validate_invariants(&self) -> Result<()> {
+        if let Some(binding) = &self.session.cognitive_package_binding {
+            binding.validate().map_err(|error| {
+                anyhow::anyhow!(
+                    "session snapshot {:?} has an invalid cognitive package binding: {error}",
+                    self.session.id
+                )
+            })?;
+        }
         let mut run_ids = HashSet::with_capacity(self.run_records.len());
 
         for (run_index, record) in self.run_records.iter().enumerate() {
@@ -158,6 +166,23 @@ impl SessionSnapshotV1 {
                     }
                 }
                 previous_sequence = Some(event.sequence);
+                if let crate::agent::AgentEvent::CognitiveContextBound { binding } = &event.event {
+                    match &self.session.cognitive_package_binding {
+                        Some(expected) if expected == binding => {}
+                        Some(_) => bail!(
+                            "run {:?} event {} carries a cognitive generation different from session {:?}",
+                            run_id,
+                            event_index,
+                            self.session.id
+                        ),
+                        None => bail!(
+                            "run {:?} event {} carries cognitive context but session {:?} is unbound",
+                            run_id,
+                            event_index,
+                            self.session.id
+                        ),
+                    }
+                }
             }
 
             if let Some(max_sequence) = previous_sequence {

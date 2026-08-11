@@ -1,0 +1,17 @@
+{
+  "schema": "agentic.ontology.r0-code-session-binding.v1",
+  "taskProofSchema": "agentic.ontology.r0-code-task-proof.v1",
+  "agentProtocol": "a3s.code.agent.v1",
+  "agentReleaseIdentity": "sha256:4be0c29b983f7b2fe0caed9c670aff2bd27b904c9ebc461a3de1dc3168289e8a",
+  "sessionId": "conversation-018f4f86",
+  "runId": "run-execution-018f4f86-attempt-1",
+  "packageId": "contra-sense/handbook",
+  "packageVersion": "0.1.0",
+  "lifecycleGeneration": 7,
+  "generationDigest": "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20",
+  "capabilitySnapshotDigest": "sha256:1e0f0a0162f5b290887ade8886af69fbba4548c863df026178e3550c77813455",
+  "commandReceiptDigest": "sha256:e1cb762543082588aac9797c50fdfc8ad9a78f2007b4ebc10fd69e3f8c91cfea",
+  "eventStreamDigest": "sha256:054fa992c9036e244b190ce374254d5cee7626a2ae21ed57a72866fe38fa82f0",
+  "resultDigest": "sha256:32926710ce39d5993da5095340b121144cb473147698a9b4c63defcbc67b411b",
+  "taskProofDigest": "sha256:2c8adb3f4d86f36b82d2ad74ff370dcb3d7920ac2cb26efd909193d8272c6b3e"
+}

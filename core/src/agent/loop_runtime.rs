@@ -98,7 +98,7 @@ impl AgentLoop {
                 session_id,
                 &event_tx,
             )
-            .await;
+            .await?;
         let effective_prompt = turn_context.effective_prompt.as_str();
         let augmented_system = turn_context.augmented_system;
 

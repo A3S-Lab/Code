@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "generation": 9,
+  "routes": [
+    {
+      "packageId": "contra-sense/handbook",
+      "componentId": "use/contra-sense/handbook",
+      "route": "handbook",
+      "version": "0.1.0",
+      "packageRoot": "packages/contra-sense/handbook/lifecycle-7-e8cffdfa8b638fe2f1dc3db85a6e16ba850d3236766a63acbda167bdfe1f8ecc",
+      "manifestSha256": "986fa67c3a77d47898a6d5267c9108816510641974855e1ce0225d2d3e2d6147",
+      "packageSha256": "e8cffdfa8b638fe2f1dc3db85a6e16ba850d3236766a63acbda167bdfe1f8ecc",
+      "lifecycleGeneration": 7,
+      "enabled": true,
+      "surfaces": [
+        "okf",
+        "skill"
+      ]
+    }
+  ]
+}

@@ -30,6 +30,7 @@ KnownAgentEventTypeV1 = Literal[
     "permission_denied",
     "context_resolving",
     "context_resolved",
+    "cognitive_context_bound",
     "command_dead_lettered",
     "command_retry",
     "queue_alert",
@@ -81,6 +82,7 @@ AGENT_EVENT_TYPES_V1: Final[Tuple[KnownAgentEventTypeV1, ...]] = (
     "permission_denied",
     "context_resolving",
     "context_resolved",
+    "cognitive_context_bound",
     "command_dead_lettered",
     "command_retry",
     "queue_alert",
@@ -131,6 +133,7 @@ class EventType:
     PERMISSION_DENIED: Final[str] = "permission_denied"
     CONTEXT_RESOLVING: Final[str] = "context_resolving"
     CONTEXT_RESOLVED: Final[str] = "context_resolved"
+    COGNITIVE_CONTEXT_BOUND: Final[str] = "cognitive_context_bound"
     COMMAND_DEAD_LETTERED: Final[str] = "command_dead_lettered"
     COMMAND_RETRY: Final[str] = "command_retry"
     QUEUE_ALERT: Final[str] = "queue_alert"

@@ -23,6 +23,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("security_provider", &self.security_provider.is_some())
             .field("llm_client", &self.llm_client.is_some())
             .field("context_providers", &self.context_providers.len())
+            .field("cognitive_context", &self.cognitive_context)
             .field("confirmation_manager", &self.confirmation_manager.is_some())
             .field("permission_checker", &self.permission_checker.is_some())
             .field("permission_policy", &self.permission_policy.is_some())
@@ -156,6 +157,20 @@ impl SessionOptions {
         provider: Arc<dyn crate::context::ContextProvider>,
     ) -> Self {
         self.context_providers.push(provider);
+        self
+    }
+
+    /// Bind this session to one exact A3S Use cognitive-package generation.
+    ///
+    /// The supplied runtime value contains a serializable immutable binding
+    /// and a host-owned provider. On restart the host must inject the same
+    /// binding again; Code never resolves `latest`, opens a package path, or
+    /// substitutes graph/personal-memory context.
+    pub fn with_cognitive_context(
+        mut self,
+        context: crate::cognitive_context::CognitiveContextSession,
+    ) -> Self {
+        self.cognitive_context = Some(context);
         self
     }
 

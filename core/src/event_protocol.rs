@@ -69,6 +69,7 @@ define_agent_event_types_v1! {
     PermissionDenied => PERMISSION_DENIED = "permission_denied",
     ContextResolving => CONTEXT_RESOLVING = "context_resolving",
     ContextResolved => CONTEXT_RESOLVED = "context_resolved",
+    CognitiveContextBound => COGNITIVE_CONTEXT_BOUND = "cognitive_context_bound",
     CommandDeadLettered => COMMAND_DEAD_LETTERED = "command_dead_lettered",
     CommandRetry => COMMAND_RETRY = "command_retry",
     QueueAlert => QUEUE_ALERT = "queue_alert",

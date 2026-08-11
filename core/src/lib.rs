@@ -82,6 +82,7 @@ pub mod agent_protocol_host;
 pub mod budget;
 pub(crate) mod child_run;
 pub mod code_intelligence;
+pub mod cognitive_context;
 pub mod commands;
 pub(crate) mod compaction;
 pub mod config;
@@ -163,6 +164,16 @@ pub use code_intelligence::{
     CodeIntelligenceStatus, CodeLocation, CodePosition, CodeQueryResult, CodeRange, CodeSymbolKind,
     DocumentRevision, DocumentSnapshot, DocumentSymbol, LanguageId, LocalCodeIntelligence,
     NavigationKind, SymbolInformation, WorkspaceCodeIntelligence,
+};
+pub use cognitive_context::{
+    CognitiveContextDocumentV1, CognitiveContextError, CognitiveContextLimits,
+    CognitiveContextProvider, CognitiveContextRequestV1, CognitiveContextResponseV1,
+    CognitiveContextResult, CognitiveContextSession, CognitiveKnowledgeBindingV1,
+    CognitiveKnowledgeCitationV1, CognitivePackageBindingV1,
+    COGNITIVE_CONTEXT_REQUEST_DIGEST_DOMAIN, COGNITIVE_CONTEXT_REQUEST_SCHEMA,
+    COGNITIVE_CONTEXT_RESPONSE_SCHEMA, COGNITIVE_KNOWLEDGE_BINDING_SCHEMA,
+    COGNITIVE_PACKAGE_BINDING_SCHEMA, OKF_KNOWLEDGE_CITATION_SCHEMA,
+    OKF_KNOWLEDGE_READ_REQUEST_SCHEMA, OKF_KNOWLEDGE_SEARCH_REQUEST_SCHEMA,
 };
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,

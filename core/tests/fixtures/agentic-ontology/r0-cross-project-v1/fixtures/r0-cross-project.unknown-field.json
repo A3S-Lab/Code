@@ -1,0 +1,68 @@
+{
+  "ambientLatest": true,
+  "candidate": {
+    "handoffDigest": "sha256:c92f8bfdb4435ceeeeb76f32d89edf054782e9a7f286e1aa9a9647a0513ff779",
+    "handoffSchema": "agentic.ontology.a3s-use-handoff.v1",
+    "knowledgeRevisionDigest": "sha256:a9062f672f407b4dad0eb417a23a61e5230bef7b5081f02bdf7c25129b3bad47",
+    "manifestDigest": "sha256:986fa67c3a77d47898a6d5267c9108816510641974855e1ce0225d2d3e2d6147",
+    "packageDigest": "sha256:e8cffdfa8b638fe2f1dc3db85a6e16ba850d3236766a63acbda167bdfe1f8ecc",
+    "packageId": "contra-sense/handbook",
+    "packageVersion": "0.1.0",
+    "requestedChannel": "stable"
+  },
+  "cloud": {
+    "agentExecutionId": "018f4f86-0000-7000-8000-000000000004",
+    "auditDigest": "sha256:a0784bec8384d8c681b29436c4e61ccefa85be1143f92b7b6e2389bbcf0e66c5",
+    "generationReceiptDigest": "sha256:c121af75cfff61274980ba78757db9bdcbafedae59efba846f691e3c65167cb1",
+    "handoffDigest": "sha256:c92f8bfdb4435ceeeeb76f32d89edf054782e9a7f286e1aa9a9647a0513ff779",
+    "organizationId": "018f4f86-0000-7000-8000-000000000001",
+    "packageReleaseId": "018f4f86-0000-7000-8000-000000000003",
+    "schema": "agentic.ontology.r0-cloud-audit-link.v1",
+    "taskProofDigest": "sha256:2c8adb3f4d86f36b82d2ad74ff370dcb3d7920ac2cb26efd909193d8272c6b3e",
+    "workspaceId": "018f4f86-0000-7000-8000-000000000002"
+  },
+  "code": {
+    "agentProtocol": "a3s.code.agent.v1",
+    "agentReleaseIdentity": "sha256:4be0c29b983f7b2fe0caed9c670aff2bd27b904c9ebc461a3de1dc3168289e8a",
+    "capabilitySnapshotDigest": "sha256:1e0f0a0162f5b290887ade8886af69fbba4548c863df026178e3550c77813455",
+    "commandReceiptDigest": "sha256:e1cb762543082588aac9797c50fdfc8ad9a78f2007b4ebc10fd69e3f8c91cfea",
+    "eventStreamDigest": "sha256:054fa992c9036e244b190ce374254d5cee7626a2ae21ed57a72866fe38fa82f0",
+    "generationDigest": "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20",
+    "lifecycleGeneration": 7,
+    "packageId": "contra-sense/handbook",
+    "packageVersion": "0.1.0",
+    "resultDigest": "sha256:32926710ce39d5993da5095340b121144cb473147698a9b4c63defcbc67b411b",
+    "runId": "run-execution-018f4f86-attempt-1",
+    "schema": "agentic.ontology.r0-code-session-binding.v1",
+    "sessionId": "conversation-018f4f86",
+    "taskProofDigest": "sha256:2c8adb3f4d86f36b82d2ad74ff370dcb3d7920ac2cb26efd909193d8272c6b3e",
+    "taskProofSchema": "agentic.ontology.r0-code-task-proof.v1"
+  },
+  "contractDigest": "sha256:4d882dc21334d873d6dcde1a758baba2548d8f5bc159d184d90b7b8f41e6d130",
+  "generation": {
+    "generationDigest": "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20",
+    "handoffDigest": "sha256:c92f8bfdb4435ceeeeb76f32d89edf054782e9a7f286e1aa9a9647a0513ff779",
+    "hostTarget": "darwin-arm64",
+    "issuer": "a3s-use",
+    "lifecycleGeneration": 7,
+    "packageId": "contra-sense/handbook",
+    "packageLockDigest": "sha256:3c82b7aa9e743d4b31647522c9ece185aae0512a5ffe2caa09eedc7094e5aba0",
+    "packageVersion": "0.1.0",
+    "receiptDigest": "sha256:c121af75cfff61274980ba78757db9bdcbafedae59efba846f691e3c65167cb1",
+    "receiptSchema": "agentic.ontology.a3s-use-generation-receipt.v1",
+    "registryGeneration": 9,
+    "registrySnapshotDigest": "sha256:d6651ddd64e5047aede35da3b31cc035b2eea3eec65a4df79659e65e066dfea2"
+  },
+  "knowledge": {
+    "citationSchema": "a3s.use.okf-knowledge-citation.v1",
+    "contentDigest": "sha256:1def786da6d190b7b3ce0176e71d99ff1cac3f8c8cc7c0f8b76a893c544e7a90",
+    "formatVersion": "0.2",
+    "generationDigest": "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20",
+    "lifecycleGeneration": 7,
+    "readSchema": "a3s.use.okf-knowledge-read-request.v1",
+    "schema": "agentic.ontology.r0-knowledge-lease-binding.v1",
+    "searchSchema": "a3s.use.okf-knowledge-search-request.v1",
+    "surfaceId": "domain-knowledge"
+  },
+  "schema": "agentic.ontology.r0-cross-project-contract.v1"
+}

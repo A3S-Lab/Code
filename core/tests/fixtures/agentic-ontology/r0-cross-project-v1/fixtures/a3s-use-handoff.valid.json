@@ -1,0 +1,46 @@
+{
+  "schema": "agentic.ontology.a3s-use-handoff.v1",
+  "project": "handbook",
+  "scope": {
+    "organizationId": "test-org",
+    "workspaceId": "compiler-tests",
+    "authorityGeneration": 1,
+    "scopeId": "handbook",
+    "revision": 1,
+    "scopeDigest": "sha256:dd55078071b6525e01d5052f1e532fa5eeb0357336a7e26b5985fbb5bf5f880c"
+  },
+  "package": {
+    "publisher": "contra-sense",
+    "name": "handbook"
+  },
+  "version": "0.1.0",
+  "route": "handbook",
+  "requiresUse": ">=0.3.0, <0.4.0",
+  "dependencies": [],
+  "requestedChannel": "stable",
+  "revision": {
+    "schema": "agentic.ontology.knowledge-revision-ref.v1",
+    "scope": {
+      "organizationId": "test-org",
+      "workspaceId": "compiler-tests",
+      "authorityGeneration": 1,
+      "scopeId": "handbook",
+      "revision": 1,
+      "scopeDigest": "sha256:dd55078071b6525e01d5052f1e532fa5eeb0357336a7e26b5985fbb5bf5f880c"
+    },
+    "generation": 1,
+    "revisionDigest": "sha256:a9062f672f407b4dad0eb417a23a61e5230bef7b5081f02bdf7c25129b3bad47",
+    "referenceDigest": "sha256:7afef23f602009096a853a28ad581abbab3d55f155a9f11c383a0827661aa619"
+  },
+  "draftDigest": "sha256:95178701b9bfe1cd89bbba9ba0afecd0b2ad9414fd79ae754bb7df9044cb56d5",
+  "approvalDigest": "sha256:3898c93d35bda1ee12481abab11eaf00c23a46eb355947edd192a4789e6bb5ca",
+  "revisionActivationReceiptDigest": "sha256:19538e263e4229e81b409f8229edc5b5486da844b252745780ff7e2103da25c0",
+  "blueprintDigest": "sha256:d6e310ee60ca8f514b2a1af6a275babb43b6ea32b39be5f337b9d3bf7ecafbd2",
+  "surfaceGraphDigest": "sha256:e6e8c26ab51262e61bbf6abd5b0644c74e43478f0fe830b65954586444ce7a22",
+  "compilerPackageDigest": "sha256:d0fd0d366bbc628847e8de05bed273441bcf51f15a00b310d39206a2bb23e232",
+  "usePackageDigest": "sha256:e8cffdfa8b638fe2f1dc3db85a6e16ba850d3236766a63acbda167bdfe1f8ecc",
+  "manifestDigest": "sha256:986fa67c3a77d47898a6d5267c9108816510641974855e1ce0225d2d3e2d6147",
+  "fileCount": 10,
+  "expandedBytes": 13805,
+  "handoffDigest": "sha256:c92f8bfdb4435ceeeeb76f32d89edf054782e9a7f286e1aa9a9647a0513ff779"
+}

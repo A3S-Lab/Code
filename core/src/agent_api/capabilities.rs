@@ -263,6 +263,9 @@ fn build_context_providers(
     skill_registry: Arc<SkillRegistry>,
 ) -> Vec<Arc<dyn ContextProvider>> {
     let mut providers = opts.context_providers.clone();
+    if let Some(cognitive_context) = &opts.cognitive_context {
+        providers.push(Arc::new(cognitive_context.clone()));
+    }
     push_agents_md_context(&mut providers, workspace);
     push_skill_catalog_context(&mut providers, skill_registry);
     providers

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added the Rust-host `CognitiveContextSession` boundary for one exact A3S Use
+  cognitive-package generation. Typed requests and cited Markdown responses
+  retain package/version, lifecycle generation, capability snapshot, Knowledge
+  surface, content, source, and citation digests under strict item/byte bounds.
+- Persisted cognitive-package bindings in session snapshots and added the
+  `cognitive_context_bound` runtime/event-protocol record so restart and replay
+  retain the same generation identity.
+
+### Changed
+
+- Cognitive-package-bound turns now fail closed on provider or identity drift,
+  require the same host-injected binding on resume, suppress personal-memory
+  recall, and reject general RAG/graph providers instead of using them as a
+  fallback.
+
 ## [6.8.0] - 2026-08-05
 
 ### Added

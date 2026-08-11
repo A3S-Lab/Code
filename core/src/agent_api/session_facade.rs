@@ -5,6 +5,13 @@ impl std::fmt::Debug for AgentSession {
         f.debug_struct("AgentSession")
             .field("session_id", &self.session_id)
             .field("workspace", &self.workspace.display().to_string())
+            .field(
+                "cognitive_package_binding",
+                &self
+                    .cognitive_context
+                    .as_ref()
+                    .map(crate::cognitive_context::CognitiveContextSession::binding),
+            )
             .field("auto_save", &self.auto_save)
             .finish()
     }
@@ -79,6 +86,15 @@ impl AgentSession {
     /// this session's events, if any.
     pub fn correlation_id(&self) -> Option<&str> {
         self.correlation_id.as_deref()
+    }
+
+    /// Return the exact cognitive-package generation bound to this session.
+    pub fn cognitive_package_binding(
+        &self,
+    ) -> Option<&crate::cognitive_context::CognitivePackageBindingV1> {
+        self.cognitive_context
+            .as_ref()
+            .map(crate::cognitive_context::CognitiveContextSession::binding)
     }
 
     /// Proactively close the session and release its in-flight work.
