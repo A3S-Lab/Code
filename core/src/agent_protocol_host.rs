@@ -6,15 +6,21 @@
 
 use crate::agent_api::{AgentRunSpawn, AgentSession};
 use crate::agent_protocol::{
-    validate_lower_sha256, AgentProtocolCommandReceiptV1, AgentProtocolCommandV1,
-    AgentProtocolError, AgentProtocolEventPageRequestV1, AgentProtocolEventPageV1,
-    AgentProtocolRunIdentityV1, AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE,
+    validate_lower_sha256, AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1,
+    AgentProtocolCommandReceiptV1, AgentProtocolCommandV1, AgentProtocolError,
+    AgentProtocolEventPageRequestV1, AgentProtocolEventPageV1, AgentProtocolRunIdentityV1,
+    AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1, AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1,
+    AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES, AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE,
 };
 use crate::error::CodeError;
 use crate::release::{AgentReleaseManifest, AGENT_PROTOCOL_V1};
-use crate::run::RunSnapshot;
+use crate::run::{RunSnapshot, RunWorkspaceChangeSet};
+use base64::Engine as _;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::{Mutex, RwLock};
 
 /// Stable failures returned by the Code-owned headless protocol adapter.
 #[derive(Debug, Error)]
@@ -33,6 +39,10 @@ pub enum AgentProtocolHostError {
     RunUnavailable,
     #[error("A3S Code Agent sequence cannot be represented on this host")]
     SequenceOverflow,
+    #[error("A3S Code Agent change set is still being captured")]
+    ChangeSetPending,
+    #[error("A3S Code Agent run has no Git-compatible change set")]
+    ChangeSetUnavailable,
     #[error(transparent)]
     Code(#[from] CodeError),
 }
@@ -47,6 +57,8 @@ impl AgentProtocolHostError {
             Self::RunNotFound => "a3s.code.agent_protocol.run_not_found",
             Self::RunUnavailable => "a3s.code.agent_protocol.run_unavailable",
             Self::SequenceOverflow => "a3s.code.agent_protocol.sequence_overflow",
+            Self::ChangeSetPending => "a3s.code.agent_protocol.change_set_pending",
+            Self::ChangeSetUnavailable => "a3s.code.agent_protocol.change_set_unavailable",
             Self::Code(error) => error.code(),
         }
     }
@@ -60,6 +72,14 @@ impl AgentProtocolHostError {
 pub struct AgentProtocolHost {
     agent_release_identity: String,
     session: Arc<AgentSession>,
+    change_set_admission: Arc<Mutex<()>>,
+    change_set_states: Arc<RwLock<HashMap<String, ChangeSetCaptureState>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChangeSetCaptureState {
+    Capturing,
+    Unavailable,
 }
 
 impl AgentProtocolHost {
@@ -72,6 +92,8 @@ impl AgentProtocolHost {
         Ok(Self {
             agent_release_identity,
             session,
+            change_set_admission: Arc::new(Mutex::new(())),
+            change_set_states: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -89,6 +111,8 @@ impl AgentProtocolHost {
         Ok(Self {
             agent_release_identity: manifest.artifact().digest().to_string(),
             session,
+            change_set_admission: Arc::new(Mutex::new(())),
+            change_set_states: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -110,23 +134,42 @@ impl AgentProtocolHost {
         command.validate()?;
         self.validate_identity(command.identity())?;
 
+        let _change_set_admission = self.change_set_admission.lock().await;
         let replayed = match command {
             AgentProtocolCommandV1::Start { request } => {
-                let spawned = self
+                let baseline = self.prepare_change_set(&request.identity).await;
+                let spawned = match self
                     .session
                     .spawn_run_with_id(&request.identity.run_id, &request.prompt)
-                    .await?;
-                detach(spawned)
+                    .await
+                {
+                    Ok(spawned) => spawned,
+                    Err(error) => {
+                        self.mark_change_set_unavailable(&request.identity).await;
+                        return Err(error.into());
+                    }
+                };
+                self.detach_with_change_set_capture(&request.identity, spawned, baseline)
+                    .await
             }
             AgentProtocolCommandV1::Recover { request } => {
-                let spawned = self
+                let baseline = self.prepare_change_set(&request.identity).await;
+                let spawned = match self
                     .session
                     .spawn_recovery_with_run_id(
                         &request.checkpoint_run_id,
                         &request.identity.run_id,
                     )
-                    .await?;
-                detach(spawned)
+                    .await
+                {
+                    Ok(spawned) => spawned,
+                    Err(error) => {
+                        self.mark_change_set_unavailable(&request.identity).await;
+                        return Err(error.into());
+                    }
+                };
+                self.detach_with_change_set_capture(&request.identity, spawned, baseline)
+                    .await
             }
             AgentProtocolCommandV1::Cancel { request } => {
                 let snapshot = self.snapshot(&request.identity).await?;
@@ -207,6 +250,144 @@ impl AgentProtocolHost {
         .await
     }
 
+    /// Read the immutable Git-compatible patch captured for one terminal run.
+    pub async fn change_set_for(
+        &self,
+        request: &AgentProtocolChangeSetRequestV1,
+    ) -> Result<AgentProtocolChangeSetV1, AgentProtocolHostError> {
+        request.validate()?;
+        self.validate_identity(&request.identity)?;
+        let snapshot = self.snapshot(&request.identity).await?;
+        if !snapshot.status.is_terminal() {
+            return Err(AgentProtocolHostError::ChangeSetPending);
+        }
+        if let Some(change_set) = snapshot.workspace_change_set {
+            let response = AgentProtocolChangeSetV1 {
+                schema: AgentProtocolChangeSetV1::SCHEMA.into(),
+                identity: request.identity.clone(),
+                state: snapshot.status.into(),
+                format: AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1.into(),
+                encoding: AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1.into(),
+                base_tree: change_set.base_tree,
+                result_tree: change_set.result_tree,
+                patch_digest: change_set.patch_digest,
+                patch_bytes: change_set.patch_bytes,
+                patch_base64: change_set.patch_base64,
+                observed_at_ms: change_set.observed_at_ms,
+            };
+            response.validate()?;
+            return Ok(response);
+        }
+        match self
+            .change_set_states
+            .read()
+            .await
+            .get(&request.identity.run_id)
+            .copied()
+        {
+            Some(ChangeSetCaptureState::Capturing) => Err(AgentProtocolHostError::ChangeSetPending),
+            Some(ChangeSetCaptureState::Unavailable) | None => {
+                Err(AgentProtocolHostError::ChangeSetUnavailable)
+            }
+        }
+    }
+
+    async fn prepare_change_set(
+        &self,
+        identity: &AgentProtocolRunIdentityV1,
+    ) -> Option<crate::git::WorkspaceTreeSnapshot> {
+        if self.session.run_snapshot(&identity.run_id).await.is_some() {
+            return None;
+        }
+        let workspace = self.session.workspace().to_path_buf();
+        let baseline =
+            tokio::task::spawn_blocking(move || crate::git::snapshot_workspace_tree(&workspace))
+                .await
+                .ok()
+                .and_then(Result::ok);
+        self.change_set_states.write().await.insert(
+            identity.run_id.clone(),
+            if baseline.is_some() {
+                ChangeSetCaptureState::Capturing
+            } else {
+                ChangeSetCaptureState::Unavailable
+            },
+        );
+        baseline
+    }
+
+    async fn mark_change_set_unavailable(&self, identity: &AgentProtocolRunIdentityV1) {
+        self.change_set_states
+            .write()
+            .await
+            .insert(identity.run_id.clone(), ChangeSetCaptureState::Unavailable);
+    }
+
+    async fn detach_with_change_set_capture(
+        &self,
+        identity: &AgentProtocolRunIdentityV1,
+        spawned: AgentRunSpawn,
+        baseline: Option<crate::git::WorkspaceTreeSnapshot>,
+    ) -> bool {
+        match spawned {
+            AgentRunSpawn::Started { worker, .. } => {
+                let Some(baseline) = baseline else {
+                    drop(worker);
+                    return false;
+                };
+                let workspace = self.session.workspace().to_path_buf();
+                let session = Arc::clone(&self.session);
+                let run_id = identity.run_id.clone();
+                let pin_identity = format!(
+                    "{}:{}:{}",
+                    self.agent_release_identity, identity.session_id, identity.run_id
+                );
+                let states = Arc::clone(&self.change_set_states);
+                tokio::spawn(async move {
+                    let _ = worker.await;
+                    let evidence = tokio::task::spawn_blocking(move || {
+                        let result = crate::git::snapshot_workspace_tree(&workspace)?;
+                        let patch = crate::git::diff_workspace_trees(
+                            &workspace,
+                            &baseline,
+                            &result,
+                            AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES,
+                        )?;
+                        crate::git::pin_workspace_tree(&workspace, &pin_identity, &result)?;
+                        let patch_bytes = u64::try_from(patch.len())
+                            .map_err(|_| anyhow::anyhow!("change-set byte count overflowed"))?;
+                        Ok::<_, anyhow::Error>(RunWorkspaceChangeSet {
+                            base_tree: format!("git-tree:{}", baseline.tree),
+                            result_tree: format!("git-tree:{}", result.tree),
+                            patch_digest: format!("sha256:{:x}", Sha256::digest(&patch)),
+                            patch_bytes,
+                            patch_base64: base64::engine::general_purpose::STANDARD.encode(patch),
+                            observed_at_ms: now_ms(),
+                        })
+                    })
+                    .await
+                    .ok()
+                    .and_then(Result::ok);
+                    let available = match evidence {
+                        Some(evidence) => session
+                            .record_workspace_change_set(&run_id, evidence)
+                            .await
+                            .is_ok(),
+                        None => false,
+                    };
+                    let mut states = states.write().await;
+                    if available {
+                        states.remove(&run_id);
+                    } else {
+                        states.insert(run_id, ChangeSetCaptureState::Unavailable);
+                    }
+                });
+                false
+            }
+            AgentRunSpawn::Replayed { .. } => true,
+        }
+    }
+
     fn validate_identity(
         &self,
         identity: &AgentProtocolRunIdentityV1,
@@ -233,18 +414,6 @@ impl AgentProtocolHost {
             return Err(AgentProtocolHostError::SessionMismatch);
         }
         Ok(snapshot)
-    }
-}
-
-fn detach(spawned: AgentRunSpawn) -> bool {
-    match spawned {
-        AgentRunSpawn::Started { worker, .. } => {
-            // Tokio tasks continue after their JoinHandle is dropped. The
-            // session remains the cancellation and graceful-shutdown owner.
-            drop(worker);
-            false
-        }
-        AgentRunSpawn::Replayed { .. } => true,
     }
 }
 

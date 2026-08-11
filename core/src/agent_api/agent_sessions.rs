@@ -14,6 +14,7 @@ use super::{
 };
 use crate::error::{CodeError, Result};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -295,6 +296,7 @@ pub(super) async fn open_protocol_session_async(
     create_if_missing: bool,
 ) -> Result<Option<AgentSession>> {
     bail_if_agent_closed(agent)?;
+    let workspace = workspace.into();
     let session_id = options
         .session_id
         .clone()
@@ -314,7 +316,7 @@ pub(super) async fn open_protocol_session_async(
         options = options.with_session_store(store);
     }
     if persisted {
-        resume_session_async(agent, &session_id, options)
+        resume_protocol_session_async(agent, &session_id, workspace, options)
             .await
             .map(Some)
     } else {
@@ -564,10 +566,28 @@ pub(super) async fn resume_session_async(
     session_id: &str,
     options: SessionOptions,
 ) -> Result<AgentSession> {
+    resume_session_async_inner(agent, session_id, options, None).await
+}
+
+async fn resume_protocol_session_async(
+    agent: &Agent,
+    session_id: &str,
+    workspace: String,
+    options: SessionOptions,
+) -> Result<AgentSession> {
+    resume_session_async_inner(agent, session_id, options, Some(workspace)).await
+}
+
+async fn resume_session_async_inner(
+    agent: &Agent,
+    session_id: &str,
+    options: SessionOptions,
+    workspace_override: Option<String>,
+) -> Result<AgentSession> {
     bail_if_agent_closed(agent)?;
     let reservation = reserve_session(agent, session_id)?;
 
-    let session = build_resumed_session(agent, session_id, options).await?;
+    let session = build_resumed_session(agent, session_id, options, workspace_override).await?;
     if let Err(error) = reservation.finalize(&session.close_handle) {
         session.close().await;
         return Err(error);
@@ -592,7 +612,7 @@ pub(super) async fn replace_session_async(
     let reservation = reserve_session_replacement(agent, current)?;
     current.save().await?;
     let options = options.with_session_id(&session_id);
-    let replacement = build_resumed_session(agent, &session_id, options).await?;
+    let replacement = build_resumed_session(agent, &session_id, options, None).await?;
     let current_handle = match reservation.finalize(&replacement.close_handle) {
         Ok(handle) => handle,
         Err(error) => {
@@ -611,6 +631,7 @@ async fn build_resumed_session(
     agent: &Agent,
     session_id: &str,
     mut options: SessionOptions,
+    workspace_override: Option<String>,
 ) -> Result<AgentSession> {
     let store = session_config::resolve_session_store(&agent.code_config, &options)
         .await?
@@ -619,7 +640,11 @@ async fn build_resumed_session(
             message: "resume_session requires a configured session store".to_string(),
         })?;
 
-    let snapshot = session_persistence::load_session_snapshot(&store, session_id).await?;
+    let mut snapshot = session_persistence::load_session_snapshot(&store, session_id).await?;
+    if let Some(workspace) = workspace_override {
+        restore_protocol_workspace(&snapshot, &workspace).await?;
+        snapshot.session.config.workspace = workspace;
+    }
     let data = &snapshot.session;
     options = options.with_session_store(Arc::clone(&store));
     let mut opts = session_persistence::apply_persisted_runtime_options(options, data)?;
@@ -637,4 +662,48 @@ async fn build_resumed_session(
     }
 
     Ok(session)
+}
+
+async fn restore_protocol_workspace(
+    snapshot: &crate::store::SessionSnapshotV1,
+    workspace: &str,
+) -> Result<()> {
+    let result_tree = snapshot
+        .run_records
+        .iter()
+        .enumerate()
+        .filter_map(|(index, record)| {
+            record
+                .snapshot
+                .workspace_change_set
+                .as_ref()
+                .map(|change_set| {
+                    (
+                        (
+                            change_set.observed_at_ms,
+                            record.snapshot.updated_at_ms,
+                            index,
+                        ),
+                        change_set.result_tree.clone(),
+                    )
+                })
+        })
+        .max_by_key(|(order, _)| *order)
+        .map(|(_, result_tree)| result_tree);
+    let Some(result_tree) = result_tree else {
+        return Ok(());
+    };
+    let workspace = PathBuf::from(workspace);
+    tokio::task::spawn_blocking(move || {
+        crate::git::restore_workspace_tree(&workspace, &result_tree)
+    })
+    .await
+    .map_err(|error| CodeError::SessionConfiguration {
+        field: "workspace",
+        message: format!("could not join Agent Harness workspace restore: {error}"),
+    })?
+    .map_err(|error| CodeError::SessionConfiguration {
+        field: "workspace",
+        message: format!("could not restore Agent Harness workspace: {error}"),
+    })
 }

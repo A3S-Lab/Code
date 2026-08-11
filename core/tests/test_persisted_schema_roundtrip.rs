@@ -36,7 +36,9 @@ use a3s_code_core::orchestration::{
 };
 use a3s_code_core::permissions::{PermissionPolicy, PermissionRule};
 use a3s_code_core::planning::Task;
-use a3s_code_core::run::{RunEventRecord, RunRecord, RunSnapshot, RunStatus};
+use a3s_code_core::run::{
+    RunEventRecord, RunRecord, RunSnapshot, RunStatus, RunWorkspaceChangeSet,
+};
 use a3s_code_core::store::{
     ContextUsage, MemorySessionStore, SessionConfig, SessionData, SessionState, SessionStore,
 };
@@ -445,6 +447,14 @@ fn gen_run_status(rng: &mut Rng) -> RunStatus {
 
 fn gen_run_record(rng: &mut Rng) -> RunRecord {
     let event_n = rng.below(5);
+    let workspace_change_set = rng.boolean().then(|| RunWorkspaceChangeSet {
+        base_tree: format!("git-tree:{}", "1".repeat(40)),
+        result_tree: format!("git-tree:{}", "2".repeat(40)),
+        patch_digest: format!("sha256:{}", "3".repeat(64)),
+        patch_bytes: 0,
+        patch_base64: String::new(),
+        observed_at_ms: rng.u64_small(),
+    });
     RunRecord {
         snapshot: RunSnapshot {
             id: rng.string(),
@@ -456,6 +466,7 @@ fn gen_run_record(rng: &mut Rng) -> RunRecord {
             result_text: rng.opt_string(),
             error: rng.opt_string(),
             event_count: rng.usize_below(1000),
+            workspace_change_set,
         },
         events: (0..event_n)
             .map(|i| RunEventRecord {
@@ -841,6 +852,28 @@ fn backward_compat_session_data_accepts_todos_alias() {
     let loaded: SessionData = serde_json::from_str(&s).expect("legacy `todos` payload must load");
     assert_eq!(loaded.tasks.len(), 1);
     assert_eq!(loaded.tasks[0].content, "legacy task");
+}
+
+#[test]
+fn backward_compat_run_snapshot_without_workspace_change_set_loads() {
+    let mut rng = Rng::new(789);
+    let mut record = gen_run_record(&mut rng);
+    record.snapshot.workspace_change_set = Some(RunWorkspaceChangeSet {
+        base_tree: format!("git-tree:{}", "1".repeat(40)),
+        result_tree: format!("git-tree:{}", "2".repeat(40)),
+        patch_digest: format!("sha256:{}", "3".repeat(64)),
+        patch_bytes: 0,
+        patch_base64: String::new(),
+        observed_at_ms: 1,
+    });
+    let mut value = serde_json::to_value(record).unwrap();
+    value["snapshot"]
+        .as_object_mut()
+        .expect("run snapshot object")
+        .remove("workspace_change_set");
+
+    let loaded: RunRecord = serde_json::from_value(value).expect("older run record must load");
+    assert!(loaded.snapshot.workspace_change_set.is_none());
 }
 
 // ─────────────────────────────────────────────────────────────────────

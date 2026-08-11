@@ -8,6 +8,7 @@
 use crate::event_protocol::{run_event_envelope_v1, EventEnvelopeV1, EVENT_ENVELOPE_V1_VERSION};
 pub use crate::release::AGENT_PROTOCOL_V1;
 use crate::run::{RunEventPage, RunEventRecord, RunStatus};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -21,12 +22,20 @@ pub const AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES: usize = 16 * 1024;
 pub const AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES: usize = 64 * 1024;
 pub const AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE: usize = 64;
 pub const AGENT_PROTOCOL_MAX_EVENT_PAGE_BYTES: usize = 6 * 1024 * 1024;
+pub const AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES: usize = 4 * 1024 * 1024;
+pub const AGENT_PROTOCOL_MAX_CHANGE_SET_RESPONSE_BYTES: usize =
+    (AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES * 4 / 3) + 128 * 1024;
+pub const AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1: &str = "git_unified_diff_v1";
+pub const AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1: &str = "base64";
 
 /// Canonical HTTP endpoint served by `a3s code harness` for v1 commands.
 pub const AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1: &str = "/v1/agent/commands";
 
 /// Canonical HTTP endpoint served by `a3s code harness` for v1 event pages.
 pub const AGENT_PROTOCOL_EVENT_PAGE_HTTP_PATH_V1: &str = "/v1/agent/events:page";
+
+/// Canonical HTTP endpoint served by `a3s code harness` for immutable run changes.
+pub const AGENT_PROTOCOL_CHANGE_SET_HTTP_PATH_V1: &str = "/v1/agent/changes";
 
 /// Stable validation failures for the headless Agent protocol.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -556,6 +565,91 @@ impl AgentProtocolEventPageV1 {
     }
 }
 
+/// Exact run query accepted by the immutable change-set endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProtocolChangeSetRequestV1 {
+    pub schema: String,
+    pub identity: AgentProtocolRunIdentityV1,
+}
+
+impl AgentProtocolChangeSetRequestV1 {
+    pub const SCHEMA: &'static str = "a3s.code.agent-change-set-request.v1";
+
+    pub fn validate(&self) -> Result<(), AgentProtocolError> {
+        validate_schema(&self.schema, Self::SCHEMA)?;
+        self.identity.validate()
+    }
+
+    pub fn digest(&self) -> Result<String, AgentProtocolError> {
+        digest_validated(self, || self.validate())
+    }
+}
+
+/// Immutable Git-compatible unified diff captured for one terminal Code run.
+///
+/// The base and result tree identities bind the diff to the exact workspace
+/// generations observed immediately before and after the run. The content
+/// digest and byte count let transports and local apply clients fail closed on
+/// truncation or mutation without inventing another run or checkpoint model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProtocolChangeSetV1 {
+    pub schema: String,
+    pub identity: AgentProtocolRunIdentityV1,
+    pub state: AgentProtocolRunStateV1,
+    pub format: String,
+    pub encoding: String,
+    pub base_tree: String,
+    pub result_tree: String,
+    pub patch_digest: String,
+    pub patch_bytes: u64,
+    pub patch_base64: String,
+    pub observed_at_ms: u64,
+}
+
+impl AgentProtocolChangeSetV1 {
+    pub const SCHEMA: &'static str = "a3s.code.agent-change-set.v1";
+
+    pub fn validate(&self) -> Result<(), AgentProtocolError> {
+        validate_schema(&self.schema, Self::SCHEMA)?;
+        self.identity.validate()?;
+        if !self.state.is_terminal() {
+            return Err(AgentProtocolError::InvalidField("state"));
+        }
+        if self.format != AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1 {
+            return Err(AgentProtocolError::InvalidField("format"));
+        }
+        if self.encoding != AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1 {
+            return Err(AgentProtocolError::InvalidField("encoding"));
+        }
+        validate_git_tree("base_tree", &self.base_tree)?;
+        validate_git_tree("result_tree", &self.result_tree)?;
+        validate_lower_sha256("patch_digest", &self.patch_digest)?;
+        let declared_bytes = usize::try_from(self.patch_bytes)
+            .map_err(|_| AgentProtocolError::InvalidField("patch_bytes"))?;
+        let patch = base64::engine::general_purpose::STANDARD
+            .decode(&self.patch_base64)
+            .map_err(|_| AgentProtocolError::InvalidField("patch_base64"))?;
+        if declared_bytes != patch.len()
+            || declared_bytes > AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES
+            || self.patch_digest != format!("sha256:{:x}", Sha256::digest(&patch))
+            || self.observed_at_ms == 0
+        {
+            return Err(AgentProtocolError::InvalidField("patch_base64"));
+        }
+        let encoded = serde_json::to_vec(self).map_err(|_| AgentProtocolError::Encoding)?;
+        if encoded.len() > AGENT_PROTOCOL_MAX_CHANGE_SET_RESPONSE_BYTES {
+            return Err(AgentProtocolError::InvalidField("patch_base64"));
+        }
+        Ok(())
+    }
+
+    pub fn digest(&self) -> Result<String, AgentProtocolError> {
+        digest_validated(self, || self.validate())
+    }
+}
+
 fn validate_schema(value: &str, expected: &str) -> Result<(), AgentProtocolError> {
     if value == expected {
         Ok(())
@@ -590,6 +684,20 @@ pub(crate) fn validate_lower_sha256(
 ) -> Result<(), AgentProtocolError> {
     let valid = value.strip_prefix("sha256:").is_some_and(|hex| {
         hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err(AgentProtocolError::InvalidField(field))
+    }
+}
+
+fn validate_git_tree(field: &'static str, value: &str) -> Result<(), AgentProtocolError> {
+    let valid = value.strip_prefix("git-tree:").is_some_and(|hex| {
+        matches!(hex.len(), 40 | 64)
             && hex
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))

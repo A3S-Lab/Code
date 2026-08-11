@@ -636,6 +636,7 @@ mod tests {
                 result_text: Some("done".to_string()),
                 error: None,
                 event_count,
+                workspace_change_set: None,
             },
             events: sequences
                 .iter()

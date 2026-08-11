@@ -5,6 +5,7 @@
 //! it is missing.
 
 use anyhow::{anyhow, Result};
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io::Read;
@@ -249,11 +250,36 @@ fn run_git_os(repo_path: &Path, args: &[OsString]) -> Result<(bool, Vec<u8>, Vec
     run_git_os_with_executable(&executable, repo_path, args, GIT_COMMAND_TIMEOUT)
 }
 
+fn run_git_os_with_env(
+    repo_path: &Path,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+) -> Result<(bool, Vec<u8>, Vec<u8>)> {
+    let executable = trusted_git_executable(repo_path)?;
+    run_git_os_with_executable_and_env(
+        &executable,
+        repo_path,
+        args,
+        GIT_COMMAND_TIMEOUT,
+        environment,
+    )
+}
+
 fn run_git_os_with_executable(
     executable: &Path,
     repo_path: &Path,
     args: &[OsString],
     timeout: Duration,
+) -> Result<(bool, Vec<u8>, Vec<u8>)> {
+    run_git_os_with_executable_and_env(executable, repo_path, args, timeout, &[])
+}
+
+fn run_git_os_with_executable_and_env(
+    executable: &Path,
+    repo_path: &Path,
+    args: &[OsString],
+    timeout: Duration,
+    environment: &[(OsString, OsString)],
 ) -> Result<(bool, Vec<u8>, Vec<u8>)> {
     if git_operation_cancelled() {
         return Err(anyhow!("Git command cancelled before execution"));
@@ -262,6 +288,7 @@ fn run_git_os_with_executable(
     let mut command = Command::new(executable);
     configure_git_environment(&mut command, repo_path);
     command
+        .envs(environment.iter().cloned())
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -345,6 +372,219 @@ fn run_git_os_with_executable(
 }
 
 // ==================== Git Operations ====================
+
+/// One exact Git tree written through an isolated temporary index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceTreeSnapshot {
+    pub tree: String,
+}
+
+/// Create a detached worktree without inheriting mutable files from another
+/// Harness session. The source worktree must be clean so admission never
+/// silently drops host changes.
+pub(crate) fn create_isolated_worktree(repo_path: &Path, destination: &Path) -> Result<()> {
+    let status = get_status(repo_path)?;
+    if status.is_dirty {
+        return Err(anyhow!(
+            "Cannot isolate an Agent Harness session from a dirty source worktree"
+        ));
+    }
+    if destination.exists() {
+        return Err(anyhow!("Agent Harness worktree destination already exists"));
+    }
+    let args = vec![
+        OsString::from("worktree"),
+        OsString::from("add"),
+        OsString::from("--detach"),
+        destination.as_os_str().to_os_string(),
+        OsString::from("HEAD"),
+    ];
+    let (success, _, stderr) = run_git_os(repo_path, &args)?;
+    if !success {
+        return Err(anyhow!(
+            "Failed to create isolated Agent Harness worktree: {}",
+            String::from_utf8_lossy(&stderr).trim_end()
+        ));
+    }
+    Ok(())
+}
+
+/// Remove one previously admitted detached Harness worktree.
+pub(crate) fn remove_isolated_worktree(repo_path: &Path, destination: &Path) -> Result<()> {
+    let args = vec![
+        OsString::from("worktree"),
+        OsString::from("remove"),
+        OsString::from("--force"),
+        destination.as_os_str().to_os_string(),
+    ];
+    let (success, _, stderr) = run_git_os(repo_path, &args)?;
+    if !success {
+        return Err(anyhow!(
+            "Failed to remove isolated Agent Harness worktree: {}",
+            String::from_utf8_lossy(&stderr).trim_end()
+        ));
+    }
+    Ok(())
+}
+
+/// Capture tracked and untracked, non-ignored workspace content as one Git
+/// tree without mutating the worktree index or branch.
+pub(crate) fn snapshot_workspace_tree(repo_path: &Path) -> Result<WorkspaceTreeSnapshot> {
+    if !is_git_repo(repo_path) {
+        return Err(anyhow!("Agent Harness workspace is not a Git repository"));
+    }
+    let index = tempfile::Builder::new()
+        .prefix("a3s-code-change-index-")
+        .tempfile()?;
+    let index_path = index.path().to_path_buf();
+    drop(index);
+    if index_path.exists() {
+        std::fs::remove_file(&index_path)?;
+    }
+    let environment = vec![(
+        OsString::from("GIT_INDEX_FILE"),
+        index_path.as_os_str().to_os_string(),
+    )];
+    let result = (|| {
+        run_git_success_with_env(
+            repo_path,
+            &[OsString::from("read-tree"), OsString::from("HEAD")],
+            &environment,
+        )?;
+        run_git_success_with_env(
+            repo_path,
+            &[
+                OsString::from("add"),
+                OsString::from("-A"),
+                OsString::from("--"),
+                OsString::from("."),
+            ],
+            &environment,
+        )?;
+        let stdout =
+            run_git_success_with_env(repo_path, &[OsString::from("write-tree")], &environment)?;
+        let tree = String::from_utf8(stdout)
+            .map_err(|_| anyhow!("Git tree identity is not UTF-8"))?
+            .trim()
+            .to_owned();
+        if !is_git_object_id(&tree) {
+            return Err(anyhow!("Git returned an invalid workspace tree identity"));
+        }
+        Ok(WorkspaceTreeSnapshot { tree })
+    })();
+    let _ = std::fs::remove_file(index_path);
+    result
+}
+
+/// Render the exact binary-capable Git patch between two captured trees.
+pub(crate) fn diff_workspace_trees(
+    repo_path: &Path,
+    base: &WorkspaceTreeSnapshot,
+    result: &WorkspaceTreeSnapshot,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>> {
+    if maximum_bytes == 0 || !is_git_object_id(&base.tree) || !is_git_object_id(&result.tree) {
+        return Err(anyhow!(
+            "Agent Harness change-set bounds or tree identity are invalid"
+        ));
+    }
+    let args = [
+        OsString::from("diff"),
+        OsString::from("--binary"),
+        OsString::from("--full-index"),
+        OsString::from("--no-color"),
+        OsString::from("--no-ext-diff"),
+        OsString::from("--no-textconv"),
+        OsString::from("--src-prefix=a/"),
+        OsString::from("--dst-prefix=b/"),
+        OsString::from(&base.tree),
+        OsString::from(&result.tree),
+        OsString::from("--"),
+    ];
+    let output = run_git_success_with_env(repo_path, &args, &[])?;
+    if output.len() > maximum_bytes {
+        return Err(anyhow!(
+            "Agent Harness change set exceeds its {} byte protocol bound",
+            maximum_bytes
+        ));
+    }
+    Ok(output)
+}
+
+/// Retain a captured run tree in the repository object database across
+/// worktree cleanup and Git garbage collection. The external identity is
+/// hashed before it becomes part of the private ref namespace.
+pub(crate) fn pin_workspace_tree(
+    repo_path: &Path,
+    identity: &str,
+    snapshot: &WorkspaceTreeSnapshot,
+) -> Result<()> {
+    if identity.is_empty() || !is_git_object_id(&snapshot.tree) {
+        return Err(anyhow!("Agent Harness workspace tree pin is invalid"));
+    }
+    let reference = format!(
+        "refs/a3s-code/harness/{:x}",
+        Sha256::digest(identity.as_bytes())
+    );
+    run_git_success_with_env(
+        repo_path,
+        &[
+            OsString::from("update-ref"),
+            OsString::from(reference),
+            OsString::from(&snapshot.tree),
+        ],
+        &[],
+    )?;
+    Ok(())
+}
+
+/// Restore a freshly-created protocol worktree to one persisted result tree.
+/// HEAD remains detached at the configured source revision, so the restored
+/// files continue to appear as the conversation's uncommitted changes.
+pub(crate) fn restore_workspace_tree(repo_path: &Path, tree_identity: &str) -> Result<()> {
+    let tree = tree_identity
+        .strip_prefix("git-tree:")
+        .filter(|tree| is_git_object_id(tree))
+        .ok_or_else(|| anyhow!("Persisted Agent Harness result tree identity is invalid"))?;
+    if get_status(repo_path)?.is_dirty {
+        return Err(anyhow!(
+            "Cannot restore an Agent Harness result tree into a dirty worktree"
+        ));
+    }
+    run_git_success_with_env(
+        repo_path,
+        &[
+            OsString::from("read-tree"),
+            OsString::from("--reset"),
+            OsString::from("-u"),
+            OsString::from(tree),
+        ],
+        &[],
+    )?;
+    Ok(())
+}
+
+fn run_git_success_with_env(
+    repo_path: &Path,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+) -> Result<Vec<u8>> {
+    let (success, stdout, stderr) = run_git_os_with_env(repo_path, args, environment)?;
+    if !success {
+        return Err(anyhow!(
+            "Git workspace evidence command failed: {}",
+            String::from_utf8_lossy(&stderr).trim_end()
+        ));
+    }
+    Ok(stdout)
+}
+
+fn is_git_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
 
 /// Repository status information.
 #[derive(Debug, Clone)]

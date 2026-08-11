@@ -1,12 +1,17 @@
 use a3s_code_core::{
-    AgentEvent, AgentProtocolCommandActionV1, AgentProtocolCommandReceiptV1,
-    AgentProtocolCommandV1, AgentProtocolEventPageRequestV1, AgentProtocolEventPageV1,
-    AgentProtocolEventRecordV1, AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1,
-    AgentProtocolRunRecoverV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1, EventEnvelopeV1,
-    InMemoryRunStore, AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1, AGENT_PROTOCOL_EVENT_PAGE_HTTP_PATH_V1,
-    AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES, AGENT_PROTOCOL_V1,
+    AgentEvent, AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1,
+    AgentProtocolCommandActionV1, AgentProtocolCommandReceiptV1, AgentProtocolCommandV1,
+    AgentProtocolEventPageRequestV1, AgentProtocolEventPageV1, AgentProtocolEventRecordV1,
+    AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1, AgentProtocolRunRecoverV1,
+    AgentProtocolRunStartV1, AgentProtocolRunStateV1, EventEnvelopeV1, InMemoryRunStore,
+    AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1, AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1,
+    AGENT_PROTOCOL_CHANGE_SET_HTTP_PATH_V1, AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1,
+    AGENT_PROTOCOL_EVENT_PAGE_HTTP_PATH_V1, AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES,
+    AGENT_PROTOCOL_V1,
 };
+use base64::Engine as _;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 #[test]
 fn run_state_names_are_the_exact_serde_wire_values() {
@@ -233,6 +238,53 @@ fn event_page_queries_and_http_paths_are_code_owned() {
     assert!(unbounded.validate().is_err());
 }
 
+#[test]
+fn change_sets_are_terminal_digest_bound_and_code_owned() {
+    assert_eq!(AGENT_PROTOCOL_CHANGE_SET_HTTP_PATH_V1, "/v1/agent/changes");
+    let identity = identity("run-execution-018f4f86-attempt-1");
+    let request = AgentProtocolChangeSetRequestV1 {
+        schema: AgentProtocolChangeSetRequestV1::SCHEMA.into(),
+        identity: identity.clone(),
+    };
+    request.validate().expect("valid change-set query");
+
+    let patch = b"diff --git a/remote.txt b/remote.txt\nnew file mode 100644\n";
+    let change_set = AgentProtocolChangeSetV1 {
+        schema: AgentProtocolChangeSetV1::SCHEMA.into(),
+        identity,
+        state: AgentProtocolRunStateV1::Completed,
+        format: AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1.into(),
+        encoding: AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1.into(),
+        base_tree: format!("git-tree:{}", "1".repeat(40)),
+        result_tree: format!("git-tree:{}", "2".repeat(40)),
+        patch_digest: format!("sha256:{:x}", Sha256::digest(patch)),
+        patch_bytes: patch.len() as u64,
+        patch_base64: base64::engine::general_purpose::STANDARD.encode(patch),
+        observed_at_ms: 1_723_000_000_000,
+    };
+    change_set.validate().expect("valid terminal change set");
+    assert!(change_set
+        .digest()
+        .expect("change-set digest")
+        .starts_with("sha256:"));
+
+    let mut non_terminal = change_set.clone();
+    non_terminal.state = AgentProtocolRunStateV1::Executing;
+    assert!(non_terminal.validate().is_err());
+
+    let mut wrong_digest = change_set.clone();
+    wrong_digest.patch_digest = digest('b');
+    assert!(wrong_digest.validate().is_err());
+
+    let mut wrong_length = change_set.clone();
+    wrong_length.patch_bytes += 1;
+    assert!(wrong_length.validate().is_err());
+
+    let mut corrupt_base64 = change_set;
+    corrupt_base64.patch_base64.push('!');
+    assert!(corrupt_base64.validate().is_err());
+}
+
 #[tokio::test]
 async fn event_pages_project_the_authoritative_code_run_store() {
     let identity = identity("run-execution-018f4f86-attempt-1");
@@ -338,4 +390,6 @@ fn the_protocol_is_closed_bounded_and_send_sync() {
     assert_send_sync::<AgentProtocolCommandReceiptV1>();
     assert_send_sync::<AgentProtocolEventPageRequestV1>();
     assert_send_sync::<AgentProtocolEventPageV1>();
+    assert_send_sync::<AgentProtocolChangeSetRequestV1>();
+    assert_send_sync::<AgentProtocolChangeSetV1>();
 }

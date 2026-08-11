@@ -173,6 +173,20 @@ impl AgentSession {
         conversation_runtime::spawn_recovery_with_run_id(self, checkpoint_run_id, run_id).await
     }
 
+    pub(crate) async fn record_workspace_change_set(
+        &self,
+        run_id: &str,
+        change_set: crate::run::RunWorkspaceChangeSet,
+    ) -> Result<crate::run::RunSnapshot> {
+        let snapshot = self
+            .run_store
+            .record_workspace_change_set(run_id, change_set)
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        self.save().await?;
+        Ok(snapshot)
+    }
+
     /// Send a prompt with image attachments and wait for the complete response.
     ///
     /// Images are included as multi-modal content blocks in the user message.

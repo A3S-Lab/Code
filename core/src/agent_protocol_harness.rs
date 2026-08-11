@@ -6,8 +6,9 @@
 
 use crate::agent_api::{Agent, SessionOptions};
 use crate::agent_protocol::{
-    AgentProtocolCommandReceiptV1, AgentProtocolCommandV1, AgentProtocolError,
-    AgentProtocolEventPageRequestV1, AgentProtocolEventPageV1, AgentProtocolRunIdentityV1,
+    AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandReceiptV1,
+    AgentProtocolCommandV1, AgentProtocolError, AgentProtocolEventPageRequestV1,
+    AgentProtocolEventPageV1, AgentProtocolRunIdentityV1,
 };
 use crate::agent_protocol_host::{AgentProtocolHost, AgentProtocolHostError};
 use crate::error::CodeError;
@@ -15,6 +16,7 @@ use crate::release::{
     agent_harness_compatibility_v1, AgentReleaseError, AgentReleaseManifest, AGENT_PROTOCOL_V1,
 };
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -40,6 +42,8 @@ pub enum AgentProtocolHarnessError {
     SessionCapacity,
     #[error("A3S Code Harness is draining or stopped")]
     Closed,
+    #[error("A3S Code Harness workspace isolation failed: {0}")]
+    Workspace(String),
 }
 
 impl AgentProtocolHarnessError {
@@ -52,6 +56,61 @@ impl AgentProtocolHarnessError {
             Self::SessionNotFound => "a3s.code.agent_protocol.session_not_found",
             Self::SessionCapacity => "a3s.code.agent_protocol.session_capacity",
             Self::Closed => "a3s.code.agent_protocol.harness_closed",
+            Self::Workspace(_) => "a3s.code.agent_protocol.workspace_isolation",
+        }
+    }
+}
+
+struct HarnessSessionEntry {
+    host: Arc<AgentProtocolHost>,
+    _workspace: HarnessSessionWorkspace,
+}
+
+enum HarnessSessionWorkspace {
+    Shared(PathBuf),
+    Isolated {
+        source: PathBuf,
+        path: PathBuf,
+        _temporary_root: tempfile::TempDir,
+    },
+}
+
+impl HarnessSessionWorkspace {
+    async fn prepare(source: PathBuf) -> Result<Self, AgentProtocolHarnessError> {
+        tokio::task::spawn_blocking(move || {
+            if !crate::git::is_git_repo(&source) {
+                return Ok(Self::Shared(source));
+            }
+            let temporary_root = tempfile::Builder::new()
+                .prefix("a3s-code-harness-session-")
+                .tempdir()
+                .map_err(|error| AgentProtocolHarnessError::Workspace(error.to_string()))?;
+            let path = temporary_root.path().join("workspace");
+            crate::git::create_isolated_worktree(&source, &path)
+                .map_err(|error| AgentProtocolHarnessError::Workspace(error.to_string()))?;
+            Ok(Self::Isolated {
+                source,
+                path,
+                _temporary_root: temporary_root,
+            })
+        })
+        .await
+        .map_err(|error| AgentProtocolHarnessError::Workspace(error.to_string()))?
+    }
+
+    fn path(&self) -> &Path {
+        match self {
+            Self::Shared(path) | Self::Isolated { path, .. } => path,
+        }
+    }
+}
+
+impl Drop for HarnessSessionWorkspace {
+    fn drop(&mut self) {
+        if let Self::Isolated { source, path, .. } = self {
+            if let Err(error) = crate::git::remove_isolated_worktree(source, path) {
+                tracing::warn!(%error, workspace = %path.display(), "could not remove Agent Harness session worktree");
+            }
         }
     }
 }
@@ -69,7 +128,7 @@ pub struct AgentProtocolHarness {
     workspace: String,
     session_options: SessionOptions,
     max_sessions: usize,
-    sessions: RwLock<HashMap<String, Arc<AgentProtocolHost>>>,
+    sessions: RwLock<HashMap<String, Arc<HarnessSessionEntry>>>,
     admission: Mutex<()>,
     closed: AtomicBool,
 }
@@ -177,6 +236,16 @@ impl AgentProtocolHarness {
         host.event_page_for(request).await.map_err(Into::into)
     }
 
+    /// Route an immutable change-set query into the same authoritative run.
+    pub async fn change_set(
+        &self,
+        request: &AgentProtocolChangeSetRequestV1,
+    ) -> Result<AgentProtocolChangeSetV1, AgentProtocolHarnessError> {
+        request.validate()?;
+        let host = self.host_for(&request.identity, false).await?;
+        host.change_set_for(request).await.map_err(Into::into)
+    }
+
     /// Stop admission and close every Code-owned session and Agent resource.
     pub async fn close(&self) {
         if self.closed.swap(true, Ordering::AcqRel) {
@@ -204,7 +273,7 @@ impl AgentProtocolHarness {
             .read()
             .await
             .get(&identity.session_id)
-            .cloned()
+            .map(|entry| Arc::clone(&entry.host))
         {
             return Ok(host);
         }
@@ -218,7 +287,7 @@ impl AgentProtocolHarness {
             .read()
             .await
             .get(&identity.session_id)
-            .cloned()
+            .map(|entry| Arc::clone(&entry.host))
         {
             return Ok(host);
         }
@@ -226,6 +295,7 @@ impl AgentProtocolHarness {
             return Err(AgentProtocolHarnessError::SessionCapacity);
         }
 
+        let workspace = HarnessSessionWorkspace::prepare(PathBuf::from(&self.workspace)).await?;
         let options = self
             .session_options
             .clone()
@@ -233,17 +303,24 @@ impl AgentProtocolHarness {
             .with_auto_save(true);
         let session = self
             .agent
-            .open_protocol_session_async(&self.workspace, options, create_if_missing)
+            .open_protocol_session_async(
+                workspace.path().to_string_lossy().into_owned(),
+                options,
+                create_if_missing,
+            )
             .await?
             .ok_or(AgentProtocolHarnessError::SessionNotFound)?;
         let host = Arc::new(AgentProtocolHost::from_manifest(
             &self.manifest,
             Arc::new(session),
         )?);
-        self.sessions
-            .write()
-            .await
-            .insert(identity.session_id.clone(), Arc::clone(&host));
+        self.sessions.write().await.insert(
+            identity.session_id.clone(),
+            Arc::new(HarnessSessionEntry {
+                host: Arc::clone(&host),
+                _workspace: workspace,
+            }),
+        );
         Ok(host)
     }
 }

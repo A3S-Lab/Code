@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added per-conversation detached Git worktrees to the native Agent Harness and
+  the bounded `/v1/agent/changes` protocol endpoint. Every terminal run can now
+  expose one immutable, SHA-256-bound binary Git patch without mutating the
+  source worktree or sharing workspace writes across concurrent conversations.
 - Added host-pinned `a3s.code.tool-result-transform-policy.v1` policies for
   deterministic Tool-result bounding, UTF-8-safe head/tail retention, exact
   repeated-line folding, and structured JSON-array sampling. Policies persist

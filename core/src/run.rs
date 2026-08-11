@@ -55,6 +55,29 @@ pub struct RunSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub event_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_change_set: Option<RunWorkspaceChangeSet>,
+}
+
+/// Immutable workspace evidence captured around one exact run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunWorkspaceChangeSet {
+    pub base_tree: String,
+    pub result_tree: String,
+    pub patch_digest: String,
+    pub patch_bytes: u64,
+    pub patch_base64: String,
+    pub observed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RunWorkspaceChangeSetError {
+    #[error("run was not found")]
+    RunNotFound,
+    #[error("run is not terminal")]
+    RunNotTerminal,
+    #[error("run workspace change set conflicts with immutable evidence")]
+    Conflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +139,7 @@ impl RunSnapshot {
             result_text: None,
             error: None,
             event_count: 0,
+            workspace_change_set: None,
         }
     }
 }
@@ -300,6 +324,29 @@ impl InMemoryRunStore {
 
     pub async fn snapshot(&self, run_id: &str) -> Option<RunSnapshot> {
         self.runs.read().await.get(run_id).cloned()
+    }
+
+    /// Bind one immutable workspace change set to an already terminal run.
+    /// Exact replay is accepted; a different second write fails closed.
+    pub async fn record_workspace_change_set(
+        &self,
+        run_id: &str,
+        change_set: RunWorkspaceChangeSet,
+    ) -> Result<RunSnapshot, RunWorkspaceChangeSetError> {
+        let mut runs = self.runs.write().await;
+        let run = runs
+            .get_mut(run_id)
+            .ok_or(RunWorkspaceChangeSetError::RunNotFound)?;
+        if !run.status.is_terminal() {
+            return Err(RunWorkspaceChangeSetError::RunNotTerminal);
+        }
+        match &run.workspace_change_set {
+            Some(existing) if existing == &change_set => return Ok(run.clone()),
+            Some(_) => return Err(RunWorkspaceChangeSetError::Conflict),
+            None => {}
+        }
+        run.workspace_change_set = Some(change_set);
+        Ok(run.clone())
     }
 
     pub async fn events(&self, run_id: &str) -> Vec<RunEventRecord> {
@@ -520,6 +567,47 @@ mod retention_tests {
         assert_eq!(replay.snapshot().session_id, winner.session_id);
         assert_eq!(replay.snapshot().prompt, winner.prompt);
         assert_eq!(store.list().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn workspace_change_set_is_terminal_and_immutable() {
+        let store = InMemoryRunStore::new();
+        let run = store.create_run("session-1", "change the workspace").await;
+        let evidence = RunWorkspaceChangeSet {
+            base_tree: format!("git-tree:{}", "1".repeat(40)),
+            result_tree: format!("git-tree:{}", "2".repeat(40)),
+            patch_digest: format!("sha256:{}", "3".repeat(64)),
+            patch_bytes: 0,
+            patch_base64: String::new(),
+            observed_at_ms: 1,
+        };
+
+        assert!(matches!(
+            store
+                .record_workspace_change_set(&run.id, evidence.clone())
+                .await,
+            Err(RunWorkspaceChangeSetError::RunNotTerminal)
+        ));
+        store.mark_failed(&run.id, "fixture failure").await.unwrap();
+        assert_eq!(
+            store
+                .record_workspace_change_set(&run.id, evidence.clone())
+                .await
+                .unwrap()
+                .workspace_change_set,
+            Some(evidence.clone())
+        );
+        store
+            .record_workspace_change_set(&run.id, evidence.clone())
+            .await
+            .expect("exact evidence replay is idempotent");
+
+        let mut conflict = evidence;
+        conflict.result_tree = format!("git-tree:{}", "4".repeat(40));
+        assert!(matches!(
+            store.record_workspace_change_set(&run.id, conflict).await,
+            Err(RunWorkspaceChangeSetError::Conflict)
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

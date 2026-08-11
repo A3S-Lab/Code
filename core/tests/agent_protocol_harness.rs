@@ -2,17 +2,42 @@ use a3s_code_core::config::{CodeConfig, ModelConfig, ModelModalities, ProviderCo
 use a3s_code_core::llm::{ContentBlock, LlmClient, LlmResponse, Message, StreamEvent, TokenUsage};
 use a3s_code_core::store::{MemorySessionStore, SessionStore};
 use a3s_code_core::{
-    Agent, AgentProtocolCommandV1, AgentProtocolEventPageRequestV1, AgentProtocolHarness,
-    AgentProtocolHarnessError, AgentProtocolRunIdentityV1, AgentProtocolRunStartV1,
-    AgentProtocolRunStateV1, SessionOptions, AGENT_PROTOCOL_V1,
+    Agent, AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandV1,
+    AgentProtocolEventPageRequestV1, AgentProtocolHarness, AgentProtocolHarnessError,
+    AgentProtocolRunIdentityV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1, PlanningMode,
+    SessionOptions, AGENT_PROTOCOL_V1,
 };
+use base64::Engine as _;
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 struct StaticStreamingClient;
+
+#[derive(Clone)]
+struct ScriptedStreamingClient {
+    responses: Arc<std::sync::Mutex<Vec<LlmResponse>>>,
+}
+
+impl ScriptedStreamingClient {
+    fn new(mut responses: Vec<LlmResponse>) -> Self {
+        responses.reverse();
+        Self {
+            responses: Arc::new(std::sync::Mutex::new(responses)),
+        }
+    }
+
+    fn next(&self) -> anyhow::Result<LlmResponse> {
+        self.responses
+            .lock()
+            .unwrap()
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("scripted Harness client exhausted"))
+    }
+}
 
 #[async_trait::async_trait]
 impl LlmClient for StaticStreamingClient {
@@ -41,6 +66,37 @@ impl LlmClient for StaticStreamingClient {
     }
 }
 
+#[async_trait::async_trait]
+impl LlmClient for ScriptedStreamingClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[a3s_code_core::llm::ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        self.next()
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[a3s_code_core::llm::ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        let response = self.next()?;
+        let (sender, receiver) = mpsc::channel(4);
+        tokio::spawn(async move {
+            let text = response.text();
+            if !text.is_empty() {
+                let _ = sender.send(StreamEvent::TextDelta(text)).await;
+            }
+            let _ = sender.send(StreamEvent::Done(response)).await;
+        });
+        Ok(receiver)
+    }
+}
+
 fn response() -> LlmResponse {
     LlmResponse {
         message: Message {
@@ -61,6 +117,52 @@ fn response() -> LlmResponse {
         token_logprobs: Vec::new(),
         meta: None,
     }
+}
+
+fn tool_response(name: &str, input: serde_json::Value) -> LlmResponse {
+    LlmResponse {
+        message: Message {
+            role: "assistant".into(),
+            content: vec![ContentBlock::ToolUse {
+                id: "tool-write-1".into(),
+                name: name.into(),
+                input,
+            }],
+            reasoning_content: None,
+        },
+        usage: TokenUsage {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        },
+        stop_reason: Some("tool_use".into()),
+        token_logprobs: Vec::new(),
+        meta: None,
+    }
+}
+
+fn git(workspace: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .expect("run Git fixture command");
+    assert!(
+        output.status.success(),
+        "Git fixture command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn initialize_git_workspace(workspace: &std::path::Path) {
+    git(workspace, &["init"]);
+    git(workspace, &["config", "user.name", "A3S Test"]);
+    git(workspace, &["config", "user.email", "test@a3s.invalid"]);
+    std::fs::write(workspace.join("seed.txt"), "seed\n").expect("write seed file");
+    git(workspace, &["add", "seed.txt"]);
+    git(workspace, &["commit", "-m", "seed"]);
 }
 
 fn offline_config() -> CodeConfig {
@@ -143,6 +245,31 @@ async fn wait_for_terminal(
     .expect("detached Harness run must terminate")
 }
 
+async fn wait_for_change_set(
+    harness: &AgentProtocolHarness,
+    command: &AgentProtocolCommandV1,
+) -> AgentProtocolChangeSetV1 {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match harness
+                .change_set(&AgentProtocolChangeSetRequestV1 {
+                    schema: AgentProtocolChangeSetRequestV1::SCHEMA.into(),
+                    identity: command.identity().clone(),
+                })
+                .await
+            {
+                Ok(change_set) => break change_set,
+                Err(AgentProtocolHarnessError::Host(
+                    a3s_code_core::AgentProtocolHostError::ChangeSetPending,
+                )) => tokio::task::yield_now().await,
+                Err(error) => panic!("unexpected change-set error: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("change set must be captured after terminal state")
+}
+
 #[tokio::test]
 async fn harness_multiplexes_sessions_through_code_owned_hosts() {
     let workspace = tempfile::tempdir().unwrap();
@@ -183,8 +310,66 @@ async fn harness_multiplexes_sessions_through_code_owned_hosts() {
 }
 
 #[tokio::test]
+async fn harness_isolates_sessions_and_exports_one_digest_bound_run_patch() {
+    let workspace = tempfile::tempdir().unwrap();
+    initialize_git_workspace(workspace.path());
+    let manifest = manifest();
+    let release_identity = manifest.artifact().digest().to_string();
+    let client = ScriptedStreamingClient::new(vec![
+        tool_response(
+            "write",
+            serde_json::json!({
+                "file_path": "remote.txt",
+                "content": "remote change\n"
+            }),
+        ),
+        response(),
+    ]);
+    let harness = AgentProtocolHarness::new(
+        manifest,
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .unwrap()
+    .with_session_options(
+        SessionOptions::new()
+            .with_planning_mode(PlanningMode::Disabled)
+            .with_confirmation_manager(Arc::new(a3s_code_core::hitl::AutoApproveConfirmation))
+            .with_llm_client(Arc::new(client)),
+    );
+    let command = start(
+        &release_identity,
+        "changes-conversation",
+        "changes-execution",
+    );
+
+    harness.execute(&command).await.unwrap();
+    assert_eq!(
+        wait_for_terminal(&harness, &command).await.state,
+        AgentProtocolRunStateV1::Completed
+    );
+    let change_set = wait_for_change_set(&harness, &command).await;
+    change_set.validate().unwrap();
+    let patch = base64::engine::general_purpose::STANDARD
+        .decode(&change_set.patch_base64)
+        .unwrap();
+    let patch = String::from_utf8(patch).unwrap();
+    assert!(
+        patch.contains("diff --git a/remote.txt b/remote.txt"),
+        "{patch}"
+    );
+    assert!(patch.contains("+remote change"), "{patch}");
+    assert_eq!(change_set.patch_bytes as usize, patch.len());
+    assert!(!workspace.path().join("remote.txt").exists());
+
+    harness.close().await;
+    git(workspace.path(), &["status", "--porcelain"]);
+}
+
+#[tokio::test]
 async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart() {
     let workspace = tempfile::tempdir().unwrap();
+    initialize_git_workspace(workspace.path());
     let store = Arc::new(MemorySessionStore::new());
     let release = manifest();
     let release_identity = release.artifact().digest().to_string();
@@ -193,6 +378,16 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
         "durable-conversation",
         "durable-execution",
     );
+    let first_client = ScriptedStreamingClient::new(vec![
+        tool_response(
+            "write",
+            serde_json::json!({
+                "file_path": "remote.txt",
+                "content": "survives restart\n"
+            }),
+        ),
+        response(),
+    ]);
 
     let first_agent = Arc::new(Agent::from_config(offline_config()).await.unwrap());
     let first = AgentProtocolHarness::new(
@@ -204,7 +399,9 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
     .with_session_options(
         SessionOptions::new()
             .with_session_store(store.clone() as Arc<dyn SessionStore>)
-            .with_llm_client(Arc::new(StaticStreamingClient)),
+            .with_planning_mode(PlanningMode::Disabled)
+            .with_confirmation_manager(Arc::new(a3s_code_core::hitl::AutoApproveConfirmation))
+            .with_llm_client(Arc::new(first_client)),
     );
     let receipt = first.execute(&command).await.unwrap();
     assert!(!receipt.replayed);
@@ -212,6 +409,7 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
         wait_for_terminal(&first, &command).await.state,
         AgentProtocolRunStateV1::Completed
     );
+    wait_for_change_set(&first, &command).await;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if store
@@ -222,6 +420,7 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
                     snapshot.run_records.iter().any(|record| {
                         record.snapshot.id == "durable-execution"
                             && record.snapshot.status == a3s_code_core::RunStatus::Completed
+                            && record.snapshot.workspace_change_set.is_some()
                     })
                 })
             {
@@ -233,8 +432,19 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
     .await
     .expect("terminal run must be persisted before restart");
     first.close().await;
+    git(workspace.path(), &["gc", "--prune=now"]);
 
     let second_agent = Arc::new(Agent::from_config(offline_config()).await.unwrap());
+    let second_client = ScriptedStreamingClient::new(vec![
+        tool_response(
+            "write",
+            serde_json::json!({
+                "file_path": "follow-up.txt",
+                "content": "second run\n"
+            }),
+        ),
+        response(),
+    ]);
     let second = AgentProtocolHarness::new(
         release,
         second_agent,
@@ -244,12 +454,34 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
     .with_session_options(
         SessionOptions::new()
             .with_session_store(store as Arc<dyn SessionStore>)
-            .with_llm_client(Arc::new(StaticStreamingClient)),
+            .with_planning_mode(PlanningMode::Disabled)
+            .with_confirmation_manager(Arc::new(a3s_code_core::hitl::AutoApproveConfirmation))
+            .with_llm_client(Arc::new(second_client)),
     );
     let replay = second.execute(&command).await.unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.state, AgentProtocolRunStateV1::Completed);
     assert_eq!(second.session_count().await, 1);
+
+    let follow_up = start(
+        &release_identity,
+        "durable-conversation",
+        "durable-execution-follow-up",
+    );
+    second.execute(&follow_up).await.unwrap();
+    assert_eq!(
+        wait_for_terminal(&second, &follow_up).await.state,
+        AgentProtocolRunStateV1::Completed
+    );
+    let change_set = wait_for_change_set(&second, &follow_up).await;
+    let patch = base64::engine::general_purpose::STANDARD
+        .decode(change_set.patch_base64)
+        .unwrap();
+    let patch = String::from_utf8(patch).unwrap();
+    assert!(patch.contains("diff --git a/follow-up.txt b/follow-up.txt"));
+    assert!(!patch.contains("remote.txt"));
+    assert!(!workspace.path().join("remote.txt").exists());
+    assert!(!workspace.path().join("follow-up.txt").exists());
     second.close().await;
 }
 
