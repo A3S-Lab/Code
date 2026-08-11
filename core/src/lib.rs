@@ -140,6 +140,7 @@ pub(crate) mod text;
 pub(crate) mod tool_confirmation;
 pub mod tools;
 pub mod trace;
+pub mod use_runtime_tasks;
 pub mod verification;
 pub mod workspace;
 
@@ -280,6 +281,14 @@ pub use tools::{
     TOOL_RESULT_CONTENT_MEDIA_TYPE,
 };
 pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind};
+pub use use_runtime_tasks::{
+    UsePlanScope, UsePlanScopeKind, UseProjectedLifecycleIdentity, UseRuntimeTaskDispatcher,
+    UseRuntimeTaskError, UseRuntimeTaskExecutionV1, UseRuntimeTaskProjectionAdapter,
+    UseRuntimeTaskProjectionV1, UseRuntimeTaskRequestV1, UseRuntimeTaskResult,
+    MAX_USE_RUNTIME_TASK_ARGUMENTS, MAX_USE_RUNTIME_TASK_ARGUMENT_BYTES,
+    MAX_USE_RUNTIME_TASK_OUTPUT_BYTES, MAX_USE_RUNTIME_TASK_TIMEOUT_MS,
+    USE_RUNTIME_TASK_REQUEST_SCHEMA, USE_RUNTIME_TASK_RESULT_SCHEMA,
+};
 pub use workspace::{
     ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, CommandOutput, CommandOutputObserver,
     CommandOutputSummary, CommandRequest, CustomWorkspaceChunkingStrategy,

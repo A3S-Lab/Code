@@ -158,6 +158,7 @@ telemetry remain opt-in.
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
 | Context and memory      | Ranked context, repeated compaction, three-tier memory, typed stores, recall, extraction, relations, and pruning                                                                                                                        | Host-selected and configurable                                                                                                                                            |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
+| A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
 | Model adapters          | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations                                                                                                                                                        | Configuration or host injection                                                                                                                                           |
 | Structured output       | Native provider formats or schema-validated prompt, partial parse, and repair fallback                                                                                                                                                  | Baseline                                                                                                                                                                  |
 | MCP and Skills          | Isolated MCP transports plus filesystem, registry, inline, and live session Skills                                                                                                                                                      | Configuration or live registration                                                                                                                                        |
@@ -347,6 +348,23 @@ projection digests. It is non-queryable and never enters Agent context; its
 purpose is to close same-source readiness edges such as `Flow -> OKF` without
 implicitly selecting a cognitive package. The singular `Knowledge` value above
 remains the only Run-visible cognitive authority.
+
+### Bind reviewed A3S Use Runtime Tasks
+
+`UseRuntimeTaskProjectionAdapter` consumes one exact `toolTasks` entry from an
+A3S Use capability snapshot. The embedding host supplies a
+`UseRuntimeTaskDispatcher` adapter backed by A3S Use's leased
+`RuntimeTaskDispatcher`, then stages the adapter under its matching Tool
+`CapabilityId` in the same Use-backed `SessionCapabilityBatch` as the rest of
+that generation. Code never executes the projected command itself or writes the
+Tool into the mutable compatibility registry.
+
+Each invocation repeats the snapshot, scope, package and manifest digests,
+lifecycle generation, provider, and surface identity under bounded argv,
+deadline, and output contracts. A mismatched response fails closed. The
+`SessionCapabilityBatch` retains the exact Use generation lease for the Run,
+while the dispatcher retains its package Registry lease through Runtime output
+capture and cleanup.
 
 ## Tools that respect the workspace
 

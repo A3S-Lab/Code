@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `UseRuntimeTaskProjectionAdapter` as the Rust-host boundary for
+  consuming one exact A3S Use capability-snapshot v2 Runtime Tool Task through
+  the atomic `SessionCapabilityBatch`. The adapter retains reviewed scope,
+  package/manifest digests, lifecycle generation, provider identity, bounded
+  argv and deadline contracts, and fails closed on response drift while A3S
+  Use retains generation-lease, dispatch, and cleanup authority.
+
 ## [8.0.1] - 2026-08-25
 
 ### Changed
