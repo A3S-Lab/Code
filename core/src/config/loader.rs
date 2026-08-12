@@ -259,6 +259,14 @@ fn acl_path_list_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<Vec<PathB
     }
 }
 
+fn acl_string_list_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<Vec<String>> {
+    let value = acl_attr(block, keys)?;
+    match value {
+        a3s_acl::Value::List(items) => Some(items.iter().filter_map(acl_string).collect()),
+        _ => acl_string(value).map(|value| vec![value]),
+    }
+}
+
 fn snake_to_camel(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut uppercase_next = false;
@@ -568,6 +576,24 @@ impl CodeConfig {
                 "agent_dirs" => {
                     if let Some(paths) = acl_path_list_attr(&block, &["agent_dirs"]) {
                         config.agent_dirs = paths;
+                    }
+                }
+                "project_doc_max_bytes" | "projectDocMaxBytes" => {
+                    if let Some(max_bytes) =
+                        acl_usize_attr(&block, &["project_doc_max_bytes", "projectDocMaxBytes"])
+                    {
+                        config.project_doc_max_bytes = Some(max_bytes);
+                    }
+                }
+                "project_doc_fallback_filenames" | "projectDocFallbackFilenames" => {
+                    if let Some(filenames) = acl_string_list_attr(
+                        &block,
+                        &[
+                            "project_doc_fallback_filenames",
+                            "projectDocFallbackFilenames",
+                        ],
+                    ) {
+                        config.project_doc_fallback_filenames = filenames;
                     }
                 }
                 "max_tool_rounds" => {

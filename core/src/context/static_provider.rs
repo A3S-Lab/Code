@@ -49,6 +49,11 @@ impl ContextProvider for StaticContextProvider {
 
         for item in self.items.iter().take(max_results) {
             let item_tokens = estimated_tokens(item);
+            if item.is_required() {
+                total_tokens = total_tokens.saturating_add(item_tokens);
+                result.add_item(item.clone());
+                continue;
+            }
             if total_tokens + item_tokens > max_tokens {
                 result.truncated = true;
 
@@ -152,5 +157,27 @@ mod tests {
         assert_eq!(result.items[0].token_count, 2);
         assert!(result.items[0].content.contains("[context truncated]"));
         assert!(result.truncated);
+    }
+
+    #[tokio::test]
+    async fn required_static_item_bypasses_retrieval_token_budget() {
+        let provider = StaticContextProvider::new("static").with_item(
+            ContextItem::new(
+                "instructions",
+                ContextType::Resource,
+                "one two three four five six",
+            )
+            .with_token_count(6)
+            .with_required(),
+        );
+
+        let result = provider
+            .query(&ContextQuery::new("prompt").with_max_tokens(2))
+            .await
+            .unwrap();
+
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].token_count, 6);
+        assert!(!result.truncated);
     }
 }

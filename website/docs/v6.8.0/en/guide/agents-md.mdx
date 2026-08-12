@@ -35,15 +35,37 @@ In the filesystem-first architecture, `AGENTS.md` explains how this project work
 
 ## Nested Rules
 
-The current runtime auto-loads only the workspace-root `AGENTS.md`. Nested
-`AGENTS.md` files are still useful as repository documentation or host-level
-conventions, but they are not traversed automatically by A3S Code unless the
-host reads them and injects their content.
+A3S Code builds one instruction chain when a session starts. It finds the
+nearest Git root, walks from that root to the selected workspace, and includes
+at most one document from every directory. The lookup order in each directory
+is:
+
+1. `AGENTS.override.md`
+2. `AGENTS.md`
+3. the ordered names in `project_doc_fallback_filenames`
+
+Documents are joined from root to workspace. More local guidance appears later
+and therefore overrides broader guidance. An `AGENTS.override.md` replaces the
+ordinary `AGENTS.md` only in its own directory; it does not discard guidance
+from parent directories. If no Git root exists, A3S Code checks only the
+selected workspace.
+
+Empty files are skipped. The combined default budget is 32 KiB and can be
+changed with `project_doc_max_bytes`; zero disables project instruction loading.
+A3S Code accepts regular UTF-8 files inside the project root and ignores
+symlink candidates and unsafe fallback names. The effective bounded chain is
+mandatory session context, so the generic retrieval budget cannot silently
+drop it.
 
 Use nested `AGENTS.md` files only when subdirectories truly differ, such as a
 desktop app, API package, or SDK with a different toolchain. Do not copy the
 root file just to repeat it; duplicated rules make it harder for long-running
 agents to identify the current source of truth.
+
+```acl
+project_doc_max_bytes = 65536
+project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
+```
 
 ## Relationship To Other Conventions
 

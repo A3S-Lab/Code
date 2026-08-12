@@ -13,6 +13,8 @@ memory_dir = "./memory"
 storage_url = "sqlite://state.db"
 skill_dirs = ["./skills", "./shared-skills"]
 agent_dirs = ["./agents"]
+project_doc_max_bytes = 65536
+project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
 max_tool_rounds = 42
 max_parallel_tasks = 6
 auto_parallel = false
@@ -164,6 +166,11 @@ mcp_servers "filesystem" {
     assert_eq!(config.storage_url.as_deref(), Some("sqlite://state.db"));
     assert_eq!(config.skill_dirs.len(), 2);
     assert_eq!(config.agent_dirs.len(), 1);
+    assert_eq!(config.project_doc_max_bytes, Some(65536));
+    assert_eq!(
+        config.project_doc_fallback_filenames,
+        ["TEAM_GUIDE.md", ".agents.md"]
+    );
     assert_eq!(config.max_tool_rounds, Some(42));
     assert_eq!(config.max_parallel_tasks, Some(6));
     assert_eq!(config.auto_parallel, Some(false));

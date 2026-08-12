@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added Codex-compatible hierarchical project instructions. Sessions now load
+  `AGENTS.override.md`, `AGENTS.md`, and configured fallback names from the
+  nearest Git root through the workspace, enforce a bounded UTF-8/non-symlink
+  admission policy, retain source provenance, and keep the resulting chain out
+  of ordinary retrieval-budget eviction.
 - Added one agent-wide scheduler backed by `a3s-lane::PriorityQueue`, with a
   configurable global capacity, strict priority/FIFO admission, starvation-safe
   aging, cancellation, drain-on-close, occupancy snapshots, and per-session

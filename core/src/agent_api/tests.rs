@@ -1205,7 +1205,7 @@ async fn test_session_routes_agents_md_through_context_provider() {
         .extra
         .as_deref()
         .unwrap_or_default()
-        .contains("Project Instructions (AGENTS.md)"));
+        .contains("Project Instructions (AGENTS.md chain)"));
 
     let result = agents_provider
         .query(&crate::context::ContextQuery::new("complete the task"))
@@ -1214,10 +1214,11 @@ async fn test_session_routes_agents_md_through_context_provider() {
 
     assert_eq!(result.items.len(), 1);
     assert_eq!(result.items[0].id, "agents_md");
+    assert!(result.items[0].is_required());
     assert!(result.items[0]
         .content
         .contains("Always run focused tests before reporting completion."));
-    assert_eq!(result.items[0].relevance, 0.95);
+    assert_eq!(result.items[0].relevance, 1.0);
 }
 
 #[tokio::test]

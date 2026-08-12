@@ -46,6 +46,7 @@ pub const CONTEXT_PROVENANCE_METADATA: &str = "a3s.context.provenance";
 pub const CONTEXT_PRIORITY_METADATA: &str = "a3s.context.priority";
 pub const CONTEXT_TRUST_METADATA: &str = "a3s.context.trust";
 pub const CONTEXT_FRESHNESS_METADATA: &str = "a3s.context.freshness";
+pub(crate) const CONTEXT_REQUIRED_METADATA: &str = "a3s.context.required";
 
 /// Type of context being queried
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -268,6 +269,19 @@ impl ContextItem {
         self
     }
 
+    /// Mark harness-owned context as mandatory prompt material.
+    ///
+    /// This is reserved for bounded instruction sources such as the effective
+    /// AGENTS.md chain. Ordinary retrieval providers remain subject to the
+    /// normal per-query and assembly budgets.
+    pub(crate) fn with_required(mut self) -> Self {
+        self.metadata.insert(
+            CONTEXT_REQUIRED_METADATA.to_string(),
+            serde_json::Value::Bool(true),
+        );
+        self
+    }
+
     pub fn provenance(&self) -> Option<&str> {
         self.metadata
             .get(CONTEXT_PROVENANCE_METADATA)
@@ -284,6 +298,13 @@ impl ContextItem {
 
     pub fn freshness(&self) -> f32 {
         metadata_score(self.metadata.get(CONTEXT_FRESHNESS_METADATA))
+    }
+
+    pub(crate) fn is_required(&self) -> bool {
+        self.metadata
+            .get(CONTEXT_REQUIRED_METADATA)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
     }
 
     /// Format as XML tag for system prompt injection

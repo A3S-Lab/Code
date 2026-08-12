@@ -8,9 +8,7 @@
 use super::SessionOptions;
 use crate::agent::AgentConfig;
 use crate::config::CodeConfig;
-use crate::context::{
-    ContextItem, ContextProvider, ContextType, SkillCatalogContextProvider, StaticContextProvider,
-};
+use crate::context::{ContextProvider, SkillCatalogContextProvider, StaticContextProvider};
 use crate::llm::{LlmClient, ToolDefinition};
 use crate::mcp::McpTool;
 use crate::skills::SkillRegistry;
@@ -102,8 +100,12 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
 
     register_mcp_capabilities(&tool_executor, input.mcp_sources);
 
-    let context_providers =
-        build_context_providers(input.opts, input.workspace, Arc::clone(&skill_registry));
+    let context_providers = build_context_providers(
+        input.code_config,
+        input.opts,
+        input.workspace,
+        Arc::clone(&skill_registry),
+    );
     let tool_defs = tool_executor.definitions();
 
     SessionCapabilities {
@@ -268,6 +270,7 @@ fn group_mcp_tools_by_server(all_tools: Vec<(String, McpTool)>) -> HashMap<Strin
 }
 
 fn build_context_providers(
+    code_config: &CodeConfig,
     opts: &SessionOptions,
     workspace: &Path,
     skill_registry: Arc<SkillRegistry>,
@@ -276,55 +279,22 @@ fn build_context_providers(
     if let Some(cognitive_context) = &opts.cognitive_context {
         providers.push(Arc::new(cognitive_context.clone()));
     }
-    push_agents_md_context(&mut providers, workspace);
+    push_agents_md_context(&mut providers, code_config, workspace);
     push_skill_catalog_context(&mut providers, skill_registry);
     providers
 }
 
-fn push_agents_md_context(providers: &mut Vec<Arc<dyn ContextProvider>>, workspace: &Path) {
-    let agents_md_path = workspace.join("AGENTS.md");
-    if !agents_md_path.exists() || !agents_md_path.is_file() {
+fn push_agents_md_context(
+    providers: &mut Vec<Arc<dyn ContextProvider>>,
+    code_config: &CodeConfig,
+    workspace: &Path,
+) {
+    let Some(item) = super::project_instructions::load_context_item(code_config, workspace) else {
         return;
-    }
-
-    match std::fs::read_to_string(&agents_md_path) {
-        Ok(content) if !content.trim().is_empty() => {
-            tracing::info!(
-                path = %agents_md_path.display(),
-                "Auto-loaded AGENTS.md from workspace root"
-            );
-            let token_count = content.split_whitespace().count().max(1);
-            let item = ContextItem::new(
-                "agents_md",
-                ContextType::Resource,
-                format!("# Project Instructions (AGENTS.md)\n\n{}", content),
-            )
-            .with_source(format!("file://{}", agents_md_path.display()))
-            .with_provenance("workspace_instructions")
-            .with_priority(0.95)
-            .with_trust(0.95)
-            .with_freshness(1.0)
-            .with_relevance(0.95)
-            .with_token_count(token_count);
-
-            providers.push(Arc::new(
-                StaticContextProvider::new("agents_md").with_item(item),
-            ));
-        }
-        Ok(_) => {
-            tracing::debug!(
-                path = %agents_md_path.display(),
-                "AGENTS.md exists but is empty - skipping"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                path = %agents_md_path.display(),
-                error = %e,
-                "Failed to read AGENTS.md - skipping"
-            );
-        }
-    }
+    };
+    providers.push(Arc::new(
+        StaticContextProvider::new("agents_md").with_item(item),
+    ));
 }
 
 fn push_skill_catalog_context(

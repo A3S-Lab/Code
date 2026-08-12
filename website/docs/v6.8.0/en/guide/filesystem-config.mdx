@@ -45,6 +45,8 @@ Inject tokens through environment variables. Do not commit credentials. Once `ag
 ```acl
 skill_dirs = ["./.a3s/skills"]
 agent_dirs = ["./.a3s/agents"]
+project_doc_max_bytes = 32768
+project_doc_fallback_filenames = ["TEAM_GUIDE.md"]
 
 auto_delegation {
   enabled        = true
@@ -54,7 +56,7 @@ auto_delegation {
 }
 ```
 
-`skill_dirs` points at reusable skills. `agent_dirs` points at worker/subagent definitions. Automatic delegation decides whether the model may choose a worker; it does not remove parent-session permission policy, tool visibility, or verification requirements.
+`skill_dirs` points at reusable skills. `agent_dirs` points at worker/subagent definitions. `project_doc_max_bytes` bounds the combined root-to-workspace instruction chain; fallback filenames are checked after `AGENTS.override.md` and `AGENTS.md`. Automatic delegation decides whether the model may choose a worker; it does not remove parent-session permission policy, tool visibility, or verification requirements.
 
 ## Session Storage
 

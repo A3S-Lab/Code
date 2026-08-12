@@ -165,8 +165,9 @@ impl ContextAssembler {
 
         let mut items = deduped.into_values().collect::<Vec<_>>();
         items.sort_by(|a, b| {
-            ranking_score(b)
-                .total_cmp(&ranking_score(a))
+            b.is_required()
+                .cmp(&a.is_required())
+                .then_with(|| ranking_score(b).total_cmp(&ranking_score(a)))
                 .then_with(|| b.relevance.total_cmp(&a.relevance))
                 .then_with(|| estimated_tokens(a).cmp(&estimated_tokens(b)))
                 .then_with(|| a.id.cmp(&b.id))
@@ -179,6 +180,11 @@ impl ContextAssembler {
         let mut source_token_counts: HashMap<String, usize> = HashMap::new();
 
         for item in items {
+            if item.is_required() {
+                total_tokens = total_tokens.saturating_add(estimated_tokens(&item));
+                selected.push(item);
+                continue;
+            }
             if selected.len() >= self.budget.max_items {
                 truncated = true;
                 break;
@@ -502,6 +508,37 @@ mod tests {
             vec!["file-a", "memory"]
         );
         assert_eq!(assembly.total_tokens, 4);
+        assert!(assembly.truncated);
+    }
+
+    #[test]
+    fn required_workspace_instructions_bypass_generic_context_budgets() {
+        let assembler = ContextAssembler::new(ContextBudget {
+            max_items: 1,
+            max_tokens: 2,
+        })
+        .with_source_policy(ContextSourcePolicy {
+            max_items_per_source: Some(1),
+            max_tokens_per_source: Some(1),
+        });
+        let instructions = ContextItem::new(
+            "agents_md",
+            ContextType::Resource,
+            "one two three four five six",
+        )
+        .with_source("a3s://workspace-instructions")
+        .with_provenance("workspace_instructions")
+        .with_token_count(6)
+        .with_required();
+        let ordinary = ContextItem::new("ordinary", ContextType::Resource, "ordinary")
+            .with_token_count(1)
+            .with_relevance(1.0);
+
+        let assembly = assembler.assemble(&[result("test", vec![ordinary, instructions])]);
+
+        assert_eq!(assembly.items.len(), 1);
+        assert_eq!(assembly.items[0].id, "agents_md");
+        assert_eq!(assembly.total_tokens, 6);
         assert!(assembly.truncated);
     }
 }

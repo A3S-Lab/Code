@@ -144,6 +144,18 @@ pub struct CodeConfig {
     #[serde(default, alias = "agent_dirs")]
     pub agent_dirs: Vec<PathBuf>,
 
+    /// Maximum combined bytes loaded from project instruction files.
+    ///
+    /// When unset, instruction discovery uses the Codex-compatible 32 KiB
+    /// default. A value of zero disables project instruction loading.
+    #[serde(default, alias = "project_doc_max_bytes")]
+    pub project_doc_max_bytes: Option<usize>,
+
+    /// Ordered fallback filenames checked after `AGENTS.override.md` and
+    /// `AGENTS.md` in every directory from the project root to the workspace.
+    #[serde(default, alias = "project_doc_fallback_filenames")]
+    pub project_doc_fallback_filenames: Vec<String>,
+
     /// Maximum tool execution rounds per turn (default: 25)
     #[serde(default, alias = "max_tool_rounds")]
     pub max_tool_rounds: Option<usize>,

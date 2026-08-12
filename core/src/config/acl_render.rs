@@ -100,6 +100,20 @@ fn render_execution(config: &CodeConfig, document: &Document) -> Vec<SingleEntry
             (!config.agent_dirs.is_empty()).then(|| path_list(&config.agent_dirs)),
         ),
         scalar_entry(
+            &["project_doc_max_bytes", "projectDocMaxBytes"],
+            "project_doc_max_bytes",
+            config.project_doc_max_bytes.map(number),
+        ),
+        scalar_entry(
+            &[
+                "project_doc_fallback_filenames",
+                "projectDocFallbackFilenames",
+            ],
+            "project_doc_fallback_filenames",
+            (!config.project_doc_fallback_filenames.is_empty())
+                .then(|| string_list(&config.project_doc_fallback_filenames)),
+        ),
+        scalar_entry(
             &["max_tool_rounds", "maxToolRounds"],
             "max_tool_rounds",
             config.max_tool_rounds.map(number),

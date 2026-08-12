@@ -48,6 +48,7 @@ mod direct_tool_facade;
 mod direct_tools;
 mod governance_facade;
 mod hook_control;
+mod project_instructions;
 mod run_admission;
 mod run_facade;
 mod run_lifecycle;
