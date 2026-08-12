@@ -4,6 +4,20 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [6.9.0] - 2026-08-12
+
+### Added
+
+- Added agent-wide priority scheduling controls and occupancy snapshots shared
+  by conversation runs, direct tools, and detached workflows.
+- Added bounded project and personal instruction provenance, tool-result
+  transform evidence, and cognitive-package binding projections from Core.
+
+### Changed
+
+- Updated the bundled Core with trusted lifecycle hook governance, including
+  model-bound prompt rewrites, permission gates, compaction, and session events.
+
 ## [6.8.1] - 2026-08-09
 
 ### Added
