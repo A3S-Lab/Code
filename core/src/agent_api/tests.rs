@@ -230,6 +230,9 @@ struct RecordingRuntimeHook {
     hook_events: std::sync::Mutex<Vec<crate::hooks::HookEvent>>,
 }
 
+#[derive(Debug)]
+struct RewritingPromptHook;
+
 #[derive(Debug, Default)]
 struct CapturingContextProvider {
     session_ids: std::sync::Mutex<Vec<Option<String>>>,
@@ -469,6 +472,19 @@ impl crate::hooks::HookExecutor for RecordingRuntimeHook {
             session_id.to_string(),
             event.clone(),
         ));
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::hooks::HookExecutor for RewritingPromptHook {
+    async fn fire(&self, event: &crate::hooks::HookEvent) -> crate::hooks::HookResult {
+        if matches!(event, crate::hooks::HookEvent::PrePrompt(_)) {
+            return crate::hooks::HookResult::continue_with(serde_json::json!({
+                "prompt": "HOOK_REWRITTEN_PROMPT",
+                "additionalContext": "HOOK_ADDITIONAL_CONTEXT"
+            }));
+        }
+        crate::hooks::HookResult::Continue(None)
     }
 }
 
@@ -3212,6 +3228,33 @@ async fn test_send_publishes_runtime_events_to_hook_executor() {
     assert!(events
         .iter()
         .all(|(run_id, _, _)| run_id.starts_with("run-")));
+}
+
+#[tokio::test]
+async fn session_pre_prompt_rewrite_reaches_model_history() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let options = SessionOptions::new()
+        .with_hook_executor(Arc::new(RewritingPromptHook))
+        .with_continuation(false);
+    let session = agent
+        .build_session(
+            "/tmp/test-pre-prompt-rewrite".into(),
+            Arc::new(StaticStreamingClient::new("hooked answer")),
+            &options,
+        )
+        .unwrap();
+
+    let result = session.send("ORIGINAL_PROMPT", None).await.unwrap();
+    let user_prompt = result
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .expect("rewritten user message")
+        .text();
+    assert!(user_prompt.contains("HOOK_REWRITTEN_PROMPT"));
+    assert!(user_prompt.contains("HOOK_ADDITIONAL_CONTEXT"));
+    assert!(!user_prompt.contains("ORIGINAL_PROMPT"));
 }
 
 #[tokio::test]

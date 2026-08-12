@@ -3,7 +3,7 @@ use super::execution_state::ExecutionLoopState;
 use super::llm_turn::LlmTurnRequest;
 use super::queue_forwarder::QueueEventForwarder;
 use super::{AgentEvent, AgentLoop, AgentResult};
-use crate::llm::Message;
+use crate::llm::{ContentBlock, Message};
 use crate::prompts::AgentStyle;
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -90,6 +90,7 @@ impl AgentLoop {
             cancel_token,
         );
 
+        let prompt_before_hooks = effective_prompt;
         let turn_context = self
             .prepare_turn_context(
                 &effective_system_prompt,
@@ -114,9 +115,14 @@ impl AgentLoop {
             },
         );
 
-        // Add user message
+        // Put the hook-effective prompt on the wire. Previously the rewritten
+        // value was used only for context lookup and telemetry while the LLM
+        // still received the original user message, making prompt rewrites and
+        // additionalContext observational instead of authoritative.
         if !msg_prompt.is_empty() {
-            state.messages.push(Message::user(msg_prompt));
+            state.messages.push(Message::user(effective_prompt));
+        } else if effective_prompt != prompt_before_hooks {
+            rewrite_latest_user_prompt(&mut state.messages, prompt_before_hooks, effective_prompt);
         }
 
         loop {
@@ -233,5 +239,37 @@ impl AgentLoop {
             checkpoint_ms: self.config.host_env.now_ms(),
         };
         sink.save_checkpoint(&checkpoint).await;
+    }
+}
+
+fn rewrite_latest_user_prompt(messages: &mut [Message], original: &str, replacement: &str) {
+    let candidate = messages
+        .iter()
+        .rposition(|message| message.role == "user" && message.text() == original)
+        .or_else(|| {
+            messages
+                .iter()
+                .rposition(|message| message.role == "user" && !message.text().is_empty())
+        });
+    let Some(index) = candidate else {
+        tracing::warn!("PrePrompt modified input but no user message could be rewritten");
+        return;
+    };
+    let message = &mut messages[index];
+
+    let mut wrote_text = false;
+    message.content.retain_mut(|block| match block {
+        ContentBlock::Text { text } if !wrote_text => {
+            *text = replacement.to_string();
+            wrote_text = true;
+            true
+        }
+        ContentBlock::Text { .. } => false,
+        _ => true,
+    });
+    if !wrote_text {
+        message.content.push(ContentBlock::Text {
+            text: replacement.to_string(),
+        });
     }
 }

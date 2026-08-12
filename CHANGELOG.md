@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shared bounded byte budget and configurable `user_instructions_dir`.
 - Completed lifecycle hook governance for tool-input rewrites, prompt blocks,
   permission requests, context compaction, and session start/end. Rewritten
-  tool arguments are schema-validated again before any side effect.
+  tool arguments are schema-validated again before any side effect, and
+  PrePrompt rewrites/additional context now replace the actual model-bound
+  user message instead of affecting only context lookup and telemetry.
 - Added Codex-compatible hierarchical project instructions. Sessions now load
   `AGENTS.override.md`, `AGENTS.md`, and configured fallback names from the
   nearest Git root through the workspace, enforce a bounded UTF-8/non-symlink
