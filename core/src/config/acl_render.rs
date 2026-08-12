@@ -100,6 +100,19 @@ fn render_execution(config: &CodeConfig, document: &Document) -> Vec<SingleEntry
             (!config.agent_dirs.is_empty()).then(|| path_list(&config.agent_dirs)),
         ),
         scalar_entry(
+            &[
+                "user_instructions_dir",
+                "userInstructionsDir",
+                "global_instructions_dir",
+                "globalInstructionsDir",
+            ],
+            "user_instructions_dir",
+            config
+                .user_instructions_dir
+                .as_ref()
+                .map(|path| Value::String(path.to_string_lossy().into_owned())),
+        ),
+        scalar_entry(
             &["project_doc_max_bytes", "projectDocMaxBytes"],
             "project_doc_max_bytes",
             config.project_doc_max_bytes.map(number),

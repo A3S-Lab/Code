@@ -1205,7 +1205,7 @@ async fn test_session_routes_agents_md_through_context_provider() {
         .extra
         .as_deref()
         .unwrap_or_default()
-        .contains("Project Instructions (AGENTS.md chain)"));
+        .contains("Instructions (personal + project AGENTS.md chain)"));
 
     let result = agents_provider
         .query(&crate::context::ContextQuery::new("complete the task"))
@@ -3212,6 +3212,38 @@ async fn test_send_publishes_runtime_events_to_hook_executor() {
     assert!(events
         .iter()
         .all(|(run_id, _, _)| run_id.starts_with("run-")));
+}
+
+#[tokio::test]
+async fn async_session_build_and_close_fire_lifecycle_hooks_once() {
+    let hook = Arc::new(RecordingRuntimeHook::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session_async(
+            "/tmp/test-session-lifecycle-hooks",
+            Some(SessionOptions::new().with_hook_executor(hook.clone())),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        hook.hook_events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, crate::hooks::HookEvent::SessionStart(_)))
+            .count(),
+        1
+    );
+    session.close().await;
+    let events = hook.hook_events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, crate::hooks::HookEvent::SessionEnd(_)))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

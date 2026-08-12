@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extended hierarchical instructions with a Codex-compatible personal layer:
+  sessions load the first non-empty `~/.a3s/AGENTS.override.md` or
+  `~/.a3s/AGENTS.md` before the project root-to-workspace chain, under one
+  shared bounded byte budget and configurable `user_instructions_dir`.
+- Completed lifecycle hook governance for tool-input rewrites, prompt blocks,
+  permission requests, context compaction, and session start/end. Rewritten
+  tool arguments are schema-validated again before any side effect.
 - Added Codex-compatible hierarchical project instructions. Sessions now load
   `AGENTS.override.md`, `AGENTS.md`, and configured fallback names from the
   nearest Git root through the workspace, enforce a bounded UTF-8/non-symlink

@@ -1,14 +1,25 @@
 use super::AgentLoop;
 use crate::hooks::{
-    ErrorType, HookEvent, HookOutcome, OnErrorEvent, PlanningStrategy, PostPlanningEvent,
-    PostResponseEvent, PostToolUseEvent, PrePlanningEvent, PreToolUseEvent, TokenUsageInfo,
-    ToolResultData,
+    ErrorType, HookEvent, HookOutcome, OnErrorEvent, PermissionRequestEvent, PlanningStrategy,
+    PostCompactEvent, PostPlanningEvent, PostResponseEvent, PostToolUseEvent, PreCompactEvent,
+    PrePlanningEvent, PreToolUseEvent, TokenUsageInfo, ToolResultData,
 };
 use crate::llm::TokenUsage;
 use crate::planning::ExecutionPlan;
 use crate::safety_gate::HookDenialFeedback;
 use anyhow::{bail, Result};
 use std::sync::Arc;
+
+pub(super) struct PreToolHookDecision {
+    pub(super) denial: Option<HookDenialFeedback>,
+    pub(super) updated_args: Option<serde_json::Value>,
+}
+
+pub(super) enum PermissionHookDecision {
+    Continue,
+    Allow,
+    Deny(String),
+}
 
 impl AgentLoop {
     /// Fire PreToolUse hook event before tool execution.
@@ -19,7 +30,7 @@ impl AgentLoop {
         tool_name: &str,
         args: &serde_json::Value,
         recent_tools: Vec<String>,
-    ) -> Option<HookDenialFeedback> {
+    ) -> PreToolHookDecision {
         if let Some(he) = &self.config.hook_engine {
             // Convert null args to empty object so JS callbacks don't get null.input errors
             let safe_args = if args.is_null() {
@@ -36,7 +47,77 @@ impl AgentLoop {
             });
             return normalize_pre_tool_gate_outcome(he.fire_outcome(&event).await);
         }
-        None
+        PreToolHookDecision {
+            denial: None,
+            updated_args: None,
+        }
+    }
+
+    /// Fire PermissionRequest immediately before host confirmation is shown.
+    pub(super) async fn fire_permission_request(
+        &self,
+        session_id: &str,
+        tool_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> PermissionHookDecision {
+        let Some(he) = &self.config.hook_engine else {
+            return PermissionHookDecision::Continue;
+        };
+        let event = HookEvent::PermissionRequest(PermissionRequestEvent {
+            session_id: session_id.to_string(),
+            tool_id: tool_id.to_string(),
+            tool: tool_name.to_string(),
+            args: args.clone(),
+        });
+        normalize_permission_outcome(he.fire_outcome(&event).await)
+    }
+
+    pub(super) async fn fire_pre_compact(
+        &self,
+        session_id: &str,
+        message_count: usize,
+        used_tokens: usize,
+        max_tokens: usize,
+    ) -> Result<()> {
+        let Some(he) = &self.config.hook_engine else {
+            return Ok(());
+        };
+        let event = HookEvent::PreCompact(PreCompactEvent {
+            session_id: session_id.to_string(),
+            message_count,
+            used_tokens,
+            max_tokens,
+        });
+        match he.fire_outcome(&event).await {
+            HookOutcome::Block { reason } => bail!("Context compaction blocked by hook: {reason}"),
+            HookOutcome::Retry { reason, .. } => {
+                bail!("Context compaction deferred by hook: {reason}")
+            }
+            HookOutcome::Escalate { reason, .. } => {
+                bail!("Context compaction requires review: {reason}")
+            }
+            HookOutcome::Continue(_) | HookOutcome::Skip => Ok(()),
+        }
+    }
+
+    pub(super) async fn fire_post_compact(
+        &self,
+        session_id: &str,
+        message_count_before: usize,
+        message_count_after: usize,
+        summary_generated: bool,
+    ) {
+        let Some(he) = &self.config.hook_engine else {
+            return;
+        };
+        let event = HookEvent::PostCompact(PostCompactEvent {
+            session_id: session_id.to_string(),
+            message_count_before,
+            message_count_after,
+            summary_generated,
+        });
+        let _ = he.fire(&event).await;
     }
 
     /// Fire PostToolUse hook event after tool execution (fire-and-forget).
@@ -222,23 +303,86 @@ impl AgentLoop {
 /// The gateway has no retry scheduler or human-escalation wait state. Allowing
 /// either outcome to fall through would execute the protected tool without the
 /// requested policy action, so both fail closed until such a path exists.
-fn normalize_pre_tool_gate_outcome(outcome: HookOutcome) -> Option<HookDenialFeedback> {
+fn normalize_pre_tool_gate_outcome(outcome: HookOutcome) -> PreToolHookDecision {
     match outcome {
-        HookOutcome::Continue(_) | HookOutcome::Skip => None,
-        HookOutcome::Block { reason } => Some(HookDenialFeedback::blocked(reason)),
+        HookOutcome::Continue(modified) => PreToolHookDecision {
+            denial: None,
+            updated_args: modified.and_then(extract_updated_tool_input),
+        },
+        HookOutcome::Skip => PreToolHookDecision {
+            denial: None,
+            updated_args: None,
+        },
+        HookOutcome::Block { reason } => PreToolHookDecision {
+            denial: Some(HookDenialFeedback::blocked(reason)),
+            updated_args: None,
+        },
         HookOutcome::Retry {
             reason,
             retry_after_ms,
-        } => Some(HookDenialFeedback::retry(reason, retry_after_ms)),
+        } => PreToolHookDecision {
+            denial: Some(HookDenialFeedback::retry(reason, retry_after_ms)),
+            updated_args: None,
+        },
         HookOutcome::Escalate { reason, target } => {
             let target = target
                 .as_deref()
                 .map(|value| format!(" to {value}"))
                 .unwrap_or_default();
-            Some(HookDenialFeedback::blocked(format!(
-                "Pre-tool hook escalated{target}: {reason}"
-            )))
+            PreToolHookDecision {
+                denial: Some(HookDenialFeedback::blocked(format!(
+                    "Pre-tool hook escalated{target}: {reason}"
+                ))),
+                updated_args: None,
+            }
         }
+    }
+}
+
+fn extract_updated_tool_input(modified: serde_json::Value) -> Option<serde_json::Value> {
+    let output = modified.get("hookSpecificOutput").unwrap_or(&modified);
+    if let Some(value) = output
+        .get("updatedInput")
+        .or_else(|| output.get("updated_input"))
+        .or_else(|| output.get("args"))
+    {
+        return Some(value.clone());
+    }
+    if output.get("additionalContext").is_some()
+        || output.get("additional_context").is_some()
+        || output.get("decision").is_some()
+        || output.get("permissionDecision").is_some()
+    {
+        return None;
+    }
+    Some(output.clone())
+}
+
+fn normalize_permission_outcome(outcome: HookOutcome) -> PermissionHookDecision {
+    match outcome {
+        HookOutcome::Continue(Some(value)) => {
+            let output = value.get("hookSpecificOutput").unwrap_or(&value);
+            let decision = output
+                .get("decision")
+                .or_else(|| output.get("permissionDecision"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let reason = output
+                .get("reason")
+                .or_else(|| output.get("permissionDecisionReason"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Permission hook denied the tool")
+                .to_string();
+            match decision.to_ascii_lowercase().as_str() {
+                "allow" | "approve" => PermissionHookDecision::Allow,
+                "deny" | "reject" | "block" => PermissionHookDecision::Deny(reason),
+                _ => PermissionHookDecision::Continue,
+            }
+        }
+        HookOutcome::Block { reason }
+        | HookOutcome::Retry { reason, .. }
+        | HookOutcome::Escalate { reason, .. } => PermissionHookDecision::Deny(reason),
+        HookOutcome::Continue(None) | HookOutcome::Skip => PermissionHookDecision::Continue,
     }
 }
 
@@ -331,6 +475,7 @@ mod tests {
             reason: "temporary policy outage".to_string(),
             retry_after_ms: 250,
         })
+        .denial
         .unwrap();
 
         assert_eq!(result.reason, "temporary policy outage");
@@ -344,6 +489,7 @@ mod tests {
             reason: "approval required".to_string(),
             target: Some("security-team".to_string()),
         })
+        .denial
         .unwrap();
 
         assert!(result.reason.contains("security-team"));
@@ -354,7 +500,27 @@ mod tests {
 
     #[test]
     fn explicit_pre_tool_continue_and_skip_remain_non_blocking() {
-        assert!(normalize_pre_tool_gate_outcome(HookOutcome::Continue(None)).is_none());
-        assert!(normalize_pre_tool_gate_outcome(HookOutcome::Skip).is_none());
+        assert!(normalize_pre_tool_gate_outcome(HookOutcome::Continue(None))
+            .denial
+            .is_none());
+        assert!(normalize_pre_tool_gate_outcome(HookOutcome::Skip)
+            .denial
+            .is_none());
+    }
+
+    #[test]
+    fn pre_tool_rewrite_accepts_codex_hook_specific_output() {
+        let decision =
+            normalize_pre_tool_gate_outcome(HookOutcome::Continue(Some(serde_json::json!({
+                "hookSpecificOutput": {
+                    "updatedInput": {"path": "safe.txt"}
+                }
+            }))));
+
+        assert!(decision.denial.is_none());
+        assert_eq!(
+            decision.updated_args,
+            Some(serde_json::json!({"path": "safe.txt"}))
+        );
     }
 }

@@ -431,6 +431,13 @@ impl AgentLoop {
         }
 
         let before_len = state.messages.len();
+        if let Err(error) = self
+            .fire_pre_compact(session_id.unwrap_or(""), before_len, used, max)
+            .await
+        {
+            tracing::warn!(error = %error, "Auto-compact skipped by lifecycle hook");
+            return true;
+        }
         let percent_before = used as f32 / max as f32;
         let compaction_budget = crate::compaction::CompactionBudget::for_auto_compaction(
             max,
@@ -522,6 +529,7 @@ impl AgentLoop {
             &state.messages,
             percent_before,
         );
+        let summary_generated = compact_summary.is_some();
 
         if let Some(tx) = event_tx {
             tx.send(AgentEvent::ContextCompacted {
@@ -534,6 +542,13 @@ impl AgentLoop {
             .await
             .ok();
         }
+        self.fire_post_compact(
+            session_id.unwrap_or(""),
+            before_len,
+            state.messages.len(),
+            summary_generated,
+        )
+        .await;
         true
     }
 

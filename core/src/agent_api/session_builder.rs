@@ -51,7 +51,9 @@ pub(super) async fn build_agent_session(
         tool_executor: Arc::clone(&capabilities.tool_executor),
     })
     .await?;
-    finish_agent_session(agent, canonical, resolved, capabilities, runtime)
+    let session = finish_agent_session(agent, canonical, resolved, capabilities, runtime)?;
+    fire_session_start(&session).await;
+    Ok(session)
 }
 
 pub(super) fn build_agent_session_sync(
@@ -69,7 +71,47 @@ pub(super) fn build_agent_session_sync(
         opts: &resolved.options,
         tool_executor: Arc::clone(&capabilities.tool_executor),
     });
-    finish_agent_session(agent, canonical, resolved, capabilities, runtime)
+    let session = finish_agent_session(agent, canonical, resolved, capabilities, runtime)?;
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let executor = effective_hook_executor(&session);
+        let event = session_start_event(&session);
+        handle.spawn(async move {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), executor.fire(&event))
+                .await;
+        });
+    }
+    Ok(session)
+}
+
+fn effective_hook_executor(session: &AgentSession) -> Arc<dyn crate::hooks::HookExecutor> {
+    session
+        .hook_executor
+        .clone()
+        .unwrap_or_else(|| Arc::clone(&session.hook_engine) as Arc<dyn crate::hooks::HookExecutor>)
+}
+
+fn session_start_event(session: &AgentSession) -> crate::hooks::HookEvent {
+    let (provider, model) = session
+        .model_name
+        .split_once('/')
+        .unwrap_or(("", session.model_name.as_str()));
+    crate::hooks::HookEvent::SessionStart(crate::hooks::SessionStartEvent {
+        session_id: session.session_id.clone(),
+        system_prompt: None,
+        model_provider: provider.to_string(),
+        model_name: model.to_string(),
+    })
+}
+
+async fn fire_session_start(session: &AgentSession) {
+    let executor = effective_hook_executor(session);
+    let event = session_start_event(session);
+    if tokio::time::timeout(std::time::Duration::from_secs(5), executor.fire(&event))
+        .await
+        .is_err()
+    {
+        tracing::warn!(session_id = %session.session_id, "SessionStart hook timed out");
+    }
 }
 
 fn resolved_session_id(resolved: &ResolvedSessionConfig) -> String {
@@ -203,6 +245,11 @@ fn finish_agent_session(
         )
     });
 
+    let hook_engine = Arc::new(crate::hooks::HookEngine::new());
+    let lifecycle_hook_executor: Arc<dyn crate::hooks::HookExecutor> = opts
+        .hook_executor
+        .clone()
+        .unwrap_or_else(|| Arc::clone(&hook_engine) as Arc<dyn crate::hooks::HookExecutor>);
     let close_handle = Arc::new(super::session_close::SessionCloseHandle {
         session_id: session_id.clone(),
         closed: Arc::clone(&closed),
@@ -212,7 +259,8 @@ fn finish_agent_session(
         run_store: Arc::clone(&run_store),
         subagent_tasks: Arc::clone(&subagent_tasks),
         confirmation_manager: config.confirmation_manager.clone(),
-        hook_executor: opts.hook_executor.clone(),
+        hook_executor: Some(lifecycle_hook_executor),
+        started_at: std::time::Instant::now(),
         command_queue: command_queue.clone(),
         run_admission: Arc::clone(&run_admission),
         memory: memory.clone(),
@@ -253,7 +301,7 @@ fn finish_agent_session(
             super::session_persistence::SessionPersistenceState::default(),
         )),
         auto_save: opts.auto_save,
-        hook_engine: Arc::new(crate::hooks::HookEngine::new()),
+        hook_engine,
         hook_executor: opts.hook_executor.clone(),
         init_warning: None,
         command_registry: std::sync::Mutex::new(command_registry),

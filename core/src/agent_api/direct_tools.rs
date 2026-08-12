@@ -260,6 +260,7 @@ mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use tokio::sync::Notify;
 
     struct ContextProbeTool;
@@ -273,6 +274,8 @@ mod tests {
     struct DenyAllTools;
     struct DenyToolBudget;
     struct RedactingSecurity;
+    #[derive(Debug)]
+    struct RewritingPreToolHook;
 
     #[derive(Debug, Default)]
     struct BlockingPreToolHook {
@@ -307,6 +310,19 @@ mod tests {
             if matches!(event, HookEvent::PreToolUse(_)) {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 HookResult::Block("blocked direct tool in test".to_string())
+            } else {
+                HookResult::Continue(None)
+            }
+        }
+    }
+
+    #[async_trait]
+    impl HookExecutor for RewritingPreToolHook {
+        async fn fire(&self, event: &HookEvent) -> HookResult {
+            if matches!(event, HookEvent::PreToolUse(_)) {
+                HookResult::continue_with(serde_json::json!({
+                    "updatedInput": {"value": "rewritten"}
+                }))
             } else {
                 HookResult::Continue(None)
             }
@@ -417,6 +433,39 @@ mod tests {
 
     struct CountingTool {
         calls: Arc<AtomicUsize>,
+    }
+
+    struct ArgumentCaptureTool {
+        captured: Arc<Mutex<Option<serde_json::Value>>>,
+    }
+
+    #[async_trait]
+    impl Tool for ArgumentCaptureTool {
+        fn name(&self) -> &str {
+            "argument_capture"
+        }
+
+        fn description(&self) -> &str {
+            "captures validated arguments"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+                "additionalProperties": false
+            })
+        }
+
+        async fn execute(
+            &self,
+            args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            *self.captured.lock().unwrap() = Some(args.clone());
+            Ok(ToolOutput::success("captured"))
+        }
     }
 
     #[async_trait]
@@ -962,6 +1011,35 @@ mod tests {
         ));
         assert_eq!(hooks.calls.load(Ordering::SeqCst), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pre_tool_hook_rewrites_and_revalidates_arguments_before_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let captured = Arc::new(Mutex::new(None));
+        let tool_executor = Arc::new(ToolExecutor::new(dir.path().to_string_lossy().to_string()));
+        tool_executor.register_dynamic_tool(Arc::new(ArgumentCaptureTool {
+            captured: Arc::clone(&captured),
+        }));
+        let runtime = direct_runtime_with_config(
+            tool_executor,
+            ToolContext::new(dir.path().to_path_buf()).with_session_id("session-hook-rewrite"),
+            AgentConfig {
+                hook_engine: Some(Arc::new(RewritingPreToolHook)),
+                ..AgentConfig::default()
+            },
+        );
+
+        let result = runtime
+            .call("argument_capture", serde_json::json!({"value": "original"}))
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0, "{}", result.output);
+        assert_eq!(
+            captured.lock().unwrap().as_ref(),
+            Some(&serde_json::json!({"value": "rewritten"}))
+        );
     }
 
     #[tokio::test]

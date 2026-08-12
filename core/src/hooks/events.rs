@@ -12,6 +12,12 @@ pub enum HookEventType {
     PreToolUse,
     /// After tool execution
     PostToolUse,
+    /// Before interactive permission is requested
+    PermissionRequest,
+    /// Before context compaction
+    PreCompact,
+    /// After context compaction
+    PostCompact,
     /// Before LLM generation
     GenerateStart,
     /// After LLM generation
@@ -69,6 +75,9 @@ impl std::fmt::Display for HookEventType {
         match self {
             HookEventType::PreToolUse => write!(f, "pre_tool_use"),
             HookEventType::PostToolUse => write!(f, "post_tool_use"),
+            HookEventType::PermissionRequest => write!(f, "permission_request"),
+            HookEventType::PreCompact => write!(f, "pre_compact"),
+            HookEventType::PostCompact => write!(f, "post_compact"),
             HookEventType::GenerateStart => write!(f, "generate_start"),
             HookEventType::GenerateEnd => write!(f, "generate_end"),
             HookEventType::SessionStart => write!(f, "session_start"),
@@ -134,6 +143,33 @@ pub struct PostToolUseEvent {
     pub args: serde_json::Value,
     /// Execution result
     pub result: ToolResultData,
+}
+
+/// Permission-request event payload, fired before the host confirmation UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionRequestEvent {
+    pub session_id: String,
+    pub tool_id: String,
+    pub tool: String,
+    pub args: serde_json::Value,
+}
+
+/// Pre-compaction event payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreCompactEvent {
+    pub session_id: String,
+    pub message_count: usize,
+    pub used_tokens: usize,
+    pub max_tokens: usize,
+}
+
+/// Post-compaction event payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostCompactEvent {
+    pub session_id: String,
+    pub message_count_before: usize,
+    pub message_count_after: usize,
+    pub summary_generated: bool,
 }
 
 /// Generate start event payload
@@ -517,6 +553,12 @@ pub enum HookEvent {
     PreToolUse(PreToolUseEvent),
     #[serde(rename = "post_tool_use")]
     PostToolUse(PostToolUseEvent),
+    #[serde(rename = "permission_request")]
+    PermissionRequest(PermissionRequestEvent),
+    #[serde(rename = "pre_compact")]
+    PreCompact(PreCompactEvent),
+    #[serde(rename = "post_compact")]
+    PostCompact(PostCompactEvent),
     #[serde(rename = "generate_start")]
     GenerateStart(GenerateStartEvent),
     #[serde(rename = "generate_end")]
@@ -568,6 +610,9 @@ impl HookEvent {
         match self {
             HookEvent::PreToolUse(_) => HookEventType::PreToolUse,
             HookEvent::PostToolUse(_) => HookEventType::PostToolUse,
+            HookEvent::PermissionRequest(_) => HookEventType::PermissionRequest,
+            HookEvent::PreCompact(_) => HookEventType::PreCompact,
+            HookEvent::PostCompact(_) => HookEventType::PostCompact,
             HookEvent::GenerateStart(_) => HookEventType::GenerateStart,
             HookEvent::GenerateEnd(_) => HookEventType::GenerateEnd,
             HookEvent::SessionStart(_) => HookEventType::SessionStart,
@@ -598,6 +643,9 @@ impl HookEvent {
         match self {
             HookEvent::PreToolUse(e) => &e.session_id,
             HookEvent::PostToolUse(e) => &e.session_id,
+            HookEvent::PermissionRequest(e) => &e.session_id,
+            HookEvent::PreCompact(e) => &e.session_id,
+            HookEvent::PostCompact(e) => &e.session_id,
             HookEvent::GenerateStart(e) => &e.session_id,
             HookEvent::GenerateEnd(e) => &e.session_id,
             HookEvent::SessionStart(e) => &e.session_id,

@@ -4,7 +4,8 @@ use crate::context::{
     ContextResult, ContextType,
 };
 use crate::hooks::{
-    HookEvent, HookResult, IntentDetectionEvent, PreContextPerceptionEvent, PrePromptEvent,
+    HookEvent, HookOutcome, HookResult, IntentDetectionEvent, PreContextPerceptionEvent,
+    PrePromptEvent,
 };
 use futures::future::join_all;
 use tokio::sync::mpsc;
@@ -31,8 +32,7 @@ impl AgentLoop {
                 &built_system_prompt,
                 message_count,
             )
-            .await
-            .unwrap_or_else(|| effective_prompt.to_string());
+            .await?;
 
         if let Some(ref sp) = self.config.security_provider {
             sp.taint_input(&effective_prompt);
@@ -405,14 +405,14 @@ impl AgentLoop {
     }
 
     /// Fire PrePrompt hook event before prompt augmentation.
-    /// Returns optional modified prompt text from the hook.
+    /// Returns the effective prompt or fails closed when the hook blocks.
     async fn fire_pre_prompt(
         &self,
         session_id: &str,
         prompt: &str,
         system_prompt: &Option<String>,
         message_count: usize,
-    ) -> Option<String> {
+    ) -> anyhow::Result<String> {
         if let Some(he) = &self.config.hook_engine {
             let event = HookEvent::PrePrompt(PrePromptEvent {
                 session_id: session_id.to_string(),
@@ -420,15 +420,40 @@ impl AgentLoop {
                 system_prompt: system_prompt.clone(),
                 message_count,
             });
-            let result = he.fire(&event).await;
-            if let HookResult::Continue(Some(modified)) = result {
-                // Extract modified prompt from hook response
-                if let Some(new_prompt) = modified.get("prompt").and_then(|v| v.as_str()) {
-                    return Some(new_prompt.to_string());
+            match he.fire_outcome(&event).await {
+                HookOutcome::Continue(Some(modified)) => {
+                    let output = modified.get("hookSpecificOutput").unwrap_or(&modified);
+                    let mut effective = output
+                        .get("prompt")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(prompt)
+                        .to_string();
+                    if let Some(context) = output
+                        .get("additionalContext")
+                        .or_else(|| output.get("additional_context"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        effective.push_str("\n\n<user-prompt-hook-context>\n");
+                        effective.push_str(context);
+                        effective.push_str("\n</user-prompt-hook-context>");
+                    }
+                    return Ok(effective);
                 }
+                HookOutcome::Block { reason } => {
+                    anyhow::bail!("User prompt blocked by hook: {reason}")
+                }
+                HookOutcome::Retry { reason, .. } => {
+                    anyhow::bail!("User prompt deferred by hook: {reason}")
+                }
+                HookOutcome::Escalate { reason, .. } => {
+                    anyhow::bail!("User prompt requires review: {reason}")
+                }
+                HookOutcome::Continue(None) | HookOutcome::Skip => {}
             }
         }
-        None
+        Ok(prompt.to_string())
     }
 }
 

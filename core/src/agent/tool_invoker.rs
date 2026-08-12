@@ -1,6 +1,7 @@
 //! Scoped governance kernel for model, nested orchestrator, and host-direct
 //! tool invocations.
 
+use super::hook_runtime::PermissionHookDecision;
 use super::tool_result_runtime::NormalizedToolResult;
 use super::{AgentEvent, AgentLoop};
 use crate::budget::BudgetDecision;
@@ -36,8 +37,11 @@ impl ScopedToolInvoker {
         }
     }
 
-    async fn decide_gate(&self, invocation: &ToolInvocation) -> ToolGateDecision {
-        let pre_tool_denial = self
+    async fn decide_gate(
+        &self,
+        invocation: &mut ToolInvocation,
+    ) -> Result<ToolGateDecision, String> {
+        let hook_decision = self
             .agent
             .fire_pre_tool_use(
                 &self.session_id,
@@ -46,6 +50,14 @@ impl ScopedToolInvoker {
                 invocation.recent_tools.clone(),
             )
             .await;
+        if let Some(updated_args) = hook_decision.updated_args {
+            invocation.args = updated_args;
+            self.agent
+                .tool_executor
+                .registry()
+                .validate_arguments(&invocation.name, &invocation.args)?;
+        }
+        let pre_tool_denial = hook_decision.denial;
 
         let host_direct_policy = match invocation.origin {
             InvocationOrigin::HostDirect(policy) | InvocationOrigin::HostDirectNested(policy) => {
@@ -57,15 +69,15 @@ impl ScopedToolInvoker {
             host_direct_policy,
             Some(HostDirectPolicy::TrustedControlPlane)
         ) {
-            return match pre_tool_denial {
+            return Ok(match pre_tool_denial {
                 Some(feedback) => feedback.into_gate_decision(&invocation.name),
                 None => ToolGateDecision::Execute {
                     reason: ToolGateApproval::HostDirectTrusted,
                 },
-            };
+            });
         }
 
-        ToolSafetyGate::new(&self.agent.config)
+        Ok(ToolSafetyGate::new(&self.agent.config)
             .decide(ToolGateInput {
                 tool_name: &invocation.name,
                 args: &invocation.args,
@@ -76,7 +88,7 @@ impl ScopedToolInvoker {
                     .registry()
                     .requires_confirmation(&invocation.name, &invocation.args),
             })
-            .await
+            .await)
     }
 
     async fn resolve_gate(
@@ -114,6 +126,29 @@ impl ScopedToolInvoker {
                 timeout_ms,
                 timeout_action,
             } => {
+                match self
+                    .agent
+                    .fire_permission_request(
+                        &self.session_id,
+                        &invocation.id,
+                        &invocation.name,
+                        &invocation.args,
+                    )
+                    .await
+                {
+                    PermissionHookDecision::Allow => {
+                        return self.execute_budgeted(invocation, ctx).await;
+                    }
+                    PermissionHookDecision::Deny(reason) => {
+                        self.emit_permission_denied(invocation, reason.clone())
+                            .await;
+                        return NormalizedToolResult::denied(format!(
+                            "Tool '{}' denied by permission hook: {reason}",
+                            invocation.name
+                        ));
+                    }
+                    PermissionHookDecision::Continue => {}
+                }
                 let confirmation = if let Some(manager) =
                     self.agent.config.confirmation_manager.as_ref()
                 {
@@ -328,7 +363,7 @@ impl ScopedToolInvoker {
 
 #[async_trait]
 impl ToolInvoker for ScopedToolInvoker {
-    async fn invoke(&self, invocation: ToolInvocation, ctx: &ToolContext) -> ToolResult {
+    async fn invoke(&self, mut invocation: ToolInvocation, ctx: &ToolContext) -> ToolResult {
         let started = Instant::now();
         let cancellation = ctx.cancellation_token();
         let invocation_ctx = match ctx.enter_tool_invocation(&invocation.name) {
@@ -369,16 +404,19 @@ impl ToolInvoker for ScopedToolInvoker {
             _ = cancellation.cancelled() => {
                 None
             }
-            decision = self.decide_gate(&invocation) => Some(decision),
+            decision = self.decide_gate(&mut invocation) => Some(decision),
         };
         let normalized = match decision {
-            Some(decision) => {
+            Some(Ok(decision)) => {
                 // Once execution starts, its deadline wrapper owns
                 // cancellation and settlement. Do not drop that future from an
                 // outer select: blocking VMs and process-backed tools need a
                 // chance to observe their invocation token and terminate.
                 self.resolve_gate(&invocation, &invocation_ctx, decision)
                     .await
+            }
+            Some(Err(message)) => {
+                NormalizedToolResult::invalid_arguments(&invocation.name, message)
             }
             None => NormalizedToolResult::denied(format!(
                 "Tool '{}' cancelled by caller",

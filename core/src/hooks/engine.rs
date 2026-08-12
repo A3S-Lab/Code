@@ -474,7 +474,14 @@ impl HookEngine {
     /// decision before producing tool or planning side effects. Other hook
     /// points are observational or advisory and remain best-effort.
     fn is_gating_event(event: &HookEvent) -> bool {
-        matches!(event, HookEvent::PreToolUse(_) | HookEvent::PrePlanning(_))
+        matches!(
+            event,
+            HookEvent::PreToolUse(_)
+                | HookEvent::PermissionRequest(_)
+                | HookEvent::PreCompact(_)
+                | HookEvent::PrePrompt(_)
+                | HookEvent::PrePlanning(_)
+        )
     }
 
     /// Map handler infrastructure failures according to the hook point's role.

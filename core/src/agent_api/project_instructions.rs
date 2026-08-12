@@ -1,8 +1,9 @@
-//! Bounded project instruction discovery for workspace sessions.
+//! Bounded personal and project instruction discovery for workspace sessions.
 //!
 //! A session gets one immutable instruction chain at construction time. The
-//! chain starts at the nearest Git root and ends at the selected workspace;
-//! the later, more local documents therefore have the final word.
+//! chain starts with the personal `~/.a3s` document, then walks from the
+//! nearest Git root to the selected workspace. Later, more local documents
+//! therefore have the final word.
 
 use crate::config::CodeConfig;
 use crate::context::{ContextItem, ContextType};
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 const DEFAULT_PROJECT_DOC_MAX_BYTES: usize = 32 * 1024;
 const MAX_PROJECT_DOC_MAX_BYTES: usize = 1024 * 1024;
 const MAX_PROJECT_INSTRUCTION_DEPTH: usize = 256;
-const PROJECT_DOC_SEPARATOR: &str = "\n\n--- project-doc ---\n\n";
+const PROJECT_DOC_SEPARATOR: &str = "\n\n--- instruction-doc ---\n\n";
 const PROJECT_DOC_SOURCES_METADATA: &str = "a3s.context.project_instruction_sources";
 
 pub(super) fn load_context_item(code_config: &CodeConfig, workspace: &Path) -> Option<ContextItem> {
@@ -28,7 +29,7 @@ pub(super) fn load_context_item(code_config: &CodeConfig, workspace: &Path) -> O
         .map(|path| format!("file://{}", path.display()))
         .collect::<Vec<_>>();
     let content = format!(
-        "# Project Instructions (AGENTS.md chain)\n\n{}",
+        "# Instructions (personal + project AGENTS.md chain)\n\n{}",
         loaded.content
     );
     let token_count = content.split_whitespace().count().max(1);
@@ -37,7 +38,7 @@ pub(super) fn load_context_item(code_config: &CodeConfig, workspace: &Path) -> O
         files = loaded.sources.len(),
         bytes = loaded.loaded_bytes,
         workspace = %workspace.display(),
-        "Auto-loaded hierarchical project instructions"
+        "Auto-loaded hierarchical personal and project instructions"
     );
     Some(
         ContextItem::new("agents_md", ContextType::Resource, content)
@@ -90,40 +91,33 @@ fn load_project_instructions(
     let mut sources = Vec::new();
     let mut loaded_bytes = 0usize;
 
+    if let Some(user_directory) = user_instruction_directory(code_config) {
+        load_first_instruction_in_directory(
+            &user_directory,
+            &user_directory,
+            &["AGENTS.override.md".to_string(), "AGENTS.md".to_string()],
+            &mut remaining,
+            &mut contents,
+            &mut sources,
+            &mut loaded_bytes,
+            "personal",
+        );
+    }
+
     for directory in search_dirs {
         if remaining == 0 {
             break;
         }
-        let Some(path) =
-            select_project_instruction_file(&directory, &project_root, &candidate_names)
-        else {
-            continue;
-        };
-        match read_project_instruction_file(&path, remaining) {
-            Ok(Some((content, bytes_read, truncated))) => {
-                if truncated {
-                    tracing::warn!(
-                        path = %path.display(),
-                        remaining_bytes = remaining,
-                        "Project instruction file exceeded the remaining budget and was truncated"
-                    );
-                }
-                remaining = remaining.saturating_sub(bytes_read);
-                loaded_bytes = loaded_bytes.saturating_add(bytes_read);
-                contents.push(content);
-                sources.push(path);
-            }
-            Ok(None) => {
-                tracing::debug!(path = %path.display(), "Project instruction file is empty - skipping");
-            }
-            Err(error) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %error,
-                    "Failed to read project instruction file - skipping"
-                );
-            }
-        }
+        load_first_instruction_in_directory(
+            &directory,
+            &project_root,
+            &candidate_names,
+            &mut remaining,
+            &mut contents,
+            &mut sources,
+            &mut loaded_bytes,
+            "project",
+        );
     }
 
     (!contents.is_empty()).then(|| LoadedProjectInstructions {
@@ -131,6 +125,70 @@ fn load_project_instructions(
         sources,
         loaded_bytes,
     })
+}
+
+fn user_instruction_directory(code_config: &CodeConfig) -> Option<PathBuf> {
+    let configured = code_config
+        .user_instructions_dir
+        .clone()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".a3s")))?;
+    let metadata = std::fs::symlink_metadata(&configured).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        tracing::warn!(
+            path = %configured.display(),
+            "Ignoring personal instruction directory that is not a regular non-symlink directory"
+        );
+        return None;
+    }
+    Some(super::safe_canonicalize(&configured))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_first_instruction_in_directory(
+    directory: &Path,
+    allowed_root: &Path,
+    candidate_names: &[String],
+    remaining: &mut usize,
+    contents: &mut Vec<String>,
+    sources: &mut Vec<PathBuf>,
+    loaded_bytes: &mut usize,
+    scope: &str,
+) {
+    if *remaining == 0 {
+        return;
+    }
+    for name in candidate_names {
+        let Some(path) = select_project_instruction_file(directory, allowed_root, name) else {
+            continue;
+        };
+        match read_project_instruction_file(&path, *remaining) {
+            Ok(Some((content, bytes_read, truncated))) => {
+                if truncated {
+                    tracing::warn!(
+                        path = %path.display(),
+                        remaining_bytes = *remaining,
+                        "Instruction file exceeded the remaining budget and was truncated"
+                    );
+                }
+                *remaining = remaining.saturating_sub(bytes_read);
+                *loaded_bytes = loaded_bytes.saturating_add(bytes_read);
+                contents.push(content);
+                sources.push(path);
+                break;
+            }
+            Ok(None) => {
+                tracing::debug!(path = %path.display(), scope, "Instruction file is empty - trying the next candidate");
+            }
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    scope,
+                    "Failed to read instruction file - trying the next candidate"
+                );
+            }
+        }
+    }
 }
 
 fn project_instruction_directories(workspace: &Path) -> Vec<PathBuf> {
@@ -189,29 +247,26 @@ fn is_safe_project_instruction_filename(candidate: &str) -> bool {
 fn select_project_instruction_file(
     directory: &Path,
     project_root: &Path,
-    candidate_names: &[String],
+    candidate_name: &str,
 ) -> Option<PathBuf> {
-    for name in candidate_names {
-        let candidate = directory.join(name);
-        let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {
-            continue;
-        };
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            tracing::warn!(
-                path = %candidate.display(),
-                "Ignoring project instruction candidate that is not a regular non-symlink file"
-            );
-            continue;
-        }
-        let resolved = super::safe_canonicalize(&candidate);
-        let resolved_root = super::safe_canonicalize(project_root);
-        if !resolved.starts_with(&resolved_root) {
-            tracing::warn!(path = %resolved.display(), "Ignoring project instruction candidate outside the project root");
-            continue;
-        }
-        return Some(resolved);
+    let candidate = directory.join(candidate_name);
+    let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {
+        return None;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        tracing::warn!(
+            path = %candidate.display(),
+            "Ignoring instruction candidate that is not a regular non-symlink file"
+        );
+        return None;
     }
-    None
+    let resolved = super::safe_canonicalize(&candidate);
+    let resolved_root = super::safe_canonicalize(project_root);
+    if !resolved.starts_with(&resolved_root) {
+        tracing::warn!(path = %resolved.display(), "Ignoring instruction candidate outside its allowed root");
+        return None;
+    }
+    Some(resolved)
 }
 
 fn read_project_instruction_file(
@@ -278,7 +333,7 @@ mod tests {
         assert_eq!(loaded.sources.len(), 3);
         assert_eq!(
             loaded.content,
-            "root guidance\n\n--- project-doc ---\n\ncrate override\n\n--- project-doc ---\n\nworkspace guidance"
+            "root guidance\n\n--- instruction-doc ---\n\ncrate override\n\n--- instruction-doc ---\n\nworkspace guidance"
         );
         assert!(!loaded.content.contains("shadowed guidance"));
     }
@@ -317,7 +372,42 @@ mod tests {
 
         let loaded = load_project_instructions(&config, &nested).unwrap();
         assert_eq!(loaded.loaded_bytes, 7);
-        assert_eq!(loaded.content, "root\n\n--- project-doc ---\n\ndee");
+        assert_eq!(loaded.content, "root\n\n--- instruction-doc ---\n\ndee");
+    }
+
+    #[test]
+    fn prepends_personal_override_and_shares_the_combined_budget() {
+        let directory = repo();
+        let personal = tempfile::tempdir().unwrap();
+        std::fs::write(personal.path().join("AGENTS.override.md"), "personal").unwrap();
+        std::fs::write(personal.path().join("AGENTS.md"), "shadowed personal").unwrap();
+        std::fs::write(directory.path().join("AGENTS.md"), "project").unwrap();
+        let config = CodeConfig {
+            user_instructions_dir: Some(personal.path().to_path_buf()),
+            project_doc_max_bytes: Some(11),
+            ..Default::default()
+        };
+
+        let loaded = load_project_instructions(&config, directory.path()).unwrap();
+        assert_eq!(loaded.sources.len(), 2);
+        assert_eq!(loaded.content, "personal\n\n--- instruction-doc ---\n\npro");
+        assert!(!loaded.content.contains("shadowed personal"));
+        assert_eq!(loaded.loaded_bytes, 11);
+    }
+
+    #[test]
+    fn empty_personal_override_falls_back_to_personal_agents_file() {
+        let directory = repo();
+        let personal = tempfile::tempdir().unwrap();
+        std::fs::write(personal.path().join("AGENTS.override.md"), " \n").unwrap();
+        std::fs::write(personal.path().join("AGENTS.md"), "personal fallback").unwrap();
+        let config = CodeConfig {
+            user_instructions_dir: Some(personal.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let loaded = load_project_instructions(&config, directory.path()).unwrap();
+        assert_eq!(loaded.content, "personal fallback");
     }
 
     #[test]

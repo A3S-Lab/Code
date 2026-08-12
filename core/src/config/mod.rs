@@ -144,10 +144,23 @@ pub struct CodeConfig {
     #[serde(default, alias = "agent_dirs")]
     pub agent_dirs: Vec<PathBuf>,
 
-    /// Maximum combined bytes loaded from project instruction files.
+    /// Directory containing personal instructions loaded before project files.
+    ///
+    /// When unset, instruction discovery checks `~/.a3s/AGENTS.override.md`
+    /// and then `~/.a3s/AGENTS.md`, using the first non-empty regular file.
+    #[serde(
+        default,
+        alias = "user_instructions_dir",
+        alias = "globalInstructionsDir",
+        alias = "global_instructions_dir",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub user_instructions_dir: Option<PathBuf>,
+
+    /// Maximum combined bytes loaded from personal and project instruction files.
     ///
     /// When unset, instruction discovery uses the Codex-compatible 32 KiB
-    /// default. A value of zero disables project instruction loading.
+    /// default. A value of zero disables all automatic instruction loading.
     #[serde(default, alias = "project_doc_max_bytes")]
     pub project_doc_max_bytes: Option<usize>,
 

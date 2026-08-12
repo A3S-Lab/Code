@@ -13,6 +13,7 @@ memory_dir = "./memory"
 storage_url = "sqlite://state.db"
 skill_dirs = ["./skills", "./shared-skills"]
 agent_dirs = ["./agents"]
+user_instructions_dir = "./personal-instructions"
 project_doc_max_bytes = 65536
 project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
 max_tool_rounds = 42
@@ -166,6 +167,10 @@ mcp_servers "filesystem" {
     assert_eq!(config.storage_url.as_deref(), Some("sqlite://state.db"));
     assert_eq!(config.skill_dirs.len(), 2);
     assert_eq!(config.agent_dirs.len(), 1);
+    assert_eq!(
+        config.user_instructions_dir.unwrap().to_string_lossy(),
+        "./personal-instructions"
+    );
     assert_eq!(config.project_doc_max_bytes, Some(65536));
     assert_eq!(
         config.project_doc_fallback_filenames,

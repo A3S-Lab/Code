@@ -15,7 +15,7 @@
 //! perform exactly the same cleanup.
 
 use crate::hitl::ConfirmationProvider;
-use crate::hooks::HookExecutor;
+use crate::hooks::{HookEvent, HookExecutor, SessionEndEvent};
 use crate::run::InMemoryRunStore;
 use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +27,7 @@ const QUEUE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const MEMORY_EXTRACTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const RUN_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const RUN_ABORT_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+const SESSION_END_HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Bundle of `Arc`-shared session state needed to perform a graceful close
 /// from anywhere holding (a clone of) the handle.
@@ -47,6 +48,7 @@ pub(crate) struct SessionCloseHandle {
     pub(crate) subagent_tasks: Arc<InMemorySubagentTaskTracker>,
     pub(crate) confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
     pub(crate) hook_executor: Option<Arc<dyn HookExecutor>>,
+    pub(crate) started_at: std::time::Instant,
     /// Optional session-owned lane queue. Close first shuts it down to reject
     /// new work, then drains commands admitted before the close boundary.
     pub(crate) command_queue: Option<Arc<crate::session_lane_queue::SessionLaneQueue>>,
@@ -243,6 +245,22 @@ impl SessionCloseHandle {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .remove_all(&self.skill_registry);
+
+        if let Some(hook) = &self.hook_executor {
+            let duration_ms = self.started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            let event = HookEvent::SessionEnd(SessionEndEvent {
+                session_id: self.session_id.clone(),
+                total_tokens: 0,
+                total_tool_calls: 0,
+                duration_ms,
+            });
+            if tokio::time::timeout(SESSION_END_HOOK_TIMEOUT, hook.fire(&event))
+                .await
+                .is_err()
+            {
+                tracing::warn!(session_id = %self.session_id, "SessionEnd hook timed out");
+            }
+        }
 
         tracing::info!(session_id = %self.session_id, "AgentSession closed");
     }

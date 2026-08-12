@@ -578,6 +578,22 @@ impl CodeConfig {
                         config.agent_dirs = paths;
                     }
                 }
+                "user_instructions_dir"
+                | "userInstructionsDir"
+                | "global_instructions_dir"
+                | "globalInstructionsDir" => {
+                    if let Some(path) = acl_string_attr(
+                        &block,
+                        &[
+                            "user_instructions_dir",
+                            "userInstructionsDir",
+                            "global_instructions_dir",
+                            "globalInstructionsDir",
+                        ],
+                    ) {
+                        config.user_instructions_dir = Some(PathBuf::from(path));
+                    }
+                }
                 "project_doc_max_bytes" | "projectDocMaxBytes" => {
                     if let Some(max_bytes) =
                         acl_usize_attr(&block, &["project_doc_max_bytes", "projectDocMaxBytes"])
