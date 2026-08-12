@@ -27,7 +27,6 @@ const QUEUE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const MEMORY_EXTRACTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const RUN_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const RUN_ABORT_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
-const SESSION_END_HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Bundle of `Arc`-shared session state needed to perform a graceful close
 /// from anywhere holding (a clone of) the handle.
@@ -254,12 +253,7 @@ impl SessionCloseHandle {
                 total_tool_calls: 0,
                 duration_ms,
             });
-            if tokio::time::timeout(SESSION_END_HOOK_TIMEOUT, hook.fire(&event))
-                .await
-                .is_err()
-            {
-                tracing::warn!(session_id = %self.session_id, "SessionEnd hook timed out");
-            }
+            let _ = hook.fire(&event).await;
         }
 
         tracing::info!(session_id = %self.session_id, "AgentSession closed");

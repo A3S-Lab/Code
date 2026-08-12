@@ -76,8 +76,7 @@ pub(super) fn build_agent_session_sync(
         let executor = effective_hook_executor(&session);
         let event = session_start_event(&session);
         handle.spawn(async move {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), executor.fire(&event))
-                .await;
+            let _ = executor.fire(&event).await;
         });
     }
     Ok(session)
@@ -106,12 +105,7 @@ fn session_start_event(session: &AgentSession) -> crate::hooks::HookEvent {
 async fn fire_session_start(session: &AgentSession) {
     let executor = effective_hook_executor(session);
     let event = session_start_event(session);
-    if tokio::time::timeout(std::time::Duration::from_secs(5), executor.fire(&event))
-        .await
-        .is_err()
-    {
-        tracing::warn!(session_id = %session.session_id, "SessionStart hook timed out");
-    }
+    let _ = executor.fire(&event).await;
 }
 
 fn resolved_session_id(resolved: &ResolvedSessionConfig) -> String {
