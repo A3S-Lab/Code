@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   permission requests, context compaction, and session start/end. Rewritten
   tool arguments are schema-validated again before any side effect, and
   PrePrompt rewrites/additional context now replace the actual model-bound
-  user message instead of affecting only context lookup and telemetry.
+  user message instead of affecting only context lookup and telemetry. Prompt
+  denials also emit an actionable terminal stream error to interactive and
+  headless hosts.
 - Added Codex-compatible hierarchical project instructions. Sessions now load
   `AGENTS.override.md`, `AGENTS.md`, and configured fallback names from the
   nearest Git root through the workspace, enforce a bounded UTF-8/non-symlink

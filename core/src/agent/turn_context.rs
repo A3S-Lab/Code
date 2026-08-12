@@ -25,14 +25,27 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
     ) -> anyhow::Result<TurnContext> {
         let built_system_prompt = Some(effective_system_prompt.to_string());
-        let effective_prompt = self
+        let effective_prompt = match self
             .fire_pre_prompt(
                 session_id.unwrap_or(""),
                 effective_prompt,
                 &built_system_prompt,
                 message_count,
             )
-            .await?;
+            .await
+        {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                if let Some(tx) = event_tx {
+                    tx.send(AgentEvent::Error {
+                        message: error.to_string(),
+                    })
+                    .await
+                    .ok();
+                }
+                return Err(error);
+            }
+        };
 
         if let Some(ref sp) = self.config.security_provider {
             sp.taint_input(&effective_prompt);

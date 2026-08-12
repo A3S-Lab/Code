@@ -233,6 +233,9 @@ struct RecordingRuntimeHook {
 #[derive(Debug)]
 struct RewritingPromptHook;
 
+#[derive(Debug)]
+struct BlockingPromptHook;
+
 #[derive(Debug, Default)]
 struct CapturingContextProvider {
     session_ids: std::sync::Mutex<Vec<Option<String>>>,
@@ -483,6 +486,16 @@ impl crate::hooks::HookExecutor for RewritingPromptHook {
                 "prompt": "HOOK_REWRITTEN_PROMPT",
                 "additionalContext": "HOOK_ADDITIONAL_CONTEXT"
             }));
+        }
+        crate::hooks::HookResult::Continue(None)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::hooks::HookExecutor for BlockingPromptHook {
+    async fn fire(&self, event: &crate::hooks::HookEvent) -> crate::hooks::HookResult {
+        if matches!(event, crate::hooks::HookEvent::PrePrompt(_)) {
+            return crate::hooks::HookResult::block("prompt policy denied this request");
         }
         crate::hooks::HookResult::Continue(None)
     }
@@ -3255,6 +3268,35 @@ async fn session_pre_prompt_rewrite_reaches_model_history() {
     assert!(user_prompt.contains("HOOK_REWRITTEN_PROMPT"));
     assert!(user_prompt.contains("HOOK_ADDITIONAL_CONTEXT"));
     assert!(!user_prompt.contains("ORIGINAL_PROMPT"));
+}
+
+#[tokio::test]
+async fn session_pre_prompt_block_emits_stream_error() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let options = SessionOptions::new()
+        .with_hook_executor(Arc::new(BlockingPromptHook))
+        .with_continuation(false);
+    let session = agent
+        .build_session(
+            "/tmp/test-pre-prompt-block".into(),
+            Arc::new(StaticStreamingClient::new("must not reach model")),
+            &options,
+        )
+        .unwrap();
+
+    let (mut events, worker) = session.stream("BLOCK_ME", None).await.unwrap();
+    let mut error = None;
+    while let Some(event) = events.recv().await {
+        if let AgentEvent::Error { message } = event {
+            error = Some(message);
+        }
+    }
+    worker.await.unwrap();
+
+    assert_eq!(
+        error.as_deref(),
+        Some("User prompt blocked by hook: prompt policy denied this request")
+    );
 }
 
 #[tokio::test]
