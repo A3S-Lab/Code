@@ -15,7 +15,7 @@ export default defineConfig({
   siteOrigin,
   title: 'A3S Code',
   description:
-    'A Rust runtime for coding agents with tool calls, approval, event streaming, and recovery. Available for Rust, Node.js, Python, and Go.',
+    'A Rust runtime for coding agents with shared priority scheduling, governed tools, event streaming, and recovery. Available for Rust, Node.js, Python, and Go.',
   lang: 'zh',
   icon: '/favicon.svg',
   logo: '/a3s-code-mark.svg',
@@ -42,8 +42,16 @@ export default defineConfig({
     ],
   },
   multiVersion: {
-    default: 'v6.8.0',
-    versions: ['v6.8.0', 'v6.7.0', 'v6.6.0', 'v6.5.2', 'v6.5.1', 'v6.5.0'],
+    default: 'v6.9.0',
+    versions: [
+      'v6.9.0',
+      'v6.8.0',
+      'v6.7.0',
+      'v6.6.0',
+      'v6.5.2',
+      'v6.5.1',
+      'v6.5.0',
+    ],
   },
   locales: [
     {
@@ -51,14 +59,14 @@ export default defineConfig({
       label: '简体中文',
       title: 'A3S Code',
       description:
-        '用 Rust 构建的编码 Agent 运行时，支持工具调用、权限确认、事件流和任务恢复，并提供 Rust、Node.js、Python、Go API。',
+        '用 Rust 构建的编码 Agent 运行时，支持共享优先级调度、受治理的工具执行、事件流和任务恢复，并提供 Rust、Node.js、Python、Go API。',
     },
     {
       lang: 'en',
       label: 'English',
       title: 'A3S Code',
       description:
-        'A Rust runtime for coding agents with tool calls, approval, event streaming, and recovery. Available for Rust, Node.js, Python, and Go.',
+        'A Rust runtime for coding agents with shared priority scheduling, governed tools, event streaming, and recovery. Available for Rust, Node.js, Python, and Go.',
     },
   ],
   head: [

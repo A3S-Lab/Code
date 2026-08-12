@@ -121,7 +121,7 @@ telemetry remain opt-in.
 | Area | What is available | Activation |
 | --- | --- | --- |
 | Agent runtime | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, and replay | Baseline |
-| Governed tools | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, and delegation | Exposed only when workspace and policy allow |
+| Governed tools | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence | Exposed only when workspace and policy allow |
 | Code intelligence | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata | Host-selected local workspace |
 | Context and memory | Ranked context, repeated compaction, three-tier memory, typed stores, recall, extraction, relations, and pruning | Host-selected and configurable |
 | Cognitive packages | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages |
@@ -129,12 +129,12 @@ telemetry remain opt-in.
 | Structured output | Native provider formats or schema-validated prompt, partial parse, and repair fallback | Baseline |
 | MCP and Skills | Isolated MCP transports plus filesystem, registry, inline, and live session Skills | Configuration or live registration |
 | Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation | Manual tools independently configurable; automation opt-in |
-| Priority scheduling | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation and starvation-safe aging | Baseline; tune `task_scheduler`, select per-session `TaskPriority` |
+| Priority scheduling | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, and occupancy snapshots | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()` |
 | Programmable workflows | Bounded QuickJS `program` calls and replayable A3S Flow-backed dynamic workflows | `program` baseline; dynamic runtime explicitly registered |
 | Persistence | Atomic snapshots, run events, traces, artifacts, verification, checkpoints, and optional RL trajectories | Configured store and host policy |
 | State graph | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow 0.11 lifecycle projection including cancellation, terminal outcomes, progress, and child operations | Explicit application use |
 | Agent release contract | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks | Baseline admission API |
-| Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, and bounded pages of the existing `EventEnvelopeV1` stream | `AgentProtocolHarness` multiplexes ordinary Code sessions and `AgentProtocolHost` executes through each `AgentSession`; the `a3s code` process supplies service transport |
+| Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, bounded `EventEnvelopeV1` pages, per-conversation detached Git worktrees, and immutable `/v1/agent/changes` patches | `AgentProtocolHarness` multiplexes ordinary Code sessions and `AgentProtocolHost` executes through each `AgentSession`; the `a3s code` process supplies service transport |
 | Headless web search | Lazy Chrome/Chromium-backed Google/Baidu engines and managed browser lifecycle APIs; Lightpanda remains configurable | Default Cargo feature `headless-search`; disable with `default-features = false` |
 | S3 workspace | S3-compatible object backend | Cargo feature `s3` |
 | Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown | Cargo feature `serve` |
@@ -202,12 +202,17 @@ async fn main() -> a3s_code_core::Result<()> {
 
     let options = options.with_task_priority(TaskPriority::Interactive);
 
-    let _session = Agent::new("agent.acl")
-        .await?
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
         .session_builder("/path/to/workspace")
         .options(options)
         .build()
         .await?;
+
+    let stats = agent.task_scheduler_stats().await?;
+    let same_scheduler = session.task_scheduler_stats().await?;
+    println!("active={} pending={}", stats.active, stats.pending);
+    assert_eq!(stats.max_active, same_scheduler.max_active);
 
     Ok(())
 }
@@ -272,6 +277,15 @@ SHA-256 `repeat_key`, names the estimator, declares the loss mode, and points
 to either the persisted full-output artifact or the inline digest. It is
 observational evidence: Core does not claim provider billing usage and does not
 rewrite Tool content from these measurements.
+
+Content projection is controlled separately by the session-pinned
+`a3s.code.tool-result-transform-policy.v1` policy. The conservative default
+retains a 100 KiB prefix. `ToolResultTransformPolicyV1::context_efficient()`
+retains a UTF-8-safe 64 KiB head and 32 KiB tail, folds exact repeated lines,
+and samples oversized top-level JSON arrays. Rust, Node.js, Python, and Go
+expose the same policy fields. The policy persists in `SessionSnapshotV1`, and
+resume rejects an explicitly different policy so replay cannot silently change
+the model-visible Tool result.
 
 ### Context-efficient repository tools
 

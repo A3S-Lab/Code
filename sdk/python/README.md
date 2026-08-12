@@ -90,6 +90,56 @@ cancellation. Use `governed_tool_async(name, args)` when the host coordinates a
 call that must still pass the session permission and confirmation gates.
 Synchronous callers can use `governed_tool(name, args)`.
 
+## Agent-Wide Priority Scheduling
+
+Every session created from one `Agent` shares the same execution capacity.
+Conversation runs, direct tools, detached children, and host workflows enter
+one priority/FIFO scheduler.
+
+```python
+options = SessionOptions()
+options.task_priority = "background"
+background = agent.session("/my-project", options)
+
+stats = agent.task_scheduler_stats()
+same_scheduler = background.task_scheduler_stats()
+print(stats["active"], stats["pendingByPriority"]["background"])
+```
+
+Priorities are `urgent`, `interactive` (the default), `foreground`,
+`background`, and `maintenance`. Equal priorities remain FIFO; waiting
+non-urgent work ages toward interactive priority. Configure global capacity
+and the aging interval in ACL:
+
+```acl
+task_scheduler {
+  max_active = 4
+  aging_interval_ms = 30000
+}
+```
+
+The returned dictionaries report `maxActive`, active and pending totals,
+per-priority counts, and shutdown state. They are point-in-time diagnostic
+snapshots, not capacity reservations.
+
+## Deterministic Tool-result projection
+
+Pin the context-efficient profile when long Tool output should retain both its
+beginning and end, fold exact repeated lines, and sample oversized JSON arrays:
+
+```python
+from a3s_code import SessionOptions, ToolResultTransformPolicy
+
+options = SessionOptions()
+options.tool_result_transform_policy = ToolResultTransformPolicy.context_efficient()
+projected = agent.session("/my-project", options)
+```
+
+The exact policy persists in the session snapshot, and resume rejects policy
+drift. Read `ToolResult.metadata["a3s_tool_result_evidence"]` for the
+original/projected sizes and token estimates, SHA-256 digests, loss mode,
+repeat key, transform algorithm, and immutable inline or artifact reference.
+
 ## Session Operation Concurrency
 
 A session admits one transcript-affecting operation at a time. `send`, `stream`,

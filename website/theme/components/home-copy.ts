@@ -4,7 +4,7 @@ export const copy = {
     titleLead: '把 A3S Code',
     titleAccent: '接进现有产品',
     subtitle:
-      'A3S Code 提供 Agent 会话、工具调用、权限确认、事件流和任务恢复。你可以直接使用 a3s code，也可以通过 Rust、Node.js、Python 或 Go SDK 嵌入现有应用。',
+      'A3S Code 提供 Agent 会话、共享优先级调度、受治理的工具执行、事件流和任务恢复。你可以直接使用 a3s code，也可以通过 Rust、Node.js、Python 或 Go SDK 嵌入现有应用。',
     docs: '开始使用',
     github: '查看 GitHub',
     copy: '复制',
@@ -116,7 +116,7 @@ export const copy = {
     titleLead: 'Add A3S Code',
     titleAccent: 'to an existing product',
     subtitle:
-      'A3S Code provides agent sessions, tool execution, approvals, event streaming, and task recovery. Run a3s code directly or embed the Rust, Node.js, Python, or Go SDK.',
+      'A3S Code provides agent sessions, shared priority scheduling, governed tool execution, event streaming, and task recovery. Run a3s code directly or embed the Rust, Node.js, Python, or Go SDK.',
     docs: 'Get started',
     github: 'View on GitHub',
     copy: 'Copy',

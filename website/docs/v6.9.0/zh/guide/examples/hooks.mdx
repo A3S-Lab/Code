@@ -1,0 +1,199 @@
+---
+title: '生命周期钩子'
+description: '注册、统计并注销用于观测和把控 Agent 活动的生命周期事件回调。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 生命周期钩子
+
+钩子让你在 Agent 活动发生时进行观测和把控。你针对某个生命周期事件注册一个具名回调，
+运行时会在该节点调用它，回调返回一个决策，例如 `{ action: "continue" }`。钩子可用于
+审计、脱敏、日志记录，或在不修改 Agent 提示词的前提下实施策略。
+
+其生命周期是对称的：`registerHook` 按名称添加回调，`hookCount` 告诉你当前有多少个钩子
+处于活动状态，`unregisterHook` 则按名称移除某个钩子。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::{
+    hooks::{
+        Hook, HookConfig, HookEvent, HookEventType, HookHandler, HookMatcher, HookResponse,
+    },
+    Agent,
+};
+
+struct ContinueHandler;
+
+impl HookHandler for ContinueHandler {
+    fn handle(&self, event: &HookEvent) -> HookResponse {
+        println!("observed {}", event.event_type());
+        HookResponse::continue_()
+    }
+}
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let hook = Hook::new("observe-env-read", HookEventType::PreToolUse)
+        .with_matcher(HookMatcher::path("**/.env*"))
+        .with_config(HookConfig {
+            priority: 100,
+            ..HookConfig::default()
+        });
+    session.register_hook(hook)?;
+    session.register_hook_handler("observe-env-read", Arc::new(ContinueHandler))?;
+
+    println!("active hooks: {}", session.hook_count());
+    session.send("读取项目 README 并总结。", None).await?;
+
+    session.unregister_hook_handler("observe-env-read")?;
+    session.unregister_hook("observe-env-read")?;
+    println!("active hooks: {}", session.hook_count());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session(process.cwd());
+
+// 为生命周期事件注册命名钩子。回调不能抛出异常，
+// 必须返回形如 { action: 'continue' } 的决策。
+session.registerHook(
+  'observe-env-read',
+  'pre_tool_use',
+  { pathPattern: '**/.env*' },
+  { priority: 100 },
+  () => ({ action: 'continue' }),
+);
+
+console.log('active hooks:', session.hookCount()); // 1
+
+await session.run('Read the project README and summarize it.');
+
+// 不再需要时按名称移除钩子。
+session.unregisterHook('observe-env-read');
+console.log('active hooks:', session.hookCount()); // 0
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session('.', SessionOptions())
+
+# 为生命周期事件注册命名钩子，回调会返回决策。
+session.register_hook(
+    'observe-env-read',
+    'pre_tool_use',
+    {'pathPattern': '**/.env*'},
+    {'priority': 100},
+    lambda: {'action': 'continue'},
+)
+
+print("active hooks:", session.hook_count())  # 1
+
+session.run("Read the project README and summarize it.")
+
+# 不再需要时按名称移除钩子。
+session.unregister_hook('observe-env-read')
+print("active hooks:", session.hook_count())  # 0
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v6"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	priority := 100
+	err = session.RegisterHookWithHandler(ctx, code.Hook{
+		ID:        "observe-env-read",
+		EventType: "pre_tool_use",
+		Matcher:   &code.HookMatcher{PathPattern: "**/.env*"},
+		Config:    &code.HookConfig{Priority: &priority},
+	}, func(_ context.Context, event json.RawMessage) (*code.HookResponse, error) {
+		fmt.Println("hook event:", string(event))
+		return &code.HookResponse{Action: "continue"}, nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	count, err := session.HookCount(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("active hooks:", count)
+
+	if _, err = session.Run(ctx, "读取项目 README 并总结。"); err != nil {
+		log.Fatal(err)
+	}
+
+	if _, err = session.UnregisterHook(ctx, "observe-env-read"); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+注意事项：
+
+- 钩子回调返回一个决策。返回 `{ action: "continue" }`（Node）/
+  `{"action": "continue"}`（Python）/
+  `&code.HookResponse{Action: "continue"}`（Go）即可让 Agent 继续执行。
+- 匹配器（`{ pathPattern: '**/.env*' }`）将钩子限定到路径匹配该模式的事件，而
+  `{ priority: 100 }` 用于对同一事件上的多个钩子排序（数值越小越先执行）。
+- Node 钩子回调**不得**抛出异常——未捕获的抛出可能会终止进程。请让处理逻辑保持完备，
+  并始终返回一个决策。
+- `hookCount` / `hook_count` / `HookCount` 反映当前已注册钩子的数量，在测试中可方便地断言注册与
+  清理是否生效。
+- `unregisterHook` / `unregister_hook` / `UnregisterHook` 接收你注册时使用的名称。请始终拆除不再需要的
+  钩子，以免它们在多次运行之间泄漏。
+- 把钩子当作生产关卡前，请先验证你所依赖的具体 event path。

@@ -44,8 +44,6 @@ providers "provider" {
 ```acl
 skill_dirs = ["./.a3s/skills"]
 agent_dirs = ["./.a3s/agents"]
-project_doc_max_bytes = 32768
-project_doc_fallback_filenames = ["TEAM_GUIDE.md"]
 
 auto_delegation {
   enabled        = true
@@ -55,7 +53,7 @@ auto_delegation {
 }
 ```
 
-`skill_dirs` 指向可复用技能目录；`agent_dirs` 指向 worker/subagent 定义目录。`project_doc_max_bytes` 限制从仓库根到 workspace 的项目指令链总大小；后备文件名会在 `AGENTS.override.md` 和 `AGENTS.md` 之后查找。自动委派只决定是否让模型选择 worker，不会取消父 session 的权限策略、工具可见性或验证要求。
+`skill_dirs` 指向可复用技能目录；`agent_dirs` 指向 worker/subagent 定义目录。自动委派只决定是否让模型选择 worker，不会取消父 session 的权限策略、工具可见性或验证要求。
 
 ## 会话存储
 

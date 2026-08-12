@@ -51,6 +51,63 @@ The synchronous `session()`, `resumeSession()`, `sessionForAgent()`,
 `sessionForWorker()`, `cancel()`, and `close()` methods remain available for
 compatibility. New event-loop applications should not use them.
 
+## Agent-Wide Priority Scheduling
+
+Every session created from one `Agent` shares the same execution capacity.
+Conversation runs, direct tools, detached children, and host workflows enter
+one priority/FIFO scheduler, so background work cannot bypass interactive
+traffic through a different API.
+
+```js
+const background = await agent.sessionAsync('/my-project', {
+  taskPriority: 'background',
+})
+
+const stats = await agent.taskSchedulerStats()
+const sameScheduler = await background.taskSchedulerStats()
+console.log(stats.active, stats.pendingByPriority.background)
+```
+
+Priorities are `urgent`, `interactive` (the default), `foreground`,
+`background`, and `maintenance`. Equal priorities remain FIFO; waiting
+non-urgent work ages toward interactive priority. Configure global capacity
+and the aging interval in ACL:
+
+```acl
+task_scheduler {
+  max_active = 4
+  aging_interval_ms = 30000
+}
+```
+
+The returned `TaskSchedulerStats` reports `maxActive`, active and pending
+totals, per-priority counts, and shutdown state. It is a point-in-time
+diagnostic snapshot, not a capacity reservation.
+
+## Deterministic Tool-result projection
+
+Pin the context-efficient profile when long Tool output should retain both its
+beginning and end, fold exact repeated lines, and sample oversized JSON arrays:
+
+```js
+const projected = await agent.sessionAsync('/my-project', {
+  toolResultTransformPolicy: {
+    schema: 'a3s.code.tool-result-transform-policy.v1',
+    maxOutputBytes: 100 * 1024,
+    headBytes: 64 * 1024,
+    tailBytes: 32 * 1024,
+    foldRepeatedLines: true,
+    repeatedLineThreshold: 3,
+    structuredSampleItems: 32,
+  },
+})
+```
+
+The exact policy persists in the session snapshot, and resume rejects policy
+drift. Parse `ToolResult.metadataJson` and read `a3s_tool_result_evidence` for
+the original/projected sizes and token estimates, SHA-256 digests, loss mode,
+repeat key, transform algorithm, and immutable inline or artifact reference.
+
 ## Session Operation Concurrency
 
 A session admits one transcript-affecting operation at a time. `send`, `stream`,

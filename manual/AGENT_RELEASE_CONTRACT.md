@@ -46,9 +46,22 @@ provenance declarations. A native Harness validates both by admitting the
 manifest first and then accepting commands only for its declared artifact.
 
 The version-one process transport uses Code-owned paths: commands are posted to
-`/v1/agent/commands`, while bounded `AgentProtocolEventPageRequestV1` values are
-posted to `/v1/agent/events:page`. Hosts must forward the corresponding Code
-types intact rather than translating them into another lifecycle protocol.
+`/v1/agent/commands`, bounded `AgentProtocolEventPageRequestV1` values are
+posted to `/v1/agent/events:page`, and exact terminal-run identities are posted
+to `/v1/agent/changes`. The last endpoint returns one immutable
+`a3s.code.agent-change-set.v1` value: a SHA-256-bound, base64-encoded binary Git
+patch between exact `base_tree` and `result_tree` identities, with a 4 MiB raw
+patch bound. Hosts must forward the corresponding Code types intact rather
+than translating them into another lifecycle or change-set protocol.
+
+For a Git workspace, `AgentProtocolHarness` admits each conversation into a
+temporary detached worktree at the clean source repository's `HEAD`. Runs
+capture tracked and untracked non-ignored content without mutating the source
+index, and the Harness removes the isolated worktree when that conversation is
+dropped. A persisted conversation restores its latest captured result tree
+when admitted again. Non-Git workspaces use the configured shared path and do
+not expose Git-compatible change sets; a dirty Git source fails isolation
+admission rather than silently losing host changes.
 
 The Core crate does not build an OCI image, launch the manifest's declared
 entrypoint, implement the declared HTTP health endpoints or a network listener,

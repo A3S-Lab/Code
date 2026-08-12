@@ -1,0 +1,60 @@
+---
+title: '上下文'
+description: '可靠编程智能体的预算化上下文组装'
+---
+
+# 上下文
+
+A3S Code 把上下文当作有预算的资源。
+
+上下文来源包括用户 prompt、历史、AGENTS.md、skills、memory、文件搜索、直接工具结果、MCP、委派子运行摘要和 trace event。AGENTS.md 注入、skills discovery、memory API、直接工具结果、委派 helper 和 `traceEvents()` 属于 Node SDK 文档表面；MCP context 行为应针对你的 live integration 单独验证。
+
+```text
+sources -> ContextItem -> rank -> dedupe -> budget -> render
+```
+
+长 grep 输出、日志和委派子运行 transcript 不应直接塞进 prompt；应保存在 prompt 之外，再总结成适合 prompt 的证据。紧凑运行证据可通过 `session.traceEvents()` 获取。
+
+## 精确认知包（Rust 宿主）
+
+嵌入式 Rust 宿主可以把会话绑定到某个精确的 A3S Use cognitive-package 代。A3S Code
+不会安装包、解析 Registry 条目或选择 `latest`；宿主负责注入不可变的
+`CognitivePackageBindingV1`，以及持有对应 Knowledge lease 的 Provider。
+
+```rust
+use a3s_code_core::{CognitiveContextSession, SessionOptions};
+
+let cognitive_context = CognitiveContextSession::new(binding, provider)?;
+let options = SessionOptions::new().with_cognitive_context(cognitive_context);
+```
+
+持久化的 `a3s.code.cognitive-package-session-binding.v1` 身份包含包 ID/版本、生命周期代、
+代摘要、能力快照摘要、精确 Knowledge surface 和 prompt 注入上限。每个带类型的请求与
+带引用的 Markdown 响应都会重复该绑定，并在内容进入模型上下文前完成校验。
+
+硬上限是 4 个文档、每个文档 6 KiB、总计 6 KiB；宿主可在绑定中选择更小的限制。
+Provider 失败、引用非法、请求不匹配或代身份漂移都会关闭失败，不会回退到无关检索。
+
+必须使用 `with_cognitive_context`。通过通用 context-provider 列表加入认知 Provider 会
+被拒绝，因为这种方式无法正确持久化绑定。精确认知包不能与通用 RAG 或图 Provider
+共存，并且会抑制个人 memory 召回；Code 自己管理的工作区指令与 skills 仍然可用。
+
+绑定会写入会话快照，并发出 `cognitive_context_bound` 事件。恢复时，宿主必须重新注入
+具有相同绑定的 Provider；缺失绑定或使用不同的代都会被拒绝。这个带类型的边界目前是
+Rust 宿主集成面，不是 Node.js、Python 或 Go 的会话选项。
+
+## 上下文压缩
+
+长会话可启用自动压缩：
+
+```ts
+const session = agent.session('/repo', {
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  maxContextTokens: 128_000,
+});
+```
+
+未设置 `maxContextTokens` 时，Core 会优先使用当前模型声明的上下文窗口。每次模型请求前，Core 会统计 system prompt、会话消息、工具调用与结果以及暴露给模型的工具 schema；达到阈值后，它会限制过大的工具输出、总结较早且边界安全的消息、保留近期消息，并继续当前任务。压缩摘要还会参与后续压缩，因此长会话可以持续滚动压缩；这不会扩大模型单次请求的物理上下文窗口。压缩成功时，`context_compacted` 事件会携带累计摘要，使用外部历史的宿主可以把同一压缩代持久化到后续轮次。
+
+Python SDK 中对应的字段是 `max_context_tokens`。

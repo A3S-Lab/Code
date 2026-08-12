@@ -61,22 +61,22 @@ const governanceFeatures: Feature[] = [
       en: 'Check files, shell, Git, and external requests',
     },
     body: {
-      zh: '模型提交工具参数后，Runtime 依次检查参数、Workspace 能力和权限规则。需要用户确认的调用会先暂停，不会直接执行。',
-      en: 'After the model submits tool arguments, the runtime checks the arguments, workspace capability, and permission policy. Calls that need approval pause before execution.',
+      zh: '模型或前置钩子提交工具参数后，Runtime 会再次校验 Schema，再检查 Workspace 能力和权限规则。需要用户确认的调用会先暂停。',
+      en: 'After the model or a pre-hook supplies tool arguments, the runtime validates the schema again, then checks workspace capability and permission policy. Calls that need approval pause.',
     },
-    tags: ['policy', 'HITL', 'sandbox'],
+    tags: ['hooks', 'policy', 'HITL', 'sandbox'],
   },
   {
     index: '02',
     title: {
-      zh: '大输出保存为 Artifact',
-      en: 'Store large output as artifacts',
+      zh: '确定性投影大输出，保留完整证据',
+      en: 'Project large output with verifiable evidence',
     },
     body: {
-      zh: '文件、搜索、命令和网页结果都支持范围或游标。超过限制的内容会写入 Artifact，模型只收到预览、大小、哈希和取回地址。',
-      en: 'File, search, command, and web results support ranges or cursors. Oversized output is written to an artifact; the model receives a preview, size, hash, and retrieval URI.',
+      zh: '固定策略可以保留头尾、折叠重复行并采样 JSON。模型收到投影内容；应用同时得到字节、哈希和损失证据，Artifact 保留完整原文。',
+      en: 'A pinned policy can retain head and tail, fold repeated lines, and sample JSON. The model receives projected content; the app gets byte, hash, and loss evidence while artifacts keep the original.',
     },
-    tags: ['cursor', 'artifact', 'hash'],
+    tags: ['transform', 'evidence', 'artifact'],
   },
   {
     index: '03',
@@ -246,10 +246,10 @@ const runtimeLayers = [
     code: 'L02 / AGENT API',
     title: { zh: 'Agent 与 Session', en: 'Agent and session' },
     body: {
-      zh: 'Agent 读取配置并准备共享能力；AgentSession 把这些能力连接到一个项目目录和一段对话。',
-      en: 'Agent loads configuration and shared capabilities. AgentSession connects them to one project workspace and one conversation.',
+      zh: 'Agent 读取配置并准备共享能力与优先级调度器；AgentSession 把它们连接到一个项目目录和一段对话。',
+      en: 'Agent loads configuration, shared capabilities, and the priority scheduler. AgentSession connects them to one project workspace and one conversation.',
     },
-    tags: ['Agent', 'AgentSession', 'lifecycle'],
+    tags: ['Agent', 'AgentSession', 'priority'],
   },
   {
     id: 'context',
@@ -266,8 +266,8 @@ const runtimeLayers = [
     code: 'L04 / GOVERNANCE',
     title: { zh: '权限与执行检查', en: 'Permission and execution checks' },
     body: {
-      zh: '工具真正执行前，Runtime 会校验参数并检查能力和权限；再按配置进行用户确认、预算限制、沙箱隔离或取消。',
-      en: 'Before a tool runs, the runtime validates its arguments and checks capabilities and permissions, then applies approval, budget, sandbox, and cancellation rules.',
+      zh: '工具真正执行前，Runtime 会运行门控钩子、重新校验改写参数，并检查能力和权限；再按配置进行用户确认、预算、沙箱或取消。',
+      en: 'Before a tool runs, the runtime executes gating hooks, revalidates rewritten arguments, and checks capabilities and permissions before approval, budget, sandbox, or cancellation.',
     },
     tags: ['validate', 'permission', 'confirm', 'budget'],
   },
@@ -286,8 +286,8 @@ const runtimeLayers = [
     code: 'L06 / DURABILITY',
     title: { zh: '事件、记录与恢复', en: 'Events, records, and recovery' },
     body: {
-      zh: 'AgentEvent 把执行过程交给界面；Run、Trace、Artifact、验证报告和 SessionSnapshotV1 用来排查问题、审计和恢复任务。',
-      en: 'AgentEvent feeds the execution stream to your UI. Runs, traces, artifacts, verification reports, and SessionSnapshotV1 support debugging, audit, and recovery.',
+      zh: 'AgentEvent 把执行过程交给界面；Run、Trace、Artifact、不可变 Git 补丁和 SessionSnapshotV1 用来排查、审计、合并与恢复。',
+      en: 'AgentEvent feeds the execution stream to your UI. Runs, traces, artifacts, immutable Git patches, and SessionSnapshotV1 support debugging, audit, merge, and recovery.',
     },
     tags: ['EventEnvelopeV1', 'Run', 'Artifact', 'Snapshot'],
   },

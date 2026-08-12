@@ -32,13 +32,13 @@ configuration, wire behavior, or SDK surface to remain reproducible. Required
 parameter or function-signature breaks must use the appropriate minor or major
 product version rather than being hidden inside a documentation patch.
 
-The active `v6.8.0` content lives under `docs/v6.8.0`. The `v6.7.0`, `v6.6.0`,
-`v6.5.2`, `v6.5.1`, and `v6.5.0` directories remain read-only historical
-snapshots; this policy does not rewrite existing archives. For a new minor or
-major line, always create a new current directory and archive the previously
-supported line. Keep only supported or contract-distinct revisions in the
-public selector; release tags and `CHANGELOG.md` retain the complete patch
-history.
+The active `v6.9.0` content lives under `docs/v6.9.0`. The `v6.8.0`, `v6.7.0`,
+`v6.6.0`, `v6.5.2`, `v6.5.1`, and `v6.5.0` directories remain read-only
+historical snapshots; this policy does not rewrite existing archives. For a
+new minor or major line, always create a new current directory and archive the
+previously supported line. Keep only supported or contract-distinct revisions
+in the public selector; release tags and `CHANGELOG.md` retain the complete
+patch history.
 
 When archiving a release, list the exact revision in `multiVersion.versions`
 in `rspress.config.ts`. Record its tag, source tree, file count, and canonical

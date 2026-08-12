@@ -35,29 +35,13 @@ description: '作为一等上下文的项目指令'
 
 ## 嵌套规则
 
-A3S Code 会在 session 启动时构建一条项目指令链：先找到最近的 Git 根目录，再从
-Git 根目录逐级走到当前 workspace，每层目录最多选择一份文件。每层的查找顺序是：
-
-1. `AGENTS.override.md`
-2. `AGENTS.md`
-3. `project_doc_fallback_filenames` 中按顺序配置的后备文件名
-
-指令按“根目录到 workspace”顺序拼接，因此越靠近当前 workspace 的局部规则越晚出现，
-优先级也越高。`AGENTS.override.md` 只替换同一目录中的普通 `AGENTS.md`，不会清除父目录
-规则。找不到 Git 根目录时，只检查当前 workspace。
-
-空文件会跳过。默认总预算为 32 KiB，可通过 `project_doc_max_bytes` 调整；设为 0 可关闭
-项目指令加载。A3S Code 只接受项目根目录内的 UTF-8 普通文件，会忽略符号链接候选和不安全
-的后备文件名。经过边界约束的最终指令链属于 session 必读上下文，不会被通用检索预算静默丢弃。
+当前运行时只会自动读取 workspace 根目录的 `AGENTS.md`。嵌套 `AGENTS.md`
+仍然可以作为仓库文档或宿主约定存在，但 A3S Code 不会自动沿目录树遍历它们，
+除非宿主自己读取并注入这些内容。
 
 只有当子目录规则确实不同，才添加嵌套 `AGENTS.md`。例如桌面端、API 端或某个 SDK
 的构建工具链不同，可以在对应目录下放局部规则。不要为了重复根部说明而复制文件；
 重复会让长期 Agent 难以判断哪份规则才是最新。
-
-```acl
-project_doc_max_bytes = 65536
-project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
-```
 
 ## 与其他约定的关系
 
