@@ -303,6 +303,20 @@ fn wrapper_environment_pins_profile_files_to_the_private_scratch_directory() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn wrapper_environment_preserves_windows_broker_state_root() {
+    let workspace = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let environment = compose_srt_process_env(None, scratch.path(), workspace.path()).unwrap();
+
+    assert_eq!(
+        environment.get(OsStr::new("LOCALAPPDATA")),
+        std::env::var_os("LOCALAPPDATA").as_ref(),
+        "srt-win needs the invoking user's LocalAppData to read its protected provisioning receipt"
+    );
+}
+
 #[test]
 fn child_environment_rejects_explicit_bootstrap_injection_variables() {
     let scratch = tempfile::tempdir().unwrap();

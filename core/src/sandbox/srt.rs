@@ -637,6 +637,14 @@ fn compose_srt_process_env(
     #[cfg(windows)]
     {
         let mut environment = compose_child_env(explicit, scratch)?;
+        // `srt-win` keeps its DPAPI-protected provisioning receipt under the
+        // invoking user's LocalAppData. The managed wrapper intentionally
+        // starts from `env_clear`, so preserve only this broker prerequisite;
+        // the Windows provider builds a fresh sandbox-user environment for
+        // the actual command and does not expose the broker profile there.
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            environment.insert(OsString::from("LOCALAPPDATA"), local_app_data);
+        }
         remove_bootstrap_injection_variables(&mut environment);
         if let Some(path) = trusted_wrapper_path(workspace) {
             environment.insert(OsString::from("PATH"), path);
