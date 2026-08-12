@@ -12,6 +12,16 @@ pub(super) struct PySession {
 
 #[pymethods]
 impl PySession {
+    /// Return current occupancy of the Agent-wide priority scheduler shared by
+    /// this session and its siblings.
+    fn task_scheduler_stats(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let stats = py
+            .allow_threads(move || get_runtime().block_on(session.task_scheduler_stats()))
+            .map_err(py_task_scheduler_error)?;
+        task_scheduler_stats_to_py(py, &stats)
+    }
+
     /// Send a prompt or request and wait for the complete response.
     ///
     /// Args:

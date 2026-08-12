@@ -44,6 +44,26 @@ const (
 	TaskPriorityMaintenance TaskPriority = "maintenance"
 )
 
+// TaskPriorityCounts reports scheduler occupancy grouped by priority class.
+type TaskPriorityCounts struct {
+	Urgent      uint64 `json:"urgent"`
+	Interactive uint64 `json:"interactive"`
+	Foreground  uint64 `json:"foreground"`
+	Background  uint64 `json:"background"`
+	Maintenance uint64 `json:"maintenance"`
+}
+
+// TaskSchedulerStats is a point-in-time snapshot of the scheduler shared by
+// every session created from one Agent.
+type TaskSchedulerStats struct {
+	MaxActive         uint64             `json:"maxActive"`
+	Active            uint64             `json:"active"`
+	Pending           uint64             `json:"pending"`
+	ActiveByPriority  TaskPriorityCounts `json:"activeByPriority"`
+	PendingByPriority TaskPriorityCounts `json:"pendingByPriority"`
+	Closed            bool               `json:"closed"`
+}
+
 // SessionOptions contains the same value-shaped session configuration exposed
 // by the Rust, TypeScript, and Python SDKs.
 type SessionOptions struct {

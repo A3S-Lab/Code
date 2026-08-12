@@ -87,6 +87,15 @@ fn py_code_error(error: a3s_code_core::CodeError) -> PyErr {
     py_error_with_code(code, error.to_string())
 }
 
+fn py_task_scheduler_error(error: a3s_code_core::TaskSchedulerError) -> PyErr {
+    let code = match error {
+        a3s_code_core::TaskSchedulerError::InvalidConfig(_) => "INVALID_CONFIG",
+        a3s_code_core::TaskSchedulerError::Cancelled => "TASK_ADMISSION_CANCELLED",
+        a3s_code_core::TaskSchedulerError::Closed => "TASK_SCHEDULER_CLOSED",
+    };
+    py_error_with_code(code, error.to_string())
+}
+
 fn py_serve_error(failure_code: Option<&'static str>, error: a3s_code_core::CodeError) -> PyErr {
     let code = failure_code.unwrap_or(error.code());
     py_error_with_code(code, error.to_string())
@@ -180,6 +189,16 @@ fn agent_run_spawn_to_py(py: Python<'_>, spawn: &RustAgentRunSpawn) -> PyResult<
         "replayed": spawn.replayed(),
     }))
     .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize run spawn: {e}")))?;
+    json_string_to_py(py, &json)
+}
+
+fn task_scheduler_stats_to_py(
+    py: Python<'_>,
+    stats: &a3s_code_core::TaskSchedulerStats,
+) -> PyResult<PyObject> {
+    let json = serde_json::to_string(stats).map_err(|error| {
+        PyRuntimeError::new_err(format!("Failed to serialize task scheduler stats: {error}"))
+    })?;
     json_string_to_py(py, &json)
 }
 

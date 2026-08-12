@@ -16,6 +16,7 @@ import type {
   AgentRunSpawnObject,
   ReadFileOptions,
   SessionOptions,
+  TaskSchedulerStats,
   // From extra-types.d.ts (hand-authored):
   ToolErrorKind,
   VerificationStatus,
@@ -42,6 +43,7 @@ declare const _result: ToolResult
 declare const _runSpawn: AgentRunSpawnObject
 declare const _readOptions: ReadFileOptions
 declare const _sessionOptions: SessionOptions
+declare const _schedulerStats: TaskSchedulerStats
 declare const _err: ToolErrorKind
 declare const _status: VerificationStatus
 declare const _check: VerificationCheck
@@ -68,6 +70,9 @@ void _session.principal
 void _session.agentTemplateId
 void _session.correlationId
 void _session.hasMemory
+void _session.taskSchedulerStats()
+void _agent.taskSchedulerStats()
+void _schedulerStats.activeByPriority.interactive
 void _agent.session('repo', {
   ..._sessionOptions,
   llmApiTimeoutMs: 30_000,

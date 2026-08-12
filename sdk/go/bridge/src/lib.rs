@@ -9,7 +9,7 @@ use a3s_code_core::serve::{spawn_agent_dir_daemon, ServeDaemonHandle};
 use a3s_code_core::{
     execute_steps_parallel_resumable, run_event_envelope_v1, Agent, AgentResult, AgentSession,
     AgentStepSpec, CodeError, EventEnvelopeV1, Message, PlanningMode, ReadFileOptions,
-    SessionOptions, SystemPromptSlots, ToolCallResult,
+    SessionOptions, SystemPromptSlots, TaskSchedulerError, ToolCallResult,
 };
 use base64::Engine as _;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -29,6 +29,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "sdk_capabilities",
     "agent_create",
     "agent_refresh_mcp_tools",
+    "agent_task_scheduler_stats",
     "agent_replace_session",
     "agent_session_for_agent",
     "agent_session_for_worker",
@@ -43,6 +44,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_create",
     "session_resume",
     "session_info",
+    "session_task_scheduler_stats",
     "session_is_closed",
     "session_send",
     "session_resume_run",
@@ -240,6 +242,17 @@ impl From<CodeError> for BridgeFailure {
     }
 }
 
+impl From<TaskSchedulerError> for BridgeFailure {
+    fn from(error: TaskSchedulerError) -> Self {
+        let code = match error {
+            TaskSchedulerError::InvalidConfig(_) => "INVALID_CONFIG",
+            TaskSchedulerError::Cancelled => "TASK_ADMISSION_CANCELLED",
+            TaskSchedulerError::Closed => "TASK_SCHEDULER_CLOSED",
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
 fn serve_failure(handle: &ServeDaemonHandle, error: CodeError) -> BridgeFailure {
     BridgeFailure::new(
         handle.failure_code().unwrap_or(error.code()),
@@ -365,6 +378,14 @@ impl BridgeState {
                     .refresh_mcp_tools()
                     .await?;
                 Ok(json!({ "refreshed": true }))
+            }
+            "agent_task_scheduler_stats" => {
+                let stats = self
+                    .agent(&required::<String>(&request.params, "agent_id")?)
+                    .await?
+                    .task_scheduler_stats()
+                    .await?;
+                encode(stats)
             }
             "agent_replace_session" => {
                 let agent_id: String = required(&request.params, "agent_id")?;
@@ -511,6 +532,14 @@ impl BridgeState {
             "session_info" => {
                 let session = self.request_session(&request.params).await?;
                 Ok(session_info(&session))
+            }
+            "session_task_scheduler_stats" => {
+                let stats = self
+                    .request_session(&request.params)
+                    .await?
+                    .task_scheduler_stats()
+                    .await?;
+                encode(stats)
             }
             "session_is_closed" => {
                 let closed = self.request_session(&request.params).await?.is_closed();
@@ -2954,6 +2983,23 @@ mod tests {
             .await
             .unwrap();
         let session_handle = created["session_handle"].as_str().unwrap();
+
+        let agent_stats = state
+            .dispatch(&request(
+                "agent_task_scheduler_stats",
+                json!({ "agent_id": agent_id }),
+            ))
+            .await
+            .unwrap();
+        let session_stats = state
+            .dispatch(&request(
+                "session_task_scheduler_stats",
+                json!({ "session_handle": session_handle }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(agent_stats["maxActive"], session_stats["maxActive"]);
+        assert_eq!(agent_stats["pending"], Value::from(0));
 
         state
             .dispatch(&request(

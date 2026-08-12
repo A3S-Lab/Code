@@ -298,6 +298,18 @@ func (agent *Agent) RefreshMCPTools(ctx context.Context) error {
 	return agent.runtime.Request(ctx, op, map[string]any{"agent_id": agent.id}, nil)
 }
 
+// TaskSchedulerStats returns current occupancy of the priority scheduler
+// shared by every session created from this Agent.
+func (agent *Agent) TaskSchedulerStats(ctx context.Context) (TaskSchedulerStats, error) {
+	const op = "agent_task_scheduler_stats"
+	if err := validateAgent(agent, ctx, op); err != nil {
+		return TaskSchedulerStats{}, err
+	}
+	var result TaskSchedulerStats
+	err := agent.runtime.Request(ctx, op, map[string]any{"agent_id": agent.id}, &result)
+	return result, err
+}
+
 func (agent *Agent) ListSessions(ctx context.Context) ([]string, error) {
 	const op = "agent_list_sessions"
 	if err := validateAgent(agent, ctx, op); err != nil {

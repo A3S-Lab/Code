@@ -112,6 +112,16 @@ impl PyAgent {
         })
     }
 
+    /// Return current occupancy of the priority scheduler shared by every
+    /// session created from this Agent.
+    fn task_scheduler_stats(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let agent = self.inner.clone();
+        let stats = py
+            .allow_threads(move || get_runtime().block_on(agent.task_scheduler_stats()))
+            .map_err(py_task_scheduler_error)?;
+        task_scheduler_stats_to_py(py, &stats)
+    }
+
     /// Bind to a workspace directory, returning a Session.
     ///
     /// Args:

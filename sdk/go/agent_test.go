@@ -7,6 +7,53 @@ import (
 	"testing"
 )
 
+func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
+	runtime := &fakeRuntime{
+		request: func(
+			_ context.Context,
+			operation string,
+			params map[string]any,
+		) (any, error) {
+			switch operation {
+			case "agent_task_scheduler_stats":
+				if params["agent_id"] != "agent-1" {
+					t.Fatalf("unexpected agent params: %#v", params)
+				}
+			case "session_task_scheduler_stats":
+				if params["session_handle"] != "session-1" {
+					t.Fatalf("unexpected session params: %#v", params)
+				}
+			default:
+				t.Fatalf("unexpected operation %q", operation)
+			}
+			return TaskSchedulerStats{
+				MaxActive: 4,
+				Pending:   1,
+				PendingByPriority: TaskPriorityCounts{
+					Background: 1,
+				},
+			}, nil
+		},
+	}
+	agent := &Agent{runtime: runtime, id: "agent-1"}
+	agentStats, err := agent.TaskSchedulerStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{runtime: runtime, handle: "session-1"}
+	sessionStats, err := session.TaskSchedulerStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agentStats.MaxActive != 4 || sessionStats.PendingByPriority.Background != 1 {
+		t.Fatalf("unexpected scheduler stats: agent=%#v session=%#v", agentStats, sessionStats)
+	}
+	want := []string{"agent_task_scheduler_stats", "session_task_scheduler_stats"}
+	if got := runtime.operations(); !slices.Equal(got, want) {
+		t.Fatalf("operations = %v, want %v", got, want)
+	}
+}
+
 func TestCreateSessionAndCloseWithInjectedRuntime(t *testing.T) {
 	runtime := &fakeRuntime{
 		request: func(

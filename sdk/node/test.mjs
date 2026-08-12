@@ -71,6 +71,18 @@ providers "anthropic" {
 `.trim()
 
 const agent = await mod.Agent.create(inlineConfig)
+const initialSchedulerStats = await agent.taskSchedulerStats()
+assert.equal(initialSchedulerStats.maxActive, 4, 'default Agent scheduler capacity should be visible')
+assert.equal(initialSchedulerStats.active, 0, 'fresh Agent scheduler should be idle')
+assert.equal(initialSchedulerStats.pending, 0, 'fresh Agent scheduler should have no pending work')
+assert.equal(initialSchedulerStats.closed, false, 'fresh Agent scheduler should be open')
+assert.deepEqual(initialSchedulerStats.activeByPriority, {
+  urgent: 0,
+  interactive: 0,
+  foreground: 0,
+  background: 0,
+  maintenance: 0,
+})
 
 // A MemorySessionStore is an identity-bearing object, not merely a backend name.
 // Reusing the same instance must expose the snapshot written by the first session.
@@ -121,6 +133,12 @@ const session = agent.session(workspace, {
   permissionPolicy: { defaultDecision: 'allow' },
   workspaceBackend: new mod.LocalWorkspaceBackend(workspace),
 })
+const sessionSchedulerStats = await session.taskSchedulerStats()
+assert.equal(
+  sessionSchedulerStats.maxActive,
+  initialSchedulerStats.maxActive,
+  'sessions should observe their Agent-wide scheduler',
+)
 assert.equal(typeof session.spawnRunWithId, 'function', 'exact run admission must be exported')
 assert.equal(
   typeof session.spawnRecoveryWithRunId,

@@ -103,6 +103,18 @@ func (session *Session) Info(ctx context.Context) (SessionInfo, error) {
 	return result, err
 }
 
+// TaskSchedulerStats returns current occupancy of the Agent-wide priority
+// scheduler shared by this session and its siblings.
+func (session *Session) TaskSchedulerStats(ctx context.Context) (TaskSchedulerStats, error) {
+	const op = "session_task_scheduler_stats"
+	if err := validateSession(session, ctx, op); err != nil {
+		return TaskSchedulerStats{}, err
+	}
+	var result TaskSchedulerStats
+	err := session.runtime.Request(ctx, op, session.params(), &result)
+	return result, err
+}
+
 // Send executes one prompt and waits for the complete response. A nil history
 // uses and updates the session's internal conversation history.
 func (session *Session) Send(

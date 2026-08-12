@@ -465,6 +465,7 @@ assertContainsAll('Go Agent', goAgent, [
   'Session',
   'ResumeSession',
   'RefreshMCPTools',
+  'TaskSchedulerStats',
   'ListSessions',
   'CloseSession',
   'IsClosed',
@@ -473,6 +474,7 @@ assertContainsAll('Go Agent', goAgent, [
 assertContainsAll('Go Session', goSession, [
   'Run',
   'Send',
+  'TaskSchedulerStats',
   'SpawnRunWithID',
   'SpawnRecoveryWithRunID',
   'Stream',

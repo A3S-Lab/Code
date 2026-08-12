@@ -601,9 +601,11 @@ pub(super) fn js_session_options_to_rust(
         opts = opts.with_model(model);
     }
     if let Some(priority) = o.task_priority {
-        opts = opts.with_task_priority(priority.parse().map_err(|error| {
-            napi::Error::from_reason(format!("taskPriority: {error}"))
-        })?);
+        opts = opts.with_task_priority(
+            priority
+                .parse()
+                .map_err(|error| napi::Error::from_reason(format!("taskPriority: {error}")))?,
+        );
     }
     if o.builtin_skills.unwrap_or(false) {
         opts = opts.with_builtin_skills();

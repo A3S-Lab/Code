@@ -45,6 +45,17 @@ impl Agent {
         Ok(())
     }
 
+    /// Return current occupancy of the priority scheduler shared by every
+    /// session created from this Agent.
+    #[napi]
+    pub async fn task_scheduler_stats(&self) -> napi::Result<TaskSchedulerStats> {
+        self.inner
+            .task_scheduler_stats()
+            .await
+            .map(TaskSchedulerStats::from)
+            .map_err(node_task_scheduler_error)
+    }
+
     /// Bind to a workspace directory, returning a Session.
     ///
     /// @param workspace - Path to the workspace directory

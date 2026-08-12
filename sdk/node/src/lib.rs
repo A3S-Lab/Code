@@ -91,8 +91,9 @@ use a3s_code_core::{
     AgentEvent as RustAgentEvent, AgentEventProjectionV1 as RustAgentEventProjectionV1,
     AgentResult as RustAgentResult, AgentRunSpawn as RustAgentRunSpawn,
     AgentSession as RustAgentSession, EventProtocolError as RustEventProtocolError,
-    PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions, AGENT_EVENT_TYPES_V1,
-    EVENT_ENVELOPE_V1_VERSION,
+    PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions,
+    TaskPriorityCounts as RustTaskPriorityCounts, TaskSchedulerStats as RustTaskSchedulerStats,
+    AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
 };
 use napi::Either;
 use napi::Env;
@@ -102,6 +103,15 @@ const MEMORY_UNAVAILABLE_MESSAGE: &str =
 
 fn node_code_error(error: a3s_code_core::CodeError) -> napi::Error {
     napi::Error::from_reason(format!("[A3S_CODE_ERROR:{}] {}", error.code(), error))
+}
+
+fn node_task_scheduler_error(error: a3s_code_core::TaskSchedulerError) -> napi::Error {
+    let code = match error {
+        a3s_code_core::TaskSchedulerError::InvalidConfig(_) => "INVALID_CONFIG",
+        a3s_code_core::TaskSchedulerError::Cancelled => "TASK_ADMISSION_CANCELLED",
+        a3s_code_core::TaskSchedulerError::Closed => "TASK_SCHEDULER_CLOSED",
+    };
+    napi::Error::from_reason(format!("[A3S_CODE_ERROR:{code}] {error}"))
 }
 
 fn node_serve_error(
@@ -167,6 +177,62 @@ impl NapiRuntime {
 
 fn get_runtime() -> NapiRuntime {
     NapiRuntime
+}
+
+// ============================================================================
+// Task scheduler observability
+// ============================================================================
+
+/// Scheduler occupancy grouped by the stable priority classes.
+#[napi(object)]
+#[derive(Clone)]
+pub struct TaskPriorityCounts {
+    pub urgent: i64,
+    pub interactive: i64,
+    pub foreground: i64,
+    pub background: i64,
+    pub maintenance: i64,
+}
+
+impl From<RustTaskPriorityCounts> for TaskPriorityCounts {
+    fn from(value: RustTaskPriorityCounts) -> Self {
+        Self {
+            urgent: scheduler_count(value.urgent),
+            interactive: scheduler_count(value.interactive),
+            foreground: scheduler_count(value.foreground),
+            background: scheduler_count(value.background),
+            maintenance: scheduler_count(value.maintenance),
+        }
+    }
+}
+
+/// Point-in-time occupancy of the priority scheduler shared by an Agent's sessions.
+#[napi(object)]
+#[derive(Clone)]
+pub struct TaskSchedulerStats {
+    pub max_active: i64,
+    pub active: i64,
+    pub pending: i64,
+    pub active_by_priority: TaskPriorityCounts,
+    pub pending_by_priority: TaskPriorityCounts,
+    pub closed: bool,
+}
+
+impl From<RustTaskSchedulerStats> for TaskSchedulerStats {
+    fn from(value: RustTaskSchedulerStats) -> Self {
+        Self {
+            max_active: scheduler_count(value.max_active),
+            active: scheduler_count(value.active),
+            pending: scheduler_count(value.pending),
+            active_by_priority: value.active_by_priority.into(),
+            pending_by_priority: value.pending_by_priority.into(),
+            closed: value.closed,
+        }
+    }
+}
+
+fn scheduler_count(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 // ============================================================================

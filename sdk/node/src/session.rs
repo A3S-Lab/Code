@@ -8,6 +8,17 @@ pub struct Session {
 
 #[napi]
 impl Session {
+    /// Return current occupancy of the Agent-wide priority scheduler shared by
+    /// this session and its siblings.
+    #[napi]
+    pub async fn task_scheduler_stats(&self) -> napi::Result<TaskSchedulerStats> {
+        self.inner
+            .task_scheduler_stats()
+            .await
+            .map(TaskSchedulerStats::from)
+            .map_err(node_task_scheduler_error)
+    }
+
     /// Send a prompt or request and wait for the complete response.
     ///
     /// `send("prompt")` is the compact prompt-first form. `send({ prompt,
