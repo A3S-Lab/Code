@@ -106,6 +106,17 @@ impl InteractiveToolGuardrail {
         assessment_permission(&assess_tool(tool_name, args))
     }
 
+    /// Return whether an exact Bash command matches the deterministic,
+    /// non-bypassable catastrophic-operation floor.
+    ///
+    /// Sandboxed hosts use this separately from the conservative lexical risk
+    /// projection: unknown shell syntax may be safe inside an enforced OS
+    /// boundary, while destructive system commands remain denied in every
+    /// execution mode.
+    pub fn is_catastrophic_bash_command(command: &str) -> bool {
+        is_catastrophic_bash_command(command)
+    }
+
     /// Assess an invocation, including workspace symlink boundary checks.
     pub fn assess(&self, tool_name: &str, args: &serde_json::Value) -> ToolRiskAssessment {
         if let Some(assessment) = self.workspace_boundary_assessment(tool_name, args) {
