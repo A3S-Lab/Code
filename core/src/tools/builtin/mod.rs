@@ -196,6 +196,7 @@ pub fn register_task_with_mcp_managers(
 }
 
 /// Register session task tools with the owning agent's shared scheduler.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_task_with_mcp_managers_and_scheduler(
     registry: &Arc<ToolRegistry>,
     llm_client: Arc<dyn crate::llm::LlmClient>,
