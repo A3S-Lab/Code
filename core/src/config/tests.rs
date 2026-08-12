@@ -54,6 +54,11 @@ fn test_config_with_storage_backend() {
             llm_api_timeout_ms = 45000
             auto_parallel = false
 
+            task_scheduler {
+              max_active = 2
+              agingIntervalMs = 1500
+            }
+
             auto_delegation {
               enabled = true
               auto_parallel = true
@@ -71,11 +76,25 @@ fn test_config_with_storage_backend() {
     assert_eq!(config.memory_dir, Some(PathBuf::from("/tmp/memory")));
     assert_eq!(config.max_parallel_tasks, Some(3));
     assert_eq!(config.llm_api_timeout_ms, Some(45_000));
+    assert_eq!(config.task_scheduler.max_active, 2);
+    assert_eq!(config.task_scheduler.aging_interval_ms, 1_500);
     assert!(config.auto_delegation.enabled);
     assert!(!config.auto_delegation.auto_parallel);
     assert!(!config.auto_delegation.allow_manual_delegation);
     assert!((config.auto_delegation.min_confidence - 0.8).abs() < f32::EPSILON);
     assert_eq!(config.auto_delegation.max_tasks, 2);
+}
+
+#[test]
+fn test_config_rejects_zero_task_scheduler_capacity_and_aging() {
+    for body in [
+        "max_active = 0\naging_interval_ms = 1",
+        "max_active = 1\naging_interval_ms = 0",
+    ] {
+        let error = CodeConfig::from_acl(&format!("task_scheduler {{\n{body}\n}}"))
+            .expect_err("invalid scheduler config must fail closed");
+        assert!(error.to_string().contains("greater than zero"));
+    }
 }
 
 #[test]

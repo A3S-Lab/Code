@@ -129,6 +129,7 @@ telemetry remain opt-in.
 | Structured output | Native provider formats or schema-validated prompt, partial parse, and repair fallback | Baseline |
 | MCP and Skills | Isolated MCP transports plus filesystem, registry, inline, and live session Skills | Configuration or live registration |
 | Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation | Manual tools independently configurable; automation opt-in |
+| Priority scheduling | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation and starvation-safe aging | Baseline; tune `task_scheduler`, select per-session `TaskPriority` |
 | Programmable workflows | Bounded QuickJS `program` calls and replayable A3S Flow-backed dynamic workflows | `program` baseline; dynamic runtime explicitly registered |
 | Persistence | Atomic snapshots, run events, traces, artifacts, verification, checkpoints, and optional RL trajectories | Configured store and host policy |
 | State graph | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow 0.11 lifecycle projection including cancellation, terminal outcomes, progress, and child operations | Explicit application use |
@@ -170,14 +171,25 @@ sessions_dir = ".a3s/sessions"
 memory_dir = ".a3s/memory"
 skill_dirs = [".a3s/skills"]
 agent_dirs = [".a3s/agents"]
+
+task_scheduler {
+  max_active = 4
+  aging_interval_ms = 30000
+}
 ```
+
+Every session created by an `Agent` shares this scheduler. Priorities are
+`urgent`, `interactive` (the default), `foreground`, `background`, and
+`maintenance`; equal priorities remain FIFO. Older non-urgent work is promoted
+one level per `aging_interval_ms`, up to interactive priority, so sustained
+interactive traffic cannot permanently starve background work.
 
 `Agent::new` accepts an ACL path or inline ACL. Build sessions asynchronously
 so configuration, stores, queues, MCP sources, and workspace services are
 resolved before the first turn.
 
 ```rust,no_run
-use a3s_code_core::{Agent, PlanningMode, SessionOptions};
+use a3s_code_core::{Agent, PlanningMode, SessionOptions, TaskPriority};
 
 #[tokio::main]
 async fn main() -> a3s_code_core::Result<()> {
@@ -187,6 +199,8 @@ async fn main() -> a3s_code_core::Result<()> {
         .with_auto_compact(true)
         .with_max_context_tokens(200_000)
         .with_auto_compact_threshold(0.8);
+
+    let options = options.with_task_priority(TaskPriority::Interactive);
 
     let _session = Agent::new("agent.acl")
         .await?

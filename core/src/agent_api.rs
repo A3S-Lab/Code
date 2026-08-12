@@ -172,6 +172,8 @@ pub struct ReadFileOptions {
 pub struct SessionOptions {
     /// Override the default model. Format: `"provider/model"` (e.g., `"openai/gpt-4o"`).
     pub model: Option<String>,
+    /// Priority used for top-level operations created by this session.
+    pub task_priority: crate::task_scheduler::TaskPriority,
     /// Extra directories to scan for agent files.
     /// Merged with any global `agent_dirs` from [`CodeConfig`].
     pub agent_dirs: Vec<PathBuf>,
@@ -413,6 +415,10 @@ pub struct AgentSession {
     /// Provider-reported generation capacity shared by every loop and
     /// host-direct tool call created for this session.
     model_generation_admission: crate::llm::ModelGenerationAdmission,
+    /// Agent-wide execution admission shared across sibling sessions.
+    task_scheduler: Arc<crate::task_scheduler::TaskScheduler>,
+    /// Base priority for this session's top-level operations.
+    task_priority: crate::task_scheduler::TaskPriority,
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,

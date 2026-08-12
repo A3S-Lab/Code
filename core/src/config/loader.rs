@@ -7,6 +7,7 @@ use crate::llm::LlmConfig;
 use crate::mcp::McpServerConfig;
 use crate::memory::MemoryConfig;
 use crate::queue::SessionQueueConfig;
+use crate::task_scheduler::TaskSchedulerConfig;
 use a3s_memory::{PrunePolicy, RelevanceConfig};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
@@ -393,6 +394,17 @@ fn parse_queue_block(block: &a3s_acl::Block) -> Result<SessionQueueConfig> {
         .map_err(|error| CodeError::Config(format!("Invalid queue configuration: {error}")))
 }
 
+fn parse_task_scheduler_block(block: &a3s_acl::Block) -> Result<TaskSchedulerConfig> {
+    let config: TaskSchedulerConfig =
+        serde_json::from_value(acl_block_to_json(block)).map_err(|error| {
+            CodeError::Config(format!("Invalid task scheduler configuration: {error}"))
+        })?;
+    config
+        .validate()
+        .map_err(|error| CodeError::Config(error.to_string()))?;
+    Ok(config)
+}
+
 fn parse_search_block(block: &a3s_acl::Block) -> Result<super::SearchConfig> {
     serde_json::from_value(acl_block_to_json(block))
         .map_err(|error| CodeError::Config(format!("Invalid search configuration: {error}")))
@@ -530,6 +542,9 @@ impl CodeConfig {
                 }
                 "queue" => {
                     config.queue = Some(parse_queue_block(&block)?);
+                }
+                "task_scheduler" | "taskScheduler" => {
+                    config.task_scheduler = parse_task_scheduler_block(&block)?;
                 }
                 "search" => {
                     config.search = Some(parse_search_block(&block)?);

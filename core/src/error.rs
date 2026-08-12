@@ -96,6 +96,14 @@ pub enum CodeError {
     #[error("Session '{session_id}' already has an active operation")]
     SessionBusy { session_id: String },
 
+    /// Global task admission was cancelled before an execution slot opened.
+    #[error("Task admission for session '{session_id}' was cancelled")]
+    TaskAdmissionCancelled { session_id: String },
+
+    /// The owning agent's global task scheduler no longer accepts work.
+    #[error("Task scheduler is closed")]
+    TaskSchedulerClosed,
+
     /// A host replayed a run id with different immutable session or input
     /// identity. The existing run is preserved and no work is started.
     #[error("Run '{run_id}' is already bound to different immutable input")]
@@ -153,6 +161,8 @@ impl CodeError {
             Self::AsyncSessionBuildRequired { .. } => "ASYNC_SESSION_BUILD_REQUIRED",
             Self::SessionClosed { .. } => "SESSION_CLOSED",
             Self::SessionBusy { .. } => "SESSION_BUSY",
+            Self::TaskAdmissionCancelled { .. } => "TASK_ADMISSION_CANCELLED",
+            Self::TaskSchedulerClosed => "TASK_SCHEDULER_CLOSED",
             Self::RunIdentityConflict { .. } => "RUN_IDENTITY_CONFLICT",
             Self::BudgetExhausted { .. } => "BUDGET_EXHAUSTED",
             Self::Security(_) => "SECURITY_ERROR",
@@ -318,6 +328,17 @@ mod tests {
             }
             .code(),
             "BUDGET_EXHAUSTED"
+        );
+        assert_eq!(
+            CodeError::TaskAdmissionCancelled {
+                session_id: "session-1".to_string(),
+            }
+            .code(),
+            "TASK_ADMISSION_CANCELLED"
+        );
+        assert_eq!(
+            CodeError::TaskSchedulerClosed.code(),
+            "TASK_SCHEDULER_CLOSED"
         );
     }
 

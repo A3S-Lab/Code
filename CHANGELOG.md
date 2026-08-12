@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added one agent-wide scheduler backed by `a3s-lane::PriorityQueue`, with a
+  configurable global capacity, strict priority/FIFO admission, starvation-safe
+  aging, cancellation, drain-on-close, occupancy snapshots, and per-session
+  priorities across Rust, Node.js, Python, and Go. Conversation runs,
+  host-direct tools, detached background children, and host-started workflows
+  now share the same capacity boundary.
 - Added per-conversation detached Git worktrees to the native Agent Harness and
   the bounded `/v1/agent/changes` protocol endpoint. Every terminal run can now
   expose one immutable, SHA-256-bound binary Git patch without mutating the

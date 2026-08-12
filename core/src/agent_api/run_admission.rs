@@ -38,6 +38,7 @@ impl RunAdmission {
 
         Ok(RunAdmissionLease {
             admission: Arc::clone(self),
+            task_lease: None,
         })
     }
 
@@ -92,6 +93,17 @@ impl RunAdmission {
 /// RAII lease for one admitted session operation.
 pub(super) struct RunAdmissionLease {
     admission: Arc<RunAdmission>,
+    task_lease: Option<crate::task_scheduler::TaskLease>,
+}
+
+impl RunAdmissionLease {
+    pub(super) fn attach_task_lease(
+        mut self,
+        task_lease: crate::task_scheduler::TaskLease,
+    ) -> Self {
+        self.task_lease = Some(task_lease);
+        self
+    }
 }
 
 impl Drop for RunAdmissionLease {

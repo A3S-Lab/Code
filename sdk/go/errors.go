@@ -37,6 +37,12 @@ const (
 )
 
 const (
+	CodeTaskAdmissionCancelled ErrorCode = "TASK_ADMISSION_CANCELLED"
+	CodeTaskSchedulerClosed    ErrorCode = "TASK_SCHEDULER_CLOSED"
+	CodeRunIdentityConflict    ErrorCode = "RUN_IDENTITY_CONFLICT"
+)
+
+const (
 	CodeServeStartupFailed            ErrorCode = "SERVE_STARTUP_FAILED"
 	CodeServeRuntimeFailed            ErrorCode = "SERVE_RUNTIME_FAILED"
 	CodeServeDaemonPanicked           ErrorCode = "SERVE_DAEMON_PANICKED"
@@ -69,6 +75,12 @@ var (
 	ErrSerialization         = &Error{Code: CodeSerialization}
 	ErrInternal              = &Error{Code: CodeInternal}
 	ErrUnsupportedOperation  = &Error{Code: CodeUnsupportedOperation}
+)
+
+var (
+	ErrTaskAdmissionCancelled = &Error{Code: CodeTaskAdmissionCancelled}
+	ErrTaskSchedulerClosed    = &Error{Code: CodeTaskSchedulerClosed}
+	ErrRunIdentityConflict    = &Error{Code: CodeRunIdentityConflict}
 )
 
 var (

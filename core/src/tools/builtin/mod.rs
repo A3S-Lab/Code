@@ -183,6 +183,52 @@ pub fn register_task_with_mcp_managers(
     parent_context: Option<crate::child_run::ChildRunContext>,
     subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
 ) {
+    register_task_internal(
+        registry,
+        llm_client,
+        agent_registry,
+        workspace,
+        mcp_managers,
+        parent_context,
+        subagent_tracker,
+        None,
+    );
+}
+
+/// Register session task tools with the owning agent's shared scheduler.
+pub(crate) fn register_task_with_mcp_managers_and_scheduler(
+    registry: &Arc<ToolRegistry>,
+    llm_client: Arc<dyn crate::llm::LlmClient>,
+    agent_registry: Arc<crate::subagent::AgentRegistry>,
+    workspace: String,
+    mcp_managers: Vec<Arc<crate::mcp::manager::McpManager>>,
+    parent_context: Option<crate::child_run::ChildRunContext>,
+    subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
+    task_scheduler: Arc<crate::task_scheduler::TaskScheduler>,
+) {
+    register_task_internal(
+        registry,
+        llm_client,
+        agent_registry,
+        workspace,
+        mcp_managers,
+        parent_context,
+        subagent_tracker,
+        Some(task_scheduler),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn register_task_internal(
+    registry: &Arc<ToolRegistry>,
+    llm_client: Arc<dyn crate::llm::LlmClient>,
+    agent_registry: Arc<crate::subagent::AgentRegistry>,
+    workspace: String,
+    mcp_managers: Vec<Arc<crate::mcp::manager::McpManager>>,
+    parent_context: Option<crate::child_run::ChildRunContext>,
+    subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
+    task_scheduler: Option<Arc<crate::task_scheduler::TaskScheduler>>,
+) {
     use crate::tools::task::{ParallelTaskTool, TaskExecutor, TaskTool};
     let mut executor =
         TaskExecutor::with_mcp_managers(agent_registry, llm_client, workspace, mcp_managers);
@@ -191,6 +237,11 @@ pub fn register_task_with_mcp_managers(
     }
     if let Some(tracker) = subagent_tracker {
         executor = executor.with_subagent_tracker(tracker);
+    }
+    if let Some(task_scheduler) = task_scheduler {
+        // Model-visible task tools run inside an already-admitted parent turn.
+        // Only their detached background branch needs another global slot.
+        executor = executor.with_task_scheduler(task_scheduler, false);
     }
     let executor = Arc::new(executor);
     registry.register_builtin(Arc::new(TaskTool::new(Arc::clone(&executor))));

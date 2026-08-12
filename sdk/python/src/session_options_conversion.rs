@@ -39,6 +39,15 @@ pub(super) fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustS
     if let Some(m) = so.model {
         o = o.with_model(m);
     }
+    if let Some(priority) = so.task_priority {
+        o = o.with_task_priority(
+            priority
+                .parse()
+                .map_err(|error: a3s_code_core::TaskSchedulerError| {
+                    PyValueError::new_err(error.to_string())
+                })?,
+        );
+    }
     if so.builtin_skills {
         o = o.with_builtin_skills();
     }

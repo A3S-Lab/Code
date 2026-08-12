@@ -2423,6 +2423,192 @@ async fn background_task_updates_shared_tracker_without_an_event_receiver() {
 }
 
 #[tokio::test]
+async fn independent_subagent_work_uses_the_agent_scheduler_without_nested_deadlock() {
+    use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 1,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let blocker = scheduler
+        .acquire(
+            crate::task_scheduler::TaskPriority::Interactive,
+            "parent",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("scheduled background result")),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_subagent_tracker(Arc::clone(&tracker))
+        .with_task_scheduler(Arc::clone(&scheduler), false),
+    );
+    let task_id = executor.clone().execute_background(
+        TaskParams {
+            agent: "worker".to_string(),
+            description: "scheduled background".to_string(),
+            prompt: "finish after admission".to_string(),
+            background: true,
+            max_steps: Some(1),
+            output_schema: None,
+        },
+        None,
+        Some("parent-session".to_string()),
+    );
+    for _ in 0..100 {
+        if scheduler.stats().await.unwrap().pending == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(scheduler.stats().await.unwrap().pending, 1);
+    assert_eq!(
+        tracker.get(&task_id).await.unwrap().status,
+        SubagentStatus::Running
+    );
+
+    drop(blocker);
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let snapshot = tracker.get(&task_id).await.unwrap();
+            if snapshot.status != SubagentStatus::Running {
+                break snapshot;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background task should run after the parent slot is released");
+    assert_eq!(snapshot.status, SubagentStatus::Completed);
+    assert_eq!(
+        snapshot.output.as_deref(),
+        Some("scheduled background result")
+    );
+
+    // A host-started foreground workflow has no parent lease and queues too.
+    let blocker = scheduler
+        .acquire(
+            crate::task_scheduler::TaskPriority::Interactive,
+            "other-parent",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let host_executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("scheduled foreground result")),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_task_scheduler(Arc::clone(&scheduler), true),
+    );
+    let foreground = tokio::spawn(async move {
+        host_executor
+            .execute(
+                TaskParams {
+                    agent: "worker".to_string(),
+                    description: "scheduled foreground".to_string(),
+                    prompt: "finish after host admission".to_string(),
+                    background: false,
+                    max_steps: Some(1),
+                    output_schema: None,
+                },
+                None,
+                Some("host-workflow"),
+            )
+            .await
+    });
+    for _ in 0..100 {
+        if scheduler.stats().await.unwrap().pending == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(scheduler.stats().await.unwrap().pending, 1);
+    drop(blocker);
+    assert_eq!(
+        foreground.await.unwrap().unwrap().output,
+        "scheduled foreground result"
+    );
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn queued_background_task_can_be_cancelled_by_task_id() {
+    use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 1,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let blocker = scheduler
+        .acquire(
+            crate::task_scheduler::TaskPriority::Interactive,
+            "parent",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("must not execute")),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_subagent_tracker(Arc::clone(&tracker))
+        .with_task_scheduler(Arc::clone(&scheduler), false),
+    );
+    let task_id = executor.execute_background(
+        TaskParams {
+            agent: "worker".to_string(),
+            description: "cancel while queued".to_string(),
+            prompt: "must not reach the model".to_string(),
+            background: true,
+            max_steps: Some(1),
+            output_schema: None,
+        },
+        None,
+        Some("parent-session".to_string()),
+    );
+    for _ in 0..100 {
+        if scheduler.stats().await.unwrap().pending == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(scheduler.stats().await.unwrap().pending, 1);
+    assert!(tracker.cancel(&task_id).await);
+    for _ in 0..100 {
+        if scheduler.stats().await.unwrap().pending == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(scheduler.stats().await.unwrap().pending, 0);
+    assert_eq!(
+        tracker.get(&task_id).await.unwrap().status,
+        SubagentStatus::Cancelled
+    );
+
+    drop(blocker);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
 async fn background_task_keeps_the_admitted_run_permission_snapshot_across_turn_changes() {
     use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
 

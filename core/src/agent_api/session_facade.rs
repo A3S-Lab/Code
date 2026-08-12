@@ -5,6 +5,7 @@ impl std::fmt::Debug for AgentSession {
         f.debug_struct("AgentSession")
             .field("session_id", &self.session_id)
             .field("workspace", &self.workspace.display().to_string())
+            .field("task_priority", &self.task_priority)
             .field(
                 "cognitive_package_binding",
                 &self
@@ -18,6 +19,16 @@ impl std::fmt::Debug for AgentSession {
 }
 
 impl AgentSession {
+    /// Return current occupancy of the scheduler shared with sibling sessions.
+    pub async fn task_scheduler_stats(
+        &self,
+    ) -> std::result::Result<
+        crate::task_scheduler::TaskSchedulerStats,
+        crate::task_scheduler::TaskSchedulerError,
+    > {
+        self.task_scheduler.stats().await
+    }
+
     /// Get a snapshot of command entries (name, description, optional usage).
     ///
     /// Acquires the command registry lock briefly and returns owned data.

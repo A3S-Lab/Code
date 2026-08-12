@@ -11,6 +11,8 @@ use super::*;
 pub struct Agent {
     pub(super) code_config: CodeConfig,
     pub(super) config: AgentConfig,
+    /// Shared priority admission for every session and independent task.
+    pub(super) task_scheduler: Arc<crate::task_scheduler::TaskScheduler>,
     /// Global MCP manager loaded from config.mcp_servers
     pub(super) global_mcp: Option<Arc<crate::mcp::manager::McpManager>>,
     /// Pre-fetched MCP tool definitions from global_mcp (cached at creation time).
@@ -306,6 +308,16 @@ impl Agent {
     /// panic.
     pub async fn close(&self) {
         agent_sessions::close_agent(self).await
+    }
+
+    /// Return current cross-session priority scheduler occupancy.
+    pub async fn task_scheduler_stats(
+        &self,
+    ) -> std::result::Result<
+        crate::task_scheduler::TaskSchedulerStats,
+        crate::task_scheduler::TaskSchedulerError,
+    > {
+        self.task_scheduler.stats().await
     }
 
     /// Return whether [`close`](Self::close) has been called on this agent.

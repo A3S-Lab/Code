@@ -105,6 +105,9 @@ impl DirectToolRuntime {
         let agent_loop = self.agent_loop;
         let session_id = self.session_id;
         let cancel = self.session_cancel.child_token();
+        let task_scheduler = self.task_scheduler;
+        let task_priority = self.task_priority;
+        let closed = self.closed;
         let mut ctx = self.tool_context;
         ctx.agent_event_tx = Some(broadcast_tx);
         let tool_name = name.clone();
@@ -113,6 +116,20 @@ impl DirectToolRuntime {
         let event_tx = Some(runtime_tx);
         let security_provider = self.security_provider;
         let handle = tokio::spawn(async move {
+            let _task_lease = acquire_task_admission(
+                task_scheduler.as_deref(),
+                task_priority,
+                &session_id,
+                &tool_name,
+                &cancel,
+                &closed,
+            )
+            .await?;
+            if closed.load(Ordering::Acquire) {
+                return Err(crate::error::CodeError::SessionClosed {
+                    session_id: session_id.clone(),
+                });
+            }
             let result = agent_loop
                 .invoke_host_tool(
                     ToolInvocation::host_direct(tool_id.clone(), tool_name.clone(), args),

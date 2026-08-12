@@ -516,6 +516,20 @@ pub(super) async fn close_agent(agent: &Agent) {
         handle.close().await;
     }
 
+    // Session cancellation releases queued admissions and normally settles
+    // active leases within the close grace period. Keep the agent-wide wait
+    // bounded as a final defense against a host-direct task that ignores
+    // cancellation.
+    if tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        agent.task_scheduler.shutdown(),
+    )
+    .await
+    .is_err()
+    {
+        tracing::warn!("Agent task scheduler did not drain before close timeout");
+    }
+
     // Tear down global MCP connections so background workers exit.
     if let Some(mcp) = &agent.global_mcp {
         for name in mcp.list_connected().await {

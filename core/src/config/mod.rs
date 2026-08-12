@@ -152,6 +152,10 @@ pub struct CodeConfig {
     #[serde(default, alias = "max_parallel_tasks")]
     pub max_parallel_tasks: Option<usize>,
 
+    /// Agent-wide priority and concurrency admission shared by all sessions.
+    #[serde(default, alias = "task_scheduler")]
+    pub task_scheduler: crate::task_scheduler::TaskSchedulerConfig,
+
     /// Global automatic child-agent delegation settings.
     #[serde(default, alias = "auto_delegation")]
     pub auto_delegation: AutoDelegationConfig,

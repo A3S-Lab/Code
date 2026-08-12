@@ -27,6 +27,8 @@ pub(super) struct DirectToolRuntime {
     session_id: String,
     session_cancel: tokio_util::sync::CancellationToken,
     closed: Arc<AtomicBool>,
+    task_scheduler: Option<Arc<crate::task_scheduler::TaskScheduler>>,
+    task_priority: crate::task_scheduler::TaskPriority,
     security_provider: Option<Arc<dyn crate::security::SecurityProvider>>,
 }
 
@@ -39,6 +41,8 @@ impl DirectToolRuntime {
             session_id: session.session_id.clone(),
             session_cancel: session.session_cancel.clone(),
             closed: Arc::clone(&session.closed),
+            task_scheduler: Some(Arc::clone(&session.task_scheduler)),
+            task_priority: session.task_priority,
             security_provider: session.config.security_provider.clone(),
         }
     }
@@ -148,6 +152,16 @@ impl DirectToolRuntime {
     async fn call_invocation(&self, invocation: ToolInvocation) -> Result<ToolCallResult> {
         self.ensure_open()?;
         let cancel = self.session_cancel.child_token();
+        let _task_lease = acquire_task_admission(
+            self.task_scheduler.as_deref(),
+            self.task_priority,
+            &self.session_id,
+            &invocation.name,
+            &cancel,
+            &self.closed,
+        )
+        .await?;
+        self.ensure_open()?;
         let result = self
             .agent_loop
             .invoke_host_tool(
@@ -169,6 +183,47 @@ impl DirectToolRuntime {
         }
         Ok(())
     }
+}
+
+async fn acquire_task_admission(
+    scheduler: Option<&crate::task_scheduler::TaskScheduler>,
+    priority: crate::task_scheduler::TaskPriority,
+    session_id: &str,
+    operation: &str,
+    cancellation: &tokio_util::sync::CancellationToken,
+    closed: &AtomicBool,
+) -> Result<Option<crate::task_scheduler::TaskLease>> {
+    let Some(scheduler) = scheduler else {
+        return Ok(None);
+    };
+    scheduler
+        .acquire(
+            priority,
+            format!("{session_id}:tool:{operation}"),
+            cancellation,
+        )
+        .await
+        .map(Some)
+        .map_err(|error| match error {
+            crate::task_scheduler::TaskSchedulerError::Cancelled
+                if closed.load(Ordering::Acquire) =>
+            {
+                crate::error::CodeError::SessionClosed {
+                    session_id: session_id.to_string(),
+                }
+            }
+            crate::task_scheduler::TaskSchedulerError::Cancelled => {
+                crate::error::CodeError::TaskAdmissionCancelled {
+                    session_id: session_id.to_string(),
+                }
+            }
+            crate::task_scheduler::TaskSchedulerError::Closed => {
+                crate::error::CodeError::TaskSchedulerClosed
+            }
+            crate::task_scheduler::TaskSchedulerError::InvalidConfig(message) => {
+                crate::error::CodeError::Config(message)
+            }
+        })
 }
 
 fn project_tool_result(result: crate::tools::ToolResult) -> ToolCallResult {
@@ -354,6 +409,8 @@ mod tests {
             session_id,
             session_cancel: tokio_util::sync::CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
+            task_scheduler: None,
+            task_priority: crate::task_scheduler::TaskPriority::Interactive,
             security_provider,
         }
     }
@@ -824,6 +881,8 @@ mod tests {
             session_id: "session-queue".to_string(),
             session_cancel: tokio_util::sync::CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
+            task_scheduler: None,
+            task_priority: crate::task_scheduler::TaskPriority::Interactive,
             security_provider: None,
         };
 

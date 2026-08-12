@@ -128,6 +128,12 @@ pub struct TaskExecutor {
     /// Optional shared tracker — when present each task registers a
     /// `CancellationToken` so callers can cancel by `task_id`.
     subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
+    /// Agent-wide scheduler for independent delegated work.
+    task_scheduler: Option<Arc<crate::task_scheduler::TaskScheduler>>,
+    /// Host-started workflow executors have no parent lease, so their
+    /// foreground steps must be admitted independently. Model-invoked task
+    /// tools inherit the enclosing run's lease and leave this false.
+    schedule_foreground: bool,
 }
 
 impl TaskExecutor {
@@ -153,6 +159,8 @@ impl TaskExecutor {
                 crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
             )),
             subagent_tracker: None,
+            task_scheduler: None,
+            schedule_foreground: false,
         }
     }
 
@@ -189,6 +197,8 @@ impl TaskExecutor {
                 crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
             )),
             subagent_tracker: None,
+            task_scheduler: None,
+            schedule_foreground: false,
         }
     }
 
@@ -271,6 +281,17 @@ impl TaskExecutor {
         self
     }
 
+    /// Admit independent delegated work through the owning agent's scheduler.
+    pub fn with_task_scheduler(
+        mut self,
+        scheduler: Arc<crate::task_scheduler::TaskScheduler>,
+        schedule_foreground: bool,
+    ) -> Self {
+        self.task_scheduler = Some(scheduler);
+        self.schedule_foreground = schedule_foreground;
+        self
+    }
+
     fn visible_agents(&self) -> Vec<AgentDefinition> {
         self.registry.list_visible()
     }
@@ -349,6 +370,45 @@ impl TaskExecutor {
             anyhow::bail!("Operation cancelled by parent session");
         }
 
+        let cancel_token = parent_cancellation
+            .map(CancellationToken::child_token)
+            .unwrap_or_default();
+        // Background callers receive the task id before this future starts.
+        // Register immediately so targeted cancellation also interrupts time
+        // spent waiting in the global scheduler.
+        if params.background {
+            if let Some(ref tracker) = self.subagent_tracker {
+                tracker
+                    .register_canceller(&task_id, cancel_token.clone())
+                    .await;
+            }
+        }
+        let _task_lease = if params.background || self.schedule_foreground {
+            match &self.task_scheduler {
+                Some(scheduler) => Some(
+                    scheduler
+                        .acquire(
+                            if params.background {
+                                crate::task_scheduler::TaskPriority::Background
+                            } else {
+                                crate::task_scheduler::TaskPriority::Foreground
+                            },
+                            format!(
+                                "{}:subagent:{}",
+                                parent_session_id.unwrap_or("host"),
+                                task_id
+                            ),
+                            &cancel_token,
+                        )
+                        .await
+                        .map_err(|error| anyhow::anyhow!(error))?,
+                ),
+                None => None,
+            }
+        } else {
+            None
+        };
+
         let session_id = format!("task-run-{}", task_id);
         let started_ms = epoch_ms();
         let output_schema = params.output_schema.clone();
@@ -403,17 +463,12 @@ impl TaskExecutor {
 
         // Register MCP tools so child agents can access MCP servers.
         for mcp in &self.mcp_managers {
-            let all_tools = match parent_cancellation {
-                Some(cancellation) => {
-                    tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => {
-                            anyhow::bail!("Operation cancelled by parent session");
-                        }
-                        tools = mcp.get_all_tools() => tools,
-                    }
+            let all_tools = tokio::select! {
+                biased;
+                _ = cancel_token.cancelled() => {
+                    anyhow::bail!("Operation cancelled before child execution");
                 }
-                None => mcp.get_all_tools().await,
+                tools = mcp.get_all_tools() => tools,
             };
             let mut by_server: std::collections::HashMap<
                 String,
@@ -452,9 +507,6 @@ impl TaskExecutor {
         let child_security_provider = child_config.security_provider.clone();
         let source_security_provider = child_security_provider.clone();
 
-        let cancel_token = parent_cancellation
-            .map(CancellationToken::child_token)
-            .unwrap_or_default();
         let mut tool_context = self.child_tool_context(session_id.clone(), cancel_token.clone());
         if let Some(ref parent_ctx) = self.parent_context {
             if let Some(ref services) = parent_ctx.workspace_services {
@@ -515,10 +567,12 @@ impl TaskExecutor {
 
         // Register a CancellationToken with the tracker (if shared) so the
         // parent session's `cancel_subagent_task` can interrupt this run.
-        if let Some(ref tracker) = self.subagent_tracker {
-            tracker
-                .register_canceller(&task_id, cancel_token.clone())
-                .await;
+        if !params.background {
+            if let Some(ref tracker) = self.subagent_tracker {
+                tracker
+                    .register_canceller(&task_id, cancel_token.clone())
+                    .await;
+            }
         }
 
         let structured_prompt = output_schema

@@ -58,10 +58,15 @@ pub(super) async fn build_agent_from_config(config: CodeConfig) -> Result<Agent>
     let mut agent_config = base_agent_config(&config);
     install_global_skill_registry(&mut agent_config, &config);
     let (global_mcp, global_mcp_tools) = connect_global_mcp(&config).await;
+    let task_scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(config.task_scheduler.clone())
+            .map_err(|error| CodeError::Config(error.to_string()))?,
+    );
 
     Ok(Agent {
         code_config: config,
         config: agent_config,
+        task_scheduler,
         global_mcp,
         global_mcp_tools: std::sync::Mutex::new(global_mcp_tools),
         sessions: Arc::new(std::sync::Mutex::new(

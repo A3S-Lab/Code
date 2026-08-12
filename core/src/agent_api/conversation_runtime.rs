@@ -23,9 +23,35 @@ fn bail_if_closed(session: &AgentSession) -> Result<()> {
     Ok(())
 }
 
-fn admit(session: &AgentSession) -> Result<run_admission::RunAdmissionLease> {
+async fn admit(
+    session: &AgentSession,
+    operation: &'static str,
+) -> Result<run_admission::RunAdmissionLease> {
     bail_if_closed(session)?;
-    session.run_admission.try_acquire(&session.session_id)
+    let lease = session.run_admission.try_acquire(&session.session_id)?;
+    let label = format!("{}:{operation}", session.session_id);
+    let task_lease = session
+        .task_scheduler
+        .acquire(session.task_priority, label, &session.session_cancel)
+        .await
+        .map_err(|error| match error {
+            crate::task_scheduler::TaskSchedulerError::Cancelled if session.is_closed() => {
+                CodeError::SessionClosed {
+                    session_id: session.session_id.clone(),
+                }
+            }
+            crate::task_scheduler::TaskSchedulerError::Cancelled => {
+                CodeError::TaskAdmissionCancelled {
+                    session_id: session.session_id.clone(),
+                }
+            }
+            crate::task_scheduler::TaskSchedulerError::Closed => CodeError::TaskSchedulerClosed,
+            crate::task_scheduler::TaskSchedulerError::InvalidConfig(message) => {
+                CodeError::Config(message)
+            }
+        })?;
+    bail_if_closed(session)?;
+    Ok(lease.attach_task_lease(task_lease))
 }
 
 pub(super) async fn send(
@@ -34,7 +60,7 @@ pub(super) async fn send(
     history: Option<&[Message]>,
 ) -> Result<AgentResult> {
     // Admission must precede command dispatch and internal-history reads.
-    let _lease = admit(session)?;
+    let _lease = admit(session, "send").await?;
 
     if let Some(result) = command_runtime::dispatch_blocking(session, prompt, history).await? {
         return Ok(result);
@@ -55,7 +81,7 @@ pub(super) async fn send_with_attachments(
     history: Option<&[Message]>,
 ) -> Result<AgentResult> {
     // Admission must precede the attachment message's internal-history clone.
-    let _lease = admit(session)?;
+    let _lease = admit(session, "send-with-attachments").await?;
 
     // Build one user message containing text and images, then execute from the
     // resulting message list so the loop does not append a duplicate prompt.
@@ -72,7 +98,7 @@ pub(super) async fn stream_with_attachments(
     attachments: &[Attachment],
     history: Option<&[Message]>,
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
-    let lease = admit(session)?;
+    let lease = admit(session, "stream-with-attachments").await?;
 
     let input = ConversationInput::with_attachments(session, history, prompt, attachments);
     let stream_run = StreamRunContext::start(session, prompt, input.persistence).await;
@@ -90,7 +116,7 @@ pub(super) async fn stream(
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
     // Slash commands share admission because they read and may mutate the same
     // session state as model-backed operations.
-    let lease = admit(session)?;
+    let lease = admit(session, "stream").await?;
 
     if let Some((rx, handle)) = command_runtime::dispatch_streaming(session, prompt).await {
         let worker_abort = handle.abort_handle();
@@ -119,7 +145,7 @@ pub(super) async fn spawn_run_with_id(
     if let Some(replay) = exact_run_replay(session, run_id, prompt).await? {
         return Ok(replay);
     }
-    let lease = admit(session)?;
+    let lease = admit(session, "spawn-run").await?;
     let input = ConversationInput::from_history(session, None);
     let reservation = RunControlState::from_session(session)
         .reserve_run_with_id(run_id, prompt)
@@ -151,7 +177,7 @@ pub(super) async fn spawn_recovery_with_run_id(
         return Ok(replay);
     }
 
-    let lease = admit(session)?;
+    let lease = admit(session, "spawn-recovery").await?;
     let checkpoint = load_resume_checkpoint(session, checkpoint_run_id).await?;
     let reservation = RunControlState::from_session(session)
         .reserve_run_with_id(run_id, &prompt)
@@ -194,7 +220,7 @@ pub(super) async fn resume_run(
     session: &AgentSession,
     checkpoint_run_id: &str,
 ) -> Result<crate::agent::AgentResult> {
-    let _lease = admit(session)?;
+    let _lease = admit(session, "resume-run").await?;
     let checkpoint = load_resume_checkpoint(session, checkpoint_run_id).await?;
 
     let persistence =

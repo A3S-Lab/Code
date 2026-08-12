@@ -2328,6 +2328,7 @@ impl BridgeRemoteGitConfig {
 #[serde(default)]
 struct BridgeSessionOptions {
     model: Option<String>,
+    task_priority: Option<String>,
     builtin_skills: Option<bool>,
     agent_dirs: Vec<String>,
     skill_dirs: Vec<String>,
@@ -2400,6 +2401,11 @@ impl BridgeSessionOptions {
         let mut options = SessionOptions::new();
         if let Some(value) = self.model {
             options = options.with_model(value);
+        }
+        if let Some(value) = self.task_priority {
+            options = options.with_task_priority(value.parse().map_err(|error| {
+                BridgeFailure::new("INVALID_REQUEST", format!("task_priority: {error}"))
+            })?);
         }
         if self.builtin_skills.unwrap_or(false) {
             options = options.with_builtin_skills();
@@ -3127,6 +3133,7 @@ mod tests {
     fn session_options_map_sdk_value_configuration() {
         let bridge: BridgeSessionOptions = serde_json::from_value(json!({
             "model": "anthropic/test-model",
+            "task_priority": "background",
             "agent_dirs": ["agents"],
             "skill_dirs": ["skills"],
             "session_id": "session-1",
@@ -3168,6 +3175,10 @@ mod tests {
         let options = bridge.into_core().unwrap();
 
         assert_eq!(options.model.as_deref(), Some("anthropic/test-model"));
+        assert_eq!(
+            options.task_priority,
+            a3s_code_core::TaskPriority::Background
+        );
         assert_eq!(options.agent_dirs, vec![PathBuf::from("agents")]);
         assert_eq!(options.skill_dirs, vec![PathBuf::from("skills")]);
         assert_eq!(options.session_id.as_deref(), Some("session-1"));

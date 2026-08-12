@@ -34,10 +34,21 @@ type HostEnvConfig struct {
 	FixedTimeMS        *uint64 `json:"fixed_time_ms,omitempty"`
 }
 
+type TaskPriority string
+
+const (
+	TaskPriorityUrgent      TaskPriority = "urgent"
+	TaskPriorityInteractive TaskPriority = "interactive"
+	TaskPriorityForeground  TaskPriority = "foreground"
+	TaskPriorityBackground  TaskPriority = "background"
+	TaskPriorityMaintenance TaskPriority = "maintenance"
+)
+
 // SessionOptions contains the same value-shaped session configuration exposed
 // by the Rust, TypeScript, and Python SDKs.
 type SessionOptions struct {
 	Model                              string                     `json:"model,omitempty"`
+	TaskPriority                       TaskPriority               `json:"task_priority,omitempty"`
 	BuiltinSkills                      *bool                      `json:"builtin_skills,omitempty"`
 	AgentDirs                          []string                   `json:"agent_dirs,omitempty"`
 	SkillDirs                          []string                   `json:"skill_dirs,omitempty"`

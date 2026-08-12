@@ -106,6 +106,8 @@ fn runtime(
             session_id,
             session_cancel: CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
+            task_scheduler: None,
+            task_priority: crate::task_scheduler::TaskPriority::Interactive,
             security_provider: None,
         },
         calls,

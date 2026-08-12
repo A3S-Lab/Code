@@ -253,6 +253,14 @@ fn session_options_map_parallel_delegation_controls() {
 }
 
 #[test]
+fn session_options_map_task_priority() {
+    let mut session_options = PySessionOptions::new();
+    session_options.task_priority = Some("background".to_string());
+    let opts = build_rust_session_options(session_options).unwrap();
+    assert_eq!(opts.task_priority, a3s_code_core::TaskPriority::Background);
+}
+
+#[test]
 fn session_options_map_resilience_controls() {
     let mut session_options = PySessionOptions::new();
     session_options.tool_timeout_ms = Some(1_000);

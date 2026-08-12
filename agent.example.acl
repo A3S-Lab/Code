@@ -21,7 +21,17 @@ providers "openai" {
   }
 }
 
-# Queue Configuration (a3s-lane v0.5 integration)
+# Agent-wide task admission. Every session, host-direct tool call, detached
+# background child, and host-started workflow shares this capacity boundary.
+# Lower task priorities run first; aging eventually promotes old background
+# and maintenance work to prevent starvation.
+task_scheduler {
+  max_active = 4
+  aging_interval_ms = 30000
+}
+
+# Optional per-session tool-lane configuration (a3s-lane v0.5 integration).
+# This is distinct from the agent-wide task scheduler above.
 queue {
   # Max concurrency per lane
   control_max_concurrency = 2

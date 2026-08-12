@@ -513,6 +513,7 @@ unknown { nested { enabled = true } }
         config.thinking_budget = Some(16000);
         config.max_tool_rounds = Some(64);
         config.auto_delegation.max_tasks = 9;
+        config.task_scheduler.max_active = 7;
         config.memory.as_mut().expect("memory").max_working = 24;
         config.queue.as_mut().expect("queue").query_max_concurrency = 11;
         config.search.as_mut().expect("search").timeout = 22;
@@ -567,6 +568,7 @@ unknown { nested { enabled = true } }
         assert_eq!(round_trip.thinking_budget, Some(16000));
         assert_eq!(round_trip.max_tool_rounds, Some(64));
         assert_eq!(round_trip.auto_delegation.max_tasks, 9);
+        assert_eq!(round_trip.task_scheduler.max_active, 7);
         assert_eq!(round_trip.memory.expect("memory").max_working, 24);
         assert_eq!(round_trip.queue.expect("queue").query_max_concurrency, 11);
         assert_eq!(round_trip.search.expect("search").timeout, 22);

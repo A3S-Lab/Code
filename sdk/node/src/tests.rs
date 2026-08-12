@@ -213,6 +213,22 @@ fn artifact_store_limits_maps_to_rust_session_options() {
 }
 
 #[test]
+fn task_priority_maps_to_rust_session_options() {
+    let opts = js_session_options_to_rust(Some(SessionOptions {
+        task_priority: Some("maintenance".to_string()),
+        ..Default::default()
+    }))
+    .unwrap();
+    assert_eq!(opts.task_priority, a3s_code_core::TaskPriority::Maintenance);
+
+    let invalid = js_session_options_to_rust(Some(SessionOptions {
+        task_priority: Some("eventually".to_string()),
+        ..Default::default()
+    }));
+    assert!(invalid.is_err());
+}
+
+#[test]
 fn tool_result_transform_policy_maps_to_rust_session_options() {
     let policy = a3s_code_core::tools::ToolResultTransformPolicyV1::context_efficient();
     let opts = js_session_options_to_rust(Some(SessionOptions {

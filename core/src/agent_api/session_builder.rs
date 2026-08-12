@@ -232,6 +232,8 @@ fn finish_agent_session(
     let session = AgentSession {
         llm_client,
         model_generation_admission,
+        task_scheduler: Arc::clone(&agent.task_scheduler),
+        task_priority: opts.task_priority,
         tool_executor,
         tool_context,
         memory: config.memory.clone(),

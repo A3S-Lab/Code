@@ -214,6 +214,12 @@ struct SessionAdmissionClient {
 }
 
 #[derive(Clone)]
+struct TaskSchedulerProbeClient {
+    started: tokio::sync::mpsc::UnboundedSender<String>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[derive(Clone)]
 struct CancellableStreamingClient {
     text: String,
 }
@@ -642,6 +648,31 @@ impl LlmClient for SessionAdmissionClient {
 }
 
 #[async_trait::async_trait]
+impl LlmClient for TaskSchedulerProbeClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        let prompt = messages.last().map(Message::text).unwrap_or_default();
+        self.started.send(prompt.clone()).unwrap();
+        self.release.acquire().await.unwrap().forget();
+        Ok(scripted_text_response(&format!("completed: {prompt}")))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("task scheduler probe uses blocking completion")
+    }
+}
+
+#[async_trait::async_trait]
 impl LlmClient for CancellableStreamingClient {
     async fn complete(
         &self,
@@ -822,6 +853,177 @@ fn build_effective_registry_for_test(
 async fn test_from_config() {
     let agent = Agent::from_config(test_config()).await;
     assert!(agent.is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_scheduler_prioritizes_interactive_work_across_sessions() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let client = Arc::new(TaskSchedulerProbeClient {
+        started: started_tx,
+        release: Arc::clone(&release),
+    });
+    let mut config = test_config();
+    config.task_scheduler = crate::task_scheduler::TaskSchedulerConfig {
+        max_active: 1,
+        aging_interval_ms: 60_000,
+    };
+    config.memory = Some(crate::memory::MemoryConfig {
+        llm_extraction: false,
+        ..Default::default()
+    });
+    let agent = Agent::from_config(config).await.unwrap();
+
+    let make_session = |id: &str, priority| {
+        SessionOptions::new()
+            .with_session_id(id)
+            .with_llm_client(client.clone())
+            .with_planning_mode(crate::prompts::PlanningMode::Disabled)
+            .with_continuation(false)
+            .with_task_priority(priority)
+    };
+    let blocker = Arc::new(
+        agent
+            .session_async(
+                workspace.path().to_string_lossy(),
+                Some(make_session(
+                    "scheduler-blocker",
+                    crate::task_scheduler::TaskPriority::Foreground,
+                )),
+            )
+            .await
+            .unwrap(),
+    );
+    let background = Arc::new(
+        agent
+            .session_async(
+                workspace.path().to_string_lossy(),
+                Some(make_session(
+                    "scheduler-background",
+                    crate::task_scheduler::TaskPriority::Background,
+                )),
+            )
+            .await
+            .unwrap(),
+    );
+    let interactive = Arc::new(
+        agent
+            .session_async(
+                workspace.path().to_string_lossy(),
+                Some(make_session(
+                    "scheduler-interactive",
+                    crate::task_scheduler::TaskPriority::Interactive,
+                )),
+            )
+            .await
+            .unwrap(),
+    );
+
+    let blocker_run = tokio::spawn({
+        let blocker = Arc::clone(&blocker);
+        async move { blocker.send("blocker", None).await }
+    });
+    assert_eq!(started_rx.recv().await.as_deref(), Some("blocker"));
+
+    let background_run = tokio::spawn({
+        let background = Arc::clone(&background);
+        async move { background.send("background", None).await }
+    });
+    while agent.task_scheduler_stats().await.unwrap().pending < 1 {
+        tokio::task::yield_now().await;
+    }
+    let interactive_run = tokio::spawn({
+        let interactive = Arc::clone(&interactive);
+        async move { interactive.send("interactive", None).await }
+    });
+    while agent.task_scheduler_stats().await.unwrap().pending < 2 {
+        tokio::task::yield_now().await;
+    }
+    let queued = agent.task_scheduler_stats().await.unwrap();
+    assert_eq!(queued.pending_by_priority.background, 1);
+    assert_eq!(queued.pending_by_priority.interactive, 1);
+
+    release.add_permits(1);
+    assert_eq!(started_rx.recv().await.as_deref(), Some("interactive"));
+    release.add_permits(1);
+    assert_eq!(started_rx.recv().await.as_deref(), Some("background"));
+    release.add_permits(1);
+
+    blocker_run.await.unwrap().unwrap();
+    interactive_run.await.unwrap().unwrap();
+    background_run.await.unwrap().unwrap();
+    assert_eq!(agent.task_scheduler_stats().await.unwrap().active, 0);
+    agent.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_direct_tools_share_the_agent_scheduler_with_conversation_runs() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let client = Arc::new(TaskSchedulerProbeClient {
+        started: started_tx,
+        release: Arc::clone(&release),
+    });
+    let mut config = test_config();
+    config.task_scheduler = crate::task_scheduler::TaskSchedulerConfig {
+        max_active: 1,
+        aging_interval_ms: 60_000,
+    };
+    config.memory = Some(crate::memory::MemoryConfig {
+        llm_extraction: false,
+        ..Default::default()
+    });
+    let agent = Agent::from_config(config).await.unwrap();
+    let base_options = |id: &str| {
+        SessionOptions::new()
+            .with_session_id(id)
+            .with_llm_client(client.clone())
+            .with_planning_mode(crate::prompts::PlanningMode::Disabled)
+            .with_continuation(false)
+    };
+    let conversation = Arc::new(
+        agent
+            .session_async(
+                workspace.path().to_string_lossy(),
+                Some(base_options("direct-scheduler-conversation")),
+            )
+            .await
+            .unwrap(),
+    );
+    let direct = Arc::new(
+        agent
+            .session_async(
+                workspace.path().to_string_lossy(),
+                Some(base_options("direct-scheduler-tool")),
+            )
+            .await
+            .unwrap(),
+    );
+    direct
+        .register_dynamic_tool(Arc::new(NamedSessionTool("scheduled-direct".to_string())))
+        .unwrap();
+
+    let conversation_run = tokio::spawn({
+        let conversation = Arc::clone(&conversation);
+        async move { conversation.send("hold-global-slot", None).await }
+    });
+    assert_eq!(started_rx.recv().await.as_deref(), Some("hold-global-slot"));
+    let direct_run = tokio::spawn({
+        let direct = Arc::clone(&direct);
+        async move { direct.tool("scheduled-direct", serde_json::json!({})).await }
+    });
+    while agent.task_scheduler_stats().await.unwrap().pending < 1 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!direct_run.is_finished());
+
+    release.add_permits(1);
+    conversation_run.await.unwrap().unwrap();
+    assert_eq!(direct_run.await.unwrap().unwrap().output, "ok");
+    assert_eq!(agent.task_scheduler_stats().await.unwrap().active, 0);
+    agent.close().await;
 }
 
 #[tokio::test]

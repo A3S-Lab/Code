@@ -118,7 +118,33 @@ fn render_execution(config: &CodeConfig, document: &Document) -> Vec<SingleEntry
             &["auto_delegation", "autoDelegation"],
             Some(render_auto_delegation(config, document)),
         ),
+        block_entry(
+            &["task_scheduler", "taskScheduler"],
+            Some(render_task_scheduler(config, document)),
+        ),
     ]
+}
+
+fn render_task_scheduler(config: &CodeConfig, document: &Document) -> Block {
+    let mut block = base_block(
+        document,
+        &["task_scheduler", "taskScheduler"],
+        None,
+        "task_scheduler",
+    );
+    set_attr(
+        &mut block,
+        &["max_active", "maxActive"],
+        "max_active",
+        Some(number(config.task_scheduler.max_active)),
+    );
+    set_attr(
+        &mut block,
+        &["aging_interval_ms", "agingIntervalMs"],
+        "aging_interval_ms",
+        Some(number(config.task_scheduler.aging_interval_ms)),
+    );
+    block
 }
 
 fn render_auto_delegation(config: &CodeConfig, document: &Document) -> Block {

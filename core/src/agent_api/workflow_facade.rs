@@ -26,7 +26,7 @@ impl AgentSession {
         if !self.config.auto_delegation.allow_manual_delegation {
             return;
         }
-        crate::tools::register_task_with_mcp_managers(
+        crate::tools::register_task_with_mcp_managers_and_scheduler(
             self.tool_executor.registry(),
             Arc::clone(&self.llm_client),
             Arc::clone(&self.agent_registry),
@@ -34,6 +34,7 @@ impl AgentSession {
             self.mcp_managers.clone(),
             Some(self.parent_run_context()),
             Some(Arc::clone(&self.subagent_tasks)),
+            Arc::clone(&self.task_scheduler),
         );
     }
 
@@ -79,6 +80,9 @@ impl AgentSession {
         .with_parent_cancellation(self.session_cancel.child_token())
         .with_subagent_tracker(Arc::clone(&self.subagent_tasks))
         .with_max_parallel_tasks(self.config.max_parallel_tasks)
+        // Host workflow/AgentExecutor calls have no enclosing conversation
+        // lease, so each foreground step enters the global queue.
+        .with_task_scheduler(Arc::clone(&self.task_scheduler), true)
     }
 
     /// A programmable [`Workflow`](crate::orchestration::Workflow) bound to this

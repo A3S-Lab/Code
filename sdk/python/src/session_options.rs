@@ -6,6 +6,7 @@ use super::*;
 #[pyclass(name = "SessionOptions")]
 pub(super) struct PySessionOptions {
     pub(super) model: Option<String>,
+    pub(super) task_priority: Option<String>,
     pub(super) builtin_skills: bool,
     pub(super) skill_dirs: Vec<String>,
     pub(super) enforce_active_skill_tool_restrictions: Option<bool>,
@@ -165,6 +166,7 @@ impl Clone for PySessionOptions {
     fn clone(&self) -> Self {
         Self {
             model: self.model.clone(),
+            task_priority: self.task_priority.clone(),
             builtin_skills: self.builtin_skills,
             skill_dirs: self.skill_dirs.clone(),
             enforce_active_skill_tool_restrictions: self.enforce_active_skill_tool_restrictions,
@@ -243,6 +245,7 @@ impl PySessionOptions {
     pub(super) fn new() -> Self {
         Self {
             model: None,
+            task_priority: None,
             builtin_skills: false,
             skill_dirs: vec![],
             enforce_active_skill_tool_restrictions: None,
@@ -311,6 +314,23 @@ impl PySessionOptions {
     #[setter]
     fn set_model(&mut self, value: Option<String>) {
         self.model = value;
+    }
+
+    /// Global admission priority: urgent, interactive, foreground, background, or maintenance.
+    #[getter]
+    fn get_task_priority(&self) -> Option<String> {
+        self.task_priority.clone()
+    }
+
+    #[setter]
+    fn set_task_priority(&mut self, value: Option<String>) -> PyResult<()> {
+        if let Some(priority) = value.as_deref() {
+            priority
+                .parse::<a3s_code_core::TaskPriority>()
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        }
+        self.task_priority = value;
+        Ok(())
     }
 
     /// Compatibility flag for the built-in skill registry.

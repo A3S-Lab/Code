@@ -133,6 +133,8 @@ pub struct HostEnvOptions {
 pub struct SessionOptions {
     /// Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o").
     pub model: Option<String>,
+    /// Global admission priority: urgent, interactive, foreground, background, or maintenance.
+    pub task_priority: Option<String>,
     /// Compatibility flag for the built-in skill registry.
     ///
     /// A3S Code currently ships no embedded built-in skills; `true` requests
@@ -597,6 +599,11 @@ pub(super) fn js_session_options_to_rust(
     let mut opts = RustSessionOptions::new();
     if let Some(model) = o.model {
         opts = opts.with_model(model);
+    }
+    if let Some(priority) = o.task_priority {
+        opts = opts.with_task_priority(priority.parse().map_err(|error| {
+            napi::Error::from_reason(format!("taskPriority: {error}"))
+        })?);
     }
     if o.builtin_skills.unwrap_or(false) {
         opts = opts.with_builtin_skills();

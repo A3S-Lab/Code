@@ -16,6 +16,7 @@ impl std::fmt::Debug for SessionOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionOptions")
             .field("model", &self.model)
+            .field("task_priority", &self.task_priority)
             .field("agent_dirs", &self.agent_dirs)
             .field("worker_agents", &self.worker_agents.len())
             .field("skill_dirs", &self.skill_dirs)
@@ -90,6 +91,12 @@ impl SessionOptions {
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    /// Set the priority of top-level work submitted by this session.
+    pub fn with_task_priority(mut self, priority: crate::task_scheduler::TaskPriority) -> Self {
+        self.task_priority = priority;
         self
     }
 
