@@ -21,7 +21,7 @@ providers "openai" {
   }
 }
 
-# Queue Configuration (a3s-lane v0.4.0 integration)
+# Queue Configuration (a3s-lane v0.5 integration)
 queue {
   # Max concurrency per lane
   control_max_concurrency = 2

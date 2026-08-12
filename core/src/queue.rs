@@ -178,7 +178,7 @@ pub struct SessionQueueConfig {
     pub lane_handlers: HashMap<SessionLane, LaneHandlerConfig>,
 
     // ========================================================================
-    // a3s-lane v0.4.0 integration features
+    // a3s-lane v0.5 integration features
     // ========================================================================
     /// Enable dead letter queue for failed commands
     #[serde(default)]
@@ -200,7 +200,7 @@ pub struct SessionQueueConfig {
     pub storage_path: Option<std::path::PathBuf>,
 
     // ========================================================================
-    // a3s-lane v0.4.0 advanced features
+    // a3s-lane v0.5 advanced features
     // ========================================================================
     /// Retry policy configuration
     #[serde(default)]
@@ -267,19 +267,19 @@ pub struct PriorityBoostConfig {
 }
 
 fn default_control_concurrency() -> usize {
-    4
+    2
 }
 
 fn default_query_concurrency() -> usize {
-    12 // Balanced: better stability than 8, good performance (between 8 and 16)
-}
-
-fn default_execute_concurrency() -> usize {
     4
 }
 
-fn default_generate_concurrency() -> usize {
+fn default_execute_concurrency() -> usize {
     2
+}
+
+fn default_generate_concurrency() -> usize {
+    1
 }
 
 impl Default for SessionQueueConfig {
@@ -452,6 +452,26 @@ mod tests {
         assert!(!config.enable_dlq);
         assert!(!config.enable_metrics);
         assert!(!config.enable_alerts);
+    }
+
+    #[test]
+    fn serde_defaults_match_rust_defaults() {
+        let config: SessionQueueConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        let defaults = SessionQueueConfig::default();
+
+        assert_eq!(
+            config.control_max_concurrency,
+            defaults.control_max_concurrency
+        );
+        assert_eq!(config.query_max_concurrency, defaults.query_max_concurrency);
+        assert_eq!(
+            config.execute_max_concurrency,
+            defaults.execute_max_concurrency
+        );
+        assert_eq!(
+            config.generate_max_concurrency,
+            defaults.generate_max_concurrency
+        );
     }
 
     #[test]

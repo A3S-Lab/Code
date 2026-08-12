@@ -14,13 +14,15 @@
 use crate::agent::AgentEvent;
 use crate::queue::SessionLane;
 use crate::queue::{
-    ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionCommand, SessionQueueConfig,
-    TaskHandlerMode,
+    ExternalTask, ExternalTaskResult, LaneHandlerConfig,
+    PriorityBoostConfig as SessionPriorityBoostConfig, RateLimitConfig as SessionRateLimitConfig,
+    RetryPolicyConfig, SessionCommand, SessionQueueConfig, TaskHandlerMode,
 };
 use a3s_lane::{
     AlertManager, Command as LaneCommand, DeadLetter, EventEmitter, LaneConfig, LaneError,
-    LocalStorage, MetricsSnapshot, PriorityBoostConfig, QueueManager, QueueManagerBuilder,
-    QueueMetrics, RateLimitConfig, Result as LaneResult, RetryPolicy,
+    LocalStorage, MetricsSnapshot, PriorityBoostConfig as LanePriorityBoostConfig, QueueManager,
+    QueueManagerBuilder, QueueMetrics, RateLimitConfig as LaneRateLimitConfig,
+    Result as LaneResult, RetryPolicy,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -42,16 +44,6 @@ impl SessionLane {
             SessionLane::Query => "query",
             SessionLane::Execute => "skill",
             SessionLane::Generate => "prompt",
-        }
-    }
-
-    /// Get priority value (lower = higher priority)
-    fn lane_priority(self) -> u8 {
-        match self {
-            SessionLane::Control => 1,
-            SessionLane::Query => 2,
-            SessionLane::Execute => 4,
-            SessionLane::Generate => 5,
         }
     }
 }
@@ -254,10 +246,12 @@ impl SessionLaneQueue {
     async fn build_queue_manager(
         config: &SessionQueueConfig,
     ) -> Result<(QueueManager, Option<QueueMetrics>)> {
+        if config.enable_dlq && config.dlq_max_size == Some(0) {
+            anyhow::bail!("queue.dlq_max_size must be greater than zero");
+        }
+
         let emitter = EventEmitter::new(100);
         let mut builder = QueueManagerBuilder::new(emitter);
-        let default_timeout = config.default_timeout_ms.map(Duration::from_millis);
-        let default_retry = Some(RetryPolicy::exponential(3));
 
         for lane in [
             SessionLane::Control,
@@ -265,29 +259,8 @@ impl SessionLaneQueue {
             SessionLane::Execute,
             SessionLane::Generate,
         ] {
-            // Apply user-configured concurrency limits
-            let max_concurrency = match lane {
-                SessionLane::Control => config.control_max_concurrency,
-                SessionLane::Query => config.query_max_concurrency,
-                SessionLane::Execute => config.execute_max_concurrency,
-                SessionLane::Generate => config.generate_max_concurrency,
-            };
-
-            // Create LaneConfig with user-specified max_concurrency
-            let mut cfg = LaneConfig::new(1, max_concurrency);
-
-            if let Some(timeout) = default_timeout {
-                cfg = cfg.with_timeout(timeout);
-            }
-            if let Some(ref retry) = default_retry {
-                cfg = cfg.with_retry_policy(retry.clone());
-            }
-            if lane == SessionLane::Generate {
-                cfg = cfg.with_rate_limit(RateLimitConfig::per_minute(60));
-                cfg = cfg
-                    .with_priority_boost(PriorityBoostConfig::standard(Duration::from_secs(300)));
-            }
-            builder = builder.with_lane(lane.lane_id(), cfg, lane.lane_priority());
+            let lane_config = Self::build_lane_config(config, lane)?;
+            builder = builder.with_lane(lane.lane_id(), lane_config, lane.priority());
         }
 
         if config.enable_dlq {
@@ -314,6 +287,125 @@ impl SessionLaneQueue {
 
         let manager = builder.build().await?;
         Ok((manager, metrics))
+    }
+
+    /// Translate the public session queue configuration into the exact
+    /// a3s-lane settings for one lane. Keeping this conversion in one place
+    /// prevents advertised ACL options from silently falling back to unrelated
+    /// hard-coded values.
+    fn build_lane_config(config: &SessionQueueConfig, lane: SessionLane) -> Result<LaneConfig> {
+        let max_concurrency = config.max_concurrency(lane);
+        if max_concurrency == 0 {
+            anyhow::bail!(
+                "queue max concurrency for {:?} must be greater than zero",
+                lane
+            );
+        }
+
+        let mut lane_config = LaneConfig::new(1, max_concurrency);
+        if let Some(timeout_ms) = config
+            .lane_timeouts
+            .get(&lane)
+            .copied()
+            .or(config.default_timeout_ms)
+        {
+            if timeout_ms == 0 {
+                anyhow::bail!("queue timeout for {:?} must be greater than zero", lane);
+            }
+            lane_config = lane_config.with_timeout(Duration::from_millis(timeout_ms));
+        }
+
+        if let Some(retry) = config.retry_policy.as_ref() {
+            lane_config = lane_config.with_retry_policy(Self::retry_policy(retry)?);
+        }
+        if let Some(rate_limit) = config.rate_limit.as_ref() {
+            if let Some(rate_limit) = Self::rate_limit(rate_limit)? {
+                lane_config = lane_config.with_rate_limit(rate_limit);
+            }
+        }
+        if let Some(priority_boost) = config.priority_boost.as_ref() {
+            if let Some(priority_boost) = Self::priority_boost(priority_boost)? {
+                lane_config = lane_config.with_priority_boost(priority_boost);
+            }
+        }
+        if let Some(threshold) = config.pressure_threshold {
+            if threshold == 0 {
+                anyhow::bail!("queue.pressure_threshold must be greater than zero");
+            }
+            lane_config = lane_config.with_pressure_threshold(threshold);
+        }
+
+        Ok(lane_config)
+    }
+
+    fn retry_policy(config: &RetryPolicyConfig) -> Result<RetryPolicy> {
+        match config.strategy.as_str() {
+            "none" => Ok(RetryPolicy::none()),
+            "fixed" => Ok(RetryPolicy::fixed(
+                config.max_retries,
+                Duration::from_millis(
+                    config.fixed_delay_ms.unwrap_or(config.initial_delay_ms),
+                ),
+            )),
+            "exponential" => {
+                let mut policy = RetryPolicy::exponential(config.max_retries);
+                policy.initial_delay = Duration::from_millis(config.initial_delay_ms);
+                if policy.initial_delay > policy.max_delay {
+                    policy.max_delay = policy.initial_delay;
+                }
+                Ok(policy)
+            }
+            strategy => anyhow::bail!(
+                "unsupported queue retry strategy `{strategy}`; expected none, fixed, or exponential"
+            ),
+        }
+    }
+
+    fn rate_limit(config: &SessionRateLimitConfig) -> Result<Option<LaneRateLimitConfig>> {
+        if config.limit_type == "unlimited" {
+            return Ok(None);
+        }
+
+        let max_operations = config
+            .max_operations
+            .filter(|value| *value > 0)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "queue rate limit `{}` requires max_operations greater than zero",
+                    config.limit_type
+                )
+            })?;
+        let rate_limit = match config.limit_type.as_str() {
+            "per_second" => LaneRateLimitConfig::per_second(max_operations),
+            "per_minute" => LaneRateLimitConfig::per_minute(max_operations),
+            "per_hour" => LaneRateLimitConfig::per_hour(max_operations),
+            limit_type => anyhow::bail!(
+                "unsupported queue rate limit `{limit_type}`; expected unlimited, per_second, per_minute, or per_hour"
+            ),
+        };
+        Ok(Some(rate_limit))
+    }
+
+    fn priority_boost(
+        config: &SessionPriorityBoostConfig,
+    ) -> Result<Option<LanePriorityBoostConfig>> {
+        if config.strategy == "disabled" {
+            return Ok(None);
+        }
+
+        let deadline_ms = config.deadline_ms.unwrap_or(300_000);
+        if deadline_ms == 0 {
+            anyhow::bail!("queue priority boost deadline must be greater than zero");
+        }
+        let deadline = Duration::from_millis(deadline_ms);
+        let priority_boost = match config.strategy.as_str() {
+            "standard" => LanePriorityBoostConfig::standard(deadline),
+            "aggressive" => LanePriorityBoostConfig::aggressive(deadline),
+            strategy => anyhow::bail!(
+                "unsupported queue priority boost strategy `{strategy}`; expected disabled, standard, or aggressive"
+            ),
+        };
+        Ok(Some(priority_boost))
     }
 
     pub async fn start(&self) -> Result<()> {
@@ -521,6 +613,8 @@ impl SessionLaneQueue {
 mod tests {
     use super::*;
     use crate::queue::SessionCommand;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Mutex;
 
     struct TestCommand {
         value: Value,
@@ -536,6 +630,39 @@ mod tests {
         }
         fn payload(&self) -> Value {
             self.value.clone()
+        }
+    }
+
+    struct OrderedCommand {
+        label: &'static str,
+        order: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl SessionCommand for OrderedCommand {
+        async fn execute(&self) -> Result<Value> {
+            self.order.lock().await.push(self.label);
+            Ok(serde_json::json!(self.label))
+        }
+
+        fn command_type(&self) -> &str {
+            "ordered"
+        }
+    }
+
+    struct FailingCommand {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl SessionCommand for FailingCommand {
+        async fn execute(&self) -> Result<Value> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err(anyhow::anyhow!("expected failure"))
+        }
+
+        fn command_type(&self) -> &str {
+            "failing"
         }
     }
 
@@ -736,12 +863,192 @@ mod tests {
 
     #[test]
     fn test_lane_priority() {
-        assert!(SessionLane::Control.lane_priority() < SessionLane::Query.lane_priority());
-        assert!(SessionLane::Query.lane_priority() < SessionLane::Execute.lane_priority());
-        assert!(SessionLane::Execute.lane_priority() < SessionLane::Generate.lane_priority());
+        assert!(SessionLane::Control.priority() < SessionLane::Query.priority());
+        assert!(SessionLane::Query.priority() < SessionLane::Execute.priority());
+        assert!(SessionLane::Execute.priority() < SessionLane::Generate.priority());
     }
 
-    // Queue configuration is handled by SessionQueueConfig.
+    #[test]
+    fn default_lane_config_is_safe_for_non_idempotent_tools() {
+        let config = SessionLaneQueue::build_lane_config(
+            &SessionQueueConfig::default(),
+            SessionLane::Execute,
+        )
+        .unwrap();
+
+        assert_eq!(config.retry_policy, RetryPolicy::none());
+        assert!(config.default_timeout.is_none());
+        assert!(config.rate_limit.is_none());
+        assert!(config.priority_boost.is_none());
+        assert!(config.pressure_threshold.is_none());
+    }
+
+    #[test]
+    fn advanced_queue_options_are_forwarded_to_a3s_lane() {
+        let mut lane_timeouts = HashMap::new();
+        lane_timeouts.insert(SessionLane::Execute, 12_000);
+        let config = SessionQueueConfig {
+            default_timeout_ms: Some(5_000),
+            lane_timeouts,
+            retry_policy: Some(RetryPolicyConfig {
+                strategy: "exponential".to_string(),
+                max_retries: 2,
+                initial_delay_ms: 250,
+                fixed_delay_ms: None,
+            }),
+            rate_limit: Some(SessionRateLimitConfig {
+                limit_type: "per_minute".to_string(),
+                max_operations: Some(25),
+            }),
+            priority_boost: Some(SessionPriorityBoostConfig {
+                strategy: "aggressive".to_string(),
+                deadline_ms: Some(20_000),
+            }),
+            pressure_threshold: Some(7),
+            ..Default::default()
+        };
+
+        let lane_config =
+            SessionLaneQueue::build_lane_config(&config, SessionLane::Execute).unwrap();
+        assert_eq!(
+            lane_config.default_timeout,
+            Some(Duration::from_millis(12_000))
+        );
+        assert_eq!(lane_config.retry_policy.max_retries, 2);
+        assert_eq!(
+            lane_config.retry_policy.initial_delay,
+            Duration::from_millis(250)
+        );
+        assert_eq!(lane_config.rate_limit.as_ref().unwrap().max_commands, 25);
+        assert_eq!(
+            lane_config.rate_limit.as_ref().unwrap().window,
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            lane_config.priority_boost.as_ref().unwrap().deadline,
+            Duration::from_secs(20)
+        );
+        assert_eq!(lane_config.pressure_threshold, Some(7));
+    }
+
+    #[tokio::test]
+    async fn invalid_queue_configuration_fails_during_session_build() {
+        let zero_concurrency = SessionQueueConfig {
+            execute_max_concurrency: 0,
+            ..Default::default()
+        };
+        assert!(SessionLaneQueue::build_queue_manager(&zero_concurrency)
+            .await
+            .err()
+            .expect("zero concurrency should be rejected")
+            .to_string()
+            .contains("greater than zero"));
+
+        let invalid_retry = SessionQueueConfig {
+            retry_policy: Some(RetryPolicyConfig {
+                strategy: "surprise".to_string(),
+                max_retries: 1,
+                initial_delay_ms: 1,
+                fixed_delay_ms: None,
+            }),
+            ..Default::default()
+        };
+        assert!(SessionLaneQueue::build_queue_manager(&invalid_retry)
+            .await
+            .err()
+            .expect("unknown retry strategy should be rejected")
+            .to_string()
+            .contains("unsupported queue retry strategy"));
+    }
+
+    #[tokio::test]
+    async fn queued_lanes_execute_in_declared_priority_order() {
+        let (tx, _) = broadcast::channel(100);
+        let queue = SessionLaneQueue::new("priority", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        let generate = queue
+            .submit(
+                SessionLane::Generate,
+                Box::new(OrderedCommand {
+                    label: "generate",
+                    order: Arc::clone(&order),
+                }),
+            )
+            .await;
+        let execute = queue
+            .submit(
+                SessionLane::Execute,
+                Box::new(OrderedCommand {
+                    label: "execute",
+                    order: Arc::clone(&order),
+                }),
+            )
+            .await;
+        let query = queue
+            .submit(
+                SessionLane::Query,
+                Box::new(OrderedCommand {
+                    label: "query",
+                    order: Arc::clone(&order),
+                }),
+            )
+            .await;
+        let control = queue
+            .submit(
+                SessionLane::Control,
+                Box::new(OrderedCommand {
+                    label: "control",
+                    order: Arc::clone(&order),
+                }),
+            )
+            .await;
+
+        queue.start().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            for result in [control, query, execute, generate] {
+                result.await.unwrap().unwrap();
+            }
+        })
+        .await
+        .expect("all queued commands should finish");
+
+        assert_eq!(
+            *order.lock().await,
+            vec!["control", "query", "execute", "generate"]
+        );
+        queue.shutdown().await;
+        queue.drain(Duration::from_secs(2)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn default_queue_does_not_retry_failed_tool_commands() {
+        let (tx, _) = broadcast::channel(100);
+        let queue = SessionLaneQueue::new("no-retry", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        queue.start().await.unwrap();
+        let result = queue
+            .submit(
+                SessionLane::Execute,
+                Box::new(FailingCommand {
+                    attempts: Arc::clone(&attempts),
+                }),
+            )
+            .await;
+
+        assert!(tokio::time::timeout(Duration::from_secs(2), result)
+            .await
+            .expect("failed command should resolve")
+            .unwrap()
+            .is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        queue.shutdown().await;
+        queue.drain(Duration::from_secs(2)).await.unwrap();
+    }
 
     #[tokio::test]
     async fn test_build_queue_manager_default() {
