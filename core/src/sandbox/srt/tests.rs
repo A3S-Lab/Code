@@ -1,4 +1,21 @@
 use super::*;
+
+#[cfg(windows)]
+#[test]
+fn child_arguments_remove_windows_verbatim_prefixes() {
+    assert_eq!(
+        child_argument_path(Path::new(r"\\?\C:\Program Files\nodejs\entry.js")),
+        PathBuf::from(r"C:\Program Files\nodejs\entry.js")
+    );
+    assert_eq!(
+        child_argument_path(Path::new(r"\\?\UNC\server\share\entry.js")),
+        PathBuf::from(r"\\server\share\entry.js")
+    );
+    assert_eq!(
+        child_argument_path(Path::new(r"D:\runtime\entry.js")),
+        PathBuf::from(r"D:\runtime\entry.js")
+    );
+}
 use crate::sandbox::BashSandbox;
 #[cfg(not(windows))]
 use std::sync::Arc;

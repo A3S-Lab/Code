@@ -201,14 +201,18 @@ impl SrtBashSandbox {
 
         let mut command = if let Some(node) = &self.node {
             let mut command = Command::new(node);
-            command.arg(&self.binary);
+            // Node 24 on Windows cannot resolve a JavaScript entrypoint passed
+            // with Rust's canonical `\\?\` prefix (it truncates the script to
+            // the drive such as `C:`). Keep the canonical path for trust checks,
+            // but pass the equivalent Win32 spelling to the child process.
+            command.arg(child_argument_path(&self.binary));
             command
         } else {
             Command::new(&self.binary)
         };
         command
             .arg("--settings")
-            .arg(&settings_path)
+            .arg(child_argument_path(&settings_path))
             // Stop the SRT CLI parser before the wrapped executable's flags.
             // Without this delimiter, flags such as `env -i` or PowerShell's
             // `-NoProfile` are consumed as SRT options before the sandbox
@@ -227,7 +231,7 @@ impl SrtBashSandbox {
             let wrapped = crate::tools::builtin::bash::build_powershell_command(&request.command);
             let encoded = crate::tools::builtin::bash::encode_powershell_command(&wrapped);
             command
-                .arg(&self.shell)
+                .arg(child_argument_path(&self.shell))
                 .args([
                     "-NoLogo",
                     "-NoProfile",
@@ -281,6 +285,23 @@ impl SrtBashSandbox {
             timed_out: false,
         })
     }
+}
+
+fn child_argument_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let value = path.as_os_str().to_string_lossy();
+        if value
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"\\?\UNC\"))
+        {
+            return PathBuf::from(format!(r"\\{}", &value[8..]));
+        }
+        if let Some(value) = value.strip_prefix(r"\\?\") {
+            return PathBuf::from(value);
+        }
+    }
+    path.to_path_buf()
 }
 
 #[async_trait]
