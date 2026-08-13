@@ -18,6 +18,7 @@ mod patch;
 mod read;
 mod safe_http;
 mod search;
+mod semantic_search;
 mod web_fetch;
 mod web_search;
 mod write;
@@ -70,8 +71,12 @@ pub fn register_builtins(
     if capabilities.exec {
         registry.register_builtin(Arc::new(bash::BashTool));
     }
-    if capabilities.search {
-        registry.register_builtin(Arc::new(search::SearchTool::new(capabilities.read)));
+    let semantic_enabled = capabilities.read && workspace_services.workspace_retrieval().is_some();
+    if capabilities.search || semantic_enabled {
+        let search = search::SearchTool::new(capabilities.read)
+            .with_backend_search(capabilities.search)
+            .with_semantic(semantic_enabled);
+        registry.register_builtin(Arc::new(search));
     }
     if workspace_services.code_intelligence().is_some() {
         code_intelligence::register(registry);

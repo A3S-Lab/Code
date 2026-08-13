@@ -25,6 +25,23 @@ fn test_redacted_tool_log_summary_omits_values() {
 }
 
 #[test]
+fn semantic_query_values_are_not_part_of_invocation_summaries() {
+    let sentinel = "private-semantic-query-sentinel";
+    let args = serde_json::json!({
+        "mode": "semantic",
+        "query": sentinel,
+        "path": "private/module"
+    });
+    let summary = redacted_tool_log_summary("search", &args);
+
+    assert!(!summary.contains(sentinel));
+    assert!(!summary.contains("private/module"));
+    assert!(summary.contains("mode"));
+    assert!(summary.contains("query"));
+    assert!(summary.contains("path"));
+}
+
+#[test]
 fn test_redacted_tool_log_summary_handles_non_object_args() {
     let summary = redacted_tool_log_summary("noop", &serde_json::json!("raw string"));
     assert!(summary.contains("noop"));

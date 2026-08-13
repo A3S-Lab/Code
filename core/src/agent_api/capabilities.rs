@@ -165,6 +165,12 @@ fn resolve_workspace_services(
             owned_backend: owned_workspace_backend,
         });
     };
+    if !services.capabilities().read {
+        return Err(CodeError::SessionConfiguration {
+            field: "workspace_retrieval",
+            message: "semantic retrieval requires workspace read capability".to_owned(),
+        });
+    }
     let catalog = services
         .chunk_catalog()
         .ok_or_else(|| CodeError::SessionConfiguration {

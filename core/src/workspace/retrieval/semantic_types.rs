@@ -136,6 +136,96 @@ pub struct WorkspaceRetrievalStatus {
     pub model: Option<EmbeddingProviderDescriptor>,
 }
 
+/// Bounded request for semantic workspace retrieval.
+#[derive(Clone, Eq, PartialEq)]
+pub struct WorkspaceSemanticSearchRequest {
+    pub query: String,
+    pub path: Option<String>,
+    pub include: Option<String>,
+    pub limit: usize,
+}
+
+impl fmt::Debug for WorkspaceSemanticSearchRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkspaceSemanticSearchRequest")
+            .field("query_bytes", &self.query.len())
+            .field("has_path_filter", &self.path.is_some())
+            .field("has_include_filter", &self.include.is_some())
+            .field("limit", &self.limit)
+            .finish()
+    }
+}
+
+impl WorkspaceSemanticSearchRequest {
+    pub fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            path: None,
+            include: None,
+            limit: 10,
+        }
+    }
+
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub fn with_include(mut self, include: impl Into<String>) -> Self {
+        self.include = Some(include.into());
+        self
+    }
+
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
+    }
+}
+
+/// One digest-verified semantic match from an immutable catalog revision.
+#[derive(Clone, PartialEq)]
+pub struct WorkspaceSemanticSearchHit {
+    pub chunk: Arc<super::WorkspaceChunk>,
+    pub score: f32,
+}
+
+impl fmt::Debug for WorkspaceSemanticSearchHit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkspaceSemanticSearchHit")
+            .field("chunk_id", &self.chunk.id)
+            .field("start_line", &self.chunk.start_line)
+            .field("end_line", &self.chunk.end_line)
+            .field("source_revision", &self.chunk.source_revision)
+            .field("score", &self.score)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Explicit reason a semantic query could not run or returned partial data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSemanticFallbackReason {
+    Building,
+    Degraded,
+    Closed,
+    QueryEmbeddingFailed,
+    VectorSearchFailed,
+    RevisionChanged,
+    FilteredStaleHits,
+}
+
+/// Structured semantic results and the exact status that produced them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceSemanticSearchResult {
+    pub hits: Vec<WorkspaceSemanticSearchHit>,
+    pub status: WorkspaceRetrievalStatus,
+    pub searched_records: usize,
+    pub truncated: bool,
+    pub fallback: Option<WorkspaceSemanticFallbackReason>,
+}
+
 impl WorkspaceRetrievalStatus {
     pub fn disabled() -> Self {
         Self {
@@ -176,10 +266,18 @@ pub enum WorkspaceRetrievalError {
         field: &'static str,
         reason: &'static str,
     },
+    #[error("invalid workspace semantic query: {0}")]
+    InvalidQuery(String),
+    #[error("workspace semantic retrieval is not enabled for this session")]
+    Unavailable,
+    #[error("workspace semantic query was cancelled")]
+    Cancelled,
     #[error(transparent)]
     Embedding(#[from] EmbeddingError),
     #[error(transparent)]
     VectorIndex(#[from] VectorIndexError),
+    #[error(transparent)]
+    WorkspaceIndex(#[from] super::WorkspaceIndexError),
 }
 
 pub type WorkspaceRetrievalResult<T> = Result<T, WorkspaceRetrievalError>;

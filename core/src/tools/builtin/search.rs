@@ -1,6 +1,8 @@
 //! Unified workspace search tool.
 
-use super::{bm25::Bm25Tool, glob_tool::GlobTool, grep::GrepTool};
+use super::{
+    bm25::Bm25Tool, glob_tool::GlobTool, grep::GrepTool, semantic_search::SemanticSearchTool,
+};
 use crate::tools::types::{Tool, ToolCapabilities, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -12,6 +14,7 @@ enum SearchMode {
     Grep,
     Glob,
     Bm25,
+    Semantic,
 }
 
 impl SearchMode {
@@ -20,7 +23,8 @@ impl SearchMode {
             Some("grep") => Ok(Self::Grep),
             Some("glob") => Ok(Self::Glob),
             Some("bm25") => Ok(Self::Bm25),
-            Some(_) => Err("mode must be 'grep', 'glob', or 'bm25'".to_string()),
+            Some("semantic") => Ok(Self::Semantic),
+            Some(_) => Err("mode must be 'grep', 'glob', 'bm25', or 'semantic'".to_string()),
             None => Err("mode parameter is required".to_string()),
         }
     }
@@ -30,6 +34,7 @@ impl SearchMode {
             Self::Grep => "grep",
             Self::Glob => "glob",
             Self::Bm25 => "bm25",
+            Self::Semantic => "semantic",
         }
     }
 }
@@ -40,18 +45,40 @@ impl SearchMode {
 /// have different backend and rendering behavior. The model sees one stable
 /// tool contract and selects the behavior with `mode`.
 pub struct SearchTool {
+    backend_search_enabled: bool,
     read_enabled: bool,
+    semantic_enabled: bool,
 }
 
 impl SearchTool {
     pub fn new(read_enabled: bool) -> Self {
-        Self { read_enabled }
+        Self {
+            backend_search_enabled: true,
+            read_enabled,
+            semantic_enabled: false,
+        }
+    }
+
+    pub fn with_backend_search(mut self, enabled: bool) -> Self {
+        self.backend_search_enabled = enabled;
+        self
+    }
+
+    pub fn with_semantic(mut self, enabled: bool) -> Self {
+        self.semantic_enabled = enabled;
+        self
     }
 
     fn modes(&self) -> Vec<&'static str> {
-        let mut modes = vec!["grep", "glob"];
-        if self.read_enabled {
+        let mut modes = Vec::new();
+        if self.backend_search_enabled {
+            modes.extend(["grep", "glob"]);
+        }
+        if self.backend_search_enabled && self.read_enabled {
             modes.push("bm25");
+        }
+        if self.semantic_enabled {
+            modes.push("semantic");
         }
         modes
     }
@@ -61,9 +88,21 @@ impl SearchTool {
         mode: SearchMode,
         args: &serde_json::Value,
     ) -> std::result::Result<serde_json::Value, String> {
+        if matches!(mode, SearchMode::Grep | SearchMode::Glob) && !self.backend_search_enabled {
+            return Err(format!(
+                "mode='{}' is unavailable because this workspace backend did not provide search",
+                mode.as_str()
+            ));
+        }
         if mode == SearchMode::Bm25 && !self.read_enabled {
             return Err(
                 "mode='bm25' is unavailable because this workspace backend did not provide file reads"
+                    .to_string(),
+            );
+        }
+        if mode == SearchMode::Semantic && !self.semantic_enabled {
+            return Err(
+                "mode='semantic' is unavailable because this session did not enable semantic retrieval"
                     .to_string(),
             );
         }
@@ -77,7 +116,7 @@ impl SearchTool {
         adapted.insert(
             match mode {
                 SearchMode::Grep | SearchMode::Glob => "pattern",
-                SearchMode::Bm25 => "query",
+                SearchMode::Bm25 | SearchMode::Semantic => "query",
             }
             .to_string(),
             serde_json::Value::String(query.to_string()),
@@ -116,6 +155,10 @@ impl SearchTool {
                 copy_if_present(args, &mut adapted, "context", "context");
                 copy_if_present(args, &mut adapted, "limit", "limit");
             }
+            SearchMode::Semantic => {
+                copy_if_present(args, &mut adapted, "include", "include");
+                copy_if_present(args, &mut adapted, "limit", "limit");
+            }
         }
 
         Ok(serde_json::Value::Object(adapted))
@@ -129,7 +172,7 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the workspace with regex content search, file globbing, or native BM25 lexical ranking. Select the behavior with mode."
+        "Search the workspace with regex, glob, native BM25 lexical ranking, or session-scoped semantic similarity. Select the behavior with mode."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -148,7 +191,7 @@ impl Tool for SearchTool {
                 "sort": "path"
             }),
         ];
-        if self.read_enabled {
+        if self.backend_search_enabled && self.read_enabled {
             examples.push(serde_json::json!({
                 "mode": "bm25",
                 "query": "workspace permission policy",
@@ -156,7 +199,15 @@ impl Tool for SearchTool {
                 "limit": 8
             }));
         }
-        let grep_output_modes = if self.read_enabled {
+        if self.semantic_enabled {
+            examples.push(serde_json::json!({
+                "mode": "semantic",
+                "query": "where session shutdown releases temporary indexes",
+                "path": "core/src",
+                "limit": 8
+            }));
+        }
+        let grep_output_modes = if self.backend_search_enabled && self.read_enabled {
             vec!["content", "files_with_matches", "count", "summary"]
         } else {
             vec!["content", "files_with_matches", "summary"]
@@ -168,12 +219,12 @@ impl Tool for SearchTool {
                 "mode": {
                     "type": "string",
                     "enum": modes,
-                    "description": "Required. grep searches file contents with a regular expression; glob finds paths; bm25 ranks text chunks by lexical relevance."
+                    "description": "Required. grep searches file contents with a regular expression; glob finds paths; bm25 ranks chunks by lexical relevance; semantic ranks digest-verified chunks by meaning when enabled."
                 },
                 "query": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Required. A regular expression in grep mode, a glob pattern in glob mode, or a plain-text relevance query in bm25 mode."
+                    "description": "Required. A regular expression in grep mode, a glob pattern in glob mode, or a plain-text relevance query in bm25/semantic mode."
                 },
                 "path": {
                     "type": "string",
@@ -181,7 +232,7 @@ impl Tool for SearchTool {
                 },
                 "include": {
                     "type": "string",
-                    "description": "Optional for grep/bm25. Glob pattern used to filter candidate files, for example '*.rs' or '*.{ts,tsx}'."
+                    "description": "Optional for grep/bm25/semantic. Glob pattern used to filter candidate files, for example '*.rs' or '*.{ts,tsx}'."
                 },
                 "context": {
                     "type": "integer",
@@ -201,7 +252,7 @@ impl Tool for SearchTool {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": MAX_PAGE_LIMIT,
-                    "description": "Optional. Page size for glob or paginated grep (default 200, maximum 1000), or result count for bm25 (default 10, maximum 25)."
+                    "description": "Optional. Page size for glob or paginated grep (default 200, maximum 1000), or result count for bm25/semantic (default 10, maximum 25)."
                 },
                 "cursor": {
                     "type": "string",
@@ -229,7 +280,7 @@ impl Tool for SearchTool {
             {
                 ToolCapabilities::read_only_paginated(16)
             }
-            Ok(SearchMode::Bm25) => ToolCapabilities::parallel_safe_read(2),
+            Ok(SearchMode::Bm25 | SearchMode::Semantic) => ToolCapabilities::parallel_safe_read(2),
             Ok(SearchMode::Grep) | Err(_) => ToolCapabilities::parallel_safe_read(16),
         }
     }
@@ -247,6 +298,7 @@ impl Tool for SearchTool {
             SearchMode::Grep => GrepTool.execute(&adapted, ctx).await?,
             SearchMode::Glob => GlobTool.execute(&adapted, ctx).await?,
             SearchMode::Bm25 => Bm25Tool.execute(&adapted, ctx).await?,
+            SearchMode::Semantic => SemanticSearchTool.execute(&adapted, ctx).await?,
         };
         Ok(with_search_mode(output, mode))
     }
@@ -296,6 +348,17 @@ mod tests {
         assert_eq!(
             SearchTool::new(true).parameters()["properties"]["mode"]["enum"],
             serde_json::json!(["grep", "glob", "bm25"])
+        );
+        assert_eq!(
+            SearchTool::new(true).with_semantic(true).parameters()["properties"]["mode"]["enum"],
+            serde_json::json!(["grep", "glob", "bm25", "semantic"])
+        );
+        assert_eq!(
+            SearchTool::new(true)
+                .with_backend_search(false)
+                .with_semantic(true)
+                .parameters()["properties"]["mode"]["enum"],
+            serde_json::json!(["semantic"])
         );
         assert_eq!(
             SearchTool::new(false).parameters()["examples"]
@@ -363,6 +426,17 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("file reads"));
+    }
+
+    #[test]
+    fn semantic_mode_requires_a_session_runtime() {
+        let error = SearchTool::new(true)
+            .adapted_args(
+                SearchMode::Semantic,
+                &serde_json::json!({"mode": "semantic", "query": "workspace"}),
+            )
+            .unwrap_err();
+        assert!(error.contains("did not enable semantic retrieval"));
     }
 
     #[test]

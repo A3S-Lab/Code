@@ -84,6 +84,26 @@ impl AgentSession {
             .unwrap_or_else(crate::workspace::WorkspaceRetrievalStatus::disabled)
     }
 
+    /// Run a structured semantic workspace query against this session.
+    ///
+    /// Returned source chunks are reread and digest-verified through the
+    /// session's workspace backend. Partial indexing, degradation, and
+    /// revision races are represented explicitly in the result's status and
+    /// fallback fields.
+    pub async fn semantic_search(
+        &self,
+        request: crate::workspace::WorkspaceSemanticSearchRequest,
+    ) -> crate::workspace::WorkspaceRetrievalResult<crate::workspace::WorkspaceSemanticSearchResult>
+    {
+        if self.is_closed() {
+            return Err(crate::workspace::WorkspaceRetrievalError::Unavailable);
+        }
+        self.tool_context
+            .workspace_services
+            .semantic_search(request, self.session_cancel.child_token())
+            .await
+    }
+
     /// Return the host-defined tenant id, if any.
     ///
     /// The framework only transports this string — it never interprets

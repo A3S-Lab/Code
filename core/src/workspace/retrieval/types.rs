@@ -15,7 +15,7 @@ impl WorkspaceChunkId {
 }
 
 /// One bounded source chunk admitted to workspace retrieval.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct WorkspaceChunk {
     pub id: WorkspaceChunkId,
     pub path: Arc<str>,
@@ -31,6 +31,22 @@ pub struct WorkspaceChunk {
     pub content_digest: Arc<str>,
     pub source_revision: u64,
     pub text: Arc<str>,
+}
+
+impl std::fmt::Debug for WorkspaceChunk {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkspaceChunk")
+            .field("id", &self.id)
+            .field("language", &self.language)
+            .field("start_line", &self.start_line)
+            .field("end_line", &self.end_line)
+            .field("start_byte", &self.start_byte)
+            .field("end_byte", &self.end_byte)
+            .field("source_revision", &self.source_revision)
+            .field("text_bytes", &self.text.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Deterministic chunking limits.

@@ -39,7 +39,9 @@ pub use retrieval::{
     LexicalSearchRequest, LexicalSearchResult, WorkspaceChunk, WorkspaceChunkCatalog,
     WorkspaceChunkId, WorkspaceEligibilityPolicy, WorkspaceIndexError, WorkspaceRetrievalError,
     WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalResult,
-    WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus, WorkspaceSemanticIndexLimits,
+    WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus, WorkspaceSemanticFallbackReason,
+    WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit, WorkspaceSemanticSearchRequest,
+    WorkspaceSemanticSearchResult,
 };
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};

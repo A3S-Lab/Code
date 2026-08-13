@@ -388,7 +388,9 @@ pub struct ToolExecutor {
 /// can contain secrets, so the summary records only the tool name, the sorted
 /// argument field names, and the serialized payload size — never the values. This
 /// keeps the always-on `info!` tool trace (also exported to OTLP) compliant with
-/// the "never log secrets" boundary. Use `trace!` for full args when debugging.
+/// the "never log secrets" boundary. Full argument values are intentionally
+/// absent at every log level because search queries and file content may carry
+/// workspace-sensitive material.
 fn redacted_tool_log_summary(name: &str, args: &serde_json::Value) -> String {
     let arg_keys: Vec<&str> = match args.as_object() {
         Some(map) => {
@@ -410,7 +412,6 @@ fn redacted_tool_log_summary(name: &str, args: &serde_json::Value) -> String {
 /// [`redacted_tool_log_summary`] for the redaction rationale.
 fn log_tool_invocation(name: &str, args: &serde_json::Value) {
     tracing::info!("{}", redacted_tool_log_summary(name, args));
-    tracing::trace!("Tool {} full args: {}", name, args);
 }
 
 impl ToolExecutor {

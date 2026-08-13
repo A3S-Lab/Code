@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 mod lifecycle;
 mod semantic;
+mod semantic_query;
 
 #[test]
 fn chunking_is_utf8_safe_deterministic_and_bounded_by_lines_and_bytes() {

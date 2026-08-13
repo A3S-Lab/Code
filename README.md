@@ -353,8 +353,13 @@ files as atomic A3S Memory partitions. `AgentSession::workspace_retrieval_status
 reports building, ready, degraded, or closed state, revisions, coverage, queue
 depth, failures, and vector memory. Closing the session cancels the provider,
 joins the owned task within a configured deadline, stops Code-owned local
-manifest work, and drops all vector state. Semantic query rendering remains a
-separate gate; CODE-S1 exposes lifecycle and readiness, not model-facing search.
+manifest work, and drops all vector state. Enabled sessions add
+`mode: "semantic"` to the unified `search` tool; disabled sessions retain the
+existing schema. Semantic queries use bounded provider execution, report the
+exact catalog/vector revisions and partial-coverage fallback, and reread each
+candidate through `WorkspaceServices` to verify its full-file digest and exact
+chunk byte range before source text is rendered. A stale, deleted, unreadable,
+or concurrently superseded candidate is never exposed.
 
 Use `edit` with `dry_run: true` to receive the exact before/after diff without
 writing. The dry run is declared read-only and can be safely batched. Apply the

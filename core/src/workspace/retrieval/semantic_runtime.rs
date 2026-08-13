@@ -11,9 +11,13 @@ use tokio_util::sync::CancellationToken;
 
 /// Session-owned asynchronous projection from workspace chunks to vectors.
 ///
-/// The runtime never reads a workspace. It embeds only text already admitted
-/// and retained by the shared [`WorkspaceChunkCatalog`].
+/// The background projection embeds only text already admitted and retained by
+/// the shared [`WorkspaceChunkCatalog`]. Query-time source verification reads
+/// through the caller's [`WorkspaceFileSystem`](crate::workspace::WorkspaceFileSystem)
+/// capability before any chunk text is returned.
 pub struct WorkspaceRetrievalRuntime {
+    pub(super) catalog: Arc<WorkspaceChunkCatalog>,
+    pub(super) executor: EmbeddingExecutor,
     index: Mutex<Option<Arc<InMemoryVectorIndex>>>,
     status: Arc<RwLock<WorkspaceRetrievalStatus>>,
     lifetime: CancellationToken,
@@ -48,6 +52,8 @@ impl WorkspaceRetrievalRuntime {
         )));
         let lifetime = parent_lifetime.child_token();
         let runtime = Arc::new(Self {
+            catalog: Arc::clone(&catalog),
+            executor: executor.clone(),
             index: Mutex::new(Some(Arc::clone(&index))),
             status: Arc::clone(&status),
             lifetime: lifetime.clone(),
@@ -67,9 +73,12 @@ impl WorkspaceRetrievalRuntime {
         read_unpoisoned(&self.status).clone()
     }
 
-    #[cfg(test)]
-    pub(crate) fn index(&self) -> Option<Arc<InMemoryVectorIndex>> {
+    pub(super) fn index(&self) -> Option<Arc<InMemoryVectorIndex>> {
         lock_unpoisoned(&self.index).clone()
+    }
+
+    pub(super) fn child_lifetime(&self) -> CancellationToken {
+        self.lifetime.child_token()
     }
 
     /// Cancel indexing, join its owned task within the configured deadline,

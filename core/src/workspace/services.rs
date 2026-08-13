@@ -304,6 +304,43 @@ impl WorkspaceServices {
         self.workspace_retrieval.clone()
     }
 
+    /// Search the session-owned semantic index and verify every returned
+    /// source chunk against the workspace backend before exposing its text.
+    pub async fn semantic_search(
+        &self,
+        mut request: super::WorkspaceSemanticSearchRequest,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> super::WorkspaceRetrievalResult<super::WorkspaceSemanticSearchResult> {
+        if !self.capabilities.read {
+            return Err(super::WorkspaceRetrievalError::Unavailable);
+        }
+        if let Some(path) = request.path.take() {
+            request.path = Some(
+                self.path_resolver
+                    .normalize(&path)
+                    .map_err(|_| {
+                        super::WorkspaceRetrievalError::InvalidQuery(
+                            "path was rejected by the workspace resolver".to_owned(),
+                        )
+                    })?
+                    .as_str()
+                    .to_owned(),
+            );
+        }
+        let runtime = self
+            .workspace_retrieval
+            .as_ref()
+            .ok_or(super::WorkspaceRetrievalError::Unavailable)?;
+        runtime
+            .search(
+                request,
+                Arc::clone(&self.file_system),
+                self.operation_timeout,
+                cancellation,
+            )
+            .await
+    }
+
     pub(crate) fn with_workspace_retrieval(
         &self,
         runtime: Arc<WorkspaceRetrievalRuntime>,

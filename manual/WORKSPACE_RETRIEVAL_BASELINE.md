@@ -180,3 +180,35 @@ tests cover partial readiness, update-during-embedding fencing, per-file
 degradation, build-after-start failure cleanup, default disablement, custom
 workspace rejection, synchronous rejection, idempotent close, and weak-reference
 vector cleanup.
+
+## CODE-Q1 implementation evidence
+
+The unified model-facing `search` tool now advertises `mode: "semantic"` only
+for sessions that have both an enabled retrieval runtime and workspace read
+capability. Existing disabled sessions preserve the previous grep, glob, and
+BM25 schema. Hosts may also call the structured
+`WorkspaceServices::semantic_search` API with typed request, hit, status, and
+fallback values.
+
+Each query is bounded, cancellable, and embedded by the same immutable
+provider generation as the session index. Search captures an immutable chunk
+catalog snapshot, filters candidate partitions by the host-normalized path and
+optional glob, and accepts a Memory result only when its vector revision and
+the catalog/source revisions remain unchanged. A concurrent replacement or
+session close returns no result from a mixed generation.
+
+Vector identity is not sufficient evidence for source text. Before rendering,
+Code rereads every candidate file through the configured
+`WorkspaceFileSystem`, checks the complete SHA-256 content digest, and checks
+the exact UTF-8 byte range against the catalog chunk. Missing, unreadable,
+timed-out, modified, or mismatched files are removed and reported with an
+explicit fallback reason. Tool metadata contains status, model identity,
+coverage, revisions, searched-record counts, truncation, source anchors, and a
+per-hit verification marker; query/source values are absent from Code-owned
+debug diagnostics and tool invocation logs at every tracing level.
+
+Deterministic tests cover semantic ordering, path and glob filters, query
+cancellation, disabled/enabled schema negotiation, direct session tool
+execution, changed-source lag, deleted-source lag, lifecycle closure, and all
+pre-existing search modes. CODE-H1 is the next gate and will add hybrid fusion;
+CODE-Q1 deliberately keeps semantic as an explicit diagnostic channel.

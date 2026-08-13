@@ -29,6 +29,15 @@ async fn retrieval_is_disabled_without_explicit_typed_options() {
         session.workspace_retrieval_status().phase,
         WorkspaceRetrievalPhase::Disabled
     );
+    let search = session
+        .tool_definitions()
+        .into_iter()
+        .find(|tool| tool.name == "search")
+        .unwrap();
+    assert_eq!(
+        search.parameters["properties"]["mode"]["enum"],
+        serde_json::json!(["grep", "glob", "bm25"])
+    );
     session.close().await;
     // Disabled means there is no runtime to transition; it remains a stable
     // capability observation rather than pretending an index existed.
@@ -36,6 +45,87 @@ async fn retrieval_is_disabled_without_explicit_typed_options() {
         session.workspace_retrieval_status().phase,
         WorkspaceRetrievalPhase::Disabled
     );
+}
+
+#[tokio::test]
+async fn enabled_session_exposes_and_executes_semantic_search() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("cache.rs"),
+        "release temporary session vector memory\n",
+    )
+    .unwrap();
+    let provider: Arc<dyn EmbeddingProvider> = Arc::new(ImmediateProvider);
+    let options =
+        SessionOptions::new().with_workspace_retrieval(WorkspaceRetrievalOptions::new(provider));
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+    let session = agent
+        .session_async(workspace.path().to_string_lossy(), Some(options))
+        .await
+        .unwrap();
+    wait_for_ready(&session).await;
+
+    let search = session
+        .tool_definitions()
+        .into_iter()
+        .find(|tool| tool.name == "search")
+        .unwrap();
+    assert_eq!(
+        search.parameters["properties"]["mode"]["enum"],
+        serde_json::json!(["grep", "glob", "bm25", "semantic"])
+    );
+    let result = session
+        .tool(
+            "search",
+            serde_json::json!({
+                "mode": "semantic",
+                "query": "session cleanup",
+                "include": "*.rs",
+                "limit": 1
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.exit_code, 0, "{}", result.output);
+    assert!(result.output.contains("cache.rs:1-1"), "{}", result.output);
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["mode"], "semantic");
+    assert_eq!(metadata["status"]["phase"], "ready");
+    assert_eq!(metadata["results"][0]["digest_verified"], true);
+
+    let structured = session
+        .semantic_search(
+            crate::WorkspaceSemanticSearchRequest::new("session cleanup").with_limit(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(structured.hits.len(), 1);
+    assert_eq!(structured.hits[0].chunk.path.as_ref(), "cache.rs");
+
+    let invalid = session
+        .semantic_search(
+            crate::WorkspaceSemanticSearchRequest::new("session cleanup").with_path("../escape"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        invalid,
+        crate::WorkspaceRetrievalError::InvalidQuery(_)
+    ));
+
+    session.close().await;
+    let closed = session
+        .semantic_search(crate::WorkspaceSemanticSearchRequest::new(
+            "session cleanup",
+        ))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        closed,
+        crate::WorkspaceRetrievalError::Unavailable
+    ));
 }
 
 #[tokio::test]
@@ -129,6 +219,51 @@ async fn custom_workspace_without_a_catalog_is_rejected_before_provider_calls() 
 }
 
 #[tokio::test]
+async fn custom_workspace_without_read_capability_is_rejected() {
+    let backend = Arc::new(EmptyWorkspace);
+    let catalog = crate::WorkspaceChunkCatalog::new(
+        crate::ChunkingConfig::default(),
+        crate::ChunkCatalogLimits::default(),
+    )
+    .unwrap();
+    let services = WorkspaceServices::builder(
+        WorkspaceRef::new("write-only", "remote://write-only"),
+        backend,
+    )
+    .capabilities(crate::WorkspaceCapabilities {
+        read: false,
+        write: true,
+        exec: false,
+        search: false,
+        git: false,
+        code_intelligence: false,
+    })
+    .chunk_catalog(catalog)
+    .build();
+    let provider = Arc::new(BlockingProvider::new());
+    let provider_port: Arc<dyn EmbeddingProvider> = provider.clone();
+    let options = SessionOptions::new()
+        .with_workspace_backend(services)
+        .with_workspace_retrieval(WorkspaceRetrievalOptions::new(provider_port));
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+
+    let error = agent
+        .session_async("remote-placeholder", Some(options))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::CodeError::SessionConfiguration {
+            field: "workspace_retrieval",
+            ..
+        }
+    ));
+    assert_eq!(provider.calls.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
 async fn a_later_session_build_failure_cleans_up_started_retrieval_work() {
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -169,6 +304,38 @@ struct BlockingProvider {
     calls: AtomicUsize,
     called: Notify,
     cancellation: std::sync::Mutex<Option<CancellationToken>>,
+}
+
+struct ImmediateProvider;
+
+#[async_trait]
+impl EmbeddingProvider for ImmediateProvider {
+    fn descriptor(&self) -> EmbeddingProviderDescriptor {
+        EmbeddingProviderDescriptor::new("fixture", "immediate-v1", 2)
+    }
+
+    async fn embed(
+        &self,
+        request: EmbeddingBatchRequest,
+        _cancellation: CancellationToken,
+    ) -> Result<EmbeddingBatchResponse, EmbeddingProviderError> {
+        let vectors = request
+            .inputs()
+            .iter()
+            .map(|input| EmbeddingVector::new(input.id(), vec![1.0, 0.0]))
+            .collect();
+        Ok(EmbeddingBatchResponse::new(self.descriptor(), vectors))
+    }
+}
+
+async fn wait_for_ready(session: &super::AgentSession) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while session.workspace_retrieval_status().phase != WorkspaceRetrievalPhase::Ready {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("semantic session did not become ready");
 }
 
 impl BlockingProvider {

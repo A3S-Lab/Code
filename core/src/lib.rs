@@ -264,8 +264,10 @@ pub use workspace::{
     WorkspaceGrepResult, WorkspaceIndexError, WorkspacePath, WorkspacePathResolver, WorkspaceRef,
     WorkspaceResult, WorkspaceRetrievalError, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
     WorkspaceRetrievalResult, WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus, WorkspaceSearch,
-    WorkspaceSemanticIndexLimits, WorkspaceServices, WorkspaceServicesBuilder, WorkspaceTextRange,
-    WorkspaceTextReader, WorkspaceVersionConflict, WorkspaceWriteOutcome,
+    WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
+    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult, WorkspaceServices,
+    WorkspaceServicesBuilder, WorkspaceTextRange, WorkspaceTextReader, WorkspaceVersionConflict,
+    WorkspaceWriteOutcome,
 };
 #[cfg(feature = "s3")]
 pub use workspace::{S3BackendConfig, S3WorkspaceBackend};
