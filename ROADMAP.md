@@ -352,7 +352,8 @@ Current implementation status:
 | `WSR-00` | Delivered | Versioned relevance and lifecycle fixtures, native BM25 CI baseline, reference sizing profile, locked budgets, and adversarial trust-boundary review |
 | `MEM-V1` | Delivered | A3S Memory `main` commit `82e3734` adds the public exact ephemeral vector kernel and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, Clippy, and rustdoc gates |
 | `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, per-file BM25 postings, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read BM25 path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
-| `CODE-E1` | Next | Host-injected embedding provider contract, batching, cancellation, typed errors, and deterministic fake provider |
+| `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
+| `CODE-S1` | Next | Asynchronous session retrieval runtime, A3S Memory vector partitions, partial readiness, status, and bounded shutdown |
 
 The detailed baseline and threat model are in
 [`manual/WORKSPACE_RETRIEVAL_BASELINE.md`](manual/WORKSPACE_RETRIEVAL_BASELINE.md).

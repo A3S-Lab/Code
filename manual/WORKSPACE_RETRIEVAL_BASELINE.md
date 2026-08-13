@@ -116,3 +116,31 @@ Native BM25 reuses the catalog's per-file postings after its first source
 revision. Until then, and for custom providers without a catalog, it retains the
 compatible query-time scanner. The locked nine-query result ordering is equal
 on both paths, while the incremental path reports zero query-time file reads.
+
+## CODE-E1 implementation evidence
+
+Code exposes a host-injected `EmbeddingProvider` independently from LLM clients,
+workspace traversal, and A3S Memory. An immutable descriptor binds provider,
+model, optional revision, dimension, and normalization for one generation.
+`EmbeddingExecutor` rejects invalid descriptors and configuration before work,
+then partitions admitted inputs deterministically by input count, text bytes,
+and expected `f32` vector bytes. It returns all validated vectors in caller
+order or a typed error; a later batch failure never returns an earlier partial
+result.
+
+Only typed timeout, rate-limit, and unavailable failures are retried. Retries,
+per-attempt timeouts, retry delays, request text, input count, and expected
+vector memory all have constructor-validated hard bounds. Cancellation wins at
+preflight, during an active provider call, and during retry backoff; timeout
+also cancels the child token passed to the provider. Authentication and invalid
+request failures are never retried.
+
+Every response must preserve the generation descriptor and contain exactly one
+finite, correctly dimensioned vector for each unique input identifier. Unit
+normalization is verified when promised. Provider panics are contained as typed
+executor failures without copying panic payloads into the returned error.
+Code-owned `Debug` and error rendering omit input text, vector values, and raw
+provider response bodies. Deterministic fake-provider tests cover batching,
+order, partial failure, cancellation, timeout, retry exhaustion, descriptor
+drift, output identity, dimension, non-finite values, normalization, budgets,
+panic containment, and diagnostic redaction.

@@ -339,6 +339,16 @@ changes are tombstoned before replacement work; a failed read reduces indexed
 coverage instead of returning stale text. The catalog is ephemeral and is
 released with its manifest-backed workspace backend.
 
+Hosts can implement the public `EmbeddingProvider` trait without adding a
+model SDK to A3S Memory. `EmbeddingExecutor` validates the provider/model
+descriptor, deterministically batches caller-admitted text, enforces text and
+expected-vector byte budgets before calls, propagates cancellation, applies
+typed bounded retries, and rejects partial, duplicate, unknown, dimension-
+mismatched, non-finite, non-normalized, or descriptor-drifted responses. Input
+text and vector values are redacted from Code-owned `Debug` output and errors.
+This contract does not enable retrieval by itself; asynchronous session-owned
+vector indexing is the next Workspace Retrieval gate.
+
 Use `edit` with `dry_run: true` to receive the exact before/after diff without
 writing. The dry run is declared read-only and can be safely batched. Apply the
 result with `expected_replacements` and optionally `max_replacements` to reject

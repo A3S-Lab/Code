@@ -88,6 +88,7 @@ pub(crate) mod compaction;
 pub mod config;
 pub mod context;
 pub mod dynamic_workflow;
+pub mod embedding;
 pub mod error;
 pub mod event_protocol;
 pub mod flow_graph;
@@ -186,6 +187,12 @@ pub use config::{
 pub use dynamic_workflow::{
     dynamic_workflow_store_path, DynamicWorkflowRuntime, DynamicWorkflowScriptLimits,
     DynamicWorkflowTool, DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,
+};
+pub use embedding::{
+    EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingError, EmbeddingExecution,
+    EmbeddingExecutor, EmbeddingExecutorConfig, EmbeddingFailureKind, EmbeddingInput,
+    EmbeddingNormalization, EmbeddingProvider, EmbeddingProviderDescriptor, EmbeddingProviderError,
+    EmbeddingResult, EmbeddingVector,
 };
 pub use error::SessionBuildResource;
 pub use error::{CodeError, Result};
