@@ -41,19 +41,48 @@ pub(super) async fn build_agent_session(
     resolved: ResolvedSessionConfig,
 ) -> Result<AgentSession> {
     let canonical = safe_canonicalize(Path::new(&workspace));
-    let capabilities = build_resolved_capabilities(agent, &canonical, &resolved);
+    let session_cancel = tokio_util::sync::CancellationToken::new();
+    let capabilities =
+        build_resolved_capabilities(agent, &canonical, &resolved, session_cancel.clone())?;
     let session_id = resolved_session_id(&resolved);
-    let runtime = build_session_runtime(SessionRuntimeInput {
+    let runtime = match build_session_runtime(SessionRuntimeInput {
         code_config: &agent.code_config,
         workspace: &canonical,
         session_id: &session_id,
         opts: &resolved.options,
         tool_executor: Arc::clone(&capabilities.tool_executor),
     })
-    .await?;
-    let session = finish_agent_session(agent, canonical, resolved, capabilities, runtime)?;
+    .await
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            cleanup_unfinished_capabilities(&capabilities, &session_cancel).await;
+            return Err(error);
+        }
+    };
+    let session = finish_agent_session(
+        agent,
+        canonical,
+        resolved,
+        capabilities,
+        runtime,
+        session_cancel,
+    )?;
     fire_session_start(&session).await;
     Ok(session)
+}
+
+async fn cleanup_unfinished_capabilities(
+    capabilities: &SessionCapabilities,
+    session_cancel: &tokio_util::sync::CancellationToken,
+) {
+    session_cancel.cancel();
+    if let Some(retrieval) = &capabilities.workspace_retrieval {
+        retrieval.close().await;
+    }
+    if let Some(backend) = &capabilities.owned_workspace_backend {
+        backend.shutdown();
+    }
 }
 
 pub(super) fn build_agent_session_sync(
@@ -62,7 +91,9 @@ pub(super) fn build_agent_session_sync(
     resolved: ResolvedSessionConfig,
 ) -> Result<AgentSession> {
     let canonical = safe_canonicalize(Path::new(&workspace));
-    let capabilities = build_resolved_capabilities(agent, &canonical, &resolved);
+    let session_cancel = tokio_util::sync::CancellationToken::new();
+    let capabilities =
+        build_resolved_capabilities(agent, &canonical, &resolved, session_cancel.clone())?;
     let session_id = resolved_session_id(&resolved);
     let runtime = build_session_runtime_sync(SessionRuntimeInput {
         code_config: &agent.code_config,
@@ -71,7 +102,14 @@ pub(super) fn build_agent_session_sync(
         opts: &resolved.options,
         tool_executor: Arc::clone(&capabilities.tool_executor),
     });
-    let session = finish_agent_session(agent, canonical, resolved, capabilities, runtime)?;
+    let session = finish_agent_session(
+        agent,
+        canonical,
+        resolved,
+        capabilities,
+        runtime,
+        session_cancel,
+    )?;
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         let executor = effective_hook_executor(&session);
         let event = session_start_event(&session);
@@ -116,16 +154,20 @@ fn build_resolved_capabilities(
     agent: &Agent,
     canonical: &Path,
     resolved: &ResolvedSessionConfig,
-) -> SessionCapabilities {
+    session_lifetime: tokio_util::sync::CancellationToken,
+) -> Result<SessionCapabilities> {
     let opts = &resolved.options;
-    build_session_capabilities(SessionCapabilityInput {
-        code_config: &agent.code_config,
-        base_config: &agent.config,
-        workspace: canonical,
-        llm_client: Arc::clone(&resolved.llm_client),
-        opts,
-        mcp_sources: resolved.mcp_sources.clone(),
-    })
+    build_session_capabilities(
+        SessionCapabilityInput {
+            code_config: &agent.code_config,
+            base_config: &agent.config,
+            workspace: canonical,
+            llm_client: Arc::clone(&resolved.llm_client),
+            opts,
+            mcp_sources: resolved.mcp_sources.clone(),
+        },
+        session_lifetime,
+    )
 }
 
 fn finish_agent_session(
@@ -134,6 +176,7 @@ fn finish_agent_session(
     resolved: ResolvedSessionConfig,
     capabilities: SessionCapabilities,
     runtime: SessionRuntime,
+    session_cancel: tokio_util::sync::CancellationToken,
 ) -> Result<AgentSession> {
     let opts = &resolved.options;
     let llm_client = Arc::clone(&resolved.llm_client);
@@ -146,6 +189,8 @@ fn finish_agent_session(
     let context_providers = capabilities.context_providers;
     let effective_registry = capabilities.skill_registry;
     let subagent_tasks = capabilities.subagent_tasks;
+    let workspace_retrieval = capabilities.workspace_retrieval;
+    let owned_workspace_backend = capabilities.owned_workspace_backend;
 
     let prompt_slots = opts
         .prompt_slots
@@ -226,7 +271,6 @@ fn finish_agent_session(
     let command_registry = CommandRegistry::new();
 
     let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let session_cancel = tokio_util::sync::CancellationToken::new();
     let cancel_token = Arc::new(tokio::sync::Mutex::new(None));
     let current_run_id = Arc::new(tokio::sync::Mutex::new(None));
     let run_admission = Arc::new(super::run_admission::RunAdmission::default());
@@ -269,6 +313,8 @@ fn finish_agent_session(
         skill_ownership: std::sync::Mutex::new(
             super::session_extensions::SessionSkillOwnership::default(),
         ),
+        workspace_retrieval: workspace_retrieval.clone(),
+        owned_workspace_backend,
     });
 
     let session = AgentSession {
@@ -313,6 +359,7 @@ fn finish_agent_session(
         verification_reports: Arc::new(RwLock::new(Vec::new())),
         closed,
         session_cancel,
+        workspace_retrieval,
         close_handle,
         tenant_id: opts.tenant_id.clone(),
         principal: opts.principal.clone(),

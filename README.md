@@ -346,8 +346,15 @@ expected-vector byte budgets before calls, propagates cancellation, applies
 typed bounded retries, and rejects partial, duplicate, unknown, dimension-
 mismatched, non-finite, non-normalized, or descriptor-drifted responses. Input
 text and vector values are redacted from Code-owned `Debug` output and errors.
-This contract does not enable retrieval by itself; asynchronous session-owned
-vector indexing is the next Workspace Retrieval gate.
+`SessionOptions::with_workspace_retrieval(WorkspaceRetrievalOptions::new(...))`
+binds that contract to a session. Code reuses the admitted chunk catalog,
+starts indexing without delaying `session_async`, and publishes completed
+files as atomic A3S Memory partitions. `AgentSession::workspace_retrieval_status`
+reports building, ready, degraded, or closed state, revisions, coverage, queue
+depth, failures, and vector memory. Closing the session cancels the provider,
+joins the owned task within a configured deadline, stops Code-owned local
+manifest work, and drops all vector state. Semantic query rendering remains a
+separate gate; CODE-S1 exposes lifecycle and readiness, not model-facing search.
 
 Use `edit` with `dry_run: true` to receive the exact before/after diff without
 writing. The dry run is declared read-only and can be safely batched. Apply the

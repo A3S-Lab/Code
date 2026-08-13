@@ -37,7 +37,9 @@ pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict
 pub use retrieval::{
     ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, LexicalSearchHit,
     LexicalSearchRequest, LexicalSearchResult, WorkspaceChunk, WorkspaceChunkCatalog,
-    WorkspaceChunkId, WorkspaceEligibilityPolicy, WorkspaceIndexError,
+    WorkspaceChunkId, WorkspaceEligibilityPolicy, WorkspaceIndexError, WorkspaceRetrievalError,
+    WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalResult,
+    WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus, WorkspaceSemanticIndexLimits,
 };
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};

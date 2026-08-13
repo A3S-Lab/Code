@@ -20,6 +20,7 @@ pub enum SessionBuildResource {
     Queue,
     Mcp,
     RlTrajectory,
+    WorkspaceRetrieval,
 }
 
 impl std::fmt::Display for SessionBuildResource {
@@ -30,6 +31,7 @@ impl std::fmt::Display for SessionBuildResource {
             Self::Queue => "session queue",
             Self::Mcp => "MCP",
             Self::RlTrajectory => "RL trajectory recorder",
+            Self::WorkspaceRetrieval => "workspace retrieval",
         })
     }
 }

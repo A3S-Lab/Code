@@ -97,6 +97,11 @@ impl ResolvedSessionConfig {
                 resource: SessionBuildResource::RlTrajectory,
             });
         }
+        if options.workspace_retrieval.is_some() {
+            return Err(CodeError::AsyncSessionBuildRequired {
+                resource: SessionBuildResource::WorkspaceRetrieval,
+            });
+        }
         let memory_store =
             options
                 .memory_store

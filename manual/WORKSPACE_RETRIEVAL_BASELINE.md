@@ -144,3 +144,39 @@ provider response bodies. Deterministic fake-provider tests cover batching,
 order, partial failure, cancellation, timeout, retry exhaustion, descriptor
 drift, output identity, dimension, non-finite values, normalization, budgets,
 panic containment, and diagnostic redaction.
+
+## CODE-S1 implementation evidence
+
+Code pins A3S Memory to commit `82e3734f` and creates one exact in-memory
+vector index per enabled session. The typed `WorkspaceRetrievalOptions` accepts
+a provider object, embedding limits, vector record/byte budgets, and a bounded
+shutdown timeout; it does not expose a string backend selector. Retrieval is
+disabled by default and the synchronous compatibility session constructor
+rejects it as an async-only resource.
+
+An enabled local session creates one manifest-backed workspace bundle and
+shares its chunk catalog with lexical and semantic projections. A custom
+workspace is accepted only when its `WorkspaceServices` supplies a catalog;
+Code never bypasses that abstraction to read host files. `session_async`
+returns while embedding is still blocked. Each file is an atomic A3S Memory
+partition and becomes query-ready independently, so status exposes partial
+coverage without pretending the corpus is complete.
+
+Catalog revisions are watched directly. A changed or removed digest is marked
+building and its old vector partition is removed before replacement embedding.
+Generation cancellation plus digest checks before and after Memory publication
+prevent an embedding completed for a superseded catalog revision from becoming
+ready. Provider or vector-budget failures degrade semantic coverage only; the
+catalog and lexical paths stay available.
+
+`AgentSession::workspace_retrieval_status` exposes phase, catalog/source/vector
+revisions, eligible/catalog/indexed file and chunk counts, basis-point coverage,
+queue depth, current and cumulative failures, vector records/bytes, and the
+immutable model descriptor. Session close cancels active embedding, joins or
+aborts the single owned task within the configured deadline, clears and drops
+the vector index, and shuts down only local manifest/catalog work created by
+that session. Host-owned workspaces retain their external lifecycle. Regression
+tests cover partial readiness, update-during-embedding fencing, per-file
+degradation, build-after-start failure cleanup, default disablement, custom
+workspace rejection, synchronous rejection, idempotent close, and weak-reference
+vector cleanup.

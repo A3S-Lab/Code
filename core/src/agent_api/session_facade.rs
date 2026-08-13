@@ -72,6 +72,18 @@ impl AgentSession {
         self.session_cancel.clone()
     }
 
+    /// Observe asynchronous semantic workspace indexing for this session.
+    ///
+    /// Disabled sessions return a stable `disabled` status without starting a
+    /// background task. Closing a configured session transitions the same
+    /// status to `closed` and releases its in-memory vector index.
+    pub fn workspace_retrieval_status(&self) -> crate::workspace::WorkspaceRetrievalStatus {
+        self.workspace_retrieval
+            .as_ref()
+            .map(|runtime| runtime.status())
+            .unwrap_or_else(crate::workspace::WorkspaceRetrievalStatus::disabled)
+    }
+
     /// Return the host-defined tenant id, if any.
     ///
     /// The framework only transports this string — it never interprets

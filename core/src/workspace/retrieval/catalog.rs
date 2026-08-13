@@ -7,6 +7,7 @@ use crate::workspace::{LocalWorkspaceFile, LocalWorkspaceFileStatus, WorkspacePa
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::sync::{Arc, RwLock};
+use tokio::sync::watch;
 
 /// Immutable, query-safe view of one catalog revision.
 #[derive(Clone)]
@@ -53,6 +54,18 @@ impl ChunkCatalogSnapshot {
         self.state.estimated_index_bytes
     }
 
+    /// Number of files admitted by the workspace policy for this source
+    /// revision, including files whose catalog build failed.
+    pub fn eligible_file_count(&self) -> usize {
+        self.state.eligible_file_count
+    }
+
+    /// Number of admitted files that failed catalog construction for this
+    /// source revision.
+    pub fn failed_file_count(&self) -> usize {
+        self.state.failed_file_count
+    }
+
     pub fn paths(&self) -> Vec<String> {
         self.state.files.keys().cloned().collect()
     }
@@ -81,6 +94,7 @@ pub struct WorkspaceChunkCatalog {
     chunking: ChunkingConfig,
     limits: ChunkCatalogLimits,
     state: RwLock<Arc<CatalogState>>,
+    updates: watch::Sender<ChunkCatalogSnapshot>,
 }
 
 impl std::fmt::Debug for WorkspaceChunkCatalog {
@@ -101,19 +115,33 @@ impl WorkspaceChunkCatalog {
     ) -> WorkspaceIndexResult<Arc<Self>> {
         let chunking = chunking.validate()?;
         let limits = limits.validate()?;
+        let state = Arc::new(CatalogState::default());
+        let (updates, _) = watch::channel(ChunkCatalogSnapshot {
+            state: Arc::clone(&state),
+        });
         Ok(Arc::new(Self {
             chunking,
             limits,
-            state: RwLock::new(Arc::new(CatalogState::default())),
+            state: RwLock::new(state),
+            updates,
         }))
     }
 
     pub(crate) fn default_catalog() -> Arc<Self> {
+        let state = Arc::new(CatalogState::default());
+        let (updates, _) = watch::channel(ChunkCatalogSnapshot {
+            state: Arc::clone(&state),
+        });
         Arc::new(Self {
             chunking: ChunkingConfig::default(),
             limits: ChunkCatalogLimits::default(),
-            state: RwLock::new(Arc::new(CatalogState::default())),
+            state: RwLock::new(state),
+            updates,
         })
+    }
+
+    pub(crate) fn subscribe(&self) -> watch::Receiver<ChunkCatalogSnapshot> {
+        self.updates.subscribe()
     }
 
     pub fn snapshot(&self) -> WorkspaceIndexResult<ChunkCatalogSnapshot> {
@@ -159,7 +187,8 @@ impl WorkspaceChunkCatalog {
             .map_err(|_| WorkspaceIndexError::LockPoisoned)?;
         let mut files = state.files.clone();
         files.insert(path.as_str().to_owned(), replacement);
-        self.publish_locked(&mut state, source_revision, files)
+        let eligible_file_count = files.len();
+        self.publish_locked(&mut state, source_revision, files, eligible_file_count, 0)
     }
 
     pub fn remove_file(
@@ -178,7 +207,8 @@ impl WorkspaceChunkCatalog {
             .map_err(|_| WorkspaceIndexError::LockPoisoned)?;
         let mut files = state.files.clone();
         files.remove(path.as_str());
-        self.publish_locked(&mut state, source_revision, files)
+        let eligible_file_count = files.len();
+        self.publish_locked(&mut state, source_revision, files, eligible_file_count, 0)
     }
 
     pub fn clear(&self, source_revision: u64) -> WorkspaceIndexResult<ChunkCatalogSnapshot> {
@@ -186,7 +216,7 @@ impl WorkspaceChunkCatalog {
             .state
             .write()
             .map_err(|_| WorkspaceIndexError::LockPoisoned)?;
-        self.publish_locked(&mut state, source_revision, BTreeMap::new())
+        self.publish_locked(&mut state, source_revision, BTreeMap::new(), 0, 0)
     }
 
     pub(crate) fn chunking(&self) -> ChunkingConfig {
@@ -202,6 +232,8 @@ impl WorkspaceChunkCatalog {
         expected_revision: u64,
         source_revision: u64,
         files: BTreeMap<String, Arc<CatalogFile>>,
+        eligible_file_count: usize,
+        failed_file_count: usize,
     ) -> WorkspaceIndexResult<ChunkCatalogSnapshot> {
         let mut state = self
             .state
@@ -213,7 +245,13 @@ impl WorkspaceChunkCatalog {
                 actual: state.revision,
             });
         }
-        self.publish_locked(&mut state, source_revision, files)
+        self.publish_locked(
+            &mut state,
+            source_revision,
+            files,
+            eligible_file_count,
+            failed_file_count,
+        )
     }
 
     fn publish_locked(
@@ -221,7 +259,14 @@ impl WorkspaceChunkCatalog {
         state: &mut Arc<CatalogState>,
         source_revision: u64,
         files: BTreeMap<String, Arc<CatalogFile>>,
+        eligible_file_count: usize,
+        failed_file_count: usize,
     ) -> WorkspaceIndexResult<ChunkCatalogSnapshot> {
+        if files.len().saturating_add(failed_file_count) > eligible_file_count {
+            return Err(WorkspaceIndexError::InvalidConfig(
+                "catalog coverage counts are inconsistent".to_owned(),
+            ));
+        }
         let usage = CatalogUsage::from_files(files.values(), self.limits)?;
         let chunks = files
             .values()
@@ -240,9 +285,13 @@ impl WorkspaceChunkCatalog {
             chunks: Arc::from(chunks),
             text_bytes: usage.text_bytes,
             estimated_index_bytes: usage.index_bytes,
+            eligible_file_count,
+            failed_file_count,
         });
         *state = Arc::clone(&next);
-        Ok(ChunkCatalogSnapshot { state: next })
+        let snapshot = ChunkCatalogSnapshot { state: next };
+        self.updates.send_replace(snapshot.clone());
+        Ok(snapshot)
     }
 }
 
@@ -317,6 +366,8 @@ pub(crate) struct CatalogState {
     pub(crate) chunks: Arc<[Arc<WorkspaceChunk>]>,
     pub(crate) text_bytes: usize,
     pub(crate) estimated_index_bytes: usize,
+    pub(crate) eligible_file_count: usize,
+    pub(crate) failed_file_count: usize,
 }
 
 pub(crate) struct CatalogFile {

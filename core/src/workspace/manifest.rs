@@ -453,6 +453,14 @@ impl ManifestWorkspaceBackend {
             .catalog()
     }
 
+    /// Stop the local manifest and any lazily enabled catalog projection.
+    pub(crate) fn shutdown(&self) {
+        if let Some(runtime) = self.catalog_runtime.get() {
+            runtime.shutdown();
+        }
+        self.manifest.shutdown();
+    }
+
     pub fn local_root(&self) -> &Path {
         &self.local.root
     }

@@ -51,10 +51,8 @@ impl LocalWorkspaceCatalogRuntime {
     pub(crate) fn catalog(&self) -> Arc<WorkspaceChunkCatalog> {
         Arc::clone(&self.catalog)
     }
-}
 
-impl Drop for LocalWorkspaceCatalogRuntime {
-    fn drop(&mut self) {
+    pub(crate) fn shutdown(&self) {
         self.lifetime.cancel();
         if let Some(task) = self
             .task
@@ -64,6 +62,12 @@ impl Drop for LocalWorkspaceCatalogRuntime {
         {
             task.abort();
         }
+    }
+}
+
+impl Drop for LocalWorkspaceCatalogRuntime {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 

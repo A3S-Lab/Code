@@ -66,6 +66,7 @@ impl std::fmt::Debug for SessionOptions {
             )
             .field("sandbox_handle", &self.sandbox_handle.is_some())
             .field("workspace_services", &self.workspace_services.is_some())
+            .field("workspace_retrieval", &self.workspace_retrieval)
             .field("auto_compact", &self.auto_compact)
             .field("auto_compact_threshold", &self.auto_compact_threshold)
             .field("max_context_tokens", &self.max_context_tokens)
@@ -535,6 +536,19 @@ impl SessionOptions {
         services: Arc<crate::workspace::WorkspaceServices>,
     ) -> Self {
         self.workspace_services = Some(services);
+        self
+    }
+
+    /// Enable session-bound semantic workspace indexing.
+    ///
+    /// The session builder returns without waiting for corpus embeddings. The
+    /// caller can observe partial readiness through
+    /// [`AgentSession::workspace_retrieval_status`](super::AgentSession::workspace_retrieval_status).
+    pub fn with_workspace_retrieval(
+        mut self,
+        options: crate::workspace::WorkspaceRetrievalOptions,
+    ) -> Self {
+        self.workspace_retrieval = Some(options);
         self
     }
 

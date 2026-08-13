@@ -79,6 +79,12 @@ pub(crate) struct SessionCloseHandle {
     pub(crate) skill_registry: Arc<crate::skills::SkillRegistry>,
     /// Exact live skill registrations owned by this session.
     pub(crate) skill_ownership: std::sync::Mutex<super::session_extensions::SessionSkillOwnership>,
+    /// Session-owned semantic index. It is cancelled, joined, and cleared by
+    /// the same close boundary as runs and other session resources.
+    pub(crate) workspace_retrieval: Option<Arc<crate::workspace::WorkspaceRetrievalRuntime>>,
+    /// Local manifest backend created by Code for this session. Host-supplied
+    /// backends keep their external lifetime and are never shut down here.
+    pub(crate) owned_workspace_backend: Option<Arc<crate::workspace::ManifestWorkspaceBackend>>,
 }
 
 impl SessionCloseHandle {
@@ -141,6 +147,15 @@ impl SessionCloseHandle {
 
         // 3. Fire the session-level token so children cascade.
         self.session_cancel.cancel();
+
+        // The runtime derives its token from `session_cancel`, then performs a
+        // bounded join and releases the complete vector allocation graph.
+        if let Some(retrieval) = &self.workspace_retrieval {
+            retrieval.close().await;
+        }
+        if let Some(backend) = &self.owned_workspace_backend {
+            backend.shutdown();
+        }
 
         // 4. Mark the active run cancelled and notify the hook executor. The
         //    per-run token has already fired via step 1.

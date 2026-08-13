@@ -14,6 +14,7 @@ use crate::mcp::McpTool;
 use crate::skills::SkillRegistry;
 use crate::subagent::AgentRegistry;
 use crate::tools::ToolExecutor;
+use crate::{CodeError, Result, SessionBuildResource};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,16 +36,24 @@ pub(super) struct SessionCapabilities {
     pub(super) skill_registry: Arc<SkillRegistry>,
     pub(super) agent_registry: Arc<AgentRegistry>,
     pub(super) subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
+    pub(super) workspace_retrieval: Option<Arc<crate::workspace::WorkspaceRetrievalRuntime>>,
+    pub(super) owned_workspace_backend: Option<Arc<crate::workspace::ManifestWorkspaceBackend>>,
 }
 
-pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> SessionCapabilities {
+struct ResolvedWorkspaceServices {
+    services: Arc<crate::workspace::WorkspaceServices>,
+    retrieval: Option<Arc<crate::workspace::WorkspaceRetrievalRuntime>>,
+    owned_backend: Option<Arc<crate::workspace::ManifestWorkspaceBackend>>,
+}
+
+pub(super) fn build_session_capabilities(
+    input: SessionCapabilityInput<'_>,
+    session_lifetime: tokio_util::sync::CancellationToken,
+) -> Result<SessionCapabilities> {
     let artifact_limits = input.opts.artifact_store_limits.unwrap_or_default();
     let retention_limits = input.opts.retention_limits.unwrap_or_default();
-    let workspace_services = input
-        .opts
-        .workspace_services
-        .clone()
-        .unwrap_or_else(|| crate::workspace::WorkspaceServices::local(input.workspace));
+    let workspace = resolve_workspace_services(&input, session_lifetime)?;
+    let workspace_services = workspace.services;
     let tool_executor = Arc::new(
         ToolExecutor::new_with_workspace_services_and_artifact_limits(
             input.workspace.display().to_string(),
@@ -108,7 +117,7 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
     );
     let tool_defs = tool_executor.definitions();
 
-    SessionCapabilities {
+    Ok(SessionCapabilities {
         tool_executor,
         trace_sink,
         tool_defs,
@@ -116,7 +125,71 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
         skill_registry,
         agent_registry,
         subagent_tasks,
+        workspace_retrieval: workspace.retrieval,
+        owned_workspace_backend: workspace.owned_backend,
+    })
+}
+
+fn resolve_workspace_services(
+    input: &SessionCapabilityInput<'_>,
+    session_lifetime: tokio_util::sync::CancellationToken,
+) -> Result<ResolvedWorkspaceServices> {
+    let (mut services, owned_workspace_backend) = match &input.opts.workspace_services {
+        Some(services) => (Arc::clone(services), None),
+        None if input.opts.workspace_retrieval.is_some() => {
+            let backend = crate::workspace::ManifestWorkspaceBackend::new(input.workspace);
+            (
+                crate::workspace::WorkspaceServices::local_with_retrieval_backend(Arc::clone(
+                    &backend,
+                )),
+                Some(backend),
+            )
+        }
+        None => (
+            crate::workspace::WorkspaceServices::local(input.workspace),
+            None,
+        ),
+    };
+    if services.workspace_retrieval().is_some() {
+        return Err(CodeError::SessionConfiguration {
+            field: "workspace_services",
+            message: "workspace services already belong to another semantic retrieval runtime"
+                .to_owned(),
+        });
     }
+
+    let Some(options) = input.opts.workspace_retrieval.clone() else {
+        return Ok(ResolvedWorkspaceServices {
+            services,
+            retrieval: None,
+            owned_backend: owned_workspace_backend,
+        });
+    };
+    let catalog = services
+        .chunk_catalog()
+        .ok_or_else(|| CodeError::SessionConfiguration {
+            field: "workspace_retrieval",
+            message: "semantic retrieval requires workspace services with a chunk catalog"
+                .to_owned(),
+        })?;
+    let runtime =
+        crate::workspace::WorkspaceRetrievalRuntime::start(catalog, options, session_lifetime)
+            .map_err(|error| CodeError::SessionInitialization {
+                resource: SessionBuildResource::WorkspaceRetrieval,
+                message: error.to_string(),
+            })?;
+    services = services
+        .with_workspace_retrieval(Arc::clone(&runtime))
+        .ok_or_else(|| CodeError::SessionConfiguration {
+            field: "workspace_services",
+            message: "workspace services already belong to another semantic retrieval runtime"
+                .to_owned(),
+        })?;
+    Ok(ResolvedWorkspaceServices {
+        services,
+        retrieval: Some(runtime),
+        owned_backend: owned_workspace_backend,
+    })
 }
 
 pub(super) fn register_skill_capability(
@@ -212,7 +285,7 @@ fn register_task_capability(
         duplicate_tool_call_threshold: input.opts.duplicate_tool_call_threshold,
         confirmation_manager: input.opts.confirmation_manager.clone(),
         enforce_active_skill_tool_restrictions: input.opts.enforce_active_skill_tool_restrictions,
-        workspace_services: input.opts.workspace_services.clone(),
+        workspace_services: Some(tool_executor.registry().context().workspace_services),
         sandbox_handle: input.opts.sandbox_handle.clone(),
         budget_guard: input.opts.budget_guard.clone(),
     };

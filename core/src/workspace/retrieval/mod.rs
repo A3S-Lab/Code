@@ -10,12 +10,19 @@ mod eligibility;
 pub(crate) mod lexical;
 mod reconcile;
 mod runtime;
+mod semantic_runtime;
+mod semantic_types;
 mod types;
 
 pub use catalog::{ChunkCatalogSnapshot, WorkspaceChunkCatalog};
 pub use eligibility::WorkspaceEligibilityPolicy;
 pub use lexical::{LexicalSearchHit, LexicalSearchRequest, LexicalSearchResult};
 pub(crate) use runtime::LocalWorkspaceCatalogRuntime;
+pub use semantic_runtime::WorkspaceRetrievalRuntime;
+pub use semantic_types::{
+    WorkspaceRetrievalError, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
+    WorkspaceRetrievalResult, WorkspaceRetrievalStatus, WorkspaceSemanticIndexLimits,
+};
 pub use types::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunk, WorkspaceChunkId, WorkspaceIndexError,
 };

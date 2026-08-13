@@ -147,6 +147,8 @@ impl WorkspaceCatalogReconciler {
                 previous.revision(),
                 snapshot.version,
                 next_files,
+                eligible_paths.len(),
+                0,
             )?;
             return Ok(CatalogReconcileReport {
                 source_revision: snapshot.version,
@@ -169,7 +171,13 @@ impl WorkspaceCatalogReconciler {
             previous.revision()
         } else {
             self.catalog
-                .publish_reconciliation(previous.revision(), snapshot.version, next_files.clone())?
+                .publish_reconciliation(
+                    previous.revision(),
+                    snapshot.version,
+                    next_files.clone(),
+                    eligible_paths.len(),
+                    0,
+                )?
                 .revision()
         };
 
@@ -244,9 +252,13 @@ impl WorkspaceCatalogReconciler {
         read_paths.sort();
         failures.sort_by(|left, right| left.path.cmp(&right.path));
 
-        let published =
-            self.catalog
-                .publish_reconciliation(publish_revision, snapshot.version, next_files)?;
+        let published = self.catalog.publish_reconciliation(
+            publish_revision,
+            snapshot.version,
+            next_files,
+            eligible_paths.len(),
+            failures.len(),
+        )?;
         Ok(CatalogReconcileReport {
             source_revision: snapshot.version,
             catalog_revision: published.revision(),

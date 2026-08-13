@@ -6,8 +6,8 @@ use super::{
     LocalWorkspaceBackend, ManifestWorkspaceBackend, VirtualPathResolver, WorkspaceCapabilities,
     WorkspaceChunkCatalog, WorkspaceCommandRunner, WorkspaceFileSystem, WorkspaceFileSystemExt,
     WorkspaceGit, WorkspaceGitStashProvider, WorkspaceGitWorktreeProvider, WorkspacePath,
-    WorkspacePathResolver, WorkspaceRef, WorkspaceResult, WorkspaceSearch, WorkspaceTextReader,
-    WorkspaceWriteOutcome,
+    WorkspacePathResolver, WorkspaceRef, WorkspaceResult, WorkspaceRetrievalRuntime,
+    WorkspaceSearch, WorkspaceTextReader, WorkspaceWriteOutcome,
 };
 use crate::code_intelligence::{LocalCodeIntelligence, WorkspaceCodeIntelligence};
 use anyhow::{anyhow, Result};
@@ -26,6 +26,7 @@ pub struct WorkspaceServices {
     search: Option<Arc<dyn WorkspaceSearch>>,
     code_intelligence: Option<Arc<dyn WorkspaceCodeIntelligence>>,
     chunk_catalog: Option<Arc<WorkspaceChunkCatalog>>,
+    workspace_retrieval: Option<Arc<WorkspaceRetrievalRuntime>>,
     git: Option<Arc<dyn WorkspaceGit>>,
     git_stash: Option<Arc<dyn WorkspaceGitStashProvider>>,
     git_worktree: Option<Arc<dyn WorkspaceGitWorktreeProvider>>,
@@ -47,6 +48,7 @@ impl std::fmt::Debug for WorkspaceServices {
             .field("search", &self.search.is_some())
             .field("code_intelligence", &self.code_intelligence.is_some())
             .field("chunk_catalog", &self.chunk_catalog.is_some())
+            .field("workspace_retrieval", &self.workspace_retrieval.is_some())
             .field("git", &self.git.is_some())
             .field("git_stash", &self.git_stash.is_some())
             .field("git_worktree", &self.git_worktree.is_some())
@@ -86,6 +88,7 @@ impl WorkspaceServices {
             search,
             code_intelligence: None,
             chunk_catalog: None,
+            workspace_retrieval: None,
             git,
             git_stash: None,
             git_worktree: None,
@@ -126,6 +129,7 @@ impl WorkspaceServices {
             search: Some(search),
             code_intelligence: None,
             chunk_catalog: None,
+            workspace_retrieval: None,
             git: Some(git),
             git_stash: Some(git_stash),
             git_worktree: Some(git_worktree),
@@ -238,6 +242,7 @@ impl WorkspaceServices {
             search: Some(search),
             code_intelligence: None,
             chunk_catalog,
+            workspace_retrieval: None,
             git: Some(git),
             git_stash: Some(git_stash),
             git_worktree: Some(git_worktree),
@@ -294,6 +299,38 @@ impl WorkspaceServices {
         self.chunk_catalog.clone()
     }
 
+    /// Optional semantic retrieval runtime bound to this workspace session.
+    pub fn workspace_retrieval(&self) -> Option<Arc<WorkspaceRetrievalRuntime>> {
+        self.workspace_retrieval.clone()
+    }
+
+    pub(crate) fn with_workspace_retrieval(
+        &self,
+        runtime: Arc<WorkspaceRetrievalRuntime>,
+    ) -> Option<Arc<Self>> {
+        if self.workspace_retrieval.is_some() {
+            return None;
+        }
+        Some(Arc::new(Self {
+            workspace_ref: self.workspace_ref.clone(),
+            capabilities: self.capabilities,
+            path_resolver: Arc::clone(&self.path_resolver),
+            file_system: Arc::clone(&self.file_system),
+            file_system_ext: self.file_system_ext.clone(),
+            text_reader: self.text_reader.clone(),
+            command_runner: self.command_runner.clone(),
+            search: self.search.clone(),
+            code_intelligence: self.code_intelligence.clone(),
+            chunk_catalog: self.chunk_catalog.clone(),
+            workspace_retrieval: Some(runtime),
+            git: self.git.clone(),
+            git_stash: self.git_stash.clone(),
+            git_worktree: self.git_worktree.clone(),
+            operation_timeout: self.operation_timeout,
+            local_root: self.local_root.clone(),
+        }))
+    }
+
     /// Attach a semantic code query provider while preserving every existing
     /// workspace capability and backend.
     pub fn with_code_intelligence(
@@ -313,6 +350,7 @@ impl WorkspaceServices {
             search: self.search.clone(),
             code_intelligence: Some(provider),
             chunk_catalog: self.chunk_catalog.clone(),
+            workspace_retrieval: self.workspace_retrieval.clone(),
             git: self.git.clone(),
             git_stash: self.git_stash.clone(),
             git_worktree: self.git_worktree.clone(),
@@ -367,6 +405,7 @@ impl WorkspaceServices {
             search: self.search.clone(),
             code_intelligence: self.code_intelligence.clone(),
             chunk_catalog: self.chunk_catalog.clone(),
+            workspace_retrieval: self.workspace_retrieval.clone(),
             git: Some(git),
             git_stash,
             git_worktree: None,
@@ -616,6 +655,7 @@ impl WorkspaceServicesBuilder {
         services.capabilities.code_intelligence = self.code_intelligence.is_some();
         services.code_intelligence = self.code_intelligence;
         services.chunk_catalog = self.chunk_catalog;
+        services.workspace_retrieval = None;
         services.git_stash = self.git_stash;
         services.git_worktree = self.git_worktree;
         services.operation_timeout = self.operation_timeout;

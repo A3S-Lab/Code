@@ -330,6 +330,12 @@ pub struct SessionOptions {
     /// server-local filesystem. This is the primary extension point for DFS,
     /// browser, container, and remote workspace deployments.
     pub workspace_services: Option<Arc<crate::workspace::WorkspaceServices>>,
+    /// Optional session-owned semantic workspace retrieval configuration.
+    ///
+    /// Construction is asynchronous and ephemeral. Source chunks stay in the
+    /// workspace catalog, vectors stay in memory, and no vector state is
+    /// serialized with the session snapshot.
+    pub workspace_retrieval: Option<crate::workspace::WorkspaceRetrievalOptions>,
     /// Enable auto-compaction when context usage exceeds threshold.
     pub auto_compact: bool,
     /// Context usage percentage threshold for auto-compaction (0.0 - 1.0).
@@ -492,6 +498,8 @@ pub struct AgentSession {
     /// this token first, after which any new `child_token()` returns an
     /// already-cancelled token (defending against close/spawn races).
     pub(crate) session_cancel: tokio_util::sync::CancellationToken,
+    /// Optional asynchronous semantic workspace index owned by this session.
+    workspace_retrieval: Option<Arc<crate::workspace::WorkspaceRetrievalRuntime>>,
     /// Shared `Arc`-handle used by both [`AgentSession::close`] and the
     /// parent [`Agent`]'s registry. The handle bundles every field needed
     /// to perform the close sequence so the two entry points cannot drift.
@@ -520,5 +528,7 @@ pub struct AgentSession {
 
 #[cfg(test)]
 mod replacement_tests;
+#[cfg(test)]
+mod retrieval_tests;
 #[cfg(test)]
 mod tests;

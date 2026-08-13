@@ -353,7 +353,8 @@ Current implementation status:
 | `MEM-V1` | Delivered | A3S Memory `main` commit `82e3734` adds the public exact ephemeral vector kernel and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, Clippy, and rustdoc gates |
 | `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, per-file BM25 postings, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read BM25 path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
-| `CODE-S1` | Next | Asynchronous session retrieval runtime, A3S Memory vector partitions, partial readiness, status, and bounded shutdown |
+| `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `82e3734f` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
+| `CODE-Q1` | Next | Structured semantic search, query embedding, immutable revision metadata, digest-verified snippets, and explicit fallback |
 
 The detailed baseline and threat model are in
 [`manual/WORKSPACE_RETRIEVAL_BASELINE.md`](manual/WORKSPACE_RETRIEVAL_BASELINE.md).
