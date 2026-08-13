@@ -74,7 +74,7 @@ async fn enabled_session_exposes_and_executes_semantic_search() {
         .unwrap();
     assert_eq!(
         search.parameters["properties"]["mode"]["enum"],
-        serde_json::json!(["grep", "glob", "bm25", "semantic"])
+        serde_json::json!(["grep", "glob", "bm25", "semantic", "hybrid"])
     );
     let result = session
         .tool(
@@ -104,6 +104,33 @@ async fn enabled_session_exposes_and_executes_semantic_search() {
     assert_eq!(structured.hits.len(), 1);
     assert_eq!(structured.hits[0].chunk.path.as_ref(), "cache.rs");
 
+    let hybrid = session
+        .tool(
+            "search",
+            serde_json::json!({
+                "mode": "hybrid",
+                "query": "session cleanup",
+                "include": "*.rs",
+                "limit": 1
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hybrid.exit_code, 0, "{}", hybrid.output);
+    assert!(hybrid.output.contains("cache.rs:1-1"), "{}", hybrid.output);
+    let metadata = hybrid.metadata.unwrap();
+    assert_eq!(metadata["mode"], "hybrid");
+    assert_eq!(metadata["algorithm"], "rrf_k60");
+    assert_eq!(metadata["results"][0]["digest_verified"], true);
+
+    let structured_hybrid = session
+        .hybrid_search(crate::WorkspaceHybridSearchRequest::new("session cleanup").with_limit(1))
+        .await
+        .unwrap();
+    assert_eq!(structured_hybrid.hits.len(), 1);
+    assert_eq!(structured_hybrid.hits[0].chunk.path.as_ref(), "cache.rs");
+    assert_eq!(structured_hybrid.channels.len(), 4);
+
     let invalid = session
         .semantic_search(
             crate::WorkspaceSemanticSearchRequest::new("session cleanup").with_path("../escape"),
@@ -120,6 +147,14 @@ async fn enabled_session_exposes_and_executes_semantic_search() {
         .semantic_search(crate::WorkspaceSemanticSearchRequest::new(
             "session cleanup",
         ))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        closed,
+        crate::WorkspaceRetrievalError::Unavailable
+    ));
+    let closed = session
+        .hybrid_search(crate::WorkspaceHybridSearchRequest::new("session cleanup"))
         .await
         .unwrap_err();
     assert!(matches!(

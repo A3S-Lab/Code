@@ -44,63 +44,72 @@
       "category": "exact",
       "query": "session cache invalidation",
       "relevant_paths": ["src/session_cache.rs"],
-      "expected_bm25_paths": ["src/session_cache.rs", "docs/cache.md", "src/session_cache_zh.rs"]
+      "expected_bm25_paths": ["src/session_cache.rs", "docs/cache.md", "src/session_cache_zh.rs"],
+      "expected_hybrid_paths": ["src/session_cache.rs", "docs/cache.md", "src/session_cache_zh.rs"]
     },
     {
       "id": "identifier-full",
       "category": "identifier",
       "query": "LocalWorkspaceAccessPolicy",
       "relevant_paths": ["src/path_policy.rs"],
-      "expected_bm25_paths": ["src/path_policy.rs", "src/session_cache.rs", "src/workspace_policy_zh.rs"]
+      "expected_bm25_paths": ["src/path_policy.rs", "src/session_cache.rs", "src/workspace_policy_zh.rs"],
+      "expected_hybrid_paths": ["src/path_policy.rs", "src/session_cache.rs", "src/workspace_policy_zh.rs"]
     },
     {
       "id": "identifier-split",
       "category": "identifier",
       "query": "local workspace access policy",
       "relevant_paths": ["src/path_policy.rs"],
-      "expected_bm25_paths": ["src/path_policy.rs", "src/session_cache.rs", "src/workspace_policy_zh.rs"]
+      "expected_bm25_paths": ["src/path_policy.rs", "src/session_cache.rs", "src/workspace_policy_zh.rs"],
+      "expected_hybrid_paths": ["src/path_policy.rs", "src/session_cache.rs", "src/workspace_policy_zh.rs"]
     },
     {
       "id": "exact-retry-policy",
       "category": "exact",
       "query": "exponential backoff jitter",
       "relevant_paths": ["src/retry.rs"],
-      "expected_bm25_paths": ["src/retry.rs"]
+      "expected_bm25_paths": ["src/retry.rs"],
+      "expected_hybrid_paths": ["src/retry.rs"]
     },
     {
       "id": "cjk-workspace-policy",
       "category": "cjk",
       "query": "工作区权限策略",
       "relevant_paths": ["src/workspace_policy_zh.rs"],
-      "expected_bm25_paths": ["src/workspace_policy_zh.rs"]
+      "expected_bm25_paths": ["src/workspace_policy_zh.rs"],
+      "expected_hybrid_paths": ["src/workspace_policy_zh.rs"]
     },
     {
       "id": "cjk-session-cache",
       "category": "cjk",
       "query": "会话缓存过期",
       "relevant_paths": ["src/session_cache_zh.rs"],
-      "expected_bm25_paths": ["src/session_cache_zh.rs"]
+      "expected_bm25_paths": ["src/session_cache_zh.rs"],
+      "expected_hybrid_paths": ["src/session_cache_zh.rs"]
     },
     {
       "id": "paraphrase-authentication",
       "category": "paraphrase",
       "query": "login token validation",
       "relevant_paths": ["src/http_guard.rs"],
-      "expected_bm25_paths": []
+      "expected_bm25_paths": [],
+      "expected_hybrid_paths": ["src/http_guard.rs"]
     },
     {
       "id": "paraphrase-retry",
       "category": "paraphrase",
       "query": "delay repeated network attempts",
       "relevant_paths": ["src/retry.rs"],
-      "expected_bm25_paths": []
+      "expected_bm25_paths": [],
+      "expected_hybrid_paths": ["src/retry.rs"]
     },
     {
       "id": "cross-language-paraphrase",
       "category": "paraphrase",
       "query": "refresh stored conversation state when it becomes stale",
       "relevant_paths": ["src/session_cache_zh.rs"],
-      "expected_bm25_paths": []
+      "expected_bm25_paths": [],
+      "expected_hybrid_paths": ["src/session_cache_zh.rs"]
     }
   ],
   "expected_bm25_summary": {
@@ -112,6 +121,17 @@
       "exact": 1.0,
       "identifier": 1.0,
       "paraphrase": 0.0
+    }
+  },
+  "expected_hybrid_summary": {
+    "query_count": 9,
+    "recall_at_10": 1.0,
+    "mean_reciprocal_rank": 1.0,
+    "category_recall_at_10": {
+      "cjk": 1.0,
+      "exact": 1.0,
+      "identifier": 1.0,
+      "paraphrase": 1.0
     }
   }
 }

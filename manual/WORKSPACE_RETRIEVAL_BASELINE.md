@@ -210,5 +210,28 @@ debug diagnostics and tool invocation logs at every tracing level.
 Deterministic tests cover semantic ordering, path and glob filters, query
 cancellation, disabled/enabled schema negotiation, direct session tool
 execution, changed-source lag, deleted-source lag, lifecycle closure, and all
-pre-existing search modes. CODE-H1 is the next gate and will add hybrid fusion;
-CODE-Q1 deliberately keeps semantic as an explicit diagnostic channel.
+pre-existing search modes. Semantic remains an explicit diagnostic channel;
+hybrid is the normal natural-language retrieval mode for enabled sessions.
+
+## CODE-H1 implementation evidence
+
+Hybrid search builds four bounded channel lists: exact literals, catalog BM25,
+optional Code Intelligence workspace symbols, and semantic hits with strictly
+positive cosine similarity. One-based channel ranks are fused with RRF at
+`k=60`; raw BM25 and vector scores never cross calibration domains. Exact
+ASCII identifier token matches occupy a protected tier, followed by stable
+path, byte-offset, and chunk-id tie breakers. Final output admits at most two
+chunks per file.
+
+The fused candidate list is verified once. Candidates are grouped by path,
+each file is read at most once, and both its full SHA-256 digest and exact UTF-8
+chunk range must match the captured catalog revision. A catalog race returns
+no mixed-generation result. Query embedding and optional structural failures
+retain lexical evidence and appear in channel/final fallback metadata.
+
+The locked fixture now carries `expected_hybrid_paths` without changing the
+BM25 baseline. Its annotated deterministic embeddings map only relevant
+query/document pairs, preventing zero-score corpus padding from satisfying the
+Top-10 gate. Hybrid reaches Recall@10 and MRR 1.0 (BM25: 0.6667), preserves
+identifier first rank, and has dedicated stale-source, semantic-degradation,
+symbol-mapping, diversity, determinism, and redaction coverage.

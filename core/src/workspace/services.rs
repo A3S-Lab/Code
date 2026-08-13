@@ -341,6 +341,44 @@ impl WorkspaceServices {
             .await
     }
 
+    /// Run exact, lexical, structural, and semantic retrieval against one
+    /// catalog revision, fuse channel ranks, and verify returned source text.
+    pub async fn hybrid_search(
+        &self,
+        mut request: super::WorkspaceHybridSearchRequest,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> super::WorkspaceRetrievalResult<super::WorkspaceHybridSearchResult> {
+        if !self.capabilities.read {
+            return Err(super::WorkspaceRetrievalError::Unavailable);
+        }
+        if let Some(path) = request.path.take() {
+            request.path = Some(
+                self.path_resolver
+                    .normalize(&path)
+                    .map_err(|_| {
+                        super::WorkspaceRetrievalError::InvalidQuery(
+                            "path was rejected by the workspace resolver".to_owned(),
+                        )
+                    })?
+                    .as_str()
+                    .to_owned(),
+            );
+        }
+        let runtime = self
+            .workspace_retrieval
+            .as_ref()
+            .ok_or(super::WorkspaceRetrievalError::Unavailable)?;
+        runtime
+            .hybrid_search(
+                request,
+                Arc::clone(&self.file_system),
+                self.code_intelligence.clone(),
+                self.operation_timeout,
+                cancellation,
+            )
+            .await
+    }
+
     pub(crate) fn with_workspace_retrieval(
         &self,
         runtime: Arc<WorkspaceRetrievalRuntime>,

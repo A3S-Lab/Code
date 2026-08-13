@@ -256,7 +256,7 @@ the model.
 
 | Concern | Built-in surface |
 | --- | --- |
-| Files and directories | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, and native BM25 modes |
+| Files and directories | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, native BM25, semantic diagnostics, and hybrid retrieval modes |
 | Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination |
 | Code intelligence | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools |
 | Web evidence | Quality-gated headless → HTTP/RSS → API `web_search` with shared admission, session circuits, and request coalescing; plus bounded `web_fetch`, source normalization, and SSRF protections |
@@ -354,12 +354,27 @@ reports building, ready, degraded, or closed state, revisions, coverage, queue
 depth, failures, and vector memory. Closing the session cancels the provider,
 joins the owned task within a configured deadline, stops Code-owned local
 manifest work, and drops all vector state. Enabled sessions add
-`mode: "semantic"` to the unified `search` tool; disabled sessions retain the
-existing schema. Semantic queries use bounded provider execution, report the
+`mode: "semantic"` and `mode: "hybrid"` to the unified `search` tool; disabled
+sessions retain the existing schema. Semantic queries use bounded provider
+execution and report the
 exact catalog/vector revisions and partial-coverage fallback, and reread each
 candidate through `WorkspaceServices` to verify its full-file digest and exact
 chunk byte range before source text is rendered. A stale, deleted, unreadable,
 or concurrently superseded candidate is never exposed.
+
+Hybrid mode creates independent exact-literal, incremental BM25, optional Code
+Intelligence symbol, and positive-similarity semantic candidate lists. It
+fuses one-based ranks with reciprocal-rank fusion (`k=60`) instead of mixing
+uncalibrated scores. Exact ASCII identifier tokens occupy a protected tier;
+deterministic tie breakers and a two-chunk-per-file cap keep results stable and
+diverse. Fusion precedes source access, so each selected path is reread at most
+once for full-digest and exact-byte-range verification. Per-channel candidate,
+truncation, status, and fallback metadata make partial operation explicit.
+
+The locked nine-query fixture preserves the original BM25 baseline and adds an
+independent hybrid result set whose deterministic provider admits only
+annotated query/document pairs. Hybrid Recall@10 and MRR are 1.0 on that
+fixture, improving Recall@10 by 33.3 points without reducing identifier rank.
 
 Use `edit` with `dry_run: true` to receive the exact before/after diff without
 writing. The dry run is declared read-only and can be safely batched. Apply the

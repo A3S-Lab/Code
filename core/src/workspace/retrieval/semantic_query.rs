@@ -1,5 +1,5 @@
 use super::{
-    digest_content, WorkspaceChunk, WorkspaceRetrievalError, WorkspaceRetrievalPhase,
+    retain_verified, WorkspaceChunk, WorkspaceRetrievalError, WorkspaceRetrievalPhase,
     WorkspaceRetrievalRuntime, WorkspaceSemanticFallbackReason, WorkspaceSemanticSearchHit,
     WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult,
 };
@@ -20,9 +20,44 @@ impl WorkspaceRetrievalRuntime {
     /// chunks from the exact observed revision.
     pub(crate) async fn search(
         &self,
-        request: WorkspaceSemanticSearchRequest,
+        mut request: WorkspaceSemanticSearchRequest,
         file_system: Arc<dyn WorkspaceFileSystem>,
         operation_timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<WorkspaceSemanticSearchResult, WorkspaceRetrievalError> {
+        let requested_limit = request.limit;
+        request.limit = requested_limit.saturating_mul(4).min(MAX_RESULTS);
+        let runtime_cancellation = self.child_lifetime();
+        let mut result = self
+            .search_candidates(request, cancellation.clone())
+            .await?;
+        let (hits, verification_filtered, verification_truncated) = retain_verified(
+            result.hits,
+            requested_limit,
+            |hit: &WorkspaceSemanticSearchHit| hit.chunk.as_ref(),
+            file_system.as_ref(),
+            operation_timeout,
+            &runtime_cancellation,
+            &cancellation,
+        )
+        .await?;
+        result.hits = hits;
+        result.truncated |= verification_truncated;
+        if verification_filtered {
+            result.fallback = Some(WorkspaceSemanticFallbackReason::FilteredStaleHits);
+        }
+        if !self.result_revision_matches(&result.status, &runtime_cancellation, &cancellation)? {
+            return Ok(empty_result(
+                self.status(),
+                WorkspaceSemanticFallbackReason::RevisionChanged,
+            ));
+        }
+        Ok(result)
+    }
+
+    pub(super) async fn search_candidates(
+        &self,
+        request: WorkspaceSemanticSearchRequest,
         cancellation: CancellationToken,
     ) -> Result<WorkspaceSemanticSearchResult, WorkspaceRetrievalError> {
         let request = ValidatedSemanticRequest::new(request)?;
@@ -67,6 +102,7 @@ impl WorkspaceRetrievalRuntime {
 
         let runtime_cancellation = self.child_lifetime();
         let query_cancellation = runtime_cancellation.child_token();
+        let _query_cancellation_guard = query_cancellation.clone().drop_guard();
         let query_call = self.executor.embed(
             vec![EmbeddingInput::new(QUERY_ID, request.query.clone())],
             query_cancellation.clone(),
@@ -173,7 +209,7 @@ impl WorkspaceRetrievalRuntime {
         }
 
         let searched_records = vector_result.searched_records;
-        let truncated = vector_result.truncated;
+        let mut truncated = vector_result.truncated;
         let mut filtered_stale = false;
         let candidates = vector_result
             .hits
@@ -193,19 +229,8 @@ impl WorkspaceRetrievalRuntime {
                 })
             })
             .collect::<Vec<_>>();
-        let (hits, verification_filtered) = verify_current_files(
-            candidates,
-            request.limit,
-            file_system.as_ref(),
-            operation_timeout,
-            &runtime_cancellation,
-            &cancellation,
-        )
-        .await?;
-        filtered_stale |= verification_filtered;
-        if cancellation.is_cancelled() || runtime_cancellation.is_cancelled() {
-            return Err(WorkspaceRetrievalError::Cancelled);
-        }
+        truncated |= candidates.len() > request.limit;
+        let hits = candidates.into_iter().take(request.limit).collect();
         let final_status = self.status();
         let final_catalog_revision = self.catalog.snapshot()?.revision();
         if final_status.phase == WorkspaceRetrievalPhase::Closed {
@@ -237,66 +262,28 @@ impl WorkspaceRetrievalRuntime {
             fallback,
         })
     }
-}
 
-async fn verify_current_files(
-    candidates: Vec<WorkspaceSemanticSearchHit>,
-    limit: usize,
-    file_system: &dyn WorkspaceFileSystem,
-    operation_timeout: Option<Duration>,
-    runtime_cancellation: &CancellationToken,
-    caller_cancellation: &CancellationToken,
-) -> Result<(Vec<WorkspaceSemanticSearchHit>, bool), WorkspaceRetrievalError> {
-    let mut verified_files = HashMap::<Arc<str>, bool>::new();
-    let mut hits = Vec::with_capacity(limit);
-    let mut filtered = false;
-    for hit in candidates {
-        let verified = match verified_files.get(&hit.chunk.path) {
-            Some(verified) => *verified,
-            None => {
-                let path =
-                    crate::workspace::WorkspacePath::from_normalized(hit.chunk.path.as_ref());
-                let read = async {
-                    match operation_timeout {
-                        Some(timeout) => {
-                            tokio::time::timeout(timeout, file_system.read_text(&path))
-                                .await
-                                .ok()
-                                .and_then(Result::ok)
-                        }
-                        None => file_system.read_text(&path).await.ok(),
-                    }
-                };
-                let content = tokio::select! {
-                    biased;
-                    _ = caller_cancellation.cancelled() => {
-                        return Err(WorkspaceRetrievalError::Cancelled);
-                    }
-                    _ = runtime_cancellation.cancelled() => {
-                        return Err(WorkspaceRetrievalError::Cancelled);
-                    }
-                    content = read => content,
-                };
-                let verified = content.is_some_and(|content| {
-                    digest_content(&content).as_ref() == hit.chunk.content_digest.as_ref()
-                        && content
-                            .get(hit.chunk.start_byte..hit.chunk.end_byte)
-                            .is_some_and(|text| text == hit.chunk.text.as_ref())
-                });
-                verified_files.insert(Arc::clone(&hit.chunk.path), verified);
-                verified
-            }
-        };
-        if !verified {
-            filtered = true;
-            continue;
+    pub(super) fn result_revision_matches(
+        &self,
+        expected: &super::WorkspaceRetrievalStatus,
+        runtime_cancellation: &CancellationToken,
+        caller_cancellation: &CancellationToken,
+    ) -> Result<bool, WorkspaceRetrievalError> {
+        if caller_cancellation.is_cancelled() || runtime_cancellation.is_cancelled() {
+            return Err(WorkspaceRetrievalError::Cancelled);
         }
-        hits.push(hit);
-        if hits.len() == limit {
-            break;
+        let current = self.status();
+        let catalog_revision = self.catalog.snapshot()?.revision();
+        if current.phase == WorkspaceRetrievalPhase::Closed
+            || current.catalog_revision != expected.catalog_revision
+            || current.source_revision != expected.source_revision
+            || current.vector_revision != expected.vector_revision
+            || catalog_revision != expected.catalog_revision
+        {
+            return Ok(false);
         }
+        Ok(true)
     }
-    Ok((hits, filtered))
 }
 
 struct ValidatedSemanticRequest {

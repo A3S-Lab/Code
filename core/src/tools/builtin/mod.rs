@@ -13,6 +13,7 @@ mod generate_object;
 pub(crate) mod git;
 mod glob_tool;
 mod grep;
+mod hybrid_search;
 mod ls;
 mod patch;
 mod read;

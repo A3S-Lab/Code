@@ -1,7 +1,8 @@
 //! Unified workspace search tool.
 
 use super::{
-    bm25::Bm25Tool, glob_tool::GlobTool, grep::GrepTool, semantic_search::SemanticSearchTool,
+    bm25::Bm25Tool, glob_tool::GlobTool, grep::GrepTool, hybrid_search::HybridSearchTool,
+    semantic_search::SemanticSearchTool,
 };
 use crate::tools::types::{Tool, ToolCapabilities, ToolContext, ToolOutput};
 use anyhow::Result;
@@ -15,6 +16,7 @@ enum SearchMode {
     Glob,
     Bm25,
     Semantic,
+    Hybrid,
 }
 
 impl SearchMode {
@@ -24,7 +26,10 @@ impl SearchMode {
             Some("glob") => Ok(Self::Glob),
             Some("bm25") => Ok(Self::Bm25),
             Some("semantic") => Ok(Self::Semantic),
-            Some(_) => Err("mode must be 'grep', 'glob', 'bm25', or 'semantic'".to_string()),
+            Some("hybrid") => Ok(Self::Hybrid),
+            Some(_) => {
+                Err("mode must be 'grep', 'glob', 'bm25', 'semantic', or 'hybrid'".to_string())
+            }
             None => Err("mode parameter is required".to_string()),
         }
     }
@@ -35,6 +40,7 @@ impl SearchMode {
             Self::Glob => "glob",
             Self::Bm25 => "bm25",
             Self::Semantic => "semantic",
+            Self::Hybrid => "hybrid",
         }
     }
 }
@@ -78,7 +84,7 @@ impl SearchTool {
             modes.push("bm25");
         }
         if self.semantic_enabled {
-            modes.push("semantic");
+            modes.extend(["semantic", "hybrid"]);
         }
         modes
     }
@@ -100,11 +106,11 @@ impl SearchTool {
                     .to_string(),
             );
         }
-        if mode == SearchMode::Semantic && !self.semantic_enabled {
-            return Err(
-                "mode='semantic' is unavailable because this session did not enable semantic retrieval"
-                    .to_string(),
-            );
+        if matches!(mode, SearchMode::Semantic | SearchMode::Hybrid) && !self.semantic_enabled {
+            return Err(format!(
+                "mode='{}' is unavailable because this session did not enable semantic retrieval",
+                mode.as_str()
+            ));
         }
 
         let query = args
@@ -116,7 +122,7 @@ impl SearchTool {
         adapted.insert(
             match mode {
                 SearchMode::Grep | SearchMode::Glob => "pattern",
-                SearchMode::Bm25 | SearchMode::Semantic => "query",
+                SearchMode::Bm25 | SearchMode::Semantic | SearchMode::Hybrid => "query",
             }
             .to_string(),
             serde_json::Value::String(query.to_string()),
@@ -155,7 +161,7 @@ impl SearchTool {
                 copy_if_present(args, &mut adapted, "context", "context");
                 copy_if_present(args, &mut adapted, "limit", "limit");
             }
-            SearchMode::Semantic => {
+            SearchMode::Semantic | SearchMode::Hybrid => {
                 copy_if_present(args, &mut adapted, "include", "include");
                 copy_if_present(args, &mut adapted, "limit", "limit");
             }
@@ -201,6 +207,12 @@ impl Tool for SearchTool {
         }
         if self.semantic_enabled {
             examples.push(serde_json::json!({
+                "mode": "hybrid",
+                "query": "where session shutdown releases temporary indexes",
+                "path": "core/src",
+                "limit": 8
+            }));
+            examples.push(serde_json::json!({
                 "mode": "semantic",
                 "query": "where session shutdown releases temporary indexes",
                 "path": "core/src",
@@ -219,12 +231,12 @@ impl Tool for SearchTool {
                 "mode": {
                     "type": "string",
                     "enum": modes,
-                    "description": "Required. grep searches file contents with a regular expression; glob finds paths; bm25 ranks chunks by lexical relevance; semantic ranks digest-verified chunks by meaning when enabled."
+                    "description": "Required. grep searches file contents with a regular expression; glob finds paths; bm25 ranks chunks lexically; semantic ranks by meaning; hybrid fuses exact, lexical, symbol, and semantic evidence."
                 },
                 "query": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Required. A regular expression in grep mode, a glob pattern in glob mode, or a plain-text relevance query in bm25/semantic mode."
+                    "description": "Required. A regular expression in grep mode, a glob pattern in glob mode, or a plain-text relevance query in bm25/semantic/hybrid mode."
                 },
                 "path": {
                     "type": "string",
@@ -232,7 +244,7 @@ impl Tool for SearchTool {
                 },
                 "include": {
                     "type": "string",
-                    "description": "Optional for grep/bm25/semantic. Glob pattern used to filter candidate files, for example '*.rs' or '*.{ts,tsx}'."
+                    "description": "Optional for grep/bm25/semantic/hybrid. Glob pattern used to filter candidate files, for example '*.rs' or '*.{ts,tsx}'."
                 },
                 "context": {
                     "type": "integer",
@@ -252,7 +264,7 @@ impl Tool for SearchTool {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": MAX_PAGE_LIMIT,
-                    "description": "Optional. Page size for glob or paginated grep (default 200, maximum 1000), or result count for bm25/semantic (default 10, maximum 25)."
+                    "description": "Optional. Page size for glob or paginated grep (default 200, maximum 1000), or result count for bm25/semantic/hybrid (default 10, maximum 25)."
                 },
                 "cursor": {
                     "type": "string",
@@ -280,7 +292,9 @@ impl Tool for SearchTool {
             {
                 ToolCapabilities::read_only_paginated(16)
             }
-            Ok(SearchMode::Bm25 | SearchMode::Semantic) => ToolCapabilities::parallel_safe_read(2),
+            Ok(SearchMode::Bm25 | SearchMode::Semantic | SearchMode::Hybrid) => {
+                ToolCapabilities::parallel_safe_read(2)
+            }
             Ok(SearchMode::Grep) | Err(_) => ToolCapabilities::parallel_safe_read(16),
         }
     }
@@ -299,6 +313,7 @@ impl Tool for SearchTool {
             SearchMode::Glob => GlobTool.execute(&adapted, ctx).await?,
             SearchMode::Bm25 => Bm25Tool.execute(&adapted, ctx).await?,
             SearchMode::Semantic => SemanticSearchTool.execute(&adapted, ctx).await?,
+            SearchMode::Hybrid => HybridSearchTool.execute(&adapted, ctx).await?,
         };
         Ok(with_search_mode(output, mode))
     }
@@ -351,14 +366,14 @@ mod tests {
         );
         assert_eq!(
             SearchTool::new(true).with_semantic(true).parameters()["properties"]["mode"]["enum"],
-            serde_json::json!(["grep", "glob", "bm25", "semantic"])
+            serde_json::json!(["grep", "glob", "bm25", "semantic", "hybrid"])
         );
         assert_eq!(
             SearchTool::new(true)
                 .with_backend_search(false)
                 .with_semantic(true)
                 .parameters()["properties"]["mode"]["enum"],
-            serde_json::json!(["semantic"])
+            serde_json::json!(["semantic", "hybrid"])
         );
         assert_eq!(
             SearchTool::new(false).parameters()["examples"]
@@ -434,6 +449,14 @@ mod tests {
             .adapted_args(
                 SearchMode::Semantic,
                 &serde_json::json!({"mode": "semantic", "query": "workspace"}),
+            )
+            .unwrap_err();
+        assert!(error.contains("did not enable semantic retrieval"));
+
+        let error = SearchTool::new(true)
+            .adapted_args(
+                SearchMode::Hybrid,
+                &serde_json::json!({"mode": "hybrid", "query": "workspace"}),
             )
             .unwrap_err();
         assert!(error.contains("did not enable semantic retrieval"));

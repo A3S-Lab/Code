@@ -104,6 +104,25 @@ impl AgentSession {
             .await
     }
 
+    /// Run structured hybrid workspace retrieval for this session.
+    ///
+    /// Exact literal, BM25, optional Code Intelligence symbols, and semantic
+    /// candidates are fused by rank. Returned chunks are current-source
+    /// verified and include per-channel status and fallback metadata.
+    pub async fn hybrid_search(
+        &self,
+        request: crate::workspace::WorkspaceHybridSearchRequest,
+    ) -> crate::workspace::WorkspaceRetrievalResult<crate::workspace::WorkspaceHybridSearchResult>
+    {
+        if self.is_closed() {
+            return Err(crate::workspace::WorkspaceRetrievalError::Unavailable);
+        }
+        self.tool_context
+            .workspace_services
+            .hybrid_search(request, self.session_cancel.child_token())
+            .await
+    }
+
     /// Return the host-defined tenant id, if any.
     ///
     /// The framework only transports this string — it never interprets

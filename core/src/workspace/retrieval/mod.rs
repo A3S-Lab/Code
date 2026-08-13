@@ -7,6 +7,10 @@
 mod catalog;
 mod chunk;
 mod eligibility;
+mod hybrid_candidates;
+mod hybrid_query;
+mod hybrid_rank;
+mod hybrid_types;
 pub(crate) mod lexical;
 mod reconcile;
 mod runtime;
@@ -14,10 +18,16 @@ mod semantic_query;
 mod semantic_runtime;
 mod semantic_types;
 mod types;
+mod verification;
 
 pub use catalog::{ChunkCatalogSnapshot, WorkspaceChunkCatalog};
 pub(crate) use chunk::digest_content;
 pub use eligibility::WorkspaceEligibilityPolicy;
+pub use hybrid_types::{
+    WorkspaceHybridChannelRank, WorkspaceHybridChannelStatus, WorkspaceHybridFallbackReason,
+    WorkspaceHybridSearchHit, WorkspaceHybridSearchRequest, WorkspaceHybridSearchResult,
+    WorkspaceRetrievalChannel,
+};
 pub use lexical::{LexicalSearchHit, LexicalSearchRequest, LexicalSearchResult};
 pub(crate) use runtime::LocalWorkspaceCatalogRuntime;
 pub use semantic_runtime::WorkspaceRetrievalRuntime;
@@ -30,6 +40,7 @@ pub use semantic_types::{
 pub use types::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunk, WorkspaceChunkId, WorkspaceIndexError,
 };
+pub(crate) use verification::retain_verified;
 
 #[cfg(test)]
 mod tests;
