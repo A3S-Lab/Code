@@ -225,6 +225,12 @@ pub struct SessionOptions {
     /// agent.session('/repo', { workspaceBackend: new LocalWorkspaceBackend('/repo') });
     /// ```
     pub workspace_backend: Option<JsWorkspaceBackend>,
+    /// Session-bound asynchronous semantic workspace retrieval.
+    ///
+    /// Pass `new WorkspaceRetrievalOptions(provider)`. Index construction
+    /// starts in the background and all vectors remain in memory for this session.
+    #[napi(ts_type = "WorkspaceRetrievalOptions")]
+    pub workspace_retrieval: Option<WorkspaceRetrievalOptionsObject>,
     /// Optional remote git provider. When set, the resulting session attaches
     /// a `RemoteGitBackend` on top of `workspaceBackend` so the built-in
     /// `git` tool is available even on object-storage workspaces.
@@ -741,6 +747,9 @@ pub(super) fn js_session_options_to_rust(
         return Err(napi::Error::from_reason(
             "remoteGit requires workspaceBackend to be set; pass a LocalWorkspaceBackend or S3WorkspaceBackend alongside it",
         ));
+    }
+    if let Some(ref retrieval) = o.workspace_retrieval {
+        opts = opts.with_workspace_retrieval(js_workspace_retrieval_to_rust(retrieval)?);
     }
     // Build prompt slots if any slot is set
     if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some()

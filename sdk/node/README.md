@@ -47,6 +47,61 @@ await session.closeAsync()
 failed replacement leaves the current object live; a successful replacement
 returns the same session ID and closes the previous object.
 
+## Ephemeral Workspace Retrieval
+
+Inject an asynchronous embedding callback to build a session-owned, in-memory
+index without a vector database. The callback receives bounded batches and an
+`AbortSignal`; pass the signal to the provider HTTP request so session close,
+query cancellation, and deadlines stop source-code egress promptly.
+
+```js
+const {
+  CallbackEmbeddingProvider,
+  WorkspaceRetrievalOptions,
+} = require('@a3s-lab/code')
+
+const provider = new CallbackEmbeddingProvider(
+  {
+    provider: 'my-embedding-service',
+    model: 'code-search-v1',
+    dimension: 768,
+    normalization: 'unit',
+  },
+  async ({ inputs, signal }) => {
+    const response = await fetch(embeddingUrl, {
+      method: 'POST',
+      signal,
+      body: JSON.stringify({ input: inputs.map(({ text }) => text) }),
+    })
+    const body = await response.json()
+    return {
+      vectors: inputs.map((input, index) => ({
+        id: input.id,
+        values: body.data[index].embedding,
+      })),
+    }
+  },
+)
+
+const retrieval = new WorkspaceRetrievalOptions(provider)
+retrieval.maxRecords = 100_000
+retrieval.maxBytes = 128 * 1024 * 1024
+
+const session = await agent.sessionAsync('/my-project', {
+  workspaceRetrieval: retrieval,
+})
+console.log(session.workspaceRetrievalStatus())
+console.log(await session.hybridSearch({ query: 'where sessions release resources' }))
+await session.closeAsync()
+```
+
+Construction does not wait for the full corpus. Status moves through
+`building`, `ready`, `degraded`, and `closed`; hybrid search retains exact,
+BM25, and symbol evidence while semantic coverage is partial. Results contain
+only current-source, digest-verified chunks. Callback failures may return a
+typed `{ kind, retryAfterMs? }` object; response bodies and exception messages
+are not copied into Code diagnostics.
+
 The synchronous `session()`, `resumeSession()`, `sessionForAgent()`,
 `sessionForWorker()`, `cancel()`, and `close()` methods remain available for
 compatibility. New event-loop applications should not use them.

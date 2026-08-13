@@ -191,6 +191,7 @@ impl RustHookHandler for NodeCallbackHandler {
 /// - `{ action: 'skip' }`              → skip
 /// - `{ action: 'retry', delayMs: N }` → retry after N ms
 /// - `{ action: 'continue', modified: {...} }` → continue with modified data
+///
 /// Retry objects may include `reason`; the bridge preserves it with the delay.
 fn parse_js_hook_response(val: napi::JsUnknown) -> napi::Result<RustHookResponse> {
     use napi::{JsObject, ValueType};

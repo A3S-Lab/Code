@@ -858,6 +858,9 @@ mod session_memory;
 
 mod session_tools;
 
+mod workspace_retrieval;
+pub use workspace_retrieval::*;
+
 mod session_governance;
 
 mod session_capabilities;

@@ -90,3 +90,40 @@ export type A3sCodeErrorCode =
 export interface A3sCodeError extends Error {
   code: A3sCodeErrorCode
 }
+
+/** One caller-identified input sent to a host embedding callback. */
+export interface EmbeddingInput {
+  id: string
+  text: string
+}
+
+/** One executor-bounded batch sent to a host embedding callback. */
+export interface EmbeddingBatchRequest {
+  inputs: Array<EmbeddingInput>
+  textBytes: number
+  /** Aborted when the session closes, the request is cancelled, or the deadline expires. */
+  signal: AbortSignal
+}
+
+/** One vector returned for the matching input id. */
+export interface EmbeddingVector {
+  id: string
+  values: Array<number>
+}
+
+export interface EmbeddingBatchResponse {
+  vectors: Array<EmbeddingVector>
+}
+
+/** Typed provider failure; message/body fields are intentionally unsupported. */
+export interface EmbeddingBatchFailure {
+  kind:
+    | 'cancelled'
+    | 'timeout'
+    | 'rate_limited'
+    | 'unavailable'
+    | 'authentication'
+    | 'invalid_request'
+    | 'other'
+  retryAfterMs?: number
+}

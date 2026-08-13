@@ -94,6 +94,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -156,8 +157,7 @@ dependencies = [
 [[package]]
 name = "a3s-memory"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10288750681acd08de9a4d7daef80550d72017dc4aef00256c8aad44c55e35e6"
+source = "git+https://github.com/A3S-Lab/Memory.git?rev=82e3734f6c02d0c26a232502ca261069c83ab725#82e3734f6c02d0c26a232502ca261069c83ab725"
 dependencies = [
  "anyhow",
  "async-trait",

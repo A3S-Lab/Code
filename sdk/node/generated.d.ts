@@ -470,6 +470,13 @@ export interface SessionOptions {
    */
   workspaceBackend?: JsWorkspaceBackend
   /**
+   * Session-bound asynchronous semantic workspace retrieval.
+   *
+   * Pass `new WorkspaceRetrievalOptions(provider)`. Index construction
+   * starts in the background and all vectors remain in memory for this session.
+   */
+  workspaceRetrieval?: WorkspaceRetrievalOptions
+  /**
    * Optional remote git provider. When set, the resulting session attaches
    * a `RemoteGitBackend` on top of `workspaceBackend` so the built-in
    * `git` tool is available even on object-storage workspaces.
@@ -836,6 +843,93 @@ export interface BudgetGuardHandlers {
    * itself.
    */
   timeoutMs?: number
+}
+export interface WorkspaceRetrievalOptionsObject {
+  /** Opaque live provider identity. Pass a `WorkspaceRetrievalOptions` instance. */
+  instanceId: string
+  maxRecords?: number
+  maxBytes?: number
+  shutdownTimeoutMs?: number
+}
+export interface EmbeddingProviderDescriptorObject {
+  provider: string
+  model: string
+  revision?: string
+  dimension: number
+  /** `"none"` or `"unit"`. */
+  normalization?: string
+}
+export interface WorkspaceSearchRequest {
+  query: string
+  path?: string
+  include?: string
+  limit?: number
+}
+export interface WorkspaceChunkObject {
+  id: string
+  path: string
+  language?: string
+  startLine: number
+  endLine: number
+  startByte: number
+  endByte: number
+  sourceRevision: number
+  text: string
+  digestVerified: boolean
+}
+export interface WorkspaceRetrievalStatusObject {
+  phase: string
+  catalogRevision: number
+  sourceRevision: number
+  vectorRevision: number
+  eligibleFiles: number
+  catalogFiles: number
+  catalogChunks: number
+  indexedFiles: number
+  indexedChunks: number
+  coverageBps: number
+  queueDepth: number
+  failedFiles: number
+  totalFailures: number
+  vectorRecords: number
+  vectorBytes: number
+  model?: EmbeddingProviderDescriptorObject
+}
+export interface WorkspaceSemanticSearchHitObject {
+  chunk: WorkspaceChunkObject
+  score: number
+}
+export interface WorkspaceSemanticSearchResultObject {
+  hits: Array<WorkspaceSemanticSearchHitObject>
+  status: WorkspaceRetrievalStatusObject
+  searchedRecords: number
+  truncated: boolean
+  fallback?: string
+}
+export interface WorkspaceHybridChannelRankObject {
+  channel: string
+  rank: number
+}
+export interface WorkspaceHybridChannelStatusObject {
+  channel: string
+  candidateCount: number
+  truncated: boolean
+  fallback?: string
+}
+export interface WorkspaceHybridSearchHitObject {
+  chunk: WorkspaceChunkObject
+  fusedScore: number
+  exactIdentifier: boolean
+  channels: Array<WorkspaceHybridChannelRankObject>
+}
+export interface WorkspaceHybridSearchResultObject {
+  hits: Array<WorkspaceHybridSearchHitObject>
+  semanticStatus: WorkspaceRetrievalStatusObject
+  catalogRevision: number
+  sourceRevision: number
+  channels: Array<WorkspaceHybridChannelStatusObject>
+  truncated: boolean
+  fallback?: string
 }
 export interface AgentResult {
   text: string
@@ -1577,6 +1671,12 @@ export declare class Session {
    * ```
    */
   gitCommand(args: GitCommandOptions): Promise<ToolResult>
+  /** Return a non-sensitive snapshot of the session-owned semantic index. */
+  workspaceRetrievalStatus(): WorkspaceRetrievalStatusObject
+  /** Search the current, digest-verified workspace using semantic similarity. */
+  semanticSearch(request: WorkspaceSearchRequest): Promise<WorkspaceSemanticSearchResultObject>
+  /** Fuse exact, BM25, symbol, and optional semantic evidence in Rust Core. */
+  hybridSearch(request: WorkspaceSearchRequest): Promise<WorkspaceHybridSearchResultObject>
   /** Check if this session has an advanced lane queue configured. */
   hasQueue(): boolean
   /**
@@ -1749,6 +1849,22 @@ export declare class Session {
   toolDefinitions(): any
   /** Return a stored tool artifact by URI, or null if it is not retained. */
   getArtifact(artifactUri: string): any
+}
+/** Typed options that enable ephemeral semantic retrieval for one session. */
+export declare class WorkspaceRetrievalOptions {
+  constructor(provider: CallbackEmbeddingProvider)
+  /** Return the opaque provider identity used by structural SessionOptions conversion. */
+  get instanceId(): string
+  get maxRecords(): number
+  set maxRecords(value: number)
+  get maxBytes(): number
+  set maxBytes(value: number)
+  get shutdownTimeoutMs(): number
+  set shutdownTimeoutMs(value: number)
+}
+/** Host-injected asynchronous embedding provider for session-bound retrieval. */
+export declare class CallbackEmbeddingProvider {
+  constructor(descriptor: EmbeddingProviderDescriptorObject, embed: (request: EmbeddingBatchRequest) => Promise<EmbeddingBatchResponse | EmbeddingBatchFailure>, timeoutMs?: number | null)
 }
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {

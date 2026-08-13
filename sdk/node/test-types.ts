@@ -17,6 +17,11 @@ import type {
   ReadFileOptions,
   SessionOptions,
   TaskSchedulerStats,
+  CallbackEmbeddingProvider,
+  WorkspaceRetrievalOptions,
+  WorkspaceRetrievalStatusObject,
+  WorkspaceSemanticSearchResultObject,
+  WorkspaceHybridSearchResultObject,
   // From extra-types.d.ts (hand-authored):
   ToolErrorKind,
   VerificationStatus,
@@ -25,6 +30,8 @@ import type {
   ToolArtifact,
   A3sCodeError,
   A3sCodeErrorCode,
+  EmbeddingBatchRequest,
+  EmbeddingBatchResponse,
   // From event-protocol-v1.d.ts (generated from the core catalog):
   AgentEventTypeV1,
   AgentEventV1,
@@ -44,6 +51,13 @@ declare const _runSpawn: AgentRunSpawnObject
 declare const _readOptions: ReadFileOptions
 declare const _sessionOptions: SessionOptions
 declare const _schedulerStats: TaskSchedulerStats
+declare const _embeddingProvider: CallbackEmbeddingProvider
+declare const _retrievalOptions: WorkspaceRetrievalOptions
+declare const _retrievalStatus: WorkspaceRetrievalStatusObject
+declare const _semanticResult: WorkspaceSemanticSearchResultObject
+declare const _hybridResult: WorkspaceHybridSearchResultObject
+declare const _embeddingRequest: EmbeddingBatchRequest
+declare const _embeddingResponse: EmbeddingBatchResponse
 declare const _err: ToolErrorKind
 declare const _status: VerificationStatus
 declare const _check: VerificationCheck
@@ -71,6 +85,16 @@ void _session.agentTemplateId
 void _session.correlationId
 void _session.hasMemory
 void _session.taskSchedulerStats()
+void _session.workspaceRetrievalStatus()
+void _session.semanticSearch({ query: 'session cleanup', limit: 5 })
+void _session.hybridSearch({ query: 'terminate_owned_tasks', path: 'src' })
+void _retrievalOptions.maxRecords
+void _retrievalStatus.coverageBps
+void _semanticResult.hits[0]?.chunk.digestVerified
+void _hybridResult.channels[0]?.channel
+void _embeddingRequest.inputs[0]?.text
+void _embeddingResponse.vectors[0]?.values
+void _embeddingProvider
 void _agent.taskSchedulerStats()
 void _schedulerStats.activeByPriority.interactive
 void _agent.session('repo', {
