@@ -30,6 +30,8 @@ pub(super) struct PySessionOptions {
     pub(super) security_provider: Option<pyo3::PyObject>,
     /// Workspace backend. Set to ``LocalWorkspaceBackend`` to use local filesystem tools explicitly.
     pub(super) workspace_backend: Option<pyo3::PyObject>,
+    /// Session-bound ephemeral semantic retrieval options.
+    pub(super) workspace_retrieval: Option<PyWorkspaceRetrievalOptions>,
     /// Optional remote git provider. When set, the session attaches a
     /// ``RemoteGitBackend`` on top of ``workspace_backend`` so the built-in
     /// ``git`` tool is available on object-storage workspaces. Requires
@@ -192,6 +194,7 @@ impl Clone for PySessionOptions {
             workspace_backend: pyo3::Python::with_gil(|py| {
                 self.workspace_backend.as_ref().map(|o| o.clone_ref(py))
             }),
+            workspace_retrieval: self.workspace_retrieval.clone(),
             remote_git: self.remote_git.clone(),
             role: self.role.clone(),
             guidelines: self.guidelines.clone(),
@@ -263,6 +266,7 @@ impl PySessionOptions {
             session_store: None,
             security_provider: None,
             workspace_backend: None,
+            workspace_retrieval: None,
             remote_git: None,
             role: None,
             guidelines: None,
@@ -565,6 +569,17 @@ impl PySessionOptions {
     #[setter]
     fn set_workspace_backend(&mut self, value: Option<pyo3::PyObject>) {
         self.workspace_backend = value;
+    }
+
+    /// Typed, session-bound ephemeral workspace retrieval configuration.
+    #[getter]
+    fn get_workspace_retrieval(&self) -> Option<PyWorkspaceRetrievalOptions> {
+        self.workspace_retrieval.clone()
+    }
+
+    #[setter]
+    fn set_workspace_retrieval(&mut self, value: Option<PyWorkspaceRetrievalOptions>) {
+        self.workspace_retrieval = value;
     }
 
     /// Optional remote git provider. Attach a ``RemoteGitBackendConfig`` to

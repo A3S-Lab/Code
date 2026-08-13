@@ -33,8 +33,37 @@ pub(super) fn apply_planning_mode(
     }
 }
 
-/// Build RustSessionOptions from PySessionOptions.
+/// Build options for synchronous SDK entry points.
+///
+/// A host callback-backed retrieval provider must be bound to a live asyncio
+/// loop, so retrieval-enabled sessions deliberately use the async conversion
+/// entry point below.
 pub(super) fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptions> {
+    build_rust_session_options_inner(so, None)
+}
+
+/// Build options while binding any host embedding callback to the caller's
+/// currently running asyncio loop.
+pub(super) fn build_rust_session_options_async(
+    py: Python<'_>,
+    so: PySessionOptions,
+) -> PyResult<RustSessionOptions> {
+    let event_loop = if so.workspace_retrieval.is_some() {
+        Some(
+            py.import("asyncio")?
+                .call_method0("get_running_loop")?
+                .unbind(),
+        )
+    } else {
+        None
+    };
+    build_rust_session_options_inner(so, event_loop)
+}
+
+fn build_rust_session_options_inner(
+    so: PySessionOptions,
+    event_loop: Option<PyObject>,
+) -> PyResult<RustSessionOptions> {
     let mut o = RustSessionOptions::new();
     if let Some(m) = so.model {
         o = o.with_model(m);
@@ -167,6 +196,16 @@ pub(super) fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustS
         return Err(PyValueError::new_err(
             "remote_git requires workspace_backend to be set; assign a LocalWorkspaceBackend or S3WorkspaceBackend first",
         ));
+    }
+    if let Some(ref retrieval) = so.workspace_retrieval {
+        let event_loop = event_loop.ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "workspace_retrieval requires session_async(), resume_session_async(), or replace_session_async() so the embedding callback can bind to a running asyncio loop",
+            )
+        })?;
+        let retrieval =
+            Python::with_gil(|py| retrieval_options_to_core(py, retrieval, event_loop))?;
+        o = o.with_workspace_retrieval(retrieval);
     }
     // Build prompt slots if any slot is set
     if so.role.is_some()

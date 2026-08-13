@@ -4,6 +4,12 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Added typed, session-bound ephemeral workspace retrieval with host-injected
+  async embedding callbacks, lifecycle status, and digest-verified semantic and
+  hybrid search DTOs.
+
 ## [6.9.0] - 2026-08-12
 
 ### Added

@@ -85,6 +85,7 @@ impl RustHookHandler for PythonCallbackHandler {
 /// - `{"action": "block", "reason": "…"}`     → block
 /// - `{"action": "skip"}`                     → skip
 /// - `{"action": "retry", "delay_ms": N}`     → retry
+///
 /// Retry dictionaries may include `reason`; the bridge preserves it with the delay.
 pub(super) fn parse_py_hook_response(
     py: pyo3::Python,

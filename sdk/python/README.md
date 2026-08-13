@@ -90,6 +90,55 @@ cancellation. Use `governed_tool_async(name, args)` when the host coordinates a
 call that must still pass the session permission and confirmation gates.
 Synchronous callers can use `governed_tool(name, args)`.
 
+## Ephemeral Workspace Retrieval
+
+Semantic retrieval is opt-in and belongs to one session. The host injects an
+async embedding callback; A3S Code owns chunking, bounded in-memory vectors,
+hybrid ranking, source-digest verification, and shutdown. Nothing is persisted
+to a vector database.
+
+```python
+from a3s_code import CallbackEmbeddingProvider, SessionOptions, WorkspaceRetrievalOptions
+
+async def embed(request):
+    response = await embedding_client.embed(
+        model="text-embedding-model",
+        inputs=[item["text"] for item in request["inputs"]],
+    )
+    return {
+        "vectors": [
+            {"id": item["id"], "values": vector}
+            for item, vector in zip(request["inputs"], response.vectors)
+        ]
+    }
+
+provider = CallbackEmbeddingProvider(
+    "host-provider",
+    "text-embedding-model",
+    1536,
+    embed,
+    normalization="unit",
+)
+retrieval = WorkspaceRetrievalOptions(provider)
+retrieval.max_records = 100_000
+retrieval.max_bytes = 128 * 1024 * 1024
+
+options = SessionOptions()
+options.workspace_retrieval = retrieval
+session = await agent.session_async("/my-project", options)
+
+status = session.workspace_retrieval_status()
+semantic = await session.semantic_search_async({"query": "session cleanup"})
+hybrid = await session.hybrid_search_async({"query": "terminate_owned_tasks"})
+await session.close_async()
+```
+
+Create, resume, and replace retrieval-enabled sessions through their async
+APIs so the provider can bind to the current event loop. Cancelling or closing
+the session cancels the active embedding coroutine. The exported
+`EmbeddingBatchRequest`, `WorkspaceRetrievalStatus`, and semantic/hybrid result
+`TypedDict` declarations provide the static callback and DTO contract.
+
 ## Agent-Wide Priority Scheduling
 
 Every session created from one `Agent` shares the same execution capacity.

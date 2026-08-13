@@ -356,7 +356,7 @@ Current implementation status:
 | `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `82e3734f` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
 | `CODE-Q1` | Delivered | Structured semantic search through the unified `search` tool, bounded query embedding, immutable catalog/vector revision fencing, current-file digest and byte-range verification, coverage metadata, cancellation, and explicit fallback |
 | `CODE-H1` | Delivered | Exact literal, incremental BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
-| `SDK-R1` | In progress | Node now exposes a typed async provider/options boundary, abort propagation, status, and verified semantic/hybrid DTOs; Python and Go parity remain before the gate closes |
+| `SDK-R1` | In progress | Node and Python now expose typed async provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs; Go parity remains before the gate closes |
 
 The detailed baseline and threat model are in
 [`manual/WORKSPACE_RETRIEVAL_BASELINE.md`](manual/WORKSPACE_RETRIEVAL_BASELINE.md).

@@ -14,6 +14,7 @@ fn agent_run_spawn_dict_preserves_snapshot_and_replay_state() {
             result_text: None,
             error: None,
             event_count: 0,
+            workspace_change_set: None,
         },
     };
 

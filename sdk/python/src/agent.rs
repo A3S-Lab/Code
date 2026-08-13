@@ -294,7 +294,9 @@ impl PyAgent {
         workspace: String,
         options: Option<PySessionOptions>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let options = options.map(build_rust_session_options).transpose()?;
+        let options = options
+            .map(|options| build_rust_session_options_async(py, options))
+            .transpose()?;
         let callable = Bound::new(
             py,
             AsyncSessionCall {
@@ -353,7 +355,7 @@ impl PyAgent {
         session_id: String,
         options: PySessionOptions,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let options = build_rust_session_options(options)?;
+        let options = build_rust_session_options_async(py, options)?;
         let callable = Bound::new(
             py,
             AsyncSessionCall {
@@ -381,7 +383,7 @@ impl PyAgent {
         current: PyRef<'_, PySession>,
         options: PySessionOptions,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let options = build_rust_session_options(options)?;
+        let options = build_rust_session_options_async(py, options)?;
         let callable = Bound::new(
             py,
             AsyncSessionCall {

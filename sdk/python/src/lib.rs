@@ -378,6 +378,9 @@ mod session_memory;
 
 mod session_tools;
 
+mod workspace_retrieval;
+use workspace_retrieval::*;
+
 mod session_queue_api;
 
 mod session_capabilities;
@@ -962,6 +965,8 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgentDefinition>()?;
     m.add_class::<PyAutoDelegationConfig>()?;
     m.add_class::<PySessionOptions>()?;
+    m.add_class::<PyCallbackEmbeddingProvider>()?;
+    m.add_class::<PyWorkspaceRetrievalOptions>()?;
     m.add_class::<PyServeHandle>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;

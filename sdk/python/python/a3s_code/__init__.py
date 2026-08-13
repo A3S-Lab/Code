@@ -9,3 +9,27 @@ from .event_protocol_v1 import (
     KnownAgentEventTypeV1,
 )
 from .errors import CodeErrorCode
+from .workspace_retrieval import (
+    EmbeddingBatchFailure,
+    EmbeddingBatchRequest,
+    EmbeddingBatchResponse,
+    EmbeddingBatchSuccess,
+    EmbeddingCallback,
+    EmbeddingInput,
+    EmbeddingNormalization,
+    EmbeddingProviderDescriptor,
+    EmbeddingVector,
+    WorkspaceChunk,
+    WorkspaceHybridChannelRank,
+    WorkspaceHybridChannelStatus,
+    WorkspaceHybridFallbackReason,
+    WorkspaceHybridSearchHit,
+    WorkspaceHybridSearchResult,
+    WorkspaceRetrievalChannel,
+    WorkspaceRetrievalPhase,
+    WorkspaceRetrievalStatus,
+    WorkspaceSearchRequest,
+    WorkspaceSemanticFallbackReason,
+    WorkspaceSemanticSearchHit,
+    WorkspaceSemanticSearchResult,
+)
