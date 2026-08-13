@@ -20,7 +20,7 @@ fn encoded_file_path(root: &std::path::Path, category: &str, id: &str) -> std::p
         .join(format!("id_{key}.json"))
 }
 
-fn create_test_session_data() -> SessionData {
+pub(super) fn create_test_session_data() -> SessionData {
     SessionData {
         id: "test-session-1".to_string(),
         config: SessionConfig {

@@ -4,7 +4,8 @@
 //! choose a "latest" generation. The host supplies a provider and one complete
 //! immutable binding obtained from A3S Use. Every request and response repeats
 //! that binding, and Code validates cited, bounded Markdown before it can enter
-//! the model context.
+//! the model context. A successful exact-generation search may return zero
+//! documents; that is an authoritative miss, not a provider failure.
 
 use crate::context::{
     ContextItem, ContextProvider, ContextProviderFailureMode, ContextQuery, ContextResult,
@@ -501,7 +502,6 @@ impl CognitiveContextResponseV1 {
         if self.schema != COGNITIVE_CONTEXT_RESPONSE_SCHEMA
             || self.request_digest != request.request_digest
             || self.binding != request.binding
-            || self.documents.is_empty()
             || self.documents.len() > request.binding.limits.max_results
         {
             return Err(response_drift(
@@ -848,9 +848,9 @@ mod tests {
     }
 
     #[test]
-    fn response_rejects_empty_duplicate_and_unbounded_documents() {
+    fn response_accepts_empty_but_rejects_duplicate_and_unbounded_documents() {
         let request = CognitiveContextRequestV1::new("session-1", "retry", binding()).unwrap();
-        assert!(CognitiveContextResponseV1::new(&request, Vec::new(), false).is_err());
+        CognitiveContextResponseV1::new(&request, Vec::new(), false).unwrap();
 
         let valid = response(&request);
         let duplicate = vec![valid.documents[0].clone(), valid.documents[0].clone()];

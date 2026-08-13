@@ -4,7 +4,7 @@ use crate::llm::{ContentBlock, LlmResponse, StreamEvent, TokenUsage};
 use crate::store::SessionStore;
 
 #[derive(Clone)]
-struct StaticStreamingClient {
+pub(super) struct StaticStreamingClient {
     text: String,
 }
 
@@ -104,7 +104,7 @@ impl crate::mcp::transport::McpTransport for FailingCloseSessionTransport {
 }
 
 impl StaticStreamingClient {
-    fn new(text: impl Into<String>) -> Self {
+    pub(super) fn new(text: impl Into<String>) -> Self {
         Self { text: text.into() }
     }
 
@@ -242,20 +242,21 @@ struct CapturingContextProvider {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum TestCognitiveProviderMode {
+pub(super) enum TestCognitiveProviderMode {
     Valid,
+    Empty,
     DriftGeneration,
     Fail,
 }
 
 #[derive(Debug)]
-struct TestCognitiveProvider {
+pub(super) struct TestCognitiveProvider {
     mode: TestCognitiveProviderMode,
-    requests: std::sync::Mutex<Vec<crate::cognitive_context::CognitiveContextRequestV1>>,
+    pub(super) requests: std::sync::Mutex<Vec<crate::cognitive_context::CognitiveContextRequestV1>>,
 }
 
 impl TestCognitiveProvider {
-    fn new(mode: TestCognitiveProviderMode) -> Self {
+    pub(super) fn new(mode: TestCognitiveProviderMode) -> Self {
         Self {
             mode,
             requests: std::sync::Mutex::new(Vec::new()),
@@ -397,6 +398,14 @@ impl crate::cognitive_context::CognitiveContextProvider for TestCognitiveProvide
             ));
         }
 
+        if matches!(self.mode, TestCognitiveProviderMode::Empty) {
+            return crate::cognitive_context::CognitiveContextResponseV1::new(
+                request,
+                Vec::new(),
+                false,
+            );
+        }
+
         let citation = crate::cognitive_context::CognitiveKnowledgeCitationV1::new(
             &request.binding,
             "concepts/retry-policy.md",
@@ -422,7 +431,7 @@ impl crate::cognitive_context::CognitiveContextProvider for TestCognitiveProvide
     }
 }
 
-fn test_cognitive_binding() -> crate::cognitive_context::CognitivePackageBindingV1 {
+pub(super) fn test_cognitive_binding() -> crate::cognitive_context::CognitivePackageBindingV1 {
     let generation_digest =
         "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20";
     let knowledge = crate::cognitive_context::CognitiveKnowledgeBindingV1::new(
@@ -445,7 +454,7 @@ fn test_cognitive_binding() -> crate::cognitive_context::CognitivePackageBinding
     .unwrap()
 }
 
-fn test_cognitive_context(
+pub(super) fn test_cognitive_context(
     mode: TestCognitiveProviderMode,
 ) -> (
     crate::cognitive_context::CognitiveContextSession,
@@ -7315,6 +7324,41 @@ async fn cognitive_provider_failure_and_generation_drift_fail_closed_without_fal
             AgentEvent::MemoryRecalled { .. } | AgentEvent::End { .. }
         )));
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cognitive_zero_hit_is_an_authoritative_miss_and_does_not_block_conversation() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let (cognitive_context, provider) = test_cognitive_context(TestCognitiveProviderMode::Empty);
+    let session = agent
+        .session_async(
+            "/tmp/cognitive-zero-hit",
+            Some(
+                SessionOptions::new()
+                    .with_session_id("cognitive-zero-hit")
+                    .with_llm_client(Arc::new(StaticStreamingClient::new("ordinary reply")))
+                    .with_planning(false)
+                    .with_cognitive_context(cognitive_context),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let result = session.send("Hello", None).await.unwrap();
+    assert_eq!(result.text, "ordinary reply");
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    let records = session.run_store.records().await;
+    assert!(records[0].events.iter().any(|record| matches!(
+        record.event,
+        AgentEvent::ContextResolved {
+            total_items: 0,
+            total_tokens: 0
+        }
+    )));
+    assert!(!records[0]
+        .events
+        .iter()
+        .any(|record| matches!(record.event, AgentEvent::MemoryRecalled { .. })));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -261,7 +261,11 @@ impl Agent {
     ///
     /// Callers must serialize this operation with conversation work on
     /// `current` (for example, only reconfigure an idle interactive session).
-    /// The replacement keeps the same session ID and persisted history.
+    /// The replacement keeps the same session ID and persisted history. It may
+    /// bind or advance a host-supplied cognitive package; historical
+    /// run evidence retains the exact binding that produced each run. The
+    /// replacement snapshot is committed before registry cutover; ordinary
+    /// resume still requires the persisted current binding byte-for-byte.
     pub async fn replace_session_async(
         &self,
         current: &AgentSession,

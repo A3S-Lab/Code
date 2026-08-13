@@ -243,9 +243,14 @@ Code repeats the complete binding in every provider request, validates source
 and citation digests before prompt injection, persists the binding in
 `SessionSnapshotV1`, and emits `cognitive_context_bound` into the ordinary run
 event stream. A resumed session requires the host to inject the same binding.
+An embedding host may use atomic session replacement to bind or advance an
+exact generation without losing conversation history; prior run evidence keeps
+its original binding and only the replacement binding is available to new work.
 Provider failure, generation drift, a missing citation, or an attempt to add a
 general RAG/graph fallback aborts the turn; personal memory is not recalled for
-a cognitive-package-bound turn. Registry lookup, installation, lifecycle,
+a cognitive-package-bound turn. A verified zero-hit response is an
+authoritative miss and leaves the ordinary conversation available. Registry
+lookup, installation, lifecycle,
 package files, and the human-review ontology graph remain outside Code.
 
 ## Tools that respect the workspace

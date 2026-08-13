@@ -21,6 +21,7 @@ pub(super) struct SessionPersistenceState {
     baseline: Option<SessionData>,
     total_usage: crate::llm::TokenUsage,
     tasks: Vec<crate::planning::Task>,
+    prior_cognitive_package_bindings: Vec<crate::cognitive_context::CognitivePackageBindingV1>,
 }
 
 #[derive(Clone)]
@@ -28,6 +29,7 @@ struct SessionPersistenceSeed {
     baseline: Option<SessionData>,
     total_usage: crate::llm::TokenUsage,
     tasks: Vec<crate::planning::Task>,
+    prior_cognitive_package_bindings: Vec<crate::cognitive_context::CognitivePackageBindingV1>,
 }
 
 impl SessionPersistenceState {
@@ -56,10 +58,15 @@ impl SessionPersistenceState {
         self.tasks = tasks;
     }
 
-    fn restore(&mut self, session: SessionData) {
+    fn restore(
+        &mut self,
+        session: SessionData,
+        prior_cognitive_package_bindings: Vec<crate::cognitive_context::CognitivePackageBindingV1>,
+    ) {
         self.total_usage = session.total_usage.clone();
         self.tasks = session.tasks.clone();
         self.baseline = Some(session);
+        self.prior_cognitive_package_bindings = prior_cognitive_package_bindings;
     }
 
     fn seed(&self) -> SessionPersistenceSeed {
@@ -67,6 +74,7 @@ impl SessionPersistenceState {
             baseline: self.baseline.clone(),
             total_usage: self.total_usage.clone(),
             tasks: self.tasks.clone(),
+            prior_cognitive_package_bindings: self.prior_cognitive_package_bindings.clone(),
         }
     }
 
@@ -153,6 +161,7 @@ impl SessionPersistenceContext {
         let history = read_or_recover(&self.history).clone();
         let verification_reports = read_or_recover(&self.verification_reports).clone();
         let seed = read_or_recover(&self.persistence_state).seed();
+        let prior_cognitive_package_bindings = seed.prior_cognitive_package_bindings.clone();
         let data = build_session_data_snapshot(SessionDataSnapshotInput {
             session_id: &self.session_id,
             workspace: &self.workspace,
@@ -169,7 +178,7 @@ impl SessionPersistenceContext {
         })
         .await;
 
-        let snapshot = SessionSnapshotV1::new(
+        let mut snapshot = SessionSnapshotV1::new(
             data,
             &self.tool_executor.artifact_store(),
             self.trace_sink.events(),
@@ -177,6 +186,15 @@ impl SessionPersistenceContext {
             verification_reports,
             self.subagent_tasks.list().await,
         );
+        snapshot.prior_cognitive_package_bindings = prior_cognitive_package_bindings;
+        snapshot
+            .normalize_cognitive_package_bindings()
+            .map_err(|error| {
+                CodeError::Session(format!(
+                    "Could not normalize cognitive binding history for session {}: {error:#}",
+                    self.session_id
+                ))
+            })?;
         snapshot
             .validate_for_session(&self.session_id)
             .map_err(|error| {
@@ -245,6 +263,7 @@ pub(super) async fn load_session_snapshot(
 pub(super) fn apply_persisted_runtime_options(
     mut opts: SessionOptions,
     data: &SessionData,
+    allow_cognitive_replacement: bool,
 ) -> Result<SessionOptions> {
     let model_was_explicit = opts.model.is_some();
     opts.session_id = Some(data.id.clone());
@@ -314,6 +333,7 @@ pub(super) fn apply_persisted_runtime_options(
         opts.cognitive_context.as_ref(),
     ) {
         (Some(persisted), Some(injected)) if injected.binding() == persisted => {}
+        (Some(_), Some(_)) if allow_cognitive_replacement => {}
         (Some(_), Some(_)) => {
             return Err(CodeError::SessionConfiguration {
                 field: "cognitive_context",
@@ -326,6 +346,7 @@ pub(super) fn apply_persisted_runtime_options(
                 message: "resuming a cognitive-package session requires the host to re-inject a provider for the persisted exact generation".to_string(),
             });
         }
+        (None, Some(_)) if allow_cognitive_replacement => {}
         (None, Some(_)) => {
             return Err(CodeError::SessionConfiguration {
                 field: "cognitive_context",
@@ -366,7 +387,10 @@ pub(super) async fn restore_persisted_session_state(
             ))
         })?;
     let restored_store = snapshot.artifact_store();
-    write_or_recover(&session.persistence_state).restore(snapshot.session.clone());
+    write_or_recover(&session.persistence_state).restore(
+        snapshot.session.clone(),
+        snapshot.prior_cognitive_package_bindings.clone(),
+    );
     *write_or_recover(&session.history) = snapshot.session.messages;
 
     let target_store = session.tool_executor.artifact_store();
@@ -787,7 +811,7 @@ mod tests {
     #[test]
     fn persisted_runtime_options_prefer_llm_config() {
         let data = persisted_data(Some("anthropic/old"), Some(("openai", "gpt-4o")));
-        let opts = apply_persisted_runtime_options(SessionOptions::new(), &data).unwrap();
+        let opts = apply_persisted_runtime_options(SessionOptions::new(), &data, false).unwrap();
         assert_eq!(opts.session_id.as_deref(), Some("session-1"));
         assert_eq!(opts.model.as_deref(), Some("openai/gpt-4o"));
     }
@@ -795,7 +819,7 @@ mod tests {
     #[test]
     fn persisted_runtime_options_fall_back_to_model_name() {
         let data = persisted_data(Some("openai/gpt-4o"), None);
-        let opts = apply_persisted_runtime_options(SessionOptions::new(), &data).unwrap();
+        let opts = apply_persisted_runtime_options(SessionOptions::new(), &data, false).unwrap();
         assert_eq!(opts.model.as_deref(), Some("openai/gpt-4o"));
     }
 
@@ -805,12 +829,14 @@ mod tests {
         let policy = crate::tools::ToolResultTransformPolicyV1::context_efficient();
         data.config.tool_result_transform_policy = policy.clone();
 
-        let inherited = apply_persisted_runtime_options(SessionOptions::new(), &data).unwrap();
+        let inherited =
+            apply_persisted_runtime_options(SessionOptions::new(), &data, false).unwrap();
         assert_eq!(inherited.tool_result_transform_policy, Some(policy.clone()));
 
         let matching = apply_persisted_runtime_options(
             SessionOptions::new().with_tool_result_transform_policy(policy),
             &data,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -823,6 +849,7 @@ mod tests {
                 crate::tools::ToolResultTransformPolicyV1::conservative(),
             ),
             &data,
+            false,
         )
         .unwrap_err();
         assert!(matches!(
@@ -839,12 +866,14 @@ mod tests {
         let mut data = persisted_data(Some("openai/gpt-4o"), None);
         data.config.max_context_length = 128_000;
 
-        let restored = apply_persisted_runtime_options(SessionOptions::new(), &data).unwrap();
+        let restored =
+            apply_persisted_runtime_options(SessionOptions::new(), &data, false).unwrap();
         assert_eq!(restored.max_context_tokens, Some(128_000));
 
         let switched = apply_persisted_runtime_options(
             SessionOptions::new().with_model("anthropic/claude"),
             &data,
+            false,
         )
         .unwrap();
         assert_eq!(switched.max_context_tokens, None);
@@ -852,6 +881,7 @@ mod tests {
         let overridden = apply_persisted_runtime_options(
             SessionOptions::new().with_max_context_tokens(64_000),
             &data,
+            false,
         )
         .unwrap();
         assert_eq!(overridden.max_context_tokens, Some(64_000));
@@ -937,7 +967,7 @@ mod tests {
         baseline.tasks = vec![crate::planning::Task::new("task-1", "preserve me")];
 
         let persistence_state = Arc::new(RwLock::new(SessionPersistenceState::default()));
-        write_or_recover(&persistence_state).restore(baseline);
+        write_or_recover(&persistence_state).restore(baseline, Vec::new());
         write_or_recover(&persistence_state).record_usage(&crate::llm::TokenUsage {
             prompt_tokens: 10,
             completion_tokens: 5,

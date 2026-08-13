@@ -601,7 +601,8 @@ async fn resume_session_async_inner(
     bail_if_agent_closed(agent)?;
     let reservation = reserve_session(agent, session_id)?;
 
-    let session = build_resumed_session(agent, session_id, options, workspace_override).await?;
+    let session =
+        build_resumed_session(agent, session_id, options, workspace_override, false).await?;
     if let Err(error) = reservation.finalize(&session.close_handle) {
         session.close().await;
         return Err(error);
@@ -626,7 +627,11 @@ pub(super) async fn replace_session_async(
     let reservation = reserve_session_replacement(agent, current)?;
     current.save().await?;
     let options = options.with_session_id(&session_id);
-    let replacement = build_resumed_session(agent, &session_id, options, None).await?;
+    let replacement = build_resumed_session(agent, &session_id, options, None, true).await?;
+    if let Err(error) = replacement.save().await {
+        replacement.close().await;
+        return Err(error);
+    }
     let current_handle = match reservation.finalize(&replacement.close_handle) {
         Ok(handle) => handle,
         Err(error) => {
@@ -646,6 +651,7 @@ async fn build_resumed_session(
     session_id: &str,
     mut options: SessionOptions,
     workspace_override: Option<String>,
+    allow_cognitive_replacement: bool,
 ) -> Result<AgentSession> {
     let store = session_config::resolve_session_store(&agent.code_config, &options)
         .await?
@@ -659,12 +665,22 @@ async fn build_resumed_session(
         restore_protocol_workspace(&snapshot, &workspace).await?;
         snapshot.session.config.workspace = workspace;
     }
-    let data = &snapshot.session;
+    let replacement_binding = options
+        .cognitive_context
+        .as_ref()
+        .map(|context| context.binding().clone());
     options = options.with_session_store(Arc::clone(&store));
-    let mut opts = session_persistence::apply_persisted_runtime_options(options, data)?;
+    let mut opts = session_persistence::apply_persisted_runtime_options(
+        options,
+        &snapshot.session,
+        allow_cognitive_replacement,
+    )?;
+    if allow_cognitive_replacement {
+        snapshot.replace_cognitive_package_binding(replacement_binding)?;
+    }
     session_persistence::ensure_artifact_restore_capacity(&mut opts, &snapshot);
     let opts = session_builder::prepare_session_options(agent, opts);
-    let workspace = data.config.workspace.clone();
+    let workspace = snapshot.session.config.workspace.clone();
     let canonical = super::safe_canonicalize(std::path::Path::new(&workspace));
     let resolved = session_config::ResolvedSessionConfig::resolve(agent, &canonical, opts).await?;
     let session = session_builder::build_agent_session(agent, workspace, resolved).await?;

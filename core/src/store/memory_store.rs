@@ -25,6 +25,7 @@ pub struct MemorySessionStore {
 #[derive(Debug, Clone, Default)]
 struct MemorySessionEntry {
     session: Option<SessionData>,
+    prior_cognitive_package_bindings: Vec<crate::cognitive_context::CognitivePackageBindingV1>,
     artifacts: Vec<ToolArtifact>,
     trace_events: Vec<TraceEvent>,
     run_records: Vec<RunRecord>,
@@ -36,6 +37,7 @@ impl MemorySessionEntry {
     fn from_snapshot(snapshot: &SessionSnapshotV1) -> Self {
         Self {
             session: Some(snapshot.session.clone()),
+            prior_cognitive_package_bindings: snapshot.prior_cognitive_package_bindings.clone(),
             artifacts: snapshot.artifacts.clone(),
             trace_events: snapshot.trace_events.clone(),
             run_records: snapshot.run_records.clone(),
@@ -49,6 +51,7 @@ impl MemorySessionEntry {
         Some(SessionSnapshotV1 {
             schema_version: super::SESSION_SNAPSHOT_SCHEMA_VERSION,
             session,
+            prior_cognitive_package_bindings: self.prior_cognitive_package_bindings.clone(),
             artifacts: self.artifacts.clone(),
             trace_events: self.trace_events.clone(),
             run_records: self.run_records.clone(),
