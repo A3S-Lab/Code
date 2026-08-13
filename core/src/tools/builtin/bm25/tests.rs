@@ -131,6 +131,45 @@ async fn validates_numeric_bounds_for_direct_calls() {
     }
 }
 
+#[tokio::test]
+async fn manifest_backed_bm25_uses_the_incremental_catalog_without_query_reads() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("src/cache.rs");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "pub fn invalidate_session_cache() { /* session cache invalidation policy */ }\n",
+    )
+    .unwrap();
+    let services = crate::workspace::WorkspaceServices::local_with_retrieval(temp.path());
+    let catalog = services.chunk_catalog().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if catalog.snapshot().unwrap().source_revision() > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("incremental catalog did not become ready");
+    let context = ToolContext::new(temp.path().to_path_buf()).with_workspace_services(services);
+
+    let result = Bm25Tool
+        .execute(
+            &serde_json::json!({"query": "session cache invalidation"}),
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "{}", result.content);
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["mode"], "incremental_catalog");
+    assert_eq!(metadata["scan"]["read_files"], 0);
+    assert_eq!(metadata["results"][0]["path"], "src/cache.rs");
+}
+
 #[derive(Debug, Deserialize)]
 struct RetrievalFixture {
     schema_version: u32,

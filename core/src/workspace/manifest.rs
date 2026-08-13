@@ -6,6 +6,7 @@
 //! every agent tool call. File I/O, command execution, and git operations still
 //! delegate to [`LocalWorkspaceBackend`].
 
+use super::retrieval::{LocalWorkspaceCatalogRuntime, WorkspaceChunkCatalog};
 use super::{
     escape_control_chars_for_display, validate_relative_pattern, CommandOutput, CommandRequest,
     LocalWorkspaceAccessPolicy, LocalWorkspaceBackend, WorkspaceCommandRunner, WorkspaceDirEntry,
@@ -26,7 +27,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, RwLock,
+    Arc, OnceLock, RwLock,
 };
 #[cfg(test)]
 use std::time::Duration;
@@ -407,6 +408,7 @@ struct ManifestSearchSnapshot {
 pub struct ManifestWorkspaceBackend {
     local: Arc<LocalWorkspaceBackend>,
     manifest: Arc<LocalWorkspaceManifest>,
+    catalog_runtime: OnceLock<Arc<LocalWorkspaceCatalogRuntime>>,
 }
 
 impl ManifestWorkspaceBackend {
@@ -430,11 +432,25 @@ impl ManifestWorkspaceBackend {
         local: Arc<LocalWorkspaceBackend>,
         manifest: Arc<LocalWorkspaceManifest>,
     ) -> Arc<Self> {
-        Arc::new(Self { local, manifest })
+        Arc::new(Self {
+            local,
+            manifest,
+            catalog_runtime: OnceLock::new(),
+        })
     }
 
     pub fn manifest(&self) -> Arc<LocalWorkspaceManifest> {
         Arc::clone(&self.manifest)
+    }
+
+    /// Enable and return a session-local catalog built from the shared manifest.
+    pub fn chunk_catalog(&self) -> Arc<WorkspaceChunkCatalog> {
+        self.catalog_runtime
+            .get_or_init(|| {
+                let file_system: Arc<dyn WorkspaceFileSystem> = self.local.clone();
+                LocalWorkspaceCatalogRuntime::start(Arc::clone(&self.manifest), file_system)
+            })
+            .catalog()
     }
 
     pub fn local_root(&self) -> &Path {

@@ -127,9 +127,15 @@ pub(super) async fn run_manifest_task(
             .map(|state| state.index.by_path.keys().cloned().collect::<HashSet<_>>())
             .unwrap_or_default();
         let file_changes = normalize_file_changes(&root, &events, &known_paths);
-        publish_scan(&root, &state, &snapshots, &scan_cancelled).await;
+        let snapshot = scan_workspace(&root, &state, &scan_cancelled).await;
+        // Invalidation must be observable before the revision that contains
+        // it. Consumers that listen to both streams can then tombstone stale
+        // content before publishing replacement work for the new revision.
         for change in file_changes {
             let _ = changes.send(change);
+        }
+        if let Some(snapshot) = snapshot {
+            let _ = snapshots.send(snapshot);
         }
     }
 }
@@ -300,6 +306,16 @@ async fn publish_scan(
     snapshots: &broadcast::Sender<LocalWorkspaceManifestSnapshot>,
     scan_cancelled: &Arc<AtomicBool>,
 ) {
+    if let Some(snapshot) = scan_workspace(root, state, scan_cancelled).await {
+        let _ = snapshots.send(snapshot);
+    }
+}
+
+async fn scan_workspace(
+    root: &Path,
+    state: &Arc<RwLock<ManifestState>>,
+    scan_cancelled: &Arc<AtomicBool>,
+) -> Option<LocalWorkspaceManifestSnapshot> {
     let root = root.to_path_buf();
     let scan_cancelled_for_task = Arc::clone(scan_cancelled);
     let (scan_tx, scan_rx) = oneshot::channel();
@@ -314,16 +330,13 @@ async fn publish_scan(
         })
         .is_err()
     {
-        return;
+        return None;
     }
     let Ok(Some(files)) = scan_rx.await else {
-        return;
+        return None;
     };
     if scan_cancelled.load(Ordering::Acquire) {
-        return;
+        return None;
     }
-    let Some(snapshot) = update_state(state, files) else {
-        return;
-    };
-    let _ = snapshots.send(snapshot);
+    update_state(state, files)
 }

@@ -15,6 +15,7 @@ mod local_access;
 mod manifest;
 mod path;
 mod remote_git;
+pub(crate) mod retrieval;
 #[cfg(feature = "s3")]
 mod s3;
 mod services;
@@ -33,6 +34,11 @@ use path::{
 };
 pub(crate) use path::{escape_control_chars_for_display, validate_relative_pattern};
 pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict};
+pub use retrieval::{
+    ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, LexicalSearchHit,
+    LexicalSearchRequest, LexicalSearchResult, WorkspaceChunk, WorkspaceChunkCatalog,
+    WorkspaceChunkId, WorkspaceEligibilityPolicy, WorkspaceIndexError,
+};
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};
 pub use services::{WorkspaceServices, WorkspaceServicesBuilder};

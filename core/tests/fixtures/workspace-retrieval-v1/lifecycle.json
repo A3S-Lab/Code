@@ -57,7 +57,7 @@
         {"path": "src/change.rs", "content": "pub fn after_change() {}\n"},
         {"path": "src/rename_new.rs", "content": "pub fn renamed() {}\n"}
       ],
-      "expected_read_paths": ["src/keep.rs"],
+      "expected_read_paths": ["src/change.rs", "src/keep.rs", "src/rename_new.rs"],
       "expected_catalog_paths": ["src/change.rs", "src/keep.rs", "src/rename_new.rs"]
     }
   ]

@@ -239,12 +239,14 @@ pub use task_scheduler::{
 };
 pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind};
 pub use workspace::{
-    CommandOutput, CommandOutputObserver, CommandOutputSummary, CommandRequest,
-    LocalWorkspaceAccessPolicy, LocalWorkspaceBackend, LocalWorkspaceFile,
+    ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, CommandOutput, CommandOutputObserver,
+    CommandOutputSummary, CommandRequest, LexicalSearchHit, LexicalSearchRequest,
+    LexicalSearchResult, LocalWorkspaceAccessPolicy, LocalWorkspaceBackend, LocalWorkspaceFile,
     LocalWorkspaceFileStatus, LocalWorkspaceManifest, LocalWorkspaceManifestSnapshot,
     ManifestWorkspaceBackend, RecentWorkspaceFile, RemoteGitBackend, RemoteGitBackendConfig,
-    RemoteGitConflict, VirtualPathResolver, WorkspaceCapabilities, WorkspaceCommandRunner,
-    WorkspaceDirEntry, WorkspaceError, WorkspaceFileChange, WorkspaceFileChangeKind,
+    RemoteGitConflict, VirtualPathResolver, WorkspaceCapabilities, WorkspaceChunk,
+    WorkspaceChunkCatalog, WorkspaceChunkId, WorkspaceCommandRunner, WorkspaceDirEntry,
+    WorkspaceEligibilityPolicy, WorkspaceError, WorkspaceFileChange, WorkspaceFileChangeKind,
     WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspaceFileType, WorkspaceGit,
     WorkspaceGitBranch, WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest,
     WorkspaceGitCommit, WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest,
@@ -252,9 +254,9 @@ pub use workspace::{
     WorkspaceGitStash, WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus,
     WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
     WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest,
-    WorkspaceGrepResult, WorkspacePath, WorkspacePathResolver, WorkspaceRef, WorkspaceResult,
-    WorkspaceSearch, WorkspaceServices, WorkspaceServicesBuilder, WorkspaceTextRange,
-    WorkspaceTextReader, WorkspaceVersionConflict, WorkspaceWriteOutcome,
+    WorkspaceGrepResult, WorkspaceIndexError, WorkspacePath, WorkspacePathResolver, WorkspaceRef,
+    WorkspaceResult, WorkspaceSearch, WorkspaceServices, WorkspaceServicesBuilder,
+    WorkspaceTextRange, WorkspaceTextReader, WorkspaceVersionConflict, WorkspaceWriteOutcome,
 };
 #[cfg(feature = "s3")]
 pub use workspace::{S3BackendConfig, S3WorkspaceBackend};

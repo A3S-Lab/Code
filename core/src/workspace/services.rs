@@ -4,9 +4,10 @@
 use super::{CommandRequest, WorkspaceError, WorkspaceVersionConflict};
 use super::{
     LocalWorkspaceBackend, ManifestWorkspaceBackend, VirtualPathResolver, WorkspaceCapabilities,
-    WorkspaceCommandRunner, WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspaceGit,
-    WorkspaceGitStashProvider, WorkspaceGitWorktreeProvider, WorkspacePath, WorkspacePathResolver,
-    WorkspaceRef, WorkspaceResult, WorkspaceSearch, WorkspaceTextReader, WorkspaceWriteOutcome,
+    WorkspaceChunkCatalog, WorkspaceCommandRunner, WorkspaceFileSystem, WorkspaceFileSystemExt,
+    WorkspaceGit, WorkspaceGitStashProvider, WorkspaceGitWorktreeProvider, WorkspacePath,
+    WorkspacePathResolver, WorkspaceRef, WorkspaceResult, WorkspaceSearch, WorkspaceTextReader,
+    WorkspaceWriteOutcome,
 };
 use crate::code_intelligence::{LocalCodeIntelligence, WorkspaceCodeIntelligence};
 use anyhow::{anyhow, Result};
@@ -24,6 +25,7 @@ pub struct WorkspaceServices {
     command_runner: Option<Arc<dyn WorkspaceCommandRunner>>,
     search: Option<Arc<dyn WorkspaceSearch>>,
     code_intelligence: Option<Arc<dyn WorkspaceCodeIntelligence>>,
+    chunk_catalog: Option<Arc<WorkspaceChunkCatalog>>,
     git: Option<Arc<dyn WorkspaceGit>>,
     git_stash: Option<Arc<dyn WorkspaceGitStashProvider>>,
     git_worktree: Option<Arc<dyn WorkspaceGitWorktreeProvider>>,
@@ -44,6 +46,7 @@ impl std::fmt::Debug for WorkspaceServices {
             .field("command_runner", &self.command_runner.is_some())
             .field("search", &self.search.is_some())
             .field("code_intelligence", &self.code_intelligence.is_some())
+            .field("chunk_catalog", &self.chunk_catalog.is_some())
             .field("git", &self.git.is_some())
             .field("git_stash", &self.git_stash.is_some())
             .field("git_worktree", &self.git_worktree.is_some())
@@ -82,6 +85,7 @@ impl WorkspaceServices {
             command_runner,
             search,
             code_intelligence: None,
+            chunk_catalog: None,
             git,
             git_stash: None,
             git_worktree: None,
@@ -121,6 +125,7 @@ impl WorkspaceServices {
             command_runner: Some(command_runner),
             search: Some(search),
             code_intelligence: None,
+            chunk_catalog: None,
             git: Some(git),
             git_stash: Some(git_stash),
             git_worktree: Some(git_worktree),
@@ -138,6 +143,12 @@ impl WorkspaceServices {
         Self::local_with_manifest_backend(backend)
     }
 
+    /// Build local manifest services with an asynchronous ephemeral catalog.
+    pub fn local_with_retrieval(root: impl Into<PathBuf>) -> Arc<Self> {
+        let backend = ManifestWorkspaceBackend::new(root);
+        Self::local_with_retrieval_backend(backend)
+    }
+
     /// Build local manifest-backed services with native Code Intelligence.
     ///
     /// The provider subscribes to the manifest's existing change stream and
@@ -148,6 +159,16 @@ impl WorkspaceServices {
     ) -> Result<Arc<Self>> {
         let backend = ManifestWorkspaceBackend::new(root);
         Self::local_with_code_intelligence_backend(backend, isolation_scope).await
+    }
+
+    /// Build one local session with retrieval and Code Intelligence sharing
+    /// the same manifest scanner and filesystem change stream.
+    pub async fn local_with_retrieval_and_code_intelligence(
+        root: impl Into<PathBuf>,
+        isolation_scope: impl Into<String>,
+    ) -> Result<Arc<Self>> {
+        let backend = ManifestWorkspaceBackend::new(root);
+        Self::local_with_retrieval_and_code_intelligence_backend(backend, isolation_scope).await
     }
 
     /// Attach native Code Intelligence to one shared manifest backend.
@@ -164,9 +185,36 @@ impl WorkspaceServices {
         Ok(services.with_code_intelligence(provider))
     }
 
+    /// Attach retrieval and Code Intelligence to one shared manifest backend.
+    pub async fn local_with_retrieval_and_code_intelligence_backend(
+        backend: Arc<ManifestWorkspaceBackend>,
+        isolation_scope: impl Into<String>,
+    ) -> Result<Arc<Self>> {
+        let manifest = backend.manifest();
+        let file_system: Arc<dyn WorkspaceFileSystem> = backend.clone();
+        let services = Self::local_with_retrieval_backend(backend);
+        let provider = LocalCodeIntelligence::start(isolation_scope, manifest, file_system)
+            .await
+            .map_err(|error| anyhow!("failed to start Code Intelligence: {error}"))?;
+        Ok(services.with_code_intelligence(provider))
+    }
+
     /// Build local workspace services from a shared manifest backend. Hosts
     /// can keep the same manifest for UI file pickers and agent tools.
     pub fn local_with_manifest_backend(backend: Arc<ManifestWorkspaceBackend>) -> Arc<Self> {
+        Self::local_with_manifest_backend_and_catalog(backend, None)
+    }
+
+    /// Enable retrieval on a shared manifest backend.
+    pub fn local_with_retrieval_backend(backend: Arc<ManifestWorkspaceBackend>) -> Arc<Self> {
+        let catalog = backend.chunk_catalog();
+        Self::local_with_manifest_backend_and_catalog(backend, Some(catalog))
+    }
+
+    fn local_with_manifest_backend_and_catalog(
+        backend: Arc<ManifestWorkspaceBackend>,
+        chunk_catalog: Option<Arc<WorkspaceChunkCatalog>>,
+    ) -> Arc<Self> {
         let workspace_ref = WorkspaceRef::new(
             backend.local_root().display().to_string(),
             backend.local_root().display().to_string(),
@@ -189,6 +237,7 @@ impl WorkspaceServices {
             command_runner: Some(command_runner),
             search: Some(search),
             code_intelligence: None,
+            chunk_catalog,
             git: Some(git),
             git_stash: Some(git_stash),
             git_worktree: Some(git_worktree),
@@ -240,6 +289,11 @@ impl WorkspaceServices {
         self.code_intelligence.clone()
     }
 
+    /// Optional session-local catalog shared by lexical and semantic retrieval.
+    pub fn chunk_catalog(&self) -> Option<Arc<WorkspaceChunkCatalog>> {
+        self.chunk_catalog.clone()
+    }
+
     /// Attach a semantic code query provider while preserving every existing
     /// workspace capability and backend.
     pub fn with_code_intelligence(
@@ -258,6 +312,7 @@ impl WorkspaceServices {
             command_runner: self.command_runner.clone(),
             search: self.search.clone(),
             code_intelligence: Some(provider),
+            chunk_catalog: self.chunk_catalog.clone(),
             git: self.git.clone(),
             git_stash: self.git_stash.clone(),
             git_worktree: self.git_worktree.clone(),
@@ -311,6 +366,7 @@ impl WorkspaceServices {
             command_runner: self.command_runner.clone(),
             search: self.search.clone(),
             code_intelligence: self.code_intelligence.clone(),
+            chunk_catalog: self.chunk_catalog.clone(),
             git: Some(git),
             git_stash,
             git_worktree: None,
@@ -451,6 +507,7 @@ pub struct WorkspaceServicesBuilder {
     command_runner: Option<Arc<dyn WorkspaceCommandRunner>>,
     search: Option<Arc<dyn WorkspaceSearch>>,
     code_intelligence: Option<Arc<dyn WorkspaceCodeIntelligence>>,
+    chunk_catalog: Option<Arc<WorkspaceChunkCatalog>>,
     git: Option<Arc<dyn WorkspaceGit>>,
     git_stash: Option<Arc<dyn WorkspaceGitStashProvider>>,
     git_worktree: Option<Arc<dyn WorkspaceGitWorktreeProvider>>,
@@ -469,6 +526,7 @@ impl WorkspaceServicesBuilder {
             command_runner: None,
             search: None,
             code_intelligence: None,
+            chunk_catalog: None,
             git: None,
             git_stash: None,
             git_worktree: None,
@@ -496,6 +554,12 @@ impl WorkspaceServicesBuilder {
     pub fn code_intelligence(mut self, provider: Arc<dyn WorkspaceCodeIntelligence>) -> Self {
         self.capabilities.code_intelligence = true;
         self.code_intelligence = Some(provider);
+        self
+    }
+
+    /// Attach a typed, session-local workspace retrieval catalog.
+    pub fn chunk_catalog(mut self, catalog: Arc<WorkspaceChunkCatalog>) -> Self {
+        self.chunk_catalog = Some(catalog);
         self
     }
 
@@ -551,6 +615,7 @@ impl WorkspaceServicesBuilder {
         services.text_reader = self.text_reader;
         services.capabilities.code_intelligence = self.code_intelligence.is_some();
         services.code_intelligence = self.code_intelligence;
+        services.chunk_catalog = self.chunk_catalog;
         services.git_stash = self.git_stash;
         services.git_worktree = self.git_worktree;
         services.operation_timeout = self.operation_timeout;

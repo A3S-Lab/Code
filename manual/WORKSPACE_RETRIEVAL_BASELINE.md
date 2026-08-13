@@ -93,3 +93,26 @@ The lifecycle fixture defines create, change, delete, rename, unchanged rescan,
 and lag-recovery behavior separately from relevance judgments. `CODE-C1`
 consumes that contract; `WSR-QA` expands it with scheduling, cancellation, and
 provider fault injection.
+
+## CODE-C1 implementation evidence
+
+Retrieval-enabled manifest workspaces now create one asynchronous,
+session-local `WorkspaceChunkCatalog`; plain manifest and Code Intelligence
+sessions do not pay this cost. The catalog shares the existing manifest
+watcher, reads only through `WorkspaceFileSystem`, and publishes immutable
+revisions. Normal unchanged snapshots perform zero reads; explicit changes
+reread only invalidated paths; lag recovery rereads every admitted file and
+reuses content-identical partitions by digest. Change notifications are
+published before their corresponding manifest snapshot. Changed and removed
+paths are tombstoned before replacement work so failures lower coverage rather
+than returning stale content.
+
+The default catalog independently bounds retained text and conservatively
+estimated lexical-index memory at 64 MiB each, in addition to file and chunk
+limits. A file that would exceed a budget is reported as a failed partition;
+already admitted smaller files remain queryable and publication stays atomic.
+
+Native BM25 reuses the catalog's per-file postings after its first source
+revision. Until then, and for custom providers without a catalog, it retains the
+compatible query-time scanner. The locked nine-query result ordering is equal
+on both paths, while the incremental path reports zero query-time file reads.

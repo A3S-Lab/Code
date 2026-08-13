@@ -8,7 +8,8 @@ use self::ranking::{query_terms, score_documents, tokenize, Bm25Document, B, K1}
 use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::workspace::{
-    escape_control_chars_for_display, WorkspaceGlobRequest, WorkspaceGrepRequest, WorkspacePath,
+    escape_control_chars_for_display, LexicalSearchRequest, LexicalSearchResult,
+    WorkspaceGlobRequest, WorkspaceGrepRequest, WorkspacePath,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -172,6 +173,12 @@ impl Tool for Bm25Tool {
             .map(str::trim)
             .filter(|glob| !glob.is_empty());
 
+        if let Some(output) =
+            search_incremental_catalog(query, path.clone(), glob, limit, context_lines, ctx)
+        {
+            return Ok(output);
+        }
+
         let Some(search) = ctx.workspace_services.search() else {
             return Ok(ToolOutput::error(
                 "bm25 is not available: this workspace backend did not provide search",
@@ -288,6 +295,137 @@ impl Tool for Bm25Tool {
 
         Ok(ToolOutput::success(content).with_metadata(metadata))
     }
+}
+
+fn search_incremental_catalog(
+    query: &str,
+    path: WorkspacePath,
+    glob: Option<&str>,
+    limit: usize,
+    context_lines: usize,
+    ctx: &ToolContext,
+) -> Option<ToolOutput> {
+    let catalog = ctx.workspace_services.chunk_catalog()?;
+    let snapshot = match catalog.snapshot() {
+        Ok(snapshot) if snapshot.source_revision() > 0 => snapshot,
+        Ok(_) => return None,
+        Err(error) => {
+            tracing::warn!(%error, "BM25 catalog snapshot failed; using query-time fallback");
+            return None;
+        }
+    };
+    let mut request = LexicalSearchRequest::new(query);
+    request.path = path;
+    request.glob = glob.map(str::to_owned);
+    request.limit = limit;
+    request.max_candidate_files = MAX_CANDIDATE_FILES;
+    request.max_results_per_file = MAX_RESULTS_PER_FILE;
+    let result = match snapshot.lexical_search(&request) {
+        Ok(result) => result,
+        Err(error) => {
+            return Some(ToolOutput::error(format!(
+                "BM25 catalog search failed: {error}"
+            )))
+        }
+    };
+    Some(render_incremental_result(query, result, context_lines))
+}
+
+fn render_incremental_result(
+    query: &str,
+    result: LexicalSearchResult,
+    context_lines: usize,
+) -> ToolOutput {
+    let candidate_truncated = result.candidate_truncated;
+    let terms = result.query_terms.clone();
+    let mut rendered = Vec::with_capacity(result.hits.len());
+    for (rank, hit) in result.hits.iter().enumerate() {
+        let source = ChunkSource {
+            path: WorkspacePath::from_normalized(hit.chunk.path.as_ref()),
+            start_line: hit.chunk.start_line.saturating_sub(1),
+            lines: hit.chunk.text.lines().map(str::to_owned).collect(),
+        };
+        rendered.push(render_result(
+            rank + 1,
+            &source,
+            hit.score,
+            &terms,
+            context_lines,
+        ));
+    }
+    let metadata = incremental_search_metadata(&result, &rendered);
+    if rendered.is_empty() {
+        let safe_query = escape_control_chars_for_display(truncate_utf8(query, 256));
+        return ToolOutput::success(format!("No BM25 matches found for query: {safe_query}"))
+            .with_metadata(metadata);
+    }
+
+    let safe_query = escape_control_chars_for_display(truncate_utf8(query, 256));
+    let mut content = format!("BM25 results for: {safe_query}\n\n");
+    content.push_str(
+        &rendered
+            .iter()
+            .map(|result| result.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    );
+    content.push_str(&format!(
+        "\n\n{} result(s); 0 file(s) read; {} indexed chunk(s) considered",
+        rendered.len(),
+        result.scored_chunks
+    ));
+    if candidate_truncated {
+        content.push_str("\nWarning: search limits truncated the candidate corpus.");
+    }
+    ToolOutput::success(content).with_metadata(metadata)
+}
+
+fn incremental_search_metadata(
+    result: &LexicalSearchResult,
+    rendered: &[RenderedResult],
+) -> serde_json::Value {
+    let mut seen_anchors = HashSet::new();
+    let source_anchors = rendered
+        .iter()
+        .filter(|result| seen_anchors.insert(result.source_anchor.clone()))
+        .map(|result| result.source_anchor.clone())
+        .collect::<Vec<_>>();
+    let results = rendered
+        .iter()
+        .map(|result| result.metadata.clone())
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "algorithm": "bm25",
+        "mode": "incremental_catalog",
+        "parameters": {
+            "k1": K1,
+            "b": B,
+            "chunk_lines": CHUNK_LINES,
+        },
+        "query_terms": result.query_terms,
+        "catalog": {
+            "revision": result.catalog_revision,
+            "source_revision": result.source_revision,
+        },
+        "candidate_search": {
+            "matching_files": result.matching_files,
+            "selected_files": result.selected_files,
+            "backend_truncated": false,
+            "candidate_truncated": result.candidate_truncated,
+            "used_glob_fallback": false,
+        },
+        "scan": {
+            "read_files": 0,
+            "failed_reads": 0,
+            "oversized_files": 0,
+            "scanned_bytes": 0,
+            "scored_chunks": result.scored_chunks,
+            "truncated": result.candidate_truncated,
+        },
+        "source_anchors": source_anchors,
+        "results": results,
+        "returned_results": results.len(),
+    })
 }
 
 fn bounded_usize(

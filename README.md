@@ -322,7 +322,22 @@ The non-content modes ask built-in workspace backends to count matches without
 constructing discarded match text. In `mode: "glob"`, `search` retains a
 backend's recency or relevance order by default; request `sort: "path"` when
 cursor pages require stable lexical ordering. Use `mode: "bm25"` for bounded
-dependency-free lexical ranking over workspace text chunks.
+dependency-free lexical ranking over workspace text chunks. Retrieval-enabled
+manifest-backed local workspaces build one bounded, session-local chunk catalog
+asynchronously and reuse its incremental BM25 postings across queries. Session
+construction does not wait for indexing; BM25 transparently uses the existing
+query-time scanner until the first catalog revision is ready. Catalog metadata
+reports `mode: "incremental_catalog"` and zero query-time file reads. Custom
+workspace backends keep the compatible scanner path unless they provide a
+catalog capability. Plain manifest and Code Intelligence sessions do not start
+this additional catalog work.
+
+The catalog has deterministic UTF-8-safe line/byte chunking, immutable query
+snapshots, file/chunk/text/lexical-index budgets, and default exclusions for
+generated, binary, oversized, credential, key, and `.a3s` control paths. File
+changes are tombstoned before replacement work; a failed read reduces indexed
+coverage instead of returning stale text. The catalog is ephemeral and is
+released with its manifest-backed workspace backend.
 
 Use `edit` with `dry_run: true` to receive the exact before/after diff without
 writing. The dry run is declared read-only and can be safely batched. Apply the
