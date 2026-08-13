@@ -1,4 +1,6 @@
 use super::*;
+use serde::Deserialize;
+use std::collections::BTreeMap;
 
 fn context_with_files(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolContext) {
     let temp = tempfile::tempdir().unwrap();
@@ -126,5 +128,169 @@ async fn validates_numeric_bounds_for_direct_calls() {
     ] {
         let result = Bm25Tool.execute(&args, &context).await.unwrap();
         assert!(!result.success, "args={args} output={}", result.content);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RetrievalFixture {
+    schema_version: u32,
+    documents: Vec<RetrievalDocument>,
+    queries: Vec<RetrievalQuery>,
+    expected_bm25_summary: RetrievalSummary,
+}
+
+#[derive(Debug, Deserialize)]
+struct RetrievalDocument {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RetrievalQuery {
+    id: String,
+    category: String,
+    query: String,
+    relevant_paths: Vec<String>,
+    expected_bm25_paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RetrievalSummary {
+    query_count: usize,
+    recall_at_10: f64,
+    mean_reciprocal_rank: f64,
+    category_recall_at_10: BTreeMap<String, f64>,
+}
+
+#[tokio::test]
+async fn workspace_retrieval_v1_locks_native_bm25_baseline() {
+    let fixture: RetrievalFixture = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/workspace-retrieval-v1/corpus.json"
+    )))
+    .expect("workspace retrieval fixture must parse");
+    assert_eq!(fixture.schema_version, 1);
+    assert_eq!(
+        fixture.queries.len(),
+        fixture.expected_bm25_summary.query_count
+    );
+
+    let files = fixture
+        .documents
+        .iter()
+        .map(|document| (document.path.as_str(), document.content.as_str()))
+        .collect::<Vec<_>>();
+    let (_temp, context) = context_with_files(&files);
+    let mut reciprocal_rank_sum = 0.0;
+    let mut recalled = 0usize;
+    let mut category_counts = BTreeMap::<String, (usize, usize)>::new();
+
+    for query in &fixture.queries {
+        let result = Bm25Tool
+            .execute(
+                &serde_json::json!({"query": query.query, "limit": 10}),
+                &context,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("query '{}' failed: {error}", query.id));
+        assert!(result.success, "query '{}': {}", query.id, result.content);
+
+        let paths = result
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("results"))
+            .and_then(serde_json::Value::as_array)
+            .map(|results| {
+                results
+                    .iter()
+                    .filter_map(|result| result.get("path").and_then(serde_json::Value::as_str))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            paths, query.expected_bm25_paths,
+            "BM25 baseline drifted for query '{}'",
+            query.id
+        );
+
+        let first_relevant_rank = paths
+            .iter()
+            .position(|path| query.relevant_paths.contains(path));
+        let was_recalled = first_relevant_rank.is_some();
+        recalled += usize::from(was_recalled);
+        reciprocal_rank_sum += first_relevant_rank
+            .map(|rank| 1.0 / (rank + 1) as f64)
+            .unwrap_or_default();
+        let counts = category_counts.entry(query.category.clone()).or_default();
+        counts.0 += usize::from(was_recalled);
+        counts.1 += 1;
+    }
+
+    let query_count = fixture.queries.len() as f64;
+    assert_metric(
+        recalled as f64 / query_count,
+        fixture.expected_bm25_summary.recall_at_10,
+        "Recall@10",
+    );
+    assert_metric(
+        reciprocal_rank_sum / query_count,
+        fixture.expected_bm25_summary.mean_reciprocal_rank,
+        "MRR",
+    );
+    for (category, expected) in &fixture.expected_bm25_summary.category_recall_at_10 {
+        let (category_recalled, category_total) =
+            category_counts.get(category).copied().unwrap_or_default();
+        assert_metric(
+            category_recalled as f64 / category_total as f64,
+            *expected,
+            &format!("{category} Recall@10"),
+        );
+    }
+}
+
+fn assert_metric(actual: f64, expected: f64, name: &str) {
+    assert!(
+        (actual - expected).abs() < 1e-12,
+        "{name} drifted: actual={actual}, expected={expected}"
+    );
+}
+
+#[test]
+fn workspace_retrieval_v1_lifecycle_contract_is_well_formed() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/workspace-retrieval-v1/lifecycle.json"
+    )))
+    .expect("workspace retrieval lifecycle fixture must parse");
+
+    assert_eq!(fixture["schema_version"], 1);
+    let steps = fixture["steps"]
+        .as_array()
+        .expect("lifecycle steps must be an array");
+    let operations = steps
+        .iter()
+        .map(|step| {
+            step["operation"]
+                .as_str()
+                .expect("every lifecycle step must have an operation")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        operations,
+        [
+            "reconcile",
+            "upsert",
+            "upsert",
+            "rename",
+            "delete",
+            "reconcile"
+        ]
+    );
+    for step in steps {
+        assert!(step["id"].is_string());
+        assert!(step["documents"].is_array());
+        assert!(step["expected_read_paths"].is_array());
+        assert!(step["expected_catalog_paths"].is_array());
     }
 }

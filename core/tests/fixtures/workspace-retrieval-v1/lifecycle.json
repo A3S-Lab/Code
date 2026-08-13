@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "initial_documents": [
+    {"path": "src/keep.rs", "content": "pub fn keep_v1() {}\n"},
+    {"path": "src/change.rs", "content": "pub fn before_change() {}\n"},
+    {"path": "src/delete.rs", "content": "pub fn delete_me() {}\n"},
+    {"path": "src/rename_old.rs", "content": "pub fn renamed() {}\n"}
+  ],
+  "steps": [
+    {
+      "id": "unchanged-rescan",
+      "operation": "reconcile",
+      "documents": [
+        {"path": "src/keep.rs", "content": "pub fn keep_v1() {}\n"},
+        {"path": "src/change.rs", "content": "pub fn before_change() {}\n"},
+        {"path": "src/delete.rs", "content": "pub fn delete_me() {}\n"},
+        {"path": "src/rename_old.rs", "content": "pub fn renamed() {}\n"}
+      ],
+      "expected_read_paths": [],
+      "expected_catalog_paths": ["src/change.rs", "src/delete.rs", "src/keep.rs", "src/rename_old.rs"]
+    },
+    {
+      "id": "create",
+      "operation": "upsert",
+      "documents": [{"path": "src/create.rs", "content": "pub fn created() {}\n"}],
+      "expected_read_paths": ["src/create.rs"],
+      "expected_catalog_paths": ["src/change.rs", "src/create.rs", "src/delete.rs", "src/keep.rs", "src/rename_old.rs"]
+    },
+    {
+      "id": "change",
+      "operation": "upsert",
+      "documents": [{"path": "src/change.rs", "content": "pub fn after_change() {}\n"}],
+      "expected_read_paths": ["src/change.rs"],
+      "expected_catalog_paths": ["src/change.rs", "src/create.rs", "src/delete.rs", "src/keep.rs", "src/rename_old.rs"]
+    },
+    {
+      "id": "rename",
+      "operation": "rename",
+      "from_path": "src/rename_old.rs",
+      "documents": [{"path": "src/rename_new.rs", "content": "pub fn renamed() {}\n"}],
+      "expected_read_paths": ["src/rename_new.rs"],
+      "expected_catalog_paths": ["src/change.rs", "src/create.rs", "src/delete.rs", "src/keep.rs", "src/rename_new.rs"]
+    },
+    {
+      "id": "delete",
+      "operation": "delete",
+      "from_path": "src/delete.rs",
+      "documents": [],
+      "expected_read_paths": [],
+      "expected_catalog_paths": ["src/change.rs", "src/create.rs", "src/keep.rs", "src/rename_new.rs"]
+    },
+    {
+      "id": "lagged-reconcile",
+      "operation": "reconcile",
+      "documents": [
+        {"path": "src/keep.rs", "content": "pub fn keep_v2_after_lag() {}\n"},
+        {"path": "src/change.rs", "content": "pub fn after_change() {}\n"},
+        {"path": "src/rename_new.rs", "content": "pub fn renamed() {}\n"}
+      ],
+      "expected_read_paths": ["src/keep.rs"],
+      "expected_catalog_paths": ["src/change.rs", "src/keep.rs", "src/rename_new.rs"]
+    }
+  ]
+}

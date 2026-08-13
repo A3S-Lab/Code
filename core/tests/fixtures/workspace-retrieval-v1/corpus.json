@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "documents": [
+    {
+      "path": "src/session_cache.rs",
+      "content": "pub fn invalidate_session_cache() {\n    // Session cache invalidation policy removes expired entries.\n    clear_expired_entries();\n}\n"
+    },
+    {
+      "path": "src/path_policy.rs",
+      "content": "pub struct LocalWorkspaceAccessPolicy;\n\nimpl LocalWorkspaceAccessPolicy {\n    pub fn admits_relative_path(&self) -> bool { true }\n}\n"
+    },
+    {
+      "path": "src/retry.rs",
+      "content": "pub fn retry_transient_failure() {\n    // Apply exponential backoff with jitter after transient upstream failures.\n}\n"
+    },
+    {
+      "path": "src/http_guard.rs",
+      "content": "pub fn admit_request() {\n    // Reject requests whose bearer credential has expired before entering protected routes.\n}\n"
+    },
+    {
+      "path": "src/workspace_policy_zh.rs",
+      "content": "// 工作区权限策略阻止越界路径访问。\npub fn enforce_workspace_boundary() {}\n"
+    },
+    {
+      "path": "src/session_cache_zh.rs",
+      "content": "// 会话缓存过期后重新加载数据。\npub fn reload_expired_session_data() {}\n"
+    },
+    {
+      "path": "src/audit.rs",
+      "content": "pub fn write_audit_event() {\n    // Append a bounded event to the immutable audit stream.\n}\n"
+    },
+    {
+      "path": "docs/cache.md",
+      "content": "# Cache\n\nA generic cache stores values. Cache cache cache.\n"
+    },
+    {
+      "path": "docs/security.md",
+      "content": "# Security\n\nAuthentication and authorization concepts for protected resources.\n"
+    }
+  ],
+  "queries": [
+    {
+      "id": "exact-session-cache",
+      "category": "exact",
+      "query": "session cache invalidation",
+      "relevant_paths": ["src/session_cache.rs"],
+      "expected_bm25_paths": ["src/session_cache.rs", "docs/cache.md", "src/session_cache_zh.rs"]
+    },
+    {
+      "id": "identifier-full",
+      "category": "identifier",
+      "query": "LocalWorkspaceAccessPolicy",
+      "relevant_paths": ["src/path_policy.rs"],
+      "expected_bm25_paths": ["src/path_policy.rs", "src/session_cache.rs", "src/workspace_policy_zh.rs"]
+    },
+    {
+      "id": "identifier-split",
+      "category": "identifier",
+      "query": "local workspace access policy",
+      "relevant_paths": ["src/path_policy.rs"],
+      "expected_bm25_paths": ["src/path_policy.rs", "src/session_cache.rs", "src/workspace_policy_zh.rs"]
+    },
+    {
+      "id": "exact-retry-policy",
+      "category": "exact",
+      "query": "exponential backoff jitter",
+      "relevant_paths": ["src/retry.rs"],
+      "expected_bm25_paths": ["src/retry.rs"]
+    },
+    {
+      "id": "cjk-workspace-policy",
+      "category": "cjk",
+      "query": "工作区权限策略",
+      "relevant_paths": ["src/workspace_policy_zh.rs"],
+      "expected_bm25_paths": ["src/workspace_policy_zh.rs"]
+    },
+    {
+      "id": "cjk-session-cache",
+      "category": "cjk",
+      "query": "会话缓存过期",
+      "relevant_paths": ["src/session_cache_zh.rs"],
+      "expected_bm25_paths": ["src/session_cache_zh.rs"]
+    },
+    {
+      "id": "paraphrase-authentication",
+      "category": "paraphrase",
+      "query": "login token validation",
+      "relevant_paths": ["src/http_guard.rs"],
+      "expected_bm25_paths": []
+    },
+    {
+      "id": "paraphrase-retry",
+      "category": "paraphrase",
+      "query": "delay repeated network attempts",
+      "relevant_paths": ["src/retry.rs"],
+      "expected_bm25_paths": []
+    },
+    {
+      "id": "cross-language-paraphrase",
+      "category": "paraphrase",
+      "query": "refresh stored conversation state when it becomes stale",
+      "relevant_paths": ["src/session_cache_zh.rs"],
+      "expected_bm25_paths": []
+    }
+  ],
+  "expected_bm25_summary": {
+    "query_count": 9,
+    "recall_at_10": 0.6666666666666666,
+    "mean_reciprocal_rank": 0.6666666666666666,
+    "category_recall_at_10": {
+      "cjk": 1.0,
+      "exact": 1.0,
+      "identifier": 1.0,
+      "paraphrase": 0.0
+    }
+  }
+}

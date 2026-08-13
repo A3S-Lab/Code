@@ -345,6 +345,17 @@ states, and close semantics before the feature is declared stable.
 
 ### 6.9 Delivery gates and dependency order
 
+Current implementation status:
+
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| `WSR-00` | Delivered | Versioned relevance and lifecycle fixtures, native BM25 CI baseline, reference sizing profile, locked budgets, and adversarial trust-boundary review |
+| `MEM-V1` | Delivered | A3S Memory `main` commit `82e3734` adds the public exact ephemeral vector kernel and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, Clippy, and rustdoc gates |
+| `CODE-C1` | Next | Shared catalog, eligibility policy, deterministic chunking, lexical postings, and manifest reconciliation |
+
+The detailed baseline and threat model are in
+[`manual/WORKSPACE_RETRIEVAL_BASELINE.md`](manual/WORKSPACE_RETRIEVAL_BASELINE.md).
+
 | Gate | Owner | Depends on | Deliverable | Exit criteria |
 | --- | --- | --- | --- | --- |
 | `WSR-00` | Code core/tests | None | Versioned retrieval fixture corpus, current BM25 baseline, sizing data, threat model, and locked quality/latency budgets | Baseline is reproducible in CI and separates identifier, paraphrase, CJK, and lifecycle cases |
