@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounded overlap, and a validated `Send + Sync` Rust host extension. Session-
   owned catalogs accept explicit strategy and memory-limit configuration;
   host-owned catalogs reject silent session overrides.
+- Added an opt-in bounded deterministic hybrid reranker after RRF with
+  exact-identifier protection, overlap and lexical-boilerplate similarity,
+  MMR-style diversity, stable tie breaking, checked candidate/feature/scratch
+  limits, unchanged-order RRF fallback, and versioned diagnostics. Node,
+  Python, and Go hybrid result DTOs expose the applied algorithm and resource
+  accounting; RRF-only remains the compatibility default pending paired
+  strategy and DeepSeek evaluation.
 
 ## [6.9.0] - 2026-08-12
 

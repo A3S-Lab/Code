@@ -124,10 +124,19 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 )
                 assert hybrid["hits"][0]["chunk"]["path"] == "src/session_cleanup.rs"
                 assert hybrid["hits"][0]["exact_identifier"] is True
+                assert (
+                    hybrid["hits"][0]["rerank_score"]
+                    == hybrid["hits"][0]["fused_score"]
+                )
+                assert hybrid["hits"][0]["redundancy_score"] == 0.0
                 assert any(
                     rank["channel"] == "exact"
                     for rank in hybrid["hits"][0]["channels"]
                 )
+                assert hybrid["rerank"]["requested_mode"] == "rrf_only"
+                assert hybrid["rerank"]["applied_mode"] == "rrf_only"
+                assert hybrid["rerank"]["algorithm"] == "rrf_k60"
+                assert hybrid["rerank"]["fallback"] is None
                 assert provider_calls >= 2
             finally:
                 await session.close_async()

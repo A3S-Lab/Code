@@ -5,11 +5,12 @@ use super::hybrid_candidates::{
     CHANNEL_CANDIDATE_LIMIT,
 };
 use super::hybrid_rank::{fuse_candidates, RankedCandidate};
+use super::rerank::{rerank_fused_candidates, rerank_status_not_run};
 use super::{
     retain_verified, ChunkCatalogSnapshot, WorkspaceHybridChannelStatus,
     WorkspaceHybridFallbackReason, WorkspaceHybridSearchRequest, WorkspaceHybridSearchResult,
-    WorkspaceRetrievalChannel, WorkspaceRetrievalError, WorkspaceRetrievalRuntime,
-    WorkspaceRetrievalStatus, WorkspaceSemanticFallbackReason,
+    WorkspaceRerankStatus, WorkspaceRetrievalChannel, WorkspaceRetrievalError,
+    WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus, WorkspaceSemanticFallbackReason,
 };
 use crate::code_intelligence::WorkspaceCodeIntelligence;
 use crate::workspace::WorkspaceFileSystem;
@@ -83,6 +84,7 @@ impl WorkspaceRetrievalRuntime {
                     false,
                     Some(WorkspaceHybridFallbackReason::RevisionChanged),
                 ),
+                rerank_status_not_run(self.rerank_options.mode),
             ));
         }
 
@@ -148,10 +150,12 @@ impl WorkspaceRetrievalRuntime {
             .limit
             .saturating_mul(VERIFICATION_OVERFETCH)
             .min(MAX_RESULTS.saturating_mul(VERIFICATION_OVERFETCH));
-        let fused = fuse_candidates(candidates, verification_limit);
+        let fused = fuse_candidates(candidates);
+        let reranked = rerank_fused_candidates(fused, verification_limit, self.rerank_options);
+        let rerank_status = reranked.status;
         let runtime_cancellation = self.child_lifetime();
         let (hits, verification_filtered, verification_truncated) = retain_verified(
-            fused,
+            reranked.hits,
             request.limit,
             |hit| hit.chunk.as_ref(),
             file_system.as_ref(),
@@ -174,6 +178,7 @@ impl WorkspaceRetrievalRuntime {
                     semantic_truncated,
                     semantic_fallback,
                 ),
+                rerank_status,
             ));
         }
 
@@ -201,7 +206,10 @@ impl WorkspaceRetrievalRuntime {
             catalog_revision: snapshot.revision(),
             source_revision: snapshot.source_revision(),
             channels,
-            truncated: channel_truncated || verification_truncated,
+            truncated: channel_truncated
+                || verification_truncated
+                || rerank_status.candidate_truncated,
+            rerank: rerank_status,
             fallback,
         })
     }
@@ -272,6 +280,7 @@ fn revision_changed_result(
     semantic_status: WorkspaceRetrievalStatus,
     snapshot: &ChunkCatalogSnapshot,
     channels: Vec<WorkspaceHybridChannelStatus>,
+    rerank: WorkspaceRerankStatus,
 ) -> WorkspaceHybridSearchResult {
     WorkspaceHybridSearchResult {
         hits: Vec::new(),
@@ -279,6 +288,7 @@ fn revision_changed_result(
         catalog_revision: snapshot.revision(),
         source_revision: snapshot.source_revision(),
         channels,
+        rerank,
         truncated: false,
         fallback: Some(WorkspaceHybridFallbackReason::RevisionChanged),
     }

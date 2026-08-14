@@ -4,7 +4,8 @@ use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolCapabilities, ToolContext, ToolOutput};
 use crate::workspace::{
     escape_control_chars_for_display, WorkspaceHybridFallbackReason, WorkspaceHybridSearchHit,
-    WorkspaceHybridSearchRequest, WorkspaceHybridSearchResult, WorkspaceRetrievalError,
+    WorkspaceHybridSearchRequest, WorkspaceHybridSearchResult, WorkspaceRerankMode,
+    WorkspaceRetrievalError,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -120,7 +121,7 @@ fn render_result(result: WorkspaceHybridSearchResult) -> ToolOutput {
             .hits
             .iter()
             .enumerate()
-            .map(|(rank, hit)| render_hit(rank + 1, hit))
+            .map(|(rank, hit)| render_hit(rank + 1, hit, result.rerank.applied_mode))
             .collect::<Vec<_>>()
             .join("\n\n"),
     );
@@ -135,7 +136,11 @@ fn render_result(result: WorkspaceHybridSearchResult) -> ToolOutput {
     ToolOutput::success(content).with_metadata(metadata)
 }
 
-fn render_hit(rank: usize, hit: &WorkspaceHybridSearchHit) -> String {
+fn render_hit(
+    rank: usize,
+    hit: &WorkspaceHybridSearchHit,
+    rerank_mode: WorkspaceRerankMode,
+) -> String {
     let chunk = &hit.chunk;
     let safe_path = escape_control_chars_for_display(chunk.path.as_ref());
     let rendered_line_count = chunk.text.lines().count().min(MAX_RENDERED_LINES);
@@ -148,9 +153,16 @@ fn render_hit(rank: usize, hit: &WorkspaceHybridSearchHit) -> String {
         .map(|channel| format!("{:?}#{}", channel.channel, channel.rank).to_lowercase())
         .collect::<Vec<_>>()
         .join(", ");
+    let ranking = match rerank_mode {
+        WorkspaceRerankMode::RrfOnly => format!("rrf {:.5}", hit.fused_score),
+        WorkspaceRerankMode::Deterministic => format!(
+            "rrf {:.5}; rerank {:.5}; redundancy {:.3}",
+            hit.fused_score, hit.rerank_score, hit.redundancy_score
+        ),
+    };
     let mut content = format!(
-        "{rank}. {safe_path}:{}-{} (rrf {:.5}; {evidence})",
-        chunk.start_line, rendered_end_line, hit.fused_score
+        "{rank}. {safe_path}:{}-{} ({ranking}; {evidence})",
+        chunk.start_line, rendered_end_line
     );
     for (offset, line) in chunk.text.lines().take(MAX_RENDERED_LINES).enumerate() {
         let safe_line = escape_control_chars_for_display(line);
@@ -188,18 +200,22 @@ fn result_metadata(result: &WorkspaceHybridSearchResult) -> serde_json::Value {
                 "end_line": hit.chunk.end_line,
                 "source_revision": hit.chunk.source_revision,
                 "fused_score": hit.fused_score,
+                "rerank_score": hit.rerank_score,
+                "redundancy_score": hit.redundancy_score,
                 "exact_identifier": hit.exact_identifier,
                 "channels": &hit.channels,
                 "digest_verified": true,
             })
         })
         .collect::<Vec<_>>();
+    let algorithm = result.rerank.algorithm.as_str();
     serde_json::json!({
-        "algorithm": "rrf_k60",
+        "algorithm": algorithm,
         "catalog_revision": result.catalog_revision,
         "source_revision": result.source_revision,
         "semantic_status": &result.semantic_status,
         "channels": &result.channels,
+        "rerank": &result.rerank,
         "fallback": &result.fallback,
         "truncated": result.truncated,
         "source_anchors": source_anchors,

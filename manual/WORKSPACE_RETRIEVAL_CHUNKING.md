@@ -97,17 +97,41 @@ execution. Repeated queries do not rechunk or re-embed unchanged files. Closing
 the session cancels reconciliation and embedding work and releases catalog and
 vector memory.
 
-## Why an in-memory reranker is still needed
+## Bounded in-memory reranking
 
 RRF already fuses exact, BM25, structural, and semantic channel ranks in
 memory. It does not know that two overlapping windows may contain mostly the
-same evidence. Configurable overlap therefore creates a concrete need for a
-bounded second stage in A3S Code:
+same evidence. A3S Code therefore provides an opt-in bounded second stage:
 
 1. preserve the exact-identifier tier;
 2. remove near-duplicate ranges and repeated boilerplate;
 3. apply deterministic MMR-style diversity to a small fused candidate pool;
-4. return the original RRF order if reranking fails or exceeds its budget.
+4. return the original RRF order if validation or checked scratch accounting
+   exceeds its budget.
+
+Enable it for a Rust-owned session catalog without changing the default:
+
+```rust
+use a3s_code_core::{WorkspaceRerankOptions, WorkspaceRetrievalOptions};
+
+let retrieval = WorkspaceRetrievalOptions::new(embedding_provider)
+    .with_rerank_options(WorkspaceRerankOptions::deterministic());
+```
+
+The deterministic v1 stage sorts the fused pool first, then examines at most
+100 candidates. For each candidate it samples bounded UTF-8-safe head/tail
+text totaling at most 4 KiB and retains at most 128 deterministic lexical
+fingerprints. Same-file interval containment and cross-file fingerprint
+Jaccard similarity drive greedy MMR-style selection. It caps returned evidence
+at two chunks per file and never copies vectors or a second full source buffer.
+The checked per-query scratch ceiling is 4 MiB.
+
+`WorkspaceRerankStatus` reports requested/applied mode, the versioned pipeline
+(`rrf_k60` or `rrf_k60+deterministic_mmr_v1`), input/evaluated/selected counts,
+near-duplicate counts, sampled feature bytes, accounted scratch bytes,
+candidate truncation, and a typed fallback. Each hit keeps its first-stage RRF
+score plus the greedy selection and redundancy scores. These diagnostics do
+not contain queries, source text, vectors, or model inputs.
 
 This stage requires chunk ranges and channel evidence, so it does not belong in
 the generic A3S Memory vector index. A host-injected local cross-encoder may be
@@ -115,8 +139,14 @@ evaluated later, default-off, behind explicit time, memory, cancellation, and
 source-egress controls. No neural runtime or model download is required by the
 baseline.
 
-The release evaluation must report Recall@5/10, MRR, nDCG@10, exact-identifier
-regression, duplicate-evidence rate, rerank p50/p95 latency, peak scratch bytes,
-and end-to-end task completion for each strategy. The locked DeepSeek paired
-task remains an integration gate, while deterministic fixtures remain the CI
-correctness oracle.
+The locked deterministic fixture reports Recall@10, MRR, and nDCG@10 of 1.0,
+zero selected near-duplicate evidence, and unchanged identifier rank. Two
+25,000-record release runs measured deterministic-versus-RRF signed end-to-end
+p95 differences of -5.163 ms and -2.322 ms (0 ms positive addition in both),
+with 75,346 conservatively accounted scratch bytes and zero fallbacks. These
+noisy paired measurements qualify the latency budget, not a speedup. The full
+strategy matrix
+must still report Recall@5/10, MRR, nDCG@10, exact-identifier regression,
+duplicate-evidence rate, rerank p50/p95 latency, peak scratch bytes, and
+end-to-end task completion. The paired DeepSeek task remains the promotion
+gate; deterministic fixtures remain the CI correctness oracle.

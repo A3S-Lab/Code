@@ -288,6 +288,9 @@ func TestWorkspaceRetrievalTypedSessionMethods(t *testing.T) {
 				return map[string]any{
 					"hits": []any{map[string]any{
 						"chunk":            map[string]any{"path": "src/session.go"},
+						"fused_score":      0.5,
+						"rerank_score":     0.5,
+						"redundancy_score": 0.0,
 						"exact_identifier": true,
 						"channels": []any{map[string]any{
 							"channel": "exact",
@@ -299,6 +302,12 @@ func TestWorkspaceRetrievalTypedSessionMethods(t *testing.T) {
 						"channel":         "exact",
 						"candidate_count": 1,
 					}},
+					"rerank": map[string]any{
+						"requested_mode":      "rrf_only",
+						"applied_mode":        "rrf_only",
+						"algorithm":           "rrf_k60",
+						"selected_candidates": 1,
+					},
 				}, nil
 			default:
 				t.Fatalf("unexpected operation %q", operation)
@@ -323,6 +332,9 @@ func TestWorkspaceRetrievalTypedSessionMethods(t *testing.T) {
 	})
 	if err != nil || len(hybrid.Hits) != 1 ||
 		!hybrid.Hits[0].ExactIdentifier ||
+		hybrid.Hits[0].RerankScore != hybrid.Hits[0].FusedScore ||
+		hybrid.Rerank.AppliedMode != WorkspaceRerankRRFOnly ||
+		hybrid.Rerank.Algorithm != WorkspaceRerankAlgorithmRRFK60 ||
 		hybrid.Channels[0].CandidateCount != 1 {
 		t.Fatalf("hybrid = %#v, %v", hybrid, err)
 	}
@@ -425,6 +437,7 @@ func TestRustBridgeWorkspaceRetrievalIntegration(t *testing.T) {
 	if len(hybrid.Hits) == 0 ||
 		hybrid.Hits[0].Chunk.Path != "src/session_cleanup.rs" ||
 		!hybrid.Hits[0].ExactIdentifier ||
+		hybrid.Rerank.AppliedMode != WorkspaceRerankRRFOnly ||
 		!hasWorkspaceChannel(hybrid.Hits[0].Channels, WorkspaceRetrievalExact) {
 		t.Fatalf("hybrid result = %#v", hybrid)
 	}

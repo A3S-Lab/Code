@@ -130,11 +130,52 @@ The permanent benchmark is:
 cargo run --release -p a3s-code-core --example workspace_retrieval_benchmark
 ```
 
-It emits machine-readable JSON and exits non-zero when either latency or
-resource gate fails. The final executable was 13,825,536 bytes. Compared with
+It emits machine-readable JSON and exits non-zero when a latency, candidate,
+scratch, fallback, or resource gate fails. The final executable was 13,825,536
+bytes. Compared with
 the earlier 13,693,952-byte size-optimized candidate, the observed upper-bound
 increase was 131,584 bytes (about 0.96 percent); intervening egress hardening
 means this is not a controlled attribution to the profile override alone.
+
+### CODE-R2 deterministic rerank qualification
+
+The version-2 benchmark runs two separately constructed sessions over the same
+25,000-record, 384-dimensional, top-20 reference corpus: compatibility
+`rrf_k60` and opt-in `rrf_k60+deterministic_mmr_v1`. This keeps provider and
+authoritative-read work in both measurements. The signed p95 difference is
+reported without clipping; only positive added latency is compared with the
+10 ms budget. Session construction and asynchronous corpus-build timings are
+reported but are not attributed to the query-time reranker.
+
+| Run | Exact p95 | RRF p95 | Deterministic p95 | Signed difference | Added-latency gate | Evaluated candidates | Feature bytes | Accounted scratch | Fallbacks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 11.273 ms | 57.574 ms | 52.410 ms | -5.163 ms | Pass (0 ms added) | 50 | 8,000 | 75,346 | 0 |
+| B | 8.110 ms | 58.229 ms | 55.907 ms | -2.322 ms | Pass (0 ms added) | 50 | 8,000 | 75,346 | 0 |
+| Gate | <= 30 ms | <= 100 ms | <= 100 ms | - | <= 10 ms positive addition | <= 100 | bounded by candidate sampling | <= 4 MiB | 0 |
+
+The locked nine-query deterministic fixture independently records Recall@10,
+MRR, and nDCG@10 of 1.0, zero selected near-duplicate evidence, and unchanged
+identifier-first rank. Adversarial unit and session tests additionally cover
+same-file interval containment, cross-file boilerplate, deterministic replay,
+candidate-pool truncation, invalid pre-provider configuration, and scratch
+budget fallback that reproduces the RRF result order.
+
+Both paired query measurements include provider and authoritative-read noise;
+their negative signed differences are evidence only that positive added p95
+stayed within budget, not that deterministic reranking accelerates retrieval.
+
+The CODE-R2-focused Core, Node, Python, and Rust Go-bridge gates pass. One full
+serial Core run completed 2,764 tests and ignored 18, with one failure in the
+unchanged Code Intelligence language-server initialization-cancellation timing
+test. Five isolated reruns produced three passes and two one-second timeout
+failures, confirming an independent existing timing flake rather than a
+retrieval-path failure; it remains visible and is not counted as a CODE-R2
+pass.
+
+These results qualify the local deterministic baseline, not a default change.
+RRF-only remains the compatibility default until `SDK-R2`, `HOST-R2`, and the
+paired chunk-strategy/DeepSeek `WSR-EVAL2` matrix demonstrate an end-task gain
+that is both statistically and operationally meaningful.
 
 ## Deterministic test evidence
 

@@ -1,7 +1,8 @@
 use super::super::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkCatalog, WorkspaceHybridFallbackReason,
-    WorkspaceHybridSearchRequest, WorkspaceRetrievalChannel, WorkspaceRetrievalOptions,
-    WorkspaceRetrievalPhase, WorkspaceRetrievalRuntime,
+    WorkspaceHybridSearchRequest, WorkspaceRerankMode, WorkspaceRerankOptions,
+    WorkspaceRetrievalChannel, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
+    WorkspaceRetrievalRuntime,
 };
 use crate::code_intelligence::{
     CodeDiagnostic, CodeIntelligenceCapabilities, CodeIntelligenceError, CodeIntelligenceState,
@@ -137,6 +138,97 @@ async fn locked_hybrid_fixture_meets_quality_and_identifier_gates() {
         fixture.queries.len()
     );
     fixture_runtime.runtime.close().await;
+}
+
+#[tokio::test]
+async fn deterministic_rerank_preserves_locked_quality_and_reports_ndcg_inputs() {
+    let fixture: RetrievalFixture = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/workspace-retrieval-v1/corpus.json"
+    )))
+    .expect("workspace retrieval fixture must parse");
+    let entries = fixture
+        .documents
+        .iter()
+        .map(|document| (document.path.as_str(), document.content.as_str()))
+        .collect::<Vec<_>>();
+    let provider: Arc<dyn EmbeddingProvider> = Arc::new(QualityProvider::from_fixture(&fixture));
+    let fixture_runtime = HybridFixture::start_with_provider_and_rerank(
+        &entries,
+        provider,
+        WorkspaceRerankOptions::deterministic(),
+    )
+    .await;
+    let mut recalled = 0usize;
+    let mut reciprocal_rank_sum = 0.0;
+    let mut ndcg_sum = 0.0;
+    let mut selected_candidates = 0usize;
+    let mut selected_duplicates = 0usize;
+
+    for query in &fixture.queries {
+        let result = fixture_runtime
+            .search(WorkspaceHybridSearchRequest::new(&query.query).with_limit(10))
+            .await;
+        assert_eq!(
+            result.rerank.applied_mode,
+            WorkspaceRerankMode::Deterministic
+        );
+        assert!(result.rerank.fallback.is_none());
+        let paths = result
+            .hits
+            .iter()
+            .map(|hit| hit.chunk.path.to_string())
+            .collect::<Vec<_>>();
+        let first_relevant_rank = paths
+            .iter()
+            .position(|path| query.relevant_paths.contains(path));
+        recalled += usize::from(first_relevant_rank.is_some());
+        reciprocal_rank_sum += first_relevant_rank
+            .map(|rank| 1.0 / (rank + 1) as f64)
+            .unwrap_or_default();
+        ndcg_sum += ndcg_at_10(&paths, &query.relevant_paths);
+        selected_candidates += result.rerank.selected_candidates;
+        selected_duplicates += result.rerank.selected_near_duplicates;
+        if query.category == "identifier" {
+            assert_eq!(first_relevant_rank, Some(0));
+        }
+    }
+
+    let query_count = fixture.queries.len() as f64;
+    let recall = recalled as f64 / query_count;
+    let mrr = reciprocal_rank_sum / query_count;
+    let ndcg = ndcg_sum / query_count;
+    let duplicate_rate = selected_duplicates as f64 / selected_candidates.max(1) as f64;
+    assert_metric(
+        recall,
+        fixture.expected_hybrid_summary.recall_at_10,
+        "rerank Recall@10",
+    );
+    assert!(
+        mrr + f64::EPSILON >= fixture.expected_hybrid_summary.mean_reciprocal_rank,
+        "rerank MRR regressed: {mrr}"
+    );
+    assert_metric(ndcg, 1.0, "rerank nDCG@10");
+    assert_metric(duplicate_rate, 0.0, "rerank duplicate evidence rate");
+    fixture_runtime.runtime.close().await;
+}
+
+fn ndcg_at_10(paths: &[String], relevant_paths: &[String]) -> f64 {
+    let dcg = paths
+        .iter()
+        .take(10)
+        .enumerate()
+        .filter(|(_, path)| relevant_paths.contains(path))
+        .map(|(rank, _)| 1.0 / ((rank + 2) as f64).log2())
+        .sum::<f64>();
+    let ideal = (0..relevant_paths.len().min(10))
+        .map(|rank| 1.0 / ((rank + 2) as f64).log2())
+        .sum::<f64>();
+    if ideal == 0.0 {
+        0.0
+    } else {
+        dcg / ideal
+    }
 }
 
 #[tokio::test]
@@ -285,6 +377,15 @@ impl HybridFixture {
         entries: &[(&str, &str)],
         provider: Arc<dyn EmbeddingProvider>,
     ) -> Self {
+        Self::start_with_provider_and_rerank(entries, provider, WorkspaceRerankOptions::default())
+            .await
+    }
+
+    async fn start_with_provider_and_rerank(
+        entries: &[(&str, &str)],
+        provider: Arc<dyn EmbeddingProvider>,
+        rerank: WorkspaceRerankOptions,
+    ) -> Self {
         let catalog =
             WorkspaceChunkCatalog::new(ChunkingConfig::default(), ChunkCatalogLimits::default())
                 .unwrap();
@@ -301,7 +402,7 @@ impl HybridFixture {
         let files = MemoryFiles::from_entries(entries);
         let runtime = WorkspaceRetrievalRuntime::start(
             catalog,
-            WorkspaceRetrievalOptions::new(provider),
+            WorkspaceRetrievalOptions::new(provider).with_rerank_options(rerank),
             CancellationToken::new(),
         )
         .unwrap();

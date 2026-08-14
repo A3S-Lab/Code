@@ -1,11 +1,11 @@
 use super::{
     WorkspaceChunk, WorkspaceHybridChannelRank, WorkspaceHybridSearchHit, WorkspaceRetrievalChannel,
 };
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 pub(super) const RRF_K: usize = 60;
-pub(super) const MAX_RESULTS_PER_FILE: usize = 2;
 
 pub(super) struct RankedCandidate {
     pub chunk: Arc<WorkspaceChunk>,
@@ -21,10 +21,7 @@ struct Accumulator {
     ranks: BTreeMap<WorkspaceRetrievalChannel, usize>,
 }
 
-pub(super) fn fuse_candidates(
-    candidates: Vec<RankedCandidate>,
-    limit: usize,
-) -> Vec<WorkspaceHybridSearchHit> {
+pub(super) fn fuse_candidates(candidates: Vec<RankedCandidate>) -> Vec<WorkspaceHybridSearchHit> {
     let mut fused = HashMap::<String, Accumulator>::new();
     for candidate in candidates {
         if candidate.rank == 0 {
@@ -51,6 +48,8 @@ pub(super) fn fuse_candidates(
         .map(|candidate| WorkspaceHybridSearchHit {
             chunk: candidate.chunk,
             fused_score: candidate.fused_score,
+            rerank_score: candidate.fused_score,
+            redundancy_score: 0.0,
             exact_identifier: candidate.exact_identifier,
             channels: candidate
                 .ranks
@@ -59,31 +58,21 @@ pub(super) fn fuse_candidates(
                 .collect(),
         })
         .collect::<Vec<_>>();
-    fused.sort_by(|left, right| {
-        right
-            .exact_identifier
-            .cmp(&left.exact_identifier)
-            .then_with(|| right.fused_score.total_cmp(&left.fused_score))
-            .then_with(|| left.chunk.path.cmp(&right.chunk.path))
-            .then_with(|| left.chunk.start_byte.cmp(&right.chunk.start_byte))
-            .then_with(|| left.chunk.id.cmp(&right.chunk.id))
-    });
-
-    let mut per_file = HashMap::<Arc<str>, usize>::new();
+    fused.sort_by(compare_fused);
     fused
-        .into_iter()
-        .filter(|candidate| {
-            let count = per_file
-                .entry(Arc::clone(&candidate.chunk.path))
-                .or_default();
-            if *count >= MAX_RESULTS_PER_FILE {
-                return false;
-            }
-            *count += 1;
-            true
-        })
-        .take(limit)
-        .collect()
+}
+
+pub(super) fn compare_fused(
+    left: &WorkspaceHybridSearchHit,
+    right: &WorkspaceHybridSearchHit,
+) -> Ordering {
+    right
+        .exact_identifier
+        .cmp(&left.exact_identifier)
+        .then_with(|| right.fused_score.total_cmp(&left.fused_score))
+        .then_with(|| left.chunk.path.cmp(&right.chunk.path))
+        .then_with(|| left.chunk.start_byte.cmp(&right.chunk.start_byte))
+        .then_with(|| left.chunk.id.cmp(&right.chunk.id))
 }
 
 #[cfg(test)]
@@ -95,15 +84,12 @@ mod tests {
     #[test]
     fn rrf_uses_channel_ranks_and_deduplicates_each_channel() {
         let chunks = chunks(&[("a.rs", "alpha\n"), ("b.rs", "beta\n")]);
-        let hits = fuse_candidates(
-            vec![
-                candidate(&chunks[0], WorkspaceRetrievalChannel::Lexical, 1, false),
-                candidate(&chunks[0], WorkspaceRetrievalChannel::Lexical, 2, false),
-                candidate(&chunks[0], WorkspaceRetrievalChannel::Semantic, 2, false),
-                candidate(&chunks[1], WorkspaceRetrievalChannel::Semantic, 1, false),
-            ],
-            10,
-        );
+        let hits = fuse_candidates(vec![
+            candidate(&chunks[0], WorkspaceRetrievalChannel::Lexical, 1, false),
+            candidate(&chunks[0], WorkspaceRetrievalChannel::Lexical, 2, false),
+            candidate(&chunks[0], WorkspaceRetrievalChannel::Semantic, 2, false),
+            candidate(&chunks[1], WorkspaceRetrievalChannel::Semantic, 1, false),
+        ]);
 
         assert_eq!(hits[0].chunk.path.as_ref(), "a.rs");
         assert_eq!(hits[0].channels.len(), 2);
@@ -117,22 +103,19 @@ mod tests {
     #[test]
     fn exact_identifier_tier_cannot_be_displaced_by_semantic_only_hits() {
         let chunks = chunks(&[("exact.rs", "ExactType\n"), ("semantic.rs", "concept\n")]);
-        let hits = fuse_candidates(
-            vec![
-                candidate(&chunks[0], WorkspaceRetrievalChannel::Exact, 25, true),
-                candidate(&chunks[1], WorkspaceRetrievalChannel::Semantic, 1, false),
-                candidate(&chunks[1], WorkspaceRetrievalChannel::Lexical, 1, false),
-                candidate(&chunks[1], WorkspaceRetrievalChannel::Structural, 1, false),
-            ],
-            10,
-        );
+        let hits = fuse_candidates(vec![
+            candidate(&chunks[0], WorkspaceRetrievalChannel::Exact, 25, true),
+            candidate(&chunks[1], WorkspaceRetrievalChannel::Semantic, 1, false),
+            candidate(&chunks[1], WorkspaceRetrievalChannel::Lexical, 1, false),
+            candidate(&chunks[1], WorkspaceRetrievalChannel::Structural, 1, false),
+        ]);
 
         assert_eq!(hits[0].chunk.path.as_ref(), "exact.rs");
         assert!(hits[0].exact_identifier);
     }
 
     #[test]
-    fn fusion_is_deterministic_and_limits_per_file_diversity() {
+    fn fusion_is_deterministic_before_second_stage_diversity() {
         let catalog = WorkspaceChunkCatalog::new(
             ChunkingConfig {
                 max_lines: 1,
@@ -167,13 +150,13 @@ mod tests {
             candidate(a_chunks[2], WorkspaceRetrievalChannel::Semantic, 3, false),
             candidate(b_chunk, WorkspaceRetrievalChannel::Semantic, 4, false),
         ];
-        let first = fuse_candidates(candidates, 10);
+        let first = fuse_candidates(candidates);
         assert_eq!(
             first
                 .iter()
                 .filter(|hit| hit.chunk.path.as_ref() == "a.rs")
                 .count(),
-            MAX_RESULTS_PER_FILE
+            3
         );
         assert_eq!(first[0].chunk.path.as_ref(), "a.rs");
         assert_eq!(first.last().unwrap().chunk.path.as_ref(), "b.rs");

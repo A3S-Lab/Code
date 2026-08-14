@@ -916,9 +916,25 @@ export interface WorkspaceHybridChannelStatusObject {
   truncated: boolean
   fallback?: string
 }
+export interface WorkspaceRerankStatusObject {
+  requestedMode: string
+  appliedMode: string
+  algorithm: string
+  inputCandidates: number
+  evaluatedCandidates: number
+  selectedCandidates: number
+  nearDuplicateCandidates: number
+  selectedNearDuplicates: number
+  featureBytes: number
+  accountedScratchBytes: number
+  candidateTruncated: boolean
+  fallback?: string
+}
 export interface WorkspaceHybridSearchHitObject {
   chunk: WorkspaceChunkObject
   fusedScore: number
+  rerankScore: number
+  redundancyScore: number
   exactIdentifier: boolean
   channels: Array<WorkspaceHybridChannelRankObject>
 }
@@ -928,6 +944,7 @@ export interface WorkspaceHybridSearchResultObject {
   catalogRevision: number
   sourceRevision: number
   channels: Array<WorkspaceHybridChannelStatusObject>
+  rerank: WorkspaceRerankStatusObject
   truncated: boolean
   fallback?: string
 }

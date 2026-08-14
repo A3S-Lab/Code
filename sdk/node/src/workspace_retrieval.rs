@@ -8,7 +8,8 @@ use a3s_code_core::embedding::{
 use a3s_code_core::{
     WorkspaceHybridChannelRank, WorkspaceHybridChannelStatus, WorkspaceHybridSearchHit,
     WorkspaceHybridSearchRequest as RustHybridSearchRequest,
-    WorkspaceHybridSearchResult as RustHybridSearchResult, WorkspaceRetrievalStatus,
+    WorkspaceHybridSearchResult as RustHybridSearchResult, WorkspaceRerankFallbackReason,
+    WorkspaceRerankMode, WorkspaceRerankStatus, WorkspaceRetrievalStatus,
     WorkspaceSemanticSearchHit, WorkspaceSemanticSearchRequest as RustSemanticSearchRequest,
     WorkspaceSemanticSearchResult as RustSemanticSearchResult,
 };

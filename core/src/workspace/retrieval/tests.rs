@@ -10,6 +10,7 @@ use std::sync::Arc;
 mod chunking_strategies;
 mod hybrid_query;
 mod lifecycle;
+mod rerank;
 mod semantic;
 mod semantic_query;
 

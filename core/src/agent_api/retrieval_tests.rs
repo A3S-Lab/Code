@@ -174,6 +174,8 @@ async fn enabled_session_exposes_and_executes_semantic_search() {
     let metadata = hybrid.metadata.unwrap();
     assert_eq!(metadata["mode"], "hybrid");
     assert_eq!(metadata["algorithm"], "rrf_k60");
+    assert_eq!(metadata["rerank"]["requestedMode"], "rrf_only");
+    assert_eq!(metadata["rerank"]["appliedMode"], "rrf_only");
     assert_eq!(metadata["results"][0]["digest_verified"], true);
 
     let structured_hybrid = session
@@ -183,6 +185,14 @@ async fn enabled_session_exposes_and_executes_semantic_search() {
     assert_eq!(structured_hybrid.hits.len(), 1);
     assert_eq!(structured_hybrid.hits[0].chunk.path.as_ref(), "cache.rs");
     assert_eq!(structured_hybrid.channels.len(), 4);
+    assert_eq!(
+        structured_hybrid.rerank.applied_mode,
+        crate::WorkspaceRerankMode::RrfOnly
+    );
+    assert_eq!(
+        structured_hybrid.rerank.algorithm,
+        crate::WorkspaceRerankAlgorithm::RrfK60
+    );
 
     let invalid = session
         .semantic_search(
@@ -467,6 +477,103 @@ async fn session_owned_workspace_uses_the_explicit_chunking_strategy() {
     assert_eq!(status.vector_records, 3);
     assert_eq!(embedded_inputs.load(Ordering::Acquire), 3);
     session.close().await;
+}
+
+#[tokio::test]
+async fn session_owned_workspace_applies_explicit_deterministic_reranking() {
+    let workspace = tempfile::tempdir().unwrap();
+    let boilerplate = "shared retry boilerplate reconnect delivery guard alpha\n";
+    std::fs::write(workspace.path().join("a.rs"), boilerplate).unwrap();
+    std::fs::write(workspace.path().join("b.rs"), boilerplate).unwrap();
+    std::fs::write(
+        workspace.path().join("c.rs"),
+        "generation fence cancels superseded vector publication\n",
+    )
+    .unwrap();
+    let embedded_inputs = Arc::new(AtomicUsize::new(0));
+    let provider: Arc<dyn EmbeddingProvider> = Arc::new(ImmediateProvider {
+        inputs: Arc::clone(&embedded_inputs),
+    });
+    let options = SessionOptions::new().with_workspace_retrieval(
+        WorkspaceRetrievalOptions::new(provider)
+            .with_rerank_options(crate::WorkspaceRerankOptions::deterministic()),
+    );
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+    let session = agent
+        .session_async(workspace.path().to_string_lossy(), Some(options))
+        .await
+        .unwrap();
+    wait_for_ready(&session).await;
+
+    let request = crate::WorkspaceHybridSearchRequest::new("shared retry reconnect").with_limit(3);
+    let result = session.hybrid_search(request).await.unwrap();
+    let paths = result
+        .hits
+        .iter()
+        .map(|hit| hit.chunk.path.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, ["a.rs", "c.rs", "b.rs"]);
+    assert_eq!(
+        result.rerank.requested_mode,
+        crate::WorkspaceRerankMode::Deterministic
+    );
+    assert_eq!(
+        result.rerank.applied_mode,
+        crate::WorkspaceRerankMode::Deterministic
+    );
+    assert_eq!(
+        result.rerank.algorithm,
+        crate::WorkspaceRerankAlgorithm::RrfK60DeterministicMmrV1
+    );
+    assert_eq!(result.rerank.near_duplicate_candidates, 1);
+    assert_eq!(result.rerank.selected_near_duplicates, 1);
+
+    let tool = session
+        .tool(
+            "search",
+            serde_json::json!({
+                "mode": "hybrid",
+                "query": "shared retry reconnect",
+                "limit": 3
+            }),
+        )
+        .await
+        .unwrap();
+    let metadata = tool.metadata.unwrap();
+    assert_eq!(metadata["algorithm"], "rrf_k60+deterministic_mmr_v1");
+    assert_eq!(metadata["rerank"]["appliedMode"], "deterministic");
+    session.close().await;
+}
+
+#[tokio::test]
+async fn invalid_rerank_bounds_fail_before_embedding_provider_calls() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("source.rs"), "eligible source\n").unwrap();
+    let provider = Arc::new(BlockingProvider::new());
+    let provider_port: Arc<dyn EmbeddingProvider> = provider.clone();
+    let mut rerank = crate::WorkspaceRerankOptions::deterministic();
+    rerank.max_candidates = 0;
+    let options = SessionOptions::new().with_workspace_retrieval(
+        WorkspaceRetrievalOptions::new(provider_port).with_rerank_options(rerank),
+    );
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+
+    let error = agent
+        .session_async(workspace.path().to_string_lossy(), Some(options))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::CodeError::SessionInitialization {
+            resource: crate::SessionBuildResource::WorkspaceRetrieval,
+            ..
+        }
+    ));
+    assert_eq!(provider.calls.load(Ordering::Acquire), 0);
 }
 
 #[async_trait]

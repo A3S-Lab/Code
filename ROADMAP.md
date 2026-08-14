@@ -419,12 +419,14 @@ Current implementation status:
 | `CODE-H1` | Delivered | Exact literal, incremental BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
 | `SDK-C2` | Planned | Add typed line/fixed/recursive strategy objects and recursive separator lists to Node, Python, and Go; keep arbitrary custom splitters on the Rust host boundary until a bounded callback lifecycle is specified |
+| `SDK-R2` | Planned | Add typed deterministic-reranker option objects to Node, Python, and Go without accepting primitive algorithm names; the current SDK result DTOs already report versioned algorithm, score, duplication, budget, truncation, and fallback evidence |
 | `HOST-R1` | Delivered | A3S CLI `main` commit `53821c8` adds default-off ACL wiring, a separate OpenAI-compatible embedding route, trusted-layer egress enforcement, bounded/redacted HTTP behavior, and session injection across exec, TUI rebuilds, and Code Web. It pins Code `47770057` and Memory `3293f572`; retrieval-focused tests pass `71/71`, the final post-pin filter passes `19/19`, all targets and Clippy compile, the release build passes, and the full Windows suite adds no failures relative to CLI baseline `f4377c2` |
 | `HOST-C2` | Planned | Add typed ACL selection for built-in chunk strategies, bounds, overlap, and recursive separators; invalid or unsupported strategy blocks fail before provider calls and retrieval remains default-off |
+| `HOST-R2` | Planned | Add explicit default-off ACL selection for the deterministic reranker and its bounded limits; invalid settings fail before provider/source egress and the effective non-sensitive algorithm is observable |
 | `WSR-QA` | Delivered | Locked quality, adversarial egress/race/isolation/confidentiality/lifecycle suites, strict Clippy, the complete serial Core suite (`2757/0/18`), two release benchmark runs, final host release build, and the post-pin DeepSeek tool-loop E2E pass. Exact p95 is 8.294/12.302 ms and hybrid p95 is 51.145/54.429 ms |
 | `WSR-EVAL1` | Delivered | Real `deepseek/deepseek-v4-pro` paired ablation passes enabled 3/3 versus disabled 0/3, Recall@5/MRR 1.0, a target beyond the 80-line boundary, 30 text files/31 chunks, three excluded non-text assets, zero non-text provider inputs, and complete post-close release |
 | `CODE-B2` | Planned | Coalesce ready chunks across files before provider execution while preserving stable IDs, per-file generation fencing, file-atomic publication, bounded flush latency, cancellation, and partial readiness; reduce the measured 30x request amplification to at most 1.10x the per-session batch-limit lower bound |
-| `CODE-R2` | Planned | Add bounded deterministic overlap/boilerplate deduplication and MMR-style reranking after RRF, with exact-tier protection, checked scratch memory, transparent evidence, and unchanged-order fallback; evaluate a host-injected local cross-encoder only after the baseline |
+| `CODE-R2` | Delivered | Rust Core adds an opt-in deterministic MMR v1 stage after pure RRF with exact-tier protection, interval/lexical near-duplicate scoring, stable tie breaking, two-results-per-file diversity, 100-candidate/4-KiB/128-fingerprint/4-MiB ceilings, unchanged-order RRF fallback, and versioned diagnostics across Rust/Node/Python/Go results. Locked Recall@10/MRR/nDCG@10 are 1.0 with zero selected duplicates; two release runs report -5.163/-2.322 ms signed end-to-end p95 differences (0/0 ms positive addition), 75,346 accounted scratch bytes, and zero fallback. RRF-only remains default |
 | `WSR-EVAL2` | Planned | Compare line, fixed, recursive, and representative custom chunking with RRF-only and deterministic rerank variants on locked fixtures plus paired DeepSeek tasks; report quality, duplication, latency, memory, provider amplification, and end-task completion |
 | `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, DeepSeek task evaluation, SDK examples, ACL host guidance, text/knowledge-compiler boundary, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
 
@@ -449,14 +451,16 @@ The chunk strategy and rerank boundary is in
 | `CODE-H1` | Code tools/intelligence | `CODE-Q1` | Exact, BM25, symbol, and semantic candidate fusion | Hybrid meets locked quality gates and preserves identifier precision |
 | `SDK-R1` | Code SDKs | `CODE-S1`, `CODE-Q1` | Rust/Node/Python/Go typed options, status DTOs, lifecycle parity, and examples | SDK alignment checks and language-specific integration tests pass |
 | `SDK-C2` | Code SDKs | `CODE-C2` | Typed line/fixed/recursive chunk options in Node/Python/Go | Cross-SDK fixtures produce identical ranges and reject identical invalid configurations; no primitive strategy-name option is accepted |
+| `SDK-R2` | Code SDKs | `CODE-R2` | Typed deterministic-reranker option objects in Node/Python/Go | Cross-SDK options preserve Core defaults and bounds, fail before provider calls, and never accept a primitive algorithm name |
 | `HOST-R1` | CLI/TUI hosts | `SDK-R1` | ACL wiring, readiness/degraded diagnostics, and explicit enable/disable controls | A user can identify disabled, building, partial, ready, and degraded states without debug logs |
 | `HOST-C2` | CLI/TUI hosts | `SDK-C2` | ACL chunk strategy, overlap, separator, and budget configuration | Omitted config preserves line defaults; invalid config fails before source/provider egress; effective non-sensitive settings are observable |
+| `HOST-R2` | CLI/TUI hosts | `SDK-R2` | ACL reranker selection and bounded settings | Omitted config preserves RRF-only; deterministic mode is explicit; invalid settings cause zero source/provider egress |
 | `WSR-QA` | Code tests/benchmarks | `CODE-H1`, `SDK-R1` | Adversarial E2E, performance benchmark, soak, and failure-injection suite | All release gates in section 6.10 pass on the reference profiles |
 | `WSR-DOC` | Memory, Code, hosts | `WSR-QA` | README, roadmap status, ACL reference, SDK examples, privacy guidance, and migration notes | Examples execute and no obsolete query-time-BM25 or sqlite-vec guidance remains |
 | `WSR-EVAL1` | Code real-model tests | `HOST-R1`, `WSR-QA` | Paired enabled/disabled DeepSeek task evaluation with chunk and non-text adversaries | Exact completion improves, locked retrieval metrics pass, non-text egress is zero, and close releases every vector |
 | `CODE-B2` | Code semantic runtime | `WSR-EVAL1` | Session-local cross-file embedding batch coordinator and amplification metrics | At most 1.10x the per-session batch-limit request lower bound with unchanged quality, lifecycle, and time-to-first-partition gates |
 | `CODE-R2` | Code ranking | `CODE-C2`, `CODE-H1` | Deterministic bounded second-stage reranker and optional typed host port | Identifier quality never regresses; duplicate evidence falls on the overlap fixture; p95/scratch limits pass; failure returns original RRF order |
-| `WSR-EVAL2` | Code tests/real model | `CODE-R2`, `HOST-C2` | Strategy/rerank matrix with deterministic and DeepSeek task evidence | Every metric in the locked report is populated and no variant ships as default without a statistically and operationally meaningful gain |
+| `WSR-EVAL2` | Code tests/real model | `CODE-R2`, `HOST-C2`, `HOST-R2` | Strategy/rerank matrix with deterministic and DeepSeek task evidence | Every metric in the locked report is populated and no variant ships as default without a statistically and operationally meaningful gain |
 
 The parallelizable dependency shape is:
 
@@ -472,13 +476,14 @@ WSR-00 ─────────────────┼─> CODE-C1 ──
 shared types and invariants are frozen. SDK and host work starts from the
 versioned Code contract, not from private runtime structs.
 
-After `CODE-C2`, `SDK-C2` then `HOST-C2` carry only the typed built-ins across
-language and ACL boundaries. `CODE-R2` can proceed in parallel with that SDK
-work because it consumes the stable chunk/rank contract. `WSR-EVAL2` starts
-only after both paths meet: the real host must select strategies, and Code must
-report the rerank variant used.
+After `CODE-C2`, `SDK-C2` then `HOST-C2` carry only the typed chunking built-ins
+across language and ACL boundaries. Delivered `CODE-R2` consumes the stable
+chunk/rank contract; `SDK-R2` then `HOST-R2` carry its explicit deterministic
+option without primitive algorithm names. `WSR-EVAL2` starts only after both
+host paths meet: the real host must select chunking and rerank variants, and
+Code must report the versioned ranking pipeline used.
 
-`CODE-R2` executes in this order:
+`CODE-R2` was executed in this order:
 
 1. Lock RRF-only fixtures for overlapping ranges, repeated boilerplate, exact
    identifiers, same-file symbols, and cross-file paraphrases. Record
@@ -493,6 +498,9 @@ report the rerank variant used.
 4. Expose algorithm/version and bounded diagnostics without queries, source
    text, vectors, or model inputs in logs. Run adversarial determinism, panic,
    timeout, memory, and stale-revision tests.
+Steps 1-4 are delivered. The remaining promotion work belongs to the following
+evaluation gates:
+
 5. Evaluate an optional host-injected local cross-encoder only against the
    deterministic baseline. It must be default-off and cannot download a model,
    make an undeclared network call, or change exact-identifier precedence.

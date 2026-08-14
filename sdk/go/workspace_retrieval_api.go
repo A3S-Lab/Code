@@ -89,9 +89,47 @@ type WorkspaceHybridChannelStatus struct {
 	Fallback       *string                   `json:"fallback"`
 }
 
+type WorkspaceRerankMode string
+
+const (
+	WorkspaceRerankRRFOnly       WorkspaceRerankMode = "rrf_only"
+	WorkspaceRerankDeterministic WorkspaceRerankMode = "deterministic"
+)
+
+type WorkspaceRerankAlgorithm string
+
+const (
+	WorkspaceRerankAlgorithmRRFK60             WorkspaceRerankAlgorithm = "rrf_k60"
+	WorkspaceRerankAlgorithmDeterministicMMRV1 WorkspaceRerankAlgorithm = "rrf_k60+deterministic_mmr_v1"
+)
+
+type WorkspaceRerankFallbackReason string
+
+const (
+	WorkspaceRerankScratchBudgetExceeded WorkspaceRerankFallbackReason = "scratch_budget_exceeded"
+	WorkspaceRerankInvalidConfiguration   WorkspaceRerankFallbackReason = "invalid_configuration"
+)
+
+type WorkspaceRerankStatus struct {
+	RequestedMode           WorkspaceRerankMode            `json:"requested_mode"`
+	AppliedMode             WorkspaceRerankMode            `json:"applied_mode"`
+	Algorithm               WorkspaceRerankAlgorithm       `json:"algorithm"`
+	InputCandidates         uint                           `json:"input_candidates"`
+	EvaluatedCandidates     uint                           `json:"evaluated_candidates"`
+	SelectedCandidates      uint                           `json:"selected_candidates"`
+	NearDuplicateCandidates uint                           `json:"near_duplicate_candidates"`
+	SelectedNearDuplicates  uint                           `json:"selected_near_duplicates"`
+	FeatureBytes            uint                           `json:"feature_bytes"`
+	AccountedScratchBytes   uint                           `json:"accounted_scratch_bytes"`
+	CandidateTruncated      bool                           `json:"candidate_truncated"`
+	Fallback                *WorkspaceRerankFallbackReason `json:"fallback"`
+}
+
 type WorkspaceHybridSearchHit struct {
 	Chunk           WorkspaceChunk               `json:"chunk"`
 	FusedScore      float64                      `json:"fused_score"`
+	RerankScore     float64                      `json:"rerank_score"`
+	RedundancyScore float64                      `json:"redundancy_score"`
 	ExactIdentifier bool                         `json:"exact_identifier"`
 	Channels        []WorkspaceHybridChannelRank `json:"channels"`
 }
@@ -102,6 +140,7 @@ type WorkspaceHybridSearchResult struct {
 	CatalogRevision uint64                         `json:"catalog_revision"`
 	SourceRevision  uint64                         `json:"source_revision"`
 	Channels        []WorkspaceHybridChannelStatus `json:"channels"`
+	Rerank          WorkspaceRerankStatus           `json:"rerank"`
 	Truncated       bool                           `json:"truncated"`
 	Fallback        *string                        `json:"fallback"`
 }

@@ -22,6 +22,7 @@ import type {
   WorkspaceRetrievalStatusObject,
   WorkspaceSemanticSearchResultObject,
   WorkspaceHybridSearchResultObject,
+  WorkspaceRerankStatusObject,
   // From extra-types.d.ts (hand-authored):
   ToolErrorKind,
   VerificationStatus,
@@ -56,6 +57,7 @@ declare const _retrievalOptions: WorkspaceRetrievalOptions
 declare const _retrievalStatus: WorkspaceRetrievalStatusObject
 declare const _semanticResult: WorkspaceSemanticSearchResultObject
 declare const _hybridResult: WorkspaceHybridSearchResultObject
+declare const _rerankStatus: WorkspaceRerankStatusObject
 declare const _embeddingRequest: EmbeddingBatchRequest
 declare const _embeddingResponse: EmbeddingBatchResponse
 declare const _err: ToolErrorKind
@@ -92,6 +94,10 @@ void _retrievalOptions.maxRecords
 void _retrievalStatus.coverageBps
 void _semanticResult.hits[0]?.chunk.digestVerified
 void _hybridResult.channels[0]?.channel
+void _hybridResult.hits[0]?.rerankScore
+void _hybridResult.rerank.accountedScratchBytes
+void _hybridResult.rerank.algorithm
+void _rerankStatus.appliedMode
 void _embeddingRequest.inputs[0]?.text
 void _embeddingResponse.vectors[0]?.values
 void _embeddingProvider

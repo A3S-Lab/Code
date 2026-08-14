@@ -266,13 +266,15 @@ pub use workspace::{
     WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest, WorkspaceGrepResult,
     WorkspaceHybridChannelRank, WorkspaceHybridChannelStatus, WorkspaceHybridFallbackReason,
     WorkspaceHybridSearchHit, WorkspaceHybridSearchRequest, WorkspaceHybridSearchResult,
-    WorkspaceIndexError, WorkspacePath, WorkspacePathResolver, WorkspaceRef, WorkspaceResult,
-    WorkspaceRetrievalChannel, WorkspaceRetrievalError, WorkspaceRetrievalOptions,
-    WorkspaceRetrievalPhase, WorkspaceRetrievalResult, WorkspaceRetrievalRuntime,
-    WorkspaceRetrievalStatus, WorkspaceSearch, WorkspaceSemanticFallbackReason,
-    WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit, WorkspaceSemanticSearchRequest,
-    WorkspaceSemanticSearchResult, WorkspaceServices, WorkspaceServicesBuilder, WorkspaceTextRange,
-    WorkspaceTextReader, WorkspaceVersionConflict, WorkspaceWriteOutcome,
+    WorkspaceIndexError, WorkspacePath, WorkspacePathResolver, WorkspaceRef,
+    WorkspaceRerankAlgorithm, WorkspaceRerankFallbackReason, WorkspaceRerankMode,
+    WorkspaceRerankOptions, WorkspaceRerankStatus, WorkspaceResult, WorkspaceRetrievalChannel,
+    WorkspaceRetrievalError, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
+    WorkspaceRetrievalResult, WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus, WorkspaceSearch,
+    WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
+    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult, WorkspaceServices,
+    WorkspaceServicesBuilder, WorkspaceTextRange, WorkspaceTextReader, WorkspaceVersionConflict,
+    WorkspaceWriteOutcome,
 };
 #[cfg(feature = "s3")]
 pub use workspace::{S3BackendConfig, S3WorkspaceBackend};

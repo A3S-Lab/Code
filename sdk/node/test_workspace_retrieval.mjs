@@ -74,7 +74,13 @@ try {
   const hybrid = await session.hybridSearch({ query: 'terminate_owned_tasks', limit: 3 })
   assert.equal(hybrid.hits[0].chunk.path, 'src/session_cleanup.rs')
   assert.equal(hybrid.hits[0].exactIdentifier, true)
+  assert.equal(hybrid.hits[0].rerankScore, hybrid.hits[0].fusedScore)
+  assert.equal(hybrid.hits[0].redundancyScore, 0)
   assert.ok(hybrid.hits[0].channels.some((channel) => channel.channel === 'exact'))
+  assert.equal(hybrid.rerank.requestedMode, 'rrf_only')
+  assert.equal(hybrid.rerank.appliedMode, 'rrf_only')
+  assert.equal(hybrid.rerank.algorithm, 'rrf_k60')
+  assert.equal(hybrid.rerank.fallback, undefined)
   assert.ok(providerCalls >= 2)
 } finally {
   await session.closeAsync()

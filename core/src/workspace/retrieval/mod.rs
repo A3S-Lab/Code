@@ -14,6 +14,7 @@ mod hybrid_rank;
 mod hybrid_types;
 pub(crate) mod lexical;
 mod reconcile;
+mod rerank;
 mod runtime;
 mod semantic_query;
 mod semantic_runtime;
@@ -31,7 +32,8 @@ pub use eligibility::WorkspaceEligibilityPolicy;
 pub use hybrid_types::{
     WorkspaceHybridChannelRank, WorkspaceHybridChannelStatus, WorkspaceHybridFallbackReason,
     WorkspaceHybridSearchHit, WorkspaceHybridSearchRequest, WorkspaceHybridSearchResult,
-    WorkspaceRetrievalChannel,
+    WorkspaceRerankAlgorithm, WorkspaceRerankFallbackReason, WorkspaceRerankMode,
+    WorkspaceRerankOptions, WorkspaceRerankStatus, WorkspaceRetrievalChannel,
 };
 pub use lexical::{LexicalSearchHit, LexicalSearchRequest, LexicalSearchResult};
 pub(crate) use runtime::LocalWorkspaceCatalogRuntime;

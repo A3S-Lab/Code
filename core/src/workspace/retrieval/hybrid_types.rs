@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 
+const DEFAULT_RERANK_MAX_CANDIDATES: usize = 100;
+const DEFAULT_RERANK_MAX_FEATURE_BYTES: usize = 4 * 1024;
+const DEFAULT_RERANK_MAX_FINGERPRINTS: usize = 128;
+const DEFAULT_RERANK_MAX_SCRATCH_BYTES: usize = 4 * 1024 * 1024;
+
 /// Independent retrieval evidence channels fused by hybrid search.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +49,97 @@ pub struct WorkspaceHybridChannelRank {
     pub channel: WorkspaceRetrievalChannel,
     /// One-based rank within this channel.
     pub rank: usize,
+}
+
+/// Requested or applied second-stage ranking behavior.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceRerankMode {
+    /// Preserve deterministic RRF ordering and per-file diversity.
+    #[default]
+    RrfOnly,
+    /// Apply the bounded deterministic MMR v1 stage after RRF.
+    Deterministic,
+}
+
+/// Versioned ranking pipeline actually applied to one hybrid result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum WorkspaceRerankAlgorithm {
+    #[serde(rename = "rrf_k60")]
+    RrfK60,
+    #[serde(rename = "rrf_k60+deterministic_mmr_v1")]
+    RrfK60DeterministicMmrV1,
+}
+
+impl WorkspaceRerankAlgorithm {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RrfK60 => "rrf_k60",
+            Self::RrfK60DeterministicMmrV1 => "rrf_k60+deterministic_mmr_v1",
+        }
+    }
+}
+
+/// Explicit bounded configuration for hybrid second-stage ranking.
+///
+/// RRF-only remains the compatibility default until the locked `WSR-EVAL2`
+/// strategy matrix proves that deterministic reranking should be promoted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct WorkspaceRerankOptions {
+    pub mode: WorkspaceRerankMode,
+    pub max_candidates: usize,
+    pub max_feature_bytes_per_candidate: usize,
+    pub max_fingerprints_per_candidate: usize,
+    pub max_scratch_bytes: usize,
+}
+
+impl WorkspaceRerankOptions {
+    /// Enable deterministic in-memory MMR v1 with the locked resource bounds.
+    pub fn deterministic() -> Self {
+        Self {
+            mode: WorkspaceRerankMode::Deterministic,
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for WorkspaceRerankOptions {
+    fn default() -> Self {
+        Self {
+            mode: WorkspaceRerankMode::RrfOnly,
+            max_candidates: DEFAULT_RERANK_MAX_CANDIDATES,
+            max_feature_bytes_per_candidate: DEFAULT_RERANK_MAX_FEATURE_BYTES,
+            max_fingerprints_per_candidate: DEFAULT_RERANK_MAX_FINGERPRINTS,
+            max_scratch_bytes: DEFAULT_RERANK_MAX_SCRATCH_BYTES,
+        }
+    }
+}
+
+/// Why an explicitly requested reranker preserved the original RRF order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceRerankFallbackReason {
+    ScratchBudgetExceeded,
+    InvalidConfiguration,
+}
+
+/// Non-sensitive accounting for one bounded hybrid rerank operation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRerankStatus {
+    pub requested_mode: WorkspaceRerankMode,
+    pub applied_mode: WorkspaceRerankMode,
+    pub algorithm: WorkspaceRerankAlgorithm,
+    pub input_candidates: usize,
+    pub evaluated_candidates: usize,
+    pub selected_candidates: usize,
+    pub near_duplicate_candidates: usize,
+    pub selected_near_duplicates: usize,
+    pub feature_bytes: usize,
+    pub accounted_scratch_bytes: usize,
+    pub candidate_truncated: bool,
+    pub fallback: Option<WorkspaceRerankFallbackReason>,
 }
 
 /// Bounded request for deterministic hybrid workspace retrieval.
@@ -98,6 +194,10 @@ impl fmt::Debug for WorkspaceHybridSearchRequest {
 pub struct WorkspaceHybridSearchHit {
     pub chunk: Arc<WorkspaceChunk>,
     pub fused_score: f64,
+    /// Greedy selection score assigned by the applied rerank stage.
+    pub rerank_score: f64,
+    /// Maximum interval or lexical similarity to an earlier selected hit.
+    pub redundancy_score: f64,
     pub exact_identifier: bool,
     pub channels: Vec<WorkspaceHybridChannelRank>,
 }
@@ -110,6 +210,8 @@ impl fmt::Debug for WorkspaceHybridSearchHit {
             .field("start_line", &self.chunk.start_line)
             .field("end_line", &self.chunk.end_line)
             .field("fused_score", &self.fused_score)
+            .field("rerank_score", &self.rerank_score)
+            .field("redundancy_score", &self.redundancy_score)
             .field("exact_identifier", &self.exact_identifier)
             .field("channels", &self.channels)
             .finish_non_exhaustive()
@@ -124,6 +226,7 @@ pub struct WorkspaceHybridSearchResult {
     pub catalog_revision: u64,
     pub source_revision: u64,
     pub channels: Vec<WorkspaceHybridChannelStatus>,
+    pub rerank: WorkspaceRerankStatus,
     pub truncated: bool,
     pub fallback: Option<WorkspaceHybridFallbackReason>,
 }
@@ -154,5 +257,9 @@ mod tests {
         assert_send_sync::<WorkspaceHybridSearchRequest>();
         assert_send_sync::<WorkspaceHybridSearchHit>();
         assert_send_sync::<WorkspaceHybridSearchResult>();
+        assert_send_sync::<WorkspaceRerankMode>();
+        assert_send_sync::<WorkspaceRerankAlgorithm>();
+        assert_send_sync::<WorkspaceRerankOptions>();
+        assert_send_sync::<WorkspaceRerankStatus>();
     }
 }

@@ -1,7 +1,9 @@
 use crate::embedding::{
     EmbeddingError, EmbeddingExecutorConfig, EmbeddingProvider, EmbeddingProviderDescriptor,
 };
-use crate::workspace::{ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkingStrategy};
+use crate::workspace::{
+    ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkingStrategy, WorkspaceRerankOptions,
+};
 use a3s_memory::vector::VectorIndexError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -70,6 +72,7 @@ pub struct WorkspaceRetrievalOptions {
     pub(crate) chunking_strategy: Option<WorkspaceChunkingStrategy>,
     pub(crate) chunking: Option<ChunkingConfig>,
     pub(crate) catalog_limits: Option<ChunkCatalogLimits>,
+    pub(crate) rerank: WorkspaceRerankOptions,
 }
 
 impl WorkspaceRetrievalOptions {
@@ -82,6 +85,7 @@ impl WorkspaceRetrievalOptions {
             chunking_strategy: None,
             chunking: None,
             catalog_limits: None,
+            rerank: WorkspaceRerankOptions::default(),
         }
     }
 
@@ -120,6 +124,12 @@ impl WorkspaceRetrievalOptions {
         self
     }
 
+    /// Select bounded second-stage behavior for hybrid workspace search.
+    pub fn with_rerank_options(mut self, options: WorkspaceRerankOptions) -> Self {
+        self.rerank = options;
+        self
+    }
+
     pub(crate) fn has_catalog_configuration(&self) -> bool {
         self.chunking_strategy.is_some() || self.chunking.is_some() || self.catalog_limits.is_some()
     }
@@ -135,6 +145,7 @@ impl fmt::Debug for WorkspaceRetrievalOptions {
             .field("chunking_strategy", &self.chunking_strategy)
             .field("chunking", &self.chunking)
             .field("catalog_limits", &self.catalog_limits)
+            .field("rerank", &self.rerank)
             .finish()
     }
 }

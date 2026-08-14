@@ -308,6 +308,8 @@ pub(super) fn hybrid_result_value(result: WorkspaceHybridSearchResult) -> Value 
         "hits": result.hits.iter().map(|hit| json!({
             "chunk": chunk_value(&hit.chunk),
             "fused_score": hit.fused_score,
+            "rerank_score": hit.rerank_score,
+            "redundancy_score": hit.redundancy_score,
             "exact_identifier": hit.exact_identifier,
             "channels": hit.channels.iter().map(|rank| json!({
                 "channel": rank.channel,
@@ -323,8 +325,26 @@ pub(super) fn hybrid_result_value(result: WorkspaceHybridSearchResult) -> Value 
             "truncated": status.truncated,
             "fallback": status.fallback,
         })).collect::<Vec<_>>(),
+        "rerank": rerank_value(&result.rerank),
         "truncated": result.truncated,
         "fallback": result.fallback,
+    })
+}
+
+fn rerank_value(status: &a3s_code_core::WorkspaceRerankStatus) -> Value {
+    json!({
+        "requested_mode": status.requested_mode,
+        "applied_mode": status.applied_mode,
+        "algorithm": status.algorithm,
+        "input_candidates": status.input_candidates,
+        "evaluated_candidates": status.evaluated_candidates,
+        "selected_candidates": status.selected_candidates,
+        "near_duplicate_candidates": status.near_duplicate_candidates,
+        "selected_near_duplicates": status.selected_near_duplicates,
+        "feature_bytes": status.feature_bytes,
+        "accounted_scratch_bytes": status.accounted_scratch_bytes,
+        "candidate_truncated": status.candidate_truncated,
+        "fallback": status.fallback,
     })
 }
 
@@ -380,5 +400,29 @@ mod tests {
                 retry_after: Some(delay)
             } if delay == Duration::from_millis(25)
         ));
+    }
+
+    #[test]
+    fn rerank_wire_status_uses_go_snake_case_fields() {
+        let status = a3s_code_core::WorkspaceRerankStatus {
+            requested_mode: a3s_code_core::WorkspaceRerankMode::Deterministic,
+            applied_mode: a3s_code_core::WorkspaceRerankMode::Deterministic,
+            algorithm: a3s_code_core::WorkspaceRerankAlgorithm::RrfK60DeterministicMmrV1,
+            input_candidates: 10,
+            evaluated_candidates: 8,
+            selected_candidates: 3,
+            near_duplicate_candidates: 2,
+            selected_near_duplicates: 0,
+            feature_bytes: 512,
+            accounted_scratch_bytes: 4_096,
+            candidate_truncated: true,
+            fallback: None,
+        };
+
+        let value = rerank_value(&status);
+        assert_eq!(value["requested_mode"], "deterministic");
+        assert_eq!(value["algorithm"], "rrf_k60+deterministic_mmr_v1");
+        assert_eq!(value["accounted_scratch_bytes"], 4_096);
+        assert!(value.get("requestedMode").is_none());
     }
 }

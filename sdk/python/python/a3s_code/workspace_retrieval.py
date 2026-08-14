@@ -32,6 +32,13 @@ WorkspaceHybridFallbackReason = Literal[
     "revision_changed",
     "filtered_stale_hits",
 ]
+WorkspaceRerankMode = Literal["rrf_only", "deterministic"]
+WorkspaceRerankAlgorithm = Literal[
+    "rrf_k60", "rrf_k60+deterministic_mmr_v1"
+]
+WorkspaceRerankFallbackReason = Literal[
+    "scratch_budget_exceeded", "invalid_configuration"
+]
 
 
 class EmbeddingInput(TypedDict):
@@ -158,9 +165,26 @@ class WorkspaceHybridChannelStatus(TypedDict):
     fallback: Optional[WorkspaceHybridFallbackReason]
 
 
+class WorkspaceRerankStatus(TypedDict):
+    requested_mode: WorkspaceRerankMode
+    applied_mode: WorkspaceRerankMode
+    algorithm: WorkspaceRerankAlgorithm
+    input_candidates: int
+    evaluated_candidates: int
+    selected_candidates: int
+    near_duplicate_candidates: int
+    selected_near_duplicates: int
+    feature_bytes: int
+    accounted_scratch_bytes: int
+    candidate_truncated: bool
+    fallback: Optional[WorkspaceRerankFallbackReason]
+
+
 class WorkspaceHybridSearchHit(TypedDict):
     chunk: WorkspaceChunk
     fused_score: float
+    rerank_score: float
+    redundancy_score: float
     exact_identifier: bool
     channels: List[WorkspaceHybridChannelRank]
 
@@ -171,6 +195,7 @@ class WorkspaceHybridSearchResult(TypedDict):
     catalog_revision: int
     source_revision: int
     channels: List[WorkspaceHybridChannelStatus]
+    rerank: WorkspaceRerankStatus
     truncated: bool
     fallback: Optional[WorkspaceHybridFallbackReason]
 
@@ -194,6 +219,10 @@ __all__ = [
     "WorkspaceRetrievalChannel",
     "WorkspaceRetrievalPhase",
     "WorkspaceRetrievalStatus",
+    "WorkspaceRerankFallbackReason",
+    "WorkspaceRerankAlgorithm",
+    "WorkspaceRerankMode",
+    "WorkspaceRerankStatus",
     "WorkspaceSearchRequest",
     "WorkspaceSemanticFallbackReason",
     "WorkspaceSemanticSearchHit",

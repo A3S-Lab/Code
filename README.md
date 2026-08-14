@@ -379,24 +379,37 @@ OCR, and knowledge-artifact compilation belong to the separate knowledge
 compiler boundary. See
 [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md) for
 strategy selection, custom range invariants, asynchronous construction, and
-the overlap-aware reranking plan.
+the bounded overlap-aware reranker.
 
 Hybrid mode creates independent exact-literal, incremental BM25, optional Code
 Intelligence symbol, and positive-similarity semantic candidate lists. It
 fuses one-based ranks with reciprocal-rank fusion (`k=60`) instead of mixing
 uncalibrated scores. Exact ASCII identifier tokens occupy a protected tier;
-deterministic tie breakers and a two-chunk-per-file cap keep results stable and
-diverse. Fusion precedes source access, so each selected path is reread at most
-once for full-digest and exact-byte-range verification. Per-channel candidate,
-truncation, status, and fallback metadata make partial operation explicit.
-RRF is the current first-stage in-memory reranker. A bounded second stage for
-overlap/boilerplate deduplication and MMR-style diversity is planned in Code;
-it is not a responsibility of the generic A3S Memory vector kernel.
+deterministic tie breakers and a two-chunk-per-file cap keep RRF-only results
+stable. Rust hosts can explicitly enable a second, in-memory deterministic
+stage with `WorkspaceRerankOptions::deterministic()`. It examines at most 100
+fused candidates, samples at most 4 KiB and 128 lexical fingerprints per
+candidate, combines interval/boilerplate similarity with MMR-style diversity,
+and uses at most 4 MiB of checked scratch. Exact identifiers remain protected;
+an invalid configuration or scratch-budget failure preserves RRF ordering.
+RRF-only remains the compatibility default pending the full strategy/DeepSeek
+matrix. Results report the versioned algorithm, selection/redundancy scores,
+candidate and byte accounting, truncation, and fallback without exposing query
+or source text. Fusion and reranking precede authoritative source access, so
+each selected path is reread at most once for full-digest and exact-byte-range
+verification. This Code-specific policy is not part of the generic A3S Memory
+vector kernel.
 
 The locked nine-query fixture preserves the original BM25 baseline and adds an
 independent hybrid result set whose deterministic provider admits only
 annotated query/document pairs. Hybrid Recall@10 and MRR are 1.0 on that
 fixture, improving Recall@10 by 33.3 points without reducing identifier rank.
+The opt-in deterministic stage also records nDCG@10 1.0 and zero selected
+near-duplicate evidence on the locked fixture. On the 25,000-record release
+profile its two end-to-end signed p95 differences versus RRF were -5.163 ms and
+-2.322 ms (0 ms positive addition in both runs), with 75,346 conservatively
+accounted scratch bytes and no fallback. This noisy paired measurement proves
+the budget, not an algorithmic speedup.
 
 Use `edit` with `dry_run: true` to receive the exact before/after diff without
 writing. The dry run is declared read-only and can be safely batched. Apply the

@@ -24,6 +24,7 @@ pub struct WorkspaceRetrievalRuntime {
     task: Mutex<Option<JoinHandle<()>>>,
     close_gate: tokio::sync::Mutex<()>,
     shutdown_timeout: std::time::Duration,
+    pub(super) rerank_options: super::WorkspaceRerankOptions,
 }
 
 impl std::fmt::Debug for WorkspaceRetrievalRuntime {
@@ -42,6 +43,7 @@ impl WorkspaceRetrievalRuntime {
         parent_lifetime: CancellationToken,
     ) -> WorkspaceRetrievalResult<Arc<Self>> {
         let limits = options.index_limits.validate()?;
+        let rerank_options = options.rerank.validate()?;
         let executor = EmbeddingExecutor::new(options.provider, options.embedding)?;
         let descriptor = VectorIndexDescriptor::new(executor.descriptor().dimension)
             .with_max_records(limits.max_records)
@@ -60,6 +62,7 @@ impl WorkspaceRetrievalRuntime {
             task: Mutex::new(None),
             close_gate: tokio::sync::Mutex::new(()),
             shutdown_timeout: limits.shutdown_timeout,
+            rerank_options,
         });
         let task = tokio::spawn(run_semantic_updates(
             catalog, index, executor, status, lifetime,

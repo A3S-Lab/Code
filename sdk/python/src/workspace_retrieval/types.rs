@@ -110,6 +110,8 @@ pub(super) fn hybrid_result_json(result: WorkspaceHybridSearchResult) -> serde_j
         "hits": result.hits.iter().map(|hit| serde_json::json!({
             "chunk": chunk_json(&hit.chunk),
             "fused_score": hit.fused_score,
+            "rerank_score": hit.rerank_score,
+            "redundancy_score": hit.redundancy_score,
             "exact_identifier": hit.exact_identifier,
             "channels": hit.channels.iter().map(|rank| serde_json::json!({
                 "channel": rank.channel,
@@ -125,8 +127,26 @@ pub(super) fn hybrid_result_json(result: WorkspaceHybridSearchResult) -> serde_j
             "truncated": status.truncated,
             "fallback": status.fallback,
         })).collect::<Vec<_>>(),
+        "rerank": rerank_json(&result.rerank),
         "truncated": result.truncated,
         "fallback": result.fallback,
+    })
+}
+
+fn rerank_json(status: &a3s_code_core::WorkspaceRerankStatus) -> serde_json::Value {
+    serde_json::json!({
+        "requested_mode": status.requested_mode,
+        "applied_mode": status.applied_mode,
+        "algorithm": status.algorithm,
+        "input_candidates": status.input_candidates,
+        "evaluated_candidates": status.evaluated_candidates,
+        "selected_candidates": status.selected_candidates,
+        "near_duplicate_candidates": status.near_duplicate_candidates,
+        "selected_near_duplicates": status.selected_near_duplicates,
+        "feature_bytes": status.feature_bytes,
+        "accounted_scratch_bytes": status.accounted_scratch_bytes,
+        "candidate_truncated": status.candidate_truncated,
+        "fallback": status.fallback,
     })
 }
 

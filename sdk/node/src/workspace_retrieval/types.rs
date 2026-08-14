@@ -240,9 +240,61 @@ impl From<&WorkspaceHybridChannelStatus> for WorkspaceHybridChannelStatusObject 
 
 #[napi(object)]
 #[derive(Clone)]
+pub struct WorkspaceRerankStatusObject {
+    pub requested_mode: String,
+    pub applied_mode: String,
+    pub algorithm: String,
+    pub input_candidates: f64,
+    pub evaluated_candidates: f64,
+    pub selected_candidates: f64,
+    pub near_duplicate_candidates: f64,
+    pub selected_near_duplicates: f64,
+    pub feature_bytes: f64,
+    pub accounted_scratch_bytes: f64,
+    pub candidate_truncated: bool,
+    pub fallback: Option<String>,
+}
+
+impl From<&WorkspaceRerankStatus> for WorkspaceRerankStatusObject {
+    fn from(status: &WorkspaceRerankStatus) -> Self {
+        Self {
+            requested_mode: rerank_mode_name(status.requested_mode).to_owned(),
+            applied_mode: rerank_mode_name(status.applied_mode).to_owned(),
+            algorithm: status.algorithm.as_str().to_owned(),
+            input_candidates: status.input_candidates as f64,
+            evaluated_candidates: status.evaluated_candidates as f64,
+            selected_candidates: status.selected_candidates as f64,
+            near_duplicate_candidates: status.near_duplicate_candidates as f64,
+            selected_near_duplicates: status.selected_near_duplicates as f64,
+            feature_bytes: status.feature_bytes as f64,
+            accounted_scratch_bytes: status.accounted_scratch_bytes as f64,
+            candidate_truncated: status.candidate_truncated,
+            fallback: status.fallback.map(rerank_fallback_name).map(str::to_owned),
+        }
+    }
+}
+
+const fn rerank_mode_name(mode: WorkspaceRerankMode) -> &'static str {
+    match mode {
+        WorkspaceRerankMode::RrfOnly => "rrf_only",
+        WorkspaceRerankMode::Deterministic => "deterministic",
+    }
+}
+
+const fn rerank_fallback_name(reason: WorkspaceRerankFallbackReason) -> &'static str {
+    match reason {
+        WorkspaceRerankFallbackReason::ScratchBudgetExceeded => "scratch_budget_exceeded",
+        WorkspaceRerankFallbackReason::InvalidConfiguration => "invalid_configuration",
+    }
+}
+
+#[napi(object)]
+#[derive(Clone)]
 pub struct WorkspaceHybridSearchHitObject {
     pub chunk: WorkspaceChunkObject,
     pub fused_score: f64,
+    pub rerank_score: f64,
+    pub redundancy_score: f64,
     pub exact_identifier: bool,
     pub channels: Vec<WorkspaceHybridChannelRankObject>,
 }
@@ -252,6 +304,8 @@ impl From<&WorkspaceHybridSearchHit> for WorkspaceHybridSearchHitObject {
         Self {
             chunk: chunk_object(&hit.chunk),
             fused_score: hit.fused_score,
+            rerank_score: hit.rerank_score,
+            redundancy_score: hit.redundancy_score,
             exact_identifier: hit.exact_identifier,
             channels: hit.channels.iter().map(Into::into).collect(),
         }
@@ -265,6 +319,7 @@ pub struct WorkspaceHybridSearchResultObject {
     pub catalog_revision: f64,
     pub source_revision: f64,
     pub channels: Vec<WorkspaceHybridChannelStatusObject>,
+    pub rerank: WorkspaceRerankStatusObject,
     pub truncated: bool,
     pub fallback: Option<String>,
 }
@@ -277,6 +332,7 @@ impl From<RustHybridSearchResult> for WorkspaceHybridSearchResultObject {
             catalog_revision: result.catalog_revision as f64,
             source_revision: result.source_revision as f64,
             channels: result.channels.iter().map(Into::into).collect(),
+            rerank: (&result.rerank).into(),
             truncated: result.truncated,
             fallback: result
                 .fallback
