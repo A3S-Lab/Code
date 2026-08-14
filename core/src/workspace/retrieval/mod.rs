@@ -16,6 +16,8 @@ pub(crate) mod lexical;
 mod reconcile;
 mod rerank;
 mod runtime;
+mod semantic_batch;
+mod semantic_projection;
 mod semantic_query;
 mod semantic_runtime;
 mod semantic_types;
@@ -39,10 +41,10 @@ pub use lexical::{LexicalSearchHit, LexicalSearchRequest, LexicalSearchResult};
 pub(crate) use runtime::LocalWorkspaceCatalogRuntime;
 pub use semantic_runtime::WorkspaceRetrievalRuntime;
 pub use semantic_types::{
-    WorkspaceRetrievalError, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
-    WorkspaceRetrievalResult, WorkspaceRetrievalStatus, WorkspaceSemanticFallbackReason,
-    WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit, WorkspaceSemanticSearchRequest,
-    WorkspaceSemanticSearchResult,
+    WorkspaceEmbeddingBatchMetrics, WorkspaceRetrievalError, WorkspaceRetrievalOptions,
+    WorkspaceRetrievalPhase, WorkspaceRetrievalResult, WorkspaceRetrievalStatus,
+    WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
+    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult,
 };
 pub use types::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunk, WorkspaceChunkId, WorkspaceIndexError,

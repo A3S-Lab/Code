@@ -7,6 +7,7 @@ use futures::FutureExt;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -175,6 +176,25 @@ impl EmbeddingExecutor {
         inputs: Vec<EmbeddingInput>,
         cancellation: CancellationToken,
     ) -> EmbeddingResult<EmbeddingExecution> {
+        self.embed_inner(inputs, cancellation, None).await
+    }
+
+    pub(crate) async fn embed_counted(
+        &self,
+        inputs: Vec<EmbeddingInput>,
+        cancellation: CancellationToken,
+        provider_requests: &AtomicUsize,
+    ) -> EmbeddingResult<EmbeddingExecution> {
+        self.embed_inner(inputs, cancellation, Some(provider_requests))
+            .await
+    }
+
+    async fn embed_inner(
+        &self,
+        inputs: Vec<EmbeddingInput>,
+        cancellation: CancellationToken,
+        provider_requests: Option<&AtomicUsize>,
+    ) -> EmbeddingResult<EmbeddingExecution> {
         if cancellation.is_cancelled() {
             return Err(EmbeddingError::Cancelled);
         }
@@ -183,7 +203,9 @@ impl EmbeddingExecutor {
         let mut provider_attempts = 0usize;
         for range in &batches {
             let request = EmbeddingBatchRequest::new(inputs[range.clone()].to_vec());
-            let (response, attempts) = self.call_batch(request.clone(), &cancellation).await?;
+            let (response, attempts) = self
+                .call_batch(request.clone(), &cancellation, provider_requests)
+                .await?;
             provider_attempts = provider_attempts.saturating_add(attempts);
             vectors.extend(validate_response(
                 &self.descriptor,
@@ -203,10 +225,14 @@ impl EmbeddingExecutor {
         &self,
         request: EmbeddingBatchRequest,
         cancellation: &CancellationToken,
+        provider_requests: Option<&AtomicUsize>,
     ) -> EmbeddingResult<(EmbeddingBatchResponse, usize)> {
         for attempt in 0..=self.config.max_retries {
             if cancellation.is_cancelled() {
                 return Err(EmbeddingError::Cancelled);
+            }
+            if let Some(provider_requests) = provider_requests {
+                provider_requests.fetch_add(1, Ordering::Relaxed);
             }
             let attempt_token = cancellation.child_token();
             let provider_call =

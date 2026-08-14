@@ -111,6 +111,11 @@ only current-source, digest-verified chunks. Callback failures may return a
 typed `{ kind, retryAfterMs? }` object; response bodies and exception messages
 are not copied into Code diagnostics.
 
+Every status snapshot exposes `batching` counters for logical document batches,
+physical provider requests, limit flush reasons, the theoretical request lower
+bound, and time to first ready file. These counters reset for each catalog
+generation and exclude non-text inputs by construction.
+
 The reranker is optional: omit the second constructor argument to preserve
 RRF-only. Its typed fields bound candidates, sampled feature bytes,
 fingerprints, and checked scratch memory. Invalid bounds fail while constructing

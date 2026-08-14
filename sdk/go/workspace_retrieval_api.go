@@ -23,6 +23,20 @@ const (
 	WorkspaceRetrievalClosed   WorkspaceRetrievalPhase = "closed"
 )
 
+type WorkspaceEmbeddingBatchMetrics struct {
+	DocumentInputs             uint    `json:"document_inputs"`
+	DocumentTextBytes          uint    `json:"document_text_bytes"`
+	DocumentBatches            uint    `json:"document_batches"`
+	DocumentProviderRequests   uint    `json:"document_provider_requests"`
+	BatchLimitLowerBound       uint    `json:"batch_limit_lower_bound"`
+	InputLimitFlushes          uint    `json:"input_limit_flushes"`
+	TextByteLimitFlushes       uint    `json:"text_byte_limit_flushes"`
+	VectorByteLimitFlushes     uint    `json:"vector_byte_limit_flushes"`
+	GenerationCompleteFlushes uint    `json:"generation_complete_flushes"`
+	TimeToFirstReadyMS         *uint64 `json:"time_to_first_ready_ms"`
+	NonTextInputs              uint    `json:"non_text_inputs"`
+}
+
 type WorkspaceRetrievalStatus struct {
 	Phase           WorkspaceRetrievalPhase      `json:"phase"`
 	CatalogRevision uint64                       `json:"catalog_revision"`
@@ -39,6 +53,7 @@ type WorkspaceRetrievalStatus struct {
 	TotalFailures   uint64                       `json:"total_failures"`
 	VectorRecords   uint                         `json:"vector_records"`
 	VectorBytes     uint                         `json:"vector_bytes"`
+	Batching        WorkspaceEmbeddingBatchMetrics `json:"batching"`
 	Model           *EmbeddingProviderDescriptor `json:"model"`
 }
 

@@ -124,6 +124,16 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 status = await asyncio.wait_for(wait_until_ready(), timeout=10)
                 assert status["phase"] == "ready", status
                 assert status["indexed_chunks"] > 0
+                batching = status["batching"]
+                assert batching["document_inputs"] > 0
+                assert batching["document_text_bytes"] > 0
+                assert batching["batch_limit_lower_bound"] > 0
+                assert (
+                    batching["document_provider_requests"] * 10
+                    <= batching["batch_limit_lower_bound"] * 11
+                )
+                assert batching["non_text_inputs"] == 0
+                assert batching["time_to_first_ready_ms"] is not None
 
                 semantic = cast(
                     WorkspaceSemanticSearchResult,

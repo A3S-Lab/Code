@@ -424,9 +424,9 @@ Current implementation status:
 | `HOST-R1` | Delivered | A3S CLI `main` commit `53821c8` adds default-off ACL wiring, a separate OpenAI-compatible embedding route, trusted-layer egress enforcement, bounded/redacted HTTP behavior, and session injection across exec, TUI rebuilds, and Code Web. It pins Code `47770057` and Memory `3293f572`; retrieval-focused tests pass `71/71`, the final post-pin filter passes `19/19`, all targets and Clippy compile, the release build passes, and the full Windows suite adds no failures relative to CLI baseline `f4377c2` |
 | `HOST-C2` | Delivered | A3S CLI `main` commit `b79df10` introduced trusted typed `line`, `fixed_window`, and `recursive` ACL blocks. Follow-up `d1c8c25` pins Code `b7a496b`, configures each shared manifest catalog exactly once, and keeps catalog settings out of per-session options across exec, TUI, and Code Web. Omission preserves line chunking and default-off retrieval; primitive/custom selectors, workspace-layer overrides, duplicate/mixed/unknown blocks, and invalid Core-owned limits fail before provider resolution or source egress. Retrieval tests pass `28/28`, exec policy `7/7`, authority overlay `5/5`, Web host/cache `5/5`, and config projection `2/2`; locked all-target check, format, and baseline-aware changed-target Clippy pass. The earlier full-LTO release build exceeded the 10-minute local gate and was not rerun for this host-only follow-up |
 | `HOST-R2` | Delivered | A3S CLI `main` commit `c8024e6` pins Code `47337f03` and adds a trusted, default-off typed `deterministic_reranker` ACL block. Omission preserves RRF-only; primitive selectors, workspace-layer overrides, duplicate/unknown blocks, and invalid Core-owned limits fail before provider resolution or source egress. `a3s config show` reports active/requested mode, the versioned algorithm, and non-sensitive limits. Retrieval tests pass `24/24`, authority-overlay tests `5/5`, and real CLI config contracts `2/2`; locked build, format, and change-scoped all-target Clippy gates pass |
-| `WSR-QA` | Delivered | Locked quality, adversarial egress/race/isolation/confidentiality/lifecycle suites, strict Clippy, the complete serial Core suite (`2757/0/18`), two release benchmark runs, final host release build, and the post-pin DeepSeek tool-loop E2E pass. Exact p95 is 8.294/12.302 ms and hybrid p95 is 51.145/54.429 ms |
-| `WSR-EVAL1` | Delivered | Real `deepseek/deepseek-v4-pro` paired ablation passes enabled 3/3 versus disabled 0/3, Recall@5/MRR 1.0, a target beyond the 80-line boundary, 30 text files/31 chunks, three excluded non-text assets, zero non-text provider inputs, and complete post-close release |
-| `CODE-B2` | Planned | Coalesce ready chunks across files before provider execution while preserving stable IDs, per-file generation fencing, file-atomic publication, bounded flush latency, cancellation, and partial readiness; reduce the measured 30x request amplification to at most 1.10x the per-session batch-limit lower bound |
+| `WSR-QA` | Delivered | Locked quality, adversarial egress/race/isolation/confidentiality/lifecycle suites, strict Core/Node/Python/Go bridge Clippy, the post-`CODE-B2` complete serial Core suite (`2777/0/18`), release benchmark runs, final host release build, and DeepSeek tool-loop E2E passes. Exact p95 is 8.294/12.302 ms and the original qualified hybrid p95 is 51.145/54.429 ms |
+| `WSR-EVAL1` | Delivered | Real `deepseek/deepseek-v4-pro` paired ablation passes enabled 3/3 versus disabled 0/3, Recall@5/MRR 1.0, a target beyond the 80-line boundary, 30 text files/31 chunks, three excluded non-text assets, zero non-text provider inputs, complete post-close release, and schema-v2 `CODE-B2` document-request amplification of 1.0x |
+| `CODE-B2` | Delivered | A session-local coordinator coalesces one immutable catalog generation across files and flushes on the earliest input, text-byte, vector-byte, or generation-complete boundary. Stable IDs, revision/digest fencing, cancellation, private split-file accumulation, file-atomic publication, partial readiness, and already-published sibling survival are covered by eight adversarial tests. Current-generation batching metrics are exposed by Core, Node, Python, and Go. The 31-chunk paired task, 55-chunk collision task, every strategy arm, and the 25,000-record release profile all report 1.0x request amplification; the release profile emits 391 requests for a 391-request lower bound with 9-10 ms time to first ready publication |
 | `CODE-R2` | Delivered | Rust Core adds an opt-in deterministic MMR v1 stage after pure RRF with exact-tier protection, interval/lexical near-duplicate scoring, stable tie breaking, two-results-per-file diversity, 100-candidate/4-KiB/128-fingerprint/4-MiB ceilings, unchanged-order RRF fallback, and versioned diagnostics across Rust/Node/Python/Go results. Locked Recall@10/MRR/nDCG@10 are 1.0 with zero selected duplicates; two release runs report -5.163/-2.322 ms signed end-to-end p95 differences (0/0 ms positive addition), 75,346 accounted scratch bytes, and zero fallback. The default-line adversarial DeepSeek slice improves completion and Recall@5 from 0/3 to 3/3 while reducing Top-5 collision evidence from 15/15 to 10/15. RRF-only remains default |
 | `WSR-EVAL2` | In progress | The default-line Core/DeepSeek rerank slice and the orthogonal built-in chunking matrix pass with versioned algorithm, quality, rank, latency, token, chunk/vector memory, provider, non-text, and lifecycle evidence. Line, fixed 512/64, and explicit-separator recursive 512/64 each complete `3/3` real tasks with Recall@5 `1.0`, MRR `0.5`, zero non-text inputs, and complete release. A valid Rust whole-file custom negative control completes only `2/3`, proving range safety does not imply context quality. The real CLI ACL-host variant at `d1c8c25` also completes `3/3` with exact tool protocol, Precision@5 `0.2`, returned-result precision `0.4286`, Recall@5 `1.0`, MRR `0.5`, nDCG@5 `0.6309`, 39 vectors/9,595 bytes, zero non-text inputs, and explicit 30x request amplification. Cross-SDK real-model variants remain pending; no default change is qualified |
 | `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, DeepSeek task evaluation, SDK examples, ACL host guidance, text/knowledge-compiler boundary, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
@@ -513,7 +513,7 @@ evaluation gates:
    duplicate evidence falls materially, nDCG/task completion improves, and
    p95 latency plus scratch-memory gates pass on the reference profile.
 
-`CODE-B2` is a post-release optimization and executes in this order:
+`CODE-B2` was executed in this order:
 
 1. Freeze machine-readable metrics for document inputs, provider requests,
    batch-limit lower bounds, flush reasons, time to first ready partition, and
@@ -521,9 +521,10 @@ evaluation gates:
 2. Add one bounded session-local coordinator between completed chunks and
    `EmbeddingExecutor`. It may group different files but may not cross sessions,
    providers, descriptors, or source generations.
-3. Flush on the earliest configured input, text-byte, vector-byte, or short
-   latency bound. Cancellation removes unpublished work without extending the
-   close deadline.
+3. Flush on the earliest configured input, text-byte, or vector-byte bound, or
+   immediately when the immutable catalog generation is exhausted. No latency
+   timer is needed because the coordinator never waits for a future revision.
+   Cancellation removes unpublished work without extending the close deadline.
 4. Validate the complete provider response, regroup vectors by file generation,
    and publish each file atomically. One malformed file or superseded generation
    cannot expose a mixed partition or discard already valid files.
@@ -533,6 +534,14 @@ evaluation gates:
 6. Ship only when request amplification is at most 1.10x the batch-limit lower
    bound and session construction, time to first partition, quality, memory, and
    close gates have no regression.
+
+Steps 1-6 are delivered. The final schema-v2 DeepSeek paired run retained 3/3
+enabled task accuracy versus 0/3 disabled, Recall@5/MRR of 1.0, one document
+provider request for each 31-chunk session, zero non-text inputs, and complete
+release. The schema-v3 25,000-record release run emitted 391 logical and
+physical batches against a 391-request lower bound, with 1.0x amplification,
+9-10 ms time to first file-atomic publication, and all latency, memory, scratch,
+quality, and cleanup gates passing.
 
 Knowledge-compiler integration is not part of `CODE-B2`. It starts with a
 separate cross-project ADR and fixture for the typed artifact/provenance handoff;

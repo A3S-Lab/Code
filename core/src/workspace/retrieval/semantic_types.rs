@@ -161,6 +161,31 @@ pub enum WorkspaceRetrievalPhase {
     Closed,
 }
 
+/// Machine-readable batching evidence for the current catalog generation.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEmbeddingBatchMetrics {
+    /// Text chunks admitted to this semantic projection generation.
+    pub document_inputs: usize,
+    /// UTF-8 bytes submitted by those document inputs, including overlap.
+    pub document_text_bytes: usize,
+    /// Logical batches submitted by the session-local coordinator.
+    pub document_batches: usize,
+    /// Physical provider calls, including retries, observed by the executor.
+    pub document_provider_requests: usize,
+    /// The theoretical request lower bound imposed by count, text, and vector limits.
+    pub batch_limit_lower_bound: usize,
+    pub input_limit_flushes: usize,
+    pub text_byte_limit_flushes: usize,
+    pub vector_byte_limit_flushes: usize,
+    /// Underfilled batches flushed immediately because the catalog generation was complete.
+    pub generation_complete_flushes: usize,
+    /// Elapsed time from observing the generation to its first file-atomic publication.
+    pub time_to_first_ready_ms: Option<u64>,
+    /// Must remain zero: non-text assets never enter the text chunk catalog.
+    pub non_text_inputs: usize,
+}
+
 /// Non-sensitive, immutable observation of one semantic index revision.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -181,6 +206,8 @@ pub struct WorkspaceRetrievalStatus {
     pub total_failures: u64,
     pub vector_records: usize,
     pub vector_bytes: usize,
+    #[serde(default)]
+    pub batching: WorkspaceEmbeddingBatchMetrics,
     pub model: Option<EmbeddingProviderDescriptor>,
 }
 
@@ -292,6 +319,7 @@ impl WorkspaceRetrievalStatus {
             total_failures: 0,
             vector_records: 0,
             vector_bytes: 0,
+            batching: WorkspaceEmbeddingBatchMetrics::default(),
             model: None,
         }
     }

@@ -6,6 +6,9 @@ and DeepSeek CLI integration rerun passed. A later paired Core evaluation also
 passed with real DeepSeek chat, explicit retrieval enable/disable control,
 multi-chunk source, and non-text exclusion. The real ACL-host strategy/rerank
 composition passed on 2026-08-15 at CLI `d1c8c25` and Code `b7a496b`.
+The subsequent `CODE-B2` qualification passed the complete serial Core suite,
+strict Core and SDK bridge Clippy, the 25,000-record release gate, and a
+schema-v2 paired DeepSeek rerun with 1.0x document-request amplification.
 
 This report qualifies the first session-bound Workspace Retrieval (`WSR`)
 release across A3S Memory, A3S Code, and the A3S CLI host. The release uses an
@@ -138,6 +141,28 @@ the earlier 13,693,952-byte size-optimized candidate, the observed upper-bound
 increase was 131,584 bytes (about 0.96 percent); intervening egress hardening
 means this is not a controlled attribution to the profile override alone.
 
+### CODE-B2 cross-file batching qualification
+
+The 2026-08-15 schema-v3 release run extends the same permanent benchmark with
+hard batching gates. Each 25,000-record session reported 25,000 document inputs,
+391 logical batches, a 391-request count/text/vector lower bound, 391 physical
+provider requests, 1.0x amplification, one generation-complete tail flush,
+zero non-text inputs, and time to first file-atomic publication of 9-10 ms.
+
+RRF-only and deterministic hybrid p95 were 57.499 and 49.560 ms, workspace
+builds were 1,201.453 and 1,104.608 ms, and synchronous session construction was
+13.943 and 6.142 ms. Both sessions retained 41,397,932 vector bytes at full
+coverage and released them completely on close. Exact-vector p95 was 16.333 ms.
+All query latency, rerank scratch/fallback, memory, request-amplification, and
+lifecycle gates passed.
+
+The deterministic projection suite covers count, text-byte, vector-byte, and
+generation-complete flushes; response-count corruption; provider retry
+accounting; split-file atomicity; later-batch failure isolation; source-revision
+cancellation; stable sibling chunk IDs; partial readiness; and bounded close.
+The paired DeepSeek task, collision-rerank, and four-strategy matrices all pass
+with 1.0x request amplification and zero non-text inputs.
+
 ### CODE-R2 deterministic rerank qualification
 
 The version-2 benchmark runs two separately constructed sessions over the same
@@ -179,7 +204,8 @@ Both arms used 15,595 vector bytes and made no non-text provider calls. The
 deterministic arm retained at most 12,239 feature bytes and accounted 18,346
 scratch bytes with no truncation or fallback. All six sessions reached full
 coverage and released all vectors after close. Document-request amplification
-was unchanged at 54x, so batching remains a separate `CODE-B2` concern.
+was 54x in that pre-`CODE-B2` run. The locked post-`CODE-B2` rerun preserves the
+same quality result while reducing both arms to 1.0x.
 
 Observed DeepSeek turn p95 was 209,318 ms for RRF and 28,102 ms for rerank,
 with 19,932 and 18,276 total tokens respectively. These are three remote-model

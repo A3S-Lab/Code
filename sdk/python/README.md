@@ -155,6 +155,9 @@ APIs so the provider can bind to the current event loop. Cancelling or closing
 the session cancels the active embedding coroutine. The exported
 `EmbeddingBatchRequest`, `WorkspaceRetrievalStatus`, and semantic/hybrid result
 `TypedDict` declarations provide the static callback and DTO contract.
+`WorkspaceRetrievalStatus["batching"]` reports logical document batches,
+physical provider requests, limit flush reasons, the theoretical request lower
+bound, and time to first ready file for the current catalog generation.
 
 The reranker argument is optional; omit it to preserve RRF-only. Its typed
 fields bound candidates, sampled feature bytes, fingerprints, and checked

@@ -20,6 +20,7 @@ from .workspace_retrieval import (
     EmbeddingProviderDescriptor,
     EmbeddingVector,
     WorkspaceChunk,
+    WorkspaceEmbeddingBatchMetrics,
     WorkspaceHybridChannelRank,
     WorkspaceHybridChannelStatus,
     WorkspaceHybridFallbackReason,

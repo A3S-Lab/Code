@@ -881,6 +881,19 @@ export interface WorkspaceChunkObject {
   text: string
   digestVerified: boolean
 }
+export interface WorkspaceEmbeddingBatchMetricsObject {
+  documentInputs: number
+  documentTextBytes: number
+  documentBatches: number
+  documentProviderRequests: number
+  batchLimitLowerBound: number
+  inputLimitFlushes: number
+  textByteLimitFlushes: number
+  vectorByteLimitFlushes: number
+  generationCompleteFlushes: number
+  timeToFirstReadyMs?: number
+  nonTextInputs: number
+}
 export interface WorkspaceRetrievalStatusObject {
   phase: string
   catalogRevision: number
@@ -897,6 +910,7 @@ export interface WorkspaceRetrievalStatusObject {
   totalFailures: number
   vectorRecords: number
   vectorBytes: number
+  batching: WorkspaceEmbeddingBatchMetricsObject
   model?: EmbeddingProviderDescriptorObject
 }
 export interface WorkspaceSemanticSearchHitObject {

@@ -2,8 +2,9 @@
 
 Status: semantic ablation and adversarial rerank slice passed on 2026-08-14;
 the built-in chunk-strategy matrix and real CLI ACL-host composition passed on
-2026-08-15. The Rust whole-file custom-strategy negative control remained
-observable but was not quality qualified.
+2026-08-15. The `CODE-B2` cross-file batching rerun passed the same day. The
+Rust whole-file custom-strategy negative control remained observable but was
+not quality qualified.
 
 This report records the reproducible real-chat-model ablation for A3S Code's
 session-bound, in-memory Workspace Retrieval. It complements the deterministic
@@ -291,7 +292,7 @@ arms and not a new default chunker or reranker. The complete host-side threat
 matrix and machine-readable schema are documented in the
 [A3S CLI evaluation](https://github.com/A3S-Lab/CLI/blob/main/docs/workspace-retrieval-evaluation.md).
 
-## Construction, model, and lifecycle measurements
+## Pre-CODE-B2 construction, model, and lifecycle measurements
 
 These live E2E samples are debug-build observations with only three samples per
 arm. Their percentiles describe this run; the release benchmark below is the
@@ -313,7 +314,7 @@ Every enabled session reported `ready`, 100 percent coverage, and zero failed
 files. Every session released all vector records and accounted vector bytes on
 close.
 
-## Chunk, vector, egress, and request metrics
+## Pre-CODE-B2 chunk, vector, egress, and request metrics
 
 The following values were identical across the three enabled sessions unless a
 range is shown:
@@ -335,7 +336,8 @@ range is shown:
 | Non-text provider inputs | 0 |
 | Post-close vector records / bytes | 0 / 0 |
 
-The default executor can admit up to 64 inputs and 256 KiB of text per batch,
+This table is the frozen failing baseline captured before `CODE-B2`. The default
+executor can admit up to 64 inputs and 256 KiB of text per batch,
 so this fixture could fit its 31 document chunks in one provider request. The
 runtime instead made 30 document requests because projection is currently
 scheduled and published per file. It batches the two chunks from the long file
@@ -366,12 +368,15 @@ Both locked latency gates passed. A3S Memory's independent exact-vector run on
 the same profile reported p50 7.797 ms, p95 10.725 ms, max 21.591 ms, and
 39,900,117 accounted bytes.
 
-## Follow-up optimization gate
+## CODE-B2 cross-file batching qualification
 
-The next build optimization should introduce a session-local cross-file batch
-coordinator after text admission and chunking but before provider execution.
-It must preserve stable chunk IDs, generation fencing, per-file atomic
-publication, cancellation, bounded queue memory, and partial readiness.
+On 2026-08-15 the same `deepseek/deepseek-v4-pro` configuration and deterministic
+embedding oracle were rerun after introducing the session-local cross-file
+coordinator. The coordinator receives one complete immutable catalog generation,
+so an underfilled tail flushes immediately on generation completion; it never
+waits for another source revision. Input, text-byte, or expected-vector-byte
+limits can flush earlier. This makes the pre-provider queue residence bounded by
+synchronous planning rather than an artificial timer.
 
 Measure provider request amplification as:
 
@@ -381,10 +386,38 @@ actual document requests
 sum per session of the batch-limit lower bound
 ```
 
-For corpora that fit the configured text/vector budgets, the exit gate is at
-most 1.10x the lower bound after the bounded flush deadline. Additional gates
-are zero non-text inputs, unchanged Recall/MRR, no slower session construction,
-bounded time-to-first-ready-partition, and complete task/vector cleanup.
+The implementation and report schema count document inputs and bytes, logical
+batches, physical provider requests including retries, the lower bound implied
+by all three limits, every flush reason, time to first file-atomic publication,
+and non-text inputs. Results were:
+
+| Profile | Document inputs per session | Lower bound | Actual requests | Amplification | First ready | Non-text inputs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Paired semantic task | 31 | 1 | 1 | 1.0x | 0-2 ms | 0 |
+| Collision/rerank task | 55 | 1 | 1 | 1.0x | 1 ms | 0 |
+| Line strategy, three sessions | 31 each | 1 each | 3 total | 1.0x | 0-1 ms | 0 |
+| Fixed 512/64, three sessions | 38 each | 1 each | 3 total | 1.0x | 0-1 ms | 0 |
+| Recursive 512/64, three sessions | 39 each | 1 each | 3 total | 1.0x | 0-1 ms | 0 |
+| Rust whole-file control, three sessions | 30 each | 1 each | 3 total | 1.0x | 0-2 ms | 0 |
+| Release profile | 25,000 | 391 | 391 | 1.0x | 9-10 ms | 0 |
+
+The paired semantic arm again completed 3/3 tasks versus 0/3 disabled, with
+Recall@5 and MRR both 1.0. The collision rerank arm retained its 3/3 versus 0/3
+quality result and reduced both former 54x request measurements to 1.0x. All
+three built-in chunking arms remained 3/3; the valid whole-file custom negative
+control remained 2/3. Every run reached full coverage and released all vector
+state. The release run recorded 391 logical batches and 391 physical document
+requests, RRF/deterministic hybrid p95 of 57.499/49.560 ms, workspace builds of
+1,201.453/1,104.608 ms, session construction of 13.943/6.142 ms, and 41,397,932
+vector bytes. All latency, scratch, memory, amplification, and cleanup gates
+passed.
+
+Deterministic adversarial tests additionally force each count/text/vector flush,
+split one file across batches, corrupt a later provider response, retry a
+request, and replace a catalog revision during an active cross-file batch. They
+prove that no partial file becomes visible, already valid siblings survive a
+later failure, retries are counted, stable sibling IDs are retained, and the
+superseded batch is cancelled before publication.
 
 ## Reproduction
 

@@ -110,6 +110,40 @@ fn chunk_object(chunk: &a3s_code_core::WorkspaceChunk) -> WorkspaceChunkObject {
 
 #[napi(object)]
 #[derive(Clone)]
+pub struct WorkspaceEmbeddingBatchMetricsObject {
+    pub document_inputs: f64,
+    pub document_text_bytes: f64,
+    pub document_batches: f64,
+    pub document_provider_requests: f64,
+    pub batch_limit_lower_bound: f64,
+    pub input_limit_flushes: f64,
+    pub text_byte_limit_flushes: f64,
+    pub vector_byte_limit_flushes: f64,
+    pub generation_complete_flushes: f64,
+    pub time_to_first_ready_ms: Option<f64>,
+    pub non_text_inputs: f64,
+}
+
+impl From<a3s_code_core::WorkspaceEmbeddingBatchMetrics> for WorkspaceEmbeddingBatchMetricsObject {
+    fn from(metrics: a3s_code_core::WorkspaceEmbeddingBatchMetrics) -> Self {
+        Self {
+            document_inputs: metrics.document_inputs as f64,
+            document_text_bytes: metrics.document_text_bytes as f64,
+            document_batches: metrics.document_batches as f64,
+            document_provider_requests: metrics.document_provider_requests as f64,
+            batch_limit_lower_bound: metrics.batch_limit_lower_bound as f64,
+            input_limit_flushes: metrics.input_limit_flushes as f64,
+            text_byte_limit_flushes: metrics.text_byte_limit_flushes as f64,
+            vector_byte_limit_flushes: metrics.vector_byte_limit_flushes as f64,
+            generation_complete_flushes: metrics.generation_complete_flushes as f64,
+            time_to_first_ready_ms: metrics.time_to_first_ready_ms.map(|value| value as f64),
+            non_text_inputs: metrics.non_text_inputs as f64,
+        }
+    }
+}
+
+#[napi(object)]
+#[derive(Clone)]
 pub struct WorkspaceRetrievalStatusObject {
     pub phase: String,
     pub catalog_revision: f64,
@@ -126,6 +160,7 @@ pub struct WorkspaceRetrievalStatusObject {
     pub total_failures: f64,
     pub vector_records: f64,
     pub vector_bytes: f64,
+    pub batching: WorkspaceEmbeddingBatchMetricsObject,
     pub model: Option<EmbeddingProviderDescriptorObject>,
 }
 
@@ -147,6 +182,7 @@ impl From<WorkspaceRetrievalStatus> for WorkspaceRetrievalStatusObject {
             total_failures: status.total_failures as f64,
             vector_records: status.vector_records as f64,
             vector_bytes: status.vector_bytes as f64,
+            batching: status.batching.into(),
             model: status.model.map(|model| EmbeddingProviderDescriptorObject {
                 provider: model.provider,
                 model: model.model,

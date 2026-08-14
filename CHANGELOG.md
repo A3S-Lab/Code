@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a session-local cross-file embedding batch coordinator for ephemeral
+  workspace retrieval. It flushes deterministic catalog generations at input,
+  text-byte, vector-byte, or generation-complete boundaries, retains split-file
+  vectors privately until file-atomic publication, fences superseded revisions,
+  and preserves already valid partitions across later provider failures.
+  Machine-readable Core, Node, Python, and Go status now reports document
+  inputs/bytes, logical batches, physical provider requests including retries,
+  the three-limit lower bound, flush reasons, time to first ready partition,
+  and non-text inputs. The 30-file and 55-file DeepSeek fixtures and the
+  25,000-record release profile reduce request amplification to 1.0x while
+  preserving quality, memory, and lifecycle gates.
 - Added asynchronous session-owned workspace retrieval to Core with one
   manifest-derived chunk catalog, incremental BM25, host-injected embeddings,
   exact in-memory vector partitions, deterministic hybrid RRF, current-source

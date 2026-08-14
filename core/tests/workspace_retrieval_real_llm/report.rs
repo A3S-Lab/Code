@@ -1,7 +1,6 @@
 //! Report types and aggregate metrics for the opt-in real-model evaluation.
 
 use super::{EvaluationVariant, RunMetric, TASKS};
-use a3s_code_core::embedding::EmbeddingExecutorConfig;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -15,7 +14,13 @@ pub(super) struct EvaluationSummary {
     pub(super) semantic_mrr: f64,
     pub(super) chunks_per_text_file: f64,
     pub(super) document_requests_per_chunk: f64,
-    pub(super) document_request_amplification_vs_input_limit: f64,
+    pub(super) document_batches: usize,
+    pub(super) document_provider_requests: usize,
+    pub(super) document_batch_limit_lower_bound: usize,
+    pub(super) document_request_amplification_vs_batch_limit: f64,
+    pub(super) generation_complete_flushes: usize,
+    pub(super) time_to_first_ready_p50_ms: u64,
+    pub(super) time_to_first_ready_p95_ms: u64,
     pub(super) non_text_provider_inputs: usize,
     pub(super) enabled_session_construction_p50_ms: u64,
     pub(super) enabled_session_construction_p95_ms: u64,
@@ -117,10 +122,9 @@ pub(super) fn summarize(runs: &[RunMetric]) -> EvaluationSummary {
         .iter()
         .map(|run| run.embedded_documents)
         .sum::<usize>();
-    let max_batch_inputs = EmbeddingExecutorConfig::default().max_batch_inputs;
-    let input_limit_request_lower_bound = enabled
+    let batch_limit_request_lower_bound = enabled
         .iter()
-        .map(|run| run.embedded_documents.div_ceil(max_batch_inputs))
+        .map(|run| run.embedding_batching.batch_limit_lower_bound)
         .sum::<usize>();
     EvaluationSummary {
         enabled_task_accuracy: rate(enabled.iter().filter(|run| run.completion_correct).count()),
@@ -137,9 +141,33 @@ pub(super) fn summarize(runs: &[RunMetric]) -> EvaluationSummary {
             / TASKS.len() as f64,
         chunks_per_text_file: ratio(indexed_chunks, indexed_files),
         document_requests_per_chunk: ratio(document_requests, document_inputs),
-        document_request_amplification_vs_input_limit: ratio(
+        document_batches: enabled
+            .iter()
+            .map(|run| run.embedding_batching.document_batches)
+            .sum(),
+        document_provider_requests: document_requests,
+        document_batch_limit_lower_bound: batch_limit_request_lower_bound,
+        document_request_amplification_vs_batch_limit: ratio(
             document_requests,
-            input_limit_request_lower_bound,
+            batch_limit_request_lower_bound,
+        ),
+        generation_complete_flushes: enabled
+            .iter()
+            .map(|run| run.embedding_batching.generation_complete_flushes)
+            .sum(),
+        time_to_first_ready_p50_ms: percentile(
+            enabled
+                .iter()
+                .filter_map(|run| run.embedding_batching.time_to_first_ready_ms)
+                .collect(),
+            0.50,
+        ),
+        time_to_first_ready_p95_ms: percentile(
+            enabled
+                .iter()
+                .filter_map(|run| run.embedding_batching.time_to_first_ready_ms)
+                .collect(),
+            0.95,
         ),
         non_text_provider_inputs: enabled.iter().map(|run| run.non_text_provider_inputs).sum(),
         enabled_session_construction_p50_ms: percentile(
@@ -308,10 +336,9 @@ fn collision_result_rate(runs: &[&RunMetric]) -> f64 {
 }
 
 fn request_amplification(runs: &[&RunMetric]) -> f64 {
-    let max_batch_inputs = EmbeddingExecutorConfig::default().max_batch_inputs;
     let lower_bound = runs
         .iter()
-        .map(|run| run.embedded_documents.div_ceil(max_batch_inputs))
+        .map(|run| run.embedding_batching.batch_limit_lower_bound)
         .sum();
     ratio(
         runs.iter().map(|run| run.document_embedding_requests).sum(),

@@ -25,8 +25,8 @@ use a3s_code_core::embedding::{
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
 use a3s_code_core::{
     Agent, AgentEvent, AgentSession, CodeConfig, SessionOptions, SystemPromptSlots,
-    WorkspaceRerankOptions, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
-    WorkspaceRetrievalStatus,
+    WorkspaceEmbeddingBatchMetrics, WorkspaceRerankOptions, WorkspaceRetrievalOptions,
+    WorkspaceRetrievalPhase, WorkspaceRetrievalStatus,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -276,6 +276,7 @@ struct RunMetric {
     embedded_queries: usize,
     embedded_input_bytes: usize,
     non_text_provider_inputs: usize,
+    embedding_batching: WorkspaceEmbeddingBatchMetrics,
     released_after_close: bool,
 }
 
@@ -660,6 +661,7 @@ async fn run_task(
         embedded_queries: counters.query_inputs.load(Ordering::Acquire),
         embedded_input_bytes: counters.input_bytes.load(Ordering::Acquire),
         non_text_provider_inputs: counters.non_text_inputs.load(Ordering::Acquire),
+        embedding_batching: status.batching.clone(),
         released_after_close,
     }
 }
@@ -745,8 +747,8 @@ async fn real_deepseek_completes_semantic_tasks_and_beats_disabled_ablation() {
     assert_eq!(summary.disabled_tool_protocol_rate, 1.0, "{runs:#?}");
     assert_eq!(summary.semantic_recall_at_5, 1.0, "{runs:#?}");
     assert_eq!(summary.semantic_mrr, 1.0, "{runs:#?}");
-    assert_eq!(
-        summary.document_request_amplification_vs_input_limit, 30.0,
+    assert!(
+        summary.document_request_amplification_vs_batch_limit <= 1.10,
         "{runs:#?}"
     );
     assert_eq!(summary.non_text_provider_inputs, 0, "{runs:#?}");
@@ -762,7 +764,11 @@ async fn real_deepseek_completes_semantic_tasks_and_beats_disabled_ablation() {
             assert_eq!(run.embedded_queries, 1, "{run:#?}");
             assert_eq!(run.query_embedding_requests, 1, "{run:#?}");
             assert_eq!(run.embedded_documents, EXPECTED_CHUNK_COUNT, "{run:#?}");
-            assert_eq!(run.document_embedding_requests, TEXT_FILE_COUNT, "{run:#?}");
+            assert_eq!(run.document_embedding_requests, 1, "{run:#?}");
+            assert_eq!(run.embedding_batching.document_inputs, EXPECTED_CHUNK_COUNT);
+            assert_eq!(run.embedding_batching.document_provider_requests, 1);
+            assert_eq!(run.embedding_batching.batch_limit_lower_bound, 1);
+            assert_eq!(run.embedding_batching.non_text_inputs, 0);
             assert_eq!(run.vector_records, EXPECTED_CHUNK_COUNT, "{run:#?}");
             assert_eq!(run.non_text_provider_inputs, 0, "{run:#?}");
         } else {
@@ -773,7 +779,7 @@ async fn real_deepseek_completes_semantic_tasks_and_beats_disabled_ablation() {
         }
     }
     let report = EvaluationReport {
-        schema_version: 1,
+        schema_version: 2,
         chat_model: model,
         embedding_provider: "process-local deterministic semantic oracle",
         task_count: TASKS.len(),
@@ -859,6 +865,8 @@ async fn real_deepseek_deterministic_rerank_defeats_duplicate_channel_collisions
     assert!(summary.deterministic_max_feature_bytes <= 100 * 4 * 1024);
     assert!(summary.deterministic_max_scratch_bytes <= 4 * 1024 * 1024);
     assert_eq!(summary.non_text_provider_inputs, 0, "{runs:#?}");
+    assert!(summary.rrf_document_request_amplification <= 1.10);
+    assert!(summary.deterministic_document_request_amplification <= 1.10);
 
     let expected_text_files = TEXT_FILE_COUNT + TASKS.len() * COLLISION_COPIES_PER_TASK;
     let expected_chunks = EXPECTED_CHUNK_COUNT + TASKS.len() * COLLISION_COPIES_PER_TASK;
@@ -871,6 +879,10 @@ async fn real_deepseek_deterministic_rerank_defeats_duplicate_channel_collisions
         assert_eq!(run.indexed_chunks, expected_chunks, "{run:#?}");
         assert_eq!(run.failed_files, 0, "{run:#?}");
         assert_eq!(run.embedded_documents, expected_chunks, "{run:#?}");
+        assert_eq!(run.document_embedding_requests, 1, "{run:#?}");
+        assert_eq!(run.embedding_batching.document_inputs, expected_chunks);
+        assert_eq!(run.embedding_batching.document_provider_requests, 1);
+        assert_eq!(run.embedding_batching.batch_limit_lower_bound, 1);
         assert_eq!(run.non_text_provider_inputs, 0, "{run:#?}");
         assert_eq!(run.rerank_selected_candidates, Some(10), "{run:#?}");
         assert_eq!(run.rerank_candidate_truncated, Some(false), "{run:#?}");
@@ -895,7 +907,7 @@ async fn real_deepseek_deterministic_rerank_defeats_duplicate_channel_collisions
     }
 
     let report = RerankEvaluationReport {
-        schema_version: 1,
+        schema_version: 2,
         chat_model: model,
         embedding_provider: "process-local deterministic semantic collision oracle",
         task_count: TASKS.len(),

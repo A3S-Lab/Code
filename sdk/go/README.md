@@ -170,6 +170,9 @@ replacing the session cancels active provider calls through their contexts,
 waits for bounded Rust cleanup, and releases the callback. Results expose only
 current-source, digest-verified chunks. Use `EmbeddingError` to report typed
 retry categories without copying remote response bodies into diagnostics.
+`WorkspaceRetrievalStatus.Batching` reports logical document batches, physical
+provider requests, limit flush reasons, the theoretical request lower bound,
+and time to first ready file for the current catalog generation.
 
 `Reranker` is a sealed typed option. Leave it `nil` to preserve RRF-only, or
 configure the object returned by `NewDeterministicWorkspaceReranker` to bound

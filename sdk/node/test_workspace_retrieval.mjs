@@ -73,6 +73,15 @@ try {
   }
   assert.equal(status.phase, 'ready', JSON.stringify(status))
   assert.ok(status.indexedChunks > 0)
+  assert.ok(status.batching.documentInputs > 0)
+  assert.ok(status.batching.documentTextBytes > 0)
+  assert.ok(status.batching.batchLimitLowerBound > 0)
+  assert.ok(
+    status.batching.documentProviderRequests * 10 <=
+      status.batching.batchLimitLowerBound * 11,
+  )
+  assert.equal(status.batching.nonTextInputs, 0)
+  assert.ok(status.batching.timeToFirstReadyMs >= 0)
 
   const semantic = await session.semanticSearch({ query: 'cleanup session resources', limit: 3 })
   assert.equal(semantic.hits[0].chunk.path, 'src/session_cleanup.rs')

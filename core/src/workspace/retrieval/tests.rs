@@ -12,6 +12,7 @@ mod hybrid_query;
 mod lifecycle;
 mod rerank;
 mod semantic;
+mod semantic_batching;
 mod semantic_query;
 
 #[test]

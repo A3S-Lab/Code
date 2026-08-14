@@ -510,6 +510,11 @@ func TestRustBridgeWorkspaceRetrievalIntegration(t *testing.T) {
 	if status.IndexedChunks < 2 {
 		t.Fatalf("fixed-window strategy did not create multiple chunks: %#v", status)
 	}
+	if status.Batching.DocumentInputs == 0 || status.Batching.BatchLimitLowerBound == 0 ||
+		status.Batching.DocumentProviderRequests*10 > status.Batching.BatchLimitLowerBound*11 ||
+		status.Batching.NonTextInputs != 0 || status.Batching.TimeToFirstReadyMS == nil {
+		t.Fatalf("unexpected embedding batch metrics: %#v", status.Batching)
+	}
 	semantic, err := session.SemanticSearch(ctx, WorkspaceSearchRequest{
 		Query: "cleanup session resources",
 		Limit: 3,

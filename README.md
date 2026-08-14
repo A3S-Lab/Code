@@ -357,10 +357,20 @@ mismatched, non-finite, non-normalized, or descriptor-drifted responses. Input
 text and vector values are redacted from Code-owned `Debug` output and errors.
 `SessionOptions::with_workspace_retrieval(WorkspaceRetrievalOptions::new(...))`
 binds that contract to a session. Code reuses the admitted chunk catalog,
-starts indexing without delaying `session_async`, and publishes completed
-files as atomic A3S Memory partitions. `AgentSession::workspace_retrieval_status`
-reports building, ready, degraded, or closed state, revisions, coverage, queue
-depth, failures, and vector memory. Closing the session cancels the provider,
+starts indexing without delaying `session_async`, coalesces chunks from the
+same catalog generation across files up to the configured input, text-byte,
+and expected-vector-byte limits, and publishes completed files as atomic A3S
+Memory partitions. A file split across provider batches remains unpublished
+until every vector has passed response validation. A newer catalog revision
+cancels and discards the unpublished generation without changing already valid
+partitions.
+
+`AgentSession::workspace_retrieval_status` reports building, ready, degraded,
+or closed state, revisions, coverage, queue depth, failures, and vector memory.
+Its `batching` object adds current-generation document inputs and bytes, logical
+batches, physical provider requests including retries, the three-limit request
+lower bound, flush reasons, time to first file-atomic publication, and the
+required zero non-text-input count. Closing the session cancels the provider,
 joins the owned task within a configured deadline, stops Code-owned local
 manifest work, and drops all vector state. Enabled sessions add
 `mode: "semantic"` and `mode: "hybrid"` to the unified `search` tool; disabled

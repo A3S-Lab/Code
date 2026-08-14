@@ -57,8 +57,11 @@ async fn main() -> Result<()> {
     )
     .await?;
     let exact_passed = exact.latency.p95_ms <= EXACT_P95_BUDGET_MS;
-    let hybrid_passed = hybrid_rrf.latency.p95_ms <= HYBRID_P95_BUDGET_MS
-        && hybrid.latency.p95_ms <= HYBRID_P95_BUDGET_MS;
+    let hybrid_rrf_passed =
+        hybrid_rrf.latency.p95_ms <= HYBRID_P95_BUDGET_MS && hybrid_rrf.batching_passed();
+    let hybrid_deterministic_passed =
+        hybrid.latency.p95_ms <= HYBRID_P95_BUDGET_MS && hybrid.batching_passed();
+    let hybrid_passed = hybrid_rrf_passed && hybrid_deterministic_passed;
     let rerank_p95_signed_delta_ms = hybrid.latency.p95_ms - hybrid_rrf.latency.p95_ms;
     let rerank_p95_added_ms = rerank_p95_signed_delta_ms.max(0.0);
     let rerank_passed = rerank_p95_added_ms <= RERANK_P95_DELTA_BUDGET_MS
@@ -66,7 +69,7 @@ async fn main() -> Result<()> {
         && hybrid.max_accounted_scratch_bytes <= RERANK_SCRATCH_BUDGET_BYTES
         && hybrid.rerank_fallbacks == 0;
     let report = json!({
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "profile": "workspace-retrieval-v2",
         "build": "release",
         "machine": {
@@ -93,8 +96,8 @@ async fn main() -> Result<()> {
             "budgetP95Ms": EXACT_P95_BUDGET_MS,
             "passed": exact_passed,
         },
-        "hybridRrfOnly": hybrid_json(&hybrid_rrf, hybrid_rrf.latency.p95_ms <= HYBRID_P95_BUDGET_MS),
-        "hybridDeterministic": hybrid_json(&hybrid, hybrid.latency.p95_ms <= HYBRID_P95_BUDGET_MS),
+        "hybridRrfOnly": hybrid_json(&hybrid_rrf, hybrid_rrf_passed),
+        "hybridDeterministic": hybrid_json(&hybrid, hybrid_deterministic_passed),
         "rerankComparison": {
             "rrfOnlyP95Ms": hybrid_rrf.latency.p95_ms,
             "deterministicP95Ms": hybrid.latency.p95_ms,
@@ -119,6 +122,9 @@ async fn main() -> Result<()> {
             "sourceBytes": hybrid.source_bytes,
             "vectorBytes": hybrid.vector_bytes,
             "documentEmbeddingInputs": hybrid.document_embedding_inputs,
+            "documentEmbeddingRequests": hybrid.document_embedding_requests,
+            "documentBatchLimitLowerBound": hybrid.document_batch_limit_lower_bound,
+            "documentRequestAmplification": hybrid.document_request_amplification,
             "queryEmbeddingInputs": hybrid.query_embedding_inputs,
             "providerNetworkIncluded": false,
             "authoritativeSourceReads": "included from the warm OS cache",
@@ -205,6 +211,13 @@ fn hybrid_json(measurement: &HybridMeasurement, passed: bool) -> serde_json::Val
         "sourceBytes": measurement.source_bytes,
         "vectorBytes": measurement.vector_bytes,
         "documentEmbeddingInputs": measurement.document_embedding_inputs,
+        "documentEmbeddingRequests": measurement.document_embedding_requests,
+        "documentBatches": measurement.document_batches,
+        "documentBatchLimitLowerBound": measurement.document_batch_limit_lower_bound,
+        "documentRequestAmplification": measurement.document_request_amplification,
+        "generationCompleteFlushes": measurement.generation_complete_flushes,
+        "timeToFirstReadyMs": measurement.time_to_first_ready_ms,
+        "nonTextInputs": measurement.non_text_inputs,
         "queryEmbeddingInputs": measurement.query_embedding_inputs,
         "providerNetworkIncluded": false,
         "authoritativeSourceReads": "included from the warm OS cache",
@@ -265,6 +278,16 @@ async fn benchmark_hybrid_search(
             provider.document_inputs.load(Ordering::Acquire)
         );
     }
+    let document_embedding_requests = provider.document_requests.load(Ordering::Acquire);
+    if document_embedding_requests != status.batching.document_provider_requests {
+        bail!(
+            "provider observed {document_embedding_requests} document requests while status reported {}",
+            status.batching.document_provider_requests
+        );
+    }
+    let document_batch_limit_lower_bound = status.batching.batch_limit_lower_bound;
+    let document_request_amplification =
+        document_embedding_requests as f64 / document_batch_limit_lower_bound.max(1) as f64;
 
     let request = WorkspaceHybridSearchRequest::new("x").with_limit(TOP_K);
     let rerank_observation = RerankObservation::default();
@@ -296,6 +319,13 @@ async fn benchmark_hybrid_search(
             WARMUP_SAMPLES + MEASURED_SAMPLES
         );
     }
+    let query_embedding_requests = provider.query_requests.load(Ordering::Acquire);
+    if query_embedding_requests != WARMUP_SAMPLES + MEASURED_SAMPLES {
+        bail!(
+            "provider received {query_embedding_requests} query requests instead of {}",
+            WARMUP_SAMPLES + MEASURED_SAMPLES
+        );
+    }
     let vector_bytes = status.vector_bytes;
     session.close().await;
     let closed = session.workspace_retrieval_status();
@@ -313,6 +343,13 @@ async fn benchmark_hybrid_search(
         source_bytes,
         vector_bytes,
         document_embedding_inputs,
+        document_embedding_requests,
+        document_batches: status.batching.document_batches,
+        document_batch_limit_lower_bound,
+        document_request_amplification,
+        generation_complete_flushes: status.batching.generation_complete_flushes,
+        time_to_first_ready_ms: status.batching.time_to_first_ready_ms,
+        non_text_inputs: status.batching.non_text_inputs,
         query_embedding_inputs,
         max_input_candidates: rerank_observation.input_candidates.load(Ordering::Acquire),
         max_evaluated_candidates: rerank_observation
@@ -441,7 +478,9 @@ fn elapsed_ms(duration: Duration) -> f64 {
 struct BenchmarkProvider {
     descriptor: EmbeddingProviderDescriptor,
     document_inputs: AtomicUsize,
+    document_requests: AtomicUsize,
     query_inputs: AtomicUsize,
+    query_requests: AtomicUsize,
 }
 
 impl BenchmarkProvider {
@@ -453,7 +492,9 @@ impl BenchmarkProvider {
                 DIMENSION,
             ),
             document_inputs: AtomicUsize::new(0),
+            document_requests: AtomicUsize::new(0),
             query_inputs: AtomicUsize::new(0),
+            query_requests: AtomicUsize::new(0),
         }
     }
 }
@@ -471,6 +512,22 @@ impl EmbeddingProvider for BenchmarkProvider {
     ) -> Result<EmbeddingBatchResponse, EmbeddingProviderError> {
         if cancellation.is_cancelled() {
             return Err(EmbeddingProviderError::Cancelled);
+        }
+        let query_request = request
+            .inputs()
+            .iter()
+            .all(|input| input.id() == "workspace-query");
+        let document_request = request
+            .inputs()
+            .iter()
+            .all(|input| input.id() != "workspace-query");
+        if !query_request && !document_request {
+            return Err(EmbeddingProviderError::InvalidRequest);
+        }
+        if query_request {
+            self.query_requests.fetch_add(1, Ordering::AcqRel);
+        } else {
+            self.document_requests.fetch_add(1, Ordering::AcqRel);
         }
         let vectors = request
             .inputs()
@@ -509,10 +566,28 @@ struct HybridMeasurement {
     source_bytes: usize,
     vector_bytes: usize,
     document_embedding_inputs: usize,
+    document_embedding_requests: usize,
+    document_batches: usize,
+    document_batch_limit_lower_bound: usize,
+    document_request_amplification: f64,
+    generation_complete_flushes: usize,
+    time_to_first_ready_ms: Option<u64>,
+    non_text_inputs: usize,
     query_embedding_inputs: usize,
     max_input_candidates: usize,
     max_evaluated_candidates: usize,
     max_feature_bytes: usize,
     max_accounted_scratch_bytes: usize,
     rerank_fallbacks: usize,
+}
+
+impl HybridMeasurement {
+    fn batching_passed(&self) -> bool {
+        self.document_batch_limit_lower_bound > 0
+            && self.document_embedding_requests.saturating_mul(10)
+                <= self.document_batch_limit_lower_bound.saturating_mul(11)
+            && self.document_embedding_requests == self.document_batches
+            && self.non_text_inputs == 0
+            && self.time_to_first_ready_ms.is_some()
+    }
 }

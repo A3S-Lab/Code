@@ -22,7 +22,14 @@ async fn builds_file_partitions_asynchronously_and_exposes_partial_readiness() {
         ("b.rs", "credential expiry guard\n"),
     ]);
     let provider = ControlledProvider::gated(vec![ProviderOutcome::Success; 2]);
-    let runtime = start_runtime(Arc::clone(&catalog), provider.clone());
+    let runtime = start_runtime_with_embedding(
+        Arc::clone(&catalog),
+        provider.clone(),
+        crate::EmbeddingExecutorConfig {
+            max_batch_inputs: 1,
+            ..Default::default()
+        },
+    );
 
     provider.wait_for_calls(1).await;
     let initial = runtime.status();
@@ -54,7 +61,14 @@ async fn builds_file_partitions_asynchronously_and_exposes_partial_readiness() {
 async fn invalidates_a_changed_partition_before_reembedding_it() {
     let catalog = populated_catalog(&[("a.rs", "old token\n"), ("b.rs", "stable token\n")]);
     let provider = ControlledProvider::gated(vec![ProviderOutcome::Success; 3]);
-    let runtime = start_runtime(Arc::clone(&catalog), provider.clone());
+    let runtime = start_runtime_with_embedding(
+        Arc::clone(&catalog),
+        provider.clone(),
+        crate::EmbeddingExecutorConfig {
+            max_batch_inputs: 1,
+            ..Default::default()
+        },
+    );
     provider.release(2);
     wait_for_status(&runtime, |status| {
         status.phase == WorkspaceRetrievalPhase::Ready
@@ -124,6 +138,7 @@ async fn a_failed_file_degrades_only_semantic_coverage() {
         ControlledProvider::immediate(vec![ProviderOutcome::Unavailable, ProviderOutcome::Success]);
     let mut options = WorkspaceRetrievalOptions::new(provider.clone());
     let embedding = crate::EmbeddingExecutorConfig {
+        max_batch_inputs: 1,
         max_retries: 0,
         ..Default::default()
     };
@@ -187,10 +202,18 @@ fn start_runtime(
     catalog: Arc<WorkspaceChunkCatalog>,
     provider: Arc<ControlledProvider>,
 ) -> Arc<WorkspaceRetrievalRuntime> {
+    start_runtime_with_embedding(catalog, provider, crate::EmbeddingExecutorConfig::default())
+}
+
+fn start_runtime_with_embedding(
+    catalog: Arc<WorkspaceChunkCatalog>,
+    provider: Arc<ControlledProvider>,
+    embedding: crate::EmbeddingExecutorConfig,
+) -> Arc<WorkspaceRetrievalRuntime> {
     let provider: Arc<dyn EmbeddingProvider> = provider;
     WorkspaceRetrievalRuntime::start(
         catalog,
-        WorkspaceRetrievalOptions::new(provider),
+        WorkspaceRetrievalOptions::new(provider).with_embedding_config(embedding),
         CancellationToken::new(),
     )
     .unwrap()

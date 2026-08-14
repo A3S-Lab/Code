@@ -108,6 +108,20 @@ class EmbeddingProviderDescriptor(TypedDict):
     normalization: EmbeddingNormalization
 
 
+class WorkspaceEmbeddingBatchMetrics(TypedDict):
+    document_inputs: int
+    document_text_bytes: int
+    document_batches: int
+    document_provider_requests: int
+    batch_limit_lower_bound: int
+    input_limit_flushes: int
+    text_byte_limit_flushes: int
+    vector_byte_limit_flushes: int
+    generation_complete_flushes: int
+    time_to_first_ready_ms: Optional[int]
+    non_text_inputs: int
+
+
 class WorkspaceRetrievalStatus(TypedDict):
     phase: WorkspaceRetrievalPhase
     catalog_revision: int
@@ -124,6 +138,7 @@ class WorkspaceRetrievalStatus(TypedDict):
     total_failures: int
     vector_records: int
     vector_bytes: int
+    batching: WorkspaceEmbeddingBatchMetrics
     model: Optional[EmbeddingProviderDescriptor]
 
 
@@ -218,6 +233,7 @@ __all__ = [
     "WorkspaceHybridSearchResult",
     "WorkspaceRetrievalChannel",
     "WorkspaceRetrievalPhase",
+    "WorkspaceEmbeddingBatchMetrics",
     "WorkspaceRetrievalStatus",
     "WorkspaceRerankFallbackReason",
     "WorkspaceRerankAlgorithm",

@@ -1,11 +1,17 @@
-use super::{
-    ChunkCatalogSnapshot, WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceRetrievalOptions,
-    WorkspaceRetrievalPhase, WorkspaceRetrievalResult, WorkspaceRetrievalStatus,
+use super::semantic_batch::SemanticBatchFlushReason;
+use super::semantic_projection::{
+    project_pending_partitions, publish_progress, remove_stale_partition, ProjectionContext,
 };
-use crate::embedding::{EmbeddingExecutor, EmbeddingInput};
-use a3s_memory::vector::{InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor, VectorRecord};
+use super::{
+    ChunkCatalogSnapshot, WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceEmbeddingBatchMetrics,
+    WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalResult,
+    WorkspaceRetrievalStatus,
+};
+use crate::embedding::EmbeddingExecutor;
+use a3s_memory::vector::{InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -119,22 +125,24 @@ impl Drop for WorkspaceRetrievalRuntime {
 }
 
 #[derive(Clone)]
-struct ReadyPartition {
-    digest: Arc<str>,
-    chunk_count: usize,
+pub(super) struct ReadyPartition {
+    pub(super) digest: Arc<str>,
+    pub(super) chunk_count: usize,
 }
 
 #[derive(Clone)]
-struct CatalogPartition {
-    digest: Arc<str>,
-    chunks: Vec<Arc<WorkspaceChunk>>,
+pub(super) struct CatalogPartition {
+    pub(super) digest: Arc<str>,
+    pub(super) chunks: Vec<Arc<WorkspaceChunk>>,
 }
 
-struct BuildState {
-    ready: BTreeMap<String, ReadyPartition>,
-    failed: BTreeSet<String>,
-    total_failures: u64,
+pub(super) struct BuildState {
+    pub(super) ready: BTreeMap<String, ReadyPartition>,
+    pub(super) failed: BTreeSet<String>,
+    pub(super) total_failures: u64,
     observed_catalog_revision: u64,
+    pub(super) batching: WorkspaceEmbeddingBatchMetrics,
+    generation_started: Option<Instant>,
 }
 
 impl BuildState {
@@ -144,12 +152,38 @@ impl BuildState {
             failed: BTreeSet::new(),
             total_failures: 0,
             observed_catalog_revision: 0,
+            batching: WorkspaceEmbeddingBatchMetrics::default(),
+            generation_started: None,
         }
     }
 
-    fn record_failure(&mut self, path: &str) {
+    pub(super) fn record_failure(&mut self, path: &str) {
         self.failed.insert(path.to_owned());
         self.total_failures = self.total_failures.saturating_add(1);
+    }
+
+    pub(super) fn record_flush(&mut self, reason: SemanticBatchFlushReason) {
+        self.batching.document_batches = self.batching.document_batches.saturating_add(1);
+        let counter = match reason {
+            SemanticBatchFlushReason::InputLimit => &mut self.batching.input_limit_flushes,
+            SemanticBatchFlushReason::TextByteLimit => &mut self.batching.text_byte_limit_flushes,
+            SemanticBatchFlushReason::VectorByteLimit => {
+                &mut self.batching.vector_byte_limit_flushes
+            }
+            SemanticBatchFlushReason::GenerationComplete => {
+                &mut self.batching.generation_complete_flushes
+            }
+        };
+        *counter = counter.saturating_add(1);
+    }
+
+    pub(super) fn record_first_ready(&mut self) {
+        if self.batching.time_to_first_ready_ms.is_some() {
+            return;
+        }
+        self.batching.time_to_first_ready_ms = self
+            .generation_started
+            .map(|started| started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
     }
 }
 
@@ -243,6 +277,8 @@ async fn reconcile_semantic_snapshot(
             .total_failures
             .saturating_add(snapshot.failed_file_count() as u64);
         state.observed_catalog_revision = snapshot.revision();
+        state.batching = WorkspaceEmbeddingBatchMetrics::default();
+        state.generation_started = Some(Instant::now());
     }
     let partitions = catalog_partitions(&snapshot);
     state.failed.clear();
@@ -297,105 +333,20 @@ async fn reconcile_semantic_snapshot(
         })
         .map(|(path, _)| path.clone())
         .collect::<Vec<_>>();
-    publish_progress(status, &snapshot, index, state, pending.len(), false);
-
-    for (offset, path) in pending.iter().enumerate() {
-        if cancellation.is_cancelled() {
-            return;
-        }
-        let Some(partition) = partitions.get(path) else {
-            continue;
-        };
-        if partition.chunks.is_empty() {
-            state.ready.insert(
-                path.clone(),
-                ReadyPartition {
-                    digest: Arc::clone(&partition.digest),
-                    chunk_count: 0,
-                },
-            );
-            publish_progress(
-                status,
-                &snapshot,
-                index,
-                state,
-                pending.len().saturating_sub(offset + 1),
-                false,
-            );
-            continue;
-        }
-
-        let inputs = partition
-            .chunks
-            .iter()
-            .map(|chunk| {
-                EmbeddingInput::new(Arc::<str>::from(chunk.id.as_str()), Arc::clone(&chunk.text))
-            })
-            .collect();
-        let execution = match executor.embed(inputs, cancellation.child_token()).await {
-            Ok(execution) => execution,
-            Err(_) if cancellation.is_cancelled() => return,
-            Err(error) => {
-                state.record_failure(path);
-                tracing::warn!(
-                    path,
-                    error = %error,
-                    "workspace semantic partition embedding failed"
-                );
-                publish_progress(
-                    status,
-                    &snapshot,
-                    index,
-                    state,
-                    pending.len().saturating_sub(offset + 1),
-                    true,
-                );
-                continue;
-            }
-        };
-
-        if !catalog_digest_matches(catalog, path, &partition.digest) {
-            continue;
-        }
-        let records = execution
-            .vectors
-            .into_iter()
-            .map(|vector| VectorRecord::new(vector.id.to_string(), vector.values))
-            .collect();
-        if let Err(error) = index.replace_partition(path, records).await {
-            state.record_failure(path);
-            tracing::warn!(path, %error, "workspace semantic partition publication failed");
-            publish_progress(
-                status,
-                &snapshot,
-                index,
-                state,
-                pending.len().saturating_sub(offset + 1),
-                true,
-            );
-            continue;
-        }
-        if !catalog_digest_matches(catalog, path, &partition.digest) {
-            remove_stale_partition(index, state, path).await;
-            continue;
-        }
-        state.ready.insert(
-            path.clone(),
-            ReadyPartition {
-                digest: Arc::clone(&partition.digest),
-                chunk_count: partition.chunks.len(),
-            },
-        );
-        state.failed.remove(path);
-        publish_progress(
-            status,
-            &snapshot,
+    project_pending_partitions(
+        ProjectionContext {
+            catalog,
             index,
-            state,
-            pending.len().saturating_sub(offset + 1),
-            false,
-        );
-    }
+            executor,
+            status,
+            snapshot: &snapshot,
+            partitions: &partitions,
+            pending: &pending,
+            cancellation: &cancellation,
+        },
+        state,
+    )
+    .await;
 }
 
 async fn invalidate_stale_partitions(
@@ -418,25 +369,6 @@ async fn invalidate_stale_partitions(
             return;
         }
     }
-}
-
-async fn remove_stale_partition(
-    index: &InMemoryVectorIndex,
-    state: &mut BuildState,
-    path: &str,
-) -> bool {
-    if let Err(error) = index.remove_partition(path).await {
-        state.record_failure(path);
-        tracing::warn!(path, %error, "workspace semantic partition invalidation failed");
-        if let Err(clear_error) = index.clear().await {
-            tracing::warn!(%clear_error, "workspace semantic index fallback clear failed");
-        }
-        state.ready.clear();
-        return false;
-    }
-    state.ready.remove(path);
-    state.failed.remove(path);
-    true
 }
 
 fn catalog_partitions(snapshot: &ChunkCatalogSnapshot) -> BTreeMap<String, CatalogPartition> {
@@ -462,84 +394,6 @@ fn catalog_partitions(snapshot: &ChunkCatalogSnapshot) -> BTreeMap<String, Catal
         }
     }
     partitions
-}
-
-fn catalog_digest_matches(catalog: &WorkspaceChunkCatalog, path: &str, digest: &str) -> bool {
-    catalog.snapshot().ok().is_some_and(|snapshot| {
-        snapshot
-            .content_digest(&crate::workspace::WorkspacePath::from_normalized(path))
-            .is_some_and(|current| current.as_ref() == digest)
-    })
-}
-
-fn publish_progress(
-    status: &RwLock<WorkspaceRetrievalStatus>,
-    snapshot: &ChunkCatalogSnapshot,
-    index: &InMemoryVectorIndex,
-    state: &BuildState,
-    queue_depth: usize,
-    semantic_failure: bool,
-) {
-    let vector = index.status();
-    let indexed_files = state
-        .ready
-        .iter()
-        .filter(|(path, ready)| {
-            snapshot
-                .content_digest(&crate::workspace::WorkspacePath::from_normalized(*path))
-                .is_some_and(|digest| digest == ready.digest)
-        })
-        .count();
-    let indexed_chunks = state
-        .ready
-        .iter()
-        .filter(|(path, ready)| {
-            snapshot
-                .content_digest(&crate::workspace::WorkspacePath::from_normalized(*path))
-                .is_some_and(|digest| digest == ready.digest)
-        })
-        .map(|(_, ready)| ready.chunk_count)
-        .sum();
-    let eligible_files = snapshot.eligible_file_count();
-    let failed_files = snapshot
-        .failed_file_count()
-        .saturating_add(state.failed.len());
-    let coverage_bps = if eligible_files == 0 {
-        10_000
-    } else {
-        indexed_files
-            .saturating_mul(10_000)
-            .checked_div(eligible_files)
-            .unwrap_or_default()
-            .min(10_000) as u16
-    };
-    let degraded = semantic_failure || failed_files > 0;
-    let phase = if degraded {
-        WorkspaceRetrievalPhase::Degraded
-    } else if queue_depth == 0 && indexed_files == eligible_files {
-        WorkspaceRetrievalPhase::Ready
-    } else {
-        WorkspaceRetrievalPhase::Building
-    };
-    let model = read_unpoisoned(status).model.clone();
-    *write_unpoisoned(status) = WorkspaceRetrievalStatus {
-        phase,
-        catalog_revision: snapshot.revision(),
-        source_revision: snapshot.source_revision(),
-        vector_revision: vector.revision.value(),
-        eligible_files,
-        catalog_files: snapshot.file_count(),
-        catalog_chunks: snapshot.chunk_count(),
-        indexed_files,
-        indexed_chunks,
-        coverage_bps,
-        queue_depth,
-        failed_files,
-        total_failures: state.total_failures,
-        vector_records: vector.record_count,
-        vector_bytes: vector.byte_count,
-        model,
-    };
 }
 
 fn publish_closed(status: &RwLock<WorkspaceRetrievalStatus>) {

@@ -290,6 +290,19 @@ pub(super) fn status_value(status: &WorkspaceRetrievalStatus) -> Value {
         "total_failures": status.total_failures,
         "vector_records": status.vector_records,
         "vector_bytes": status.vector_bytes,
+        "batching": {
+            "document_inputs": status.batching.document_inputs,
+            "document_text_bytes": status.batching.document_text_bytes,
+            "document_batches": status.batching.document_batches,
+            "document_provider_requests": status.batching.document_provider_requests,
+            "batch_limit_lower_bound": status.batching.batch_limit_lower_bound,
+            "input_limit_flushes": status.batching.input_limit_flushes,
+            "text_byte_limit_flushes": status.batching.text_byte_limit_flushes,
+            "vector_byte_limit_flushes": status.batching.vector_byte_limit_flushes,
+            "generation_complete_flushes": status.batching.generation_complete_flushes,
+            "time_to_first_ready_ms": status.batching.time_to_first_ready_ms,
+            "non_text_inputs": status.batching.non_text_inputs,
+        },
         "model": status.model,
     })
 }

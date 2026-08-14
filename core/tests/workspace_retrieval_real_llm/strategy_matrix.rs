@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use a3s_code_core::embedding::EmbeddingExecutorConfig;
 use a3s_code_core::{
     ChunkCatalogLimits, ChunkingConfig, CustomWorkspaceChunkingStrategy,
     FixedWindowChunkingOptions, RecursiveChunkingOptions, WorkspaceChunkCatalog,
@@ -152,10 +151,9 @@ fn summarize_strategy(runs: &[RunMetric], strategy: EvaluationChunking) -> Strat
         "{} produced unstable chunk counts",
         strategy.label()
     );
-    let max_batch_inputs = EmbeddingExecutorConfig::default().max_batch_inputs;
     let request_lower_bound = selected
         .iter()
-        .map(|run| run.embedded_documents.div_ceil(max_batch_inputs))
+        .map(|run| run.embedding_batching.batch_limit_lower_bound)
         .sum::<usize>();
     let task_accuracy = ratio(
         selected.iter().filter(|run| run.completion_correct).count(),
@@ -389,7 +387,13 @@ async fn real_deepseek_chunking_strategy_matrix_qualifies_builtins_and_audits_cu
         );
         assert_eq!(run.failed_files, 0, "{run:#?}");
         assert_eq!(run.embedded_documents, run.indexed_chunks, "{run:#?}");
-        assert_eq!(run.document_embedding_requests, TEXT_FILE_COUNT, "{run:#?}");
+        assert_eq!(run.document_embedding_requests, 1, "{run:#?}");
+        assert_eq!(
+            run.embedding_batching.document_inputs, run.indexed_chunks,
+            "{run:#?}"
+        );
+        assert_eq!(run.embedding_batching.document_provider_requests, 1);
+        assert_eq!(run.embedding_batching.batch_limit_lower_bound, 1);
         assert_eq!(run.embedded_queries, 1, "{run:#?}");
         assert_eq!(run.query_embedding_requests, 1, "{run:#?}");
         assert_eq!(run.vector_records, run.indexed_chunks, "{run:#?}");
@@ -406,7 +410,7 @@ async fn real_deepseek_chunking_strategy_matrix_qualifies_builtins_and_audits_cu
     }
 
     let report = StrategyEvaluationReport {
-        schema_version: 1,
+        schema_version: 2,
         chat_model: model,
         embedding_provider: "process-local deterministic semantic oracle",
         task_count: TASKS.len(),
