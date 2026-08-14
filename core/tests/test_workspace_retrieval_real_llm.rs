@@ -36,6 +36,9 @@ use tokio_util::sync::CancellationToken;
 #[path = "workspace_retrieval_real_llm/report.rs"]
 mod report;
 use report::{summarize, summarize_rerank, EvaluationReport, RerankEvaluationReport};
+#[path = "workspace_retrieval_real_llm/strategy_matrix.rs"]
+mod strategy_matrix;
+use strategy_matrix::EvaluationChunking;
 
 const DIMENSION: usize = 8;
 const TEXT_FILE_COUNT: usize = 30;
@@ -231,6 +234,7 @@ struct TurnTrace {
 struct RunMetric {
     task: &'static str,
     variant: &'static str,
+    chunking_strategy: &'static str,
     retrieval_enabled: bool,
     requested_mode: String,
     tool_protocol_ok: bool,
@@ -384,10 +388,12 @@ fn session_options(
     session_id: String,
     provider: Arc<dyn EmbeddingProvider>,
     variant: EvaluationVariant,
+    chunking: EvaluationChunking,
 ) -> SessionOptions {
     let mut policy = PermissionPolicy::new().allow_all(&["search(*)"]);
     policy.default_decision = PermissionDecision::Deny;
-    let retrieval = WorkspaceRetrievalOptions::new(provider);
+    let retrieval =
+        WorkspaceRetrievalOptions::new(provider).with_chunking_strategy(chunking.core_strategy());
     let retrieval = if variant == EvaluationVariant::HybridDeterministic {
         retrieval.with_rerank_options(WorkspaceRerankOptions::deterministic())
     } else {
@@ -499,6 +505,7 @@ async fn run_task(
     agent: &Agent,
     task: EvaluationTask,
     variant: EvaluationVariant,
+    chunking: EvaluationChunking,
     ordinal: usize,
     adversarial_rerank_fixture: bool,
 ) -> RunMetric {
@@ -516,9 +523,14 @@ async fn run_task(
         .session_async(
             workspace.path().display().to_string(),
             Some(session_options(
-                format!("wsr-deepseek-{ordinal}-{}", variant.label()),
+                format!(
+                    "wsr-deepseek-{ordinal}-{}-{}",
+                    variant.label(),
+                    chunking.label()
+                ),
                 provider,
                 variant,
+                chunking,
             )),
         )
         .await
@@ -606,6 +618,7 @@ async fn run_task(
     RunMetric {
         task: task.name,
         variant: variant.label(),
+        chunking_strategy: chunking.label(),
         retrieval_enabled: variant.retrieval_enabled(),
         requested_mode,
         tool_protocol_ok,
@@ -699,8 +712,28 @@ async fn real_deepseek_completes_semantic_tasks_and_beats_disabled_ablation() {
     let (agent, model) = deepseek_agent().await;
     let mut runs = Vec::with_capacity(TASKS.len() * 2);
     for (ordinal, task) in TASKS.iter().copied().enumerate() {
-        runs.push(run_task(&agent, task, EvaluationVariant::Disabled, ordinal, false).await);
-        runs.push(run_task(&agent, task, EvaluationVariant::Semantic, ordinal, false).await);
+        runs.push(
+            run_task(
+                &agent,
+                task,
+                EvaluationVariant::Disabled,
+                EvaluationChunking::Line,
+                ordinal,
+                false,
+            )
+            .await,
+        );
+        runs.push(
+            run_task(
+                &agent,
+                task,
+                EvaluationVariant::Semantic,
+                EvaluationChunking::Line,
+                ordinal,
+                false,
+            )
+            .await,
+        );
     }
     let summary = summarize(&runs);
     assert_eq!(summary.enabled_task_accuracy, 1.0, "{runs:#?}");
@@ -774,7 +807,17 @@ async fn real_deepseek_deterministic_rerank_defeats_duplicate_channel_collisions
             ]
         };
         for variant in variants {
-            runs.push(run_task(&agent, task, variant, ordinal, true).await);
+            runs.push(
+                run_task(
+                    &agent,
+                    task,
+                    variant,
+                    EvaluationChunking::Line,
+                    ordinal,
+                    true,
+                )
+                .await,
+            );
         }
     }
 

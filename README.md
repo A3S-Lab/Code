@@ -405,8 +405,11 @@ Node and Python hosts opt in by passing a typed
 that object keeps RRF-only, and no SDK accepts a raw mode or algorithm name.
 All four limits are validated before embedding/source egress; Go additionally
 validates them before callback registration.
-RRF-only remains the compatibility default pending the full strategy/DeepSeek
-matrix. Results report the versioned algorithm, selection/redundancy scores,
+RRF-only remains the compatibility default. The Core real-DeepSeek matrix now
+qualifies line, fixed-window, and recursive chunking under the deterministic
+stage; a valid whole-file Rust custom splitter remains an explicit negative
+control, while cross-SDK and ACL-host live execution are still pending. Results
+report the versioned algorithm, selection/redundancy scores,
 candidate and byte accounting, truncation, and fallback without exposing query
 or source text. Fusion and reranking precede authoritative source access, so
 each selected path is reread at most once for full-digest and exact-byte-range
@@ -650,7 +653,7 @@ the v1 schema.
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) | Language runtime, capability boundary, lifecycle, and verification |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md) | Architecture, quality budgets, lifecycle, and adversarial trust boundaries |
 | [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md) | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope |
-| [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) | Paired task ablation, chunk/non-text boundaries, metrics, and batching follow-up |
+| [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) | Paired task/rerank ablations, built-in chunk matrix, custom negative control, non-text boundary, metrics, and batching follow-up |
 | [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md) | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan |
 | [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md) | Filesystem-first tool and agent definitions |
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) | Admission schema, identity, compatibility, and security boundary |

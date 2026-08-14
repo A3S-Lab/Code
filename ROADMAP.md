@@ -428,7 +428,7 @@ Current implementation status:
 | `WSR-EVAL1` | Delivered | Real `deepseek/deepseek-v4-pro` paired ablation passes enabled 3/3 versus disabled 0/3, Recall@5/MRR 1.0, a target beyond the 80-line boundary, 30 text files/31 chunks, three excluded non-text assets, zero non-text provider inputs, and complete post-close release |
 | `CODE-B2` | Planned | Coalesce ready chunks across files before provider execution while preserving stable IDs, per-file generation fencing, file-atomic publication, bounded flush latency, cancellation, and partial readiness; reduce the measured 30x request amplification to at most 1.10x the per-session batch-limit lower bound |
 | `CODE-R2` | Delivered | Rust Core adds an opt-in deterministic MMR v1 stage after pure RRF with exact-tier protection, interval/lexical near-duplicate scoring, stable tie breaking, two-results-per-file diversity, 100-candidate/4-KiB/128-fingerprint/4-MiB ceilings, unchanged-order RRF fallback, and versioned diagnostics across Rust/Node/Python/Go results. Locked Recall@10/MRR/nDCG@10 are 1.0 with zero selected duplicates; two release runs report -5.163/-2.322 ms signed end-to-end p95 differences (0/0 ms positive addition), 75,346 accounted scratch bytes, and zero fallback. The default-line adversarial DeepSeek slice improves completion and Recall@5 from 0/3 to 3/3 while reducing Top-5 collision evidence from 15/15 to 10/15. RRF-only remains default |
-| `WSR-EVAL2` | In progress | The default-line Core/DeepSeek adversarial slice passes with paired RRF and deterministic variants, versioned algorithm evidence, quality/duplication/latency/memory/provider/lifecycle metrics, and zero non-text egress. Fixed, recursive, representative custom, cross-SDK real-model, and ACL-host variants remain pending; no default change is qualified |
+| `WSR-EVAL2` | In progress | The default-line Core/DeepSeek rerank slice and the orthogonal built-in chunking matrix pass with versioned algorithm, quality, rank, latency, token, chunk/vector memory, provider, non-text, and lifecycle evidence. Line, fixed 512/64, and explicit-separator recursive 512/64 each complete `3/3` real tasks with Recall@5 `1.0`, MRR `0.5`, zero non-text inputs, and complete release. A valid Rust whole-file custom negative control completes only `2/3`, proving range safety does not imply context quality. Cross-SDK real-model and ACL-host execution variants remain pending; no default change is qualified |
 | `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, DeepSeek task evaluation, SDK examples, ACL host guidance, text/knowledge-compiler boundary, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
 
 The detailed baseline and threat model are in
@@ -480,13 +480,13 @@ versioned Code contract, not from private runtime structs.
 Delivered `CODE-C2`, `SDK-C2`, and `HOST-C2` now carry the typed chunking
 built-ins across Core, language, and ACL host boundaries.
 Delivered `CODE-R2`, `SDK-R2`, and `HOST-R2` now carry the explicit
-deterministic option without primitive algorithm names. A Core-only
-default-line `WSR-EVAL2` slice already locks the
-adversarial fixture and real-model report. The CLI can now select and observe
-both chunk and rerank variants. The full release matrix still requires the real
-host to exercise both selections and Code to report the versioned ranking
-pipeline used; the DeepSeek ACL-host evidence remains pending until that
-evaluation runs.
+deterministic option without primitive algorithm names. Core `WSR-EVAL2`
+slices now lock the default-line rerank adversary and an orthogonal real-model
+chunking report across all built-ins plus a Rust custom negative control. The
+CLI can select and observe both chunk and rerank variants. The remaining
+release matrix requires cross-SDK real-model evidence and the real ACL host to
+exercise both selections; the DeepSeek ACL-host evidence remains pending until
+that evaluation runs.
 
 `CODE-R2` was executed in this order:
 

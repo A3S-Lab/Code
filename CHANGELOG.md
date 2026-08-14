@@ -46,8 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DeepSeek Core evaluation covers
   cross-channel duplicate collisions, end-task completion, quality, latency,
   memory, provider amplification, non-text egress, and cleanup. RRF-only
-  remains the compatibility default pending the complete cross-strategy and
-  host evaluation.
+  remains the compatibility default. A second orthogonal DeepSeek slice
+  qualifies line, fixed-window, and recursive chunking under the deterministic
+  reranker while retaining a deliberately coarse Rust custom splitter as a
+  measured negative control; cross-SDK real-model and ACL-host execution remain
+  pending.
 
 ## [6.9.0] - 2026-08-12
 

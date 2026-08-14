@@ -1,6 +1,9 @@
 # Workspace Retrieval DeepSeek Evaluation
 
-Status: semantic ablation and adversarial rerank slice passed on 2026-08-14.
+Status: semantic ablation and adversarial rerank slice passed on 2026-08-14;
+the built-in chunk-strategy matrix passed on 2026-08-15. The Rust whole-file
+custom-strategy negative control remained observable but was not quality
+qualified.
 
 This report records the reproducible real-chat-model ablation for A3S Code's
 session-bound, in-memory Workspace Retrieval. It complements the deterministic
@@ -58,6 +61,8 @@ implementation's own success state.
 | Host enablement | Configure a provider, then explicitly clear retrieval | Tool schema, status, and recording-provider counters | Disabled schema has no semantic/hybrid modes and provider calls remain zero |
 | Task utility | Run the same task and corpus with retrieval disabled and enabled | Exact final identifier, independent expected path, and recorded rank | Enabled task accuracy must exceed the paired disabled ablation |
 | Chunk boundary | Place an answer after 90 filler lines in a file | Catalog chunk count and expected-path rank | File becomes two chunks and the answer-bearing chunk remains retrievable |
+| Strategy isolation | Hold corpus, model, ranking, prompt, and budgets fixed while rotating line, fixed-window, and recursive splitters | Exact completion, rank, chunk/vector bytes, and lifecycle counters per strategy | Every built-in arm passes the same quality and safety gates; timings remain observations, not causal claims |
+| Custom strategy trust | Return one valid whole-file range from a Rust-host callback | Independent token-containment fixture and real task accuracy | Range safety and lifecycle must pass, but the strategy is not quality-qualified merely because its ranges are valid |
 | Non-text boundary | Add PDF, PPTX, and MP3 assets containing a recognizable sentinel | Eligible/indexed file counts and provider input sentinel counter | Zero non-text chunks, vectors, or provider inputs |
 | Tool protocol | Ask the chat model to inspect its schema and make exactly one search call | Captured tool start/end events and arguments | One successful Search call with semantic when enabled and BM25 when disabled |
 | Session lifecycle | Close every session after the turn | Post-close status and vector accounting | Zero retained vector records and bytes |
@@ -163,6 +168,59 @@ The live turn timings are six remote-model observations, including one
 attribute a speedup to the local reranker. The release benchmark in the QA
 report remains the latency gate. The 54x provider-request amplification is
 also unchanged by reranking and remains owned by `CODE-B2`.
+
+## Built-in chunk-strategy matrix and custom negative control
+
+The second `WSR-EVAL2` slice isolated the chunking factor while holding the
+corpus, deterministic embedding oracle, hybrid search, deterministic reranker,
+DeepSeek model, prompt, Top-5 limit, permissions, and fresh-session lifecycle
+constant. Each of the three tasks exercised four strategies, for twelve real
+DeepSeek turns. Strategy order rotated by task to avoid always assigning one
+arm the earliest or latest remote-service window.
+
+The built-in arms were compatibility line chunking, a 512-byte fixed window
+with 64-byte overlap, and a 512-byte recursive splitter with the explicit
+separator order `\n\n`, `\n`, `. `, and space. A Rust-host whole-file splitter
+was included as an intentionally coarse custom-strategy negative control. An
+independent local catalog gate first proved exact chunk counts and that every
+answer identifier remained complete inside at least one chunk; therefore a
+model failure could not be dismissed as an accidentally severed identifier.
+
+| Metric | Line | Fixed 512/64 | Recursive 512/64 | Whole-file custom control |
+| --- | ---: | ---: | ---: | ---: |
+| Quality gate required / passed | yes / yes | yes / yes | yes / yes | no / no |
+| Exact task completion | 1.0000 (3/3) | 1.0000 (3/3) | 1.0000 (3/3) | 0.6667 (2/3) |
+| Tool protocol compliance | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| Expected path Recall@5 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| Expected path MRR | 0.5000 | 0.5000 | 0.5000 | 0.5000 |
+| Locked chunks | 31 | 38 | 39 | 30 |
+| Chunks per text file | 1.0333 | 1.2667 | 1.3000 | 1.0000 |
+| Maximum vector bytes | 8,387 | 9,444 | 9,595 | 8,236 |
+| Provider input bytes, three sessions | 18,279 | 19,815 | 20,007 | 18,279 |
+| Index-ready p50 / p95 | 348 / 392 ms | 377 / 442 ms | 412 / 418 ms | 424 / 445 ms |
+| DeepSeek turn p50 / p95 | 17,412 / 25,989 ms | 6,431 / 6,846 ms | 6,105 / 7,268 ms | 6,499 / 27,995 ms |
+| Total model tokens | 14,671 | 13,939 | 14,174 | 14,150 |
+| Document-request amplification | 30.0x | 30.0x | 30.0x | 30.0x |
+| Non-text provider inputs | 0 | 0 | 0 | 0 |
+| Sessions fully released | 3/3 | 3/3 | 3/3 | 3/3 |
+
+Every expected path ranked second because the locked lexical decoy remained
+ahead of it; DeepSeek still returned the exact answer for all nine built-in
+runs. The whole-file control failed the long backpressure task in both the
+initial adversarial review run and the final report run, despite finding the
+expected path at rank two. Its large answer chunk also required 4,041 rerank
+feature bytes on that task, versus 725 or fewer for the built-ins. This is the
+desired trust-boundary finding: Core can prove custom ranges are complete,
+bounded, UTF-8-safe, and releasable, but only task evidence can qualify their
+context quality.
+
+Fixed and recursive overlap increased vector memory by 12.60 and 14.40 percent
+over line chunking on this corpus, while provider input bytes increased by
+8.40 and 9.45 percent. Neither changed the current 30x per-file request
+amplification. The remote turn percentiles and token totals are reported for
+reproduction only; three observations per arm cannot establish a latency or
+cost advantage. All built-ins pass this slice, but the evidence does not
+justify changing the line default.
 
 ## Construction, model, and lifecycle measurements
 
@@ -284,6 +342,20 @@ It prints `WSR_DEEPSEEK_RERANK_SUMMARY=<json>` before enforcing gates and a
 full `WSR_DEEPSEEK_RERANK_EVAL=<json>` record on success. Both tests are
 ignored by default because they require repository credentials and network
 access.
+
+The orthogonal built-in chunking matrix and Rust custom negative control can be
+run independently with:
+
+```powershell
+cargo test --offline --locked -p a3s-code-core `
+  --test test_workspace_retrieval_real_llm `
+  strategy_matrix::real_deepseek_chunking_strategy_matrix_qualifies_builtins_and_audits_custom_control -- `
+  --ignored --exact --nocapture --test-threads=1
+```
+
+It prints `WSR_DEEPSEEK_CHUNKING_SUMMARY=<json>` and, after all gates pass, the
+full `WSR_DEEPSEEK_CHUNKING_EVAL=<json>` record. The non-network fixture gate is
+`strategy_matrix::locked_strategy_fixture_has_stable_chunks_and_complete_answer_tokens`.
 
 `a3s-test capabilities --json` succeeded during the review. The optional Web
 driver schema probe reported `test.driver.web.capability_unavailable` because a
