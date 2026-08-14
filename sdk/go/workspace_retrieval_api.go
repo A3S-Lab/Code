@@ -24,37 +24,37 @@ const (
 )
 
 type WorkspaceEmbeddingBatchMetrics struct {
-	DocumentInputs             uint    `json:"document_inputs"`
-	DocumentTextBytes          uint    `json:"document_text_bytes"`
-	DocumentBatches            uint    `json:"document_batches"`
-	DocumentProviderRequests   uint    `json:"document_provider_requests"`
-	BatchLimitLowerBound       uint    `json:"batch_limit_lower_bound"`
-	InputLimitFlushes          uint    `json:"input_limit_flushes"`
-	TextByteLimitFlushes       uint    `json:"text_byte_limit_flushes"`
-	VectorByteLimitFlushes     uint    `json:"vector_byte_limit_flushes"`
+	DocumentInputs            uint    `json:"document_inputs"`
+	DocumentTextBytes         uint    `json:"document_text_bytes"`
+	DocumentBatches           uint    `json:"document_batches"`
+	DocumentProviderRequests  uint    `json:"document_provider_requests"`
+	BatchLimitLowerBound      uint    `json:"batch_limit_lower_bound"`
+	InputLimitFlushes         uint    `json:"input_limit_flushes"`
+	TextByteLimitFlushes      uint    `json:"text_byte_limit_flushes"`
+	VectorByteLimitFlushes    uint    `json:"vector_byte_limit_flushes"`
 	GenerationCompleteFlushes uint    `json:"generation_complete_flushes"`
-	TimeToFirstReadyMS         *uint64 `json:"time_to_first_ready_ms"`
-	NonTextInputs              uint    `json:"non_text_inputs"`
+	TimeToFirstReadyMS        *uint64 `json:"time_to_first_ready_ms"`
+	NonTextInputs             uint    `json:"non_text_inputs"`
 }
 
 type WorkspaceRetrievalStatus struct {
-	Phase           WorkspaceRetrievalPhase      `json:"phase"`
-	CatalogRevision uint64                       `json:"catalog_revision"`
-	SourceRevision  uint64                       `json:"source_revision"`
-	VectorRevision  uint64                       `json:"vector_revision"`
-	EligibleFiles   uint                         `json:"eligible_files"`
-	CatalogFiles    uint                         `json:"catalog_files"`
-	CatalogChunks   uint                         `json:"catalog_chunks"`
-	IndexedFiles    uint                         `json:"indexed_files"`
-	IndexedChunks   uint                         `json:"indexed_chunks"`
-	CoverageBPS     uint16                       `json:"coverage_bps"`
-	QueueDepth      uint                         `json:"queue_depth"`
-	FailedFiles     uint                         `json:"failed_files"`
-	TotalFailures   uint64                       `json:"total_failures"`
-	VectorRecords   uint                         `json:"vector_records"`
-	VectorBytes     uint                         `json:"vector_bytes"`
+	Phase           WorkspaceRetrievalPhase        `json:"phase"`
+	CatalogRevision uint64                         `json:"catalog_revision"`
+	SourceRevision  uint64                         `json:"source_revision"`
+	VectorRevision  uint64                         `json:"vector_revision"`
+	EligibleFiles   uint                           `json:"eligible_files"`
+	CatalogFiles    uint                           `json:"catalog_files"`
+	CatalogChunks   uint                           `json:"catalog_chunks"`
+	IndexedFiles    uint                           `json:"indexed_files"`
+	IndexedChunks   uint                           `json:"indexed_chunks"`
+	CoverageBPS     uint16                         `json:"coverage_bps"`
+	QueueDepth      uint                           `json:"queue_depth"`
+	FailedFiles     uint                           `json:"failed_files"`
+	TotalFailures   uint64                         `json:"total_failures"`
+	VectorRecords   uint                           `json:"vector_records"`
+	VectorBytes     uint                           `json:"vector_bytes"`
 	Batching        WorkspaceEmbeddingBatchMetrics `json:"batching"`
-	Model           *EmbeddingProviderDescriptor `json:"model"`
+	Model           *EmbeddingProviderDescriptor   `json:"model"`
 }
 
 type WorkspaceChunk struct {
@@ -122,7 +122,7 @@ type WorkspaceRerankFallbackReason string
 
 const (
 	WorkspaceRerankScratchBudgetExceeded WorkspaceRerankFallbackReason = "scratch_budget_exceeded"
-	WorkspaceRerankInvalidConfiguration   WorkspaceRerankFallbackReason = "invalid_configuration"
+	WorkspaceRerankInvalidConfiguration  WorkspaceRerankFallbackReason = "invalid_configuration"
 )
 
 type WorkspaceRerankStatus struct {
@@ -155,7 +155,7 @@ type WorkspaceHybridSearchResult struct {
 	CatalogRevision uint64                         `json:"catalog_revision"`
 	SourceRevision  uint64                         `json:"source_revision"`
 	Channels        []WorkspaceHybridChannelStatus `json:"channels"`
-	Rerank          WorkspaceRerankStatus           `json:"rerank"`
+	Rerank          WorkspaceRerankStatus          `json:"rerank"`
 	Truncated       bool                           `json:"truncated"`
 	Fallback        *string                        `json:"fallback"`
 }
