@@ -1,9 +1,9 @@
 # Workspace Retrieval DeepSeek Evaluation
 
 Status: semantic ablation and adversarial rerank slice passed on 2026-08-14;
-the built-in chunk-strategy matrix passed on 2026-08-15. The Rust whole-file
-custom-strategy negative control remained observable but was not quality
-qualified.
+the built-in chunk-strategy matrix and real CLI ACL-host composition passed on
+2026-08-15. The Rust whole-file custom-strategy negative control remained
+observable but was not quality qualified.
 
 This report records the reproducible real-chat-model ablation for A3S Code's
 session-bound, in-memory Workspace Retrieval. It complements the deterministic
@@ -59,6 +59,8 @@ implementation's own success state.
 | Boundary | Adversarial condition | Independent observable | Required gate |
 | --- | --- | --- | --- |
 | Host enablement | Configure a provider, then explicitly clear retrieval | Tool schema, status, and recording-provider counters | Disabled schema has no semantic/hybrid modes and provider calls remain zero |
+| ACL authority | Discover a workspace chat route while a temporary trusted user layer enables retrieval | Effective layer count, redacted config projection, selected chat model, and recording endpoint | Exactly two layers; DeepSeek remains the chat model; only the trusted layer grants embedding egress; no key or endpoint appears in output |
+| Catalog ownership | Combine host-supplied workspace services with an explicit chunk strategy | Host catalog debug state, session option state, and real session construction | The host configures one catalog before services attach; session options contain no catalog override; Core's ownership guard accepts the composition |
 | Task utility | Run the same task and corpus with retrieval disabled and enabled | Exact final identifier, independent expected path, and recorded rank | Enabled task accuracy must exceed the paired disabled ablation |
 | Chunk boundary | Place an answer after 90 filler lines in a file | Catalog chunk count and expected-path rank | File becomes two chunks and the answer-bearing chunk remains retrievable |
 | Strategy isolation | Hold corpus, model, ranking, prompt, and budgets fixed while rotating line, fixed-window, and recursive splitters | Exact completion, rank, chunk/vector bytes, and lifecycle counters per strategy | Every built-in arm passes the same quality and safety gates; timings remain observations, not causal claims |
@@ -222,6 +224,73 @@ reproduction only; three observations per arm cannot establish a latency or
 cost advantage. All built-ins pass this slice, but the evidence does not
 justify changing the line default.
 
+## Real CLI ACL-host composition
+
+The Core matrices above inject typed retrieval options directly. The final host
+variant instead exercised the production `a3s code exec` path, effective ACL
+layering, shared manifest backend, asynchronous catalog, semantic runtime,
+hybrid Search metadata, JSONL projection, session close, and the real DeepSeek
+tool loop. A3S CLI `main` commit `d1c8c25` pins Code `b7a496b`.
+
+The test created a workspace below the A3S monorepo root, allowing normal
+ancestor discovery to select the repository `.a3s/config.acl` for the
+`deepseek/deepseek-v4-pro` chat route. A temporary trusted user ACL supplied a
+process-local embedding endpoint, the two explicit egress gates, recursive
+512/64 chunking with explicit separators, and the typed deterministic
+reranker. The test did not copy or print the repository ACL and scanned both
+stdout and stderr for the local API-key marker and endpoint.
+
+The first live attempt failed before any DeepSeek call because the CLI placed
+the chunk strategy in per-session options while also supplying host-owned
+workspace services. Core's ownership guard correctly rejected that conflict.
+The host fix now configures `ManifestWorkspaceBackend` once, attaches its
+catalog to the shared services, and passes only provider/index/rerank options to
+each session. Exec, TUI, and Code Web use the same ownership split.
+
+| Quality metric | ACL-host result |
+| --- | ---: |
+| Exact task completion | 1.0000 (3/3) |
+| Exact tool protocol | 1.0000 (3/3) |
+| Precision@5 | 0.2000 |
+| Precision among returned results | 0.4286 (3/7) |
+| Mean returned results | 2.3333 |
+| Expected-path Recall@5 | 1.0000 |
+| Expected-path MRR | 0.5000 |
+| Expected-path nDCG@5 | 0.6309 |
+| Mean relevant rank | 2.0000 |
+
+The runtime returned 2, 2, and 3 positive candidates instead of padding Top 5
+with zero-similarity results. Precision@5 therefore uses the fixed five-slot
+denominator, while returned-result precision separately reports the density of
+evidence exposed to the model. Every independently labeled target ranked
+second behind its lexical decoy, and DeepSeek still emitted the exact answer.
+
+| Operational metric | Result per session unless noted |
+| --- | ---: |
+| Retrieval phase / coverage | `ready` / 100% |
+| Eligible / indexed / failed files | 30 / 30 / 0 |
+| Indexed chunks / vector records | 39 / 39 |
+| Accounted vector bytes | 9,595 |
+| Embedding requests | 31 (30 document + 1 query) |
+| Embedding inputs | 40 (39 document + 1 query) |
+| Document-request amplification | 30.0x |
+| Non-text provider inputs | 0 |
+| End-to-end command p50 / p95 | 9,706 / 11,675 ms |
+| Total DeepSeek tokens, three tasks | 39,219 |
+
+End-to-end command timing includes process and session setup, asynchronous
+indexing, remote-model latency, tool execution, and completion. It is not a
+retrieval-only latency claim; the release benchmark remains that gate. The
+30x provider-request finding independently reproduces the `CODE-B2` batching
+gap through the real host. CLI session close runs before the result process
+terminates, while the Core weak-reference suite remains the authority for zero
+retained vector allocations.
+
+This qualifies the ACL-host arm of `WSR-EVAL2`, not the cross-SDK real-model
+arms and not a new default chunker or reranker. The complete host-side threat
+matrix and machine-readable schema are documented in the
+[A3S CLI evaluation](https://github.com/A3S-Lab/CLI/blob/main/docs/workspace-retrieval-evaluation.md).
+
 ## Construction, model, and lifecycle measurements
 
 These live E2E samples are debug-build observations with only three samples per
@@ -356,6 +425,19 @@ cargo test --offline --locked -p a3s-code-core `
 It prints `WSR_DEEPSEEK_CHUNKING_SUMMARY=<json>` and, after all gates pass, the
 full `WSR_DEEPSEEK_CHUNKING_EVAL=<json>` record. The non-network fixture gate is
 `strategy_matrix::locked_strategy_fixture_has_stable_chunks_and_complete_answer_tokens`.
+
+The real ACL-host variant is owned by the A3S CLI repository and can be run
+from that checkout with the monorepo root containing `.a3s/config.acl`:
+
+```powershell
+$env:A3S_REAL_EVAL_ROOT = (Resolve-Path 'C:\path\to\a3s').Path
+cargo test --offline --locked `
+  --test workspace_retrieval_real_deepseek `
+  real_deepseek_acl_host_executes_recursive_reranked_workspace_tasks -- `
+  --ignored --exact --nocapture --test-threads=1
+```
+
+It prints one `WSR_DEEPSEEK_ACL_HOST_EVAL=<json>` record after all gates pass.
 
 `a3s-test capabilities --json` succeeded during the review. The optional Web
 driver schema probe reported `test.driver.web.capability_unavailable` because a

@@ -411,8 +411,9 @@ validates them before callback registration.
 RRF-only remains the compatibility default. The Core real-DeepSeek matrix now
 qualifies line, fixed-window, and recursive chunking under the deterministic
 stage; a valid whole-file Rust custom splitter remains an explicit negative
-control, while cross-SDK and ACL-host live execution are still pending. Results
-report the versioned algorithm, selection/redundancy scores,
+control. The real CLI ACL-host composition now also passes recursive 512/64
+plus deterministic reranking; cross-SDK real-model execution remains pending.
+Results report the versioned algorithm, selection/redundancy scores,
 candidate and byte accounting, truncation, and fallback without exposing query
 or source text. Fusion and reranking precede authoritative source access, so
 each selected path is reread at most once for full-digest and exact-byte-range

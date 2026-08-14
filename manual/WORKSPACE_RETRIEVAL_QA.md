@@ -4,7 +4,8 @@ Status: Passed and delivered on 2026-08-14. A3S CLI `main` commit `53821c8`
 pins the qualified Code and Memory revisions, and the post-pin release build
 and DeepSeek CLI integration rerun passed. A later paired Core evaluation also
 passed with real DeepSeek chat, explicit retrieval enable/disable control,
-multi-chunk source, and non-text exclusion.
+multi-chunk source, and non-text exclusion. The real ACL-host strategy/rerank
+composition passed on 2026-08-15 at CLI `d1c8c25` and Code `b7a496b`.
 
 This report qualifies the first session-bound Workspace Retrieval (`WSR`)
 release across A3S Memory, A3S Code, and the A3S CLI host. The release uses an
@@ -261,6 +262,14 @@ applies the Memory package-local release optimization, and passed the final
 post-pin retrieval filter (19/19), formatting, all-target Clippy, and release
 build gates.
 
+Follow-up CLI `main` commit `d1c8c25` pins Code `b7a496b` and closes the
+host-catalog ownership gap exposed by the real ACL-host test: exec, TUI, and
+Code Web now configure the shared manifest catalog exactly once and keep
+catalog options out of the session-owned semantic runtime. Retrieval tests
+pass 28/28, exec policy 7/7, ACL authority 5/5, Web host/cache 5/5, config
+projection 2/2, locked all-target check, format, and baseline-aware changed-
+target Clippy.
+
 ## Real DeepSeek integration
 
 The repository `.a3s/config.acl` was validated and inspected without printing
@@ -305,6 +314,18 @@ batch-limit lower bound. Full methodology, latency, resource, token, chunking,
 and follow-up gates are in the
 [DeepSeek evaluation report](WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md).
 
+### Real ACL-host strategy and rerank execution
+
+The production CLI then composed the repository DeepSeek route with a temporary
+trusted retrieval ACL, explicit recursive 512/64 chunking, deterministic
+reranking, and a loopback embedding oracle. All three exact tasks and all three
+one-Search protocols passed. Precision@5 was 0.2, returned-result precision
+0.4286, Recall@5 1.0, MRR 0.5, and nDCG@5 0.6309; every expected path ranked
+second. Each fresh session reached 100 percent coverage with 30 text files, 39
+chunks/vectors, 9,595 vector bytes, zero failed files, zero non-text provider
+inputs, and the same 30x request amplification. The test also proved that the
+temporary API key and endpoint were absent from stdout and stderr.
+
 ## A3S Test coverage boundary
 
 `a3s-test capabilities --json` and `a3s-test agent schema` were run from the
@@ -312,8 +333,9 @@ checked-out A3S Test implementation. The Web driver reported
 `test.driver.web.capability_unavailable` because the browser command is not
 installed in this environment. Therefore no browser screenshot is claimed.
 Code Web host injection and retrieval-status behavior are covered by
-deterministic contract tests. The real DeepSeek evidence covers both the CLI
-read workflow and the Core Search tool loop; neither requires a browser.
+deterministic contract tests. The real DeepSeek evidence covers the CLI read
+workflow, the Core Search tool loop, and production CLI hybrid retrieval with
+typed chunking/reranking; none requires a browser.
 
 ## Release disposition
 
