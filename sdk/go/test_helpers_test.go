@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/A3S-Lab/Code/sdk/go/v6/internal/bridge"
 )
 
 type recordedRequest struct {
@@ -43,8 +45,8 @@ func (runtime *fakeRuntime) Request(
 			value = *runtime.capabilities
 		} else {
 			value = Capabilities{
-				ProtocolVersion:      1,
-				EventProtocolVersion: 1,
+				ProtocolVersion:      bridge.ProtocolVersion,
+				EventProtocolVersion: bridge.EventProtocolVersion,
 				Operations:           SupportedOperations(),
 			}
 		}

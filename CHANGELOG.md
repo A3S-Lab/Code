@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added typed session-owned ephemeral workspace retrieval to the Node.js,
+  Python, and Go SDKs, including host-injected embedding providers, asynchronous
+  indexing status, digest-verified semantic and hybrid result DTOs, bounded
+  cleanup, and cancellation propagation. Go bridge protocol v2 now explicitly
+  cancels in-flight callback contexts during query and session shutdown.
+
 ## [6.9.0] - 2026-08-12
 
 ### Added

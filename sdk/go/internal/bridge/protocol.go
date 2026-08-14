@@ -4,7 +4,7 @@ package bridge
 
 import "encoding/json"
 
-const ProtocolVersion = 1
+const ProtocolVersion = 2
 const EventProtocolVersion = 1
 
 var RequiredOperations = []string{
@@ -27,6 +27,9 @@ var RequiredOperations = []string{
 	"session_resume",
 	"session_info",
 	"session_task_scheduler_stats",
+	"session_workspace_retrieval_status",
+	"session_semantic_search",
+	"session_hybrid_search",
 	"session_is_closed",
 	"session_send",
 	"session_resume_run",
@@ -130,6 +133,7 @@ type Envelope struct {
 	Result          json.RawMessage `json:"result"`
 	Event           json.RawMessage `json:"event"`
 	Callback        *Callback       `json:"callback"`
+	CallbackCancel  *CallbackCancel `json:"callback_cancel"`
 	Error           *RemoteError    `json:"error"`
 }
 
@@ -144,4 +148,8 @@ type Callback struct {
 	Method     string          `json:"method"`
 	Payload    json.RawMessage `json:"payload"`
 	TimeoutMS  uint64          `json:"timeout_ms"`
+}
+
+type CallbackCancel struct {
+	CallbackID uint64 `json:"callback_id"`
 }

@@ -488,7 +488,7 @@ multiple agents or behaviors need one auditable shared model.
 | Rust | [`a3s-code-core`](https://crates.io/crates/a3s-code-core) | Complete runtime API and extension traits |
 | Node.js | [`@a3s-lab/code`](https://www.npmjs.com/package/@a3s-lab/code) | Native N-API bindings for async lifecycle, streams, tools, stores, orchestration, MCP, and state graph |
 | Python | [`a3s-code`](https://pypi.org/project/a3s-code/) | Native PyO3/bootstrap package with sync and async application APIs |
-| Go | [`github.com/A3S-Lab/Code/sdk/go/v6`](sdk/go/README.md) | Pure-Go client with a versioned local bridge for sessions, streams, tools, runs, verification, and MCP |
+| Go | [`github.com/A3S-Lab/Code/sdk/go/v6`](sdk/go/README.md) | Pure-Go client with a versioned local bridge for sessions, streams, tools, ephemeral semantic retrieval, runs, verification, and MCP |
 
 ```bash
 # Node.js
@@ -506,7 +506,10 @@ The native SDK crates explicitly enable the Core `headless-search`, `s3`, and
 embedders receive the lazy Chrome/Chromium search tier by default and can omit
 the browser dependency stack with `default-features = false`. The pure-Go
 package uses the matching `a3s-code-go-bridge` release asset and requires no
-CGO. See the
+CGO. Node.js, Python, and Go hosts can inject typed asynchronous embedding
+providers for session-owned in-memory semantic and hybrid workspace retrieval;
+provider cancellation follows query and session lifecycle, and no SDK requires
+a vector database. See the
 [Node.js](sdk/node/README.md), [Python](sdk/python/README.md), and
 [Go](sdk/go/README.md) guides for surface-specific examples and intentional API
 differences.

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"slices"
 	"testing"
+
+	"github.com/A3S-Lab/Code/sdk/go/v6/internal/bridge"
 )
 
 func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
@@ -158,7 +160,7 @@ func TestCreateFailsClosedOnCapabilityDrift(t *testing.T) {
 		{
 			name: "event protocol",
 			capabilities: Capabilities{
-				ProtocolVersion:      1,
+				ProtocolVersion:      bridge.ProtocolVersion,
 				EventProtocolVersion: 99,
 				Operations:           SupportedOperations(),
 			},
@@ -167,7 +169,7 @@ func TestCreateFailsClosedOnCapabilityDrift(t *testing.T) {
 		{
 			name: "missing operation",
 			capabilities: Capabilities{
-				ProtocolVersion:      1,
+				ProtocolVersion:      bridge.ProtocolVersion,
 				EventProtocolVersion: 1,
 				Operations:           SupportedOperations()[1:],
 			},
@@ -176,7 +178,7 @@ func TestCreateFailsClosedOnCapabilityDrift(t *testing.T) {
 		{
 			name: "duplicate operation",
 			capabilities: Capabilities{
-				ProtocolVersion:      1,
+				ProtocolVersion:      bridge.ProtocolVersion,
 				EventProtocolVersion: 1,
 				Operations: append(
 					SupportedOperations(),

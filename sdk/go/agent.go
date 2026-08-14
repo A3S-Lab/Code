@@ -52,6 +52,10 @@ type Agent struct {
 
 	closeOnce sync.Once
 	closeErr  error
+
+	callbackMu                sync.Mutex
+	retrievalCallbacks        map[string]struct{}
+	sessionRetrievalCallbacks map[string]map[string]struct{}
 }
 
 // Create initializes an Agent from an ACL file path or inline ACL source.
@@ -192,7 +196,12 @@ func (agent *Agent) ReplaceSession(
 	if options != nil {
 		params["options"] = options
 	}
-	return agent.newSession(ctx, op, params)
+	replacement, err := agent.newSession(ctx, op, params)
+	if err != nil {
+		return nil, err
+	}
+	current.releaseRetrievalCallback()
+	return replacement, nil
 }
 
 func (agent *Agent) SessionForAgent(
@@ -256,6 +265,22 @@ func (agent *Agent) newSession(
 	operation string,
 	params map[string]any,
 ) (*Session, error) {
+	preparedOptions, callbackID, err := prepareSessionOptions(
+		agent.runtime,
+		params["options"],
+	)
+	if err != nil {
+		return nil, err
+	}
+	if preparedOptions != nil {
+		params["options"] = preparedOptions
+	}
+	owned := false
+	defer func() {
+		if callbackID != "" && !owned {
+			agent.unregisterRetrievalCallback(callbackID)
+		}
+	}()
 	var created struct {
 		SessionHandle   string  `json:"session_handle"`
 		SessionID       string  `json:"session_id"`
@@ -277,17 +302,24 @@ func (agent *Agent) newSession(
 			nil,
 		)
 	}
-	return &Session{
-		runtime:         agent.runtime,
-		handle:          created.SessionHandle,
-		id:              created.SessionID,
-		workspace:       created.Workspace,
-		initWarning:     created.InitWarning,
-		tenantID:        created.TenantID,
-		principal:       created.Principal,
-		agentTemplateID: created.AgentTemplateID,
-		correlationID:   created.CorrelationID,
-	}, nil
+	session := &Session{
+		runtime:           agent.runtime,
+		owner:             agent,
+		handle:            created.SessionHandle,
+		id:                created.SessionID,
+		workspace:         created.Workspace,
+		initWarning:       created.InitWarning,
+		tenantID:          created.TenantID,
+		principal:         created.Principal,
+		agentTemplateID:   created.AgentTemplateID,
+		correlationID:     created.CorrelationID,
+		retrievalCallback: callbackID,
+	}
+	if callbackID != "" {
+		agent.trackRetrievalCallback(created.SessionID, callbackID)
+		owned = true
+	}
+	return session, nil
 }
 
 func (agent *Agent) RefreshMCPTools(ctx context.Context) error {
@@ -344,6 +376,9 @@ func (agent *Agent) CloseSession(ctx context.Context, sessionID string) (bool, e
 		"agent_id":   agent.id,
 		"session_id": sessionID,
 	}, &result)
+	if err == nil && result.Closed {
+		agent.releaseSessionRetrievalCallbacks(sessionID)
+	}
 	return result.Closed, err
 }
 
@@ -367,10 +402,12 @@ func (agent *Agent) DisconnectIdleMCP(
 
 // ServeHandle observes and stops one filesystem-first serve daemon.
 type ServeHandle struct {
-	runtime  Runtime
-	handle   string
-	stopOnce sync.Once
-	stopErr  error
+	runtime           Runtime
+	handle            string
+	owner             *Agent
+	retrievalCallback string
+	stopOnce          sync.Once
+	stopErr           error
 }
 
 // ServeStatus is the latest observable lifecycle state of a serve daemon.
@@ -402,7 +439,31 @@ func (agent *Agent) ServeAgentDir(
 		"workspace": workspace,
 	}
 	if options != nil {
-		params["options"] = options
+		prepared, callbackID, err := prepareWorkspaceRetrievalOptions(agent.runtime, options)
+		if err != nil {
+			return nil, err
+		}
+		params["options"] = prepared
+		var result struct {
+			Handle string `json:"serve_handle"`
+		}
+		if err := agent.runtime.Request(ctx, op, params, &result); err != nil {
+			agent.unregisterRetrievalCallback(callbackID)
+			return nil, err
+		}
+		if result.Handle == "" {
+			agent.unregisterRetrievalCallback(callbackID)
+			return nil, sdkError(op, CodeProtocol, "bridge returned an empty serve handle", nil)
+		}
+		if callbackID != "" {
+			agent.trackRetrievalCallback("", callbackID)
+		}
+		return &ServeHandle{
+			runtime:           agent.runtime,
+			handle:            result.Handle,
+			owner:             agent,
+			retrievalCallback: callbackID,
+		}, nil
 	}
 	var result struct {
 		Handle string `json:"serve_handle"`
@@ -413,7 +474,7 @@ func (agent *Agent) ServeAgentDir(
 	if result.Handle == "" {
 		return nil, sdkError(op, CodeProtocol, "bridge returned an empty serve handle", nil)
 	}
-	return &ServeHandle{runtime: agent.runtime, handle: result.Handle}, nil
+	return &ServeHandle{runtime: agent.runtime, handle: result.Handle, owner: agent}, nil
 }
 
 // Status returns the daemon's current readiness and terminal failure state.
@@ -448,6 +509,9 @@ func (handle *ServeHandle) Stop(ctx context.Context) error {
 		handle.stopErr = handle.runtime.Request(ctx, op, map[string]any{
 			"serve_handle": handle.handle,
 		}, nil)
+		if handle.stopErr == nil {
+			handle.releaseRetrievalCallback()
+		}
 	})
 	return handle.stopErr
 }
@@ -486,6 +550,7 @@ func (agent *Agent) Close(ctx context.Context) error {
 			map[string]any{"agent_id": agent.id},
 			nil,
 		)
+		agent.releaseAllRetrievalCallbacks()
 		var runtimeErr error
 		if agent.ownsRuntime {
 			runtimeErr = agent.runtime.Close()

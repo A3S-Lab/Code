@@ -82,6 +82,7 @@ type SessionOptions struct {
 	DefaultSecurity                    *bool                      `json:"default_security,omitempty"`
 	WorkspaceBackend                   *WorkspaceBackendConfig    `json:"workspace_backend,omitempty"`
 	RemoteGit                          *RemoteGitBackendConfig    `json:"remote_git,omitempty"`
+	WorkspaceRetrieval                 *WorkspaceRetrievalOptions `json:"-"`
 	SessionID                          string                     `json:"session_id,omitempty"`
 	TenantID                           string                     `json:"tenant_id,omitempty"`
 	Principal                          string                     `json:"principal,omitempty"`

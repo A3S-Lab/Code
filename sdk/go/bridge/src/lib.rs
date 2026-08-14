@@ -17,13 +17,15 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 mod serve;
+mod workspace_retrieval;
+use workspace_retrieval::*;
 
-pub const BRIDGE_PROTOCOL_VERSION: u16 = 1;
+pub const BRIDGE_PROTOCOL_VERSION: u16 = 2;
 
 pub const BRIDGE_OPERATIONS: &[&str] = &[
     "sdk_capabilities",
@@ -45,6 +47,9 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_resume",
     "session_info",
     "session_task_scheduler_stats",
+    "session_workspace_retrieval_status",
+    "session_semantic_search",
+    "session_hybrid_search",
     "session_is_closed",
     "session_send",
     "session_resume_run",
@@ -161,6 +166,8 @@ pub struct BridgeEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callback: Option<BridgeCallbackInvocation>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback_cancel: Option<BridgeCallbackCancellation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<BridgeError>,
 }
 
@@ -174,6 +181,7 @@ impl BridgeEnvelope {
             result: Some(result),
             event: None,
             callback: None,
+            callback_cancel: None,
             error: None,
         }
     }
@@ -187,6 +195,7 @@ impl BridgeEnvelope {
             result: None,
             event: Some(event),
             callback: None,
+            callback_cancel: None,
             error: None,
         }
     }
@@ -200,6 +209,7 @@ impl BridgeEnvelope {
             result: None,
             event: None,
             callback: None,
+            callback_cancel: None,
             error: Some(BridgeError {
                 code: error.code,
                 message: error.message,
@@ -216,6 +226,21 @@ impl BridgeEnvelope {
             result: None,
             event: None,
             callback: Some(callback),
+            callback_cancel: None,
+            error: None,
+        }
+    }
+
+    fn callback_cancel(callback_id: u64) -> Self {
+        Self {
+            protocol_version: BRIDGE_PROTOCOL_VERSION,
+            id: callback_id,
+            kind: "callback_cancel",
+            ok: true,
+            result: None,
+            event: None,
+            callback: None,
+            callback_cancel: Some(BridgeCallbackCancellation { callback_id }),
             error: None,
         }
     }
@@ -306,6 +331,28 @@ impl BridgeState {
         })
     }
 
+    async fn session_options(
+        &self,
+        options: BridgeSessionOptions,
+    ) -> Result<SessionOptions, BridgeFailure> {
+        let callbacks = if options.workspace_retrieval.is_some() {
+            Some(self.callback_client().await?)
+        } else {
+            None
+        };
+        options.into_core(callbacks)
+    }
+
+    async fn optional_session_options(
+        &self,
+        options: Option<BridgeSessionOptions>,
+    ) -> Result<Option<SessionOptions>, BridgeFailure> {
+        match options {
+            Some(options) => self.session_options(options).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
     fn handle(&self, prefix: &str) -> String {
         format!(
             "{prefix}-{}",
@@ -361,8 +408,7 @@ impl BridgeState {
                 let accepted = self
                     .callback_client()
                     .await?
-                    .respond(callback_id, CallbackReply { result, error })
-                    .await;
+                    .respond(callback_id, CallbackReply { result, error });
                 Ok(json!({ "accepted": accepted }))
             }
             "agent_create" => {
@@ -391,8 +437,8 @@ impl BridgeState {
                 let agent_id: String = required(&request.params, "agent_id")?;
                 let current = self.request_session(&request.params).await?;
                 let options = optional::<BridgeSessionOptions>(&request.params, "options")?
-                    .unwrap_or_default()
-                    .into_core()?;
+                    .unwrap_or_default();
+                let options = self.session_options(options).await?;
                 let replacement = Arc::new(
                     self.agent(&agent_id)
                         .await?
@@ -421,9 +467,12 @@ impl BridgeState {
                         format!("agent definition {agent_name:?} was not found"),
                     )
                 })?;
-                let options = optional::<BridgeSessionOptions>(&request.params, "options")?
-                    .map(BridgeSessionOptions::into_core)
-                    .transpose()?;
+                let options = self
+                    .optional_session_options(optional::<BridgeSessionOptions>(
+                        &request.params,
+                        "options",
+                    )?)
+                    .await?;
                 let session = Arc::new(
                     self.agent(&agent_id)
                         .await?
@@ -437,9 +486,12 @@ impl BridgeState {
                 let workspace: String = required(&request.params, "workspace")?;
                 let worker =
                     required::<BridgeWorkerAgentSpec>(&request.params, "worker")?.into_core()?;
-                let options = optional::<BridgeSessionOptions>(&request.params, "options")?
-                    .map(BridgeSessionOptions::into_core)
-                    .transpose()?;
+                let options = self
+                    .optional_session_options(optional::<BridgeSessionOptions>(
+                        &request.params,
+                        "options",
+                    )?)
+                    .await?;
                 let session = Arc::new(
                     self.agent(&agent_id)
                         .await?
@@ -505,8 +557,8 @@ impl BridgeState {
                 let agent_id: String = required(&request.params, "agent_id")?;
                 let workspace: String = required(&request.params, "workspace")?;
                 let options = optional::<BridgeSessionOptions>(&request.params, "options")?
-                    .unwrap_or_default()
-                    .into_core()?;
+                    .unwrap_or_default();
+                let options = self.session_options(options).await?;
                 let session = Arc::new(
                     self.agent(&agent_id)
                         .await?
@@ -519,8 +571,8 @@ impl BridgeState {
                 let agent_id: String = required(&request.params, "agent_id")?;
                 let persisted_id: String = required(&request.params, "persisted_session_id")?;
                 let options = optional::<BridgeSessionOptions>(&request.params, "options")?
-                    .unwrap_or_default()
-                    .into_core()?;
+                    .unwrap_or_default();
+                let options = self.session_options(options).await?;
                 let session = Arc::new(
                     self.agent(&agent_id)
                         .await?
@@ -540,6 +592,35 @@ impl BridgeState {
                     .task_scheduler_stats()
                     .await?;
                 encode(stats)
+            }
+            "session_workspace_retrieval_status" => {
+                let status = self
+                    .request_session(&request.params)
+                    .await?
+                    .workspace_retrieval_status();
+                Ok(status_value(&status))
+            }
+            "session_semantic_search" => {
+                let search = required::<BridgeWorkspaceSearchRequest>(&request.params, "request")?
+                    .semantic()?;
+                let result = self
+                    .request_session(&request.params)
+                    .await?
+                    .semantic_search(search)
+                    .await
+                    .map_err(retrieval_failure)?;
+                Ok(semantic_result_value(result))
+            }
+            "session_hybrid_search" => {
+                let search = required::<BridgeWorkspaceSearchRequest>(&request.params, "request")?
+                    .hybrid()?;
+                let result = self
+                    .request_session(&request.params)
+                    .await?
+                    .hybrid_search(search)
+                    .await
+                    .map_err(retrieval_failure)?;
+                Ok(hybrid_result_value(result))
             }
             "session_is_closed" => {
                 let closed = self.request_session(&request.params).await?.is_closed();
@@ -1443,24 +1524,25 @@ impl BridgeState {
         while stops.join_next().await.is_some() {}
         let sessions = self
             .sessions
-            .read()
+            .write()
             .await
-            .values()
-            .map(|entry| Arc::clone(&entry.session))
+            .drain()
+            .map(|(_, entry)| entry.session)
             .collect::<Vec<_>>();
         for session in sessions {
             session.close().await;
         }
         let agents = self
             .agents
-            .read()
+            .write()
             .await
-            .values()
-            .cloned()
+            .drain()
+            .map(|(_, agent)| agent)
             .collect::<Vec<_>>();
         for agent in agents {
             agent.close().await;
         }
+        *self.callbacks.write().await = None;
     }
 }
 
@@ -1469,14 +1551,26 @@ impl BridgeState {
 pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(BridgeState::new());
     let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<BridgeEnvelope>();
+    let (writer_stop_tx, mut writer_stop_rx) = oneshot::channel::<()>();
     state.install_callback_writer(writer_tx.clone()).await;
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
-        while let Some(envelope) = writer_rx.recv().await {
-            let mut encoded = serde_json::to_vec(&envelope)?;
-            encoded.push(b'\n');
-            stdout.write_all(&encoded).await?;
-            stdout.flush().await?;
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut writer_stop_rx => {
+                    while let Ok(envelope) = writer_rx.try_recv() {
+                        write_bridge_envelope(&mut stdout, &envelope).await?;
+                    }
+                    break;
+                }
+                envelope = writer_rx.recv() => {
+                    let Some(envelope) = envelope else {
+                        break;
+                    };
+                    write_bridge_envelope(&mut stdout, &envelope).await?;
+                }
+            }
         }
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     });
@@ -1522,10 +1616,22 @@ pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
     state.close_all().await;
     drop(state);
     drop(writer_tx);
+    let _ = writer_stop_tx.send(());
     writer
         .await
         .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })?
         .map_err(|error| -> Box<dyn std::error::Error> { error })?;
+    Ok(())
+}
+
+async fn write_bridge_envelope(
+    stdout: &mut tokio::io::Stdout,
+    envelope: &BridgeEnvelope,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut encoded = serde_json::to_vec(envelope)?;
+    encoded.push(b'\n');
+    stdout.write_all(&encoded).await?;
+    stdout.flush().await?;
     Ok(())
 }
 
@@ -1558,6 +1664,11 @@ pub struct BridgeCallbackInvocation {
     pub timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeCallbackCancellation {
+    pub callback_id: u64,
+}
+
 struct CallbackReply {
     result: Option<Value>,
     error: Option<String>,
@@ -1566,7 +1677,30 @@ struct CallbackReply {
 struct CallbackClient {
     next_id: AtomicU64,
     writer: mpsc::UnboundedSender<BridgeEnvelope>,
-    pending: Mutex<HashMap<u64, oneshot::Sender<CallbackReply>>>,
+    pending: StdMutex<HashMap<u64, oneshot::Sender<CallbackReply>>>,
+}
+
+struct CallbackInvocationGuard<'a> {
+    client: &'a CallbackClient,
+    callback_id: u64,
+    armed: bool,
+}
+
+impl CallbackInvocationGuard<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CallbackInvocationGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed && self.client.remove_pending(self.callback_id).is_some() {
+            let _ = self
+                .client
+                .writer
+                .send(BridgeEnvelope::callback_cancel(self.callback_id));
+        }
+    }
 }
 
 impl CallbackClient {
@@ -1574,8 +1708,23 @@ impl CallbackClient {
         Self {
             next_id: AtomicU64::new(1),
             writer,
-            pending: Mutex::new(HashMap::new()),
+            pending: StdMutex::new(HashMap::new()),
         }
+    }
+
+    fn pending(&self) -> StdMutexGuard<'_, HashMap<u64, oneshot::Sender<CallbackReply>>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn remove_pending(&self, callback_id: u64) -> Option<oneshot::Sender<CallbackReply>> {
+        self.pending().remove(&callback_id)
+    }
+
+    #[cfg(test)]
+    fn pending_len(&self) -> usize {
+        self.pending().len()
     }
 
     async fn invoke(
@@ -1587,7 +1736,7 @@ impl CallbackClient {
     ) -> Result<Value, BridgeFailure> {
         let callback_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(callback_id, tx);
+        self.pending().insert(callback_id, tx);
         if self
             .writer
             .send(BridgeEnvelope::callback(
@@ -1602,39 +1751,42 @@ impl CallbackClient {
             ))
             .is_err()
         {
-            self.pending.lock().await.remove(&callback_id);
+            self.remove_pending(callback_id);
             return Err(BridgeFailure::new(
                 "BRIDGE_CLOSED",
                 "bridge output is closed",
             ));
         }
+        let mut guard = CallbackInvocationGuard {
+            client: self,
+            callback_id,
+            armed: true,
+        };
         let reply =
             match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await {
                 Ok(Ok(reply)) => reply,
                 Ok(Err(_)) => {
-                    self.pending.lock().await.remove(&callback_id);
                     return Err(BridgeFailure::new(
                         "CALLBACK_ERROR",
                         "callback response channel closed",
                     ));
                 }
                 Err(_) => {
-                    self.pending.lock().await.remove(&callback_id);
                     return Err(BridgeFailure::new(
                         "CALLBACK_TIMEOUT",
                         format!("callback {handler_id:?} timed out after {timeout_ms}ms"),
                     ));
                 }
             };
-        self.pending.lock().await.remove(&callback_id);
+        guard.disarm();
         if let Some(error) = reply.error {
             return Err(BridgeFailure::new("CALLBACK_ERROR", error));
         }
         Ok(reply.result.unwrap_or(Value::Null))
     }
 
-    async fn respond(&self, callback_id: u64, reply: CallbackReply) -> bool {
-        match self.pending.lock().await.remove(&callback_id) {
+    fn respond(&self, callback_id: u64, reply: CallbackReply) -> bool {
+        match self.remove_pending(callback_id) {
             Some(sender) => sender.send(reply).is_ok(),
             None => false,
         }
@@ -2371,6 +2523,7 @@ struct BridgeSessionOptions {
     default_security: Option<bool>,
     workspace_backend: Option<BridgeWorkspaceBackend>,
     remote_git: Option<BridgeRemoteGitConfig>,
+    workspace_retrieval: Option<BridgeWorkspaceRetrievalOptions>,
     session_id: Option<String>,
     tenant_id: Option<String>,
     principal: Option<String>,
@@ -2426,7 +2579,10 @@ struct BridgeHostEnvConfig {
 }
 
 impl BridgeSessionOptions {
-    fn into_core(self) -> Result<SessionOptions, BridgeFailure> {
+    fn into_core(
+        self,
+        callbacks: Option<Arc<CallbackClient>>,
+    ) -> Result<SessionOptions, BridgeFailure> {
         let mut options = SessionOptions::new();
         if let Some(value) = self.model {
             options = options.with_model(value);
@@ -2509,6 +2665,15 @@ impl BridgeSessionOptions {
                 "INVALID_REQUEST",
                 "remote_git requires workspace_backend",
             ));
+        }
+        if let Some(value) = self.workspace_retrieval {
+            let callbacks = callbacks.ok_or_else(|| {
+                BridgeFailure::new(
+                    "CALLBACK_UNAVAILABLE",
+                    "workspace_retrieval requires the callback transport",
+                )
+            })?;
+            options = options.with_workspace_retrieval(value.into_core(callbacks)?);
         }
         if let Some(value) = self.session_id {
             options = options.with_session_id(value);
@@ -3144,22 +3309,18 @@ mod tests {
         let callback = envelope.callback.unwrap();
         assert_eq!(callback.handler_id, "go-handler");
         assert_eq!(callback.method, "hook");
-        assert!(
-            client
-                .respond(
-                    callback.callback_id,
-                    CallbackReply {
-                        result: Some(json!({ "action": "block" })),
-                        error: None,
-                    },
-                )
-                .await
-        );
+        assert!(client.respond(
+            callback.callback_id,
+            CallbackReply {
+                result: Some(json!({ "action": "block" })),
+                error: None,
+            },
+        ));
         assert_eq!(
             pending.await.unwrap().unwrap(),
             json!({ "action": "block" })
         );
-        assert!(client.pending.lock().await.is_empty());
+        assert_eq!(client.pending_len(), 0);
 
         let timed_out = {
             let client = Arc::clone(&client);
@@ -3169,10 +3330,37 @@ mod tests {
                     .await
             })
         };
-        let _ = envelopes.recv().await.unwrap();
+        let callback = envelopes.recv().await.unwrap();
+        assert_eq!(callback.kind, "callback");
         let error = timed_out.await.unwrap().unwrap_err();
         assert_eq!(error.code, "CALLBACK_TIMEOUT");
-        assert!(client.pending.lock().await.is_empty());
+        let cancellation = envelopes.recv().await.unwrap();
+        assert_eq!(cancellation.kind, "callback_cancel");
+        assert_eq!(
+            cancellation.callback_cancel.unwrap().callback_id,
+            callback.callback.unwrap().callback_id
+        );
+        assert_eq!(client.pending_len(), 0);
+
+        let cancelled = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move {
+                client
+                    .invoke("cancelled-handler", "embedding", Value::Null, 10_000)
+                    .await
+            })
+        };
+        let callback = envelopes.recv().await.unwrap();
+        let callback_id = callback.callback.unwrap().callback_id;
+        cancelled.abort();
+        let _ = cancelled.await;
+        let cancellation = envelopes.recv().await.unwrap();
+        assert_eq!(cancellation.kind, "callback_cancel");
+        assert_eq!(
+            cancellation.callback_cancel.unwrap().callback_id,
+            callback_id
+        );
+        assert_eq!(client.pending_len(), 0);
     }
 
     #[test]
@@ -3218,7 +3406,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let options = bridge.into_core().unwrap();
+        let options = bridge.into_core(None).unwrap();
 
         assert_eq!(options.model.as_deref(), Some("anthropic/test-model"));
         assert_eq!(
@@ -3271,7 +3459,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let error = bridge.into_core().err().unwrap();
+        let error = bridge.into_core(None).err().unwrap();
         assert_eq!(error.code, "INVALID_REQUEST");
     }
 }

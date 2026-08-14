@@ -34,6 +34,7 @@ const (
 	CodeSerialization         ErrorCode = "SERIALIZATION_ERROR"
 	CodeInternal              ErrorCode = "INTERNAL_ERROR"
 	CodeUnsupportedOperation  ErrorCode = "UNSUPPORTED_OPERATION"
+	CodeWorkspaceRetrieval    ErrorCode = "WORKSPACE_RETRIEVAL_ERROR"
 )
 
 const (
@@ -75,6 +76,7 @@ var (
 	ErrSerialization         = &Error{Code: CodeSerialization}
 	ErrInternal              = &Error{Code: CodeInternal}
 	ErrUnsupportedOperation  = &Error{Code: CodeUnsupportedOperation}
+	ErrWorkspaceRetrieval    = &Error{Code: CodeWorkspaceRetrieval}
 )
 
 var (

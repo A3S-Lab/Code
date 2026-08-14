@@ -33,6 +33,11 @@ type Runtime interface {
 
 type callbackHandler func(context.Context, string, json.RawMessage) (any, error)
 
+type activeCallback struct {
+	handlerID string
+	cancel    context.CancelFunc
+}
+
 type callbackRuntime interface {
 	registerCallback(callbackHandler) (string, error)
 	unregisterCallback(string)
@@ -106,10 +111,11 @@ type LocalRuntime struct {
 	stdin   io.WriteCloser
 	stderr  *lockedBuffer
 
-	writeMu   sync.Mutex
-	mu        sync.Mutex
-	pending   map[uint64]*pendingCall
-	callbacks map[string]callbackHandler
+	writeMu         sync.Mutex
+	mu              sync.Mutex
+	pending         map[uint64]*pendingCall
+	callbacks       map[string]callbackHandler
+	activeCallbacks map[uint64]*activeCallback
 
 	nextID          atomic.Uint64
 	nextCallbackID  atomic.Uint64
@@ -166,6 +172,7 @@ func NewLocalRuntime(ctx context.Context, options ...LocalRuntimeOption) (*Local
 		stderr:          stderr,
 		pending:         make(map[uint64]*pendingCall),
 		callbacks:       make(map[string]callbackHandler),
+		activeCallbacks: make(map[uint64]*activeCallback),
 		processDone:     make(chan error, 1),
 		shutdownTimeout: config.shutdownTimeout,
 	}
@@ -372,7 +379,20 @@ func (runtime *LocalRuntime) readLoop(stdout io.Reader) {
 				))
 				return
 			}
-			go runtime.invokeCallback(*envelope.Callback)
+			runtime.startCallback(*envelope.Callback)
+			continue
+		}
+		if envelope.Kind == "callback_cancel" {
+			if envelope.CallbackCancel == nil {
+				runtime.terminate(sdkError(
+					"bridge_read",
+					CodeProtocol,
+					"bridge emitted an empty callback cancellation envelope",
+					nil,
+				))
+				return
+			}
+			runtime.cancelCallback(envelope.CallbackCancel.CallbackID)
 			continue
 		}
 
@@ -461,20 +481,41 @@ func (runtime *LocalRuntime) unregisterCallback(id string) {
 	}
 	runtime.mu.Lock()
 	delete(runtime.callbacks, id)
+	active := make([]*activeCallback, 0)
+	for callbackID, callback := range runtime.activeCallbacks {
+		if callback.handlerID == id {
+			delete(runtime.activeCallbacks, callbackID)
+			active = append(active, callback)
+		}
+	}
 	runtime.mu.Unlock()
+	for _, callback := range active {
+		callback.cancel()
+	}
 }
 
-func (runtime *LocalRuntime) invokeCallback(callback bridge.Callback) {
+func (runtime *LocalRuntime) startCallback(callback bridge.Callback) {
 	runtime.mu.Lock()
 	handler := runtime.callbacks[callback.HandlerID]
-	runtime.mu.Unlock()
-
 	timeout := time.Duration(callback.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	active := &activeCallback{handlerID: callback.HandlerID, cancel: cancel}
+	runtime.activeCallbacks[callback.CallbackID] = active
+	runtime.mu.Unlock()
+	go runtime.invokeCallback(ctx, callback, handler, active, timeout)
+}
+
+func (runtime *LocalRuntime) invokeCallback(
+	ctx context.Context,
+	callback bridge.Callback,
+	handler callbackHandler,
+	active *activeCallback,
+	timeout time.Duration,
+) {
+	defer runtime.finishCallback(callback.CallbackID, active)
 
 	var result any
 	var callbackErr error
@@ -495,6 +536,27 @@ func (runtime *LocalRuntime) invokeCallback(callback bridge.Callback) {
 	_ = runtime.Request(responseCtx, "callback_response", params, nil)
 }
 
+func (runtime *LocalRuntime) cancelCallback(callbackID uint64) {
+	runtime.mu.Lock()
+	active := runtime.activeCallbacks[callbackID]
+	if active != nil {
+		delete(runtime.activeCallbacks, callbackID)
+	}
+	runtime.mu.Unlock()
+	if active != nil {
+		active.cancel()
+	}
+}
+
+func (runtime *LocalRuntime) finishCallback(callbackID uint64, active *activeCallback) {
+	runtime.mu.Lock()
+	if runtime.activeCallbacks[callbackID] == active {
+		delete(runtime.activeCallbacks, callbackID)
+	}
+	runtime.mu.Unlock()
+	active.cancel()
+}
+
 func (runtime *LocalRuntime) terminate(err error) {
 	runtime.closed.Store(true)
 	runtime.failAll(err)
@@ -507,9 +569,14 @@ func (runtime *LocalRuntime) terminate(err error) {
 func (runtime *LocalRuntime) failAll(err error) {
 	runtime.mu.Lock()
 	pending := runtime.pending
+	active := runtime.activeCallbacks
 	runtime.pending = make(map[uint64]*pendingCall)
 	runtime.callbacks = make(map[string]callbackHandler)
+	runtime.activeCallbacks = make(map[uint64]*activeCallback)
 	runtime.mu.Unlock()
+	for _, callback := range active {
+		callback.cancel()
+	}
 	for _, call := range pending {
 		if call.stream != nil {
 			call.stream.finish(err)

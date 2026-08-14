@@ -60,6 +60,38 @@ func TestBridgeHelperProcess(t *testing.T) {
 			})
 			continue
 		}
+		if request.Operation == "trigger_cancel_callback" {
+			_ = encoder.Encode(map[string]any{
+				"protocol_version": bridge.ProtocolVersion,
+				"id":               92,
+				"kind":             "callback",
+				"ok":               true,
+				"callback": map[string]any{
+					"callback_id": 92,
+					"handler_id":  request.Params["handler_id"],
+					"method":      "embedding",
+					"payload":     map[string]any{},
+					"timeout_ms":  5000,
+				},
+			})
+			_ = encoder.Encode(map[string]any{
+				"protocol_version": bridge.ProtocolVersion,
+				"id":               92,
+				"kind":             "callback_cancel",
+				"ok":               true,
+				"callback_cancel": map[string]any{
+					"callback_id": 92,
+				},
+			})
+			_ = encoder.Encode(map[string]any{
+				"protocol_version": bridge.ProtocolVersion,
+				"id":               request.ID,
+				"kind":             "response",
+				"ok":               true,
+				"result":           map[string]any{"cancelled": true},
+			})
+			continue
+		}
 		if request.Operation == "callback_response" && callbackRequestID != 0 {
 			_ = encoder.Encode(map[string]any{
 				"protocol_version": bridge.ProtocolVersion,
@@ -133,6 +165,53 @@ func TestLocalRuntimeMultiplexesCallbacks(t *testing.T) {
 	}
 	if result.Value != 14 {
 		t.Fatalf("callback result = %#v", result)
+	}
+}
+
+func TestLocalRuntimeCancelsCallbackContext(t *testing.T) {
+	runtime, err := NewLocalRuntime(
+		context.Background(),
+		WithBridgePath(os.Args[0]),
+		withBridgeArguments("-test.run=TestBridgeHelperProcess"),
+		WithBridgeEnvironment("A3S_CODE_GO_TEST_HELPER=1"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	cancelled := make(chan struct{})
+	handlerID, err := runtime.registerCallback(
+		func(ctx context.Context, method string, _ json.RawMessage) (any, error) {
+			if method != "embedding" {
+				t.Errorf("method = %q", method)
+			}
+			<-ctx.Done()
+			close(cancelled)
+			return nil, ctx.Err()
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Cancelled bool `json:"cancelled"`
+	}
+	if err := runtime.Request(
+		context.Background(),
+		"trigger_cancel_callback",
+		map[string]any{"handler_id": handlerID},
+		&result,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Cancelled {
+		t.Fatal("helper did not acknowledge cancellation")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("callback context was not cancelled")
 	}
 }
 

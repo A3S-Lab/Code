@@ -21,6 +21,7 @@ type SessionInfo struct {
 // are single-flight; read-only observation methods may be called concurrently.
 type Session struct {
 	runtime         Runtime
+	owner           *Agent
 	handle          string
 	id              string
 	workspace       string
@@ -33,10 +34,11 @@ type Session struct {
 	closeOnce sync.Once
 	closeErr  error
 
-	callbackMu       sync.Mutex
-	hookCallbacks    map[string]string
-	commandCallbacks map[string]string
-	budgetCallback   string
+	callbackMu        sync.Mutex
+	hookCallbacks     map[string]string
+	commandCallbacks  map[string]string
+	budgetCallback    string
+	retrievalCallback string
 }
 
 func (session *Session) ID() string {
@@ -499,12 +501,40 @@ func (session *Session) releaseCallbacks() {
 	if session.budgetCallback != "" {
 		ids = append(ids, session.budgetCallback)
 	}
+	retrievalCallback := session.retrievalCallback
 	session.hookCallbacks = nil
 	session.commandCallbacks = nil
 	session.budgetCallback = ""
+	session.retrievalCallback = ""
 	session.callbackMu.Unlock()
 	for _, id := range ids {
 		runtime.unregisterCallback(id)
+	}
+	if retrievalCallback != "" {
+		runtime.unregisterCallback(retrievalCallback)
+		if session.owner != nil {
+			session.owner.forgetRetrievalCallback(retrievalCallback)
+		}
+	}
+}
+
+func (session *Session) releaseRetrievalCallback() {
+	if session == nil {
+		return
+	}
+	session.callbackMu.Lock()
+	callbackID := session.retrievalCallback
+	session.retrievalCallback = ""
+	session.callbackMu.Unlock()
+	if callbackID == "" {
+		return
+	}
+	if session.owner != nil {
+		session.owner.releaseRetrievalCallback(callbackID)
+		return
+	}
+	if runtime, ok := session.runtime.(callbackRuntime); ok {
+		runtime.unregisterCallback(callbackID)
 	}
 }
 

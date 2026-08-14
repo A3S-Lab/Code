@@ -6,9 +6,9 @@ pub(super) async fn start(state: &BridgeState, params: &Value) -> Result<Value, 
     let agent_id: String = required(params, "agent_id")?;
     let dir: String = required(params, "dir")?;
     let workspace: String = required(params, "workspace")?;
-    let options = optional::<BridgeSessionOptions>(params, "options")?
-        .map(BridgeSessionOptions::into_core)
-        .transpose()?;
+    let options = state
+        .optional_session_options(optional::<BridgeSessionOptions>(params, "options")?)
+        .await?;
     let agent_dir = a3s_code_core::config::AgentDir::load(&dir)
         .map_err(|error| BridgeFailure::new("CONFIG_ERROR", error.to_string()))?;
     let agent = state.agent(&agent_id).await?;
