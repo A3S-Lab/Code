@@ -3,6 +3,7 @@
 Status: semantic ablation and adversarial rerank slice passed on 2026-08-14;
 the built-in chunk-strategy matrix and real CLI ACL-host composition passed on
 2026-08-15. The `CODE-B2` cross-file batching rerun passed the same day. The
+public Node.js, Python, and Go SDK matrix then passed at Code `cde887b`. The
 Rust whole-file custom-strategy negative control remained observable but was
 not quality qualified.
 
@@ -290,10 +291,22 @@ one-request lower bound. CLI session close runs before the result process
 terminates, while the Core weak-reference suite remains the authority for zero
 retained vector allocations.
 
-This qualifies the ACL-host arm of `WSR-EVAL2`, not the cross-SDK real-model
-arms and not a new default chunker or reranker. The complete host-side threat
-matrix and machine-readable schema are documented in the
+This qualifies the ACL-host arm of `WSR-EVAL2`, not a new default chunker or
+reranker. The complete host-side threat matrix and machine-readable schema are
+documented in the
 [A3S CLI evaluation](https://github.com/A3S-Lab/CLI/blob/main/docs/workspace-retrieval-evaluation.md).
+
+## Cross-SDK public API matrix
+
+Code `cde887b` subsequently ran the same versioned corpus, deterministic
+embedding oracle, recursive 512/64 strategy, typed reranker, and real DeepSeek
+route through Node.js, Python, and the Go-to-Rust bridge. Each SDK passed 3/3
+exact completions and one-Search protocols with Precision@5 0.2,
+returned-result precision 0.4286, Recall@5 1.0, MRR 0.5, nDCG@5 0.6309, 1.0x
+document-request amplification, zero non-text inputs, and complete release.
+The normalized report, latency/token values, rejected prompt ambiguity, and
+commands are in the [cross-SDK contract](../sdk/evaluation/README.md). These
+three-task arms close `WSR-EVAL2` for API parity, not for a default change.
 
 ## Pre-CODE-B2 construction, model, and lifecycle measurements
 
@@ -476,7 +489,11 @@ cargo test --offline --locked `
 
 It prints one `WSR_DEEPSEEK_ACL_HOST_EVAL=<json>` record after all gates pass.
 
+The Node.js, Python, and Go runners and their hermetic fixture commands are
+listed in [`sdk/evaluation/README.md`](../sdk/evaluation/README.md). Each live
+runner prints one normalized `WSR_SDK_DEEPSEEK_EVAL=<json>` record.
+
 `a3s-test capabilities --json` succeeded during the review. The optional Web
 driver schema probe reported `test.driver.web.capability_unavailable` because a
 browser command was not installed, so this report claims Core/tool-loop E2E
-coverage and no browser screenshot evidence.
+coverage, public SDK parity, and no browser screenshot evidence.

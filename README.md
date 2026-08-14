@@ -421,8 +421,12 @@ validates them before callback registration.
 RRF-only remains the compatibility default. The Core real-DeepSeek matrix now
 qualifies line, fixed-window, and recursive chunking under the deterministic
 stage; a valid whole-file Rust custom splitter remains an explicit negative
-control. The real CLI ACL-host composition now also passes recursive 512/64
-plus deterministic reranking; cross-SDK real-model execution remains pending.
+control. The real CLI ACL-host composition and the public Node.js, Python, and
+Go SDKs now also pass recursive 512/64 plus deterministic reranking against one
+versioned corpus and normalized report contract. Each SDK completes 3/3 exact
+tasks and tool protocols with Recall@5 1.0, MRR 0.5, 1.0x document-request
+amplification, zero non-text inputs, and complete post-close vector release.
+These three-task parity runs do not qualify a new default.
 Results report the versioned algorithm, selection/redundancy scores,
 candidate and byte accounting, truncation, and fallback without exposing query
 or source text. Fusion and reranking precede authoritative source access, so
@@ -667,7 +671,7 @@ the v1 schema.
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) | Language runtime, capability boundary, lifecycle, and verification |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md) | Architecture, quality budgets, lifecycle, and adversarial trust boundaries |
 | [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md) | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope |
-| [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) | Paired task/rerank ablations, built-in chunk matrix, custom negative control, non-text boundary, metrics, and batching follow-up |
+| [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) | Paired task/rerank ablations, built-in chunk matrix, cross-SDK real-model parity, custom negative control, non-text boundary, metrics, and batching follow-up |
 | [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md) | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan |
 | [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md) | Filesystem-first tool and agent definitions |
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) | Admission schema, identity, compatibility, and security boundary |

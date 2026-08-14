@@ -95,3 +95,43 @@ provider inputs, and complete post-close vector release. Remote-model timing
 from three tasks is diagnostic rather than a release latency claim. This
 matrix qualifies SDK parity; it does not justify changing the compatible line
 chunker or RRF-only defaults.
+
+## Qualified result
+
+The 2026-08-15 run at Code `cde887b` passed every gate:
+
+| Quality metric | Node.js | Python | Go |
+| --- | ---: | ---: | ---: |
+| Exact task completion | 3/3 | 3/3 | 3/3 |
+| Exact one-Search protocol | 3/3 | 3/3 | 3/3 |
+| Precision@5 | 0.2000 | 0.2000 | 0.2000 |
+| Precision among returned results | 0.4286 (3/7) | 0.4286 (3/7) | 0.4286 (3/7) |
+| Recall@5 | 1.0000 | 1.0000 | 1.0000 |
+| MRR | 0.5000 | 0.5000 | 0.5000 |
+| nDCG@5 | 0.6309 | 0.6309 | 0.6309 |
+| Expected-path ranks | 2, 2, 2 | 2, 2, 2 | 2, 2, 2 |
+
+Every session reached 30/30 indexed text files, 39 chunks/vectors, 9,595
+accounted vector bytes, one document request against a one-request lower bound,
+zero non-text provider inputs, and zero vectors after close.
+
+| Observed metric, p50 / p95 | Node.js | Python | Go |
+| --- | ---: | ---: | ---: |
+| Session construction | 15 / 17 ms | 13 / 31 ms | 16 / 22 ms |
+| Index ready | 712 / 859 ms | 724 / 819 ms | 592 / 1,598 ms |
+| Time to first ready publication | 2 / 4 ms | 3 / 4 ms | 4 / 21 ms |
+| DeepSeek turn | 4,347 / 24,820 ms | 3,418 / 6,588 ms | 25,000 / 25,052 ms |
+| Session close | 5,008 / 5,013 ms | 5,012 / 5,017 ms | 5,012 / 5,015 ms |
+| Total DeepSeek tokens, three tasks | 14,140 | 14,609 | 14,093 |
+
+The first Node live attempt passed the Search-call contract but returned the
+file stem `replay_fence` rather than the required declaration name, so it was
+rejected. The common task prompt was clarified in every adapter to require a
+Rust function or constant declaration and to forbid paths, file stems, module
+names, prose, and Markdown. No expected answer was added. The table records the
+subsequent complete rerun.
+
+The close observations match the independently measured enabled and disabled
+session baseline in this environment. Retrieval status reported zero vector
+records and bytes after each close, so the approximately five seconds are not
+attributed to retained vector state.

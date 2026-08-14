@@ -64,8 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remains the compatibility default. A second orthogonal DeepSeek slice
   qualifies line, fixed-window, and recursive chunking under the deterministic
   reranker while retaining a deliberately coarse Rust custom splitter as a
-  measured negative control; cross-SDK real-model and ACL-host execution remain
-  pending.
+  measured negative control. The real ACL host and one versioned Node.js,
+  Python, and Go SDK matrix now each complete all three exact tasks and
+  one-Search protocols with Recall@5 1.0, MRR 0.5, 1.0x document-request
+  amplification, zero non-text inputs, and complete release. The small matrix
+  qualifies portability but does not change the compatible defaults.
 
 ## [6.9.0] - 2026-08-12
 

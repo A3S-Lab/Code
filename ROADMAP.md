@@ -428,7 +428,7 @@ Current implementation status:
 | `WSR-EVAL1` | Delivered | Real `deepseek/deepseek-v4-pro` paired ablation passes enabled 3/3 versus disabled 0/3, Recall@5/MRR 1.0, a target beyond the 80-line boundary, 30 text files/31 chunks, three excluded non-text assets, zero non-text provider inputs, complete post-close release, and schema-v2 `CODE-B2` document-request amplification of 1.0x |
 | `CODE-B2` | Delivered | A session-local coordinator coalesces one immutable catalog generation across files and flushes on the earliest input, text-byte, vector-byte, or generation-complete boundary. Stable IDs, revision/digest fencing, cancellation, private split-file accumulation, file-atomic publication, partial readiness, and already-published sibling survival are covered by eight adversarial tests. Current-generation batching metrics are exposed by Core, Node, Python, Go, and the CLI host. The 31-chunk paired task, 55-chunk collision task, every strategy arm, the 39-chunk ACL-host task, and the 25,000-record release profile all report 1.0x request amplification; the release profile emits 391 requests for a 391-request lower bound with 9-10 ms time to first ready publication |
 | `CODE-R2` | Delivered | Rust Core adds an opt-in deterministic MMR v1 stage after pure RRF with exact-tier protection, interval/lexical near-duplicate scoring, stable tie breaking, two-results-per-file diversity, 100-candidate/4-KiB/128-fingerprint/4-MiB ceilings, unchanged-order RRF fallback, and versioned diagnostics across Rust/Node/Python/Go results. Locked Recall@10/MRR/nDCG@10 are 1.0 with zero selected duplicates; two release runs report -5.163/-2.322 ms signed end-to-end p95 differences (0/0 ms positive addition), 75,346 accounted scratch bytes, and zero fallback. The default-line adversarial DeepSeek slice improves completion and Recall@5 from 0/3 to 3/3 while reducing Top-5 collision evidence from 15/15 to 10/15. RRF-only remains default |
-| `WSR-EVAL2` | In progress | The default-line Core/DeepSeek rerank slice and the orthogonal built-in chunking matrix pass with versioned algorithm, quality, rank, latency, token, chunk/vector memory, provider, non-text, and lifecycle evidence. Line, fixed 512/64, and explicit-separator recursive 512/64 each complete `3/3` real tasks with Recall@5 `1.0`, MRR `0.5`, zero non-text inputs, and complete release. A valid Rust whole-file custom negative control completes only `2/3`, proving range safety does not imply context quality. The real CLI ACL-host variant at `f435950` also completes `3/3` with exact tool protocol, Precision@5 `0.2`, returned-result precision `0.4286`, Recall@5 `1.0`, MRR `0.5`, nDCG@5 `0.6309`, 39 vectors/9,595 bytes, zero non-text inputs, and matching Core/provider request amplification of 1.0x. Cross-SDK real-model variants remain pending; no default change is qualified |
+| `WSR-EVAL2` | Delivered | The Core rerank adversary, built-in strategy matrix, Rust custom negative control, real CLI ACL host, and public SDK real-model matrix are complete. Code `cde887b` locks one corpus/report contract across Node.js, Python, and Go; each SDK completes `3/3` exact tasks and one-Search protocols with Precision@5 `0.2`, returned-result precision `0.4286`, Recall@5 `1.0`, MRR `0.5`, nDCG@5 `0.6309`, 39 vectors/9,595 bytes per session, 1.0x document-request amplification, zero non-text inputs, and complete release. Remote timing remains diagnostic, the whole-file control remains unqualified, and no default change is justified |
 | `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, DeepSeek task evaluation, SDK examples, ACL host guidance, text/knowledge-compiler boundary, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
 
 The detailed baseline and threat model are in
@@ -485,9 +485,13 @@ slices now lock the default-line rerank adversary and an orthogonal real-model
 chunking report across all built-ins plus a Rust custom negative control. The
 CLI now selects, observes, and exercises both choices through a real two-layer
 ACL and DeepSeek tool loop, and independently cross-checks Core batching metrics
-against its embedding server. The remaining release matrix requires cross-SDK
-real-model evidence; the ACL-host slice is delivered but does not qualify a
-default change.
+against its embedding server. Code `cde887b` closes the remaining release
+matrix with one versioned fixture and schema-v1 report executed through the
+public Node.js, Python, and Go APIs. All three language arms pass identical
+quality, request-amplification, non-text-egress, and release gates. The matrix
+qualifies portability; its three remote tasks per SDK do not establish a
+statistically or operationally meaningful reason to change the line or
+RRF-only defaults.
 
 `CODE-R2` was executed in this order:
 

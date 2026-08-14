@@ -10,6 +10,8 @@ composition passed on 2026-08-15 and its final batching rerun is pinned by CLI
 The subsequent `CODE-B2` qualification passed the complete serial Core suite,
 strict Core and SDK bridge Clippy, the 25,000-record release gate, and a
 schema-v2 paired DeepSeek rerun with 1.0x document-request amplification.
+Code `cde887b` then completed the public Node.js, Python, and Go real-DeepSeek
+matrix from one versioned fixture and schema-v1 report contract.
 
 This report qualifies the first session-bound Workspace Retrieval (`WSR`)
 release across A3S Memory, A3S Code, and the A3S CLI host. The release uses an
@@ -161,8 +163,9 @@ The deterministic projection suite covers count, text-byte, vector-byte, and
 generation-complete flushes; response-count corruption; provider retry
 accounting; split-file atomicity; later-batch failure isolation; source-revision
 cancellation; stable sibling chunk IDs; partial readiness; and bounded close.
-The paired DeepSeek task, collision-rerank, four-strategy matrices, and real CLI
-ACL-host test all pass with 1.0x request amplification and zero non-text inputs.
+The paired DeepSeek task, collision-rerank, four-strategy matrices, real CLI
+ACL-host test, and three public SDK arms all pass with 1.0x request
+amplification and zero non-text inputs.
 The host additionally matches Core's one logical/physical/lower-bound batch
 against an independent embedding-server request count for each 39-chunk session.
 
@@ -226,10 +229,11 @@ retrieval-path failure; it remains visible and is not counted as a CODE-R2
 pass.
 
 These results qualify the local deterministic baseline and one adversarial
-real-model slice, not a default change. RRF-only remains the compatibility
-default until `SDK-R2`, `HOST-R2`, and the complete paired
-chunk-strategy/DeepSeek `WSR-EVAL2` matrix demonstrate a gain that is both
-statistically and operationally meaningful across representative corpora.
+real-model slice, not a default change. `SDK-R2`, `HOST-R2`, and the complete
+`WSR-EVAL2` execution matrix are now delivered, but the remote arms contain
+only three tasks per variant. They demonstrate portable correctness rather
+than a statistically and operationally meaningful default advantage, so
+RRF-only remains the compatibility default.
 
 ## Deterministic test evidence
 
@@ -362,6 +366,58 @@ independent provider also observes one document request. Time to first
 file-atomic publication was 8-10 ms. The test also proved that the temporary API
 key and endpoint were absent from stdout and stderr.
 
+### Public SDK real-model parity
+
+Code `cde887b` adds one language-neutral fixture and normalized schema-v1
+report to the Node.js, Python, and Go public SDKs. Each adapter materializes the
+same digest
+`3e9d739225fa8d320b2166ff4283604c72d940693c0ea9879f112abe77773565`,
+injects the same deterministic eight-dimensional embedding oracle, selects
+recursive 512/64 chunking and the typed deterministic reranker, and loads the
+real `deepseek/deepseek-v4-pro` chat route from the repository
+`.a3s/config.acl`. DeepSeek is evaluated for schema inspection, exact tool
+selection, evidence use, and completion; it is not the ranking oracle.
+
+| Quality metric | Node.js | Python | Go |
+| --- | ---: | ---: | ---: |
+| Exact task completion | 3/3 | 3/3 | 3/3 |
+| Exact one-Search protocol | 3/3 | 3/3 | 3/3 |
+| Precision@5 | 0.2000 | 0.2000 | 0.2000 |
+| Precision among returned results | 0.4286 (3/7) | 0.4286 (3/7) | 0.4286 (3/7) |
+| Expected-path Recall@5 | 1.0000 | 1.0000 | 1.0000 |
+| Expected-path MRR | 0.5000 | 0.5000 | 0.5000 |
+| Expected-path nDCG@5 | 0.6309 | 0.6309 | 0.6309 |
+| Expected-path ranks | 2, 2, 2 | 2, 2, 2 | 2, 2, 2 |
+
+Every fresh session indexed 30 text files into 39 chunks/vectors and accounted
+9,595 vector bytes. It sent one document request for the one-request lower
+bound plus one query request, admitted no non-text sentinel, reached full
+coverage, and reported zero vector records and bytes after close.
+
+| Observed metric, p50 / p95 | Node.js | Python | Go |
+| --- | ---: | ---: | ---: |
+| Session construction | 15 / 17 ms | 13 / 31 ms | 16 / 22 ms |
+| Index ready | 712 / 859 ms | 724 / 819 ms | 592 / 1,598 ms |
+| Time to first ready publication | 2 / 4 ms | 3 / 4 ms | 4 / 21 ms |
+| DeepSeek turn | 4,347 / 24,820 ms | 3,418 / 6,588 ms | 25,000 / 25,052 ms |
+| Session close | 5,008 / 5,013 ms | 5,012 / 5,017 ms | 5,012 / 5,015 ms |
+| Total DeepSeek tokens, three tasks | 14,140 | 14,609 | 14,093 |
+
+The first Node live attempt passed the exact Search-call contract but returned
+the file stem `replay_fence` instead of the labeled declaration name. The run
+was rejected. The shared prompt contract was then clarified across all three
+adapters to require a Rust function or constant declaration and forbid paths,
+file stems, module names, prose, and Markdown; no expected answer was inserted.
+The complete three-SDK matrix above is the subsequent clean rerun.
+
+The approximately five-second close values match the enabled and disabled
+session baseline already measured in this environment. Vector records and
+bytes are synchronously zero after each close, so the observation is not
+attributed to retained retrieval state. Remote turn samples are diagnostic;
+the release benchmark remains the latency gate. Reproduction commands and the
+machine-readable field contract are in
+[`sdk/evaluation/README.md`](../sdk/evaluation/README.md).
+
 ## A3S Test coverage boundary
 
 `a3s-test capabilities --json` and `a3s-test agent schema` were run from the
@@ -370,12 +426,15 @@ checked-out A3S Test implementation. The Web driver reported
 installed in this environment. Therefore no browser screenshot is claimed.
 Code Web host injection and retrieval-status behavior are covered by
 deterministic contract tests. The real DeepSeek evidence covers the CLI read
-workflow, the Core Search tool loop, and production CLI hybrid retrieval with
-typed chunking/reranking; none requires a browser.
+workflow, the Core Search tool loop, production CLI hybrid retrieval, and
+Node.js/Python/Go public API parity with typed chunking/reranking; none requires
+a browser.
 
 ## Release disposition
 
 Pass. Keep retrieval opt-in and source egress double-gated. The deterministic
 quality, adversarial, lifecycle, confidentiality, performance, host, release
-build, and real DeepSeek integration gates passed; `WSR-QA` and `WSR-DOC` are
-delivered.
+build, and real DeepSeek integration gates passed; `WSR-QA`, `WSR-DOC`, and
+`WSR-EVAL2` are delivered. Keep line chunking and RRF-only as compatible
+defaults because the real-model samples qualify correctness and portability,
+not a representative default advantage.
