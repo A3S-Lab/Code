@@ -9,6 +9,7 @@ use crate::sandbox::srt::{
     hard_link_count, sensitive_paths, should_skip_workspace_scan_directory,
     workspace_hardlink_paths, workspace_sensitive_paths,
 };
+use crate::workspace::source_egress;
 use anyhow::{bail, Result};
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -31,6 +32,8 @@ pub enum LocalWorkspaceAccessPolicy {
 pub(crate) struct LocalWorkspaceAccessBoundary {
     sensitive_file_ids: HashSet<FileIdentity>,
     denied_hardlink_paths: HashSet<PathBuf>,
+    source_egress: bool,
+    name: &'static str,
 }
 
 impl LocalWorkspaceAccessBoundary {
@@ -68,6 +71,21 @@ impl LocalWorkspaceAccessBoundary {
         Self {
             sensitive_file_ids,
             denied_hardlink_paths,
+            source_egress: false,
+            name: "credential",
+        }
+    }
+
+    /// Construct an O(1) boundary for source sent to an external embedding
+    /// provider. Unlike the interactive credential boundary, it does not scan
+    /// the workspace at construction time. It rejects every multi-link source
+    /// file at the actual read instead.
+    pub(crate) fn for_source_egress() -> Self {
+        Self {
+            sensitive_file_ids: HashSet::new(),
+            denied_hardlink_paths: HashSet::new(),
+            source_egress: true,
+            name: "source egress",
         }
     }
 
@@ -77,27 +95,28 @@ impl LocalWorkspaceAccessBoundary {
         logical_path: &Path,
         resolved_path: Option<&Path>,
         metadata: Option<&Metadata>,
+        opened_hard_link_count: Option<u64>,
         operation: &'static str,
     ) -> Result<()> {
-        if is_sensitive_workspace_path(logical_path) {
-            return denied(operation);
+        if self.path_is_denied(logical_path) {
+            return self.denied(operation);
         }
         if self.denied_hardlink_paths.contains(logical_path) {
-            return denied(operation);
+            return self.denied(operation);
         }
 
         let resolved_relative = match resolved_path {
             Some(path) => match path.strip_prefix(workspace) {
                 Ok(relative) => Some(relative),
-                Err(_) => return denied(operation),
+                Err(_) => return self.denied(operation),
             },
             None => None,
         };
-        if resolved_relative.is_some_and(is_sensitive_workspace_path) {
-            return denied(operation);
+        if resolved_relative.is_some_and(|path| self.path_is_denied(path)) {
+            return self.denied(operation);
         }
         if resolved_relative.is_some_and(|path| self.denied_hardlink_paths.contains(path)) {
-            return denied(operation);
+            return self.denied(operation);
         }
 
         let Some(metadata) = metadata.filter(|metadata| metadata.is_file()) else {
@@ -106,13 +125,18 @@ impl LocalWorkspaceAccessBoundary {
         let checked_path = resolved_path
             .map(Path::to_path_buf)
             .unwrap_or_else(|| workspace.join(logical_path));
-        if hard_link_count(&checked_path, metadata) <= 1 {
+        let link_count =
+            opened_hard_link_count.unwrap_or_else(|| hard_link_count(&checked_path, metadata));
+        if link_count <= 1 {
             return Ok(());
+        }
+        if self.source_egress {
+            return self.denied(operation);
         }
 
         let relative = resolved_relative.unwrap_or(logical_path);
         let Some(identity) = FileIdentity::from_path(&checked_path, metadata) else {
-            return denied(operation);
+            return self.denied(operation);
         };
         let aliases_known_sensitive = self.sensitive_file_ids.contains(&identity);
         let inside_package_or_build_tree = is_skipped_workspace_tree(relative);
@@ -122,15 +146,26 @@ impl LocalWorkspaceAccessBoundary {
         // use legitimate hard links, so they remain readable unless a
         // discovered credential identity proves the inode is sensitive.
         if aliases_known_sensitive || !inside_package_or_build_tree {
-            return denied(operation);
+            return self.denied(operation);
         }
 
         Ok(())
     }
-}
 
-fn denied(operation: &'static str) -> Result<()> {
-    bail!("local workspace credential boundary denied {operation} access")
+    fn path_is_denied(&self, path: &Path) -> bool {
+        if self.source_egress {
+            source_egress::path_is_denied(path)
+        } else {
+            is_sensitive_workspace_path(path)
+        }
+    }
+
+    fn denied(&self, operation: &'static str) -> Result<()> {
+        bail!(
+            "local workspace {} boundary denied {operation} access",
+            self.name
+        )
+    }
 }
 
 fn is_sensitive_workspace_path(path: &Path) -> bool {

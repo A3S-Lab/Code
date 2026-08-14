@@ -20,6 +20,7 @@ use super::{
     WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceTextRange,
     WorkspaceTextReader, WorkspaceWriteOutcome,
 };
+use crate::sandbox::srt::hard_link_count_for_open_file;
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use std::io::Read as _;
@@ -70,6 +71,21 @@ impl LocalWorkspaceBackend {
         root: PathBuf,
         access_policy: LocalWorkspaceAccessPolicy,
     ) -> Self {
+        Self::new_with_boundary(root, |root| {
+            LocalWorkspaceAccessBoundary::for_policy(access_policy, root)
+        })
+    }
+
+    pub(crate) fn new_with_source_egress_policy(root: PathBuf) -> Self {
+        Self::new_with_boundary(root, |_| {
+            Some(LocalWorkspaceAccessBoundary::for_source_egress())
+        })
+    }
+
+    fn new_with_boundary(
+        root: PathBuf,
+        boundary: impl FnOnce(&Path) -> Option<LocalWorkspaceAccessBoundary>,
+    ) -> Self {
         let canonical = root.canonicalize();
         let root = match canonical {
             Ok(canonical) => canonical,
@@ -83,7 +99,7 @@ impl LocalWorkspaceBackend {
                 root
             }
         };
-        let access_boundary = LocalWorkspaceAccessBoundary::for_policy(access_policy, &root);
+        let access_boundary = boundary(&root);
         Self {
             root,
             access_boundary,
@@ -120,6 +136,7 @@ impl LocalWorkspaceBackend {
         path: &WorkspacePath,
         resolved: Option<&Path>,
         metadata: Option<&std::fs::Metadata>,
+        opened_hard_link_count: Option<u64>,
         operation: &'static str,
     ) -> Result<()> {
         match &self.access_boundary {
@@ -128,6 +145,7 @@ impl LocalWorkspaceBackend {
                 Path::new(path.as_str()),
                 resolved,
                 metadata,
+                opened_hard_link_count,
                 operation,
             ),
             None => Ok(()),
@@ -137,15 +155,23 @@ impl LocalWorkspaceBackend {
     pub(super) fn ensure_search_base_allowed(&self, path: &WorkspacePath) -> Result<()> {
         let resolved = self.local_path_for_read(path)?;
         let metadata = std::fs::metadata(&resolved).ok();
-        self.ensure_access(path, Some(&resolved), metadata.as_ref(), "read")
+        self.ensure_access(path, Some(&resolved), metadata.as_ref(), None, "read")
     }
 
     pub(super) fn read_search_file(&self, path: &WorkspacePath) -> Option<String> {
         let resolved = self.local_path_for_read(path).ok()?;
         let mut file = std::fs::File::open(&resolved).ok()?;
         let metadata = file.metadata().ok()?;
-        self.ensure_access(path, Some(&resolved), Some(&metadata), "read")
-            .ok()?;
+        self.ensure_access(
+            path,
+            Some(&resolved),
+            Some(&metadata),
+            self.access_boundary
+                .as_ref()
+                .map(|_| hard_link_count_for_open_file(&file, &metadata)),
+            "read",
+        )
+        .ok()?;
         let mut content = String::new();
         file.read_to_string(&mut content).ok()?;
         Some(content)
@@ -167,6 +193,7 @@ impl LocalWorkspaceBackend {
             &workspace_path,
             resolved.as_deref(),
             metadata.as_ref(),
+            None,
             "read",
         )
         .is_ok()
@@ -205,7 +232,15 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
                 error
             ))
         })?;
-        self.ensure_access(path, Some(&resolved), Some(&metadata), "read")?;
+        self.ensure_access(
+            path,
+            Some(&resolved),
+            Some(&metadata),
+            self.access_boundary
+                .as_ref()
+                .map(|_| hard_link_count_for_open_file(&file, &metadata)),
+            "read",
+        )?;
 
         let mut content = String::new();
         file.read_to_string(&mut content).await.map_err(|error| {
@@ -223,7 +258,7 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
         path: &WorkspacePath,
         content: &str,
     ) -> WorkspaceResult<WorkspaceWriteOutcome> {
-        self.ensure_access(path, None, None, "write")?;
+        self.ensure_access(path, None, None, None, "write")?;
         let resolved = self.local_path_for_write(path)?;
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
@@ -245,7 +280,15 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
                 error
             ))
         })?;
-        self.ensure_access(path, Some(&resolved), Some(&metadata), "write")?;
+        self.ensure_access(
+            path,
+            Some(&resolved),
+            Some(&metadata),
+            self.access_boundary
+                .as_ref()
+                .map(|_| hard_link_count_for_open_file(&file, &metadata)),
+            "write",
+        )?;
         file.set_len(0).await.map_err(|e| {
             WorkspaceError::Backend(anyhow!(
                 "Failed to write file {}: {}",
@@ -353,7 +396,15 @@ impl WorkspaceTextReader for LocalWorkspaceBackend {
                 error
             ))
         })?;
-        self.ensure_access(path, Some(&resolved), Some(&metadata), "read")?;
+        self.ensure_access(
+            path,
+            Some(&resolved),
+            Some(&metadata),
+            self.access_boundary
+                .as_ref()
+                .map(|_| hard_link_count_for_open_file(&file, &metadata)),
+            "read",
+        )?;
         let mut lines = BufReader::new(file).lines();
         let mut line_index = 0usize;
         while line_index < offset {
@@ -1154,6 +1205,38 @@ mod tests {
             .await
             .expect_err("source-tree hardlink writes must be denied");
         assert_eq!(std::fs::read_to_string(&source).unwrap(), "linked secret\n");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn source_egress_boundary_denies_control_paths_and_every_hardlink() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".a3s")).unwrap();
+        let source = temp.path().join("source.txt");
+        let alias = temp.path().join("src/apparently-safe.txt");
+        std::fs::write(&source, "linked source\n").unwrap();
+        std::fs::hard_link(&source, &alias).unwrap();
+        std::fs::write(temp.path().join(".a3s/config.acl"), "secret = true\n").unwrap();
+        std::fs::write(temp.path().join("src/safe.rs"), "pub fn safe() {}\n").unwrap();
+        let backend =
+            LocalWorkspaceBackend::new_with_source_egress_policy(temp.path().to_path_buf());
+
+        backend
+            .read_text(&backend.normalize("src/apparently-safe.txt").unwrap())
+            .await
+            .expect_err("source egress must reject every multi-link file");
+        backend
+            .read_text(&backend.normalize(".a3s/config.acl").unwrap())
+            .await
+            .expect_err("source egress must reject control paths at read time");
+        assert_eq!(
+            backend
+                .read_text(&backend.normalize("src/safe.rs").unwrap())
+                .await
+                .unwrap(),
+            "pub fn safe() {}\n"
+        );
     }
 
     #[cfg(any(unix, windows))]

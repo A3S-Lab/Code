@@ -190,6 +190,49 @@ async fn manifest_credential_boundary_filters_sensitive_grep_candidates() {
     assert!(!grep.output.contains(".env"));
 }
 
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn source_egress_catalog_does_not_change_ordinary_workspace_reads() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    write(&temp.path().join(".env"), b"TOKEN=tool-governed\n");
+    std::fs::hard_link(
+        temp.path().join(".env"),
+        temp.path().join("src/apparently-safe.rs"),
+    )
+    .unwrap();
+    write(&temp.path().join("src/safe.rs"), b"pub fn safe() {}\n");
+
+    let backend = ManifestWorkspaceBackend::new(temp.path());
+    let secret = backend.normalize(".env").unwrap();
+
+    assert_eq!(
+        backend.read_text(&secret).await.unwrap(),
+        "TOKEN=tool-governed\n"
+    );
+    assert_eq!(
+        backend
+            .read_text(&backend.normalize("src/apparently-safe.rs").unwrap())
+            .await
+            .unwrap(),
+        "TOKEN=tool-governed\n"
+    );
+
+    let catalog = backend.chunk_catalog();
+    let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = catalog.snapshot().unwrap();
+            if snapshot.source_revision() > 0 && snapshot.failed_file_count() == 1 {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(snapshot.paths(), vec!["src/safe.rs".to_owned()]);
+}
+
 #[tokio::test]
 async fn manifest_backend_read_write_touch_recent_files() {
     let temp = tempfile::tempdir().unwrap();

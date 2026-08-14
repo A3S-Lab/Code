@@ -1042,20 +1042,39 @@ pub(crate) fn hard_link_count(_path: &Path, metadata: &std::fs::Metadata) -> u64
     metadata.nlink()
 }
 
+#[cfg(unix)]
+pub(crate) fn hard_link_count_for_open_file<T>(_file: &T, metadata: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    metadata.nlink()
+}
+
 #[cfg(windows)]
-pub(crate) fn hard_link_count(path: &Path, _metadata: &std::fs::Metadata) -> u64 {
-    use std::os::windows::io::AsRawHandle;
+pub(crate) fn hard_link_count(path: &Path, metadata: &std::fs::Metadata) -> u64 {
+    let Ok(file) = std::fs::File::open(path) else {
+        return u64::MAX;
+    };
+    hard_link_count_for_open_file(&file, metadata)
+}
+
+#[cfg(windows)]
+pub(crate) fn hard_link_count_for_open_file<T>(file: &T, _metadata: &std::fs::Metadata) -> u64
+where
+    T: std::os::windows::io::AsRawHandle,
+{
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
     };
 
-    let Ok(file) = std::fs::File::open(path) else {
-        return u64::MAX;
-    };
     let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
     // SAFETY: `file` owns a valid handle for the duration of this call and
     // `information` points to writable storage of the required type.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+    if unsafe {
+        GetFileInformationByHandle(
+            std::os::windows::io::AsRawHandle::as_raw_handle(file),
+            &mut information,
+        )
+    } == 0
+    {
         return u64::MAX;
     }
     u64::from(information.nNumberOfLinks.max(1))
@@ -1063,6 +1082,11 @@ pub(crate) fn hard_link_count(path: &Path, _metadata: &std::fs::Metadata) -> u64
 
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn hard_link_count(_path: &Path, _metadata: &std::fs::Metadata) -> u64 {
+    1
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn hard_link_count_for_open_file<T>(_file: &T, _metadata: &std::fs::Metadata) -> u64 {
     1
 }
 

@@ -19,6 +19,7 @@ pub(crate) mod retrieval;
 #[cfg(feature = "s3")]
 mod s3;
 mod services;
+mod source_egress;
 
 pub use error::{WorkspaceError, WorkspaceResult};
 pub use local::LocalWorkspaceBackend;

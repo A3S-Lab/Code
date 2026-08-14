@@ -407,6 +407,7 @@ struct ManifestSearchSnapshot {
 /// Local backend that uses an in-memory manifest for search.
 pub struct ManifestWorkspaceBackend {
     local: Arc<LocalWorkspaceBackend>,
+    catalog_local: Arc<LocalWorkspaceBackend>,
     manifest: Arc<LocalWorkspaceManifest>,
     catalog_runtime: OnceLock<Arc<LocalWorkspaceCatalogRuntime>>,
 }
@@ -420,19 +421,32 @@ impl ManifestWorkspaceBackend {
         root: impl Into<PathBuf>,
         access_policy: LocalWorkspaceAccessPolicy,
     ) -> Arc<Self> {
+        let root = root.into();
         let local = Arc::new(LocalWorkspaceBackend::new_with_access_policy(
-            root.into(),
+            root,
             access_policy,
         ));
+        let catalog_local = Arc::new(LocalWorkspaceBackend::new_with_source_egress_policy(
+            local.root.clone(),
+        ));
         let manifest = LocalWorkspaceManifest::start(local.root.clone());
-        Self::from_manifest(local, manifest)
+        Arc::new(Self {
+            local,
+            catalog_local,
+            manifest,
+            catalog_runtime: OnceLock::new(),
+        })
     }
 
     pub fn from_manifest(
         local: Arc<LocalWorkspaceBackend>,
         manifest: Arc<LocalWorkspaceManifest>,
     ) -> Arc<Self> {
+        let catalog_local = Arc::new(LocalWorkspaceBackend::new_with_source_egress_policy(
+            local.root.clone(),
+        ));
         Arc::new(Self {
+            catalog_local,
             local,
             manifest,
             catalog_runtime: OnceLock::new(),
@@ -444,10 +458,13 @@ impl ManifestWorkspaceBackend {
     }
 
     /// Enable and return a session-local catalog built from the shared manifest.
+    ///
+    /// Catalog reads always use the source-egress boundary independently from
+    /// the access policy selected for ordinary workspace tools.
     pub fn chunk_catalog(&self) -> Arc<WorkspaceChunkCatalog> {
         self.catalog_runtime
             .get_or_init(|| {
-                let file_system: Arc<dyn WorkspaceFileSystem> = self.local.clone();
+                let file_system: Arc<dyn WorkspaceFileSystem> = self.catalog_local.clone();
                 LocalWorkspaceCatalogRuntime::start(Arc::clone(&self.manifest), file_system)
             })
             .catalog()
