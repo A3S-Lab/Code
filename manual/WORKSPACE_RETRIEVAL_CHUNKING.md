@@ -40,8 +40,9 @@ retrieval options:
 
 ```rust
 use a3s_code_core::{
+    ChunkCatalogLimits, ChunkingConfig, ManifestWorkspaceBackend,
     RecursiveChunkingOptions, SessionOptions, WorkspaceChunkingStrategy,
-    WorkspaceRetrievalOptions,
+    WorkspaceRetrievalOptions, WorkspaceServices,
 };
 
 let chunking = RecursiveChunkingOptions::new(8 * 1024, 512)?
@@ -58,8 +59,28 @@ overlap counts against retained-text and vector-record budgets.
 
 A host-supplied `WorkspaceServices` instance owns its `WorkspaceChunkCatalog`.
 Session options reject a catalog strategy or limit override in that case rather
-than silently ignoring it. Construct the host catalog with
-`WorkspaceChunkCatalog::new_with_strategy` instead.
+than silently ignoring it. A host that already shares a
+`ManifestWorkspaceBackend` across UI, search, and sessions must configure the
+backend once before any default catalog is enabled:
+
+```rust
+let backend = ManifestWorkspaceBackend::new(workspace);
+backend.configure_chunk_catalog(
+    WorkspaceChunkingStrategy::Recursive(chunking),
+    ChunkingConfig::default(),
+    ChunkCatalogLimits::default(),
+)?;
+let services = WorkspaceServices::local_with_retrieval_backend(backend);
+let retrieval = WorkspaceRetrievalOptions::new(embedding_provider);
+let options = SessionOptions::new()
+    .with_workspace_backend(services)
+    .with_workspace_retrieval(retrieval);
+```
+
+The one-shot call starts the same asynchronous manifest projection with the
+selected strategy. A second call fails instead of replacing a catalog already
+observed by another session. Hosts that own a non-manifest catalog can construct
+it directly with `WorkspaceChunkCatalog::new_with_strategy`.
 
 ## SDK built-in strategy configuration
 

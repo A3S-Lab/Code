@@ -464,7 +464,9 @@ impl ManifestWorkspaceBackend {
     /// Enable and return a session-local catalog built from the shared manifest.
     ///
     /// Catalog reads always use the source-egress boundary independently from
-    /// the access policy selected for ordinary workspace tools.
+    /// the access policy selected for ordinary workspace tools. Unless
+    /// [`Self::configure_chunk_catalog`] ran first, this enables the compatible
+    /// default catalog configuration.
     pub fn chunk_catalog(&self) -> Arc<WorkspaceChunkCatalog> {
         self.catalog_runtime
             .get_or_init(|| {
@@ -474,7 +476,14 @@ impl ManifestWorkspaceBackend {
             .catalog()
     }
 
-    pub(crate) fn configure_chunk_catalog(
+    /// Configure and enable the catalog owned by this shared manifest backend.
+    ///
+    /// Hosts that supply [`super::WorkspaceServices`] to a session must call
+    /// this before [`Self::chunk_catalog`] or a retrieval service constructor
+    /// enables the default catalog. Configuration is one-shot so later
+    /// sessions cannot silently replace the strategy or budgets owned by the
+    /// host.
+    pub fn configure_chunk_catalog(
         &self,
         strategy: WorkspaceChunkingStrategy,
         chunking: ChunkingConfig,

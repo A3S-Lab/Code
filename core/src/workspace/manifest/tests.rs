@@ -272,6 +272,35 @@ async fn source_egress_catalog_does_not_change_ordinary_workspace_reads() {
 }
 
 #[tokio::test]
+async fn host_can_configure_the_manifest_catalog_exactly_once_before_services_attach() {
+    let temp = tempfile::tempdir().unwrap();
+    let backend = ManifestWorkspaceBackend::new(temp.path());
+    let strategy = WorkspaceChunkingStrategy::FixedWindow(
+        crate::FixedWindowChunkingOptions::new(512, 64).unwrap(),
+    );
+
+    let catalog = backend
+        .configure_chunk_catalog(
+            strategy.clone(),
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+        )
+        .unwrap();
+
+    assert!(Arc::ptr_eq(&catalog, &backend.chunk_catalog()));
+    let debug = format!("{catalog:?}");
+    assert!(debug.contains("FixedWindow"), "{debug}");
+    assert!(debug.contains("target_bytes: 512"), "{debug}");
+    assert!(backend
+        .configure_chunk_catalog(
+            strategy,
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+        )
+        .is_err());
+}
+
+#[tokio::test]
 async fn manifest_backend_read_write_touch_recent_files() {
     let temp = tempfile::tempdir().unwrap();
     write(&temp.path().join("src/main.rs"), b"fn main() {}\n");

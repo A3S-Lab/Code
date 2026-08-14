@@ -34,7 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host-owned catalogs reject silent session overrides. Node, Python, and Go
   now expose typed line/fixed/recursive objects, share one locked range and
   invalid-window fixture, reject primitive strategy names, and validate before
-  provider execution (and before Go callback registration).
+  provider execution (and before Go callback registration). Shared manifest
+  hosts can configure the asynchronous catalog exactly once through the public
+  `ManifestWorkspaceBackend::configure_chunk_catalog` boundary before services
+  attach.
 - Added an opt-in bounded deterministic hybrid reranker after RRF with
   exact-identifier protection, overlap and lexical-boilerplate similarity,
   MMR-style diversity, stable tie breaking, checked candidate/feature/scratch

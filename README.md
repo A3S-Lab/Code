@@ -343,7 +343,10 @@ immutable and exclude generated, non-text, oversized, credential, key, and
 `.a3s` control paths. File changes are tombstoned before replacement work; a
 failed read reduces indexed coverage instead of returning stale text. The
 catalog is ephemeral and is released with its manifest-backed workspace
-backend.
+backend. Hosts that share a `ManifestWorkspaceBackend` across UI, search, and
+sessions configure its catalog exactly once with `configure_chunk_catalog`
+before attaching `local_with_retrieval_backend`; session options cannot
+silently replace that host-owned strategy or its budgets.
 
 Hosts can implement the public `EmbeddingProvider` trait without adding a
 model SDK to A3S Memory. `EmbeddingExecutor` validates the provider/model
