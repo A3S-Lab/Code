@@ -17,3 +17,8 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Exact workspace-vector search is latency-sensitive; keep the rest of the
+# distributable size-optimized while compiling this hot dependency for speed.
+[profile.release.package.a3s-memory]
+opt-level = 3

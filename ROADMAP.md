@@ -124,6 +124,10 @@ The program preserves the existing search surfaces:
    observable, and disabled when no admitted provider is configured.
 8. Backend choices in SDK options use typed provider objects. Raw strings such
    as `vectorBackend: "memory"` are not part of the supported SDK design.
+9. Source egress and ordinary workspace tools are separate capabilities. The
+   embedding catalog uses an O(1)-construction read boundary that revalidates
+   logical/resolved paths and hard-link count from the same open file handle;
+   enabling retrieval does not silently narrow or broaden normal tool access.
 
 ### 6.3 Target architecture
 
@@ -350,17 +354,21 @@ Current implementation status:
 | Gate | Status | Evidence |
 | --- | --- | --- |
 | `WSR-00` | Delivered | Versioned relevance and lifecycle fixtures, native BM25 CI baseline, reference sizing profile, locked budgets, and adversarial trust-boundary review |
-| `MEM-V1` | Delivered | A3S Memory `main` commit `82e3734` adds the public exact ephemeral vector kernel and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, Clippy, and rustdoc gates |
+| `MEM-V1` | Delivered | A3S Memory `main` commit `3293f572` adds the public exact ephemeral vector kernel, streamlines the contiguous exact-scan hot path, and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, benchmark, Clippy, and rustdoc gates |
 | `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, per-file BM25 postings, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read BM25 path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
-| `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `82e3734f` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
+| `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `3293f572` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
 | `CODE-Q1` | Delivered | Structured semantic search through the unified `search` tool, bounded query embedding, immutable catalog/vector revision fencing, current-file digest and byte-range verification, coverage metadata, cancellation, and explicit fallback |
 | `CODE-H1` | Delivered | Exact literal, incremental BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
 | `HOST-R1` | Delivered | A3S CLI `main` commit `c8343d9` adds default-off ACL wiring, a separate OpenAI-compatible embedding route, trusted-layer egress enforcement, bounded/redacted HTTP behavior, and session injection across exec, TUI rebuilds, and Code Web. Retrieval-focused tests pass `71/71`, all targets and Clippy compile, and the full Windows suite adds no failures relative to CLI baseline `f4377c2` |
+| `WSR-QA` | In qualification | Locked quality, focused adversarial suites, strict Clippy, the complete serial Core suite (`2746/0/18`), and two release benchmark runs pass. Exact p95 is 8.294/12.302 ms and hybrid p95 is 51.145/54.429 ms; final host pin and DeepSeek rerun remain before delivery |
+| `WSR-DOC` | In progress | README, changelog, baseline, operator QA report, SDK examples, and ACL host guidance are aligned; final revisions and release disposition remain to be recorded |
 
 The detailed baseline and threat model are in
 [`manual/WORKSPACE_RETRIEVAL_BASELINE.md`](manual/WORKSPACE_RETRIEVAL_BASELINE.md).
+Release measurements and adversarial evidence are in
+[`manual/WORKSPACE_RETRIEVAL_QA.md`](manual/WORKSPACE_RETRIEVAL_QA.md).
 
 | Gate | Owner | Depends on | Deliverable | Exit criteria |
 | --- | --- | --- | --- | --- |

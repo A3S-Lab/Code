@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added asynchronous session-owned workspace retrieval to Core with one
+  manifest-derived chunk catalog, incremental BM25, host-injected embeddings,
+  exact in-memory vector partitions, deterministic hybrid RRF, current-source
+  verification, bounded lifecycle/status APIs, and no durable vector database.
+  Remote embedding source is protected by conservative path admission and an
+  O(1)-construction read-time egress boundary that rejects resolved control
+  paths and every hard-linked alias using the same open file handle, without
+  changing ordinary tool access.
 - Added typed session-owned ephemeral workspace retrieval to the Node.js,
   Python, and Go SDKs, including host-injected embedding providers, asynchronous
   indexing status, digest-verified semantic and hybrid result DTOs, bounded

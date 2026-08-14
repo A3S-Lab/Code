@@ -529,6 +529,8 @@ pub struct AgentSession {
 #[cfg(test)]
 mod replacement_tests;
 #[cfg(test)]
+mod retrieval_qa_tests;
+#[cfg(test)]
 mod retrieval_tests;
 #[cfg(test)]
 mod tests;

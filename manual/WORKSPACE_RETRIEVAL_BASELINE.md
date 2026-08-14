@@ -2,6 +2,10 @@
 
 Status: locked on 2026-08-13 for the `WSR-00` delivery gate.
 
+Release measurements, adversarial results, and real-provider compatibility
+evidence are recorded separately in the
+[Workspace Retrieval Release Qualification](WORKSPACE_RETRIEVAL_QA.md).
+
 This document records the measurement context, quality baseline, release
 budgets, and adversarial trust boundaries for the first Workspace Retrieval
 implementation. The machine-readable fixtures live in
@@ -80,7 +84,7 @@ an explicit roadmap decision and new fixture version.
 
 | Threat | Required invariant | Deterministic evidence |
 | --- | --- | --- |
-| Path escape, symlink swap, or rename race | Every read remains governed by `WorkspaceServices`; returned evidence is fenced by current digest/revision | Out-of-root, symlink, rename-race, and stale-digest cases return no leaked or stale snippet |
+| Path escape, symlink, hard-link, or rename race | Every read remains governed by `WorkspaceServices`; the source-egress reader rejects aliased identities and returned evidence is fenced by current identity/digest/revision | Out-of-root, symlink, hard-link alias/swap, rename-race, and stale-digest cases return no leaked or stale snippet |
 | Credential or control-file egress | Remote embedding is explicit and only receives admitted chunks | Fake provider records inputs; secret, control, binary, generated, oversized, and excluded paths are absent |
 | Manifest event loss | Lag marks coverage degraded and triggers a full snapshot reconciliation | Overflow fixture converges to exactly the snapshot paths and revisions |
 | Cross-session observation | Catalogs, vectors, status, and cancellation are owned by one session | Two-session tests cannot retrieve or cancel the other session's state |
@@ -106,6 +110,15 @@ reuses content-identical partitions by digest. Change notifications are
 published before their corresponding manifest snapshot. Changed and removed
 paths are tombstoned before replacement work so failures lower coverage rather
 than returning stale content.
+
+Manifest admission rejects sensitive, control, generated, binary, and
+oversized paths without opening every file during session construction.
+Retrieval-enabled local sessions also use a dedicated source-egress catalog
+reader, which revalidates logical and resolved paths and rejects every
+multi-link file from the same open handle used for the embedding-source read,
+while leaving ordinary workspace tools on their existing host-governed access
+path. This is a second defense against a hard-link, symlink, or rename swap
+between manifest admission and embedding.
 
 The default catalog independently bounds retained text and conservatively
 estimated lexical-index memory at 64 MiB each, in addition to file and chunk
@@ -147,7 +160,7 @@ panic containment, and diagnostic redaction.
 
 ## CODE-S1 implementation evidence
 
-Code pins A3S Memory to commit `82e3734f` and creates one exact in-memory
+Code pins A3S Memory to commit `3293f572` and creates one exact in-memory
 vector index per enabled session. The typed `WorkspaceRetrievalOptions` accepts
 a provider object, embedding limits, vector record/byte budgets, and a bounded
 shutdown timeout; it does not expose a string backend selector. Retrieval is

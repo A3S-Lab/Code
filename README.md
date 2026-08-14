@@ -509,7 +509,10 @@ package uses the matching `a3s-code-go-bridge` release asset and requires no
 CGO. Node.js, Python, and Go hosts can inject typed asynchronous embedding
 providers for session-owned in-memory semantic and hybrid workspace retrieval;
 provider cancellation follows query and session lifecycle, and no SDK requires
-a vector database. See the
+a vector database. Remote embedding admits only conservative source paths,
+rejects hard-linked aliases, and revalidates logical and resolved paths at read
+time before source can leave the workspace boundary. Returned snippets are
+reread and digest-checked against current authoritative source. See the
 [Node.js](sdk/node/README.md), [Python](sdk/python/README.md), and
 [Go](sdk/go/README.md) guides for surface-specific examples and intentional API
 differences.
@@ -597,6 +600,8 @@ the v1 schema.
 | [SDK API Design](manual/SDK_API_DESIGN.md) | Cross-language API conventions and alignment |
 | [Go SDK](sdk/go/README.md) | Bridge installation, sessions, event streaming, direct tools, errors, and release compatibility |
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) | Language runtime, capability boundary, lifecycle, and verification |
+| [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md) | Architecture, quality budgets, lifecycle, and adversarial trust boundaries |
+| [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md) | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope |
 | [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md) | Filesystem-first tool and agent definitions |
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) | Admission schema, identity, compatibility, and security boundary |
 | [Changelog](CHANGELOG.md) | Release history and migration-relevant changes |
@@ -613,7 +618,13 @@ cargo clippy -p a3s-code-core --all-targets --all-features -- -D warnings
 node scripts/sdk_api_alignment_check.mjs
 cargo test -p a3s-code-go-bridge
 go -C sdk/go test ./...
+cargo run --release -p a3s-code-core --example workspace_retrieval_benchmark
 ```
+
+The retrieval benchmark emits JSON and fails when the locked 25,000 x 384
+exact-vector or hybrid p95 budgets are exceeded. See the
+[qualification report](manual/WORKSPACE_RETRIEVAL_QA.md) for the reference
+profile, inclusion rules, and measured results.
 
 Real-provider, browser-runtime, and S3 tests are ignored unless their external
 prerequisites are configured. The normal test suite is hermetic.
