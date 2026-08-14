@@ -19,18 +19,23 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use a3s_code_core::embedding::{
-    EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingExecutorConfig, EmbeddingNormalization,
-    EmbeddingProvider, EmbeddingProviderDescriptor, EmbeddingProviderError, EmbeddingVector,
+    EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingNormalization, EmbeddingProvider,
+    EmbeddingProviderDescriptor, EmbeddingProviderError, EmbeddingVector,
 };
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
 use a3s_code_core::{
     Agent, AgentEvent, AgentSession, CodeConfig, SessionOptions, SystemPromptSlots,
-    WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalStatus,
+    WorkspaceRerankOptions, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
+    WorkspaceRetrievalStatus,
 };
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+
+#[path = "workspace_retrieval_real_llm/report.rs"]
+mod report;
+use report::{summarize, summarize_rerank, EvaluationReport, RerankEvaluationReport};
 
 const DIMENSION: usize = 8;
 const TEXT_FILE_COUNT: usize = 30;
@@ -39,6 +44,7 @@ const EXPECTED_CHUNK_COUNT: usize = 31;
 const QUERY_ID: &str = "workspace-query";
 const TURN_TIMEOUT: Duration = Duration::from_secs(240);
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
+const COLLISION_COPIES_PER_TASK: usize = 8;
 const TEST_GUIDELINES: &str = "This is a deterministic repository retrieval evaluation. Follow the requested one-tool protocol exactly. Never guess an identifier that is absent from the tool evidence.";
 
 #[derive(Clone, Copy)]
@@ -47,6 +53,7 @@ struct EvaluationTask {
     query: &'static str,
     expected_path: &'static str,
     expected_identifier: &'static str,
+    collision_marker: &'static str,
 }
 
 const TASKS: [EvaluationTask; 3] = [
@@ -55,20 +62,54 @@ const TASKS: [EvaluationTask; 3] = [
         query: "what routine prevents duplicate delivery after a transport reconnect",
         expected_path: "src/replay_fence.rs",
         expected_identifier: "suppress_replayed_envelopes",
+        collision_marker: "SEMANTIC_COLLISION_REPLAY_GUARD",
     },
     EvaluationTask {
         name: "session_projection_cleanup",
         query: "会话结束后，哪个函数负责销毁只存在于内存中的检索投影",
         expected_path: "src/session_projection.rs",
         expected_identifier: "release_ephemeral_projection",
+        collision_marker: "SEMANTIC_COLLISION_SESSION_PROJECTION",
     },
     EvaluationTask {
         name: "embedding_backpressure_limit",
         query: "where is the backpressure ceiling for queued embedding work defined",
         expected_path: "src/embedding_admission.rs",
         expected_identifier: "MAX_PENDING_EMBED_BATCHES",
+        collision_marker: "SEMANTIC_COLLISION_EMBEDDING_BACKPRESSURE",
     },
 ];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EvaluationVariant {
+    Disabled,
+    Semantic,
+    HybridRrf,
+    HybridDeterministic,
+}
+
+impl EvaluationVariant {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Semantic => "semantic",
+            Self::HybridRrf => "hybrid_rrf",
+            Self::HybridDeterministic => "hybrid_deterministic",
+        }
+    }
+
+    fn retrieval_enabled(self) -> bool {
+        self != Self::Disabled
+    }
+
+    fn requested_mode(self) -> &'static str {
+        match self {
+            Self::Disabled => "bm25",
+            Self::Semantic => "semantic",
+            Self::HybridRrf | Self::HybridDeterministic => "hybrid",
+        }
+    }
+}
 
 #[derive(Default)]
 struct ProviderCounters {
@@ -96,6 +137,11 @@ impl EvaluationEmbeddingProvider {
                 .iter()
                 .position(|task| text.trim() == task.query)
                 .expect("evaluation query must be one of the locked tasks")
+        } else if let Some(task) = TASKS
+            .iter()
+            .position(|task| text.contains(task.collision_marker))
+        {
+            task
         } else if let Some(task) = TASKS
             .iter()
             .position(|task| text.contains(task.expected_identifier))
@@ -184,12 +230,26 @@ struct TurnTrace {
 #[serde(rename_all = "camelCase")]
 struct RunMetric {
     task: &'static str,
+    variant: &'static str,
     retrieval_enabled: bool,
     requested_mode: String,
     tool_protocol_ok: bool,
     completion_correct: bool,
     expected_path_rank: Option<usize>,
     result_count: usize,
+    collision_result_count: usize,
+    algorithm: Option<String>,
+    rerank_requested_mode: Option<String>,
+    rerank_applied_mode: Option<String>,
+    rerank_input_candidates: Option<usize>,
+    rerank_evaluated_candidates: Option<usize>,
+    rerank_selected_candidates: Option<usize>,
+    near_duplicate_candidates: Option<usize>,
+    selected_near_duplicates: Option<usize>,
+    rerank_feature_bytes: Option<usize>,
+    rerank_scratch_bytes: Option<usize>,
+    rerank_candidate_truncated: Option<bool>,
+    rerank_fallback: Option<String>,
     session_construction_ms: u64,
     index_ready_ms: u64,
     turn_elapsed_ms: u64,
@@ -213,51 +273,6 @@ struct RunMetric {
     embedded_input_bytes: usize,
     non_text_provider_inputs: usize,
     released_after_close: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EvaluationSummary {
-    enabled_task_accuracy: f64,
-    disabled_task_accuracy: f64,
-    enabled_tool_protocol_rate: f64,
-    disabled_tool_protocol_rate: f64,
-    semantic_recall_at_5: f64,
-    semantic_mrr: f64,
-    chunks_per_text_file: f64,
-    document_requests_per_chunk: f64,
-    document_request_amplification_vs_input_limit: f64,
-    non_text_provider_inputs: usize,
-    enabled_session_construction_p50_ms: u64,
-    enabled_session_construction_p95_ms: u64,
-    disabled_session_construction_p50_ms: u64,
-    disabled_session_construction_p95_ms: u64,
-    enabled_turn_p50_ms: u64,
-    enabled_turn_p95_ms: u64,
-    disabled_turn_p50_ms: u64,
-    disabled_turn_p95_ms: u64,
-    index_ready_p50_ms: u64,
-    index_ready_p95_ms: u64,
-    enabled_close_p50_ms: u64,
-    enabled_close_p95_ms: u64,
-    disabled_close_p50_ms: u64,
-    disabled_close_p95_ms: u64,
-    enabled_total_tokens: usize,
-    disabled_total_tokens: usize,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EvaluationReport {
-    schema_version: u32,
-    chat_model: String,
-    embedding_provider: &'static str,
-    task_count: usize,
-    text_file_count: usize,
-    non_text_file_count: usize,
-    expected_chunk_count: usize,
-    summary: EvaluationSummary,
-    runs: Vec<RunMetric>,
 }
 
 fn config_path() -> PathBuf {
@@ -340,13 +355,44 @@ fn write_fixture(root: &Path) {
     }
 }
 
+fn write_rerank_adversarial_fixture(root: &Path) {
+    write_fixture(root);
+    let source = root.join("src");
+    for task in TASKS {
+        for copy in 0..COLLISION_COPIES_PER_TASK {
+            let mut body = String::new();
+            for _ in 0..12 {
+                writeln!(body, "// {} {}", task.query, task.collision_marker)
+                    .expect("write collision evidence");
+            }
+            writeln!(
+                body,
+                "pub fn documented_{}_collision_{copy:02}() {{}}",
+                task.name
+            )
+            .expect("write collision identifier");
+            std::fs::write(
+                source.join(format!("collision_{}_{copy:02}.rs", task.name)),
+                body,
+            )
+            .expect("write adversarial collision source");
+        }
+    }
+}
+
 fn session_options(
     session_id: String,
     provider: Arc<dyn EmbeddingProvider>,
-    retrieval_enabled: bool,
+    variant: EvaluationVariant,
 ) -> SessionOptions {
     let mut policy = PermissionPolicy::new().allow_all(&["search(*)"]);
     policy.default_decision = PermissionDecision::Deny;
+    let retrieval = WorkspaceRetrievalOptions::new(provider);
+    let retrieval = if variant == EvaluationVariant::HybridDeterministic {
+        retrieval.with_rerank_options(WorkspaceRerankOptions::deterministic())
+    } else {
+        retrieval
+    };
     let options = SessionOptions::new()
         .with_session_id(session_id)
         .with_permission_policy(policy)
@@ -355,8 +401,8 @@ fn session_options(
         .with_temperature(0.0)
         .with_max_tool_rounds(2)
         .with_prompt_slots(SystemPromptSlots::default().with_guidelines(TEST_GUIDELINES))
-        .with_workspace_retrieval(WorkspaceRetrievalOptions::new(provider));
-    if retrieval_enabled {
+        .with_workspace_retrieval(retrieval);
+    if variant.retrieval_enabled() {
         options
     } else {
         options.without_workspace_retrieval()
@@ -380,10 +426,15 @@ async fn wait_until_ready(session: &AgentSession) -> WorkspaceRetrievalStatus {
     .expect("workspace retrieval did not become ready")
 }
 
-async fn run_turn(session: &AgentSession, task: EvaluationTask) -> TurnTrace {
+async fn run_turn(
+    session: &AgentSession,
+    task: EvaluationTask,
+    variant: EvaluationVariant,
+) -> TurnTrace {
     let prompt = format!(
-        "Inspect the search tool schema. Make exactly one search call and no other tool call. Use query exactly: {query}. Set path to '.', include to '*.rs', and limit to 5. If the mode 'semantic' is available, use semantic; otherwise use bm25. After the result, return exactly one Rust identifier supported by the evidence, or NOT_FOUND when no relevant identifier is present.",
-        query = task.query
+        "Inspect the search tool schema. Make exactly one search call and no other tool call. Use query exactly: {query}. Set path to '.', include to '*.rs', limit to 5, and mode to '{mode}'. After the result, return exactly one Rust identifier that directly answers the query and is supported by the evidence, or NOT_FOUND when no relevant identifier is present.",
+        query = task.query,
+        mode = variant.requested_mode(),
     );
     let started = Instant::now();
     let (mut events, worker) = session
@@ -447,11 +498,16 @@ async fn run_turn(session: &AgentSession, task: EvaluationTask) -> TurnTrace {
 async fn run_task(
     agent: &Agent,
     task: EvaluationTask,
-    retrieval_enabled: bool,
+    variant: EvaluationVariant,
     ordinal: usize,
+    adversarial_rerank_fixture: bool,
 ) -> RunMetric {
     let workspace = tempfile::tempdir().expect("create evaluation workspace");
-    write_fixture(workspace.path());
+    if adversarial_rerank_fixture {
+        write_rerank_adversarial_fixture(workspace.path());
+    } else {
+        write_fixture(workspace.path());
+    }
     let counters = Arc::new(ProviderCounters::default());
     let provider: Arc<dyn EmbeddingProvider> =
         Arc::new(EvaluationEmbeddingProvider::new(Arc::clone(&counters)));
@@ -460,44 +516,33 @@ async fn run_task(
         .session_async(
             workspace.path().display().to_string(),
             Some(session_options(
-                format!(
-                    "wsr-deepseek-{ordinal}-{}",
-                    if retrieval_enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    }
-                ),
+                format!("wsr-deepseek-{ordinal}-{}", variant.label()),
                 provider,
-                retrieval_enabled,
+                variant,
             )),
         )
         .await
         .expect("construct evaluation session");
     let session_construction_ms = elapsed_ms(construction_started);
     let index_started = Instant::now();
-    let status = if retrieval_enabled {
+    let status = if variant.retrieval_enabled() {
         wait_until_ready(&session).await
     } else {
         session.workspace_retrieval_status()
     };
-    let index_ready_ms = if retrieval_enabled {
+    let index_ready_ms = if variant.retrieval_enabled() {
         elapsed_ms(index_started)
     } else {
         0
     };
-    let trace = run_turn(&session, task).await;
+    let trace = run_turn(&session, task, variant).await;
     let call = trace.calls.first();
     let requested_mode = call
         .and_then(|call| call.args.get("mode"))
         .and_then(Value::as_str)
         .unwrap_or("<missing>")
         .to_owned();
-    let expected_mode = if retrieval_enabled {
-        "semantic"
-    } else {
-        "bm25"
-    };
+    let expected_mode = variant.requested_mode();
     let tool_protocol_ok = trace.calls.len() == 1
         && call.is_some_and(|call| {
             call.name == "search"
@@ -505,8 +550,8 @@ async fn run_task(
                 && call.args.get("query").and_then(Value::as_str) == Some(task.query)
                 && call.args.get("mode").and_then(Value::as_str) == Some(expected_mode)
         });
-    let results = call
-        .and_then(|call| call.metadata.as_ref())
+    let metadata = call.and_then(|call| call.metadata.as_ref());
+    let results = metadata
         .and_then(|metadata| metadata.get("results"))
         .and_then(Value::as_array);
     let expected_path_rank = results.and_then(|results| {
@@ -516,6 +561,32 @@ async fn run_task(
     });
     let expected_path_rank = expected_path_rank.map(|rank| rank + 1);
     let result_count = results.map_or(0, Vec::len);
+    let collision_result_count = results.map_or(0, |results| {
+        results
+            .iter()
+            .filter(|result| {
+                result
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| path.starts_with("src/collision_"))
+            })
+            .count()
+    });
+    let rerank = metadata.and_then(|metadata| metadata.get("rerank"));
+    let algorithm = json_string(metadata, "algorithm");
+    let rerank_requested_mode = json_string(rerank, "requestedMode");
+    let rerank_applied_mode = json_string(rerank, "appliedMode");
+    let rerank_input_candidates = json_usize(rerank, "inputCandidates");
+    let rerank_evaluated_candidates = json_usize(rerank, "evaluatedCandidates");
+    let rerank_selected_candidates = json_usize(rerank, "selectedCandidates");
+    let near_duplicate_candidates = json_usize(rerank, "nearDuplicateCandidates");
+    let selected_near_duplicates = json_usize(rerank, "selectedNearDuplicates");
+    let rerank_feature_bytes = json_usize(rerank, "featureBytes");
+    let rerank_scratch_bytes = json_usize(rerank, "accountedScratchBytes");
+    let rerank_candidate_truncated = rerank
+        .and_then(|rerank| rerank.get("candidateTruncated"))
+        .and_then(Value::as_bool);
+    let rerank_fallback = json_string(rerank, "fallback");
     let normalized_answer = trace.final_text.trim().trim_matches('`').trim().to_owned();
     let completion_correct = normalized_answer == task.expected_identifier;
     let close_started = Instant::now();
@@ -524,7 +595,7 @@ async fn run_task(
     let closed = session.workspace_retrieval_status();
     assert_eq!(
         closed.phase,
-        if retrieval_enabled {
+        if variant.retrieval_enabled() {
             WorkspaceRetrievalPhase::Closed
         } else {
             WorkspaceRetrievalPhase::Disabled
@@ -534,12 +605,26 @@ async fn run_task(
 
     RunMetric {
         task: task.name,
-        retrieval_enabled,
+        variant: variant.label(),
+        retrieval_enabled: variant.retrieval_enabled(),
         requested_mode,
         tool_protocol_ok,
         completion_correct,
         expected_path_rank,
         result_count,
+        collision_result_count,
+        algorithm,
+        rerank_requested_mode,
+        rerank_applied_mode,
+        rerank_input_candidates,
+        rerank_evaluated_candidates,
+        rerank_selected_candidates,
+        near_duplicate_candidates,
+        selected_near_duplicates,
+        rerank_feature_bytes,
+        rerank_scratch_bytes,
+        rerank_candidate_truncated,
+        rerank_fallback,
         session_construction_ms,
         index_ready_ms,
         turn_elapsed_ms: trace.elapsed_ms,
@@ -566,131 +651,18 @@ async fn run_task(
     }
 }
 
-fn summarize(runs: &[RunMetric]) -> EvaluationSummary {
-    let enabled = runs
-        .iter()
-        .filter(|run| run.retrieval_enabled)
-        .collect::<Vec<_>>();
-    let disabled = runs
-        .iter()
-        .filter(|run| !run.retrieval_enabled)
-        .collect::<Vec<_>>();
-    let enabled_ranks = enabled
-        .iter()
-        .filter_map(|run| run.expected_path_rank)
-        .collect::<Vec<_>>();
-    let indexed_files = enabled.iter().map(|run| run.indexed_files).sum::<usize>();
-    let indexed_chunks = enabled.iter().map(|run| run.indexed_chunks).sum::<usize>();
-    let document_requests = enabled
-        .iter()
-        .map(|run| run.document_embedding_requests)
-        .sum::<usize>();
-    let document_inputs = enabled
-        .iter()
-        .map(|run| run.embedded_documents)
-        .sum::<usize>();
-    let max_batch_inputs = EmbeddingExecutorConfig::default().max_batch_inputs;
-    let input_limit_request_lower_bound = enabled
-        .iter()
-        .map(|run| run.embedded_documents.div_ceil(max_batch_inputs))
-        .sum::<usize>();
-    EvaluationSummary {
-        enabled_task_accuracy: rate(enabled.iter().filter(|run| run.completion_correct).count()),
-        disabled_task_accuracy: rate(disabled.iter().filter(|run| run.completion_correct).count()),
-        enabled_tool_protocol_rate: rate(enabled.iter().filter(|run| run.tool_protocol_ok).count()),
-        disabled_tool_protocol_rate: rate(
-            disabled.iter().filter(|run| run.tool_protocol_ok).count(),
-        ),
-        semantic_recall_at_5: rate(enabled_ranks.iter().filter(|rank| **rank <= 5).count()),
-        semantic_mrr: enabled_ranks
-            .iter()
-            .map(|rank| 1.0 / *rank as f64)
-            .sum::<f64>()
-            / TASKS.len() as f64,
-        chunks_per_text_file: ratio(indexed_chunks, indexed_files),
-        document_requests_per_chunk: ratio(document_requests, document_inputs),
-        document_request_amplification_vs_input_limit: ratio(
-            document_requests,
-            input_limit_request_lower_bound,
-        ),
-        non_text_provider_inputs: enabled.iter().map(|run| run.non_text_provider_inputs).sum(),
-        enabled_session_construction_p50_ms: percentile(
-            enabled
-                .iter()
-                .map(|run| run.session_construction_ms)
-                .collect(),
-            0.50,
-        ),
-        enabled_session_construction_p95_ms: percentile(
-            enabled
-                .iter()
-                .map(|run| run.session_construction_ms)
-                .collect(),
-            0.95,
-        ),
-        disabled_session_construction_p50_ms: percentile(
-            disabled
-                .iter()
-                .map(|run| run.session_construction_ms)
-                .collect(),
-            0.50,
-        ),
-        disabled_session_construction_p95_ms: percentile(
-            disabled
-                .iter()
-                .map(|run| run.session_construction_ms)
-                .collect(),
-            0.95,
-        ),
-        enabled_turn_p50_ms: percentile(
-            enabled.iter().map(|run| run.turn_elapsed_ms).collect(),
-            0.50,
-        ),
-        enabled_turn_p95_ms: percentile(
-            enabled.iter().map(|run| run.turn_elapsed_ms).collect(),
-            0.95,
-        ),
-        disabled_turn_p50_ms: percentile(
-            disabled.iter().map(|run| run.turn_elapsed_ms).collect(),
-            0.50,
-        ),
-        disabled_turn_p95_ms: percentile(
-            disabled.iter().map(|run| run.turn_elapsed_ms).collect(),
-            0.95,
-        ),
-        index_ready_p50_ms: percentile(
-            enabled.iter().map(|run| run.index_ready_ms).collect(),
-            0.50,
-        ),
-        index_ready_p95_ms: percentile(
-            enabled.iter().map(|run| run.index_ready_ms).collect(),
-            0.95,
-        ),
-        enabled_close_p50_ms: percentile(enabled.iter().map(|run| run.close_ms).collect(), 0.50),
-        enabled_close_p95_ms: percentile(enabled.iter().map(|run| run.close_ms).collect(), 0.95),
-        disabled_close_p50_ms: percentile(disabled.iter().map(|run| run.close_ms).collect(), 0.50),
-        disabled_close_p95_ms: percentile(disabled.iter().map(|run| run.close_ms).collect(), 0.95),
-        enabled_total_tokens: enabled.iter().map(|run| run.total_tokens).sum(),
-        disabled_total_tokens: disabled.iter().map(|run| run.total_tokens).sum(),
-    }
+fn json_string(value: Option<&Value>, field: &str) -> Option<String> {
+    value
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
-fn rate(count: usize) -> f64 {
-    count as f64 / TASKS.len() as f64
-}
-
-fn ratio(numerator: usize, denominator: usize) -> f64 {
-    if denominator == 0 {
-        0.0
-    } else {
-        numerator as f64 / denominator as f64
-    }
-}
-
-fn percentile(mut values: Vec<u64>, quantile: f64) -> u64 {
-    values.sort_unstable();
-    let index = ((values.len() - 1) as f64 * quantile).ceil() as usize;
-    values[index]
+fn json_usize(value: Option<&Value>, field: &str) -> Option<usize> {
+    value
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -703,9 +675,7 @@ fn stable_bucket(text: &str, buckets: usize) -> usize {
     }) % buckets
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires the repository DeepSeek credentials and network access"]
-async fn real_deepseek_completes_semantic_tasks_and_beats_disabled_ablation() {
+async fn deepseek_agent() -> (Agent, String) {
     let path = config_path();
     let config = CodeConfig::from_file(&path)
         .unwrap_or_else(|error| panic!("failed to load {}: {error}", path.display()));
@@ -720,10 +690,17 @@ async fn real_deepseek_completes_semantic_tasks_and_beats_disabled_ablation() {
     let agent = Agent::from_config(config)
         .await
         .expect("create agent from DeepSeek config");
+    (agent, model)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the repository DeepSeek credentials and network access"]
+async fn real_deepseek_completes_semantic_tasks_and_beats_disabled_ablation() {
+    let (agent, model) = deepseek_agent().await;
     let mut runs = Vec::with_capacity(TASKS.len() * 2);
     for (ordinal, task) in TASKS.iter().copied().enumerate() {
-        runs.push(run_task(&agent, task, false, ordinal).await);
-        runs.push(run_task(&agent, task, true, ordinal).await);
+        runs.push(run_task(&agent, task, EvaluationVariant::Disabled, ordinal, false).await);
+        runs.push(run_task(&agent, task, EvaluationVariant::Semantic, ordinal, false).await);
     }
     let summary = summarize(&runs);
     assert_eq!(summary.enabled_task_accuracy, 1.0, "{runs:#?}");
@@ -776,5 +753,115 @@ async fn real_deepseek_completes_semantic_tasks_and_beats_disabled_ablation() {
     println!(
         "WSR_DEEPSEEK_EVAL={}",
         serde_json::to_string(&report).expect("serialize evaluation report")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the repository DeepSeek credentials and network access"]
+async fn real_deepseek_deterministic_rerank_defeats_duplicate_channel_collisions() {
+    let (agent, model) = deepseek_agent().await;
+    let mut runs = Vec::with_capacity(TASKS.len() * 2);
+    for (ordinal, task) in TASKS.iter().copied().enumerate() {
+        let variants = if ordinal % 2 == 0 {
+            [
+                EvaluationVariant::HybridRrf,
+                EvaluationVariant::HybridDeterministic,
+            ]
+        } else {
+            [
+                EvaluationVariant::HybridDeterministic,
+                EvaluationVariant::HybridRrf,
+            ]
+        };
+        for variant in variants {
+            runs.push(run_task(&agent, task, variant, ordinal, true).await);
+        }
+    }
+
+    let summary = summarize_rerank(&runs);
+    println!(
+        "WSR_DEEPSEEK_RERANK_SUMMARY={}",
+        serde_json::to_string(&summary).expect("serialize rerank evaluation summary")
+    );
+    assert_eq!(summary.rrf_tool_protocol_rate, 1.0, "{runs:#?}");
+    assert_eq!(summary.deterministic_tool_protocol_rate, 1.0, "{runs:#?}");
+    assert_eq!(summary.deterministic_task_accuracy, 1.0, "{runs:#?}");
+    assert!(
+        summary.deterministic_task_accuracy > summary.rrf_task_accuracy,
+        "rerank did not improve task completion: {runs:#?}"
+    );
+    assert_eq!(summary.deterministic_recall_at_5, 1.0, "{runs:#?}");
+    assert!(
+        summary.deterministic_recall_at_5 > summary.rrf_recall_at_5,
+        "rerank did not improve retrieval recall: {runs:#?}"
+    );
+    assert!(
+        summary.deterministic_mrr > summary.rrf_mrr,
+        "rerank did not improve reciprocal rank: {runs:#?}"
+    );
+    assert!(
+        summary.deterministic_collision_result_rate < summary.rrf_collision_result_rate,
+        "rerank did not reduce collision evidence: {runs:#?}"
+    );
+    assert!(summary.deterministic_near_duplicate_candidates > 0);
+    assert_eq!(
+        summary.deterministic_input_candidates,
+        summary.deterministic_evaluated_candidates
+    );
+    assert_eq!(summary.deterministic_selected_candidates, TASKS.len() * 10);
+    assert!(
+        summary.deterministic_selected_near_duplicates < summary.deterministic_selected_candidates
+    );
+    assert!(summary.deterministic_selected_near_duplicate_rate < 1.0);
+    assert!(summary.deterministic_max_feature_bytes <= 100 * 4 * 1024);
+    assert!(summary.deterministic_max_scratch_bytes <= 4 * 1024 * 1024);
+    assert_eq!(summary.non_text_provider_inputs, 0, "{runs:#?}");
+
+    let expected_text_files = TEXT_FILE_COUNT + TASKS.len() * COLLISION_COPIES_PER_TASK;
+    let expected_chunks = EXPECTED_CHUNK_COUNT + TASKS.len() * COLLISION_COPIES_PER_TASK;
+    for run in &runs {
+        assert!(run.released_after_close, "{run:#?}");
+        assert_eq!(run.phase, WorkspaceRetrievalPhase::Ready, "{run:#?}");
+        assert_eq!(run.coverage_bps, 10_000, "{run:#?}");
+        assert_eq!(run.eligible_files, expected_text_files, "{run:#?}");
+        assert_eq!(run.indexed_files, expected_text_files, "{run:#?}");
+        assert_eq!(run.indexed_chunks, expected_chunks, "{run:#?}");
+        assert_eq!(run.failed_files, 0, "{run:#?}");
+        assert_eq!(run.embedded_documents, expected_chunks, "{run:#?}");
+        assert_eq!(run.non_text_provider_inputs, 0, "{run:#?}");
+        assert_eq!(run.rerank_selected_candidates, Some(10), "{run:#?}");
+        assert_eq!(run.rerank_candidate_truncated, Some(false), "{run:#?}");
+        assert_eq!(run.rerank_fallback, None, "{run:#?}");
+        match run.variant {
+            "hybrid_rrf" => {
+                assert_eq!(run.algorithm.as_deref(), Some("rrf_k60"), "{run:#?}");
+                assert_eq!(run.rerank_requested_mode.as_deref(), Some("rrf_only"));
+                assert_eq!(run.rerank_applied_mode.as_deref(), Some("rrf_only"));
+            }
+            "hybrid_deterministic" => {
+                assert_eq!(
+                    run.algorithm.as_deref(),
+                    Some("rrf_k60+deterministic_mmr_v1"),
+                    "{run:#?}"
+                );
+                assert_eq!(run.rerank_requested_mode.as_deref(), Some("deterministic"));
+                assert_eq!(run.rerank_applied_mode.as_deref(), Some("deterministic"));
+            }
+            variant => panic!("unexpected rerank evaluation variant: {variant}"),
+        }
+    }
+
+    let report = RerankEvaluationReport {
+        schema_version: 1,
+        chat_model: model,
+        embedding_provider: "process-local deterministic semantic collision oracle",
+        task_count: TASKS.len(),
+        collision_copies_per_task: COLLISION_COPIES_PER_TASK,
+        summary,
+        runs,
+    };
+    println!(
+        "WSR_DEEPSEEK_RERANK_EVAL={}",
+        serde_json::to_string(&report).expect("serialize rerank evaluation report")
     );
 }

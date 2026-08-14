@@ -1,6 +1,6 @@
 # Workspace Retrieval DeepSeek Evaluation
 
-Status: passed on 2026-08-14.
+Status: semantic ablation and adversarial rerank slice passed on 2026-08-14.
 
 This report records the reproducible real-chat-model ablation for A3S Code's
 session-bound, in-memory Workspace Retrieval. It complements the deterministic
@@ -112,6 +112,58 @@ identifier. All enabled runs returned five candidates, ranked the independently
 labeled file first, and completed with the exact identifier. The multi-chunk
 backpressure task also ranked its answer-bearing file first.
 
+## Adversarial deterministic-rerank slice
+
+The first `WSR-EVAL2` Core slice compared compatibility RRF with the opt-in
+deterministic reranker under a deliberately hostile duplicate-evidence
+distribution. It is not the complete chunk-strategy/SDK/host matrix and does
+not change the RRF-only default.
+
+Each task added eight distinct text files containing the same lexical query
+and a deterministic semantic-collision marker, but not the expected answer.
+This produced 54 eligible text files, 55 chunks, and three still-excluded
+non-text assets per isolated session. The process-local embedding oracle made
+the collision files compete in both lexical and semantic channels. RRF and
+rerank used the same corpus, query, DeepSeek model, prompt, limit, provider,
+permissions, and fresh-session lifecycle. Execution order alternated by task
+to reduce fixed arm-order bias.
+
+| Metric | RRF only | Deterministic rerank |
+| --- | ---: | ---: |
+| Exact task completion | 0.0000 (0/3) | 1.0000 (3/3) |
+| Tool protocol compliance | 1.0000 (3/3) | 1.0000 (3/3) |
+| Expected path Recall@5 | 0.0000 (0/3) | 1.0000 (3/3) |
+| Expected path MRR | 0.0000 | 0.3889 |
+| Expected path rank | absent, absent, absent | 3, 2, 3 |
+| Final Top-5 collision evidence | 1.0000 (15/15) | 0.6667 (10/15) |
+| Total model tokens | 19,932 | 18,276 |
+| DeepSeek turn p95 | 209,318 ms | 28,102 ms |
+| Maximum vector bytes | 15,595 | 15,595 |
+| Document-request amplification | 54.0x | 54.0x |
+| Non-text provider inputs | 0 | 0 |
+
+The deterministic arm evaluated and selected ten fused candidates per query
+before the existing two-times authoritative-source verification overfetch was
+reduced to the requested Top-5. Across the three runs, 22 of 30 evaluated
+candidates were classified as near duplicates and 22 of 30 overfetch
+selections remained near duplicates. This is expected for a corpus dominated
+by adversarial collisions: the useful effect is not complete elimination, but
+promotion of independently relevant evidence into every final Top-5. The
+final collision rate and expected-path rank therefore remain the end-user
+quality observables.
+
+The deterministic operation retained at most 12,239 feature bytes and
+accounted 18,346 scratch bytes, with no truncation or fallback. Both arms used
+the same 15,595 vector bytes. Every session reached 100 percent coverage,
+reported zero failed files and zero non-text provider inputs, and released all
+vector records and bytes after close.
+
+The live turn timings are six remote-model observations, including one
+209-second RRF turn. They show the measured end-to-end run only; they do not
+attribute a speedup to the local reranker. The release benchmark in the QA
+report remains the latency gate. The 54x provider-request amplification is
+also unchanged by reranking and remains owned by `CODE-B2`.
+
 ## Construction, model, and lifecycle measurements
 
 These live E2E samples are debug-build observations with only three samples per
@@ -218,9 +270,20 @@ cargo test --offline --locked -p a3s-code-core `
   --ignored --nocapture --test-threads=1
 ```
 
-The test prints one `WSR_DEEPSEEK_EVAL=<json>` record containing per-run and
-aggregate metrics. It is ignored by default because it requires repository
-credentials and network access.
+The semantic ablation prints one `WSR_DEEPSEEK_EVAL=<json>` record. The paired
+rerank slice can be run independently with:
+
+```powershell
+cargo test --offline --locked -p a3s-code-core `
+  --test test_workspace_retrieval_real_llm `
+  real_deepseek_deterministic_rerank_defeats_duplicate_channel_collisions -- `
+  --ignored --exact --nocapture --test-threads=1
+```
+
+It prints `WSR_DEEPSEEK_RERANK_SUMMARY=<json>` before enforcing gates and a
+full `WSR_DEEPSEEK_RERANK_EVAL=<json>` record on success. Both tests are
+ignored by default because they require repository credentials and network
+access.
 
 `a3s-test capabilities --json` succeeded during the review. The optional Web
 driver schema probe reported `test.driver.web.capability_unavailable` because a

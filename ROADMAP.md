@@ -356,11 +356,12 @@ identifier matches cannot be displaced solely by semantic similarity.
 
 Configurable overlap makes a second, in-memory stage necessary: RRF deduplicates
 chunk IDs but cannot recognize two windows that repeat the same source span or
-boilerplate. `CODE-R2` will rerank only a bounded fused pool. Its deterministic
+boilerplate. `CODE-R2` reranks only a bounded fused pool. Its deterministic
 baseline combines interval overlap, normalized lexical shingles, channel
 agreement, and MMR-style diversity while preserving the exact-identifier tier.
-It must be deterministic across process runs, allocate from a checked scratch
-budget, and fall back to the unchanged RRF order on cancellation or failure.
+It is deterministic across process runs, allocates from a checked scratch
+budget, and falls back to the unchanged RRF order on invalid settings or
+budget failure.
 
 The deterministic reranker remains Code-owned because it consumes source
 ranges and retrieval-channel evidence. An optional
@@ -426,8 +427,8 @@ Current implementation status:
 | `WSR-QA` | Delivered | Locked quality, adversarial egress/race/isolation/confidentiality/lifecycle suites, strict Clippy, the complete serial Core suite (`2757/0/18`), two release benchmark runs, final host release build, and the post-pin DeepSeek tool-loop E2E pass. Exact p95 is 8.294/12.302 ms and hybrid p95 is 51.145/54.429 ms |
 | `WSR-EVAL1` | Delivered | Real `deepseek/deepseek-v4-pro` paired ablation passes enabled 3/3 versus disabled 0/3, Recall@5/MRR 1.0, a target beyond the 80-line boundary, 30 text files/31 chunks, three excluded non-text assets, zero non-text provider inputs, and complete post-close release |
 | `CODE-B2` | Planned | Coalesce ready chunks across files before provider execution while preserving stable IDs, per-file generation fencing, file-atomic publication, bounded flush latency, cancellation, and partial readiness; reduce the measured 30x request amplification to at most 1.10x the per-session batch-limit lower bound |
-| `CODE-R2` | Delivered | Rust Core adds an opt-in deterministic MMR v1 stage after pure RRF with exact-tier protection, interval/lexical near-duplicate scoring, stable tie breaking, two-results-per-file diversity, 100-candidate/4-KiB/128-fingerprint/4-MiB ceilings, unchanged-order RRF fallback, and versioned diagnostics across Rust/Node/Python/Go results. Locked Recall@10/MRR/nDCG@10 are 1.0 with zero selected duplicates; two release runs report -5.163/-2.322 ms signed end-to-end p95 differences (0/0 ms positive addition), 75,346 accounted scratch bytes, and zero fallback. RRF-only remains default |
-| `WSR-EVAL2` | Planned | Compare line, fixed, recursive, and representative custom chunking with RRF-only and deterministic rerank variants on locked fixtures plus paired DeepSeek tasks; report quality, duplication, latency, memory, provider amplification, and end-task completion |
+| `CODE-R2` | Delivered | Rust Core adds an opt-in deterministic MMR v1 stage after pure RRF with exact-tier protection, interval/lexical near-duplicate scoring, stable tie breaking, two-results-per-file diversity, 100-candidate/4-KiB/128-fingerprint/4-MiB ceilings, unchanged-order RRF fallback, and versioned diagnostics across Rust/Node/Python/Go results. Locked Recall@10/MRR/nDCG@10 are 1.0 with zero selected duplicates; two release runs report -5.163/-2.322 ms signed end-to-end p95 differences (0/0 ms positive addition), 75,346 accounted scratch bytes, and zero fallback. The default-line adversarial DeepSeek slice improves completion and Recall@5 from 0/3 to 3/3 while reducing Top-5 collision evidence from 15/15 to 10/15. RRF-only remains default |
+| `WSR-EVAL2` | In progress | The default-line Core/DeepSeek adversarial slice passes with paired RRF and deterministic variants, versioned algorithm evidence, quality/duplication/latency/memory/provider/lifecycle metrics, and zero non-text egress. Fixed, recursive, representative custom, cross-SDK, and ACL-host variants remain pending; no default change is qualified |
 | `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, DeepSeek task evaluation, SDK examples, ACL host guidance, text/knowledge-compiler boundary, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
 
 The detailed baseline and threat model are in
@@ -479,9 +480,11 @@ versioned Code contract, not from private runtime structs.
 After `CODE-C2`, `SDK-C2` then `HOST-C2` carry only the typed chunking built-ins
 across language and ACL boundaries. Delivered `CODE-R2` consumes the stable
 chunk/rank contract; `SDK-R2` then `HOST-R2` carry its explicit deterministic
-option without primitive algorithm names. `WSR-EVAL2` starts only after both
-host paths meet: the real host must select chunking and rerank variants, and
-Code must report the versioned ranking pipeline used.
+option without primitive algorithm names. A Core-only default-line
+`WSR-EVAL2` slice already locks the adversarial fixture and real-model report.
+The full release matrix starts only after both host paths meet: the real host
+must select chunking and rerank variants, and Code must report the versioned
+ranking pipeline used.
 
 `CODE-R2` was executed in this order:
 

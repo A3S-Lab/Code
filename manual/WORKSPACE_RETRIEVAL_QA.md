@@ -164,6 +164,29 @@ Both paired query measurements include provider and authoritative-read noise;
 their negative signed differences are evidence only that positive added p95
 stayed within budget, not that deterministic reranking accelerates retrieval.
 
+### Real DeepSeek adversarial rerank slice
+
+An ignored, reproducible Core integration test loaded
+`deepseek/deepseek-v4-pro` through the repository `.a3s/config.acl` and ran
+three paired tasks against eight cross-channel collision files per task. The
+embedding oracle remained deterministic and process-local. The RRF-only arm
+had 0/3 exact completions, 0.0 Recall@5, 0.0 MRR, and 15/15 collision results.
+The deterministic arm had 3/3 exact completions, 1.0 Recall@5, 0.3889 MRR, and
+10/15 collision results, with expected paths at ranks 3, 2, and 3.
+
+Both arms used 15,595 vector bytes and made no non-text provider calls. The
+deterministic arm retained at most 12,239 feature bytes and accounted 18,346
+scratch bytes with no truncation or fallback. All six sessions reached full
+coverage and released all vectors after close. Document-request amplification
+was unchanged at 54x, so batching remains a separate `CODE-B2` concern.
+
+Observed DeepSeek turn p95 was 209,318 ms for RRF and 28,102 ms for rerank,
+with 19,932 and 18,276 total tokens respectively. These are three remote-model
+samples per arm, including one 209-second RRF turn, and are reported without a
+speedup claim. The paired release benchmark above remains the local latency
+gate. The full JSON schema and reproduction command are in
+`WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md`.
+
 The CODE-R2-focused Core, Node, Python, and Rust Go-bridge gates pass. One full
 serial Core run completed 2,764 tests and ignored 18, with one failure in the
 unchanged Code Intelligence language-server initialization-cancellation timing
@@ -172,10 +195,11 @@ failures, confirming an independent existing timing flake rather than a
 retrieval-path failure; it remains visible and is not counted as a CODE-R2
 pass.
 
-These results qualify the local deterministic baseline, not a default change.
-RRF-only remains the compatibility default until `SDK-R2`, `HOST-R2`, and the
-paired chunk-strategy/DeepSeek `WSR-EVAL2` matrix demonstrate an end-task gain
-that is both statistically and operationally meaningful.
+These results qualify the local deterministic baseline and one adversarial
+real-model slice, not a default change. RRF-only remains the compatibility
+default until `SDK-R2`, `HOST-R2`, and the complete paired
+chunk-strategy/DeepSeek `WSR-EVAL2` matrix demonstrate a gain that is both
+statistically and operationally meaningful across representative corpora.
 
 ## Deterministic test evidence
 

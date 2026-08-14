@@ -37,8 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MMR-style diversity, stable tie breaking, checked candidate/feature/scratch
   limits, unchanged-order RRF fallback, and versioned diagnostics. Node,
   Python, and Go hybrid result DTOs expose the applied algorithm and resource
-  accounting; RRF-only remains the compatibility default pending paired
-  strategy and DeepSeek evaluation.
+  accounting. A paired adversarial DeepSeek Core evaluation covers
+  cross-channel duplicate collisions, end-task completion, quality, latency,
+  memory, provider amplification, non-text egress, and cleanup. RRF-only
+  remains the compatibility default pending the complete cross-strategy and
+  host evaluation.
 
 ## [6.9.0] - 2026-08-12
 
