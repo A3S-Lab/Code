@@ -5,7 +5,8 @@ pins the qualified Code and Memory revisions, and the post-pin release build
 and DeepSeek CLI integration rerun passed. A later paired Core evaluation also
 passed with real DeepSeek chat, explicit retrieval enable/disable control,
 multi-chunk source, and non-text exclusion. The real ACL-host strategy/rerank
-composition passed on 2026-08-15 at CLI `d1c8c25` and Code `b7a496b`.
+composition passed on 2026-08-15 and its final batching rerun is pinned by CLI
+`f435950` and Code `bdb86e17`.
 The subsequent `CODE-B2` qualification passed the complete serial Core suite,
 strict Core and SDK bridge Clippy, the 25,000-record release gate, and a
 schema-v2 paired DeepSeek rerun with 1.0x document-request amplification.
@@ -160,8 +161,10 @@ The deterministic projection suite covers count, text-byte, vector-byte, and
 generation-complete flushes; response-count corruption; provider retry
 accounting; split-file atomicity; later-batch failure isolation; source-revision
 cancellation; stable sibling chunk IDs; partial readiness; and bounded close.
-The paired DeepSeek task, collision-rerank, and four-strategy matrices all pass
-with 1.0x request amplification and zero non-text inputs.
+The paired DeepSeek task, collision-rerank, four-strategy matrices, and real CLI
+ACL-host test all pass with 1.0x request amplification and zero non-text inputs.
+The host additionally matches Core's one logical/physical/lower-bound batch
+against an independent embedding-server request count for each 39-chunk session.
 
 ### CODE-R2 deterministic rerank qualification
 
@@ -296,6 +299,10 @@ pass 28/28, exec policy 7/7, ACL authority 5/5, Web host/cache 5/5, config
 projection 2/2, locked all-target check, format, and baseline-aware changed-
 target Clippy.
 
+CLI `main` commit `f435950` subsequently pins Code `bdb86e17`, upgrades the
+host report to schema v2, and passes the 29-test retrieval filter plus the real
+DeepSeek rerun with matching Core and independent provider counters.
+
 ## Real DeepSeek integration
 
 The repository `.a3s/config.acl` was validated and inspected without printing
@@ -334,10 +341,10 @@ cleared and once enabled.
 The 33-entry fixture contained 30 text files, three non-text assets, and 31
 chunks. One answer appeared only after the default 80-line chunk boundary. All
 enabled expected paths ranked first; non-text provider inputs were zero; all
-vectors were released after close. The run also exposed 30 document provider
-requests for 31 chunks, a 30x amplification over the fixture's one-request
-batch-limit lower bound. Full methodology, latency, resource, token, chunking,
-and follow-up gates are in the
+vectors were released after close. The pre-`CODE-B2` run exposed 30 document
+provider requests for 31 chunks. The final schema-v2 rerun sends one request
+against the same one-request lower bound, for 1.0x amplification. Full
+methodology, latency, resource, token, chunking, and follow-up gates are in the
 [DeepSeek evaluation report](WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md).
 
 ### Real ACL-host strategy and rerank execution
@@ -349,8 +356,11 @@ one-Search protocols passed. Precision@5 was 0.2, returned-result precision
 0.4286, Recall@5 1.0, MRR 0.5, and nDCG@5 0.6309; every expected path ranked
 second. Each fresh session reached 100 percent coverage with 30 text files, 39
 chunks/vectors, 9,595 vector bytes, zero failed files, zero non-text provider
-inputs, and the same 30x request amplification. The test also proved that the
-temporary API key and endpoint were absent from stdout and stderr.
+inputs, and 1.0x request amplification. Each 39-chunk session reports one
+logical batch, one physical Core request, and a one-request lower bound; the
+independent provider also observes one document request. Time to first
+file-atomic publication was 8-10 ms. The test also proved that the temporary API
+key and endpoint were absent from stdout and stderr.
 
 ## A3S Test coverage boundary
 

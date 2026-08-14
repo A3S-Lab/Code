@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the three-limit lower bound, flush reasons, time to first ready partition,
   and non-text inputs. The 30-file and 55-file DeepSeek fixtures and the
   25,000-record release profile reduce request amplification to 1.0x while
-  preserving quality, memory, and lifecycle gates.
+  preserving quality, memory, and lifecycle gates. CLI `f435950` pins this
+  kernel and independently reproduces 1.0x on the real 39-chunk ACL-host task.
 - Added asynchronous session-owned workspace retrieval to Core with one
   manifest-derived chunk catalog, incremental BM25, host-injected embeddings,
   exact in-memory vector partitions, deterministic hybrid RRF, current-source

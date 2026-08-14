@@ -219,11 +219,11 @@ context quality.
 
 Fixed and recursive overlap increased vector memory by 12.60 and 14.40 percent
 over line chunking on this corpus, while provider input bytes increased by
-8.40 and 9.45 percent. Neither changed the current 30x per-file request
-amplification. The remote turn percentiles and token totals are reported for
-reproduction only; three observations per arm cannot establish a latency or
-cost advantage. All built-ins pass this slice, but the evidence does not
-justify changing the line default.
+8.40 and 9.45 percent. In that pre-`CODE-B2` matrix, neither changed the frozen
+30x per-file request amplification. The remote turn percentiles and token totals
+are reported for reproduction only; three observations per arm cannot establish
+a latency or cost advantage. All built-ins pass this slice, but the evidence
+does not justify changing the line default.
 
 ## Real CLI ACL-host composition
 
@@ -231,7 +231,7 @@ The Core matrices above inject typed retrieval options directly. The final host
 variant instead exercised the production `a3s code exec` path, effective ACL
 layering, shared manifest backend, asynchronous catalog, semantic runtime,
 hybrid Search metadata, JSONL projection, session close, and the real DeepSeek
-tool loop. A3S CLI `main` commit `d1c8c25` pins Code `b7a496b`.
+tool loop. A3S CLI `main` commit `f435950` pins Code `bdb86e17`.
 
 The test created a workspace below the A3S monorepo root, allowing normal
 ancestor discovery to select the repository `.a3s/config.acl` for the
@@ -272,18 +272,21 @@ second behind its lexical decoy, and DeepSeek still emitted the exact answer.
 | Eligible / indexed / failed files | 30 / 30 / 0 |
 | Indexed chunks / vector records | 39 / 39 |
 | Accounted vector bytes | 9,595 |
-| Embedding requests | 31 (30 document + 1 query) |
+| Embedding requests | 2 (1 document + 1 query) |
 | Embedding inputs | 40 (39 document + 1 query) |
-| Document-request amplification | 30.0x |
+| Document batches / physical requests / lower bound | 1 / 1 / 1 |
+| Document-request amplification | 1.0x |
+| Time to first file-atomic publication, p50 / p95 | 9 / 10 ms |
 | Non-text provider inputs | 0 |
-| End-to-end command p50 / p95 | 9,706 / 11,675 ms |
-| Total DeepSeek tokens, three tasks | 39,219 |
+| End-to-end command p50 / p95 | 11,220 / 31,116 ms |
+| Total DeepSeek tokens, three tasks | 39,471 |
 
 End-to-end command timing includes process and session setup, asynchronous
 indexing, remote-model latency, tool execution, and completion. It is not a
 retrieval-only latency claim; the release benchmark remains that gate. The
-30x provider-request finding independently reproduces the `CODE-B2` batching
-gap through the real host. CLI session close runs before the result process
+schema-v2 host report cross-checks Core status against independent loopback
+provider counters: both observe one document request for 39 chunks and a
+one-request lower bound. CLI session close runs before the result process
 terminates, while the Core weak-reference suite remains the authority for zero
 retained vector allocations.
 
@@ -339,9 +342,9 @@ range is shown:
 This table is the frozen failing baseline captured before `CODE-B2`. The default
 executor can admit up to 64 inputs and 256 KiB of text per batch,
 so this fixture could fit its 31 document chunks in one provider request. The
-runtime instead made 30 document requests because projection is currently
-scheduled and published per file. It batches the two chunks from the long file
-together but does not coalesce ready chunks across files. Relative to the
+pre-`CODE-B2` runtime instead made 30 document requests because projection was
+scheduled and published per file. It batched the two chunks from the long file
+together but did not coalesce ready chunks across files. Relative to the
 input-count lower bound for this fixture, provider request amplification is
 30x. This is the clearest measured optimization opportunity; it does not affect
 retrieval correctness or file-atomic publication, but it would dominate remote
@@ -399,6 +402,7 @@ and non-text inputs. Results were:
 | Fixed 512/64, three sessions | 38 each | 1 each | 3 total | 1.0x | 0-1 ms | 0 |
 | Recursive 512/64, three sessions | 39 each | 1 each | 3 total | 1.0x | 0-1 ms | 0 |
 | Rust whole-file control, three sessions | 30 each | 1 each | 3 total | 1.0x | 0-2 ms | 0 |
+| Real CLI ACL host, three sessions | 39 each | 1 each | 3 total | 1.0x | 8-10 ms | 0 |
 | Release profile | 25,000 | 391 | 391 | 1.0x | 9-10 ms | 0 |
 
 The paired semantic arm again completed 3/3 tasks versus 0/3 disabled, with
