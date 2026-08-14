@@ -357,6 +357,7 @@ Current implementation status:
 | `CODE-Q1` | Delivered | Structured semantic search through the unified `search` tool, bounded query embedding, immutable catalog/vector revision fencing, current-file digest and byte-range verification, coverage metadata, cancellation, and explicit fallback |
 | `CODE-H1` | Delivered | Exact literal, incremental BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
+| `HOST-R1` | Delivered | A3S CLI `main` commit `c8343d9` adds default-off ACL wiring, a separate OpenAI-compatible embedding route, trusted-layer egress enforcement, bounded/redacted HTTP behavior, and session injection across exec, TUI rebuilds, and Code Web. Retrieval-focused tests pass `71/71`, all targets and Clippy compile, and the full Windows suite adds no failures relative to CLI baseline `f4377c2` |
 
 The detailed baseline and threat model are in
 [`manual/WORKSPACE_RETRIEVAL_BASELINE.md`](manual/WORKSPACE_RETRIEVAL_BASELINE.md).
