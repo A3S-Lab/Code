@@ -249,7 +249,7 @@ core/src/workspace/retrieval/
 ├── lexical.rs             # indexed BM25/postings
 ├── semantic_runtime.rs    # embedding queue and vector partitions
 ├── hybrid_rank.rs         # RRF and deterministic diversity
-└── rerank.rs              # planned bounded second-stage reranker
+└── rerank.rs              # bounded deterministic second-stage reranker
 ```
 
 The manifest owns the preceding text/non-text decision in
@@ -423,7 +423,7 @@ Current implementation status:
 | `SDK-R2` | Delivered | Node, Python, and Go expose typed deterministic-reranker objects while omission preserves RRF-only. SDK/Core defaults and hard bounds align, primitive algorithm names are not accepted, invalid settings fail before provider calls or Go callback registration, result DTOs report versioned evidence, and native Node/Python plus real Go-to-Rust bridge integration gates pass |
 | `HOST-R1` | Delivered | A3S CLI `main` commit `53821c8` adds default-off ACL wiring, a separate OpenAI-compatible embedding route, trusted-layer egress enforcement, bounded/redacted HTTP behavior, and session injection across exec, TUI rebuilds, and Code Web. It pins Code `47770057` and Memory `3293f572`; retrieval-focused tests pass `71/71`, the final post-pin filter passes `19/19`, all targets and Clippy compile, the release build passes, and the full Windows suite adds no failures relative to CLI baseline `f4377c2` |
 | `HOST-C2` | Planned | Add typed ACL selection for built-in chunk strategies, bounds, overlap, and recursive separators; invalid or unsupported strategy blocks fail before provider calls and retrieval remains default-off |
-| `HOST-R2` | Planned | Add explicit default-off ACL selection for the deterministic reranker and its bounded limits; invalid settings fail before provider/source egress and the effective non-sensitive algorithm is observable |
+| `HOST-R2` | Delivered | A3S CLI `main` commit `c8024e6` pins Code `47337f03` and adds a trusted, default-off typed `deterministic_reranker` ACL block. Omission preserves RRF-only; primitive selectors, workspace-layer overrides, duplicate/unknown blocks, and invalid Core-owned limits fail before provider resolution or source egress. `a3s config show` reports active/requested mode, the versioned algorithm, and non-sensitive limits. Retrieval tests pass `24/24`, authority-overlay tests `5/5`, and real CLI config contracts `2/2`; locked build, format, and change-scoped all-target Clippy gates pass |
 | `WSR-QA` | Delivered | Locked quality, adversarial egress/race/isolation/confidentiality/lifecycle suites, strict Clippy, the complete serial Core suite (`2757/0/18`), two release benchmark runs, final host release build, and the post-pin DeepSeek tool-loop E2E pass. Exact p95 is 8.294/12.302 ms and hybrid p95 is 51.145/54.429 ms |
 | `WSR-EVAL1` | Delivered | Real `deepseek/deepseek-v4-pro` paired ablation passes enabled 3/3 versus disabled 0/3, Recall@5/MRR 1.0, a target beyond the 80-line boundary, 30 text files/31 chunks, three excluded non-text assets, zero non-text provider inputs, and complete post-close release |
 | `CODE-B2` | Planned | Coalesce ready chunks across files before provider execution while preserving stable IDs, per-file generation fencing, file-atomic publication, bounded flush latency, cancellation, and partial readiness; reduce the measured 30x request amplification to at most 1.10x the per-session batch-limit lower bound |
@@ -478,13 +478,14 @@ shared types and invariants are frozen. SDK and host work starts from the
 versioned Code contract, not from private runtime structs.
 
 After `CODE-C2`, `SDK-C2` then `HOST-C2` carry only the typed chunking built-ins
-across language and ACL boundaries. Delivered `CODE-R2` consumes the stable
-chunk/rank contract; `SDK-R2` then `HOST-R2` carry its explicit deterministic
-option without primitive algorithm names. A Core-only default-line
-`WSR-EVAL2` slice already locks the adversarial fixture and real-model report.
-The full release matrix starts only after both host paths meet: the real host
-must select chunking and rerank variants, and Code must report the versioned
-ranking pipeline used.
+across language and ACL boundaries. Delivered `CODE-R2`, `SDK-R2`, and
+`HOST-R2` now carry the explicit deterministic option without primitive
+algorithm names. A Core-only default-line `WSR-EVAL2` slice already locks the
+adversarial fixture and real-model report. The CLI can now select and observe
+rerank variants, while `HOST-C2` remains the missing host path for chunk
+strategies. The full release matrix still requires the real host to exercise
+both selections and Code to report the versioned ranking pipeline used; the
+DeepSeek ACL-host evidence remains pending until that evaluation runs.
 
 `CODE-R2` was executed in this order:
 
