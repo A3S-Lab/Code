@@ -850,6 +850,8 @@ export interface WorkspaceRetrievalOptionsObject {
   maxRecords?: number
   maxBytes?: number
   shutdownTimeoutMs?: number
+  /** Opaque validated reranker snapshot; empty preserves RRF-only. */
+  rerankerInstanceId: string
 }
 export interface EmbeddingProviderDescriptorObject {
   provider: string
@@ -1869,7 +1871,7 @@ export declare class Session {
 }
 /** Typed options that enable ephemeral semantic retrieval for one session. */
 export declare class WorkspaceRetrievalOptions {
-  constructor(provider: CallbackEmbeddingProvider)
+  constructor(provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null)
   /** Return the opaque provider identity used by structural SessionOptions conversion. */
   get instanceId(): string
   get maxRecords(): number
@@ -1878,10 +1880,28 @@ export declare class WorkspaceRetrievalOptions {
   set maxBytes(value: number)
   get shutdownTimeoutMs(): number
   set shutdownTimeoutMs(value: number)
+  /** Return the opaque reranker snapshot used by structural conversion. */
+  get rerankerInstanceId(): string
 }
 /** Host-injected asynchronous embedding provider for session-bound retrieval. */
 export declare class CallbackEmbeddingProvider {
   constructor(descriptor: EmbeddingProviderDescriptorObject, embed: (request: EmbeddingBatchRequest) => Promise<EmbeddingBatchResponse | EmbeddingBatchFailure>, timeoutMs?: number | null)
+}
+/**
+ * Explicit bounded deterministic second-stage ranking for hybrid search.
+ *
+ * Omit this object from `WorkspaceRetrievalOptions` to preserve RRF-only.
+ */
+export declare class DeterministicWorkspaceReranker {
+  constructor()
+  get maxCandidates(): number
+  set maxCandidates(value: number)
+  get maxFeatureBytesPerCandidate(): number
+  set maxFeatureBytesPerCandidate(value: number)
+  get maxFingerprintsPerCandidate(): number
+  set maxFingerprintsPerCandidate(value: number)
+  get maxScratchBytes(): number
+  set maxScratchBytes(value: number)
 }
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {

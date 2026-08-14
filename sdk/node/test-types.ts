@@ -18,6 +18,7 @@ import type {
   SessionOptions,
   TaskSchedulerStats,
   CallbackEmbeddingProvider,
+  DeterministicWorkspaceReranker,
   WorkspaceRetrievalOptions,
   WorkspaceRetrievalStatusObject,
   WorkspaceSemanticSearchResultObject,
@@ -53,6 +54,7 @@ declare const _readOptions: ReadFileOptions
 declare const _sessionOptions: SessionOptions
 declare const _schedulerStats: TaskSchedulerStats
 declare const _embeddingProvider: CallbackEmbeddingProvider
+declare const _deterministicReranker: DeterministicWorkspaceReranker
 declare const _retrievalOptions: WorkspaceRetrievalOptions
 declare const _retrievalStatus: WorkspaceRetrievalStatusObject
 declare const _semanticResult: WorkspaceSemanticSearchResultObject
@@ -60,6 +62,17 @@ declare const _hybridResult: WorkspaceHybridSearchResultObject
 declare const _rerankStatus: WorkspaceRerankStatusObject
 declare const _embeddingRequest: EmbeddingBatchRequest
 declare const _embeddingResponse: EmbeddingBatchResponse
+type _WorkspaceRetrievalConstructorArgs = ConstructorParameters<
+  typeof import('./index.js').WorkspaceRetrievalOptions
+>
+declare const _workspaceRetrievalConstructorArgs: _WorkspaceRetrievalConstructorArgs
+const _rerankerArgument: DeterministicWorkspaceReranker | null | undefined =
+  _workspaceRetrievalConstructorArgs[1]
+const _primitiveRerankerIsRejected: 'deterministic' extends NonNullable<
+  _WorkspaceRetrievalConstructorArgs[1]
+>
+  ? false
+  : true = true
 declare const _err: ToolErrorKind
 declare const _status: VerificationStatus
 declare const _check: VerificationCheck
@@ -91,6 +104,9 @@ void _session.workspaceRetrievalStatus()
 void _session.semanticSearch({ query: 'session cleanup', limit: 5 })
 void _session.hybridSearch({ query: 'terminate_owned_tasks', path: 'src' })
 void _retrievalOptions.maxRecords
+void _deterministicReranker.maxCandidates
+void _rerankerArgument
+void _primitiveRerankerIsRejected
 void _retrievalStatus.coverageBps
 void _semanticResult.hits[0]?.chunk.digestVerified
 void _hybridResult.channels[0]?.channel

@@ -966,6 +966,7 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAutoDelegationConfig>()?;
     m.add_class::<PySessionOptions>()?;
     m.add_class::<PyCallbackEmbeddingProvider>()?;
+    m.add_class::<PyDeterministicWorkspaceReranker>()?;
     m.add_class::<PyWorkspaceRetrievalOptions>()?;
     m.add_class::<PyServeHandle>()?;
     m.add_class::<PySessionQueueConfig>()?;

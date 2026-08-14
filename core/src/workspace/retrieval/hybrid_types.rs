@@ -102,6 +102,30 @@ impl WorkspaceRerankOptions {
             ..Self::default()
         }
     }
+
+    /// Override the maximum fused candidates evaluated by the second stage.
+    pub fn with_max_candidates(mut self, maximum: usize) -> Self {
+        self.max_candidates = maximum;
+        self
+    }
+
+    /// Override sampled source bytes retained per candidate for similarity.
+    pub fn with_max_feature_bytes_per_candidate(mut self, maximum: usize) -> Self {
+        self.max_feature_bytes_per_candidate = maximum;
+        self
+    }
+
+    /// Override the maximum bottom-k lexical fingerprints per candidate.
+    pub fn with_max_fingerprints_per_candidate(mut self, maximum: usize) -> Self {
+        self.max_fingerprints_per_candidate = maximum;
+        self
+    }
+
+    /// Override the checked transient-memory budget for one rerank operation.
+    pub fn with_max_scratch_bytes(mut self, maximum: usize) -> Self {
+        self.max_scratch_bytes = maximum;
+        self
+    }
 }
 
 impl Default for WorkspaceRerankOptions {

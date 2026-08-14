@@ -17,6 +17,9 @@ const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 30_000;
 const MAX_PROVIDER_TIMEOUT_MS: u64 = 300_000;
 const MAX_SEARCH_LIMIT: usize = 25;
 
+mod rerank;
+use rerank::BridgeDeterministicWorkspaceReranker;
+
 #[derive(Debug, Deserialize)]
 pub(super) struct BridgeWorkspaceRetrievalOptions {
     handler_id: String,
@@ -34,6 +37,7 @@ pub(super) struct BridgeWorkspaceRetrievalOptions {
     max_bytes: usize,
     #[serde(default = "default_shutdown_timeout_ms")]
     shutdown_timeout_ms: u64,
+    deterministic_reranker: Option<BridgeDeterministicWorkspaceReranker>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -49,6 +53,10 @@ impl BridgeWorkspaceRetrievalOptions {
         self,
         client: Arc<CallbackClient>,
     ) -> Result<a3s_code_core::WorkspaceRetrievalOptions, BridgeFailure> {
+        let reranker = self
+            .deterministic_reranker
+            .map(BridgeDeterministicWorkspaceReranker::into_core)
+            .transpose()?;
         if self.handler_id.trim().is_empty() {
             return Err(invalid_retrieval("handler_id must not be empty"));
         }
@@ -83,15 +91,16 @@ impl BridgeWorkspaceRetrievalOptions {
             descriptor,
             timeout_ms: self.provider_timeout_ms,
         });
-        Ok(
-            a3s_code_core::WorkspaceRetrievalOptions::new(provider).with_index_limits(
-                a3s_code_core::WorkspaceSemanticIndexLimits {
-                    max_records: self.max_records,
-                    max_bytes: self.max_bytes,
-                    shutdown_timeout: Duration::from_millis(self.shutdown_timeout_ms),
-                },
-            ),
-        )
+        let mut retrieval = a3s_code_core::WorkspaceRetrievalOptions::new(provider)
+            .with_index_limits(a3s_code_core::WorkspaceSemanticIndexLimits {
+                max_records: self.max_records,
+                max_bytes: self.max_bytes,
+                shutdown_timeout: Duration::from_millis(self.shutdown_timeout_ms),
+            });
+        if let Some(reranker) = reranker {
+            retrieval = retrieval.with_rerank_options(reranker);
+        }
+        Ok(retrieval)
     }
 }
 

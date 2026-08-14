@@ -57,6 +57,7 @@ query cancellation, and deadlines stop source-code egress promptly.
 ```js
 const {
   CallbackEmbeddingProvider,
+  DeterministicWorkspaceReranker,
   WorkspaceRetrievalOptions,
 } = require('@a3s-lab/code')
 
@@ -83,7 +84,9 @@ const provider = new CallbackEmbeddingProvider(
   },
 )
 
-const retrieval = new WorkspaceRetrievalOptions(provider)
+const reranker = new DeterministicWorkspaceReranker()
+reranker.maxCandidates = 100
+const retrieval = new WorkspaceRetrievalOptions(provider, reranker)
 retrieval.maxRecords = 100_000
 retrieval.maxBytes = 128 * 1024 * 1024
 
@@ -101,6 +104,12 @@ BM25, and symbol evidence while semantic coverage is partial. Results contain
 only current-source, digest-verified chunks. Callback failures may return a
 typed `{ kind, retryAfterMs? }` object; response bodies and exception messages
 are not copied into Code diagnostics.
+
+The reranker is optional: omit the second constructor argument to preserve
+RRF-only. Its typed fields bound candidates, sampled feature bytes,
+fingerprints, and checked scratch memory. Invalid bounds fail while constructing
+`WorkspaceRetrievalOptions`, before the embedding callback runs; raw mode and
+algorithm strings are not accepted.
 
 The synchronous `session()`, `resumeSession()`, `sessionForAgent()`,
 `sessionForWorker()`, `cancel()`, and `close()` methods remain available for

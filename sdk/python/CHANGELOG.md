@@ -9,6 +9,8 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 - Added typed, session-bound ephemeral workspace retrieval with host-injected
   async embedding callbacks, lifecycle status, and digest-verified semantic and
   hybrid search DTOs.
+- Added the typed `DeterministicWorkspaceReranker` opt-in with Core-aligned
+  defaults and pre-provider validation; omitting it preserves RRF-only.
 
 ## [6.9.0] - 2026-08-12
 

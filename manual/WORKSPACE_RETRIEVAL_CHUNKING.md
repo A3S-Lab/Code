@@ -118,6 +118,35 @@ let retrieval = WorkspaceRetrievalOptions::new(embedding_provider)
     .with_rerank_options(WorkspaceRerankOptions::deterministic());
 ```
 
+### SDK configuration
+
+Node, Python, and Go expose the same opt-in as a typed object. They do not
+accept a mode or algorithm string:
+
+```js
+const reranker = new DeterministicWorkspaceReranker()
+reranker.maxCandidates = 100
+const retrieval = new WorkspaceRetrievalOptions(provider, reranker)
+```
+
+```python
+reranker = DeterministicWorkspaceReranker()
+reranker.max_candidates = 100
+retrieval = WorkspaceRetrievalOptions(provider, reranker)
+```
+
+```go
+retrieval := code.NewWorkspaceRetrievalOptions(provider)
+retrieval.Reranker = code.NewDeterministicWorkspaceReranker()
+```
+
+Omitting the object (or leaving Go `Reranker` as `nil`) preserves RRF-only.
+The typed defaults are 100 candidates, 4 KiB of sampled feature bytes per
+candidate, 128 fingerprints per candidate, and 4 MiB of checked scratch.
+SDKs reject out-of-range values before provider execution; Go also validates
+before registering the provider callback, and the Rust bridge revalidates the
+wire representation against Core.
+
 The deterministic v1 stage sorts the fused pool first, then examines at most
 100 candidates. For each candidate it samples bounded UTF-8-safe head/tail
 text totaling at most 4 KiB and retains at most 128 deterministic lexical

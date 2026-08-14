@@ -103,6 +103,7 @@ type EmbeddingProvider interface {
 // Construct it with NewWorkspaceRetrievalOptions rather than naming a backend.
 type WorkspaceRetrievalOptions struct {
 	Provider        EmbeddingProvider
+	Reranker        WorkspaceReranker
 	ProviderTimeout time.Duration
 	MaxRecords      uint
 	MaxBytes        uint
@@ -125,16 +126,17 @@ type embeddingBatchFailure struct {
 }
 
 type workspaceRetrievalWireOptions struct {
-	HandlerID       string                 `json:"handler_id"`
-	Provider        string                 `json:"provider"`
-	Model           string                 `json:"model"`
-	Revision        string                 `json:"revision,omitempty"`
-	Dimension       uint                   `json:"dimension"`
-	Normalization   EmbeddingNormalization `json:"normalization"`
-	ProviderTimeout uint64                 `json:"provider_timeout_ms"`
-	MaxRecords      uint                   `json:"max_records"`
-	MaxBytes        uint                   `json:"max_bytes"`
-	ShutdownTimeout uint64                 `json:"shutdown_timeout_ms"`
+	HandlerID             string                              `json:"handler_id"`
+	Provider              string                              `json:"provider"`
+	Model                 string                              `json:"model"`
+	Revision              string                              `json:"revision,omitempty"`
+	Dimension             uint                                `json:"dimension"`
+	Normalization         EmbeddingNormalization              `json:"normalization"`
+	ProviderTimeout       uint64                              `json:"provider_timeout_ms"`
+	MaxRecords            uint                                `json:"max_records"`
+	MaxBytes              uint                                `json:"max_bytes"`
+	ShutdownTimeout       uint64                              `json:"shutdown_timeout_ms"`
+	DeterministicReranker *deterministicWorkspaceRerankerWire `json:"deterministic_reranker,omitempty"`
 }
 
 func prepareWorkspaceRetrievalOptions(
@@ -145,6 +147,14 @@ func prepareWorkspaceRetrievalOptions(
 		return options, "", nil
 	}
 	retrieval := options.WorkspaceRetrieval
+	var deterministicReranker *deterministicWorkspaceRerankerWire
+	if retrieval.Reranker != nil {
+		value, err := retrieval.Reranker.workspaceRerankerWire()
+		if err != nil {
+			return nil, "", err
+		}
+		deterministicReranker = &value
+	}
 	provider := retrieval.Provider
 	if provider == nil {
 		return nil, "", invalid("workspace_retrieval", "provider cannot be nil")
@@ -237,16 +247,17 @@ func prepareWorkspaceRetrievalOptions(
 		)
 	}
 	wire["workspace_retrieval"] = workspaceRetrievalWireOptions{
-		HandlerID:       handlerID,
-		Provider:        descriptor.Provider,
-		Model:           descriptor.Model,
-		Revision:        descriptor.Revision,
-		Dimension:       descriptor.Dimension,
-		Normalization:   descriptor.Normalization,
-		ProviderTimeout: uint64(providerTimeout / time.Millisecond),
-		MaxRecords:      maxRecords,
-		MaxBytes:        maxBytes,
-		ShutdownTimeout: uint64(shutdownTimeout / time.Millisecond),
+		HandlerID:             handlerID,
+		Provider:              descriptor.Provider,
+		Model:                 descriptor.Model,
+		Revision:              descriptor.Revision,
+		Dimension:             descriptor.Dimension,
+		Normalization:         descriptor.Normalization,
+		ProviderTimeout:       uint64(providerTimeout / time.Millisecond),
+		MaxRecords:            maxRecords,
+		MaxBytes:              maxBytes,
+		ShutdownTimeout:       uint64(shutdownTimeout / time.Millisecond),
+		DeterministicReranker: deterministicReranker,
 	}
 	return wire, handlerID, nil
 }

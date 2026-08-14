@@ -36,8 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact-identifier protection, overlap and lexical-boilerplate similarity,
   MMR-style diversity, stable tie breaking, checked candidate/feature/scratch
   limits, unchanged-order RRF fallback, and versioned diagnostics. Node,
-  Python, and Go hybrid result DTOs expose the applied algorithm and resource
-  accounting. A paired adversarial DeepSeek Core evaluation covers
+  Python, and Go expose typed deterministic-reranker option objects as well as
+  hybrid result DTOs for the applied algorithm and resource accounting. The
+  SDK option boundaries preserve Core defaults, reject primitive algorithm
+  names, and fail invalid bounds before provider calls. A paired adversarial
+  DeepSeek Core evaluation covers
   cross-channel duplicate collisions, end-task completion, quality, latency,
   memory, provider amplification, non-text egress, and cleanup. RRF-only
   remains the compatibility default pending the complete cross-strategy and

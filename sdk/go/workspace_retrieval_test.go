@@ -65,7 +65,8 @@ func TestWorkspaceRetrievalProviderLifecycle(t *testing.T) {
 				t.Fatalf("prepared options = %#v", params["options"])
 			}
 			retrieval, ok := wire["workspace_retrieval"].(workspaceRetrievalWireOptions)
-			if !ok || retrieval.HandlerID == "" || retrieval.Dimension != 4 {
+			if !ok || retrieval.HandlerID == "" || retrieval.Dimension != 4 ||
+				retrieval.DeterministicReranker != nil {
 				t.Fatalf("retrieval wire options = %#v", wire["workspace_retrieval"])
 			}
 			runtime.mu.Lock()
@@ -126,6 +127,94 @@ func TestWorkspaceRetrievalProviderLifecycle(t *testing.T) {
 	}
 	if err := agent.Close(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceRetrievalDeterministicRerankerWireAndValidation(t *testing.T) {
+	var providerCalls atomic.Uint64
+	provider := &fixtureEmbeddingProvider{
+		embed: func(
+			_ context.Context,
+			request EmbeddingBatchRequest,
+		) (EmbeddingBatchResponse, error) {
+			providerCalls.Add(1)
+			return EmbeddingBatchResponse{Vectors: []EmbeddingVector{{
+				ID: request.Inputs[0].ID, Values: []float32{1, 0, 0, 0},
+			}}}, nil
+		},
+	}
+	runtime := &fakeRuntime{}
+	reranker := NewDeterministicWorkspaceReranker()
+	options := &SessionOptions{
+		WorkspaceRetrieval: NewWorkspaceRetrievalOptions(provider),
+	}
+	options.WorkspaceRetrieval.Reranker = reranker
+	prepared, callbackID, err := prepareWorkspaceRetrievalOptions(runtime, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.unregisterCallback(callbackID)
+	wire := prepared.(map[string]any)["workspace_retrieval"].(workspaceRetrievalWireOptions)
+	if wire.DeterministicReranker == nil ||
+		wire.DeterministicReranker.MaxCandidates != defaultRerankMaxCandidates ||
+		wire.DeterministicReranker.MaxScratchBytes != defaultRerankMaxScratchBytes {
+		t.Fatalf("deterministic reranker wire = %#v", wire.DeterministicReranker)
+	}
+	encoded, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"mode"`) ||
+		strings.Contains(string(encoded), `"algorithm"`) {
+		t.Fatalf("reranker wire accepts a primitive selector: %s", encoded)
+	}
+	if providerCalls.Load() != 0 {
+		t.Fatalf("provider called while preparing options: %d", providerCalls.Load())
+	}
+
+	invalidReranker := NewDeterministicWorkspaceReranker()
+	invalidReranker.MaxCandidates = 0
+	invalidOptions := &SessionOptions{
+		WorkspaceRetrieval: NewWorkspaceRetrievalOptions(provider),
+	}
+	invalidOptions.WorkspaceRetrieval.Reranker = invalidReranker
+	_, invalidCallbackID, err := prepareWorkspaceRetrievalOptions(runtime, invalidOptions)
+	if err == nil || invalidCallbackID != "" {
+		t.Fatalf("invalid reranker = callback %q, error %v", invalidCallbackID, err)
+	}
+	runtime.mu.Lock()
+	callbackCount := len(runtime.callbacks)
+	runtime.mu.Unlock()
+	if callbackCount != 1 {
+		t.Fatalf("invalid reranker registered a callback: %d", callbackCount)
+	}
+	if providerCalls.Load() != 0 {
+		t.Fatalf("invalid reranker called provider: %d", providerCalls.Load())
+	}
+}
+
+func TestDeterministicWorkspaceRerankerRejectsEveryHardBound(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*DeterministicWorkspaceReranker)
+	}{
+		{"candidates below", func(value *DeterministicWorkspaceReranker) { value.MaxCandidates = 0 }},
+		{"candidates above", func(value *DeterministicWorkspaceReranker) { value.MaxCandidates = 101 }},
+		{"feature bytes below", func(value *DeterministicWorkspaceReranker) { value.MaxFeatureBytesPerCandidate = 3 }},
+		{"feature bytes above", func(value *DeterministicWorkspaceReranker) { value.MaxFeatureBytesPerCandidate = 4097 }},
+		{"fingerprints below", func(value *DeterministicWorkspaceReranker) { value.MaxFingerprintsPerCandidate = 0 }},
+		{"fingerprints above", func(value *DeterministicWorkspaceReranker) { value.MaxFingerprintsPerCandidate = 129 }},
+		{"scratch below", func(value *DeterministicWorkspaceReranker) { value.MaxScratchBytes = 0 }},
+		{"scratch above", func(value *DeterministicWorkspaceReranker) { value.MaxScratchBytes = 4*1024*1024 + 1 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reranker := NewDeterministicWorkspaceReranker()
+			test.mutate(reranker)
+			if _, err := reranker.workspaceRerankerWire(); err == nil {
+				t.Fatal("out-of-range reranker must fail")
+			}
+		})
 	}
 }
 
@@ -405,6 +494,7 @@ func TestRustBridgeWorkspaceRetrievalIntegration(t *testing.T) {
 	retrieval := NewWorkspaceRetrievalOptions(provider)
 	retrieval.MaxRecords = 100
 	retrieval.MaxBytes = 1024 * 1024
+	retrieval.Reranker = NewDeterministicWorkspaceReranker()
 	session, err := agent.Session(ctx, workspace, &SessionOptions{
 		WorkspaceRetrieval: retrieval,
 	})
@@ -437,7 +527,9 @@ func TestRustBridgeWorkspaceRetrievalIntegration(t *testing.T) {
 	if len(hybrid.Hits) == 0 ||
 		hybrid.Hits[0].Chunk.Path != "src/session_cleanup.rs" ||
 		!hybrid.Hits[0].ExactIdentifier ||
-		hybrid.Rerank.AppliedMode != WorkspaceRerankRRFOnly ||
+		hybrid.Rerank.AppliedMode != WorkspaceRerankDeterministic ||
+		hybrid.Rerank.Algorithm != WorkspaceRerankAlgorithmDeterministicMMRV1 ||
+		hybrid.Rerank.AccountedScratchBytes == 0 ||
 		!hasWorkspaceChannel(hybrid.Hits[0].Channels, WorkspaceRetrievalExact) {
 		t.Fatalf("hybrid result = %#v", hybrid)
 	}

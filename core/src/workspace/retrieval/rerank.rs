@@ -50,7 +50,11 @@ pub(super) fn rerank_status_not_run(requested_mode: WorkspaceRerankMode) -> Work
 }
 
 impl WorkspaceRerankOptions {
-    pub(crate) fn validate(self) -> WorkspaceRetrievalResult<Self> {
+    /// Validate the hard candidate, feature, fingerprint, and scratch bounds.
+    ///
+    /// Hosts and language bindings can call this before catalog work or
+    /// provider execution so invalid settings cause no source egress.
+    pub fn validate(self) -> WorkspaceRetrievalResult<Self> {
         validate_range(
             self.max_candidates,
             1,

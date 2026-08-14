@@ -86,6 +86,43 @@ try {
   await session.closeAsync()
 }
 
+const reranker = new mod.DeterministicWorkspaceReranker()
+assert.equal(reranker.maxCandidates, 100)
+assert.equal(reranker.maxFeatureBytesPerCandidate, 4096)
+assert.equal(reranker.maxFingerprintsPerCandidate, 128)
+assert.equal(reranker.maxScratchBytes, 4 * 1024 * 1024)
+const rerankedRetrieval = new mod.WorkspaceRetrievalOptions(provider, reranker)
+const rerankedSession = await agent.sessionAsync(workspace, {
+  workspaceRetrieval: rerankedRetrieval,
+})
+try {
+  const deadline = Date.now() + 10_000
+  let status = rerankedSession.workspaceRetrievalStatus()
+  while (status.phase === 'building' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    status = rerankedSession.workspaceRetrievalStatus()
+  }
+  assert.equal(status.phase, 'ready', JSON.stringify(status))
+  const hybrid = await rerankedSession.hybridSearch({ query: 'terminate_owned_tasks', limit: 3 })
+  assert.equal(hybrid.rerank.requestedMode, 'deterministic')
+  assert.equal(hybrid.rerank.appliedMode, 'deterministic')
+  assert.equal(hybrid.rerank.algorithm, 'rrf_k60+deterministic_mmr_v1')
+  assert.ok(hybrid.rerank.accountedScratchBytes > 0)
+  assert.equal(hybrid.rerank.fallback, undefined)
+} finally {
+  await rerankedSession.closeAsync()
+}
+
+const invalidReranker = new mod.DeterministicWorkspaceReranker()
+invalidReranker.maxCandidates = 0
+const callsBeforeInvalid = providerCalls
+assert.throws(
+  () => new mod.WorkspaceRetrievalOptions(provider, invalidReranker),
+  /rerank\.max_candidates/,
+)
+assert.equal(providerCalls, callsBeforeInvalid)
+assert.throws(() => new mod.WorkspaceRetrievalOptions(provider, 'deterministic'))
+
 let providerStarted = false
 let observedAbort = false
 const slowProvider = new mod.CallbackEmbeddingProvider(

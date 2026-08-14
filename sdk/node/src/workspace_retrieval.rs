@@ -25,14 +25,20 @@ use tokio_util::sync::CancellationToken;
 
 mod options;
 mod provider;
+mod rerank;
 mod session_api;
 mod types;
 
 pub use options::{WorkspaceRetrievalOptions, WorkspaceRetrievalOptionsObject};
 pub use provider::CallbackEmbeddingProvider;
+pub use rerank::DeterministicWorkspaceReranker;
 pub use types::*;
 
 use options::embedding_provider_registry;
 pub(super) use options::js_workspace_retrieval_to_rust;
 use provider::NodeEmbeddingProvider;
+use rerank::{
+    bind_deterministic_reranker, resolve_deterministic_reranker, unregister_deterministic_reranker,
+    NodeDeterministicRerankerConfiguration,
+};
 use types::{hybrid_request, semantic_request};

@@ -8,6 +8,8 @@ pub struct WorkspaceRetrievalOptionsObject {
     pub max_records: Option<f64>,
     pub max_bytes: Option<f64>,
     pub shutdown_timeout_ms: Option<f64>,
+    /// Opaque validated reranker snapshot; empty preserves RRF-only.
+    pub reranker_instance_id: String,
 }
 
 type NodeEmbeddingProviderRegistry = std::collections::HashMap<String, Weak<NodeEmbeddingProvider>>;
@@ -44,20 +46,37 @@ pub struct WorkspaceRetrievalOptions {
     max_records: f64,
     max_bytes: f64,
     shutdown_timeout_ms: f64,
+    reranker_instance_id: String,
+    _reranker: Option<Arc<NodeDeterministicRerankerConfiguration>>,
     _provider: Arc<NodeEmbeddingProvider>,
 }
 
 #[napi]
 impl WorkspaceRetrievalOptions {
-    #[napi(constructor)]
-    pub fn new(provider: napi::bindgen_prelude::ClassInstance<CallbackEmbeddingProvider>) -> Self {
-        Self {
+    #[napi(
+        constructor,
+        ts_args_type = "provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null"
+    )]
+    pub fn new(
+        provider: napi::bindgen_prelude::ClassInstance<CallbackEmbeddingProvider>,
+        reranker: Option<napi::bindgen_prelude::ClassInstance<DeterministicWorkspaceReranker>>,
+    ) -> napi::Result<Self> {
+        let (reranker_instance_id, reranker) = match reranker.as_ref() {
+            Some(reranker) => {
+                let (instance_id, configuration) = bind_deterministic_reranker(reranker)?;
+                (instance_id, Some(configuration))
+            }
+            None => (String::new(), None),
+        };
+        Ok(Self {
             instance_id: provider.instance_id.clone(),
             max_records: 100_000.0,
             max_bytes: (128 * 1024 * 1024) as f64,
             shutdown_timeout_ms: 5_000.0,
+            reranker_instance_id,
+            _reranker: reranker,
             _provider: Arc::clone(&provider.inner),
-        }
+        })
     }
 
     /// Return the opaque provider identity used by structural SessionOptions conversion.
@@ -95,11 +114,26 @@ impl WorkspaceRetrievalOptions {
     pub fn set_shutdown_timeout_ms(&mut self, value: f64) {
         self.shutdown_timeout_ms = value;
     }
+
+    /// Return the opaque reranker snapshot used by structural conversion.
+    #[napi(getter)]
+    pub fn reranker_instance_id(&self) -> String {
+        self.reranker_instance_id.clone()
+    }
+}
+
+impl Drop for WorkspaceRetrievalOptions {
+    fn drop(&mut self) {
+        if let Some(reranker) = &self._reranker {
+            unregister_deterministic_reranker(&self.reranker_instance_id, reranker);
+        }
+    }
 }
 
 pub(crate) fn js_workspace_retrieval_to_rust(
     options: &WorkspaceRetrievalOptionsObject,
 ) -> napi::Result<a3s_code_core::WorkspaceRetrievalOptions> {
+    let reranker = resolve_deterministic_reranker(&options.reranker_instance_id)?;
     let provider = resolve_embedding_provider(&options.instance_id)?;
     let provider: Arc<dyn EmbeddingProvider> = provider;
     let mut retrieval = a3s_code_core::WorkspaceRetrievalOptions::new(provider);
@@ -124,5 +158,8 @@ pub(crate) fn js_workspace_retrieval_to_rust(
         max_bytes,
         shutdown_timeout: Duration::from_millis(shutdown_timeout_ms as u64),
     });
+    if let Some(reranker) = reranker {
+        retrieval = retrieval.with_rerank_options(reranker);
+    }
     Ok(retrieval)
 }

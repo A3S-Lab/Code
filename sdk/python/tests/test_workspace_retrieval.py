@@ -10,6 +10,7 @@ from typing import cast
 from a3s_code import (
     Agent,
     CallbackEmbeddingProvider,
+    DeterministicWorkspaceReranker,
     EmbeddingBatchRequest,
     EmbeddingBatchResponse,
     SessionOptions,
@@ -140,6 +141,69 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 assert provider_calls >= 2
             finally:
                 await session.close_async()
+
+            reranker = DeterministicWorkspaceReranker()
+            assert reranker.max_candidates == 100
+            assert reranker.max_feature_bytes_per_candidate == 4096
+            assert reranker.max_fingerprints_per_candidate == 128
+            assert reranker.max_scratch_bytes == 4 * 1024 * 1024
+            reranked_options = SessionOptions()
+            reranked_options.workspace_retrieval = WorkspaceRetrievalOptions(
+                provider, reranker
+            )
+            reranked_session = await agent.session_async(
+                str(workspace), reranked_options
+            )
+            try:
+                reranked_status = cast(
+                    WorkspaceRetrievalStatus,
+                    reranked_session.workspace_retrieval_status(),
+                )
+                while reranked_status["phase"] == "building":
+                    await asyncio.sleep(0.02)
+                    reranked_status = cast(
+                        WorkspaceRetrievalStatus,
+                        reranked_session.workspace_retrieval_status(),
+                    )
+                assert reranked_status["phase"] == "ready", reranked_status
+                reranked = cast(
+                    WorkspaceHybridSearchResult,
+                    await reranked_session.hybrid_search_async(
+                        {"query": "terminate_owned_tasks", "limit": 3}
+                    ),
+                )
+                assert reranked["rerank"]["requested_mode"] == "deterministic"
+                assert reranked["rerank"]["applied_mode"] == "deterministic"
+                assert (
+                    reranked["rerank"]["algorithm"]
+                    == "rrf_k60+deterministic_mmr_v1"
+                )
+                assert reranked["rerank"]["accounted_scratch_bytes"] > 0
+                assert reranked["rerank"]["fallback"] is None
+            finally:
+                await reranked_session.close_async()
+
+            invalid_reranker = DeterministicWorkspaceReranker()
+            invalid_reranker.max_candidates = 0
+            invalid_options = SessionOptions()
+            invalid_options.workspace_retrieval = WorkspaceRetrievalOptions(
+                provider, invalid_reranker
+            )
+            calls_before_invalid = provider_calls
+            try:
+                await agent.session_async(str(workspace), invalid_options)
+            except ValueError as error:
+                assert "rerank.max_candidates" in str(error)
+            else:
+                raise AssertionError("invalid reranker bounds must fail")
+            assert provider_calls == calls_before_invalid
+
+            try:
+                WorkspaceRetrievalOptions(provider, "deterministic")
+            except TypeError:
+                pass
+            else:
+                raise AssertionError("primitive reranker selectors must fail")
 
             provider_started = asyncio.Event()
             provider_cancelled = asyncio.Event()

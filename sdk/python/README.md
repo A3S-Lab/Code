@@ -98,7 +98,12 @@ hybrid ranking, source-digest verification, and shutdown. Nothing is persisted
 to a vector database.
 
 ```python
-from a3s_code import CallbackEmbeddingProvider, SessionOptions, WorkspaceRetrievalOptions
+from a3s_code import (
+    CallbackEmbeddingProvider,
+    DeterministicWorkspaceReranker,
+    SessionOptions,
+    WorkspaceRetrievalOptions,
+)
 
 async def embed(request):
     response = await embedding_client.embed(
@@ -119,7 +124,9 @@ provider = CallbackEmbeddingProvider(
     embed,
     normalization="unit",
 )
-retrieval = WorkspaceRetrievalOptions(provider)
+reranker = DeterministicWorkspaceReranker()
+reranker.max_candidates = 100
+retrieval = WorkspaceRetrievalOptions(provider, reranker)
 retrieval.max_records = 100_000
 retrieval.max_bytes = 128 * 1024 * 1024
 
@@ -138,6 +145,11 @@ APIs so the provider can bind to the current event loop. Cancelling or closing
 the session cancels the active embedding coroutine. The exported
 `EmbeddingBatchRequest`, `WorkspaceRetrievalStatus`, and semantic/hybrid result
 `TypedDict` declarations provide the static callback and DTO contract.
+
+The reranker argument is optional; omit it to preserve RRF-only. Its typed
+fields bound candidates, sampled feature bytes, fingerprints, and checked
+scratch memory. Invalid bounds fail during session construction before the
+embedding coroutine runs, and raw mode or algorithm strings are not accepted.
 
 ## Agent-Wide Priority Scheduling
 

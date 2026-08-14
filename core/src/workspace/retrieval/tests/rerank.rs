@@ -202,6 +202,35 @@ fn scratch_budget_failure_returns_the_original_rrf_order() {
     assert!(!fallback.status.candidate_truncated);
 }
 
+#[test]
+fn rerank_validation_rejects_every_hard_bound() {
+    let invalid = [
+        WorkspaceRerankOptions::deterministic().with_max_candidates(0),
+        WorkspaceRerankOptions::deterministic().with_max_candidates(101),
+        WorkspaceRerankOptions::deterministic().with_max_feature_bytes_per_candidate(3),
+        WorkspaceRerankOptions::deterministic().with_max_feature_bytes_per_candidate(4_097),
+        WorkspaceRerankOptions::deterministic().with_max_fingerprints_per_candidate(0),
+        WorkspaceRerankOptions::deterministic().with_max_fingerprints_per_candidate(129),
+        WorkspaceRerankOptions::deterministic().with_max_scratch_bytes(0),
+        WorkspaceRerankOptions::deterministic().with_max_scratch_bytes(4 * 1024 * 1024 + 1),
+    ];
+
+    for options in invalid {
+        assert!(
+            options.validate().is_err(),
+            "options must be rejected: {options:?}"
+        );
+    }
+
+    WorkspaceRerankOptions::deterministic()
+        .with_max_candidates(1)
+        .with_max_feature_bytes_per_candidate(4)
+        .with_max_fingerprints_per_candidate(1)
+        .with_max_scratch_bytes(1)
+        .validate()
+        .expect("inclusive lower bounds");
+}
+
 fn chunk(
     path: &str,
     start_byte: usize,

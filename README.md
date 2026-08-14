@@ -392,6 +392,12 @@ fused candidates, samples at most 4 KiB and 128 lexical fingerprints per
 candidate, combines interval/boilerplate similarity with MMR-style diversity,
 and uses at most 4 MiB of checked scratch. Exact identifiers remain protected;
 an invalid configuration or scratch-budget failure preserves RRF ordering.
+Node and Python hosts opt in by passing a typed
+`DeterministicWorkspaceReranker` to `WorkspaceRetrievalOptions`; Go assigns
+`NewDeterministicWorkspaceReranker()` to the typed `Reranker` field. Omitting
+that object keeps RRF-only, and no SDK accepts a raw mode or algorithm name.
+All four limits are validated before embedding/source egress; Go additionally
+validates them before callback registration.
 RRF-only remains the compatibility default pending the full strategy/DeepSeek
 matrix. Results report the versioned algorithm, selection/redundancy scores,
 candidate and byte accounting, truncation, and fallback without exposing query

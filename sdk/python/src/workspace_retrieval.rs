@@ -13,7 +13,10 @@ use async_trait::async_trait;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+mod rerank;
 mod types;
+use rerank::deterministic_reranker_to_core;
+pub(crate) use rerank::PyDeterministicWorkspaceReranker;
 use types::*;
 
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 30_000;
@@ -261,24 +264,38 @@ pub(super) struct PyWorkspaceRetrievalOptions {
     pub(super) max_bytes: usize,
     #[pyo3(get, set)]
     pub(super) shutdown_timeout_ms: u64,
+    #[pyo3(get, set)]
+    pub(super) reranker: Option<PyDeterministicWorkspaceReranker>,
 }
 
 #[pymethods]
 impl PyWorkspaceRetrievalOptions {
     #[new]
-    fn new(provider: PyRef<'_, PyCallbackEmbeddingProvider>) -> Self {
+    #[pyo3(signature = (provider, reranker=None))]
+    fn new(
+        provider: PyRef<'_, PyCallbackEmbeddingProvider>,
+        reranker: Option<PyRef<'_, PyDeterministicWorkspaceReranker>>,
+    ) -> Self {
         Self {
             provider: provider.clone(),
             max_records: 100_000,
             max_bytes: 128 * 1024 * 1024,
             shutdown_timeout_ms: 5_000,
+            reranker: reranker.map(|reranker| reranker.clone()),
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "WorkspaceRetrievalOptions(max_records={}, max_bytes={}, shutdown_timeout_ms={})",
-            self.max_records, self.max_bytes, self.shutdown_timeout_ms
+            "WorkspaceRetrievalOptions(max_records={}, max_bytes={}, shutdown_timeout_ms={}, reranker={})",
+            self.max_records,
+            self.max_bytes,
+            self.shutdown_timeout_ms,
+            if self.reranker.is_some() {
+                "deterministic"
+            } else {
+                "rrf_only"
+            },
         )
     }
 }
@@ -288,6 +305,11 @@ pub(super) fn retrieval_options_to_core(
     options: &PyWorkspaceRetrievalOptions,
     event_loop: PyObject,
 ) -> PyResult<a3s_code_core::WorkspaceRetrievalOptions> {
+    let reranker = options
+        .reranker
+        .as_ref()
+        .map(deterministic_reranker_to_core)
+        .transpose()?;
     if options.max_records == 0 || options.max_bytes == 0 {
         return Err(PyValueError::new_err(
             "workspace retrieval memory limits must be positive",
@@ -315,15 +337,17 @@ pub(super) fn retrieval_options_to_core(
         event_loop,
         timeout: Duration::from_millis(options.provider.timeout_ms),
     });
-    Ok(
-        a3s_code_core::WorkspaceRetrievalOptions::new(provider).with_index_limits(
-            a3s_code_core::WorkspaceSemanticIndexLimits {
-                max_records: options.max_records,
-                max_bytes: options.max_bytes,
-                shutdown_timeout: Duration::from_millis(options.shutdown_timeout_ms),
-            },
-        ),
-    )
+    let mut retrieval = a3s_code_core::WorkspaceRetrievalOptions::new(provider).with_index_limits(
+        a3s_code_core::WorkspaceSemanticIndexLimits {
+            max_records: options.max_records,
+            max_bytes: options.max_bytes,
+            shutdown_timeout: Duration::from_millis(options.shutdown_timeout_ms),
+        },
+    );
+    if let Some(reranker) = reranker {
+        retrieval = retrieval.with_rerank_options(reranker);
+    }
+    Ok(retrieval)
 }
 
 enum AsyncWorkspaceRetrievalOperation {

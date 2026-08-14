@@ -134,6 +134,7 @@ func (p provider) Embed(
 }
 
 retrieval := code.NewWorkspaceRetrievalOptions(provider{client: client})
+retrieval.Reranker = code.NewDeterministicWorkspaceReranker()
 retrieval.MaxRecords = 100_000
 retrieval.MaxBytes = 128 * 1024 * 1024
 
@@ -160,6 +161,12 @@ replacing the session cancels active provider calls through their contexts,
 waits for bounded Rust cleanup, and releases the callback. Results expose only
 current-source, digest-verified chunks. Use `EmbeddingError` to report typed
 retry categories without copying remote response bodies into diagnostics.
+
+`Reranker` is a sealed typed option. Leave it `nil` to preserve RRF-only, or
+configure the object returned by `NewDeterministicWorkspaceReranker` to bound
+candidates, sampled feature bytes, fingerprints, and checked scratch memory.
+Invalid bounds fail before callback registration or provider execution; raw
+mode and algorithm strings are not accepted.
 
 ## Agent-wide priority scheduling
 
