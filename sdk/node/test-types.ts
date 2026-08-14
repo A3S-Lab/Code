@@ -19,6 +19,9 @@ import type {
   TaskSchedulerStats,
   CallbackEmbeddingProvider,
   DeterministicWorkspaceReranker,
+  LineWorkspaceChunkingStrategy,
+  FixedWindowWorkspaceChunkingStrategy,
+  RecursiveWorkspaceChunkingStrategy,
   WorkspaceRetrievalOptions,
   WorkspaceRetrievalStatusObject,
   WorkspaceSemanticSearchResultObject,
@@ -55,6 +58,9 @@ declare const _sessionOptions: SessionOptions
 declare const _schedulerStats: TaskSchedulerStats
 declare const _embeddingProvider: CallbackEmbeddingProvider
 declare const _deterministicReranker: DeterministicWorkspaceReranker
+declare const _lineChunking: LineWorkspaceChunkingStrategy
+declare const _fixedChunking: FixedWindowWorkspaceChunkingStrategy
+declare const _recursiveChunking: RecursiveWorkspaceChunkingStrategy
 declare const _retrievalOptions: WorkspaceRetrievalOptions
 declare const _retrievalStatus: WorkspaceRetrievalStatusObject
 declare const _semanticResult: WorkspaceSemanticSearchResultObject
@@ -68,8 +74,19 @@ type _WorkspaceRetrievalConstructorArgs = ConstructorParameters<
 declare const _workspaceRetrievalConstructorArgs: _WorkspaceRetrievalConstructorArgs
 const _rerankerArgument: DeterministicWorkspaceReranker | null | undefined =
   _workspaceRetrievalConstructorArgs[1]
+const _chunkingArgument:
+  | LineWorkspaceChunkingStrategy
+  | FixedWindowWorkspaceChunkingStrategy
+  | RecursiveWorkspaceChunkingStrategy
+  | null
+  | undefined = _workspaceRetrievalConstructorArgs[2]
 const _primitiveRerankerIsRejected: 'deterministic' extends NonNullable<
   _WorkspaceRetrievalConstructorArgs[1]
+>
+  ? false
+  : true = true
+const _primitiveChunkingIsRejected: 'recursive' extends NonNullable<
+  _WorkspaceRetrievalConstructorArgs[2]
 >
   ? false
   : true = true

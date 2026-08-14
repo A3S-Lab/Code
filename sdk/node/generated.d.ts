@@ -852,6 +852,8 @@ export interface WorkspaceRetrievalOptionsObject {
   shutdownTimeoutMs?: number
   /** Opaque validated reranker snapshot; empty preserves RRF-only. */
   rerankerInstanceId: string
+  /** Opaque validated chunking snapshot; empty preserves line chunking. */
+  chunkingStrategyInstanceId: string
 }
 export interface EmbeddingProviderDescriptorObject {
   provider: string
@@ -1869,9 +1871,32 @@ export declare class Session {
   /** Return a stored tool artifact by URI, or null if it is not retained. */
   getArtifact(artifactUri: string): any
 }
+/**
+ * Explicit compatibility line chunking for a session-owned workspace catalog.
+ *
+ * Omitting a chunking strategy also preserves this default.
+ */
+export declare class LineWorkspaceChunkingStrategy {
+  constructor()
+  /** Distinguishes this nominal strategy from primitive structural values. */
+  get usesLineBoundaries(): boolean
+}
+/** Fixed UTF-8-safe byte windows with bounded overlap. */
+export declare class FixedWindowWorkspaceChunkingStrategy {
+  constructor(targetBytes: number, overlapBytes?: number | null)
+  get targetBytes(): number
+  get overlapBytes(): number
+}
+/** Recursive separator-aware byte windows with bounded overlap. */
+export declare class RecursiveWorkspaceChunkingStrategy {
+  constructor(targetBytes: number, overlapBytes?: number | null, separators?: Array<string> | null)
+  get targetBytes(): number
+  get overlapBytes(): number
+  get separators(): Array<string>
+}
 /** Typed options that enable ephemeral semantic retrieval for one session. */
 export declare class WorkspaceRetrievalOptions {
-  constructor(provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null)
+  constructor(provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null, chunkingStrategy?: LineWorkspaceChunkingStrategy | FixedWindowWorkspaceChunkingStrategy | RecursiveWorkspaceChunkingStrategy | null)
   /** Return the opaque provider identity used by structural SessionOptions conversion. */
   get instanceId(): string
   get maxRecords(): number
@@ -1882,6 +1907,8 @@ export declare class WorkspaceRetrievalOptions {
   set shutdownTimeoutMs(value: number)
   /** Return the opaque reranker snapshot used by structural conversion. */
   get rerankerInstanceId(): string
+  /** Return the opaque chunking snapshot used by structural conversion. */
+  get chunkingStrategyInstanceId(): string
 }
 /** Host-injected asynchronous embedding provider for session-bound retrieval. */
 export declare class CallbackEmbeddingProvider {

@@ -101,6 +101,7 @@ to a vector database.
 from a3s_code import (
     CallbackEmbeddingProvider,
     DeterministicWorkspaceReranker,
+    RecursiveWorkspaceChunkingStrategy,
     SessionOptions,
     WorkspaceRetrievalOptions,
 )
@@ -126,7 +127,16 @@ provider = CallbackEmbeddingProvider(
 )
 reranker = DeterministicWorkspaceReranker()
 reranker.max_candidates = 100
-retrieval = WorkspaceRetrievalOptions(provider, reranker)
+chunking = RecursiveWorkspaceChunkingStrategy(
+    8 * 1024,
+    512,
+    ["\n\n", "\n", ". ", " "],
+)
+retrieval = WorkspaceRetrievalOptions(
+    provider,
+    reranker,
+    chunking_strategy=chunking,
+)
 retrieval.max_records = 100_000
 retrieval.max_bytes = 128 * 1024 * 1024
 
@@ -150,6 +160,14 @@ The reranker argument is optional; omit it to preserve RRF-only. Its typed
 fields bound candidates, sampled feature bytes, fingerprints, and checked
 scratch memory. Invalid bounds fail during session construction before the
 embedding coroutine runs, and raw mode or algorithm strings are not accepted.
+
+`chunking_strategy` is also optional. Pass a
+`LineWorkspaceChunkingStrategy`, `FixedWindowWorkspaceChunkingStrategy`, or
+`RecursiveWorkspaceChunkingStrategy`; omission preserves compatible line
+chunking. Targets, overlap, and recursive separator lists are immutable and
+validated by Core before indexing or provider execution. Primitive strategy
+names are rejected, and arbitrary custom range callbacks remain available only
+to trusted Rust hosts.
 
 ## Agent-Wide Priority Scheduling
 

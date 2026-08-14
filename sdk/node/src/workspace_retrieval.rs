@@ -23,17 +23,27 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+mod chunking;
 mod options;
 mod provider;
 mod rerank;
 mod session_api;
 mod types;
 
+pub use chunking::{
+    FixedWindowWorkspaceChunkingStrategy, LineWorkspaceChunkingStrategy,
+    RecursiveWorkspaceChunkingStrategy,
+};
 pub use options::{WorkspaceRetrievalOptions, WorkspaceRetrievalOptionsObject};
 pub use provider::CallbackEmbeddingProvider;
 pub use rerank::DeterministicWorkspaceReranker;
 pub use types::*;
 
+use chunking::{
+    bind_workspace_chunking_strategy, resolve_workspace_chunking_strategy,
+    unregister_workspace_chunking_strategy, NodeWorkspaceChunkingConfiguration,
+    WorkspaceChunkingStrategyInput,
+};
 use options::embedding_provider_registry;
 pub(super) use options::js_workspace_retrieval_to_rust;
 use provider::NodeEmbeddingProvider;

@@ -102,12 +102,13 @@ type EmbeddingProvider interface {
 // WorkspaceRetrievalOptions enables a bounded, session-owned in-memory index.
 // Construct it with NewWorkspaceRetrievalOptions rather than naming a backend.
 type WorkspaceRetrievalOptions struct {
-	Provider        EmbeddingProvider
-	Reranker        WorkspaceReranker
-	ProviderTimeout time.Duration
-	MaxRecords      uint
-	MaxBytes        uint
-	ShutdownTimeout time.Duration
+	Provider         EmbeddingProvider
+	Reranker         WorkspaceReranker
+	ChunkingStrategy WorkspaceChunkingStrategy
+	ProviderTimeout  time.Duration
+	MaxRecords       uint
+	MaxBytes         uint
+	ShutdownTimeout  time.Duration
 }
 
 func NewWorkspaceRetrievalOptions(provider EmbeddingProvider) *WorkspaceRetrievalOptions {
@@ -137,6 +138,7 @@ type workspaceRetrievalWireOptions struct {
 	MaxBytes              uint                                `json:"max_bytes"`
 	ShutdownTimeout       uint64                              `json:"shutdown_timeout_ms"`
 	DeterministicReranker *deterministicWorkspaceRerankerWire `json:"deterministic_reranker,omitempty"`
+	ChunkingStrategy      *workspaceChunkingStrategyWire      `json:"chunking_strategy,omitempty"`
 }
 
 func prepareWorkspaceRetrievalOptions(
@@ -147,6 +149,14 @@ func prepareWorkspaceRetrievalOptions(
 		return options, "", nil
 	}
 	retrieval := options.WorkspaceRetrieval
+	var chunkingStrategy *workspaceChunkingStrategyWire
+	if retrieval.ChunkingStrategy != nil {
+		value, err := retrieval.ChunkingStrategy.workspaceChunkingStrategyWire()
+		if err != nil {
+			return nil, "", err
+		}
+		chunkingStrategy = &value
+	}
 	var deterministicReranker *deterministicWorkspaceRerankerWire
 	if retrieval.Reranker != nil {
 		value, err := retrieval.Reranker.workspaceRerankerWire()
@@ -258,6 +268,7 @@ func prepareWorkspaceRetrievalOptions(
 		MaxBytes:              maxBytes,
 		ShutdownTimeout:       uint64(shutdownTimeout / time.Millisecond),
 		DeterministicReranker: deterministicReranker,
+		ChunkingStrategy:      chunkingStrategy,
 	}
 	return wire, handlerID, nil
 }

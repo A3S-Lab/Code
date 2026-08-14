@@ -5,13 +5,109 @@ use super::super::{
     WorkspaceIndexError,
 };
 use crate::workspace::WorkspacePath;
+use serde::Deserialize;
 use std::sync::Arc;
+
+#[derive(Deserialize)]
+struct SdkChunkingFixture {
+    schema: String,
+    cases: Vec<SdkChunkingCase>,
+    invalid_windows: Vec<SdkInvalidWindow>,
+}
+
+#[derive(Deserialize)]
+struct SdkChunkingCase {
+    name: String,
+    content: String,
+    target_bytes: Option<usize>,
+    overlap_bytes: Option<usize>,
+    separators: Option<Vec<String>>,
+    ranges: Vec<SdkChunkRange>,
+}
+
+#[derive(Deserialize)]
+struct SdkChunkRange {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Deserialize)]
+struct SdkInvalidWindow {
+    name: String,
+    target_bytes: usize,
+    overlap_bytes: usize,
+}
+
+fn sdk_chunking_fixture() -> SdkChunkingFixture {
+    serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/workspace-chunking-sdk-v1.json"
+    ))
+    .expect("workspace chunking SDK fixture")
+}
 
 fn config(max_bytes: usize) -> ChunkingConfig {
     ChunkingConfig {
         max_lines: 80,
         max_bytes,
         max_chunks_per_file: 32,
+    }
+}
+
+#[test]
+fn shared_sdk_fixture_locks_core_ranges_and_invalid_windows() {
+    let fixture = sdk_chunking_fixture();
+    assert_eq!(fixture.schema, "a3s.workspace-chunking-sdk.fixture.v1");
+
+    for case in fixture.cases {
+        let strategy = match case.name.as_str() {
+            "line" => WorkspaceChunkingStrategy::Lines,
+            "fixed_window" => WorkspaceChunkingStrategy::FixedWindow(
+                FixedWindowChunkingOptions::new(
+                    case.target_bytes.expect("fixed target"),
+                    case.overlap_bytes.expect("fixed overlap"),
+                )
+                .expect("fixed strategy"),
+            ),
+            "recursive" => WorkspaceChunkingStrategy::Recursive(
+                RecursiveChunkingOptions::new(
+                    case.target_bytes.expect("recursive target"),
+                    case.overlap_bytes.expect("recursive overlap"),
+                )
+                .expect("recursive strategy")
+                .with_separators(case.separators.expect("recursive separators"))
+                .expect("recursive separators"),
+            ),
+            name => panic!("unknown fixture strategy {name}"),
+        };
+        let catalog = WorkspaceChunkCatalog::new_with_strategy(
+            strategy,
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+        )
+        .expect("fixture catalog");
+        let path = WorkspacePath::from_normalized("fixture.txt");
+        let snapshot = catalog
+            .replace_file(&path, None, 1, &case.content)
+            .expect("fixture chunks");
+        let actual = snapshot
+            .chunks()
+            .iter()
+            .map(|chunk| (chunk.start_byte, chunk.end_byte))
+            .collect::<Vec<_>>();
+        let expected = case
+            .ranges
+            .iter()
+            .map(|range| (range.start, range.end))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{}", case.name);
+    }
+
+    for invalid in fixture.invalid_windows {
+        let rejected = FixedWindowChunkingOptions::new(invalid.target_bytes, invalid.overlap_bytes)
+            .map(WorkspaceChunkingStrategy::FixedWindow)
+            .and_then(|strategy| strategy.validate_for(ChunkingConfig::default()))
+            .is_err();
+        assert!(rejected, "{}", invalid.name);
     }
 }
 

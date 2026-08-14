@@ -10,6 +10,8 @@ pub struct WorkspaceRetrievalOptionsObject {
     pub shutdown_timeout_ms: Option<f64>,
     /// Opaque validated reranker snapshot; empty preserves RRF-only.
     pub reranker_instance_id: String,
+    /// Opaque validated chunking snapshot; empty preserves line chunking.
+    pub chunking_strategy_instance_id: String,
 }
 
 type NodeEmbeddingProviderRegistry = std::collections::HashMap<String, Weak<NodeEmbeddingProvider>>;
@@ -48,6 +50,8 @@ pub struct WorkspaceRetrievalOptions {
     shutdown_timeout_ms: f64,
     reranker_instance_id: String,
     _reranker: Option<Arc<NodeDeterministicRerankerConfiguration>>,
+    chunking_strategy_instance_id: String,
+    _chunking_strategy: Option<Arc<NodeWorkspaceChunkingConfiguration>>,
     _provider: Arc<NodeEmbeddingProvider>,
 }
 
@@ -55,15 +59,23 @@ pub struct WorkspaceRetrievalOptions {
 impl WorkspaceRetrievalOptions {
     #[napi(
         constructor,
-        ts_args_type = "provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null"
+        ts_args_type = "provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null, chunkingStrategy?: LineWorkspaceChunkingStrategy | FixedWindowWorkspaceChunkingStrategy | RecursiveWorkspaceChunkingStrategy | null"
     )]
     pub fn new(
         provider: napi::bindgen_prelude::ClassInstance<CallbackEmbeddingProvider>,
         reranker: Option<napi::bindgen_prelude::ClassInstance<DeterministicWorkspaceReranker>>,
+        chunking_strategy: Option<WorkspaceChunkingStrategyInput>,
     ) -> napi::Result<Self> {
         let (reranker_instance_id, reranker) = match reranker.as_ref() {
             Some(reranker) => {
                 let (instance_id, configuration) = bind_deterministic_reranker(reranker)?;
+                (instance_id, Some(configuration))
+            }
+            None => (String::new(), None),
+        };
+        let (chunking_strategy_instance_id, chunking_strategy) = match chunking_strategy.as_ref() {
+            Some(strategy) => {
+                let (instance_id, configuration) = bind_workspace_chunking_strategy(strategy)?;
                 (instance_id, Some(configuration))
             }
             None => (String::new(), None),
@@ -75,6 +87,8 @@ impl WorkspaceRetrievalOptions {
             shutdown_timeout_ms: 5_000.0,
             reranker_instance_id,
             _reranker: reranker,
+            chunking_strategy_instance_id,
+            _chunking_strategy: chunking_strategy,
             _provider: Arc::clone(&provider.inner),
         })
     }
@@ -120,6 +134,12 @@ impl WorkspaceRetrievalOptions {
     pub fn reranker_instance_id(&self) -> String {
         self.reranker_instance_id.clone()
     }
+
+    /// Return the opaque chunking snapshot used by structural conversion.
+    #[napi(getter)]
+    pub fn chunking_strategy_instance_id(&self) -> String {
+        self.chunking_strategy_instance_id.clone()
+    }
 }
 
 impl Drop for WorkspaceRetrievalOptions {
@@ -127,12 +147,20 @@ impl Drop for WorkspaceRetrievalOptions {
         if let Some(reranker) = &self._reranker {
             unregister_deterministic_reranker(&self.reranker_instance_id, reranker);
         }
+        if let Some(chunking_strategy) = &self._chunking_strategy {
+            unregister_workspace_chunking_strategy(
+                &self.chunking_strategy_instance_id,
+                chunking_strategy,
+            );
+        }
     }
 }
 
 pub(crate) fn js_workspace_retrieval_to_rust(
     options: &WorkspaceRetrievalOptionsObject,
 ) -> napi::Result<a3s_code_core::WorkspaceRetrievalOptions> {
+    let chunking_strategy =
+        resolve_workspace_chunking_strategy(&options.chunking_strategy_instance_id)?;
     let reranker = resolve_deterministic_reranker(&options.reranker_instance_id)?;
     let provider = resolve_embedding_provider(&options.instance_id)?;
     let provider: Arc<dyn EmbeddingProvider> = provider;
@@ -160,6 +188,9 @@ pub(crate) fn js_workspace_retrieval_to_rust(
     });
     if let Some(reranker) = reranker {
         retrieval = retrieval.with_rerank_options(reranker);
+    }
+    if let Some(chunking_strategy) = chunking_strategy {
+        retrieval = retrieval.with_chunking_strategy(chunking_strategy);
     }
     Ok(retrieval)
 }

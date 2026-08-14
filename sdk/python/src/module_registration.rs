@@ -1,0 +1,47 @@
+use super::*;
+
+pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyAgent>()?;
+    m.add_class::<PySession>()?;
+    m.add_class::<PyAgentResult>()?;
+    m.add_class::<PyAgentEvent>()?;
+    m.add_class::<PyToolResult>()?;
+    m.add_class::<PyWebSearchParams>()?;
+    m.add_class::<PyEventStream>()?;
+    m.add_class::<PySkillInfo>()?;
+    m.add_class::<PyFileMemoryStore>()?;
+    m.add_class::<PyFileSessionStore>()?;
+    m.add_class::<PyMemorySessionStore>()?;
+    m.add_class::<PyDefaultSecurityProvider>()?;
+    m.add_class::<PyLocalWorkspaceBackend>()?;
+    m.add_class::<PyS3WorkspaceBackend>()?;
+    m.add_class::<PyRemoteGitBackendConfig>()?;
+    m.add_class::<PyHostEnvConfig>()?;
+    m.add_class::<PyPermissionPolicy>()?;
+    m.add_class::<PyConfirmationPolicy>()?;
+    m.add_class::<PyArtifactStoreLimits>()?;
+    m.add_class::<PyToolResultTransformPolicy>()?;
+    m.add_class::<PyWorkerAgentSpec>()?;
+    m.add_class::<PyAgentDefinition>()?;
+    m.add_class::<PyAutoDelegationConfig>()?;
+    m.add_class::<PySessionOptions>()?;
+    m.add_class::<PyCallbackEmbeddingProvider>()?;
+    m.add_class::<PyDeterministicWorkspaceReranker>()?;
+    m.add_class::<PyLineWorkspaceChunkingStrategy>()?;
+    m.add_class::<PyFixedWindowWorkspaceChunkingStrategy>()?;
+    m.add_class::<PyRecursiveWorkspaceChunkingStrategy>()?;
+    m.add_class::<PyWorkspaceRetrievalOptions>()?;
+    m.add_class::<PyServeHandle>()?;
+    m.add_class::<PySessionQueueConfig>()?;
+    m.add_class::<PySearchConfig>()?;
+    m.add_class::<PySearchEngineConfig>()?;
+    m.add_class::<PySearchHealthConfig>()?;
+    m.add_class::<PyBrowserBackend>()?;
+    m.add_class::<PyHeadlessConfig>()?;
+    m.add_class::<PyStateGraphRuntime>()?;
+    m.add_function(wrap_pyfunction!(format_verification_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(agent_event_types_v1, m)?)?;
+    m.add_function(wrap_pyfunction!(event_envelope_v1_version, m)?)?;
+    m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
+    Ok(())
+}

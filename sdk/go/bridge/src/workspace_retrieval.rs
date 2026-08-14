@@ -17,7 +17,9 @@ const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 30_000;
 const MAX_PROVIDER_TIMEOUT_MS: u64 = 300_000;
 const MAX_SEARCH_LIMIT: usize = 25;
 
+mod chunking;
 mod rerank;
+use chunking::BridgeWorkspaceChunkingStrategy;
 use rerank::BridgeDeterministicWorkspaceReranker;
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +40,7 @@ pub(super) struct BridgeWorkspaceRetrievalOptions {
     #[serde(default = "default_shutdown_timeout_ms")]
     shutdown_timeout_ms: u64,
     deterministic_reranker: Option<BridgeDeterministicWorkspaceReranker>,
+    chunking_strategy: Option<BridgeWorkspaceChunkingStrategy>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -53,6 +56,10 @@ impl BridgeWorkspaceRetrievalOptions {
         self,
         client: Arc<CallbackClient>,
     ) -> Result<a3s_code_core::WorkspaceRetrievalOptions, BridgeFailure> {
+        let chunking_strategy = self
+            .chunking_strategy
+            .map(BridgeWorkspaceChunkingStrategy::into_core)
+            .transpose()?;
         let reranker = self
             .deterministic_reranker
             .map(BridgeDeterministicWorkspaceReranker::into_core)
@@ -99,6 +106,9 @@ impl BridgeWorkspaceRetrievalOptions {
             });
         if let Some(reranker) = reranker {
             retrieval = retrieval.with_rerank_options(reranker);
+        }
+        if let Some(chunking_strategy) = chunking_strategy {
+            retrieval = retrieval.with_chunking_strategy(chunking_strategy);
         }
         Ok(retrieval)
     }

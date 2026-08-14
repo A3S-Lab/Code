@@ -58,6 +58,7 @@ query cancellation, and deadlines stop source-code egress promptly.
 const {
   CallbackEmbeddingProvider,
   DeterministicWorkspaceReranker,
+  RecursiveWorkspaceChunkingStrategy,
   WorkspaceRetrievalOptions,
 } = require('@a3s-lab/code')
 
@@ -86,7 +87,12 @@ const provider = new CallbackEmbeddingProvider(
 
 const reranker = new DeterministicWorkspaceReranker()
 reranker.maxCandidates = 100
-const retrieval = new WorkspaceRetrievalOptions(provider, reranker)
+const chunking = new RecursiveWorkspaceChunkingStrategy(
+  8 * 1024,
+  512,
+  ['\n\n', '\n', '. ', ' '],
+)
+const retrieval = new WorkspaceRetrievalOptions(provider, reranker, chunking)
 retrieval.maxRecords = 100_000
 retrieval.maxBytes = 128 * 1024 * 1024
 
@@ -110,6 +116,14 @@ RRF-only. Its typed fields bound candidates, sampled feature bytes,
 fingerprints, and checked scratch memory. Invalid bounds fail while constructing
 `WorkspaceRetrievalOptions`, before the embedding callback runs; raw mode and
 algorithm strings are not accepted.
+
+The third constructor argument is an optional typed chunking strategy. Use
+`LineWorkspaceChunkingStrategy`, `FixedWindowWorkspaceChunkingStrategy`, or
+`RecursiveWorkspaceChunkingStrategy`; pass `null` as the reranker when only a
+chunking override is needed. Omission preserves the compatible line strategy.
+Targets, overlap, and recursive separator lists are immutable and validated by
+Core before indexing or provider execution. Primitive strategy names are not
+accepted, and custom range callbacks remain a Rust-host-only extension.
 
 The synchronous `session()`, `resumeSession()`, `sessionForAgent()`,
 `sessionForWorker()`, `cancel()`, and `close()` methods remain available for

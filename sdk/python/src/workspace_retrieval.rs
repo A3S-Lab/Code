@@ -13,8 +13,14 @@ use async_trait::async_trait;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+mod chunking;
 mod rerank;
 mod types;
+use chunking::python_chunking_strategy_to_core;
+pub(crate) use chunking::{
+    PyFixedWindowWorkspaceChunkingStrategy, PyLineWorkspaceChunkingStrategy,
+    PyRecursiveWorkspaceChunkingStrategy,
+};
 use rerank::deterministic_reranker_to_core;
 pub(crate) use rerank::PyDeterministicWorkspaceReranker;
 use types::*;
@@ -266,28 +272,32 @@ pub(super) struct PyWorkspaceRetrievalOptions {
     pub(super) shutdown_timeout_ms: u64,
     #[pyo3(get, set)]
     pub(super) reranker: Option<PyDeterministicWorkspaceReranker>,
+    pub(super) chunking_strategy: Option<a3s_code_core::WorkspaceChunkingStrategy>,
 }
 
 #[pymethods]
 impl PyWorkspaceRetrievalOptions {
     #[new]
-    #[pyo3(signature = (provider, reranker=None))]
+    #[pyo3(signature = (provider, reranker=None, chunking_strategy=None))]
     fn new(
+        py: Python<'_>,
         provider: PyRef<'_, PyCallbackEmbeddingProvider>,
         reranker: Option<PyRef<'_, PyDeterministicWorkspaceReranker>>,
-    ) -> Self {
-        Self {
+        chunking_strategy: Option<PyObject>,
+    ) -> PyResult<Self> {
+        Ok(Self {
             provider: provider.clone(),
             max_records: 100_000,
             max_bytes: 128 * 1024 * 1024,
             shutdown_timeout_ms: 5_000,
             reranker: reranker.map(|reranker| reranker.clone()),
-        }
+            chunking_strategy: python_chunking_strategy_to_core(py, chunking_strategy)?,
+        })
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "WorkspaceRetrievalOptions(max_records={}, max_bytes={}, shutdown_timeout_ms={}, reranker={})",
+            "WorkspaceRetrievalOptions(max_records={}, max_bytes={}, shutdown_timeout_ms={}, reranker={}, chunking_strategy={:?})",
             self.max_records,
             self.max_bytes,
             self.shutdown_timeout_ms,
@@ -296,6 +306,7 @@ impl PyWorkspaceRetrievalOptions {
             } else {
                 "rrf_only"
             },
+            self.chunking_strategy,
         )
     }
 }
@@ -305,6 +316,13 @@ pub(super) fn retrieval_options_to_core(
     options: &PyWorkspaceRetrievalOptions,
     event_loop: PyObject,
 ) -> PyResult<a3s_code_core::WorkspaceRetrievalOptions> {
+    if let Some(strategy) = &options.chunking_strategy {
+        strategy
+            .validate_for(a3s_code_core::ChunkingConfig::default())
+            .map_err(|error| {
+                PyValueError::new_err(format!("workspace_retrieval.chunking_strategy: {error}"))
+            })?;
+    }
     let reranker = options
         .reranker
         .as_ref()
@@ -346,6 +364,9 @@ pub(super) fn retrieval_options_to_core(
     );
     if let Some(reranker) = reranker {
         retrieval = retrieval.with_rerank_options(reranker);
+    }
+    if let Some(chunking_strategy) = &options.chunking_strategy {
+        retrieval = retrieval.with_chunking_strategy(chunking_strategy.clone());
     }
     Ok(retrieval)
 }

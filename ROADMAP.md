@@ -419,7 +419,7 @@ Current implementation status:
 | `CODE-Q1` | Delivered | Structured semantic search through the unified `search` tool, bounded query embedding, immutable catalog/vector revision fencing, current-file digest and byte-range verification, coverage metadata, cancellation, and explicit fallback |
 | `CODE-H1` | Delivered | Exact literal, incremental BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
-| `SDK-C2` | Planned | Add typed line/fixed/recursive strategy objects and recursive separator lists to Node, Python, and Go; keep arbitrary custom splitters on the Rust host boundary until a bounded callback lifecycle is specified |
+| `SDK-C2` | Delivered | Node, Python, and Go expose typed line/fixed/recursive strategy objects and recursive separator lists while omission preserves line chunking. A shared Core-owned fixture locks identical byte ranges and invalid windows; primitive names are rejected, Go validates before callback registration, the bridge revalidates typed one-of blocks, and arbitrary custom splitters remain on the Rust host boundary. Native Node/Python and real Go-to-Rust multi-chunk integration gates pass |
 | `SDK-R2` | Delivered | Node, Python, and Go expose typed deterministic-reranker objects while omission preserves RRF-only. SDK/Core defaults and hard bounds align, primitive algorithm names are not accepted, invalid settings fail before provider calls or Go callback registration, result DTOs report versioned evidence, and native Node/Python plus real Go-to-Rust bridge integration gates pass |
 | `HOST-R1` | Delivered | A3S CLI `main` commit `53821c8` adds default-off ACL wiring, a separate OpenAI-compatible embedding route, trusted-layer egress enforcement, bounded/redacted HTTP behavior, and session injection across exec, TUI rebuilds, and Code Web. It pins Code `47770057` and Memory `3293f572`; retrieval-focused tests pass `71/71`, the final post-pin filter passes `19/19`, all targets and Clippy compile, the release build passes, and the full Windows suite adds no failures relative to CLI baseline `f4377c2` |
 | `HOST-C2` | Planned | Add typed ACL selection for built-in chunk strategies, bounds, overlap, and recursive separators; invalid or unsupported strategy blocks fail before provider calls and retrieval remains default-off |
@@ -477,10 +477,11 @@ WSR-00 ─────────────────┼─> CODE-C1 ──
 shared types and invariants are frozen. SDK and host work starts from the
 versioned Code contract, not from private runtime structs.
 
-After `CODE-C2`, `SDK-C2` then `HOST-C2` carry only the typed chunking built-ins
-across language and ACL boundaries. Delivered `CODE-R2`, `SDK-R2`, and
-`HOST-R2` now carry the explicit deterministic option without primitive
-algorithm names. A Core-only default-line `WSR-EVAL2` slice already locks the
+Delivered `CODE-C2` and `SDK-C2` now carry the typed chunking built-ins across
+Core and language boundaries; `HOST-C2` remains the ACL integration gate.
+Delivered `CODE-R2`, `SDK-R2`, and `HOST-R2` now carry the explicit
+deterministic option without primitive algorithm names. A Core-only
+default-line `WSR-EVAL2` slice already locks the
 adversarial fixture and real-model report. The CLI can now select and observe
 rerank variants, while `HOST-C2` remains the missing host path for chunk
 strategies. The full release matrix still requires the real host to exercise

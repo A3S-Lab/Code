@@ -197,10 +197,11 @@ impl WorkspaceChunkingStrategy {
         }
     }
 
-    pub(crate) fn validate_for(
-        &self,
-        limits: ChunkingConfig,
-    ) -> Result<(), WorkspaceChunkingError> {
+    /// Validate this strategy against the catalog's hard per-file limits.
+    ///
+    /// Language bindings use this before they register provider callbacks so
+    /// an invalid target cannot cause source or provider egress.
+    pub fn validate_for(&self, limits: ChunkingConfig) -> Result<(), WorkspaceChunkingError> {
         match self {
             Self::Lines | Self::Custom(_) => Ok(()),
             Self::FixedWindow(options) => {

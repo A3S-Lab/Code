@@ -1,0 +1,44 @@
+{
+  "schema": "a3s.workspace-chunking-sdk.fixture.v1",
+  "cases": [
+    {
+      "name": "line",
+      "content": "alpha\nbeta\n",
+      "target_bytes": null,
+      "overlap_bytes": null,
+      "separators": null,
+      "ranges": [
+        { "start": 0, "end": 11 }
+      ]
+    },
+    {
+      "name": "fixed_window",
+      "content": "abcdefghij",
+      "target_bytes": 4,
+      "overlap_bytes": 1,
+      "separators": null,
+      "ranges": [
+        { "start": 0, "end": 4 },
+        { "start": 3, "end": 7 },
+        { "start": 6, "end": 10 }
+      ]
+    },
+    {
+      "name": "recursive",
+      "content": "alpha beta\n\nsecond paragraph\n\nthird",
+      "target_bytes": 20,
+      "overlap_bytes": 0,
+      "separators": ["\n\n", "\n", " "],
+      "ranges": [
+        { "start": 0, "end": 12 },
+        { "start": 12, "end": 30 },
+        { "start": 30, "end": 35 }
+      ]
+    }
+  ],
+  "invalid_windows": [
+    { "name": "target_below_minimum", "target_bytes": 3, "overlap_bytes": 0 },
+    { "name": "overlap_not_smaller", "target_bytes": 8, "overlap_bytes": 8 },
+    { "name": "target_above_default_limit", "target_bytes": 65537, "overlap_bytes": 0 }
+  ]
+}

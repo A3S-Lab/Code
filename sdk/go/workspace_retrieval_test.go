@@ -495,6 +495,11 @@ func TestRustBridgeWorkspaceRetrievalIntegration(t *testing.T) {
 	retrieval.MaxRecords = 100
 	retrieval.MaxBytes = 1024 * 1024
 	retrieval.Reranker = NewDeterministicWorkspaceReranker()
+	chunking, err := NewFixedWindowWorkspaceChunkingStrategy(32, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retrieval.ChunkingStrategy = chunking
 	session, err := agent.Session(ctx, workspace, &SessionOptions{
 		WorkspaceRetrieval: retrieval,
 	})
@@ -502,8 +507,8 @@ func TestRustBridgeWorkspaceRetrievalIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := waitForRetrievalPhase(t, ctx, session, WorkspaceRetrievalReady)
-	if status.IndexedChunks == 0 {
-		t.Fatalf("ready status has no indexed chunks: %#v", status)
+	if status.IndexedChunks < 2 {
+		t.Fatalf("fixed-window strategy did not create multiple chunks: %#v", status)
 	}
 	semantic, err := session.SemanticSearch(ctx, WorkspaceSearchRequest{
 		Query: "cleanup session resources",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -13,11 +14,25 @@ from a3s_code import (
     DeterministicWorkspaceReranker,
     EmbeddingBatchRequest,
     EmbeddingBatchResponse,
+    FixedWindowWorkspaceChunkingStrategy,
+    LineWorkspaceChunkingStrategy,
+    RecursiveWorkspaceChunkingStrategy,
     SessionOptions,
     WorkspaceHybridSearchResult,
     WorkspaceRetrievalOptions,
     WorkspaceRetrievalStatus,
     WorkspaceSemanticSearchResult,
+)
+
+
+CHUNKING_FIXTURE = json.loads(
+    (
+        Path(__file__).resolve().parents[3]
+        / "core"
+        / "tests"
+        / "fixtures"
+        / "workspace-chunking-sdk-v1.json"
+    ).read_text(encoding="utf-8")
 )
 
 
@@ -54,10 +69,12 @@ def test_async_workspace_retrieval_lifecycle() -> None:
             )
 
             provider_calls = 0
+            provider_inputs: list[str] = []
 
             async def embed(request: EmbeddingBatchRequest) -> EmbeddingBatchResponse:
                 nonlocal provider_calls
                 provider_calls += 1
+                provider_inputs.extend(item["text"] for item in request["inputs"])
                 await asyncio.sleep(0)
                 return {
                     "vectors": [
@@ -141,6 +158,87 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 assert provider_calls >= 2
             finally:
                 await session.close_async()
+
+            line_chunking = LineWorkspaceChunkingStrategy()
+            assert repr(line_chunking) == "LineWorkspaceChunkingStrategy()"
+            fixed_case = next(
+                case
+                for case in CHUNKING_FIXTURE["cases"]
+                if case["name"] == "fixed_window"
+            )
+            fixed_chunking = FixedWindowWorkspaceChunkingStrategy(
+                fixed_case["target_bytes"], fixed_case["overlap_bytes"]
+            )
+            assert fixed_chunking.target_bytes == fixed_case["target_bytes"]
+            assert fixed_chunking.overlap_bytes == fixed_case["overlap_bytes"]
+            recursive_case = next(
+                case
+                for case in CHUNKING_FIXTURE["cases"]
+                if case["name"] == "recursive"
+            )
+            recursive_chunking = RecursiveWorkspaceChunkingStrategy(
+                recursive_case["target_bytes"],
+                recursive_case["overlap_bytes"],
+                recursive_case["separators"],
+            )
+            assert recursive_chunking.separators == recursive_case["separators"]
+            WorkspaceRetrievalOptions(provider, None, line_chunking)
+            WorkspaceRetrievalOptions(provider, None, recursive_chunking)
+            for invalid in CHUNKING_FIXTURE["invalid_windows"]:
+                try:
+                    FixedWindowWorkspaceChunkingStrategy(
+                        invalid["target_bytes"], invalid["overlap_bytes"]
+                    )
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"invalid chunk window accepted: {invalid}")
+            try:
+                RecursiveWorkspaceChunkingStrategy(64, 0, [])
+            except ValueError as error:
+                assert "separators" in str(error)
+            else:
+                raise AssertionError("empty recursive separators must fail")
+            try:
+                WorkspaceRetrievalOptions(provider, None, "fixed_window")
+            except TypeError:
+                pass
+            else:
+                raise AssertionError("primitive chunking selectors must fail")
+
+            chunk_workspace = Path(root, "chunk-workspace")
+            chunk_workspace.mkdir()
+            (chunk_workspace / "fixture.txt").write_text(
+                fixed_case["content"], encoding="utf-8"
+            )
+            input_offset = len(provider_inputs)
+            chunk_options = SessionOptions()
+            chunk_options.workspace_retrieval = WorkspaceRetrievalOptions(
+                provider, None, fixed_chunking
+            )
+            chunk_session = await agent.session_async(
+                str(chunk_workspace), chunk_options
+            )
+            try:
+                chunk_status = cast(
+                    WorkspaceRetrievalStatus,
+                    chunk_session.workspace_retrieval_status(),
+                )
+                while chunk_status["phase"] == "building":
+                    await asyncio.sleep(0.02)
+                    chunk_status = cast(
+                        WorkspaceRetrievalStatus,
+                        chunk_session.workspace_retrieval_status(),
+                    )
+                assert chunk_status["phase"] == "ready", chunk_status
+                assert chunk_status["indexed_chunks"] == len(fixed_case["ranges"])
+                expected_texts = [
+                    fixed_case["content"][item["start"] : item["end"]]
+                    for item in fixed_case["ranges"]
+                ]
+                assert provider_inputs[input_offset:] == expected_texts
+            finally:
+                await chunk_session.close_async()
 
             reranker = DeterministicWorkspaceReranker()
             assert reranker.max_candidates == 100

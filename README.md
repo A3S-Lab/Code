@@ -381,6 +381,13 @@ compiler boundary. See
 strategy selection, custom range invariants, asynchronous construction, and
 the bounded overlap-aware reranker.
 
+Node, Python, and Go expose typed line, fixed UTF-8 window, and recursive
+separator-aware strategy objects. Omission keeps line chunking; no SDK accepts
+a primitive strategy name. The shared cross-SDK fixture locks identical byte
+ranges and invalid-window behavior, while arbitrary custom range callbacks
+remain a trusted Rust-host extension. Strategy validation precedes provider
+execution, and Go completes it before callback registration.
+
 Hybrid mode creates independent exact-literal, incremental BM25, optional Code
 Intelligence symbol, and positive-similarity semantic candidate lists. It
 fuses one-based ranks with reciprocal-rank fusion (`k=60`) instead of mixing

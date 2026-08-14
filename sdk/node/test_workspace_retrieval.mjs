@@ -4,6 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import mod from './index.js'
 
+const chunkingFixture = JSON.parse(fs.readFileSync(
+  new URL('../../core/tests/fixtures/workspace-chunking-sdk-v1.json', import.meta.url),
+  'utf8',
+))
+
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-node-retrieval-'))
 const workspace = path.join(tmpRoot, 'workspace')
 fs.mkdirSync(path.join(workspace, 'src'), { recursive: true })
@@ -31,6 +36,7 @@ function vectorFor(text) {
 }
 
 let providerCalls = 0
+const providerInputs = []
 const provider = new mod.CallbackEmbeddingProvider(
   {
     provider: 'node-fixture',
@@ -40,6 +46,7 @@ const provider = new mod.CallbackEmbeddingProvider(
   },
   async (request) => {
     providerCalls += 1
+    providerInputs.push(...request.inputs.map((input) => input.text))
     assert.equal(request.signal instanceof AbortSignal, true)
     await Promise.resolve()
     return {
@@ -84,6 +91,70 @@ try {
   assert.ok(providerCalls >= 2)
 } finally {
   await session.closeAsync()
+}
+
+const lineChunking = new mod.LineWorkspaceChunkingStrategy()
+assert.ok(lineChunking instanceof mod.LineWorkspaceChunkingStrategy)
+const fixedCase = chunkingFixture.cases.find((value) => value.name === 'fixed_window')
+const fixedChunking = new mod.FixedWindowWorkspaceChunkingStrategy(
+  fixedCase.target_bytes,
+  fixedCase.overlap_bytes,
+)
+assert.equal(fixedChunking.targetBytes, fixedCase.target_bytes)
+assert.equal(fixedChunking.overlapBytes, fixedCase.overlap_bytes)
+const recursiveCase = chunkingFixture.cases.find((value) => value.name === 'recursive')
+const recursiveChunking = new mod.RecursiveWorkspaceChunkingStrategy(
+  recursiveCase.target_bytes,
+  recursiveCase.overlap_bytes,
+  recursiveCase.separators,
+)
+assert.deepEqual(recursiveChunking.separators, recursiveCase.separators)
+assert.doesNotThrow(
+  () => new mod.WorkspaceRetrievalOptions(provider, null, lineChunking),
+)
+assert.doesNotThrow(
+  () => new mod.WorkspaceRetrievalOptions(provider, null, recursiveChunking),
+)
+for (const invalid of chunkingFixture.invalid_windows) {
+  assert.throws(
+    () => new mod.FixedWindowWorkspaceChunkingStrategy(
+      invalid.target_bytes,
+      invalid.overlap_bytes,
+    ),
+    /chunkingStrategy|chunking option/,
+  )
+}
+assert.throws(
+  () => new mod.RecursiveWorkspaceChunkingStrategy(64, 0, []),
+  /separators/,
+)
+assert.throws(
+  () => new mod.WorkspaceRetrievalOptions(provider, null, 'fixed_window'),
+)
+
+const chunkWorkspace = path.join(tmpRoot, 'chunk-workspace')
+fs.mkdirSync(chunkWorkspace, { recursive: true })
+fs.writeFileSync(path.join(chunkWorkspace, 'fixture.txt'), fixedCase.content)
+const inputOffset = providerInputs.length
+const chunkSession = await agent.sessionAsync(chunkWorkspace, {
+  workspaceRetrieval: new mod.WorkspaceRetrievalOptions(provider, null, fixedChunking),
+})
+try {
+  const deadline = Date.now() + 10_000
+  let status = chunkSession.workspaceRetrievalStatus()
+  while (status.phase === 'building' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    status = chunkSession.workspaceRetrievalStatus()
+  }
+  assert.equal(status.phase, 'ready', JSON.stringify(status))
+  assert.equal(status.indexedChunks, fixedCase.ranges.length)
+  const expectedTexts = fixedCase.ranges.map(
+    (range) => fixedCase.content.slice(range.start, range.end),
+  )
+  const actualTexts = providerInputs.slice(inputOffset)
+  assert.deepEqual(actualTexts, expectedTexts)
+} finally {
+  await chunkSession.closeAsync()
 }
 
 const reranker = new mod.DeterministicWorkspaceReranker()

@@ -31,7 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default, UTF-8-safe fixed windows, recursive prioritized separators with
   bounded overlap, and a validated `Send + Sync` Rust host extension. Session-
   owned catalogs accept explicit strategy and memory-limit configuration;
-  host-owned catalogs reject silent session overrides.
+  host-owned catalogs reject silent session overrides. Node, Python, and Go
+  now expose typed line/fixed/recursive objects, share one locked range and
+  invalid-window fixture, reject primitive strategy names, and validate before
+  provider execution (and before Go callback registration).
 - Added an opt-in bounded deterministic hybrid reranker after RRF with
   exact-identifier protection, overlap and lexical-boilerplate similarity,
   MMR-style diversity, stable tie breaking, checked candidate/feature/scratch

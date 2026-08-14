@@ -135,6 +135,15 @@ func (p provider) Embed(
 
 retrieval := code.NewWorkspaceRetrievalOptions(provider{client: client})
 retrieval.Reranker = code.NewDeterministicWorkspaceReranker()
+chunking, err := code.NewRecursiveWorkspaceChunkingStrategy(
+	8*1024,
+	512,
+	"\n\n", "\n", ". ", " ",
+)
+if err != nil {
+	return err
+}
+retrieval.ChunkingStrategy = chunking
 retrieval.MaxRecords = 100_000
 retrieval.MaxBytes = 128 * 1024 * 1024
 
@@ -167,6 +176,14 @@ configure the object returned by `NewDeterministicWorkspaceReranker` to bound
 candidates, sampled feature bytes, fingerprints, and checked scratch memory.
 Invalid bounds fail before callback registration or provider execution; raw
 mode and algorithm strings are not accepted.
+
+`ChunkingStrategy` is another sealed typed option. Leave it `nil` for the
+compatible line default, or use `NewLineWorkspaceChunkingStrategy`,
+`NewFixedWindowWorkspaceChunkingStrategy`, or
+`NewRecursiveWorkspaceChunkingStrategy`. Target, overlap, and recursive
+separator validation runs before provider descriptor access and callback
+registration. No string selector implements the interface, and custom range
+callbacks remain a trusted Rust-host extension.
 
 ## Agent-wide priority scheduling
 

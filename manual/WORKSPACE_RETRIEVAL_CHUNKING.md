@@ -61,6 +61,58 @@ Session options reject a catalog strategy or limit override in that case rather
 than silently ignoring it. Construct the host catalog with
 `WorkspaceChunkCatalog::new_with_strategy` instead.
 
+## SDK built-in strategy configuration
+
+Node, Python, and Go expose the three built-ins as typed objects. They do not
+accept a primitive strategy name, and omission preserves `Lines`:
+
+```js
+const chunking = new RecursiveWorkspaceChunkingStrategy(
+  8 * 1024,
+  512,
+  ['\n\n', '\n', '. ', ' '],
+)
+const retrieval = new WorkspaceRetrievalOptions(provider, null, chunking)
+```
+
+```python
+chunking = RecursiveWorkspaceChunkingStrategy(
+    8 * 1024,
+    512,
+    ["\n\n", "\n", ". ", " "],
+)
+retrieval = WorkspaceRetrievalOptions(
+    provider,
+    chunking_strategy=chunking,
+)
+```
+
+```go
+chunking, err := code.NewRecursiveWorkspaceChunkingStrategy(
+    8*1024,
+    512,
+    "\n\n", "\n", ". ", " ",
+)
+if err != nil {
+    return err
+}
+retrieval := code.NewWorkspaceRetrievalOptions(provider)
+retrieval.ChunkingStrategy = chunking
+```
+
+Fixed and recursive targets must contain at least four bytes, overlap must be
+smaller than the target, and the target cannot exceed the active catalog byte
+ceiling. Recursive lists contain one to sixteen unique, non-empty separators;
+each is at most 64 UTF-8 bytes and contains no NUL. Node and Python validate
+immutable strategy objects through Core. Go checks the same bounds before
+provider descriptor access or callback registration, and the Rust bridge
+revalidates its mutually exclusive typed wire blocks through Core.
+
+The shared `workspace-chunking-sdk-v1` fixture locks line, overlapping fixed,
+and separator-aware recursive byte ranges across Core and all three bindings.
+Arbitrary custom splitters remain on the Rust host boundary until a separate
+bounded callback lifecycle is designed for each language runtime.
+
 ## Custom strategy contract
 
 `CustomWorkspaceChunkingStrategy` is a synchronous `Send + Sync` Rust host
@@ -118,7 +170,7 @@ let retrieval = WorkspaceRetrievalOptions::new(embedding_provider)
     .with_rerank_options(WorkspaceRerankOptions::deterministic());
 ```
 
-### SDK configuration
+### SDK reranker configuration
 
 Node, Python, and Go expose the same opt-in as a typed object. They do not
 accept a mode or algorithm string:
