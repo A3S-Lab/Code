@@ -1,5 +1,6 @@
 //! Workspace file discovery and file-type classification.
 
+use super::file_kind::is_binary_file;
 use super::{
     normalize_relative_path_lossy, system_time_ms, LocalWorkspaceFile, LocalWorkspaceFileStatus,
 };
@@ -310,76 +311,6 @@ fn is_generated_path(path: &Path) -> bool {
             "target" | "node_modules" | ".next" | "dist" | "build" | "coverage"
         )
     })
-}
-
-fn is_binary_file(path: &Path, size: u64) -> bool {
-    if matches!(
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "png"
-            | "jpg"
-            | "jpeg"
-            | "gif"
-            | "webp"
-            | "ico"
-            | "pdf"
-            | "zip"
-            | "gz"
-            | "tgz"
-            | "xz"
-            | "wasm"
-            | "dylib"
-            | "so"
-            | "a"
-            | "o"
-            | "rlib"
-            | "class"
-            | "jar"
-    ) {
-        return true;
-    }
-    if is_known_text_path(path) {
-        return false;
-    }
-    if size == 0 {
-        return false;
-    }
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut buf = [0u8; 2048];
-    use std::io::Read;
-    match file.read(&mut buf) {
-        Ok(n) => buf[..n].contains(&0),
-        Err(_) => false,
-    }
-}
-
-fn is_known_text_path(path: &Path) -> bool {
-    if LanguageCatalog::id_for_path(path).is_some() {
-        return true;
-    }
-    if matches!(
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "txt" | "lock" | "gitignore" | "dockerignore" | "env" | "example" | "sample"
-    ) {
-        return true;
-    }
-    matches!(
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "dockerfile" | "makefile" | "justfile" | "license" | "notice"
-    )
 }
 
 pub(super) fn is_relevant_event(event: &Event, root: &Path) -> bool {

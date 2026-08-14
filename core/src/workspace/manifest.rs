@@ -34,6 +34,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
+mod file_kind;
 mod scanner;
 mod watcher;
 use scanner::is_relevant_event;

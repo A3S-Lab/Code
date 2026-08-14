@@ -332,9 +332,10 @@ workspace backends keep the compatible scanner path unless they provide a
 catalog capability. Plain manifest and Code Intelligence sessions do not start
 this additional catalog work.
 
-The catalog has deterministic UTF-8-safe line/byte chunking, immutable query
+The catalog has deterministic, non-overlapping, UTF-8-safe line/byte chunking
+(80 lines or 64 KiB by default, at most 128 chunks per file), immutable query
 snapshots, file/chunk/text/lexical-index budgets, and default exclusions for
-generated, binary, oversized, credential, key, and `.a3s` control paths. File
+generated, non-text, oversized, credential, key, and `.a3s` control paths. File
 changes are tombstoned before replacement work; a failed read reduces indexed
 coverage instead of returning stale text. The catalog is ephemeral and is
 released with its manifest-backed workspace backend.
@@ -356,11 +357,21 @@ joins the owned task within a configured deadline, stops Code-owned local
 manifest work, and drops all vector state. Enabled sessions add
 `mode: "semantic"` and `mode: "hybrid"` to the unified `search` tool; disabled
 sessions retain the existing schema. Semantic queries use bounded provider
-execution and report the
-exact catalog/vector revisions and partial-coverage fallback, and reread each
-candidate through `WorkspaceServices` to verify its full-file digest and exact
-chunk byte range before source text is rendered. A stale, deleted, unreadable,
-or concurrently superseded candidate is never exposed.
+execution and report the exact catalog/vector revisions and partial-coverage
+fallback. Each candidate is reread through `WorkspaceServices` to verify its
+full-file digest and exact chunk byte range before source text is rendered. A
+stale, deleted, unreadable, or concurrently superseded candidate is never
+exposed.
+
+Retrieval is an explicit host capability, not a model-controlled toggle. Rust
+hosts enable it with `with_workspace_retrieval(...)` and can clear an earlier
+layered choice with `without_workspace_retrieval()`; Node omits
+`workspaceRetrieval`, Python assigns `None`, and Go uses `nil` to keep it
+disabled. Clearing the option constructs no index and makes no provider call.
+Only manifest-admitted UTF-8 text and source files enter the chunk catalog.
+Non-text assets are excluded before chunking and embeddings; document parsing,
+OCR, and knowledge-artifact compilation belong to the separate knowledge
+compiler boundary.
 
 Hybrid mode creates independent exact-literal, incremental BM25, optional Code
 Intelligence symbol, and positive-similarity semantic candidate lists. It
@@ -602,6 +613,7 @@ the v1 schema.
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) | Language runtime, capability boundary, lifecycle, and verification |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md) | Architecture, quality budgets, lifecycle, and adversarial trust boundaries |
 | [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md) | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope |
+| [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) | Paired task ablation, chunk/non-text boundaries, metrics, and batching follow-up |
 | [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md) | Filesystem-first tool and agent definitions |
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) | Admission schema, identity, compatibility, and security boundary |
 | [Changelog](CHANGELOG.md) | Release history and migration-relevant changes |

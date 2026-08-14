@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   indexing status, digest-verified semantic and hybrid result DTOs, bounded
   cleanup, and cancellation propagation. Go bridge protocol v2 now explicitly
   cancels in-flight callback contexts during query and session shutdown.
+- Added explicit Rust-host retrieval clearing through
+  `SessionOptions::without_workspace_retrieval()`, conservative non-text asset
+  classification before chunking and embeddings, and a reproducible paired
+  DeepSeek task evaluation covering multi-chunk retrieval, disabled ablation,
+  non-text zero-egress, request amplification, and lifecycle metrics.
 
 ## [6.9.0] - 2026-08-12
 

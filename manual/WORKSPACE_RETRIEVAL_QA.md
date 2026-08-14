@@ -2,7 +2,9 @@
 
 Status: Passed and delivered on 2026-08-14. A3S CLI `main` commit `53821c8`
 pins the qualified Code and Memory revisions, and the post-pin release build
-and DeepSeek CLI integration rerun passed.
+and DeepSeek CLI integration rerun passed. A later paired Core evaluation also
+passed with real DeepSeek chat, explicit retrieval enable/disable control,
+multi-chunk source, and non-text exclusion.
 
 This report qualifies the first session-bound Workspace Retrieval (`WSR`)
 release across A3S Memory, A3S Code, and the A3S CLI host. The release uses an
@@ -76,8 +78,9 @@ also avoids reopening a mutable path to obtain link-count evidence.
   chunk range.
 - Lifecycle tests retain weak references and counters outside the session, then
   require them to reach zero after bounded close.
-- The real DeepSeek run is a transport and tool-loop compatibility check only.
-  Deterministic fixtures, not DeepSeek responses, are the relevance oracle.
+- Real DeepSeek runs measure transport, schema/tool-loop behavior, and exact
+  task completion. Independent labels and deterministic embeddings, not
+  DeepSeek responses, remain the ranking oracle.
 
 ## Quality results
 
@@ -211,6 +214,31 @@ DeepSeek was deliberately not used as an embedding correctness oracle. The
 configured chat route and a separately admitted embeddings route have
 different trust and protocol boundaries.
 
+### Enabled/disabled task ablation
+
+A second ignored Core integration used the same ACL-selected
+`deepseek/deepseek-v4-pro` chat model in six fresh isolated sessions. The test
+injected a process-local deterministic embedding oracle through Code's public
+provider contract because the ACL did not configure or authorize a remote
+embedding route. Each of three tasks ran once with retrieval explicitly
+cleared and once enabled.
+
+| Metric | Enabled | Disabled |
+| --- | ---: | ---: |
+| Exact task completion | 3/3 | 0/3 |
+| Tool protocol compliance | 3/3 | 3/3 |
+| Expected-path Recall@5 | 1.0000 | 0.0000 |
+| Expected-path MRR | 1.0000 | 0.0000 |
+
+The 33-entry fixture contained 30 text files, three non-text assets, and 31
+chunks. One answer appeared only after the default 80-line chunk boundary. All
+enabled expected paths ranked first; non-text provider inputs were zero; all
+vectors were released after close. The run also exposed 30 document provider
+requests for 31 chunks, a 30x amplification over the fixture's one-request
+batch-limit lower bound. Full methodology, latency, resource, token, chunking,
+and follow-up gates are in the
+[DeepSeek evaluation report](WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md).
+
 ## A3S Test coverage boundary
 
 `a3s-test capabilities --json` and `a3s-test agent schema` were run from the
@@ -218,7 +246,8 @@ checked-out A3S Test implementation. The Web driver reported
 `test.driver.web.capability_unavailable` because the browser command is not
 installed in this environment. Therefore no browser screenshot is claimed.
 Code Web host injection and retrieval-status behavior are covered by
-deterministic contract tests, while the real DeepSeek E2E is a CLI workflow.
+deterministic contract tests. The real DeepSeek evidence covers both the CLI
+read workflow and the Core Search tool loop; neither requires a browser.
 
 ## Release disposition
 

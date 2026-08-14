@@ -44,6 +44,44 @@ fn test_file(path: &str) -> LocalWorkspaceFile {
 }
 
 #[test]
+fn manifest_classifies_non_text_assets_before_workspace_retrieval() {
+    let workspace = tempfile::tempdir().unwrap();
+    write(&workspace.path().join("src/lib.rs"), b"pub fn text() {}\n");
+    write(
+        &workspace.path().join("architecture.pdf"),
+        b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n",
+    );
+    write(
+        &workspace.path().join("recording.mp3"),
+        &[b'I', b'D', b'3', 0xff, 0xfb, 0x90, 0x64],
+    );
+    write(
+        &workspace.path().join("opaque.asset"),
+        &[0x89, b'A', b'S', b'S', b'E', b'T'],
+    );
+    write(
+        &workspace.path().join("payload.bin"),
+        b"ASCII_BYTES_STILL_BELONG_TO_A_NON_TEXT_CONTAINER",
+    );
+
+    let files = scan_workspace_files(workspace.path());
+    let by_path = files
+        .iter()
+        .map(|file| (file.path.as_str(), file))
+        .collect::<HashMap<_, _>>();
+
+    assert!(!by_path["src/lib.rs"].binary);
+    for path in [
+        "architecture.pdf",
+        "recording.mp3",
+        "opaque.asset",
+        "payload.bin",
+    ] {
+        assert!(by_path[path].binary, "{path} must not enter text retrieval");
+    }
+}
+
+#[test]
 fn manifest_index_reduces_glob_candidates() {
     let files = vec![
         test_file("src/main.rs"),

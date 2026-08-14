@@ -239,6 +239,10 @@ core/src/workspace/retrieval/
 └── hybrid.rs              # candidate fusion and diversity
 ```
 
+The manifest owns the preceding text/non-text decision in
+`core/src/workspace/manifest/file_kind.rs`. The chunker never receives a
+non-text asset.
+
 The current native BM25 path selects candidates, reads files, creates 80-line
 chunks, and scores them for every query. WSR first moves chunk ownership into
 the catalog, then replaces query-time corpus construction with an incremental
@@ -268,8 +272,26 @@ without changing retrieval. A3S Memory has no dependency on this adapter.
 
 Remote providers must receive only chunks admitted by Code's embedding egress
 policy. Sensitive configuration, credential files, private keys, generated
-trees, binaries, oversized files, and workspace-private control directories
+trees, non-text assets, oversized files, and workspace-private control directories
 are excluded by default. Neither content nor vectors are written to logs.
+
+#### Text retrieval versus knowledge compilation
+
+The workspace index and the knowledge compiler are separate systems with an
+explicit ownership boundary:
+
+| Component | Owns | Must not own |
+| --- | --- | --- |
+| A3S Code manifest/catalog | Conservative text classification, full UTF-8 validation, source chunking, lexical metadata, source revision and digest fencing | PDF/Office parsing, OCR, image understanding, archive expansion, media transcription |
+| A3S Code semantic runtime | Session scheduling, admitted embedding calls, partial readiness, file-atomic vector publication, verified retrieval | Durable knowledge indexes or implicit ingestion of generated parser output |
+| A3S Memory | Bounded exact in-memory vector storage/search and lifecycle accounting | Workspace traversal, file typing, chunking, model SDKs, or document parsing |
+| CLI/host | Explicit enablement, provider injection, source-egress authorization, budgets, and status presentation | Inferring egress permission from the configured chat model |
+| Separate knowledge compiler | Parse/OCR/transcribe/normalize non-text assets and publish provenance-bearing text artifacts | Mutating a live Code session's private vector index |
+
+A future handoff from the knowledge compiler requires a typed, versioned
+artifact contract containing source identity, compiler identity/version,
+content digest, provenance, and trust policy. Until that ADR exists, Code skips
+non-text assets and does not auto-discover compiled derivatives.
 
 ### 6.6 Session lifecycle and consistency
 
@@ -363,12 +385,16 @@ Current implementation status:
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
 | `HOST-R1` | Delivered | A3S CLI `main` commit `53821c8` adds default-off ACL wiring, a separate OpenAI-compatible embedding route, trusted-layer egress enforcement, bounded/redacted HTTP behavior, and session injection across exec, TUI rebuilds, and Code Web. It pins Code `47770057` and Memory `3293f572`; retrieval-focused tests pass `71/71`, the final post-pin filter passes `19/19`, all targets and Clippy compile, the release build passes, and the full Windows suite adds no failures relative to CLI baseline `f4377c2` |
 | `WSR-QA` | Delivered | Locked quality, adversarial egress/race/isolation/confidentiality/lifecycle suites, strict Clippy, the complete serial Core suite (`2746/0/18`), two release benchmark runs, final host release build, and the post-pin DeepSeek tool-loop E2E pass. Exact p95 is 8.294/12.302 ms and hybrid p95 is 51.145/54.429 ms |
-| `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, SDK examples, ACL host guidance, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
+| `WSR-EVAL1` | Delivered | Real `deepseek/deepseek-v4-pro` paired ablation passes enabled 3/3 versus disabled 0/3, Recall@5/MRR 1.0, a target beyond the 80-line boundary, 30 text files/31 chunks, three excluded non-text assets, zero non-text provider inputs, and complete post-close release |
+| `CODE-B2` | Planned | Coalesce ready chunks across files before provider execution while preserving stable IDs, per-file generation fencing, file-atomic publication, bounded flush latency, cancellation, and partial readiness; reduce the measured 30x request amplification to at most 1.10x the per-session batch-limit lower bound |
+| `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, DeepSeek task evaluation, SDK examples, ACL host guidance, text/knowledge-compiler boundary, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
 
 The detailed baseline and threat model are in
 [`manual/WORKSPACE_RETRIEVAL_BASELINE.md`](manual/WORKSPACE_RETRIEVAL_BASELINE.md).
 Release measurements and adversarial evidence are in
 [`manual/WORKSPACE_RETRIEVAL_QA.md`](manual/WORKSPACE_RETRIEVAL_QA.md).
+The paired real-model task and batching evidence is in
+[`manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md`](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md).
 
 | Gate | Owner | Depends on | Deliverable | Exit criteria |
 | --- | --- | --- | --- | --- |
@@ -383,6 +409,8 @@ Release measurements and adversarial evidence are in
 | `HOST-R1` | CLI/TUI hosts | `SDK-R1` | ACL wiring, readiness/degraded diagnostics, and explicit enable/disable controls | A user can identify disabled, building, partial, ready, and degraded states without debug logs |
 | `WSR-QA` | Code tests/benchmarks | `CODE-H1`, `SDK-R1` | Adversarial E2E, performance benchmark, soak, and failure-injection suite | All release gates in section 6.10 pass on the reference profiles |
 | `WSR-DOC` | Memory, Code, hosts | `WSR-QA` | README, roadmap status, ACL reference, SDK examples, privacy guidance, and migration notes | Examples execute and no obsolete query-time-BM25 or sqlite-vec guidance remains |
+| `WSR-EVAL1` | Code real-model tests | `HOST-R1`, `WSR-QA` | Paired enabled/disabled DeepSeek task evaluation with chunk and non-text adversaries | Exact completion improves, locked retrieval metrics pass, non-text egress is zero, and close releases every vector |
+| `CODE-B2` | Code semantic runtime | `WSR-EVAL1` | Session-local cross-file embedding batch coordinator and amplification metrics | At most 1.10x the per-session batch-limit request lower bound with unchanged quality, lifecycle, and time-to-first-partition gates |
 
 The parallelizable dependency shape is:
 
@@ -397,6 +425,31 @@ WSR-00 ─────────────────┼─> CODE-C1 ──
 `MEM-V1`, `CODE-C1`, and `CODE-E1` should be developed in parallel after their
 shared types and invariants are frozen. SDK and host work starts from the
 versioned Code contract, not from private runtime structs.
+
+`CODE-B2` is a post-release optimization and executes in this order:
+
+1. Freeze machine-readable metrics for document inputs, provider requests,
+   batch-limit lower bounds, flush reasons, time to first ready partition, and
+   non-text inputs; first lock the current 30x amplification as a failing gate.
+2. Add one bounded session-local coordinator between completed chunks and
+   `EmbeddingExecutor`. It may group different files but may not cross sessions,
+   providers, descriptors, or source generations.
+3. Flush on the earliest configured input, text-byte, vector-byte, or short
+   latency bound. Cancellation removes unpublished work without extending the
+   close deadline.
+4. Validate the complete provider response, regroup vectors by file generation,
+   and publish each file atomically. One malformed file or superseded generation
+   cannot expose a mixed partition or discard already valid files.
+5. Rerun provider fault injection, update/delete races, partial readiness,
+   non-text zero-egress, exact/hybrid quality, lifecycle, 25,000-record release
+   benchmarks, and the paired DeepSeek evaluation.
+6. Ship only when request amplification is at most 1.10x the batch-limit lower
+   bound and session construction, time to first partition, quality, memory, and
+   close gates have no regression.
+
+Knowledge-compiler integration is not part of `CODE-B2`. It starts with a
+separate cross-project ADR and fixture for the typed artifact/provenance handoff;
+only then may Code add an explicit host-injected artifact provider.
 
 ### 6.10 Release qualification
 
@@ -428,6 +481,11 @@ later gate may not silently weaken them to make an implementation pass.
   coverage and never unbounded allocation. The initial target ceiling is
   256 MiB for catalog, lexical, and vector indexes combined.
 - Repeated queries do not reread or re-embed unchanged files.
+- Non-text workspace assets produce zero chunks, vectors, and Embedding Provider
+  inputs; their parsing belongs to the separate knowledge compiler.
+- After `CODE-B2`, document-provider request amplification is at most 1.10x the
+  per-session lower bound implied by input, text-byte, and vector-byte batch
+  limits, without delaying synchronous session construction.
 
 #### Isolation, security, and resilience
 
@@ -485,3 +543,6 @@ index is session-ephemeral.
   a concrete need and a separate ADR defines lifecycle and security.
 - Sending workspace content to any embedding endpoint merely because a chat
   model is configured.
+- Parsing, OCR, transcription, archive expansion, or direct vectorization of
+  non-text workspace assets; those operations belong to the separate knowledge
+  compiler and require an explicit typed artifact handoff.

@@ -552,6 +552,17 @@ impl SessionOptions {
         self
     }
 
+    /// Explicitly disable session-bound semantic workspace indexing.
+    ///
+    /// This clears an earlier [`Self::with_workspace_retrieval`] choice without
+    /// constructing a replacement backend or calling the embedding provider.
+    /// It is useful when a host applies layered configuration and a later,
+    /// trusted layer deliberately opts the session out.
+    pub fn without_workspace_retrieval(mut self) -> Self {
+        self.workspace_retrieval = None;
+        self
+    }
+
     /// Enable auto-compaction when context usage exceeds threshold.
     ///
     /// When enabled, the agent loop automatically prunes large tool outputs

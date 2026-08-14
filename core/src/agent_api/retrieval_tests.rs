@@ -48,6 +48,42 @@ async fn retrieval_is_disabled_without_explicit_typed_options() {
 }
 
 #[tokio::test]
+async fn explicit_disable_clears_preconfigured_retrieval_without_calling_the_provider() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("source.rs"), "eligible source\n").unwrap();
+    let provider = Arc::new(BlockingProvider::new());
+    let provider_port: Arc<dyn EmbeddingProvider> = provider.clone();
+    let options = SessionOptions::new()
+        .with_workspace_retrieval(WorkspaceRetrievalOptions::new(provider_port))
+        .without_workspace_retrieval();
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+    let session = agent
+        .session_async(workspace.path().to_string_lossy(), Some(options))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        session.workspace_retrieval_status().phase,
+        WorkspaceRetrievalPhase::Disabled
+    );
+    let search = session
+        .tool_definitions()
+        .into_iter()
+        .find(|tool| tool.name == "search")
+        .unwrap();
+    assert_eq!(
+        search.parameters["properties"]["mode"]["enum"],
+        serde_json::json!(["grep", "glob", "bm25"])
+    );
+    assert_eq!(provider.calls.load(Ordering::Acquire), 0);
+
+    session.close().await;
+    assert_eq!(provider.calls.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
 async fn enabled_session_exposes_and_executes_semantic_search() {
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -55,7 +91,18 @@ async fn enabled_session_exposes_and_executes_semantic_search() {
         "release temporary session vector memory\n",
     )
     .unwrap();
-    let provider: Arc<dyn EmbeddingProvider> = Arc::new(ImmediateProvider);
+    // ASCII container headers are intentionally used here: extension admission,
+    // not a coincidental UTF-8 decode failure, must keep these assets out.
+    std::fs::write(workspace.path().join("architecture.pdf"), "%PDF-1.7\n").unwrap();
+    std::fs::write(
+        workspace.path().join("recording.mp3"),
+        [b'I', b'D', b'3', 0xff, 0xfb, 0x90, 0x64],
+    )
+    .unwrap();
+    let embedded_inputs = Arc::new(AtomicUsize::new(0));
+    let provider: Arc<dyn EmbeddingProvider> = Arc::new(ImmediateProvider {
+        inputs: Arc::clone(&embedded_inputs),
+    });
     let options =
         SessionOptions::new().with_workspace_retrieval(WorkspaceRetrievalOptions::new(provider));
     let agent = Agent::from_config(super::tests::test_config())
@@ -66,6 +113,12 @@ async fn enabled_session_exposes_and_executes_semantic_search() {
         .await
         .unwrap();
     wait_for_ready(&session).await;
+    let status = session.workspace_retrieval_status();
+    assert_eq!(status.eligible_files, 1);
+    assert_eq!(status.indexed_files, 1);
+    assert_eq!(status.indexed_chunks, 1);
+    assert_eq!(status.vector_records, 1);
+    assert_eq!(embedded_inputs.load(Ordering::Acquire), 1);
 
     let search = session
         .tool_definitions()
@@ -341,7 +394,9 @@ struct BlockingProvider {
     cancellation: std::sync::Mutex<Option<CancellationToken>>,
 }
 
-struct ImmediateProvider;
+struct ImmediateProvider {
+    inputs: Arc<AtomicUsize>,
+}
 
 #[async_trait]
 impl EmbeddingProvider for ImmediateProvider {
@@ -354,6 +409,8 @@ impl EmbeddingProvider for ImmediateProvider {
         request: EmbeddingBatchRequest,
         _cancellation: CancellationToken,
     ) -> Result<EmbeddingBatchResponse, EmbeddingProviderError> {
+        self.inputs
+            .fetch_add(request.inputs().len(), Ordering::AcqRel);
         let vectors = request
             .inputs()
             .iter()
