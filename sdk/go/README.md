@@ -188,6 +188,10 @@ separator validation runs before provider descriptor access and callback
 registration. No string selector implements the interface, and custom range
 callbacks remain a trusted Rust-host extension.
 
+The shared [cross-SDK evaluation](../evaluation/README.md) documents the
+hermetic fixture gate and the opt-in real DeepSeek parity run. It uses one
+versioned corpus and normalized report contract across Node.js, Python, and Go.
+
 ## Agent-wide priority scheduling
 
 Every session created from one `Agent` shares the same execution capacity.

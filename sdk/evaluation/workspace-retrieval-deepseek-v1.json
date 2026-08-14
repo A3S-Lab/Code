@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "report_schema_version": 1,
+  "fixture_id": "workspace-retrieval-sdk-deepseek-v1",
+  "chat_model": "deepseek/deepseek-v4-pro",
+  "embedding": {
+    "provider": "sdk-local-evaluation",
+    "model": "semantic-fixture-v1",
+    "revision": "2026-08-15",
+    "dimension": 8,
+    "query_id": "workspace-query"
+  },
+  "chunking": {
+    "strategy": "recursive",
+    "target_bytes": 512,
+    "overlap_bytes": 64,
+    "separators": ["\n\n", "\n", ". ", " "]
+  },
+  "rerank": {
+    "requested_mode": "deterministic",
+    "algorithm": "rrf_k60+deterministic_mmr_v1"
+  },
+  "corpus": {
+    "digest_algorithm": "sha256(path-nul-content-nul-v1)",
+    "expected_digest": "3e9d739225fa8d320b2166ff4283604c72d940693c0ea9879f112abe77773565",
+    "text_file_count": 30,
+    "non_text_file_count": 3,
+    "expected_chunk_count": 39,
+    "unrelated_file_count": 24,
+    "boundary_filler_lines": 90,
+    "source_files": [
+      {
+        "path": "src/replay_fence.rs",
+        "content": "pub fn suppress_replayed_envelopes(sequence: u64, committed: u64) -> bool {\n    sequence <= committed\n}\n"
+      },
+      {
+        "path": "src/session_projection.rs",
+        "content": "pub fn release_ephemeral_projection(generation: &mut Option<u64>) {\n    generation.take();\n}\n"
+      },
+      {
+        "path": "src/reconnect_notes.rs",
+        "content": "// what routine prevents duplicate delivery after a transport reconnect\npub fn describe_reconnect_incident() {}\n"
+      },
+      {
+        "path": "src/cleanup_notes.rs",
+        "content": "// 会话结束后，哪个函数负责销毁只存在于内存中的检索投影\npub fn document_shutdown_checklist() {}\n"
+      },
+      {
+        "path": "src/queue_notes.rs",
+        "content": "// where is the backpressure ceiling for queued embedding work defined\npub const DOCUMENTED_QUEUE_OBSERVATION: usize = 999;\n"
+      }
+    ],
+    "non_text_files": [
+      {
+        "path": "assets/architecture.pdf",
+        "content": "%PDF-1.7\nNON_TEXT_ASSET_SENTINEL\n"
+      },
+      {
+        "path": "assets/slides.pptx",
+        "content": "PK OFFICE NON_TEXT_ASSET_SENTINEL\n"
+      },
+      {
+        "path": "assets/recording.mp3",
+        "content": "ID3 NON_TEXT_ASSET_SENTINEL\n"
+      }
+    ]
+  },
+  "tasks": [
+    {
+      "name": "reconnect_replay_guard",
+      "query": "what routine prevents duplicate delivery after a transport reconnect",
+      "expected_path": "src/replay_fence.rs",
+      "expected_identifier": "suppress_replayed_envelopes"
+    },
+    {
+      "name": "session_projection_cleanup",
+      "query": "会话结束后，哪个函数负责销毁只存在于内存中的检索投影",
+      "expected_path": "src/session_projection.rs",
+      "expected_identifier": "release_ephemeral_projection"
+    },
+    {
+      "name": "embedding_backpressure_limit",
+      "query": "where is the backpressure ceiling for queued embedding work defined",
+      "expected_path": "src/embedding_admission.rs",
+      "expected_identifier": "MAX_PENDING_EMBED_BATCHES"
+    }
+  ]
+}

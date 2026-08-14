@@ -172,6 +172,10 @@ validated by Core before indexing or provider execution. Primitive strategy
 names are rejected, and arbitrary custom range callbacks remain available only
 to trusted Rust hosts.
 
+The shared [cross-SDK evaluation](../evaluation/README.md) documents the
+hermetic fixture gate and the opt-in real DeepSeek parity run. It uses one
+versioned corpus and normalized report contract across Node.js, Python, and Go.
+
 ## Agent-Wide Priority Scheduling
 
 Every session created from one `Agent` shares the same execution capacity.

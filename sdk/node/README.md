@@ -130,6 +130,10 @@ Targets, overlap, and recursive separator lists are immutable and validated by
 Core before indexing or provider execution. Primitive strategy names are not
 accepted, and custom range callbacks remain a Rust-host-only extension.
 
+The shared [cross-SDK evaluation](../evaluation/README.md) documents the
+hermetic fixture gate and the opt-in real DeepSeek parity run. It uses one
+versioned corpus and normalized report contract across Node.js, Python, and Go.
+
 The synchronous `session()`, `resumeSession()`, `sessionForAgent()`,
 `sessionForWorker()`, `cancel()`, and `close()` methods remain available for
 compatibility. New event-loop applications should not use them.
