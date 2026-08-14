@@ -7,6 +7,7 @@ use crate::workspace::{LocalWorkspaceFile, LocalWorkspaceFileStatus, WorkspacePa
 use serde::Deserialize;
 use std::sync::Arc;
 
+mod chunking_strategies;
 mod hybrid_query;
 mod lifecycle;
 mod semantic;

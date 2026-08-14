@@ -128,6 +128,13 @@ The program preserves the existing search surfaces:
    embedding catalog uses an O(1)-construction read boundary that revalidates
    logical/resolved paths and hard-link count from the same open file handle;
    enabling retrieval does not silently narrow or broaden normal tool access.
+10. File classification precedes chunking. Only admitted UTF-8 text reaches a
+    splitter; document and media parsing remains a knowledge-compiler concern.
+11. Chunking is typed and pluggable, but Code retains chunk identity and range
+    validation. Host strategies return ranges, never pre-authoritative chunks.
+12. RRF and overlap-aware reranking consume Code-specific ranges, identifier
+    tiers, and channel evidence, so they belong in Code rather than the generic
+    A3S Memory vector kernel. A neural reranker is host-injected and default-off.
 
 ### 6.3 Target architecture
 
@@ -159,21 +166,25 @@ chunk boundaries or repeatedly reading the same unchanged file. Each chunk
 contains a stable identifier, workspace-relative path, line range, language,
 optional symbol context, content digest, file revision, and bounded text.
 
-Initial chunking is deterministic and language-independent, with both line and
-byte/token ceilings. Code Intelligence may later provide symbol boundaries as
-an optional enhancement, but indexing must not wait for an LSP server and must
-produce equivalent fallback chunks when Code Intelligence is unavailable.
+The compatibility chunker is deterministic and language-independent, with line
+and UTF-8 byte ceilings. Fixed UTF-8 byte windows and recursive prioritized
+separators add bounded overlap; a trusted Rust host can return custom token,
+syntax-tree, or domain ranges. Code validates complete coverage, forward
+progress, UTF-8 boundaries, and size/count budgets before computing stable IDs,
+line anchors, and digests. Code Intelligence may later provide symbol
+boundaries as an optional enhancement, but indexing must not wait for an LSP
+server and must produce equivalent fallback chunks when it is unavailable.
 
 ### 6.4 Subproject ownership
 
 | Subproject | Owns | Must not own |
 | --- | --- | --- |
-| `a3s-memory` | Public `VectorIndex` contract, vector/result types, exact in-memory implementation, dynamic dimensions, atomic partition replacement/removal, immutable query snapshots, deterministic ordering, and memory budgets | Workspaces, files, code chunking, embedding clients, model configuration, session lifecycle, hybrid ranking, or prompt context |
-| `a3s-code-core/workspace` | Chunk admission, shared `ChunkCatalog`, lexical index, manifest reconciliation, path/revision metadata, and structured `WorkspaceRetrieval` provider contract | Provider credentials, host UI, or durable cross-session cache policy |
+| `a3s-memory` | Public `VectorIndex` contract, vector/result types, exact in-memory implementation, dynamic dimensions, atomic partition replacement/removal, immutable query snapshots, deterministic ordering, and memory budgets | Workspaces, files, code chunking, embedding clients, model configuration, session lifecycle, hybrid/rerank policy, or prompt context |
+| `a3s-code-core/workspace` | Text admission, typed/custom chunk strategies, shared `ChunkCatalog`, lexical index, manifest reconciliation, path/revision metadata, and structured `WorkspaceRetrieval` provider contract | Non-text parsing, provider credentials, host UI, or durable cross-session cache policy |
 | `a3s-code-core/embedding` | Host-injected `EmbeddingProvider` contract, provider descriptor, batching, cancellation, bounded retry, and normalized embedding errors | Vector storage or workspace traversal |
 | `a3s-code-core/session` | `WorkspaceRetrievalRuntime`, asynchronous construction, prioritization, query-time promotion, cancellation, close/replace/resume behavior, and session isolation | Process-global mutable indexes or hidden persistence |
-| `a3s-code-core/tools` | `semantic`/`hybrid` search modes, RRF fusion, path filters, bounded source anchors, coverage/status metadata, and lexical fallback | A second chunker or direct filesystem traversal outside `WorkspaceServices` |
-| Code SDKs | Typed retrieval options, typed Embedding Provider injection, status/result DTOs, and lifecycle parity across Rust, Node, Python, and Go | Primitive backend-name options or SDK-specific ranking behavior |
+| `a3s-code-core/tools` | `semantic`/`hybrid` search modes, RRF fusion, bounded overlap-aware reranking, path filters, source anchors, coverage/status metadata, and lexical fallback | A second chunker or direct filesystem traversal outside `WorkspaceServices` |
+| Code SDKs | Typed retrieval/chunking options, typed Embedding Provider injection, status/result DTOs, and lifecycle parity across Rust, Node, Python, and Go | Primitive strategy/backend names or SDK-specific ranking behavior |
 | CLI/TUI and other hosts | ACL wiring, opt-in controls, readiness/degraded presentation, diagnostics, and provider-secret handling | Reimplementing indexing or making a host-specific search protocol |
 | Tests, benchmarks, and docs | Shared relevance fixtures, adversarial lifecycle tests, performance baselines, examples, and operator guidance | Production-only correctness assumptions that cannot be tested deterministically |
 
@@ -233,10 +244,12 @@ core/src/workspace/retrieval/
 ├── mod.rs                 # public provider boundary
 ├── types.rs               # requests, hits, status, revisions
 ├── chunk.rs               # deterministic bounded chunking
+├── chunking_strategy.rs   # built-in and host range splitters
 ├── catalog.rs             # shared immutable chunk snapshots
 ├── lexical.rs             # indexed BM25/postings
 ├── semantic_runtime.rs    # embedding queue and vector partitions
-└── hybrid.rs              # candidate fusion and diversity
+├── hybrid_rank.rs         # RRF and deterministic diversity
+└── rerank.rs              # planned bounded second-stage reranker
 ```
 
 The manifest owns the preceding text/non-text decision in
@@ -336,9 +349,27 @@ The query planner generates independent bounded candidate lists:
 | Semantic | Paraphrases and vocabulary mismatch | Query embedding against ready vector partitions |
 
 Hybrid ranking uses reciprocal-rank fusion over channel ranks instead of adding
-raw BM25 and cosine scores, which are not calibrated to one another. It then
-applies bounded per-file diversity and transparent recency/path hints. Exact
+raw BM25 and cosine scores, which are not calibrated to one another. The
+current first stage protects exact identifiers, applies deterministic
+path/range tie breakers, and returns at most two chunks per file. Exact
 identifier matches cannot be displaced solely by semantic similarity.
+
+Configurable overlap makes a second, in-memory stage necessary: RRF deduplicates
+chunk IDs but cannot recognize two windows that repeat the same source span or
+boilerplate. `CODE-R2` will rerank only a bounded fused pool. Its deterministic
+baseline combines interval overlap, normalized lexical shingles, channel
+agreement, and MMR-style diversity while preserving the exact-identifier tier.
+It must be deterministic across process runs, allocate from a checked scratch
+budget, and fall back to the unchanged RRF order on cancellation or failure.
+
+The deterministic reranker remains Code-owned because it consumes source
+ranges and retrieval-channel evidence. An optional
+`WorkspaceReranker: Send + Sync` host port may later admit a local
+cross-encoder over only the bounded top candidate pool. It is disabled by
+default, has explicit model identity,
+timeout, cancellation, memory and source-egress policy, and cannot make search
+unavailable when it fails. Code will not add ONNX, model downloads, or a remote
+rerank call to the baseline without benchmark evidence and a separate ADR.
 
 The initial tool rollout adds `semantic` for diagnosis/evaluation and `hybrid`
 for normal natural-language retrieval. Those modes appear in the dynamic tool
@@ -359,15 +390,18 @@ Configuration separates:
 - enablement and build/query budgets;
 - embedding provider/model/batch limits;
 - egress admission and exclude/include rules;
-- chunk size and corpus limits;
+- typed chunk strategy, overlap, custom separators, and corpus limits;
 - memory byte/record budgets;
-- search channel limits and fusion constants.
+- search channel, fusion, candidate-pool, rerank-time, and scratch limits.
 
 ACL remains the product configuration format. Provider secrets use existing
 secret resolution and are never copied into persisted session data. SDKs expose
 typed `WorkspaceRetrievalOptions` and provider objects; they do not accept raw
-backend names. All SDKs preserve the same defaults, validation errors, status
-states, and close semantics before the feature is declared stable.
+backend or chunk-strategy names. Rust hosts may inject a custom range splitter;
+Node, Python, and Go first expose typed built-in strategy objects and recursive
+separator lists. A safe callback lifecycle for cross-language custom splitters
+is a separate gate. All SDKs preserve the same defaults, validation errors,
+status states, and close semantics before the feature is declared stable.
 
 ### 6.9 Delivery gates and dependency order
 
@@ -378,15 +412,20 @@ Current implementation status:
 | `WSR-00` | Delivered | Versioned relevance and lifecycle fixtures, native BM25 CI baseline, reference sizing profile, locked budgets, and adversarial trust-boundary review |
 | `MEM-V1` | Delivered | A3S Memory `main` commit `3293f572` adds the public exact ephemeral vector kernel, streamlines the contiguous exact-scan hot path, and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, benchmark, Clippy, and rustdoc gates |
 | `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, per-file BM25 postings, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read BM25 path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
+| `CODE-C2` | Delivered | Rust Core adds compatible line, fixed UTF-8 window, recursive prioritized-separator, and host-injected custom range strategies; Code validates complete coverage and budgets, owns IDs/digests/lines, charges overlap memory, contains host failures, and wires explicit configuration into session-owned catalogs without allowing silent overrides of host-owned catalogs |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
 | `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `3293f572` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
 | `CODE-Q1` | Delivered | Structured semantic search through the unified `search` tool, bounded query embedding, immutable catalog/vector revision fencing, current-file digest and byte-range verification, coverage metadata, cancellation, and explicit fallback |
 | `CODE-H1` | Delivered | Exact literal, incremental BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
+| `SDK-C2` | Planned | Add typed line/fixed/recursive strategy objects and recursive separator lists to Node, Python, and Go; keep arbitrary custom splitters on the Rust host boundary until a bounded callback lifecycle is specified |
 | `HOST-R1` | Delivered | A3S CLI `main` commit `53821c8` adds default-off ACL wiring, a separate OpenAI-compatible embedding route, trusted-layer egress enforcement, bounded/redacted HTTP behavior, and session injection across exec, TUI rebuilds, and Code Web. It pins Code `47770057` and Memory `3293f572`; retrieval-focused tests pass `71/71`, the final post-pin filter passes `19/19`, all targets and Clippy compile, the release build passes, and the full Windows suite adds no failures relative to CLI baseline `f4377c2` |
-| `WSR-QA` | Delivered | Locked quality, adversarial egress/race/isolation/confidentiality/lifecycle suites, strict Clippy, the complete serial Core suite (`2746/0/18`), two release benchmark runs, final host release build, and the post-pin DeepSeek tool-loop E2E pass. Exact p95 is 8.294/12.302 ms and hybrid p95 is 51.145/54.429 ms |
+| `HOST-C2` | Planned | Add typed ACL selection for built-in chunk strategies, bounds, overlap, and recursive separators; invalid or unsupported strategy blocks fail before provider calls and retrieval remains default-off |
+| `WSR-QA` | Delivered | Locked quality, adversarial egress/race/isolation/confidentiality/lifecycle suites, strict Clippy, the complete serial Core suite (`2757/0/18`), two release benchmark runs, final host release build, and the post-pin DeepSeek tool-loop E2E pass. Exact p95 is 8.294/12.302 ms and hybrid p95 is 51.145/54.429 ms |
 | `WSR-EVAL1` | Delivered | Real `deepseek/deepseek-v4-pro` paired ablation passes enabled 3/3 versus disabled 0/3, Recall@5/MRR 1.0, a target beyond the 80-line boundary, 30 text files/31 chunks, three excluded non-text assets, zero non-text provider inputs, and complete post-close release |
 | `CODE-B2` | Planned | Coalesce ready chunks across files before provider execution while preserving stable IDs, per-file generation fencing, file-atomic publication, bounded flush latency, cancellation, and partial readiness; reduce the measured 30x request amplification to at most 1.10x the per-session batch-limit lower bound |
+| `CODE-R2` | Planned | Add bounded deterministic overlap/boilerplate deduplication and MMR-style reranking after RRF, with exact-tier protection, checked scratch memory, transparent evidence, and unchanged-order fallback; evaluate a host-injected local cross-encoder only after the baseline |
+| `WSR-EVAL2` | Planned | Compare line, fixed, recursive, and representative custom chunking with RRF-only and deterministic rerank variants on locked fixtures plus paired DeepSeek tasks; report quality, duplication, latency, memory, provider amplification, and end-task completion |
 | `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, DeepSeek task evaluation, SDK examples, ACL host guidance, text/knowledge-compiler boundary, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
 
 The detailed baseline and threat model are in
@@ -395,22 +434,29 @@ Release measurements and adversarial evidence are in
 [`manual/WORKSPACE_RETRIEVAL_QA.md`](manual/WORKSPACE_RETRIEVAL_QA.md).
 The paired real-model task and batching evidence is in
 [`manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md`](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md).
+The chunk strategy and rerank boundary is in
+[`manual/WORKSPACE_RETRIEVAL_CHUNKING.md`](manual/WORKSPACE_RETRIEVAL_CHUNKING.md).
 
 | Gate | Owner | Depends on | Deliverable | Exit criteria |
 | --- | --- | --- | --- | --- |
 | `WSR-00` | Code core/tests | None | Versioned retrieval fixture corpus, current BM25 baseline, sizing data, threat model, and locked quality/latency budgets | Baseline is reproducible in CI and separates identifier, paraphrase, CJK, and lifecycle cases |
 | `MEM-V1` | A3S Memory | `WSR-00` contract draft | Public vector types/trait and `InMemoryVectorIndex` | Contract, oracle, concurrency, invalid-input, budget, and cleanup tests pass without SQLite features |
 | `CODE-C1` | Code workspace | `WSR-00` | Shared chunk catalog, eligibility policy, deterministic chunker, lexical postings, and manifest reconciliation | Unchanged files are not reread; create/change/delete/rename and lag recovery are deterministic |
+| `CODE-C2` | Code workspace | `CODE-C1` | Typed built-in chunk strategies, validated Rust custom range port, overlap accounting, and session catalog configuration | UTF-8, gaps, progress, size/count, panic, ownership, deterministic-ID, and async session tests pass; the default line strategy is unchanged |
 | `CODE-E1` | Code model/session | `WSR-00` | Host-injected Embedding Provider contract, batching, cancellation, and typed errors | Deterministic fake provider proves dimensions, cancellation, retry bounds, and descriptor changes |
 | `CODE-S1` | Code session | `MEM-V1`, `CODE-C1`, `CODE-E1` | Asynchronous session retrieval runtime and vector partition lifecycle | Session creation does not wait; partial readiness works; close drops all owned tasks and memory |
 | `CODE-Q1` | Code tools | `CODE-S1` | Structured semantic search, verified snippets, status/coverage metadata, and fallback | No stale/deleted hit is rendered and existing search modes have no behavior regression |
 | `CODE-H1` | Code tools/intelligence | `CODE-Q1` | Exact, BM25, symbol, and semantic candidate fusion | Hybrid meets locked quality gates and preserves identifier precision |
 | `SDK-R1` | Code SDKs | `CODE-S1`, `CODE-Q1` | Rust/Node/Python/Go typed options, status DTOs, lifecycle parity, and examples | SDK alignment checks and language-specific integration tests pass |
+| `SDK-C2` | Code SDKs | `CODE-C2` | Typed line/fixed/recursive chunk options in Node/Python/Go | Cross-SDK fixtures produce identical ranges and reject identical invalid configurations; no primitive strategy-name option is accepted |
 | `HOST-R1` | CLI/TUI hosts | `SDK-R1` | ACL wiring, readiness/degraded diagnostics, and explicit enable/disable controls | A user can identify disabled, building, partial, ready, and degraded states without debug logs |
+| `HOST-C2` | CLI/TUI hosts | `SDK-C2` | ACL chunk strategy, overlap, separator, and budget configuration | Omitted config preserves line defaults; invalid config fails before source/provider egress; effective non-sensitive settings are observable |
 | `WSR-QA` | Code tests/benchmarks | `CODE-H1`, `SDK-R1` | Adversarial E2E, performance benchmark, soak, and failure-injection suite | All release gates in section 6.10 pass on the reference profiles |
 | `WSR-DOC` | Memory, Code, hosts | `WSR-QA` | README, roadmap status, ACL reference, SDK examples, privacy guidance, and migration notes | Examples execute and no obsolete query-time-BM25 or sqlite-vec guidance remains |
 | `WSR-EVAL1` | Code real-model tests | `HOST-R1`, `WSR-QA` | Paired enabled/disabled DeepSeek task evaluation with chunk and non-text adversaries | Exact completion improves, locked retrieval metrics pass, non-text egress is zero, and close releases every vector |
 | `CODE-B2` | Code semantic runtime | `WSR-EVAL1` | Session-local cross-file embedding batch coordinator and amplification metrics | At most 1.10x the per-session batch-limit request lower bound with unchanged quality, lifecycle, and time-to-first-partition gates |
+| `CODE-R2` | Code ranking | `CODE-C2`, `CODE-H1` | Deterministic bounded second-stage reranker and optional typed host port | Identifier quality never regresses; duplicate evidence falls on the overlap fixture; p95/scratch limits pass; failure returns original RRF order |
+| `WSR-EVAL2` | Code tests/real model | `CODE-R2`, `HOST-C2` | Strategy/rerank matrix with deterministic and DeepSeek task evidence | Every metric in the locked report is populated and no variant ships as default without a statistically and operationally meaningful gain |
 
 The parallelizable dependency shape is:
 
@@ -425,6 +471,34 @@ WSR-00 ─────────────────┼─> CODE-C1 ──
 `MEM-V1`, `CODE-C1`, and `CODE-E1` should be developed in parallel after their
 shared types and invariants are frozen. SDK and host work starts from the
 versioned Code contract, not from private runtime structs.
+
+After `CODE-C2`, `SDK-C2` then `HOST-C2` carry only the typed built-ins across
+language and ACL boundaries. `CODE-R2` can proceed in parallel with that SDK
+work because it consumes the stable chunk/rank contract. `WSR-EVAL2` starts
+only after both paths meet: the real host must select strategies, and Code must
+report the rerank variant used.
+
+`CODE-R2` executes in this order:
+
+1. Lock RRF-only fixtures for overlapping ranges, repeated boilerplate, exact
+   identifiers, same-file symbols, and cross-file paraphrases. Record
+   Recall@5/10, MRR, nDCG@10, duplicate-evidence rate, latency, and scratch
+   memory before changing ranking.
+2. Bound the fused input pool and feature bytes, then compute interval overlap
+   and normalized lexical shingles without retaining another copy of source
+   text or vectors.
+3. Add deterministic MMR-style selection with exact-tier protection and stable
+   path/range/ID tie breakers. Cancellation, allocation failure, or invalid
+   host output returns the original RRF order.
+4. Expose algorithm/version and bounded diagnostics without queries, source
+   text, vectors, or model inputs in logs. Run adversarial determinism, panic,
+   timeout, memory, and stale-revision tests.
+5. Evaluate an optional host-injected local cross-encoder only against the
+   deterministic baseline. It must be default-off and cannot download a model,
+   make an undeclared network call, or change exact-identifier precedence.
+6. Promote a rerank default only if locked identifier quality is unchanged,
+   duplicate evidence falls materially, nDCG/task completion improves, and
+   p95 latency plus scratch-memory gates pass on the reference profile.
 
 `CODE-B2` is a post-release optimization and executes in this order:
 
@@ -468,6 +542,12 @@ later gate may not silently weaken them to make an implementation pass.
   plus BM25 baselines.
 - Path filters, CJK queries, split identifiers, repeated boilerplate, and same
   symbol names in different modules have dedicated regression cases.
+- Line, fixed-window, recursive-separator, and representative custom strategies
+  have locked byte-range fixtures. Every range set is complete, gap-free,
+  UTF-8-safe, deterministic, and within file/catalog budgets.
+- `CODE-R2` reports nDCG@10 and duplicate-evidence rate in addition to Recall
+  and MRR. Exact-identifier MRR/Recall may not regress relative to RRF-only, and
+  rerank failure must reproduce the original RRF order byte-for-byte.
 
 #### Latency and resources
 
@@ -477,12 +557,19 @@ later gate may not silently weaken them to make an implementation pass.
   384-dimensional records has release-mode p95 at or below 30 ms.
 - Hybrid local ranking, excluding external query-embedding network latency and
   source reads, has p95 at or below 100 ms for the same corpus.
+- The deterministic second-stage reranker examines at most 100 fused candidates,
+  adds at most 10 ms p95 on the reference profile, and uses at most 4 MiB of
+  checked per-query scratch memory. A host neural reranker has a separate,
+  explicit budget and is never included in this baseline claim.
 - The default session budget is bounded; reaching it produces explicit partial
   coverage and never unbounded allocation. The initial target ceiling is
   256 MiB for catalog, lexical, and vector indexes combined.
 - Repeated queries do not reread or re-embed unchanged files.
 - Non-text workspace assets produce zero chunks, vectors, and Embedding Provider
   inputs; their parsing belongs to the separate knowledge compiler.
+- Intentional chunk overlap is included in retained-text, vector-record, provider
+  input, and request-amplification measurements; metrics must not count only
+  unique source bytes.
 - After `CODE-B2`, document-provider request amplification is at most 1.10x the
   per-session lower bound implied by input, text-byte, and vector-byte batch
   limits, without delaying synchronous session construction.
@@ -536,11 +623,15 @@ index is session-ephemeral.
 - Turning workspace chunks into `MemoryItem` values or applying memory
   importance, consolidation, access-count, or prune behavior to source code.
 - Making A3S Memory depend on model SDKs, HTTP clients, workspace APIs, or Code.
+- Moving Code-specific RRF/MMR, exact-identifier protection, overlap policy, or
+  reranker model lifecycle into A3S Memory.
 - Replacing `grep`, `glob`, saved-file Code Intelligence, or authoritative file
   reads with semantic similarity.
 - Shipping HNSW, product quantization, persistent caches, cross-session reuse,
   or automatic local-model downloads before baseline measurements demonstrate
   a concrete need and a separate ADR defines lifecycle and security.
+- Enabling a neural or remote reranker by default, or sending source text to a
+  second endpoint merely because an Embedding Provider is configured.
 - Sending workspace content to any embedding endpoint merely because a chat
   model is configured.
 - Parsing, OCR, transcription, archive expansion, or direct vectorization of

@@ -134,10 +134,36 @@ fn resolve_workspace_services(
     input: &SessionCapabilityInput<'_>,
     session_lifetime: tokio_util::sync::CancellationToken,
 ) -> Result<ResolvedWorkspaceServices> {
+    let retrieval_options = input.opts.workspace_retrieval.clone();
+    if input.opts.workspace_services.is_some()
+        && retrieval_options
+            .as_ref()
+            .is_some_and(|options| options.has_catalog_configuration())
+    {
+        return Err(CodeError::SessionConfiguration {
+            field: "workspace_retrieval",
+            message: "chunking strategy and catalog limits must be configured on the host-supplied workspace chunk catalog"
+                .to_owned(),
+        });
+    }
     let (mut services, owned_workspace_backend) = match &input.opts.workspace_services {
         Some(services) => (Arc::clone(services), None),
-        None if input.opts.workspace_retrieval.is_some() => {
+        None if retrieval_options.is_some() => {
             let backend = crate::workspace::ManifestWorkspaceBackend::new(input.workspace);
+            if let Some(options) = retrieval_options.as_ref() {
+                if options.has_catalog_configuration() {
+                    backend
+                        .configure_chunk_catalog(
+                            options.chunking_strategy.clone().unwrap_or_default(),
+                            options.chunking.unwrap_or_default(),
+                            options.catalog_limits.unwrap_or_default(),
+                        )
+                        .map_err(|error| CodeError::SessionInitialization {
+                            resource: SessionBuildResource::WorkspaceRetrieval,
+                            message: error.to_string(),
+                        })?;
+                }
+            }
             (
                 crate::workspace::WorkspaceServices::local_with_retrieval_backend(Arc::clone(
                     &backend,
@@ -158,7 +184,7 @@ fn resolve_workspace_services(
         });
     }
 
-    let Some(options) = input.opts.workspace_retrieval.clone() else {
+    let Some(options) = retrieval_options else {
         return Ok(ResolvedWorkspaceServices {
             services,
             retrieval: None,

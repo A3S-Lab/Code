@@ -21,9 +21,20 @@ impl LocalWorkspaceCatalogRuntime {
         manifest: Arc<LocalWorkspaceManifest>,
         file_system: Arc<dyn WorkspaceFileSystem>,
     ) -> Arc<Self> {
+        Self::start_with_catalog(
+            manifest,
+            file_system,
+            WorkspaceChunkCatalog::default_catalog(),
+        )
+    }
+
+    pub(crate) fn start_with_catalog(
+        manifest: Arc<LocalWorkspaceManifest>,
+        file_system: Arc<dyn WorkspaceFileSystem>,
+        catalog: Arc<WorkspaceChunkCatalog>,
+    ) -> Arc<Self> {
         let snapshots = manifest.subscribe();
         let changes = manifest.subscribe_changes();
-        let catalog = WorkspaceChunkCatalog::default_catalog();
         let lifetime = CancellationToken::new();
         let runtime = Arc::new(Self {
             catalog: Arc::clone(&catalog),

@@ -6,6 +6,7 @@
 
 mod catalog;
 mod chunk;
+mod chunking_strategy;
 mod eligibility;
 mod hybrid_candidates;
 mod hybrid_query;
@@ -22,6 +23,10 @@ mod verification;
 
 pub use catalog::{ChunkCatalogSnapshot, WorkspaceChunkCatalog};
 pub(crate) use chunk::digest_content;
+pub use chunking_strategy::{
+    CustomWorkspaceChunkingStrategy, FixedWindowChunkingOptions, RecursiveChunkingOptions,
+    WorkspaceChunkRange, WorkspaceChunkingError, WorkspaceChunkingInput, WorkspaceChunkingStrategy,
+};
 pub use eligibility::WorkspaceEligibilityPolicy;
 pub use hybrid_types::{
     WorkspaceHybridChannelRank, WorkspaceHybridChannelStatus, WorkspaceHybridFallbackReason,

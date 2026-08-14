@@ -1,8 +1,9 @@
-use super::chunk::{chunk_file, ChunkFileRequest};
+use super::chunk::{chunk_file_with_strategy, ChunkFileRequest};
 use super::lexical::{search_catalog, LexicalPartition, LexicalSearchRequest, LexicalSearchResult};
 use super::types::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunk, WorkspaceIndexError, WorkspaceIndexResult,
 };
+use super::WorkspaceChunkingStrategy;
 use crate::workspace::{LocalWorkspaceFile, LocalWorkspaceFileStatus, WorkspacePath};
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
@@ -92,6 +93,7 @@ impl ChunkCatalogSnapshot {
 /// Atomic, bounded, session-owned catalog of workspace source chunks.
 pub struct WorkspaceChunkCatalog {
     chunking: ChunkingConfig,
+    chunking_strategy: WorkspaceChunkingStrategy,
     limits: ChunkCatalogLimits,
     state: RwLock<Arc<CatalogState>>,
     updates: watch::Sender<ChunkCatalogSnapshot>,
@@ -102,6 +104,7 @@ impl std::fmt::Debug for WorkspaceChunkCatalog {
         formatter
             .debug_struct("WorkspaceChunkCatalog")
             .field("chunking", &self.chunking)
+            .field("chunking_strategy", &self.chunking_strategy)
             .field("limits", &self.limits)
             .field("snapshot", &self.snapshot().ok())
             .finish()
@@ -113,7 +116,19 @@ impl WorkspaceChunkCatalog {
         chunking: ChunkingConfig,
         limits: ChunkCatalogLimits,
     ) -> WorkspaceIndexResult<Arc<Self>> {
+        Self::new_with_strategy(WorkspaceChunkingStrategy::Lines, chunking, limits)
+    }
+
+    /// Construct a bounded catalog with an explicit text splitting strategy.
+    pub fn new_with_strategy(
+        chunking_strategy: WorkspaceChunkingStrategy,
+        chunking: ChunkingConfig,
+        limits: ChunkCatalogLimits,
+    ) -> WorkspaceIndexResult<Arc<Self>> {
         let chunking = chunking.validate()?;
+        chunking_strategy
+            .validate_for(chunking)
+            .map_err(|error| super::chunking_strategy::map_strategy_error("<catalog>", error))?;
         let limits = limits.validate()?;
         let state = Arc::new(CatalogState::default());
         let (updates, _) = watch::channel(ChunkCatalogSnapshot {
@@ -121,6 +136,7 @@ impl WorkspaceChunkCatalog {
         });
         Ok(Arc::new(Self {
             chunking,
+            chunking_strategy,
             limits,
             state: RwLock::new(state),
             updates,
@@ -134,6 +150,7 @@ impl WorkspaceChunkCatalog {
         });
         Arc::new(Self {
             chunking: ChunkingConfig::default(),
+            chunking_strategy: WorkspaceChunkingStrategy::Lines,
             limits: ChunkCatalogLimits::default(),
             state: RwLock::new(state),
             updates,
@@ -180,6 +197,7 @@ impl WorkspaceChunkCatalog {
             source_revision,
             content,
             self.chunking,
+            &self.chunking_strategy,
         )?);
         let mut state = self
             .state
@@ -221,6 +239,10 @@ impl WorkspaceChunkCatalog {
 
     pub(crate) fn chunking(&self) -> ChunkingConfig {
         self.chunking
+    }
+
+    pub(crate) fn chunking_strategy(&self) -> WorkspaceChunkingStrategy {
+        self.chunking_strategy.clone()
     }
 
     pub(crate) fn limits(&self) -> ChunkCatalogLimits {
@@ -385,8 +407,9 @@ impl CatalogFile {
         source_revision: u64,
         content: &str,
         chunking: ChunkingConfig,
+        chunking_strategy: &WorkspaceChunkingStrategy,
     ) -> WorkspaceIndexResult<Self> {
-        let chunked = chunk_file(
+        let chunked = chunk_file_with_strategy(
             ChunkFileRequest {
                 path: &manifest.path,
                 language: manifest.language.as_deref(),
@@ -394,6 +417,7 @@ impl CatalogFile {
                 content,
             },
             chunking,
+            chunking_strategy,
         )?;
         let chunks: Arc<[Arc<WorkspaceChunk>]> = Arc::from(chunked.chunks);
         let lexical = Arc::new(LexicalPartition::build(Arc::clone(&chunks)));

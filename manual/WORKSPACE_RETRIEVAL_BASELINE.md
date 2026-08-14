@@ -55,6 +55,11 @@ and immutable-snapshot overhead. They demonstrate why a bounded exact
 in-memory scan is a reasonable first implementation; they do not replace the
 25,000-record release benchmark.
 
+This locked profile uses the compatibility line strategy. Fixed, recursive,
+or custom strategies must report their own chunk count, retained bytes
+including overlap, vector records, provider inputs, and request amplification;
+they may not reuse the non-overlap figures above.
+
 Reference machine:
 
 - Intel Xeon w5-2445, 10 physical and 20 logical cores;
@@ -162,10 +167,10 @@ panic containment, and diagnostic redaction.
 
 Code pins A3S Memory to commit `3293f572` and creates one exact in-memory
 vector index per enabled session. The typed `WorkspaceRetrievalOptions` accepts
-a provider object, embedding limits, vector record/byte budgets, and a bounded
-shutdown timeout; it does not expose a string backend selector. Retrieval is
-disabled by default and the synchronous compatibility session constructor
-rejects it as an async-only resource.
+a provider object, embedding limits, vector record/byte budgets, catalog
+chunking strategy/limits, and a bounded shutdown timeout; it does not expose a
+string backend selector. Retrieval is disabled by default and the synchronous
+compatibility session constructor rejects it as an async-only resource.
 
 An enabled local session creates one manifest-backed workspace bundle and
 shares its chunk catalog with lexical and semantic projections. A custom
@@ -248,3 +253,23 @@ query/document pairs, preventing zero-score corpus padding from satisfying the
 Top-10 gate. Hybrid reaches Recall@10 and MRR 1.0 (BM25: 0.6667), preserves
 identifier first rank, and has dedicated stale-source, semantic-degradation,
 symbol-mapping, diversity, determinism, and redaction coverage.
+
+## CODE-C2 implementation evidence
+
+`WorkspaceChunkingStrategy` preserves the default line behavior and adds
+UTF-8-safe fixed windows, recursive prioritized separators, and a trusted Rust
+host custom range port. Fixed and recursive overlap is bounded and counts as
+retained catalog text and as independent vector records/provider inputs.
+
+Code accepts ranges only after checking complete coverage, no gaps, monotonic
+starts and ends, UTF-8 boundaries, per-range bytes, and per-file count. It then
+computes line anchors, content digests, stable IDs, and revisions itself. Host
+failures and panics become bounded catalog failures. Focused tests cover ASCII
+and multibyte boundaries, separator order, overlap accounting, invalid and
+panicking hosts, deterministic identity, session-owned async construction, and
+rejection of session overrides for a host-owned catalog.
+
+The detailed contract and selection guidance are in
+[`WORKSPACE_RETRIEVAL_CHUNKING.md`](WORKSPACE_RETRIEVAL_CHUNKING.md). The
+current RRF first stage remains unchanged; `CODE-R2` owns the planned
+overlap-aware deterministic reranker and its quality/resource gates.

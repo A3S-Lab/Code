@@ -133,6 +133,10 @@ pub enum WorkspaceIndexError {
     InvalidConfig(String),
     #[error("workspace file '{path}' produced more than {limit} chunks")]
     TooManyChunks { path: String, limit: usize },
+    #[error("custom chunking strategy failed for workspace file '{path}'")]
+    ChunkingStrategyFailed { path: String },
+    #[error("chunking strategy returned invalid ranges for workspace file '{path}': {reason}")]
+    InvalidChunkRanges { path: String, reason: &'static str },
     #[error(
         "workspace retrieval {resource} budget exceeded: requested {requested}, limit {limit}"
     )]

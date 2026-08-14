@@ -307,6 +307,46 @@ async fn custom_workspace_without_a_catalog_is_rejected_before_provider_calls() 
 }
 
 #[tokio::test]
+async fn session_chunking_options_cannot_override_a_host_owned_catalog() {
+    let backend = Arc::new(EmptyWorkspace);
+    let catalog = crate::WorkspaceChunkCatalog::new(
+        crate::ChunkingConfig::default(),
+        crate::ChunkCatalogLimits::default(),
+    )
+    .unwrap();
+    let services =
+        WorkspaceServices::builder(WorkspaceRef::new("remote", "remote://workspace"), backend)
+            .chunk_catalog(catalog)
+            .build();
+    let provider = Arc::new(BlockingProvider::new());
+    let provider_port: Arc<dyn EmbeddingProvider> = provider.clone();
+    let strategy = crate::WorkspaceChunkingStrategy::FixedWindow(
+        crate::FixedWindowChunkingOptions::new(512, 64).unwrap(),
+    );
+    let options = SessionOptions::new()
+        .with_workspace_backend(services)
+        .with_workspace_retrieval(
+            WorkspaceRetrievalOptions::new(provider_port).with_chunking_strategy(strategy),
+        );
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+
+    let error = agent
+        .session_async("remote-placeholder", Some(options))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::CodeError::SessionConfiguration {
+            field: "workspace_retrieval",
+            ..
+        }
+    ));
+    assert_eq!(provider.calls.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
 async fn custom_workspace_without_read_capability_is_rejected() {
     let backend = Arc::new(EmptyWorkspace);
     let catalog = crate::WorkspaceChunkCatalog::new(
@@ -396,6 +436,37 @@ struct BlockingProvider {
 
 struct ImmediateProvider {
     inputs: Arc<AtomicUsize>,
+}
+
+#[tokio::test]
+async fn session_owned_workspace_uses_the_explicit_chunking_strategy() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("window.txt"), "abcdefghij").unwrap();
+    let embedded_inputs = Arc::new(AtomicUsize::new(0));
+    let provider: Arc<dyn EmbeddingProvider> = Arc::new(ImmediateProvider {
+        inputs: Arc::clone(&embedded_inputs),
+    });
+    let strategy = crate::WorkspaceChunkingStrategy::FixedWindow(
+        crate::FixedWindowChunkingOptions::new(4, 1).unwrap(),
+    );
+    let options = SessionOptions::new().with_workspace_retrieval(
+        WorkspaceRetrievalOptions::new(provider).with_chunking_strategy(strategy),
+    );
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+    let session = agent
+        .session_async(workspace.path().to_string_lossy(), Some(options))
+        .await
+        .unwrap();
+    wait_for_ready(&session).await;
+
+    let status = session.workspace_retrieval_status();
+    assert_eq!(status.indexed_files, 1);
+    assert_eq!(status.indexed_chunks, 3);
+    assert_eq!(status.vector_records, 3);
+    assert_eq!(embedded_inputs.load(Ordering::Acquire), 3);
+    session.close().await;
 }
 
 #[async_trait]

@@ -6,7 +6,10 @@
 //! every agent tool call. File I/O, command execution, and git operations still
 //! delegate to [`LocalWorkspaceBackend`].
 
-use super::retrieval::{LocalWorkspaceCatalogRuntime, WorkspaceChunkCatalog};
+use super::retrieval::{
+    ChunkCatalogLimits, ChunkingConfig, LocalWorkspaceCatalogRuntime, WorkspaceChunkCatalog,
+    WorkspaceChunkingStrategy, WorkspaceIndexError,
+};
 use super::{
     escape_control_chars_for_display, validate_relative_pattern, CommandOutput, CommandRequest,
     LocalWorkspaceAccessPolicy, LocalWorkspaceBackend, WorkspaceCommandRunner, WorkspaceDirEntry,
@@ -469,6 +472,28 @@ impl ManifestWorkspaceBackend {
                 LocalWorkspaceCatalogRuntime::start(Arc::clone(&self.manifest), file_system)
             })
             .catalog()
+    }
+
+    pub(crate) fn configure_chunk_catalog(
+        &self,
+        strategy: WorkspaceChunkingStrategy,
+        chunking: ChunkingConfig,
+        limits: ChunkCatalogLimits,
+    ) -> Result<Arc<WorkspaceChunkCatalog>, WorkspaceIndexError> {
+        let catalog = WorkspaceChunkCatalog::new_with_strategy(strategy, chunking, limits)?;
+        let file_system: Arc<dyn WorkspaceFileSystem> = self.catalog_local.clone();
+        let runtime = LocalWorkspaceCatalogRuntime::start_with_catalog(
+            Arc::clone(&self.manifest),
+            file_system,
+            Arc::clone(&catalog),
+        );
+        if let Err(runtime) = self.catalog_runtime.set(runtime) {
+            runtime.shutdown();
+            return Err(WorkspaceIndexError::InvalidConfig(
+                "workspace chunk catalog was already initialized".to_owned(),
+            ));
+        }
+        Ok(catalog)
     }
 
     /// Stop the local manifest and any lazily enabled catalog projection.

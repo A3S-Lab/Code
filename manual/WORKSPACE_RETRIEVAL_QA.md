@@ -168,10 +168,11 @@ Additional deterministic suites cover source-egress hard-link rejection,
 path eligibility, symlink and resolved-path confinement, catalog
 reconciliation, semantic generation fencing, source verification, hybrid
 quality, provider validation/retry/cancellation/panic behavior, and SDK/bridge
-lifecycle parity. After the hard-link and same-open-handle defenses, the
-complete Core library suite passed serially with 2,746 passed, 0 failed, and
-18 ignored in 161.17 seconds. Strict all-target Clippy, formatting, the focused
-security suites, and both release benchmarks pass.
+lifecycle parity. The later typed chunk-strategy suite adds fixed, recursive,
+custom, overlap-accounting, invalid-range, panic, Unicode, ownership, and async
+session cases. The complete Core library suite now passes serially with 2,757
+passed, 0 failed, and 18 ignored in 167.33 seconds. Strict all-target Clippy,
+formatting, the focused security suites, and both release benchmarks pass.
 
 The three `agent_release_manifest` integration failures also reproduce on the
 clean pre-WSR Code baseline and are tracked as unrelated release-contract

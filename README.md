@@ -332,13 +332,18 @@ workspace backends keep the compatible scanner path unless they provide a
 catalog capability. Plain manifest and Code Intelligence sessions do not start
 this additional catalog work.
 
-The catalog has deterministic, non-overlapping, UTF-8-safe line/byte chunking
-(80 lines or 64 KiB by default, at most 128 chunks per file), immutable query
-snapshots, file/chunk/text/lexical-index budgets, and default exclusions for
-generated, non-text, oversized, credential, key, and `.a3s` control paths. File
-changes are tombstoned before replacement work; a failed read reduces indexed
-coverage instead of returning stale text. The catalog is ephemeral and is
-released with its manifest-backed workspace backend.
+The compatibility default is deterministic, non-overlapping, UTF-8-safe
+line/byte chunking (80 lines or 64 KiB, at most 128 chunks per file). Typed
+strategies also support fixed byte windows, recursive caller-ordered separators
+with bounded overlap, and a Rust host-supplied custom range splitter. Code
+validates complete coverage, forward progress, UTF-8 boundaries, and all size
+budgets, then owns stable IDs, line anchors, digests, and revisions. Overlap is
+charged to retained-text and vector-record budgets. Catalog snapshots are
+immutable and exclude generated, non-text, oversized, credential, key, and
+`.a3s` control paths. File changes are tombstoned before replacement work; a
+failed read reduces indexed coverage instead of returning stale text. The
+catalog is ephemeral and is released with its manifest-backed workspace
+backend.
 
 Hosts can implement the public `EmbeddingProvider` trait without adding a
 model SDK to A3S Memory. `EmbeddingExecutor` validates the provider/model
@@ -371,7 +376,10 @@ disabled. Clearing the option constructs no index and makes no provider call.
 Only manifest-admitted UTF-8 text and source files enter the chunk catalog.
 Non-text assets are excluded before chunking and embeddings; document parsing,
 OCR, and knowledge-artifact compilation belong to the separate knowledge
-compiler boundary.
+compiler boundary. See
+[Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md) for
+strategy selection, custom range invariants, asynchronous construction, and
+the overlap-aware reranking plan.
 
 Hybrid mode creates independent exact-literal, incremental BM25, optional Code
 Intelligence symbol, and positive-similarity semantic candidate lists. It
@@ -381,6 +389,9 @@ deterministic tie breakers and a two-chunk-per-file cap keep results stable and
 diverse. Fusion precedes source access, so each selected path is reread at most
 once for full-digest and exact-byte-range verification. Per-channel candidate,
 truncation, status, and fallback metadata make partial operation explicit.
+RRF is the current first-stage in-memory reranker. A bounded second stage for
+overlap/boilerplate deduplication and MMR-style diversity is planned in Code;
+it is not a responsibility of the generic A3S Memory vector kernel.
 
 The locked nine-query fixture preserves the original BM25 baseline and adds an
 independent hybrid result set whose deterministic provider admits only
@@ -614,6 +625,7 @@ the v1 schema.
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md) | Architecture, quality budgets, lifecycle, and adversarial trust boundaries |
 | [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md) | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope |
 | [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) | Paired task ablation, chunk/non-text boundaries, metrics, and batching follow-up |
+| [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md) | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan |
 | [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md) | Filesystem-first tool and agent definitions |
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) | Admission schema, identity, compatibility, and security boundary |
 | [Changelog](CHANGELOG.md) | Release history and migration-relevant changes |

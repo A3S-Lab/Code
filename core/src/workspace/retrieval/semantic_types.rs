@@ -1,6 +1,7 @@
 use crate::embedding::{
     EmbeddingError, EmbeddingExecutorConfig, EmbeddingProvider, EmbeddingProviderDescriptor,
 };
+use crate::workspace::{ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkingStrategy};
 use a3s_memory::vector::VectorIndexError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -66,6 +67,9 @@ pub struct WorkspaceRetrievalOptions {
     pub(crate) provider: Arc<dyn EmbeddingProvider>,
     pub(crate) embedding: EmbeddingExecutorConfig,
     pub(crate) index_limits: WorkspaceSemanticIndexLimits,
+    pub(crate) chunking_strategy: Option<WorkspaceChunkingStrategy>,
+    pub(crate) chunking: Option<ChunkingConfig>,
+    pub(crate) catalog_limits: Option<ChunkCatalogLimits>,
 }
 
 impl WorkspaceRetrievalOptions {
@@ -75,6 +79,9 @@ impl WorkspaceRetrievalOptions {
             provider,
             embedding: EmbeddingExecutorConfig::default(),
             index_limits: WorkspaceSemanticIndexLimits::default(),
+            chunking_strategy: None,
+            chunking: None,
+            catalog_limits: None,
         }
     }
 
@@ -89,6 +96,33 @@ impl WorkspaceRetrievalOptions {
         self.index_limits = limits;
         self
     }
+
+    /// Select the deterministic text splitter used by the session-owned
+    /// workspace catalog.
+    ///
+    /// This option configures the local catalog A3S Code creates for the
+    /// session. A host that supplies [`crate::workspace::WorkspaceServices`]
+    /// owns that catalog and must configure its strategy when constructing it.
+    pub fn with_chunking_strategy(mut self, strategy: WorkspaceChunkingStrategy) -> Self {
+        self.chunking_strategy = Some(strategy);
+        self
+    }
+
+    /// Override hard per-file chunk size and count limits.
+    pub fn with_chunking_config(mut self, config: ChunkingConfig) -> Self {
+        self.chunking = Some(config);
+        self
+    }
+
+    /// Override hard memory bounds for the session-owned text catalog.
+    pub fn with_catalog_limits(mut self, limits: ChunkCatalogLimits) -> Self {
+        self.catalog_limits = Some(limits);
+        self
+    }
+
+    pub(crate) fn has_catalog_configuration(&self) -> bool {
+        self.chunking_strategy.is_some() || self.chunking.is_some() || self.catalog_limits.is_some()
+    }
 }
 
 impl fmt::Debug for WorkspaceRetrievalOptions {
@@ -98,6 +132,9 @@ impl fmt::Debug for WorkspaceRetrievalOptions {
             .field("provider", &"<host-injected>")
             .field("embedding", &self.embedding)
             .field("index_limits", &self.index_limits)
+            .field("chunking_strategy", &self.chunking_strategy)
+            .field("chunking", &self.chunking)
+            .field("catalog_limits", &self.catalog_limits)
             .finish()
     }
 }

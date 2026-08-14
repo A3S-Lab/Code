@@ -36,15 +36,17 @@ use path::{
 pub(crate) use path::{escape_control_chars_for_display, validate_relative_pattern};
 pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict};
 pub use retrieval::{
-    ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, LexicalSearchHit,
-    LexicalSearchRequest, LexicalSearchResult, WorkspaceChunk, WorkspaceChunkCatalog,
-    WorkspaceChunkId, WorkspaceEligibilityPolicy, WorkspaceHybridChannelRank,
-    WorkspaceHybridChannelStatus, WorkspaceHybridFallbackReason, WorkspaceHybridSearchHit,
-    WorkspaceHybridSearchRequest, WorkspaceHybridSearchResult, WorkspaceIndexError,
-    WorkspaceRetrievalChannel, WorkspaceRetrievalError, WorkspaceRetrievalOptions,
-    WorkspaceRetrievalPhase, WorkspaceRetrievalResult, WorkspaceRetrievalRuntime,
-    WorkspaceRetrievalStatus, WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits,
-    WorkspaceSemanticSearchHit, WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult,
+    ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, CustomWorkspaceChunkingStrategy,
+    FixedWindowChunkingOptions, LexicalSearchHit, LexicalSearchRequest, LexicalSearchResult,
+    RecursiveChunkingOptions, WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceChunkId,
+    WorkspaceChunkRange, WorkspaceChunkingError, WorkspaceChunkingInput, WorkspaceChunkingStrategy,
+    WorkspaceEligibilityPolicy, WorkspaceHybridChannelRank, WorkspaceHybridChannelStatus,
+    WorkspaceHybridFallbackReason, WorkspaceHybridSearchHit, WorkspaceHybridSearchRequest,
+    WorkspaceHybridSearchResult, WorkspaceIndexError, WorkspaceRetrievalChannel,
+    WorkspaceRetrievalError, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
+    WorkspaceRetrievalResult, WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus,
+    WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
+    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult,
 };
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};

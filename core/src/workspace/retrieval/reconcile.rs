@@ -184,6 +184,7 @@ impl WorkspaceCatalogReconciler {
         let calls = reads.into_iter().map(|(manifest, previous)| {
             let file_system = Arc::clone(&self.file_system);
             let chunking = self.catalog.chunking();
+            let chunking_strategy = self.catalog.chunking_strategy();
             let source_revision = snapshot.version;
             async move {
                 let path = WorkspacePath::from_normalized(manifest.path.clone());
@@ -200,7 +201,13 @@ impl WorkspaceCatalogReconciler {
                         }
                         let build_manifest = manifest.clone();
                         let built = tokio::task::spawn_blocking(move || {
-                            CatalogFile::build(build_manifest, source_revision, &content, chunking)
+                            CatalogFile::build(
+                                build_manifest,
+                                source_revision,
+                                &content,
+                                chunking,
+                                &chunking_strategy,
+                            )
                         })
                         .await;
                         let result = match built {

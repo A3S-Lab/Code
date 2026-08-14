@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classification before chunking and embeddings, and a reproducible paired
   DeepSeek task evaluation covering multi-chunk retrieval, disabled ablation,
   non-text zero-egress, request amplification, and lifecycle metrics.
+- Added typed workspace text chunking strategies: the compatible line/byte
+  default, UTF-8-safe fixed windows, recursive prioritized separators with
+  bounded overlap, and a validated `Send + Sync` Rust host extension. Session-
+  owned catalogs accept explicit strategy and memory-limit configuration;
+  host-owned catalogs reject silent session overrides.
 
 ## [6.9.0] - 2026-08-12
 
