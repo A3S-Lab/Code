@@ -1,8 +1,8 @@
 # Workspace Retrieval Release Qualification
 
-Status: Core qualification passed on 2026-08-14. Final host dependency pinning
-and the post-pin DeepSeek CLI rerun remain before `WSR-QA` is marked delivered
-in `ROADMAP.md`.
+Status: Passed and delivered on 2026-08-14. A3S CLI `main` commit `53821c8`
+pins the qualified Code and Memory revisions, and the post-pin release build
+and DeepSeek CLI integration rerun passed.
 
 This report qualifies the first session-bound Workspace Retrieval (`WSR`)
 release across A3S Memory, A3S Code, and the A3S CLI host. The release uses an
@@ -187,6 +187,11 @@ and strict Clippy compiled. The complete Windows suite had the same 23
 pre-existing failures and 10 ignored tests as clean CLI baseline `f4377c2`,
 with no WSR regression.
 
+A3S CLI `main` commit `53821c8` pins Code `47770057` and Memory `3293f572`,
+applies the Memory package-local release optimization, and passed the final
+post-pin retrieval filter (19/19), formatting, all-target Clippy, and release
+build gates.
+
 ## Real DeepSeek integration
 
 The repository `.a3s/config.acl` was validated and inspected without printing
@@ -194,10 +199,11 @@ provider URLs, headers, environment-variable names, or secret values. It
 contained one provider, two models, default model
 `deepseek/deepseek-v4-pro`, retrieval disabled, and no source-egress grant.
 
-A current `a3s code exec` build then ran in JSONL/read-only mode against an
-isolated workspace. DeepSeek selected and completed one governed `Read` tool
-call and returned the expected dynamic `HOST-R1` commit marker `c8343d9` from
-the workspace ROADMAP. The run produced 137 events and reported retrieval as
+The final release `a3s 0.11.1` build then ran in JSONL/read-only mode against
+an isolated workspace. DeepSeek selected and completed exactly one governed
+`Read` tool call, executed no other tool, and returned the exact marker
+`WSR_FINAL_CODE_47770057_MEMORY_3293F572`. The run produced 79 events, one
+successful result, no invalid JSONL or stderr, and reported retrieval as
 disabled. This passes real chat, streaming/event, tool-selection, tool-result,
 and final-response compatibility without authorizing source embedding egress.
 
@@ -216,6 +222,7 @@ deterministic contract tests, while the real DeepSeek E2E is a CLI workflow.
 
 ## Release disposition
 
-Keep retrieval opt-in and source egress double-gated. Core qualification is
-passed. Do not mark `WSR-QA` or `WSR-DOC` delivered until documentation links,
-final dependency revisions, and the final DeepSeek CLI rerun all pass.
+Pass. Keep retrieval opt-in and source egress double-gated. The deterministic
+quality, adversarial, lifecycle, confidentiality, performance, host, release
+build, and real DeepSeek integration gates passed; `WSR-QA` and `WSR-DOC` are
+delivered.
