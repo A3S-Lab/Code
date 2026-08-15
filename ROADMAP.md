@@ -460,7 +460,7 @@ Current implementation status:
 | `CODE-RDY1` | Delivered | Core adds an opt-in event-driven semantic-readiness barrier with a 30-second hard ceiling. The zero-duration default preserves immediate partial fallback; ready/degraded publication wakes waiters, timeout retains `building`, and caller/session cancellation interrupts the wait without blocking session construction |
 | `WSR-EVAL2` | Delivered | The Core rerank adversary, built-in strategy matrix, Rust custom negative control, real CLI ACL host, and public SDK real-model matrix are complete. Code `cde887b` locks one corpus/report contract across Node.js, Python, and Go; each SDK completes `3/3` exact tasks and one-Search protocols with Precision@5 `0.2`, returned-result precision `0.4286`, Recall@5 `1.0`, MRR `0.5`, nDCG@5 `0.6309`, 39 vectors/9,595 bytes per session, 1.0x document-request amplification, zero non-text inputs, and complete release. Remote timing remains diagnostic, the whole-file control remains unqualified, and no default change is justified |
 | `WSR-PROD1` | Delivered | Code `beac7cb` qualifies the revision-locked 384-dimensional multilingual CPU model with RRF Recall@5 `1.0`, MRR `0.5`, 1.0x amplification, zero non-text inputs, and complete release; the English model remains a CJK negative control and deterministic MMR remains optional after lowering MRR to `0.3444`. CLI `5a27e81` passes the same model through trusted ACL and the real loopback HTTP adapter into DeepSeek at `3/3`, with `435/454` ms p50/p95 first-ready publication and a strict UTF-8 process boundary. Code `eddeeea` then passes 9/9 compile-gated generation trials across three tasks: pass rate `1.0`, 95% Wilson lower bound `0.7008`, tool/evidence/compile/integrity/release `1.0`, 1.0x amplification, zero non-text inputs, `402/919` ms initial-publication/full-ready p95, and `40` ms edited-generation publication p95. The 64-generation replacement soak retains one live vector and releases zero/zero records/bytes on close; [CI #249](https://github.com/A3S-Lab/Code/actions/runs/31862118069) passes it on Ubuntu, macOS, and Windows together with all Code checks. The versioned SLO, telemetry, and configuration-only rollback runbook is delivered |
-| `HOST-LCPU1` | Planned | SDK hosts can already inject in-process CPU embeddings and all model-free search/rerank paths remain available. Add an optional typed local CPU embedding adapter to the CLI host after a bounded runtime/model-artifact spike; no inference dependency enters Code Core or A3S Memory, and omission preserves the current binary/runtime behavior |
+| `HOST-LCPU1` | In progress | CLI `main` commit `a5794bf` pins Code `5612bed` and adds an opt-in FastEmbed/ONNX CPU adapter behind an empty default feature set. A trusted typed ACL block, revision/SHA-256-bound offline manifest, lazy bounded blocking inference, one-model/one-inference process ceilings, sanitized failures, and the Core readiness barrier are delivered. The default graph contains no FastEmbed/ORT dependency and the enabled graph contains no runtime downloader. On the Windows reference host, the provider gate records 7,568/20 ms cold/warm calls, 0 ms caller cancellation, and a 971 MiB peak-RSS increase below 1 GiB; real DeepSeek completes 3/3 tasks with Recall@5 1.0, MRR 0.3444, nDCG@5 0.5059, 1.0x document-request amplification, and zero non-text inputs. Cross-platform runtime fixtures, unsupported-CPU handling, and the comparative runtime decision remain promotion gates |
 | `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, DeepSeek task evaluation, SDK examples, ACL host guidance, text/knowledge-compiler boundary, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
 
 The detailed baseline and threat model are in
@@ -553,6 +553,28 @@ RRF-only defaults.
    panic, close during inference, and lexical fallback. Ship only if omission
    has zero behavior/dependency regression and local CPU mode passes the same
    source, revision, amplification, non-text, and release gates as remote mode.
+
+CLI `a5794bf` delivers steps 1, 3, and 4 plus the Windows reference slice of
+step 5. Its exact default dependency gate excludes `fastembed`, `ort`, and
+`ort-sys`; the local feature graph excludes `hf-hub`, so admitted sessions make
+no runtime model download. The revision-locked multilingual model produces
+384-dimensional unit vectors with a 7,568 ms cold call, 20 ms warm call, 0 ms
+caller cancellation, and a 1,018,261,504-byte peak-RSS increase. The same
+source adds 28,013,568 bytes (15.22%) to the Windows debug binary. Three real
+DeepSeek tool tasks pass at target ranks 5/2/3, reach ready publication in
+9,102/9,498 ms p50/p95, retain 39 vectors / 68,251 accounted bytes, batch all
+39 document chunks into one request, and send zero non-text inputs.
+
+FastEmbed/ONNX is therefore an opt-in production candidate, not the completed
+runtime selection. Step 2 still requires a measured `tract` or equivalently
+self-contained control rather than a feature-count comparison. Step 5 still
+requires Linux and Apple Silicon runtime fixtures for RSS, cancellation under
+load, offline startup, and the locked model corpus; explicit unsupported-CPU
+diagnostics; close-during-native-inference and panic/failure injection; and a
+larger memory margin than the current 971 MiB Windows result. Intel macOS stays
+model-free while the pinned ONNX Runtime lacks that target. These gates may
+reject or replace the candidate without changing Code Core, Memory, the ACL
+shape, or the model-free retrieval path.
 
 `CODE-R2` was executed in this order:
 
@@ -703,7 +725,7 @@ No migration or index deletion procedure is required because the baseline
 index is session-ephemeral.
 
 `WSR-PROD1` completes the stable opt-in evidence for the current provider-
-injected design. Planned `HOST-LCPU1` improves the CLI's local CPU experience;
+injected design. In-progress `HOST-LCPU1` improves the CLI's local CPU experience;
 it does not block model-free search, require a new default, or move inference
 and model-artifact ownership into Code Core or A3S Memory.
 
