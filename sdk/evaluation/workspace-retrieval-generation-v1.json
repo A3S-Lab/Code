@@ -24,7 +24,13 @@
     "cargo_timeout_seconds": 60,
     "minimum_pass_rate": 0.9,
     "minimum_wilson_lower_bound": 0.65,
-    "maximum_document_request_amplification": 1.1
+    "maximum_document_request_amplification": 1.1,
+    "maximum_session_construction_p95_ms": 100,
+    "maximum_index_ready_p95_ms": 5000,
+    "maximum_incremental_ready_p95_ms": 2000,
+    "maximum_time_to_first_ready_p95_ms": 1000,
+    "maximum_post_edit_time_to_first_ready_p95_ms": 1000,
+    "maximum_close_p95_ms": 6000
   },
   "corpus": {
     "distractor_file_count": 18,

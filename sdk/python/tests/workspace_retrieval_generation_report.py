@@ -127,3 +127,55 @@ def summarize_generation_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "totalTokens": sum(run["totalTokens"] for run in runs),
         "documentProviderRequests": document_requests,
     }
+
+
+def assess_generation_summary(
+    summary: dict[str, Any],
+    evaluation: dict[str, Any],
+    *,
+    revision_locked: bool,
+    full_task_matrix: bool,
+) -> dict[str, bool]:
+    """Apply the versioned production gates to one aggregate report."""
+
+    def at_most(metric: str, limit: str) -> bool:
+        value = summary.get(metric)
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value <= evaluation[limit]
+        )
+
+    return {
+        "revisionLocked": revision_locked,
+        "fullTaskMatrix": full_task_matrix,
+        "passRate": summary["passRate"] >= evaluation["minimum_pass_rate"],
+        "statisticalConfidence": summary["wilsonLowerBound95"]
+        >= evaluation["minimum_wilson_lower_bound"],
+        "toolProtocol": summary["toolProtocolRate"] == 1.0,
+        "evidenceCoverage": summary["evidenceRecallAt5"] == 1.0,
+        "compileOracle": summary["compilePassRate"] == 1.0,
+        "workspaceIntegrity": summary["workspaceIntegrityRate"] == 1.0,
+        "requestAmplification": summary["documentRequestAmplification"]
+        <= evaluation["maximum_document_request_amplification"],
+        "nonTextEgress": summary["nonTextProviderInputs"] == 0,
+        "releasedAfterClose": summary["releaseRate"] == 1.0,
+        "sessionConstructionP95": at_most(
+            "sessionConstructionP95Ms", "maximum_session_construction_p95_ms"
+        ),
+        "indexReadyP95": at_most(
+            "indexReadyP95Ms", "maximum_index_ready_p95_ms"
+        ),
+        "incrementalReadyP95": at_most(
+            "incrementalReadyP95Ms", "maximum_incremental_ready_p95_ms"
+        ),
+        "timeToFirstReadyP95": at_most(
+            "timeToFirstReadyP95Ms", "maximum_time_to_first_ready_p95_ms"
+        ),
+        "postEditTimeToFirstReadyP95": at_most(
+            "postEditTimeToFirstReadyP95Ms",
+            "maximum_post_edit_time_to_first_ready_p95_ms",
+        ),
+        "closeP95": at_most("closeP95Ms", "maximum_close_p95_ms"),
+    }

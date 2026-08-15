@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 from workspace_retrieval_generation_report import (
+    assess_generation_summary,
     summarize_generation_runs,
     wilson_lower_bound,
 )
@@ -54,3 +55,46 @@ def test_generation_summary_uses_compile_and_evidence_observables() -> None:
     assert summary["workspaceIntegrityRate"] == 1
     assert summary["documentRequestAmplification"] == 1
     assert summary["totalTokens"] == 34
+
+
+def test_generation_production_gates_include_latency_and_confidence() -> None:
+    summary = summarize_generation_runs(
+        [generation_run("alpha", True) for _ in range(9)]
+    )
+    evaluation = {
+        "minimum_pass_rate": 0.9,
+        "minimum_wilson_lower_bound": 0.65,
+        "maximum_document_request_amplification": 1.1,
+        "maximum_session_construction_p95_ms": 100,
+        "maximum_index_ready_p95_ms": 5000,
+        "maximum_incremental_ready_p95_ms": 2000,
+        "maximum_time_to_first_ready_p95_ms": 1000,
+        "maximum_post_edit_time_to_first_ready_p95_ms": 1000,
+        "maximum_close_p95_ms": 6000,
+    }
+
+    gates = assess_generation_summary(
+        summary,
+        evaluation,
+        revision_locked=True,
+        full_task_matrix=True,
+    )
+    assert all(gates.values())
+
+    summary["indexReadyP95Ms"] = 5001
+    slow_gates = assess_generation_summary(
+        summary,
+        evaluation,
+        revision_locked=True,
+        full_task_matrix=True,
+    )
+    assert not slow_gates["indexReadyP95"]
+
+    summary["incrementalReadyP95Ms"] = None
+    incomplete_gates = assess_generation_summary(
+        summary,
+        evaluation,
+        revision_locked=True,
+        full_task_matrix=True,
+    )
+    assert not incomplete_gates["incrementalReadyP95"]

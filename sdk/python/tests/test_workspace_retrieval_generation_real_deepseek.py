@@ -30,7 +30,10 @@ from workspace_retrieval_generation_fixture import (
     validate_generation_fixture_contract,
     write_hidden_test,
 )
-from workspace_retrieval_generation_report import summarize_generation_runs
+from workspace_retrieval_generation_report import (
+    assess_generation_summary,
+    summarize_generation_runs,
+)
 from workspace_retrieval_generation_runtime import (
     COMPLETION_MARKER,
     cargo_test,
@@ -367,24 +370,15 @@ async def evaluate_generation(
         await agent.close_async()
     summary = summarize_generation_runs(runs)
     all_task_names = {task["name"] for task in FIXTURE["tasks"]}
-    gates = {
-        "revisionLocked": bool(embedding["revision"]),
-        "fullTaskMatrix": (
+    gates = assess_generation_summary(
+        summary,
+        evaluation,
+        revision_locked=bool(embedding["revision"]),
+        full_task_matrix=(
             {task["name"] for task in tasks} == all_task_names
             and repetitions >= evaluation["default_repetitions"]
         ),
-        "passRate": summary["passRate"] >= evaluation["minimum_pass_rate"],
-        "statisticalConfidence": summary["wilsonLowerBound95"]
-        >= evaluation["minimum_wilson_lower_bound"],
-        "toolProtocol": summary["toolProtocolRate"] == 1.0,
-        "evidenceCoverage": summary["evidenceRecallAt5"] == 1.0,
-        "compileOracle": summary["compilePassRate"] == 1.0,
-        "workspaceIntegrity": summary["workspaceIntegrityRate"] == 1.0,
-        "requestAmplification": summary["documentRequestAmplification"]
-        <= evaluation["maximum_document_request_amplification"],
-        "nonTextEgress": summary["nonTextProviderInputs"] == 0,
-        "releasedAfterClose": summary["releaseRate"] == 1.0,
-    }
+    )
     return {
         "schemaVersion": FIXTURE["report_schema_version"],
         "fixtureId": FIXTURE["fixture_id"],
