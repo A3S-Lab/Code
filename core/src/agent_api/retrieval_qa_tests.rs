@@ -5,7 +5,8 @@ use crate::embedding::{
 };
 use crate::store::{MemorySessionStore, SessionStore};
 use crate::workspace::{
-    WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceSemanticSearchRequest,
+    WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalStatus,
+    WorkspaceSemanticSearchRequest,
 };
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -209,6 +210,60 @@ async fn repeated_session_lifecycle_releases_every_ephemeral_index() {
     }
 }
 
+#[tokio::test]
+#[ignore = "bounded workspace retrieval soak; run in the portability workflow"]
+async fn repeated_source_generations_replace_vectors_without_accumulation() {
+    const GENERATIONS: usize = 64;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let source = workspace.path().join("generation.rs");
+    write_generation(&source, 0);
+    let provider = Arc::new(RecordingProvider::new());
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+    let session = retrieval_session(&agent, workspace.path(), Arc::clone(&provider)).await;
+    wait_for_ready_files(&session, 1).await;
+    let initial = session.workspace_retrieval_status();
+    assert_eq!(initial.vector_records, 1);
+    let stable_vector_bytes = initial.vector_bytes;
+    let mut source_revision = initial.source_revision;
+    let mut vector_revision = initial.vector_revision;
+
+    for generation in 1..=GENERATIONS {
+        write_generation(&source, generation);
+        let ready = wait_for_new_ready_generation(&session, source_revision, vector_revision).await;
+        assert_eq!(ready.eligible_files, 1);
+        assert_eq!(ready.indexed_files, 1);
+        assert_eq!(ready.indexed_chunks, 1);
+        assert_eq!(ready.failed_files, 0);
+        assert_eq!(ready.vector_records, 1);
+        assert_eq!(ready.vector_bytes, stable_vector_bytes);
+        assert_eq!(ready.batching.document_inputs, 1);
+        assert_eq!(ready.batching.document_provider_requests, 1);
+        assert_eq!(ready.batching.batch_limit_lower_bound, 1);
+
+        let search = session
+            .semantic_search(WorkspaceSemanticSearchRequest::new("current generation"))
+            .await
+            .unwrap();
+        assert_eq!(search.hits.len(), 1);
+        assert!(search.hits[0]
+            .chunk
+            .text
+            .contains(&format!("GENERATION_{generation:03}")));
+        source_revision = ready.source_revision;
+        vector_revision = ready.vector_revision;
+    }
+
+    assert_eq!(provider.document_texts().len(), GENERATIONS + 1);
+    session.close().await;
+    let closed = session.workspace_retrieval_status();
+    assert_eq!(closed.phase, WorkspaceRetrievalPhase::Closed);
+    assert_eq!(closed.vector_records, 0);
+    assert_eq!(closed.vector_bytes, 0);
+}
+
 async fn retrieval_session(
     agent: &Agent,
     workspace: &std::path::Path,
@@ -248,6 +303,41 @@ async fn wait_for_ready_files(session: &AgentSession, expected_files: usize) {
             session.workspace_retrieval_status()
         );
     }
+}
+
+async fn wait_for_new_ready_generation(
+    session: &AgentSession,
+    previous_source_revision: u64,
+    previous_vector_revision: u64,
+) -> WorkspaceRetrievalStatus {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let status = session.workspace_retrieval_status();
+            if status.phase == WorkspaceRetrievalPhase::Ready
+                && status.source_revision > previous_source_revision
+                && status.vector_revision > previous_vector_revision
+            {
+                return status;
+            }
+            assert_ne!(status.phase, WorkspaceRetrievalPhase::Closed);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "workspace retrieval did not publish the next source generation: {:?}",
+            session.workspace_retrieval_status()
+        )
+    })
+}
+
+fn write_generation(path: &std::path::Path, generation: usize) {
+    std::fs::write(
+        path,
+        format!("pub const CURRENT: &str = \"GENERATION_{generation:03}\";\n"),
+    )
+    .unwrap();
 }
 
 async fn wait_for_degraded_files(

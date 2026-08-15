@@ -10,6 +10,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  retrieval-soak:
+    name: Retrieval soak
+    uses: ./.github/workflows/workspace-retrieval-soak.yml
+
   check:
     name: Check
     runs-on: ubuntu-latest

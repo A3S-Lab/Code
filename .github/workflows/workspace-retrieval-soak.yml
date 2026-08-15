@@ -1,0 +1,49 @@
+name: Workspace Retrieval Soak
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  retrieval-soak:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        shell: bash
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install protobuf compiler on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler on macOS
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install protobuf compiler on Windows
+        if: runner.os == 'Windows'
+        run: choco install protoc -y
+
+      - name: Run bounded retrieval churn
+        run: >-
+          cargo test --locked -p a3s-code-core --lib
+          agent_api::retrieval_qa_tests::repeated_source_generations_replace_vectors_without_accumulation
+          -- --ignored --exact --test-threads=1

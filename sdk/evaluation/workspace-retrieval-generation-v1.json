@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "report_schema_version": 1,
+  "fixture_id": "workspace-retrieval-generation-v1",
+  "chat_model": "deepseek/deepseek-v4-pro",
+  "embedding": {
+    "provider": "sentence-transformers",
+    "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+    "dimension": 384,
+    "query_id": "workspace-query"
+  },
+  "chunking": {
+    "strategy": "recursive",
+    "target_bytes": 512,
+    "overlap_bytes": 64,
+    "separators": ["\n\n", "\n", ". ", " "]
+  },
+  "evaluation": {
+    "default_repetitions": 3,
+    "maximum_repetitions": 10,
+    "ready_timeout_seconds": 60,
+    "turn_timeout_seconds": 240,
+    "cargo_timeout_seconds": 60,
+    "minimum_pass_rate": 0.9,
+    "minimum_wilson_lower_bound": 0.65,
+    "maximum_document_request_amplification": 1.1
+  },
+  "corpus": {
+    "distractor_file_count": 18,
+    "non_text_files": [
+      {
+        "path": "assets/architecture.pdf",
+        "content": "%PDF-1.7\nNON_TEXT_ASSET_SENTINEL\n"
+      },
+      {
+        "path": "assets/slides.pptx",
+        "content": "PK OFFICE NON_TEXT_ASSET_SENTINEL\n"
+      },
+      {
+        "path": "assets/recording.mp3",
+        "content": "ID3 NON_TEXT_ASSET_SENTINEL\n"
+      }
+    ]
+  },
+  "tasks": [
+    {
+      "name": "reconnect_admission",
+      "expected_digest": "1723226bc87a8dfb1da283873a6967684e42f2a6c884f0b6d8595832f246205a",
+      "query": "implement the transport rule that rejects duplicate delivery after reconnect and advances the watermark only for a new envelope",
+      "target_path": "src/solution.rs",
+      "target_source": "#[derive(Debug, PartialEq, Eq)]\npub struct Admission {\n    pub accepted: bool,\n    pub committed: u64,\n}\n\npub fn admit_reconnect(sequence: u64, committed: u64) -> Admission {\n    unimplemented!(\"GENERATION_TASK\")\n}\n",
+      "expected_evidence_paths": [
+        "src/protocol_window.rs",
+        "src/admission_contract.rs"
+      ],
+      "source_files": [
+        {
+          "path": "src/protocol_window.rs",
+          "content": "/// A reconnect envelope is replayed when its sequence is not newer than the committed watermark.\npub fn is_replayed(sequence: u64, committed: u64) -> bool {\n    sequence <= committed\n}\n"
+        },
+        {
+          "path": "src/admission_contract.rs",
+          "content": "/// An accepted envelope advances the committed watermark to that envelope's sequence.\npub fn next_committed(sequence: u64) -> u64 {\n    sequence\n}\n"
+        },
+        {
+          "path": "src/reconnect_notes.rs",
+          "content": "// reconnect duplicate delivery watermark implementation discussion only\npub const DOCUMENTED_RECONNECT_EXAMPLE: bool = false;\n"
+        }
+      ],
+      "hidden_test_path": "tests/reconnect_admission.rs",
+      "hidden_test_source": "use wsr_generation_fixture::solution::{admit_reconnect, Admission};\n\n#[test]\nfn rejects_old_and_equal_sequences_without_advancing() {\n    assert_eq!(admit_reconnect(4, 5), Admission { accepted: false, committed: 5 });\n    assert_eq!(admit_reconnect(5, 5), Admission { accepted: false, committed: 5 });\n}\n\n#[test]\nfn accepts_new_sequence_and_advances_watermark() {\n    assert_eq!(admit_reconnect(6, 5), Admission { accepted: true, committed: 6 });\n}\n"
+    },
+    {
+      "name": "projection_release",
+      "expected_digest": "66490adc6c479592a0d1942e888c34d4769bb1f9bf62ef893c609585a4e59ad4",
+      "query": "会话关闭时如何转移并清空内存投影代际，并且仅在确实存在代际时计一次释放？",
+      "target_path": "src/solution.rs",
+      "target_source": "#[derive(Debug, PartialEq, Eq)]\npub struct Release {\n    pub generation: Option<u64>,\n    pub released: usize,\n}\n\npub fn close_projection(generation: &mut Option<u64>) -> Release {\n    unimplemented!(\"GENERATION_TASK\")\n}\n",
+      "expected_evidence_paths": [
+        "src/projection_lifecycle.rs",
+        "src/release_counter.rs"
+      ],
+      "source_files": [
+        {
+          "path": "src/projection_lifecycle.rs",
+          "content": "/// 会话结束时，临时投影必须使用 Option::take 转移并清空代际标识。\npub fn detach_generation(generation: &mut Option<u64>) -> Option<u64> {\n    generation.take()\n}\n"
+        },
+        {
+          "path": "src/release_counter.rs",
+          "content": "/// A release is counted only when a projection generation actually existed.\npub fn released_delta(detached: &Option<u64>) -> usize {\n    usize::from(detached.is_some())\n}\n"
+        },
+        {
+          "path": "src/cleanup_notes.rs",
+          "content": "// 会话关闭 内存投影 代际 释放 计数 讨论，不是可执行策略。\npub const DOCUMENTED_RELEASES: usize = 99;\n"
+        }
+      ],
+      "hidden_test_path": "tests/projection_release.rs",
+      "hidden_test_source": "use wsr_generation_fixture::solution::{close_projection, Release};\n\n#[test]\nfn transfers_existing_generation_and_counts_once() {\n    let mut generation = Some(41);\n    assert_eq!(close_projection(&mut generation), Release { generation: Some(41), released: 1 });\n    assert_eq!(generation, None);\n}\n\n#[test]\nfn leaves_missing_generation_unreleased() {\n    let mut generation = None;\n    assert_eq!(close_projection(&mut generation), Release { generation: None, released: 0 });\n}\n"
+    },
+    {
+      "name": "embedding_reservation",
+      "expected_digest": "a2d6de1acfabcb5e35504ed4ecf81d19b5062e230b6b20a3eeaa95d3e647bbd8",
+      "query": "generate the pending-batch reservation that refuses at the embedding backpressure ceiling and increments exactly once below it",
+      "target_path": "src/solution.rs",
+      "target_source": "use crate::embedding_limits::MAX_PENDING_EMBED_BATCHES;\n\npub fn try_reserve(pending: &mut usize) -> bool {\n    unimplemented!(\"GENERATION_TASK\")\n}\n",
+      "expected_evidence_paths": [
+        "src/embedding_limits.rs",
+        "src/reservation_policy.rs"
+      ],
+      "source_files": [
+        {
+          "path": "src/embedding_limits.rs",
+          "generated_boundary_filler_lines": 90,
+          "content": "pub const MAX_PENDING_EMBED_BATCHES: usize = 8;\n"
+        },
+        {
+          "path": "src/reservation_policy.rs",
+          "content": "/// Capacity exists only while pending work is strictly below the configured ceiling.\npub fn has_capacity(pending: usize, ceiling: usize) -> bool {\n    pending < ceiling\n}\n\n/// A successful reservation increments the pending count exactly once.\npub fn record_reservation(pending: &mut usize) {\n    *pending += 1;\n}\n"
+        },
+        {
+          "path": "src/queue_notes.rs",
+          "content": "// embedding backpressure ceiling pending batch reservation discussion only\npub const DOCUMENTED_QUEUE_OBSERVATION: usize = 999;\n"
+        }
+      ],
+      "hidden_test_path": "tests/embedding_reservation.rs",
+      "hidden_test_source": "use wsr_generation_fixture::solution::try_reserve;\n\n#[test]\nfn reserves_once_below_the_ceiling() {\n    let mut pending = 7;\n    assert!(try_reserve(&mut pending));\n    assert_eq!(pending, 8);\n}\n\n#[test]\nfn refuses_at_or_above_the_ceiling_without_mutation() {\n    let mut at_limit = 8;\n    assert!(!try_reserve(&mut at_limit));\n    assert_eq!(at_limit, 8);\n    let mut above_limit = 9;\n    assert!(!try_reserve(&mut above_limit));\n    assert_eq!(above_limit, 9);\n}\n"
+    }
+  ]
+}

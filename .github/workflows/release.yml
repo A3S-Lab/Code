@@ -15,6 +15,10 @@ env:
   CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
+  retrieval-soak:
+    name: Retrieval soak
+    uses: ./.github/workflows/workspace-retrieval-soak.yml
+
   # ───────────────────────────────────────────────
   # Gate: CI checks must pass before any publishing
   # ───────────────────────────────────────────────
@@ -122,7 +126,7 @@ jobs:
   # ───────────────────────────────────────────────
   publish-crate:
     name: Publish to crates.io
-    needs: [ci, ci-windows]
+    needs: [ci, ci-windows, retrieval-soak]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
