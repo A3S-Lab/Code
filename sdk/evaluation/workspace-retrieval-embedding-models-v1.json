@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "matrix_id": "workspace-retrieval-real-embedding-v1",
+  "source_fixture_id": "workspace-retrieval-sdk-deepseek-v1",
+  "cases": [
+    {
+      "name": "english_negative_control_rrf",
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "revision": "c9745ed1d9f207416be6d2e6f8de32d1f16199bf",
+      "dimension": 384,
+      "rerank": "rrf-only",
+      "expected_qualified": false,
+      "expected_failed_tasks": ["session_projection_cleanup"]
+    },
+    {
+      "name": "multilingual_rrf_candidate",
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+      "dimension": 384,
+      "rerank": "rrf-only",
+      "expected_qualified": true,
+      "expected_failed_tasks": []
+    },
+    {
+      "name": "multilingual_deterministic_audit",
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+      "dimension": 384,
+      "rerank": "deterministic",
+      "expected_qualified": true,
+      "expected_failed_tasks": []
+    }
+  ],
+  "comparisons": {
+    "preferred": "multilingual_rrf_candidate",
+    "challenger": "multilingual_deterministic_audit",
+    "metrics": ["hybridMrr", "hybridNdcgAt5"]
+  }
+}

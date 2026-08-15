@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import math
 import os
 import shutil
 import sys
@@ -14,6 +12,13 @@ import time
 import unittest
 from pathlib import Path
 from typing import Any, cast
+
+from workspace_retrieval_eval_fixture import (
+    FIXTURE,
+    materialize_corpus,
+    percentile,
+    validate_fixture_contract,
+)
 
 from a3s_code import (
     Agent,
@@ -29,60 +34,8 @@ from a3s_code import (
 )
 
 
-FIXTURE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "evaluation"
-    / "workspace-retrieval-deepseek-v1.json"
-)
-FIXTURE: dict[str, Any] = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-assert FIXTURE["schema_version"] == 1
-assert FIXTURE["report_schema_version"] == 1
 READY_TIMEOUT_SECONDS = 10.0
 TURN_TIMEOUT_SECONDS = 240.0
-
-
-def generated_corpus_files() -> list[tuple[str, bytes, bool]]:
-    corpus = FIXTURE["corpus"]
-    files = [
-        (entry["path"], entry["content"].encode("utf-8"), True)
-        for entry in corpus["source_files"]
-    ]
-    for index in range(corpus["unrelated_file_count"]):
-        path = f"src/unrelated_{index:02}.rs"
-        body = (
-            f"pub fn unrelated_worker_{index:02}(value: usize) -> usize "
-            f"{{ value + {index} }}\n"
-        )
-        files.append((path, body.encode("utf-8"), True))
-    boundary = "".join(
-        f"// deterministic chunk-boundary filler {index:02}\n"
-        for index in range(corpus["boundary_filler_lines"])
-    )
-    boundary += "pub const MAX_PENDING_EMBED_BATCHES: usize = 8;\n\n"
-    boundary += "pub fn admits_batch(pending: usize) -> bool {\n"
-    boundary += "    pending < MAX_PENDING_EMBED_BATCHES\n}\n"
-    files.append(("src/embedding_admission.rs", boundary.encode("utf-8"), True))
-    files.extend(
-        (entry["path"], entry["content"].encode("utf-8"), False)
-        for entry in corpus["non_text_files"]
-    )
-    return sorted(files, key=lambda entry: entry[0])
-
-
-def materialize_corpus(root: Path) -> str:
-    files = generated_corpus_files()
-    digest = hashlib.sha256()
-    for relative_path, content, _ in files:
-        destination = root.joinpath(*relative_path.split("/"))
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(content)
-        digest.update(relative_path.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(content)
-        digest.update(b"\0")
-    assert sum(1 for _, _, text in files if text) == FIXTURE["corpus"]["text_file_count"]
-    assert sum(1 for _, _, text in files if not text) == FIXTURE["corpus"]["non_text_file_count"]
-    return digest.hexdigest()
 
 
 def stable_bucket(text: str, buckets: int) -> int:
@@ -366,13 +319,6 @@ async def run_task(agent: Any, task: dict[str, str], ordinal: int) -> dict[str, 
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-def percentile(values: list[int], fraction: float) -> int:
-    ordered = sorted(values)
-    if not ordered:
-        return 0
-    return ordered[max(0, math.ceil(fraction * len(ordered)) - 1)]
-
-
 def summarize(runs: list[dict[str, Any]]) -> dict[str, Any]:
     ranks = [run["expectedPathRank"] for run in runs]
     relevant = sum(rank is not None and rank <= 5 for rank in ranks)
@@ -456,16 +402,6 @@ async def evaluate() -> dict[str, Any]:
         }
     finally:
         await agent.close_async()
-
-
-def validate_fixture_contract() -> str:
-    root = Path(tempfile.mkdtemp(prefix="a3s-python-wsr-fixture-"))
-    try:
-        digest = materialize_corpus(root)
-        assert digest == FIXTURE["corpus"]["expected_digest"]
-        return digest
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_workspace_retrieval_real_fixture_contract() -> None:
