@@ -434,6 +434,13 @@ each selected path is reread at most once for full-digest and exact-byte-range
 verification. This Code-specific policy is not part of the generic A3S Memory
 vector kernel.
 
+A separate revision-locked real embedding model matrix now proves why provider
+compatibility and model fitness are different gates. English MiniLM misses the
+CJK task, while multilingual MiniLM retrieves all three targets. On the same
+real vectors, RRF-only preserves ranks 2/2/2 and deterministic reranking moves
+them to 5/2/3, so model selection is host-owned and neither a model nor the
+optional reranker is promoted globally from this small fixture.
+
 The locked nine-query fixture preserves the original BM25 baseline and adds an
 independent hybrid result set whose deterministic provider admits only
 annotated query/document pairs. Hybrid Recall@10 and MRR are 1.0 on that

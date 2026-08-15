@@ -135,3 +135,48 @@ The close observations match the independently measured enabled and disabled
 session baseline in this environment. Retrieval status reported zero vector
 records and bytes after each close, so the approximately five seconds are not
 attributed to retained vector state.
+
+## Real embedding model matrix
+
+The DeepSeek matrix deliberately uses a deterministic ranking oracle. The
+separate Python runner evaluates real embedding model behavior through the
+public callback provider without making Sentence Transformers a package or
+Core dependency. Model revisions, expected outcomes, and comparison direction
+are locked in `workspace-retrieval-embedding-models-v1.json`.
+
+Install the optional evaluation dependency, fetch the exact locked revisions
+once, then repeat offline from the local model cache:
+
+```powershell
+py -3.13 -m pip install sentence-transformers
+$env:PYTHONPATH = (Resolve-Path '.\sdk\python\python').Path
+
+py -3.13 .\sdk\python\tests\test_workspace_retrieval_real_embedding.py `
+  --matrix
+py -3.13 .\sdk\python\tests\test_workspace_retrieval_real_embedding.py `
+  --matrix --local-files-only
+```
+
+The runner prints `WSR_REAL_EMBEDDING_MATRIX=<json>`. It requires a locked
+revision, full 30-file/39-chunk coverage, semantic and hybrid Recall@5 of 1.0
+for positive cases, index readiness within 5 seconds, hybrid p95 within 1
+second, at most 1.10x document-request amplification, zero non-text egress,
+and complete release. The English-only model is an intentional negative
+control and must fail only the CJK task.
+
+The locked offline run at Code `beac7cb` on 2026-08-15 produced:
+
+| Case | Semantic ranks | Hybrid ranks | Hybrid Recall@5 / MRR / nDCG@5 | Ready / hybrid p95 | Result |
+| --- | --- | --- | --- | ---: | --- |
+| `all-MiniLM-L6-v2` RRF negative control | 2, -, 2 | 2, -, 2 | 0.6667 / 0.3333 / 0.4206 | 850 / 15 ms | Rejected: CJK absent |
+| Multilingual MiniLM RRF | 2, 2, 2 | 2, 2, 2 | 1.0000 / 0.5000 / 0.6309 | 985 / 20 ms | Qualified candidate |
+| Multilingual MiniLM deterministic audit | 2, 2, 2 | 5, 2, 3 | 1.0000 / 0.3444 / 0.5059 | 799 / 24 ms | Qualified, but worse ranking |
+
+All three cases used one document request for the one-request lower bound,
+admitted zero non-text inputs, accounted 68,251 vector bytes, and released all
+vectors on close. The multilingual model is
+[`paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2)
+at revision `e8f8c211226b894fcb81acc59f3b34ba3efd5f42`. This narrow fixture
+qualifies it as a production-evaluation candidate, not a bundled default. It
+also supplies real-model evidence for retaining RRF-only as the compatible
+default; deterministic reranking remains an explicit corpus-dependent option.

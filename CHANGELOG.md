@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added an opt-in, revision-locked real embedding model matrix through the
+  Python SDK callback boundary. An English MiniLM negative control fails only
+  the CJK task at Recall@5 0.6667, while multilingual MiniLM passes semantic
+  and RRF-hybrid Recall@5 1.0 with ranks 2/2/2, 1.0x request amplification,
+  zero non-text input, and complete release. The deterministic reranker keeps
+  Recall@5 but lowers MRR from 0.5 to 0.3444 on this fixture, reinforcing the
+  RRF-only default. Sentence Transformers remains an optional evaluation
+  dependency and no model is bundled or downloaded by A3S Code.
 - Added a session-local cross-file embedding batch coordinator for ephemeral
   workspace retrieval. It flushes deterministic catalog generations at input,
   text-byte, vector-byte, or generation-complete boundaries, retains split-file

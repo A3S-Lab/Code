@@ -418,6 +418,25 @@ the release benchmark remains the latency gate. Reproduction commands and the
 machine-readable field contract are in
 [`sdk/evaluation/README.md`](../sdk/evaluation/README.md).
 
+### Real embedding model boundary
+
+Code `beac7cb` starts `WSR-PROD1` by replacing the deterministic embedding
+oracle with revision-locked Sentence Transformers models through the public Python
+callback. The English `all-MiniLM-L6-v2` negative control retrieves only the
+two English targets: semantic and hybrid Recall@5 are 0.6667 and the CJK target
+is absent. `paraphrase-multilingual-MiniLM-L12-v2` retrieves all targets at
+semantic and RRF-hybrid ranks 2/2/2, Recall@5 1.0, MRR 0.5, and nDCG@5 0.6309.
+It reaches ready in 985 ms and has 20 ms hybrid p95 on the cached local run.
+
+The same multilingual vectors under deterministic reranking retain Recall@5
+1.0 but move ranks to 5/2/3, lowering MRR to 0.3444 and nDCG@5 to 0.5059. All
+arms retain 68,251 vector bytes, use 1.0x document-request amplification,
+admit zero non-text inputs, and release every vector. This qualifies a real
+multilingual model and RRF-only as production-evaluation candidates, not as
+bundled defaults. The remaining `WSR-PROD1` gates cover real CLI HTTP transport,
+representative generation tasks, soak/churn, cross-platform execution, and
+operational SLOs.
+
 ## A3S Test coverage boundary
 
 `a3s-test capabilities --json` and `a3s-test agent schema` were run from the
