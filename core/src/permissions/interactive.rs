@@ -207,11 +207,19 @@ fn shell_path_crosses_symlink(root: &std::path::Path, args: &serde_json::Value) 
                 .split_whitespace()
                 .map(clean_shell_token)
                 .filter(|token| !token.is_empty() && !token.starts_with('-'))
-                .any(|token| local_path_crosses_symlink(root, token))
+                .any(|token| shell_token_path_crosses_symlink(root, token))
         })
 }
 
 fn local_path_crosses_symlink(root: &std::path::Path, path: &str) -> bool {
+    path_crosses_symlink(root, path, false)
+}
+
+fn shell_token_path_crosses_symlink(root: &std::path::Path, path: &str) -> bool {
+    path_crosses_symlink(root, path, true)
+}
+
+fn path_crosses_symlink(root: &std::path::Path, path: &str, stop_at_shell_glob: bool) -> bool {
     if path_is_outside_workspace(path) {
         return false;
     }
@@ -219,7 +227,19 @@ fn local_path_crosses_symlink(root: &std::path::Path, path: &str) -> bool {
     for component in std::path::Path::new(path).components() {
         match component {
             std::path::Component::CurDir => continue,
-            std::path::Component::Normal(component) => current.push(component),
+            std::path::Component::Normal(component) => {
+                if stop_at_shell_glob
+                    && component
+                        .to_string_lossy()
+                        .contains(['*', '?', '[', ']', '{', '}'])
+                {
+                    // A glob is not a literal filesystem component. Prefixes
+                    // already visited above remain checked, while the lexical
+                    // Bash classifier routes the unresolved expansion to HITL.
+                    return false;
+                }
+                current.push(component);
+            }
             _ => return true,
         }
         match std::fs::symlink_metadata(&current) {

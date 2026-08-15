@@ -396,6 +396,21 @@ fn interactive_guardrail_modes_keep_the_hard_deny_floor() {
     }
 }
 
+#[test]
+fn workspace_boundary_leaves_shell_globs_for_interactive_review() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::create_dir(workspace.path().join("src")).unwrap();
+    let guardrail = InteractiveToolGuardrail::default().with_workspace(workspace.path());
+
+    for command in ["cat *", "cat src/*.rs", "cat src/[ab].rs"] {
+        assert_eq!(
+            guardrail.check("bash", &json!({"command": command})),
+            PermissionDecision::Ask,
+            "shell globs must require review rather than masquerade as symlink escapes: {command}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn interactive_guardrail_denies_paths_through_existing_symlinks() {
@@ -428,6 +443,11 @@ fn interactive_guardrail_denies_paths_through_existing_symlinks() {
         guardrail.check("bash", &json!({"command": "cat escape/secret.txt"})),
         PermissionDecision::Deny,
         "shell calls through a workspace symlink must be blocked"
+    );
+    assert_eq!(
+        guardrail.check("bash", &json!({"command": "cat escape/*.txt"})),
+        PermissionDecision::Deny,
+        "a glob must not hide a symlinked literal prefix"
     );
 }
 
