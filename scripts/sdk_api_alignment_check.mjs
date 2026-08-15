@@ -56,6 +56,11 @@ const AGENT_ALIASES = new Map([
   ['session_for_worker_async', 'session_for_worker'],
 ]);
 const SESSION_ALIASES = new Map([['read_file_with_options', 'read_file']]);
+const PYTHON_SESSION_ALIASES = new Map([
+  ...SESSION_ALIASES,
+  ['semantic_search', 'semantic_search_async'],
+  ['hybrid_search', 'hybrid_search_async'],
+]);
 
 const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
   ['llm_client', 'Rust LlmClient trait object; no cross-language provider callback shape yet.'],
@@ -139,11 +144,20 @@ function read(rel) {
   return readFileSync(path.join(root, rel), 'utf8');
 }
 
-function readRustModule(rootFile, moduleDir) {
-  const files = readdirSync(path.join(root, moduleDir), { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.rs'))
-    .map((entry) => `${moduleDir}/${entry.name}`)
+function rustModuleFiles(moduleDir) {
+  return readdirSync(path.join(root, moduleDir), { withFileTypes: true })
+    .flatMap((entry) => {
+      const relativePath = `${moduleDir}/${entry.name}`;
+      if (entry.isDirectory()) {
+        return rustModuleFiles(relativePath);
+      }
+      return entry.isFile() && entry.name.endsWith('.rs') ? [relativePath] : [];
+    })
     .sort();
+}
+
+function readRustModule(rootFile, moduleDir) {
+  const files = rustModuleFiles(moduleDir).filter((file) => file !== rootFile);
   return [read(rootFile), ...files.map(read)].join('\n');
 }
 
@@ -436,6 +450,11 @@ const goSessionOptions = goStructFields(go, 'SessionOptions');
 
 const expectedAgent = expected(coreAgent, INTENTIONAL_AGENT_OMISSIONS, AGENT_ALIASES);
 const expectedSession = expected(coreSession, INTENTIONAL_SESSION_OMISSIONS, SESSION_ALIASES);
+const expectedPythonSession = expected(
+  coreSession,
+  INTENTIONAL_SESSION_OMISSIONS,
+  PYTHON_SESSION_ALIASES,
+);
 const expectedSessionOptions = expected(
   coreSessionOptions,
   INTENTIONAL_SESSION_OPTION_OMISSIONS,
@@ -443,6 +462,9 @@ const expectedSessionOptions = expected(
 );
 const requiredAgent = [...new Set([...expectedAgent, ...SDK_AGENT_EXTRAS])].sort();
 const requiredSession = [...new Set([...expectedSession, ...SDK_SESSION_EXTRAS])].sort();
+const requiredPythonSession = [
+  ...new Set([...expectedPythonSession, ...SDK_SESSION_EXTRAS]),
+].sort();
 const requiredSessionOptions = [
   ...new Set([...expectedSessionOptions, ...SDK_SESSION_OPTION_EXTRAS]),
 ].sort();
@@ -450,7 +472,7 @@ const requiredSessionOptions = [
 assertContainsAll('Node Agent', nodeAgent, requiredAgent);
 assertContainsAll('Python Agent', pythonAgent, requiredAgent);
 assertContainsAll('Node Session', nodeSession, requiredSession);
-assertContainsAll('Python Session', pythonSession, requiredSession);
+assertContainsAll('Python Session', pythonSession, requiredPythonSession);
 assertContainsAll('Node SessionOptions', nodeSessionOptions, requiredSessionOptions);
 assertContainsAll('Python SessionOptions', pythonSessionOptions, requiredSessionOptions);
 assertContainsAll('Node generated.d.ts Agent', nodeTypeAgent, requiredAgent.map(toLowerCamel));
