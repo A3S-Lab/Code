@@ -370,7 +370,12 @@ and expected-vector-byte limits, and publishes completed files as atomic A3S
 Memory partitions. A file split across provider batches remains unpublished
 until every vector has passed response validation. A newer catalog revision
 cancels and discards the unpublished generation without changing already valid
-partitions.
+partitions. `WorkspaceRetrievalOptions::with_semantic_readiness_timeout(...)`
+optionally gives a first semantic or hybrid query a bounded, event-driven wait
+for the current generation to become ready or degraded. Omission keeps the
+compatible immediate partial fallback; the hard maximum is 30 seconds, caller
+cancellation and session close interrupt the wait, and session construction
+remains asynchronous.
 
 `AgentSession::workspace_retrieval_status` reports building, ready, degraded,
 or closed state, revisions, coverage, queue depth, failures, and vector memory.

@@ -1,5 +1,6 @@
 use super::semantic_batch::plan_semantic_batches;
 use super::semantic_runtime::{BuildState, CatalogPartition, ReadyPartition};
+use super::semantic_status::SemanticStatusCell;
 use super::{
     ChunkCatalogSnapshot, WorkspaceChunkCatalog, WorkspaceRetrievalPhase, WorkspaceRetrievalStatus,
 };
@@ -7,14 +8,14 @@ use crate::embedding::EmbeddingExecutor;
 use a3s_memory::vector::{InMemoryVectorIndex, VectorIndex, VectorRecord};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub(super) struct ProjectionContext<'a> {
     pub(super) catalog: &'a WorkspaceChunkCatalog,
     pub(super) index: &'a InMemoryVectorIndex,
     pub(super) executor: &'a EmbeddingExecutor,
-    pub(super) status: &'a RwLock<WorkspaceRetrievalStatus>,
+    pub(super) status: &'a SemanticStatusCell,
     pub(super) snapshot: &'a ChunkCatalogSnapshot,
     pub(super) partitions: &'a BTreeMap<String, CatalogPartition>,
     pub(super) pending: &'a [String],
@@ -218,7 +219,7 @@ pub(super) fn catalog_revision_matches(catalog: &WorkspaceChunkCatalog, revision
 }
 
 pub(super) fn publish_progress(
-    status: &RwLock<WorkspaceRetrievalStatus>,
+    status: &SemanticStatusCell,
     snapshot: &ChunkCatalogSnapshot,
     index: &InMemoryVectorIndex,
     state: &BuildState,
@@ -266,8 +267,8 @@ pub(super) fn publish_progress(
     } else {
         WorkspaceRetrievalPhase::Building
     };
-    let model = read_unpoisoned(status).model.clone();
-    *write_unpoisoned(status) = WorkspaceRetrievalStatus {
+    let model = status.load().model;
+    status.publish(WorkspaceRetrievalStatus {
         phase,
         catalog_revision: snapshot.revision(),
         source_revision: snapshot.source_revision(),
@@ -285,15 +286,5 @@ pub(super) fn publish_progress(
         vector_bytes: vector.byte_count,
         batching: state.batching.clone(),
         model,
-    };
-}
-
-fn read_unpoisoned<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    lock.read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn write_unpoisoned<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
-    lock.write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    });
 }

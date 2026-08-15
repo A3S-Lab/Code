@@ -20,6 +20,7 @@ mod semantic_batch;
 mod semantic_projection;
 mod semantic_query;
 mod semantic_runtime;
+mod semantic_status;
 mod semantic_types;
 mod types;
 mod verification;

@@ -2,6 +2,7 @@ use super::semantic_batch::SemanticBatchFlushReason;
 use super::semantic_projection::{
     project_pending_partitions, publish_progress, remove_stale_partition, ProjectionContext,
 };
+use super::semantic_status::SemanticStatusCell;
 use super::{
     ChunkCatalogSnapshot, WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceEmbeddingBatchMetrics,
     WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalResult,
@@ -10,7 +11,7 @@ use super::{
 use crate::embedding::EmbeddingExecutor;
 use a3s_memory::vector::{InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -25,12 +26,13 @@ pub struct WorkspaceRetrievalRuntime {
     pub(super) catalog: Arc<WorkspaceChunkCatalog>,
     pub(super) executor: EmbeddingExecutor,
     index: Mutex<Option<Arc<InMemoryVectorIndex>>>,
-    status: Arc<RwLock<WorkspaceRetrievalStatus>>,
+    status: Arc<SemanticStatusCell>,
     lifetime: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
     close_gate: tokio::sync::Mutex<()>,
     shutdown_timeout: std::time::Duration,
     pub(super) rerank_options: super::WorkspaceRerankOptions,
+    pub(super) semantic_readiness_timeout: std::time::Duration,
 }
 
 impl std::fmt::Debug for WorkspaceRetrievalRuntime {
@@ -48,14 +50,16 @@ impl WorkspaceRetrievalRuntime {
         options: WorkspaceRetrievalOptions,
         parent_lifetime: CancellationToken,
     ) -> WorkspaceRetrievalResult<Arc<Self>> {
+        options.validate_semantic_readiness_timeout()?;
         let limits = options.index_limits.validate()?;
         let rerank_options = options.rerank.validate()?;
+        let semantic_readiness_timeout = options.semantic_readiness_timeout;
         let executor = EmbeddingExecutor::new(options.provider, options.embedding)?;
         let descriptor = VectorIndexDescriptor::new(executor.descriptor().dimension)
             .with_max_records(limits.max_records)
             .with_max_bytes(limits.max_bytes);
         let index = Arc::new(InMemoryVectorIndex::new(descriptor)?);
-        let status = Arc::new(RwLock::new(WorkspaceRetrievalStatus::building(
+        let status = Arc::new(SemanticStatusCell::new(WorkspaceRetrievalStatus::building(
             executor.descriptor().clone(),
         )));
         let lifetime = parent_lifetime.child_token();
@@ -69,6 +73,7 @@ impl WorkspaceRetrievalRuntime {
             close_gate: tokio::sync::Mutex::new(()),
             shutdown_timeout: limits.shutdown_timeout,
             rerank_options,
+            semantic_readiness_timeout,
         });
         let task = tokio::spawn(run_semantic_updates(
             catalog, index, executor, status, lifetime,
@@ -79,7 +84,7 @@ impl WorkspaceRetrievalRuntime {
 
     /// Return a lock-free observation of current partial readiness.
     pub fn status(&self) -> WorkspaceRetrievalStatus {
-        read_unpoisoned(&self.status).clone()
+        self.status.load()
     }
 
     pub(super) fn index(&self) -> Option<Arc<InMemoryVectorIndex>> {
@@ -88,6 +93,20 @@ impl WorkspaceRetrievalRuntime {
 
     pub(super) fn child_lifetime(&self) -> CancellationToken {
         self.lifetime.child_token()
+    }
+
+    pub(super) async fn wait_for_semantic_readiness(
+        &self,
+        runtime_cancellation: &CancellationToken,
+        caller_cancellation: &CancellationToken,
+    ) -> WorkspaceRetrievalResult<WorkspaceRetrievalStatus> {
+        self.status
+            .wait_for_readiness(
+                self.semantic_readiness_timeout,
+                runtime_cancellation,
+                caller_cancellation,
+            )
+            .await
     }
 
     /// Cancel indexing, join its owned task within the configured deadline,
@@ -191,7 +210,7 @@ async fn run_semantic_updates(
     catalog: Arc<WorkspaceChunkCatalog>,
     index: Arc<InMemoryVectorIndex>,
     executor: EmbeddingExecutor,
-    status: Arc<RwLock<WorkspaceRetrievalStatus>>,
+    status: Arc<SemanticStatusCell>,
     lifetime: CancellationToken,
 ) {
     let mut updates = catalog.subscribe();
@@ -267,7 +286,7 @@ async fn reconcile_semantic_snapshot(
     catalog: &WorkspaceChunkCatalog,
     index: &InMemoryVectorIndex,
     executor: &EmbeddingExecutor,
-    status: &RwLock<WorkspaceRetrievalStatus>,
+    status: &SemanticStatusCell,
     state: &mut BuildState,
     snapshot: ChunkCatalogSnapshot,
     cancellation: CancellationToken,
@@ -396,8 +415,8 @@ fn catalog_partitions(snapshot: &ChunkCatalogSnapshot) -> BTreeMap<String, Catal
     partitions
 }
 
-fn publish_closed(status: &RwLock<WorkspaceRetrievalStatus>) {
-    let mut closed = read_unpoisoned(status).clone();
+fn publish_closed(status: &SemanticStatusCell) {
+    let mut closed = status.load();
     closed.phase = WorkspaceRetrievalPhase::Closed;
     closed.queue_depth = 0;
     closed.indexed_files = 0;
@@ -405,20 +424,10 @@ fn publish_closed(status: &RwLock<WorkspaceRetrievalStatus>) {
     closed.coverage_bps = 0;
     closed.vector_records = 0;
     closed.vector_bytes = 0;
-    *write_unpoisoned(status) = closed;
+    status.publish(closed);
 }
 
 fn lock_unpoisoned<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     lock.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn read_unpoisoned<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    lock.read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn write_unpoisoned<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
-    lock.write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

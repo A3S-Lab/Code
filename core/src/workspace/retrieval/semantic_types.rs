@@ -14,6 +14,7 @@ const DEFAULT_VECTOR_MAX_RECORDS: usize = 100_000;
 const DEFAULT_VECTOR_MAX_BYTES: usize = 128 * 1024 * 1024;
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_SEMANTIC_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Resource limits for one session-owned semantic workspace index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +74,7 @@ pub struct WorkspaceRetrievalOptions {
     pub(crate) chunking: Option<ChunkingConfig>,
     pub(crate) catalog_limits: Option<ChunkCatalogLimits>,
     pub(crate) rerank: WorkspaceRerankOptions,
+    pub(crate) semantic_readiness_timeout: Duration,
 }
 
 impl WorkspaceRetrievalOptions {
@@ -86,6 +88,7 @@ impl WorkspaceRetrievalOptions {
             chunking: None,
             catalog_limits: None,
             rerank: WorkspaceRerankOptions::default(),
+            semantic_readiness_timeout: Duration::ZERO,
         }
     }
 
@@ -130,6 +133,27 @@ impl WorkspaceRetrievalOptions {
         self
     }
 
+    /// Wait up to this bound when a semantic query arrives while the current
+    /// catalog generation is still building.
+    ///
+    /// The default is zero, which preserves immediate partial fallback. A
+    /// host with a slower local provider can opt into a bounded readiness
+    /// barrier without making session construction synchronous.
+    pub fn with_semantic_readiness_timeout(mut self, timeout: Duration) -> Self {
+        self.semantic_readiness_timeout = timeout;
+        self
+    }
+
+    pub(crate) fn validate_semantic_readiness_timeout(&self) -> WorkspaceRetrievalResult<()> {
+        if self.semantic_readiness_timeout > MAX_SEMANTIC_READINESS_TIMEOUT {
+            return Err(WorkspaceRetrievalError::InvalidConfiguration {
+                field: "semantic_readiness_timeout",
+                reason: "must not exceed thirty seconds",
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn has_catalog_configuration(&self) -> bool {
         self.chunking_strategy.is_some() || self.chunking.is_some() || self.catalog_limits.is_some()
     }
@@ -146,6 +170,10 @@ impl fmt::Debug for WorkspaceRetrievalOptions {
             .field("chunking", &self.chunking)
             .field("catalog_limits", &self.catalog_limits)
             .field("rerank", &self.rerank)
+            .field(
+                "semantic_readiness_timeout",
+                &self.semantic_readiness_timeout,
+            )
             .finish()
     }
 }

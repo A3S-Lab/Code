@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added an opt-in semantic readiness barrier for asynchronous workspace
+  retrieval. A host can bind a query to the current catalog generation for up
+  to 30 seconds without making session construction synchronous. Publication
+  notifications wake queries without polling; timeout preserves the existing
+  partial `building` fallback, while caller cancellation and session close
+  interrupt the wait. The default remains zero wait for compatibility.
 - Added an opt-in, revision-locked real embedding model matrix through the
   Python SDK callback boundary. An English MiniLM negative control fails only
   the CJK task at Recall@5 0.6667, while multilingual MiniLM passes semantic

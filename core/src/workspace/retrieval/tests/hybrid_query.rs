@@ -25,6 +25,8 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+mod readiness;
+
 #[derive(Debug, Deserialize)]
 struct RetrievalFixture {
     documents: Vec<RetrievalDocument>,
@@ -366,6 +368,23 @@ struct HybridFixture {
     files: Arc<MemoryFiles>,
 }
 
+fn populated_catalog(entries: &[(&str, &str)]) -> Arc<WorkspaceChunkCatalog> {
+    let catalog =
+        WorkspaceChunkCatalog::new(ChunkingConfig::default(), ChunkCatalogLimits::default())
+            .unwrap();
+    for (revision, (path, content)) in entries.iter().enumerate() {
+        catalog
+            .replace_file(
+                &WorkspacePath::from_normalized(*path),
+                path.ends_with(".rs").then_some("rust"),
+                revision as u64 + 1,
+                content,
+            )
+            .unwrap();
+    }
+    catalog
+}
+
 impl HybridFixture {
     async fn start(entries: &[(&str, &str)]) -> Self {
         let provider: Arc<dyn EmbeddingProvider> =
@@ -386,19 +405,7 @@ impl HybridFixture {
         provider: Arc<dyn EmbeddingProvider>,
         rerank: WorkspaceRerankOptions,
     ) -> Self {
-        let catalog =
-            WorkspaceChunkCatalog::new(ChunkingConfig::default(), ChunkCatalogLimits::default())
-                .unwrap();
-        for (revision, (path, content)) in entries.iter().enumerate() {
-            catalog
-                .replace_file(
-                    &WorkspacePath::from_normalized(*path),
-                    path.ends_with(".rs").then_some("rust"),
-                    revision as u64 + 1,
-                    content,
-                )
-                .unwrap();
-        }
+        let catalog = populated_catalog(entries);
         let files = MemoryFiles::from_entries(entries);
         let runtime = WorkspaceRetrievalRuntime::start(
             catalog,

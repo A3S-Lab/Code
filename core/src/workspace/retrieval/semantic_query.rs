@@ -64,7 +64,10 @@ impl WorkspaceRetrievalRuntime {
         if cancellation.is_cancelled() {
             return Err(WorkspaceRetrievalError::Cancelled);
         }
-        let observed_status = self.status();
+        let runtime_cancellation = self.child_lifetime();
+        let observed_status = self
+            .wait_for_semantic_readiness(&runtime_cancellation, &cancellation)
+            .await?;
         if observed_status.phase == WorkspaceRetrievalPhase::Closed {
             return Ok(empty_result(
                 observed_status,
@@ -100,7 +103,6 @@ impl WorkspaceRetrievalRuntime {
             ));
         };
 
-        let runtime_cancellation = self.child_lifetime();
         let query_cancellation = runtime_cancellation.child_token();
         let _query_cancellation_guard = query_cancellation.clone().drop_guard();
         let query_call = self.executor.embed(
