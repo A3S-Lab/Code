@@ -433,9 +433,34 @@ The same multilingual vectors under deterministic reranking retain Recall@5
 arms retain 68,251 vector bytes, use 1.0x document-request amplification,
 admit zero non-text inputs, and release every vector. This qualifies a real
 multilingual model and RRF-only as production-evaluation candidates, not as
-bundled defaults. The remaining `WSR-PROD1` gates cover real CLI HTTP transport,
-representative generation tasks, soak/churn, cross-platform execution, and
-operational SLOs.
+bundled defaults.
+
+### Retrieval-dependent generation boundary
+
+Code `eddeeea` adds a compile-gated three-task generation corpus and runs each
+task three times with the locked multilingual embedding model and the real
+repository-authorized `deepseek/deepseek-v4-pro` chat route. The model receives
+no expected code. It must issue exactly one explicit hybrid Search, retrieve
+both labeled evidence files, edit only the marker in `src/solution.rs`, and
+return the exact completion marker. A hidden Rust test is injected only after
+the session closes.
+
+All 9/9 runs passed, for a 1.0000 pass rate and 0.7008 two-sided 95 percent
+Wilson lower bound. Tool protocol, evidence Recall@5, hidden compile, workspace
+integrity, and release rates were all 1.0000. The run made 18 document requests
+at 1.0000x amplification, admitted zero non-text inputs, and advanced every
+edited source/vector generation without accumulating a second live generation.
+Initial/full-ready and edited-generation first-publication p95 were 402/919 and
+40 ms respectively. The complete metrics, corpus digests, reproduction command,
+and SLO thresholds are in [`sdk/evaluation/README.md`](../sdk/evaluation/README.md).
+
+The bounded local churn gate then replaced one source file 64 times. Every
+published generation retained exactly one vector record and returned only the
+latest marker; close released all records and bytes. Code
+[CI #249](https://github.com/A3S-Lab/Code/actions/runs/31862118069) passes the
+same ignored test on Ubuntu, macOS, and Windows. Operational state handling and
+configuration-only rollback are defined in the
+[Workspace Retrieval Operations runbook](WORKSPACE_RETRIEVAL_OPERATIONS.md).
 
 ## A3S Test coverage boundary
 
@@ -451,9 +476,9 @@ a browser.
 
 ## Release disposition
 
-Pass. Keep retrieval opt-in and source egress double-gated. The deterministic
-quality, adversarial, lifecycle, confidentiality, performance, host, release
-build, and real DeepSeek integration gates passed; `WSR-QA`, `WSR-DOC`, and
-`WSR-EVAL2` are delivered. Keep line chunking and RRF-only as compatible
-defaults because the real-model samples qualify correctness and portability,
-not a representative default advantage.
+Pass for opt-in retrieval-dependent generation. Keep retrieval opt-in and source
+egress double-gated. The deterministic quality, adversarial, lifecycle,
+confidentiality, performance, host, compile-gated generation, three-platform
+churn, and real DeepSeek integration gates passed. Keep line chunking and
+RRF-only as compatible defaults because the real-model samples qualify a bounded
+workflow, not a universal default advantage.

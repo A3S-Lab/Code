@@ -135,6 +135,14 @@ The program preserves the existing search surfaces:
 12. RRF and overlap-aware reranking consume Code-specific ranges, identifier
     tiers, and channel evidence, so they belong in Code rather than the generic
     A3S Memory vector kernel. A neural reranker is host-injected and default-off.
+13. The model-free CPU path is the product baseline: exact, glob, incremental
+    BM25, Code Intelligence, RRF, and deterministic MMR remain useful without an
+    Embedding Provider. Dense semantic mode is an optional enhancement and must
+    degrade to those paths when its provider is absent or unhealthy.
+14. A local CPU embedding runtime is a host adapter behind `EmbeddingProvider`,
+    not a Core or Memory dependency. It must use a revision- and digest-locked
+    artifact, bounded blocking workers, explicit CPU/RSS budgets, and no model
+    download or undeclared network access during session construction.
 
 ### 6.3 Target architecture
 
@@ -145,7 +153,7 @@ WorkspaceFileSystem ── admitted reads ─> WorkspaceRetrievalRuntime
                                              │
                               ┌──────────────┴──────────────┐
                               v                             v
-                       Shared ChunkCatalog          EmbeddingProvider
+                       Shared ChunkCatalog          EmbeddingProvider (local CPU or remote)
                               │                             │
                     ┌─────────┴─────────┐                   v
                     v                   v          InMemoryVectorIndex
@@ -185,7 +193,7 @@ server and must produce equivalent fallback chunks when it is unavailable.
 | `a3s-code-core/session` | `WorkspaceRetrievalRuntime`, asynchronous construction, prioritization, query-time promotion, cancellation, close/replace/resume behavior, and session isolation | Process-global mutable indexes or hidden persistence |
 | `a3s-code-core/tools` | `semantic`/`hybrid` search modes, RRF fusion, bounded overlap-aware reranking, path filters, source anchors, coverage/status metadata, and lexical fallback | A second chunker or direct filesystem traversal outside `WorkspaceServices` |
 | Code SDKs | Typed retrieval/chunking options, typed Embedding Provider injection, status/result DTOs, and lifecycle parity across Rust, Node, Python, and Go | Primitive strategy/backend names or SDK-specific ranking behavior |
-| CLI/TUI and other hosts | ACL wiring, opt-in controls, readiness/degraded presentation, diagnostics, and provider-secret handling | Reimplementing indexing or making a host-specific search protocol |
+| CLI/TUI and other hosts | ACL wiring, opt-in controls, readiness/degraded presentation, diagnostics, provider-secret handling, and optional local CPU provider adapters/model-artifact admission | Reimplementing indexing, placing model runtimes in Core/Memory, or making a host-specific search protocol |
 | Tests, benchmarks, and docs | Shared relevance fixtures, adversarial lifecycle tests, performance baselines, examples, and operator guidance | Production-only correctness assumptions that cannot be tested deterministically |
 
 ### 6.5 Component contracts
@@ -429,7 +437,8 @@ Current implementation status:
 | `CODE-B2` | Delivered | A session-local coordinator coalesces one immutable catalog generation across files and flushes on the earliest input, text-byte, vector-byte, or generation-complete boundary. Stable IDs, revision/digest fencing, cancellation, private split-file accumulation, file-atomic publication, partial readiness, and already-published sibling survival are covered by eight adversarial tests. Current-generation batching metrics are exposed by Core, Node, Python, Go, and the CLI host. The 31-chunk paired task, 55-chunk collision task, every strategy arm, the 39-chunk ACL-host task, and the 25,000-record release profile all report 1.0x request amplification; the release profile emits 391 requests for a 391-request lower bound with 9-10 ms time to first ready publication |
 | `CODE-R2` | Delivered | Rust Core adds an opt-in deterministic MMR v1 stage after pure RRF with exact-tier protection, interval/lexical near-duplicate scoring, stable tie breaking, two-results-per-file diversity, 100-candidate/4-KiB/128-fingerprint/4-MiB ceilings, unchanged-order RRF fallback, and versioned diagnostics across Rust/Node/Python/Go results. Locked Recall@10/MRR/nDCG@10 are 1.0 with zero selected duplicates; two release runs report -5.163/-2.322 ms signed end-to-end p95 differences (0/0 ms positive addition), 75,346 accounted scratch bytes, and zero fallback. The default-line adversarial DeepSeek slice improves completion and Recall@5 from 0/3 to 3/3 while reducing Top-5 collision evidence from 15/15 to 10/15. RRF-only remains default |
 | `WSR-EVAL2` | Delivered | The Core rerank adversary, built-in strategy matrix, Rust custom negative control, real CLI ACL host, and public SDK real-model matrix are complete. Code `cde887b` locks one corpus/report contract across Node.js, Python, and Go; each SDK completes `3/3` exact tasks and one-Search protocols with Precision@5 `0.2`, returned-result precision `0.4286`, Recall@5 `1.0`, MRR `0.5`, nDCG@5 `0.6309`, 39 vectors/9,595 bytes per session, 1.0x document-request amplification, zero non-text inputs, and complete release. Remote timing remains diagnostic, the whole-file control remains unqualified, and no default change is justified |
-| `WSR-PROD1` | In progress | Code `beac7cb` adds a revision-locked real embedding model matrix through the Python SDK. English MiniLM is a language-boundary negative control at Recall@5 `0.6667`; multilingual MiniLM reaches semantic and RRF-hybrid Recall@5 `1.0`, MRR `0.5`, ranks `2/2/2`, 1.0x request amplification, zero non-text inputs, and complete release. Deterministic reranking retains Recall@5 but lowers MRR to `0.3444`, validating RRF-only as the production candidate. CLI `5a27e81` closes the real host HTTP-provider gate on Windows: the same locked 384-dimensional multilingual model crosses trusted ACL composition and the OpenAI-compatible adapter into the asynchronous session index, then supports real DeepSeek completions at `3/3` exact tasks and tool protocols, Recall@5 `1.0`, MRR `0.5`, nDCG@5 `0.6309`, 1.0x request amplification, zero non-text inputs, and `435/454` ms p50/p95 time to first ready publication. The run also locks strict UTF-8 on the Rust-to-Python evaluation pipe after an adversarial CJK chunk exposed Windows locale corruption. Representative generation tasks with statistical repetition, soak/churn, non-Windows evidence, and operational SLO/rollback closure remain required |
+| `WSR-PROD1` | Delivered | Code `beac7cb` qualifies the revision-locked 384-dimensional multilingual CPU model with RRF Recall@5 `1.0`, MRR `0.5`, 1.0x amplification, zero non-text inputs, and complete release; the English model remains a CJK negative control and deterministic MMR remains optional after lowering MRR to `0.3444`. CLI `5a27e81` passes the same model through trusted ACL and the real loopback HTTP adapter into DeepSeek at `3/3`, with `435/454` ms p50/p95 first-ready publication and a strict UTF-8 process boundary. Code `eddeeea` then passes 9/9 compile-gated generation trials across three tasks: pass rate `1.0`, 95% Wilson lower bound `0.7008`, tool/evidence/compile/integrity/release `1.0`, 1.0x amplification, zero non-text inputs, `402/919` ms initial-publication/full-ready p95, and `40` ms edited-generation publication p95. The 64-generation replacement soak retains one live vector and releases zero/zero records/bytes on close; [CI #249](https://github.com/A3S-Lab/Code/actions/runs/31862118069) passes it on Ubuntu, macOS, and Windows together with all Code checks. The versioned SLO, telemetry, and configuration-only rollback runbook is delivered |
+| `HOST-LCPU1` | Planned | SDK hosts can already inject in-process CPU embeddings and all model-free search/rerank paths remain available. Add an optional typed local CPU embedding adapter to the CLI host after a bounded runtime/model-artifact spike; no inference dependency enters Code Core or A3S Memory, and omission preserves the current binary/runtime behavior |
 | `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, DeepSeek task evaluation, SDK examples, ACL host guidance, text/knowledge-compiler boundary, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
 
 The detailed baseline and threat model are in
@@ -464,6 +473,7 @@ The chunk strategy and rerank boundary is in
 | `CODE-R2` | Code ranking | `CODE-C2`, `CODE-H1` | Deterministic bounded second-stage reranker and optional typed host port | Identifier quality never regresses; duplicate evidence falls on the overlap fixture; p95/scratch limits pass; failure returns original RRF order |
 | `WSR-EVAL2` | Code tests/real model | `CODE-R2`, `HOST-C2`, `HOST-R2` | Strategy/rerank matrix with deterministic and DeepSeek task evidence | Every metric in the locked report is populated and no variant ships as default without a statistically and operationally meaningful gain |
 | `WSR-PROD1` | Code SDK/host evaluation | `WSR-EVAL2` | Locked real embedding models, HTTP-provider qualification, generation-task corpus, soak/churn, cross-platform matrix, and SLO/rollback runbook | Representative production evidence passes without weakening source, memory, lifecycle, or compatibility boundaries |
+| `HOST-LCPU1` | CLI host | `CODE-E1`, `WSR-PROD1` | Optional typed in-process CPU embedding adapter with offline artifact admission | Model-free search remains dependency-free; local semantic mode passes Windows/macOS/Linux quality, cold-load, throughput, RSS, cancellation, and zero-network gates |
 
 The parallelizable dependency shape is:
 
@@ -494,6 +504,32 @@ quality, request-amplification, non-text-egress, and release gates. The matrix
 qualifies portability; its three remote tasks per SDK do not establish a
 statistically or operationally meaningful reason to change the line or
 RRF-only defaults.
+
+`HOST-LCPU1` must execute in this order:
+
+1. Freeze the model-free path as a negative dependency gate: Core, Memory, and
+   default SDK/CLI builds must continue to work without an inference runtime or
+   model artifact.
+2. Compare a ready embedding-oriented ONNX adapter such as `fastembed-rs`
+   against a self-contained `tract` adapter on the locked multilingual corpus.
+   Record supported operators, binary delta, cold load, document/query
+   throughput, p50/p95, peak RSS, cancellation latency, and all three desktop
+   platforms before selecting a runtime.
+3. Define one typed local-provider ACL block and immutable artifact manifest
+   containing model identity, revision, files, SHA-256 digests, tokenizer,
+   dimension, normalization, license metadata, and runtime compatibility. Model
+   installation is a separate explicit action; session construction never
+   downloads it.
+4. Run CPU inference on a bounded blocking pool, reuse one admitted model per
+   compatible host process, preserve Code's batching/cancellation contract, and
+   expose only non-sensitive load/RSS/throughput status. Local processing does
+   not require a source-egress grant, but enabling it still requires a trusted
+   host layer.
+5. Qualify semantic quality, generation completion, offline startup, corrupt or
+   substituted artifacts, unsupported CPU features, memory pressure, provider
+   panic, close during inference, and lexical fallback. Ship only if omission
+   has zero behavior/dependency regression and local CPU mode passes the same
+   source, revision, amplification, non-text, and release gates as remote mode.
 
 `CODE-R2` was executed in this order:
 
@@ -642,6 +678,11 @@ Rollback is configuration-only: cancel the retrieval runtime, hide semantic
 tool modes, and retain existing exact, lexical, and Code Intelligence paths.
 No migration or index deletion procedure is required because the baseline
 index is session-ephemeral.
+
+`WSR-PROD1` completes the stable opt-in evidence for the current provider-
+injected design. Planned `HOST-LCPU1` improves the CLI's local CPU experience;
+it does not block model-free search, require a new default, or move inference
+and model-artifact ownership into Code Core or A3S Memory.
 
 ### 6.12 WSR non-goals
 

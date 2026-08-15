@@ -348,8 +348,15 @@ sessions configure its catalog exactly once with `configure_chunk_catalog`
 before attaching `local_with_retrieval_backend`; session options cannot
 silently replace that host-owned strategy or its budgets.
 
+No embedding or reranking model is required for the baseline workspace search:
+exact, glob, incremental BM25, Code Intelligence, and RRF execute locally on
+CPU and remain available when Workspace Retrieval is omitted. Dense semantic
+search necessarily needs a text-to-vector function, but that function may be a
+host-injected in-process CPU callback; it is not required to be remote or use a
+GPU. The optional deterministic MMR reranker is also model-free CPU code.
+
 Hosts can implement the public `EmbeddingProvider` trait without adding a
-model SDK to A3S Memory. `EmbeddingExecutor` validates the provider/model
+model runtime to A3S Memory or Code Core. `EmbeddingExecutor` validates the provider/model
 descriptor, deterministically batches caller-admitted text, enforces text and
 expected-vector byte budgets before calls, propagates cancellation, applies
 typed bounded retries, and rejects partial, duplicate, unknown, dimension-
@@ -425,8 +432,17 @@ control. The real CLI ACL-host composition and the public Node.js, Python, and
 Go SDKs now also pass recursive 512/64 plus deterministic reranking against one
 versioned corpus and normalized report contract. Each SDK completes 3/3 exact
 tasks and tool protocols with Recall@5 1.0, MRR 0.5, 1.0x document-request
-amplification, zero non-text inputs, and complete post-close vector release.
+ amplification, zero non-text inputs, and complete post-close vector release.
 These three-task parity runs do not qualify a new default.
+The separate compile-gated generation matrix combines the locked multilingual
+embedding model with the repository-authorized DeepSeek route and passes 9/9
+target-only Rust edits across three tasks, with a 0.7008 Wilson lower bound,
+Recall@5 1.0, hidden-test compilation, 1.0x provider amplification, incremental
+replacement, and complete release. A 64-generation churn gate verifies that a
+changed file replaces rather than accumulates vectors. These results qualify a
+bounded opt-in generation workflow; they still do not justify automatic
+enablement. See the [operations runbook](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)
+for SLOs and rollback.
 Results report the versioned algorithm, selection/redundancy scores,
 candidate and byte accounting, truncation, and fallback without exposing query
 or source text. Fusion and reranking precede authoritative source access, so
@@ -680,6 +696,7 @@ the v1 schema.
 | [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md) | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope |
 | [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) | Paired task/rerank ablations, built-in chunk matrix, cross-SDK real-model parity, custom negative control, non-text boundary, metrics, and batching follow-up |
 | [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md) | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan |
+| [Workspace Retrieval Operations](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md) | Production SLOs, telemetry, state response, generation gates, and configuration-only rollback |
 | [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md) | Filesystem-first tool and agent definitions |
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) | Admission schema, identity, compatibility, and security boundary |
 | [Changelog](CHANGELOG.md) | Release history and migration-relevant changes |

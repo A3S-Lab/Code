@@ -92,10 +92,12 @@ Synchronous callers can use `governed_tool(name, args)`.
 
 ## Ephemeral Workspace Retrieval
 
-Semantic retrieval is opt-in and belongs to one session. The host injects an
-async embedding callback; A3S Code owns chunking, bounded in-memory vectors,
-hybrid ranking, source-digest verification, and shutdown. Nothing is persisted
-to a vector database.
+Semantic retrieval is opt-in and belongs to one session. Exact, glob, BM25,
+Code Intelligence, and RRF need no embedding or reranking model. Dense semantic
+mode requires an embedding callback, but the callback can run a small model
+locally on CPU; no remote API or GPU is required. A3S Code owns chunking,
+bounded in-memory vectors, hybrid ranking, source-digest verification, and
+shutdown. Nothing is persisted to a vector database.
 
 ```python
 from a3s_code import (
@@ -125,8 +127,10 @@ provider = CallbackEmbeddingProvider(
     embed,
     normalization="unit",
 )
-reranker = DeterministicWorkspaceReranker()
-reranker.max_candidates = 100
+# Optional, local, and model-free. Keep None for compatibility RRF-only.
+reranker = None
+# reranker = DeterministicWorkspaceReranker()
+# reranker.max_candidates = 100
 chunking = RecursiveWorkspaceChunkingStrategy(
     8 * 1024,
     512,
@@ -163,6 +167,14 @@ The reranker argument is optional; omit it to preserve RRF-only. Its typed
 fields bound candidates, sampled feature bytes, fingerprints, and checked
 scratch memory. Invalid bounds fail during session construction before the
 embedding coroutine runs, and raw mode or algorithm strings are not accepted.
+
+The SDK deliberately does not depend on an inference framework. A host may
+implement the same callback with an optional CPU runtime such as Sentence
+Transformers or ONNX, run blocking inference through `asyncio.to_thread`, and
+lock the model revision and vector dimension in its provider descriptor. The
+real-model runner in `tests/test_workspace_retrieval_real_embedding.py`
+demonstrates this path on CPU. Model installation, caching, license admission,
+and artifact verification remain host responsibilities.
 
 `chunking_strategy` is also optional. Pass a
 `LineWorkspaceChunkingStrategy`, `FixedWindowWorkspaceChunkingStrategy`, or

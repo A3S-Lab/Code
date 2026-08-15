@@ -1,10 +1,10 @@
 # Cross-SDK Workspace Retrieval Evaluation
 
-This directory owns the versioned, language-neutral fixture used to qualify
-real-model Workspace Retrieval through the Node.js, Python, and Go public SDKs.
-The fixture is the source of truth for corpus bytes, task labels, embedding
-axes, chunking, reranking, and report versions. Language adapters must not
-silently fork those values.
+This directory owns the versioned, language-neutral fixtures used to qualify
+real-model Workspace Retrieval through public SDKs and retrieval-dependent
+generation. Each fixture is the source of truth for its corpus bytes, task
+labels, embedding axes, chunking, reranking, and report version. Language
+adapters must not silently fork those values.
 
 ## What the evaluation proves
 
@@ -180,3 +180,73 @@ at revision `e8f8c211226b894fcb81acc59f3b34ba3efd5f42`. This narrow fixture
 qualifies it as a production-evaluation candidate, not a bundled default. It
 also supplies real-model evidence for retaining RRF-only as the compatible
 default; deterministic reranking remains an explicit corpus-dependent option.
+
+## Retrieval-dependent generation matrix
+
+`workspace-retrieval-generation-v1.json` advances the qualification from
+answer extraction to repository mutation. It contains three independent Rust
+tasks covering reconnect admission, CJK lifecycle policy, and embedding
+backpressure at a chunk boundary. Each task includes two required evidence
+files, a lexical trap, 18 unrelated Rust files, and three non-text sentinels.
+The target initially contains only a typed signature and an implementation
+marker; expected code is never included in the prompt or searchable corpus.
+
+The real model must make exactly one explicit Top-5 hybrid Search call, use all
+labeled evidence, make exactly one marker-scoped edit to `src/solution.rs`, and
+touch no other model-visible file. After the session closes, the runner injects
+an independent hidden Rust test and runs `cargo test --offline --quiet`.
+Success therefore requires tool-protocol compliance, evidence coverage,
+target-only integrity, hidden compilation, incremental reindex publication,
+bounded provider amplification, zero non-text egress, and complete release; a
+plausible model response alone cannot pass.
+
+Validate the corpus contract without a model, then run the complete three-by-
+three matrix from a checkout with the Python native SDK already built and the
+locked Sentence Transformers revision cached:
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path '.\sdk\python\python').Path
+py -3.13 .\sdk\python\tests\test_workspace_retrieval_generation_real_deepseek.py `
+  --validate-fixture
+
+$env:A3S_REAL_EVAL_ROOT = (Resolve-Path 'D:\code\a3s').Path
+py -3.13 .\sdk\python\tests\test_workspace_retrieval_generation_real_deepseek.py `
+  --local-files-only
+```
+
+The runner prints `WSR_GENERATION_EVAL=<json>`. A full qualification requires
+at least three repetitions of every task, pass rate at least 0.90, a two-sided
+95 percent Wilson lower bound of at least 0.65, and 100 percent protocol,
+evidence, compile, integrity, and release rates. It also locks p95 ceilings of
+100 ms for session construction, 5,000 ms for full readiness, 1,000 ms for
+initial publication, 2,000 ms for observing the edited generation, 1,000 ms
+for its first publication, and 6,000 ms for close. Document-request
+amplification must remain at most 1.10x and non-text input must remain zero.
+
+The clean 2026-08-15 run represented by Code `eddeeea` passed all nine trials:
+
+| Metric | Observed |
+| --- | ---: |
+| Hidden-test generation success | 9/9 (1.0000) |
+| 95% Wilson lower bound | 0.7008 |
+| Per-task success | 3/3, 3/3, 3/3 |
+| Exact tool protocol / evidence Recall@5 | 1.0000 / 1.0000 |
+| Hidden compile / workspace integrity / release | 1.0000 / 1.0000 / 1.0000 |
+| Document requests / amplification | 18 / 1.0000x |
+| Non-text provider inputs | 0 |
+| Session construction p50 / p95 | 9 / 21 ms |
+| Full index ready p50 / p95 | 773 / 919 ms |
+| Initial first-ready publication p50 / p95 | 224 / 402 ms |
+| Edited-generation observation p50 / p95 | 0 / 1,054 ms |
+| Edited-generation first publication p50 / p95 | 36 / 40 ms |
+| DeepSeek turn p50 / p95 | 7,701 / 30,660 ms |
+| Hidden Cargo test p50 / p95 | 5,487 / 7,139 ms |
+| Session close p50 / p95 | 5,009 / 5,018 ms |
+| Total DeepSeek tokens | 90,088 |
+
+Every run advanced source revision 1 to 2 and vector revision 24 to 26 after
+the edit without retaining an extra generation. DeepSeek turn and Cargo build
+times are diagnostic and are not retrieval latency SLOs. Nine successful
+observations qualify this locked opt-in workflow; they do not establish a
+universal model success rate for arbitrary repositories or justify enabling
+semantic retrieval by default.
