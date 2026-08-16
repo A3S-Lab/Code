@@ -42,6 +42,15 @@ pub(crate) fn estimate_message_tokens(messages: &[Message]) -> usize {
     estimate_prompt_tokens(messages, None, &[])
 }
 
+pub(crate) fn estimate_tool_result_contents_tokens<'a>(
+    contents: impl IntoIterator<Item = &'a ToolResultContentField>,
+) -> usize {
+    let chars = contents.into_iter().fold(0usize, |total, content| {
+        total.saturating_add(tool_result_content_chars(content))
+    });
+    chars.saturating_add(3) / 4
+}
+
 fn tool_result_content_chars(content: &ToolResultContentField) -> usize {
     match content {
         ToolResultContentField::Text(text) => text.len(),

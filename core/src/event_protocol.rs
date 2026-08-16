@@ -71,6 +71,7 @@ define_agent_event_types_v1! {
     ContextResolved => CONTEXT_RESOLVED = "context_resolved",
     RunCapabilityBound => RUN_CAPABILITY_BOUND = "run_capability_bound",
     ModelInputBound => MODEL_INPUT_BOUND = "model_input_bound",
+    ModelUsageBound => MODEL_USAGE_BOUND = "model_usage_bound",
     CognitiveContextBound => COGNITIVE_CONTEXT_BOUND = "cognitive_context_bound",
     CommandDeadLettered => COMMAND_DEAD_LETTERED = "command_dead_lettered",
     CommandRetry => COMMAND_RETRY = "command_retry",

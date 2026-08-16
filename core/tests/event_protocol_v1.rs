@@ -4,9 +4,11 @@ use a3s_code_core::verification::VerificationSummary;
 use a3s_code_core::{
     run_event_envelope_v1, AgentEvent, AgentEventProjectionV1, CognitiveContextLimits,
     CognitiveKnowledgeBindingV1, CognitivePackageBindingV1, EventEnvelopeV1, ModelInputKindV1,
-    ModelInputSnapshotV1, RunCapabilitySnapshotV1, RunPolicyCeilingSnapshotV1, TokenUsage,
+    ModelInputSnapshotV1, ModelUsageSnapshotV1, RunCapabilitySnapshotV1,
+    RunPolicyCeilingSnapshotV1, TokenUsage, ToolResultContextUsageV1,
     WorkspaceCapabilitySnapshotV1, WorkspaceRetrievalCapabilitySnapshotV1, WorkspaceRetrievalPhase,
-    AGENT_EVENT_TYPES_V1, MODEL_INPUT_SNAPSHOT_V1_SCHEMA, RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA,
+    AGENT_EVENT_TYPES_V1, MODEL_INPUT_SNAPSHOT_V1_SCHEMA, MODEL_USAGE_SNAPSHOT_V1_SCHEMA,
+    RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA,
 };
 use serde_json::json;
 
@@ -123,6 +125,32 @@ fn model_input_snapshot() -> ModelInputSnapshotV1 {
         input_digest: digest('2'),
         capability_snapshot_digest: digest('d'),
         snapshot_digest: digest('3'),
+    }
+}
+
+fn model_usage_snapshot() -> ModelUsageSnapshotV1 {
+    ModelUsageSnapshotV1 {
+        schema: MODEL_USAGE_SNAPSHOT_V1_SCHEMA.to_string(),
+        call_sequence: 1,
+        input_snapshot_digest: digest('3'),
+        estimated_prompt_tokens: 225,
+        reported_prompt_tokens: 210,
+        reported_completion_tokens: 15,
+        reported_total_tokens: 225,
+        reported_cache_read_tokens: Some(32),
+        reported_cache_write_tokens: None,
+        tool_results: ToolResultContextUsageV1 {
+            total_count: 1,
+            unique_count: 1,
+            repeated_count: 0,
+            content_bytes: 96,
+            repeated_content_bytes: 0,
+            estimated_tokens: 18,
+            repeated_estimated_tokens: 0,
+            contents_digest: Some(digest('4')),
+            repeated_contents_digest: None,
+        },
+        snapshot_digest: digest('5'),
     }
 }
 
@@ -353,6 +381,14 @@ fn representative_events() -> Vec<EventCase> {
             },
             "snapshot",
             serde_json::to_value(model_input_snapshot()).unwrap(),
+        ),
+        case(
+            "model_usage_bound",
+            AgentEvent::ModelUsageBound {
+                snapshot: model_usage_snapshot(),
+            },
+            "snapshot",
+            serde_json::to_value(model_usage_snapshot()).unwrap(),
         ),
         case(
             "cognitive_context_bound",

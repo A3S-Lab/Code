@@ -4,7 +4,7 @@ use super::{AgentEvent, AgentLoop};
 use crate::budget::BudgetGuard;
 use crate::harness_evidence::{
     HarnessEvidenceError, ModelCallObservation, ModelInputSnapshotV1, RunCapabilityEvidenceSource,
-    RunCapabilitySnapshotV1,
+    RunCapabilitySnapshotV1, ToolResultContextUsageV1,
 };
 use crate::hitl::ConfirmationProvider;
 use crate::permissions::PermissionChecker;
@@ -76,6 +76,7 @@ struct ModelEvidenceState {
 pub(super) struct CapturedModelEvidence {
     pub(super) capability: RunCapabilitySnapshotV1,
     pub(super) input: ModelInputSnapshotV1,
+    pub(super) tool_result_context: ToolResultContextUsageV1,
 }
 
 impl std::fmt::Debug for InvocationContext {
@@ -199,8 +200,13 @@ impl InvocationContext {
             })
             .map_err(|_| HarnessEvidenceError::CallSequenceExhausted)?;
         let call_sequence = previous + 1;
-        let (capability, input) = state.source.capture(call_sequence, observation)?;
-        Ok(Some(CapturedModelEvidence { capability, input }))
+        let (capability, input, tool_result_context) =
+            state.source.capture(call_sequence, observation)?;
+        Ok(Some(CapturedModelEvidence {
+            capability,
+            input,
+            tool_result_context,
+        }))
     }
 
     pub(super) async fn send_capability_if_changed(

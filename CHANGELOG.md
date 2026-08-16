@@ -9,15 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added versioned `run_capability_bound` and `model_input_bound` Run events at
-  the unified provider-neutral model boundary. They bind actual model-visible
-  tools, workspace capabilities, run-owned governance bindings, serializable
-  policy identities, execution ceilings, semantic readiness/generation, input
-  shape, and retrieval Tool-result evidence through bounded
-  counters and domain-separated SHA-256 digests without retaining new prompt,
-  Tool-result, source, vector, credential, or endpoint plaintext. Capability
+- Added versioned `run_capability_bound`, `model_input_bound`, and
+  `model_usage_bound` Run events at the unified provider-neutral model
+  boundary. They bind actual model-visible tools, workspace capabilities,
+  run-owned governance bindings, serializable policy identities, execution
+  ceilings, semantic readiness/generation, input shape, retrieval Tool-result
+  evidence, exact repeated Tool-result context, prompt estimates, and
+  normalized client token/cache usage through bounded counters and
+  domain-separated SHA-256 digests without retaining new prompt, Tool-result,
+  source, vector, credential, or endpoint plaintext. Capability
   emission is concurrency-safe and deduplicated by digest; every model call has
-  a positive sequence and exact persisted replay coverage.
+  a positive sequence and exact persisted replay coverage. Run and streaming
+  caller cancellation interrupt evidence backpressure at the provider boundary.
 - Added an opt-in semantic readiness barrier for asynchronous workspace
   retrieval. A host can bind a query to the current catalog generation for up
   to 30 seconds without making session construction synchronous. Publication

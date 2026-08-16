@@ -1,7 +1,7 @@
 use super::*;
 use crate::agent::AgentConfig;
 use crate::llm::structured::{ResponseFormat, StructuredDirective};
-use crate::llm::{ContentBlock, Message, ToolDefinition, ToolResultContentField};
+use crate::llm::{ContentBlock, Message, TokenUsage, ToolDefinition, ToolResultContentField};
 use crate::workspace::WorkspaceServices;
 
 fn source(workspace: &std::path::Path) -> RunCapabilityEvidenceSource {
@@ -31,6 +31,8 @@ fn public_evidence_types_are_send_and_sync() {
     assert_send_sync::<WorkspaceRetrievalCapabilitySnapshotV1>();
     assert_send_sync::<RunCapabilitySnapshotV1>();
     assert_send_sync::<ModelInputSnapshotV1>();
+    assert_send_sync::<ToolResultContextUsageV1>();
+    assert_send_sync::<ModelUsageSnapshotV1>();
 }
 
 #[test]
@@ -39,7 +41,7 @@ fn evidence_is_stable_redacted_and_sensitive_to_actual_input() {
     let source = source(workspace.path());
     let tools = vec![search_tool()];
     let messages = vec![Message::user("top-secret-model-input")];
-    let (first_capability, first_input) = source
+    let (first_capability, first_input, _) = source
         .capture(
             1,
             ModelCallObservation::new(
@@ -52,7 +54,7 @@ fn evidence_is_stable_redacted_and_sensitive_to_actual_input() {
             ),
         )
         .unwrap();
-    let (second_capability, second_input) = source
+    let (second_capability, second_input, _) = source
         .capture(
             2,
             ModelCallObservation::new(
@@ -102,6 +104,66 @@ fn evidence_is_stable_redacted_and_sensitive_to_actual_input() {
         .unwrap()
         .1;
     assert_ne!(second_input.input_digest, changed.input_digest);
+}
+
+#[test]
+fn model_input_v1_wire_shape_stays_stable_when_usage_evidence_expands() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source(workspace.path());
+    let (_, input, tool_results) = source
+        .capture(
+            1,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &[Message::tool_result("tool-1", "private result", false)],
+                None,
+                &[],
+                None,
+                4,
+            ),
+        )
+        .unwrap();
+    let encoded = serde_json::to_value(&input).unwrap();
+    let actual = encoded
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = [
+        "schema",
+        "callSequence",
+        "kind",
+        "messageCount",
+        "contentBlockCount",
+        "imageBlockCount",
+        "toolResultCount",
+        "toolCount",
+        "retrievalResultCount",
+        "retrievalResultBytes",
+        "retrievalResultsDigest",
+        "systemBytes",
+        "messagePayloadBytes",
+        "toolDefinitionBytes",
+        "structuredOutputBytes",
+        "payloadBytes",
+        "estimatedPromptTokens",
+        "messagesDigest",
+        "systemDigest",
+        "toolDefinitionsDigest",
+        "structuredOutputDigest",
+        "inputDigest",
+        "capabilitySnapshotDigest",
+        "snapshotDigest",
+    ]
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(actual, expected);
+    let decoded: ModelInputSnapshotV1 = serde_json::from_value(encoded).unwrap();
+    decoded.validate().unwrap();
+    assert_eq!(decoded, input);
+    assert_eq!(tool_results.total_count, 1);
 }
 
 #[test]
@@ -184,10 +246,125 @@ fn model_input_identifies_semantic_tool_results_without_retaining_them() {
 }
 
 #[test]
+fn model_usage_quantifies_repeated_tool_result_content_without_retaining_it() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source(workspace.path());
+    let repeated = "private repeated tool output";
+    let messages = vec![
+        Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "read-1".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"file_path": "one.rs"}),
+            }],
+            reasoning_content: None,
+        },
+        Message::tool_result("read-1", repeated, false),
+        Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "read-2".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"file_path": "two.rs"}),
+            }],
+            reasoning_content: None,
+        },
+        Message::tool_result("read-2", repeated, false),
+        Message::tool_result("read-3", "unique tool output", false),
+    ];
+    let (_, input, tool_results) = source
+        .capture(
+            1,
+            ModelCallObservation::new(ModelInputKindV1::Completion, &messages, None, &[], None, 32),
+        )
+        .unwrap();
+    let usage =
+        ModelUsageSnapshotV1::from_input(&input, &tool_results, &TokenUsage::default()).unwrap();
+
+    input.validate().unwrap();
+    assert_eq!(input.tool_result_count, 3);
+    assert_eq!(usage.tool_results.unique_count, 2);
+    assert_eq!(usage.tool_results.repeated_count, 1);
+    assert!(usage.tool_results.content_bytes > usage.tool_results.repeated_content_bytes);
+    assert!(usage.tool_results.estimated_tokens > usage.tool_results.repeated_estimated_tokens);
+    assert!(usage.tool_results.contents_digest.is_some());
+    assert!(usage.tool_results.repeated_contents_digest.is_some());
+    let encoded = serde_json::to_string(&(input, usage)).unwrap();
+    assert!(!encoded.contains(repeated));
+    assert!(!encoded.contains("unique tool output"));
+}
+
+#[test]
+fn model_usage_binds_client_report_to_the_exact_input_snapshot() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source(workspace.path());
+    let (capability, input, tool_results) = source
+        .capture(
+            7,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &[Message::user("private prompt")],
+                None,
+                &[],
+                None,
+                13,
+            ),
+        )
+        .unwrap();
+    let usage = TokenUsage {
+        prompt_tokens: 11,
+        completion_tokens: 5,
+        total_tokens: 16,
+        cache_read_tokens: Some(3),
+        cache_write_tokens: Some(2),
+    };
+    let usage_snapshot = ModelUsageSnapshotV1::from_input(&input, &tool_results, &usage).unwrap();
+
+    usage_snapshot.validate_against(&input).unwrap();
+    input.validate_against(&capability).unwrap();
+    assert_eq!(usage_snapshot.call_sequence, 7);
+    assert_eq!(usage_snapshot.estimated_prompt_tokens, 13);
+    assert_eq!(usage_snapshot.reported_prompt_tokens, 11);
+    assert_eq!(usage_snapshot.reported_completion_tokens, 5);
+    assert_eq!(usage_snapshot.reported_total_tokens, 16);
+    assert_eq!(usage_snapshot.reported_cache_read_tokens, Some(3));
+    assert_eq!(usage_snapshot.reported_cache_write_tokens, Some(2));
+
+    let different_input = source
+        .capture(
+            8,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &[Message::user("private prompt")],
+                None,
+                &[],
+                None,
+                13,
+            ),
+        )
+        .unwrap()
+        .1;
+    assert!(matches!(
+        usage_snapshot.validate_against(&different_input),
+        Err(HarnessEvidenceError::InvalidContents(
+            "usage and input call sequences agree"
+        ))
+    ));
+
+    let mut tampered = usage_snapshot;
+    tampered.reported_total_tokens = 17;
+    assert!(matches!(
+        tampered.validate(),
+        Err(HarnessEvidenceError::DigestMismatch("snapshot_digest"))
+    ));
+}
+
+#[test]
 fn validation_rejects_snapshot_tampering() {
     let workspace = tempfile::tempdir().unwrap();
     let source = source(workspace.path());
-    let (mut capability, mut input) = source
+    let (mut capability, mut input, _) = source
         .capture(
             1,
             ModelCallObservation::new(
@@ -288,7 +465,7 @@ fn model_input_excludes_host_only_validation_schema() {
 fn validation_reports_shape_invariants_before_digest_mismatch() {
     let workspace = tempfile::tempdir().unwrap();
     let source = source(workspace.path());
-    let (mut capability, mut input) = source
+    let (mut capability, mut input, _) = source
         .capture(
             1,
             ModelCallObservation::new(
@@ -338,6 +515,27 @@ fn validation_reports_shape_invariants_before_digest_mismatch() {
             "system bytes and digest agree"
         ))
     ));
+
+    let (_, _, mut inconsistent_tool_results) = source
+        .capture(
+            3,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &[Message::tool_result("tool-1", "result", false)],
+                None,
+                &[],
+                None,
+                4,
+            ),
+        )
+        .unwrap();
+    inconsistent_tool_results.repeated_count = 1;
+    assert!(matches!(
+        inconsistent_tool_results.validate(),
+        Err(HarnessEvidenceError::InvalidContents(
+            "unique and repeated Tool-result counts partition Tool results"
+        ))
+    ));
 }
 
 #[test]
@@ -346,7 +544,7 @@ fn pair_validation_rejects_a_different_capability_snapshot() {
     let source = source(workspace.path());
     let messages = [Message::user("hello")];
     let tools = [search_tool()];
-    let (capability, input) = source
+    let (capability, input, _) = source
         .capture(
             1,
             ModelCallObservation::new(

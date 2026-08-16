@@ -5,7 +5,8 @@ use a3s_code_core::{
     Agent, AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandV1,
     AgentProtocolEventPageRequestV1, AgentProtocolHarness, AgentProtocolHarnessError,
     AgentProtocolRunIdentityV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1,
-    ModelInputSnapshotV1, PlanningMode, RunCapabilitySnapshotV1, SessionOptions, AGENT_PROTOCOL_V1,
+    ModelInputSnapshotV1, ModelUsageSnapshotV1, PlanningMode, RunCapabilitySnapshotV1,
+    SessionOptions, AGENT_PROTOCOL_V1,
 };
 use base64::Engine as _;
 use std::collections::HashMap;
@@ -351,7 +352,33 @@ async fn harness_replay_binds_redacted_capability_and_model_input_evidence() {
         serde_json::from_value(input.event.payload["snapshot"].clone()).unwrap();
     input.validate_against(&capability).unwrap();
     assert_eq!(input.call_sequence, 1);
-    let evidence_json = serde_json::to_string(&(capability.clone(), input.clone())).unwrap();
+    let usage_record = first_page
+        .events
+        .iter()
+        .find(|record| record.event.event_type == "model_usage_bound")
+        .expect("Harness run must retain a model-usage snapshot");
+    let usage: ModelUsageSnapshotV1 =
+        serde_json::from_value(usage_record.event.payload["snapshot"].clone()).unwrap();
+    usage.validate_against(&input).unwrap();
+    assert_eq!(usage.reported_total_tokens, 2);
+    let input_position = first_page
+        .events
+        .iter()
+        .position(|record| record.event.event_type == "model_input_bound")
+        .unwrap();
+    let usage_position = first_page
+        .events
+        .iter()
+        .position(|record| record.event.event_type == "model_usage_bound")
+        .unwrap();
+    let terminal_position = first_page
+        .events
+        .iter()
+        .position(|record| record.event.event_type == "agent_end")
+        .unwrap();
+    assert!(input_position < usage_position && usage_position < terminal_position);
+    let evidence_json =
+        serde_json::to_string(&(capability.clone(), input.clone(), usage.clone())).unwrap();
     assert!(!evidence_json.contains("top-secret Harness prompt"));
 
     let replay = harness.execute(&command).await.unwrap();
@@ -379,8 +406,20 @@ async fn harness_replay_binds_redacted_capability_and_model_input_evidence() {
             .clone(),
     )
     .unwrap();
+    let replay_usage: ModelUsageSnapshotV1 = serde_json::from_value(
+        replay_page
+            .events
+            .iter()
+            .find(|record| record.event.event_type == "model_usage_bound")
+            .unwrap()
+            .event
+            .payload["snapshot"]
+            .clone(),
+    )
+    .unwrap();
     assert_eq!(replay_capability, capability);
     assert_eq!(replay_input, input);
+    assert_eq!(replay_usage, usage);
 
     harness.close().await;
 }

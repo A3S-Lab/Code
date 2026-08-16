@@ -30,6 +30,7 @@ const (
 	EventContextResolved       = "context_resolved"
 	EventRunCapabilityBound    = "run_capability_bound"
 	EventModelInputBound       = "model_input_bound"
+	EventModelUsageBound       = "model_usage_bound"
 	EventCognitiveContextBound = "cognitive_context_bound"
 	EventCommandDeadLettered   = "command_dead_lettered"
 	EventCommandRetry          = "command_retry"
@@ -80,6 +81,7 @@ var agentEventTypesV1 = [...]string{
 	EventContextResolved,
 	EventRunCapabilityBound,
 	EventModelInputBound,
+	EventModelUsageBound,
 	EventCognitiveContextBound,
 	EventCommandDeadLettered,
 	EventCommandRetry,

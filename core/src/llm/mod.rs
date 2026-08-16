@@ -28,7 +28,9 @@ pub use http::{
     HttpClientError, HttpMetricsCallback, HttpMetricsRecord, HttpResponse, StreamingHttpResponse,
 };
 pub use openai::OpenAiClient;
-pub(crate) use token_estimation::{estimate_message_tokens, estimate_prompt_tokens};
+pub(crate) use token_estimation::{
+    estimate_message_tokens, estimate_prompt_tokens, estimate_tool_result_contents_tokens,
+};
 pub use types::*;
 pub use zhipu::ZhipuClient;
 

@@ -30,6 +30,7 @@ export type KnownAgentEventTypeV1 =
   | 'context_resolved'
   | 'run_capability_bound'
   | 'model_input_bound'
+  | 'model_usage_bound'
   | 'cognitive_context_bound'
   | 'command_dead_lettered'
   | 'command_retry'

@@ -2,8 +2,9 @@ use super::digest::measure;
 use super::input::{capture_model_input, ModelInputCapture};
 use super::{
     HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, RunCapabilitySnapshotV1,
-    RunPolicyCeilingSnapshotV1, WorkspaceRetrievalCapabilitySnapshotV1, CONFIRMATION_POLICY_DOMAIN,
-    MODEL_TOOLS_DOMAIN, PERMISSION_POLICY_DOMAIN, RETRIEVAL_MODEL_DOMAIN,
+    RunPolicyCeilingSnapshotV1, ToolResultContextUsageV1, WorkspaceRetrievalCapabilitySnapshotV1,
+    CONFIRMATION_POLICY_DOMAIN, MODEL_TOOLS_DOMAIN, PERMISSION_POLICY_DOMAIN,
+    RETRIEVAL_MODEL_DOMAIN,
 };
 use crate::agent::AgentConfig;
 use crate::llm::structured::StructuredDirective;
@@ -85,11 +86,18 @@ impl RunCapabilityEvidenceSource {
         &self,
         call_sequence: u64,
         observation: ModelCallObservation<'_>,
-    ) -> Result<(RunCapabilitySnapshotV1, ModelInputSnapshotV1), HarnessEvidenceError> {
+    ) -> Result<
+        (
+            RunCapabilitySnapshotV1,
+            ModelInputSnapshotV1,
+            ToolResultContextUsageV1,
+        ),
+        HarnessEvidenceError,
+    > {
         let tools_measurement = measure(MODEL_TOOLS_DOMAIN, observation.tools)?;
         let capability =
             self.capability_snapshot(observation.tools.len(), &tools_measurement.digest)?;
-        let input = capture_model_input(ModelInputCapture {
+        let (input, tool_result_context) = capture_model_input(ModelInputCapture {
             call_sequence,
             kind: observation.kind,
             messages: observation.messages,
@@ -101,7 +109,7 @@ impl RunCapabilityEvidenceSource {
             capability_snapshot_digest: &capability.snapshot_digest,
         })?;
         input.validate_against(&capability)?;
-        Ok((capability, input))
+        Ok((capability, input, tool_result_context))
     }
 
     fn capability_snapshot(

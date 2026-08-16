@@ -14,9 +14,12 @@ mod input;
 mod source;
 #[cfg(test)]
 mod tests;
+mod usage;
 
 use digest::{measure, require_digest, require_optional_digest};
 pub(crate) use source::{ModelCallObservation, RunCapabilityEvidenceSource};
+pub(crate) use usage::ModelUsageBinding;
+pub use usage::{ModelUsageSnapshotV1, ToolResultContextUsageV1, MODEL_USAGE_SNAPSHOT_V1_SCHEMA};
 
 pub const RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA: &str = "a3s.code.run-capability-snapshot.v1";
 pub const MODEL_INPUT_SNAPSHOT_V1_SCHEMA: &str = "a3s.code.model-input-snapshot.v1";
@@ -29,6 +32,10 @@ const MODEL_SYSTEM_DOMAIN: &str = "a3s.code.model-input-system.v1";
 const MODEL_TOOLS_DOMAIN: &str = "a3s.code.model-visible-tools.v1";
 const MODEL_STRUCTURED_DOMAIN: &str = "a3s.code.model-input-structured.v1";
 const RETRIEVAL_RESULTS_DOMAIN: &str = "a3s.code.model-input-retrieval-results.v1";
+const TOOL_RESULT_CONTENT_DOMAIN: &str = "a3s.code.model-input-tool-result-content.v1";
+const TOOL_RESULT_CONTENTS_DOMAIN: &str = "a3s.code.model-input-tool-result-contents.v1";
+const REPEATED_TOOL_RESULT_CONTENTS_DOMAIN: &str =
+    "a3s.code.model-input-repeated-tool-result-contents.v1";
 const RETRIEVAL_MODEL_DOMAIN: &str = "a3s.code.workspace-retrieval-model.v1";
 const PERMISSION_POLICY_DOMAIN: &str = "a3s.code.permission-policy.v1";
 const CONFIRMATION_POLICY_DOMAIN: &str = "a3s.code.confirmation-policy.v1";

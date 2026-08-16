@@ -461,6 +461,14 @@ pub enum AgentEvent {
         snapshot: crate::harness_evidence::ModelInputSnapshotV1,
     },
 
+    /// Per-call correlation between repeated Tool-result context, Code's
+    /// prompt estimate, and the normalized usage report returned by the
+    /// provider-neutral model client.
+    #[serde(rename = "model_usage_bound")]
+    ModelUsageBound {
+        snapshot: crate::harness_evidence::ModelUsageSnapshotV1,
+    },
+
     /// One run is using the exact cognitive-package generation retained by
     /// the surrounding session snapshot.
     #[serde(rename = "cognitive_context_bound")]

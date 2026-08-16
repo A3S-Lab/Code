@@ -33,8 +33,8 @@ checkpoint authority.
 | Gate | State | Code-owned outcome | Boundary |
 | --- | --- | --- | --- |
 | `CAR-01` | In progress | Conform the native Harness to Cloud `A1.2`/`A1.3` command, receipt, event-page, cancellation, and recovery contracts | Cloud retains execution identity and sequencing authority |
-| `CAR-02` | Planned | Emit bounded, versioned Tool request/result and context-usage evidence with byte counts, token estimates/reports, repeated-content digests, and immutable content references | Cloud owns authorized projections; Gateway usage remains the billed request ledger |
-| `CAR-03` | Planned | Implement deterministic Tool-result transformations with algorithm/version, source/result digest, byte/token deltas, loss mode, and immutable original reference | Cloud pins policy; Code does not invent tenant policy or mutate past events |
+| `CAR-02` | In progress | Tool-result evidence plus per-call input/usage and repeated-context diagnostics are delivered; Tool-request evidence and a configured shared adapter for authorized immutable content references remain | Cloud owns authorized projections; Gateway usage remains the billed request ledger |
+| `CAR-03` | In progress | Deterministic Tool-result transforms and versioned transform evidence are delivered; Cloud-pinned managed policy, durable original references, and conformance remain | Cloud pins policy; Code does not invent tenant policy or mutate past events |
 | `CAR-04` | Planned | Map `SessionSnapshotV1` and logical resume evidence to the common Harness checkpoint contract | Cloud `A1.6` owns checkpoint identity, retention, approval, and fork lineage |
 | `CAR-05` | Planned | Pass restart, exact replay, cancellation, hostile Tool output, bounded-content, Secret-redaction, checkpoint, and cleanup conformance through one Cloud-managed Box workload | No direct Code-to-node control path |
 
@@ -59,21 +59,25 @@ execution world.
 | --- | --- | --- | --- |
 | `HARNESS-CAP1` | Delivered | Versioned per-run capability snapshots cover actual model-visible tools, workspace services, run-owned governance bindings, configured serializable policy identities, execution ceilings, and semantic readiness/generation identities | `run_capability_bound` is emitted before provider use and its digest changes on tool, serializable policy, service, readiness, or generation drift; authorization still executes through the same run-owned governance scope |
 | `HARNESS-IN1` | In progress | `ModelInputSnapshotV1` records bounded content-addressed evidence for the actual system/message/tool-definition/provider-facing structured directive submitted to each provider-neutral model call, plus identified semantic/hybrid Tool-result evidence | Digest/counter evidence and exact event replay are delivered; immutable authorized references to retained original content remain part of `CAR-02` rather than being copied into the event journal |
+| `HARNESS-USAGE1` | Delivered | `ModelUsageSnapshotV1` measures exact repeated Tool-result context and binds the prompt estimate and normalized `LlmClient` token/cache usage to its input snapshot | Successful completion and streaming calls emit validated `model_usage_bound` evidence before returning their terminal response; replay is exact and run/stream cancellation releases evidence backpressure |
 | `HARNESS-SCOPE1` | Planned | Scoped, reversible capability leases for one run/turn/subtask with cancellation-safe teardown | A temporary capability cannot survive its declared scope or broaden a child run beyond the parent ceiling |
 | `HARNESS-PROFILE1` | Planned | Typed tool-presentation and code-mode profiles over the existing governed executor | Profiles change model-facing presentation and token cost, never authorization, workspace identity, or audit semantics |
 
 `CODE-RDY1` below was the first delivered slice of `HARNESS-CAP1`. The completed
 capability snapshot now observes the current readiness phase, catalog/source/
 vector revisions, coverage, and model-descriptor digest immediately before each
-provider call. The companion `model_input_bound` event is emitted for every
-completion, streaming, structured, and streaming-structured call. Both events
-reuse the existing Run journal and `EventEnvelopeV1`; no parallel audit store is
-introduced. See [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md).
+provider call. The companion `model_input_bound` event is emitted before every
+completion, streaming, structured, and streaming-structured call, and
+`model_usage_bound` binds its successful result to the same call sequence. All
+three events reuse the existing Run journal and `EventEnvelopeV1`; no parallel
+audit store is introduced. See
+[Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md).
 
 ## 4. Invariants
 
-1. Raw Tool content uses the configured shared content adapter; events carry
-   bounded fields and immutable references.
+1. Raw Tool content uses the configured shared content adapter. Evidence events
+   stay bounded, and lossy projection requires an authorized immutable original
+   reference.
 2. A transform never destroys the original authority and never changes an
    already-persisted event during replay.
 3. Code does not receive brokered plaintext credentials when the Box egress

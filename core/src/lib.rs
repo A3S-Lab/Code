@@ -210,9 +210,10 @@ pub use flow_graph::{
     FLOW_GRAPH_SOURCE,
 };
 pub use harness_evidence::{
-    HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, RunCapabilitySnapshotV1,
-    RunPolicyCeilingSnapshotV1, WorkspaceCapabilitySnapshotV1,
-    WorkspaceRetrievalCapabilitySnapshotV1, MODEL_INPUT_SNAPSHOT_V1_SCHEMA,
+    HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, ModelUsageSnapshotV1,
+    RunCapabilitySnapshotV1, RunPolicyCeilingSnapshotV1, ToolResultContextUsageV1,
+    WorkspaceCapabilitySnapshotV1, WorkspaceRetrievalCapabilitySnapshotV1,
+    MODEL_INPUT_SNAPSHOT_V1_SCHEMA, MODEL_USAGE_SNAPSHOT_V1_SCHEMA,
     RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA,
 };
 pub use llm::{

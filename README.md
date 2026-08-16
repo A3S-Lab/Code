@@ -565,7 +565,7 @@ replay project these values through `EventEnvelopeV1`, which preserves its
 version, event type, complete payload, and optional metadata. Older SDK clients
 can retain future event names and payloads they do not yet understand.
 
-Governed model calls add two audit events at the same unified provider-neutral
+Governed model calls add three audit events at the same unified provider-neutral
 boundary. `run_capability_bound` records a versioned digest-bound snapshot of
 the actual model-visible tools, workspace service surface, run-owned governance
 bindings, configured serializable policy identities, execution ceilings, and
@@ -574,12 +574,17 @@ surface changes. Every completion, streaming, structured, or streaming-
 structured call emits `model_input_bound` with a unique positive call sequence,
 bounded counters/serialized-byte measurements, and domain-separated SHA-256
 digests of the actual messages, system input, tool definitions, provider-facing
-structured directive, and identified semantic/hybrid Tool results. Host-only
-validation schemas are excluded because they are not sent to the model. The
-new evidence stores no prompt, Tool result, source text, vector, credential, or
-endpoint plaintext and exact Run replay preserves it without a parallel audit
-store. Digests provide integrity and correlation, not encryption; do not export
-them to a less-trusted boundary merely because plaintext is absent. See
+structured directive, and identified semantic/hybrid Tool results. After each
+successful call, `model_usage_bound` correlates Code's prompt estimate and
+normalized `LlmClient` token/cache usage with that exact input snapshot and
+measures exact repeated Tool-result content under different call IDs through
+bounded byte/token counters and digests; it does not claim Gateway billing
+authority. Host-only validation schemas are excluded because they are not sent
+to the model. The new evidence stores no prompt, Tool result, source text,
+vector, credential, or endpoint plaintext and exact Run replay preserves it
+without a parallel audit store. Digests provide integrity and correlation, not
+encryption; do not export them to a less-trusted boundary merely because
+plaintext is absent. See
 [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md).
 
 A configured `SessionStore` can persist complete `SessionSnapshotV1`
@@ -725,7 +730,7 @@ the v1 schema.
 | [User Guide](manual/USER_GUIDE.md) · [Chinese](manual/USER_GUIDE_CN.md) | Installation, configuration, sessions, tools, and common workflows |
 | [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) | Extension contracts, security, lifecycle, and production integration |
 | [SDK API Design](manual/SDK_API_DESIGN.md) | Cross-language API conventions and alignment |
-| [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md) | Capability/input snapshots, event ordering, redaction boundary, validation, and replay |
+| [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md) | Capability/input/usage snapshots, repeated-context diagnostics, event ordering, redaction boundary, validation, and replay |
 | [Go SDK](sdk/go/README.md) | Bridge installation, sessions, event streaming, direct tools, errors, and release compatibility |
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) | Language runtime, capability boundary, lifecycle, and verification |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md) | Architecture, quality budgets, lifecycle, and adversarial trust boundaries |

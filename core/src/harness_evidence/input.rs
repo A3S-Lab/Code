@@ -1,11 +1,15 @@
 use super::digest::{measure, DigestMeasurement};
 use super::{
-    HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, MODEL_INPUT_PAYLOAD_DOMAIN,
-    MODEL_INPUT_SNAPSHOT_V1_SCHEMA, MODEL_MESSAGES_DOMAIN, MODEL_STRUCTURED_DOMAIN,
-    MODEL_SYSTEM_DOMAIN, RETRIEVAL_RESULTS_DOMAIN,
+    HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, ToolResultContextUsageV1,
+    MODEL_INPUT_PAYLOAD_DOMAIN, MODEL_INPUT_SNAPSHOT_V1_SCHEMA, MODEL_MESSAGES_DOMAIN,
+    MODEL_STRUCTURED_DOMAIN, MODEL_SYSTEM_DOMAIN, REPEATED_TOOL_RESULT_CONTENTS_DOMAIN,
+    RETRIEVAL_RESULTS_DOMAIN, TOOL_RESULT_CONTENTS_DOMAIN, TOOL_RESULT_CONTENT_DOMAIN,
 };
 use crate::llm::structured::{ResponseFormat, StructuredDirective};
-use crate::llm::{ContentBlock, Message, ToolDefinition};
+use crate::llm::{
+    estimate_tool_result_contents_tokens, ContentBlock, Message, ToolDefinition,
+    ToolResultContentField,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -24,7 +28,7 @@ pub(super) struct ModelInputCapture<'a> {
 
 pub(super) fn capture_model_input(
     capture: ModelInputCapture<'_>,
-) -> Result<ModelInputSnapshotV1, HarnessEvidenceError> {
+) -> Result<(ModelInputSnapshotV1, ToolResultContextUsageV1), HarnessEvidenceError> {
     let messages_measurement = measure(MODEL_MESSAGES_DOMAIN, capture.messages)?;
     let system_measurement = capture
         .system
@@ -40,6 +44,22 @@ pub(super) fn capture_model_input(
         .then(|| measure(RETRIEVAL_RESULTS_DOMAIN, &retrieval_results))
         .transpose()?;
     let counts = count_content_blocks(capture.messages);
+    let tool_results = analyze_tool_results(capture.messages)?;
+    let tool_result_context = ToolResultContextUsageV1 {
+        total_count: counts.tool_results,
+        unique_count: tool_results.unique_count,
+        repeated_count: tool_results.repeated.len(),
+        content_bytes: tool_results.content_bytes,
+        repeated_content_bytes: tool_results.repeated_content_bytes,
+        estimated_tokens: estimate_tool_result_contents_tokens(
+            tool_results.contents.iter().copied(),
+        ),
+        repeated_estimated_tokens: estimate_tool_result_contents_tokens(
+            tool_results.repeated.iter().copied(),
+        ),
+        contents_digest: tool_results.measurement.map(|value| value.digest),
+        repeated_contents_digest: tool_results.repeated_measurement.map(|value| value.digest),
+    };
 
     #[derive(Serialize)]
     struct Payload<'a> {
@@ -91,7 +111,59 @@ pub(super) fn capture_model_input(
         snapshot_digest: String::new(),
     };
     snapshot.snapshot_digest = snapshot.expected_digest()?;
-    Ok(snapshot)
+    tool_result_context.validate()?;
+    Ok((snapshot, tool_result_context))
+}
+
+struct ToolResultAnalysis<'a> {
+    contents: Vec<&'a ToolResultContentField>,
+    repeated: Vec<&'a ToolResultContentField>,
+    unique_count: usize,
+    content_bytes: u64,
+    repeated_content_bytes: u64,
+    measurement: Option<DigestMeasurement>,
+    repeated_measurement: Option<DigestMeasurement>,
+}
+
+fn analyze_tool_results(
+    messages: &[Message],
+) -> Result<ToolResultAnalysis<'_>, HarnessEvidenceError> {
+    let contents = messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let measurement = (!contents.is_empty())
+        .then(|| measure(TOOL_RESULT_CONTENTS_DOMAIN, &contents))
+        .transpose()?;
+    let mut seen = HashSet::with_capacity(contents.len());
+    let mut repeated = Vec::new();
+    let mut content_bytes = 0u64;
+    let mut repeated_content_bytes = 0u64;
+    for content in &contents {
+        let item = measure(TOOL_RESULT_CONTENT_DOMAIN, *content)?;
+        content_bytes = content_bytes.saturating_add(item.bytes);
+        if !seen.insert(item.digest) {
+            repeated_content_bytes = repeated_content_bytes.saturating_add(item.bytes);
+            repeated.push(*content);
+        }
+    }
+    let repeated_measurement = (!repeated.is_empty())
+        .then(|| measure(REPEATED_TOOL_RESULT_CONTENTS_DOMAIN, &repeated))
+        .transpose()?;
+
+    Ok(ToolResultAnalysis {
+        contents,
+        repeated,
+        unique_count: seen.len(),
+        content_bytes,
+        repeated_content_bytes,
+        measurement,
+        repeated_measurement,
+    })
 }
 
 #[derive(Serialize)]

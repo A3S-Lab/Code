@@ -7,7 +7,9 @@
 
 use super::{AgentEvent, AgentLoop, InvocationContext};
 use crate::budget::{BudgetDecision, BudgetGuard};
-use crate::harness_evidence::{ModelCallObservation, ModelInputKindV1};
+use crate::harness_evidence::{
+    ModelCallObservation, ModelInputKindV1, ModelUsageBinding, ModelUsageSnapshotV1,
+};
 use crate::llm::structured::{NativeStructuredSupport, StructuredDirective};
 use crate::llm::{
     estimate_prompt_tokens, LlmClient, LlmResponse, Message, ModelGenerationConcurrency,
@@ -48,7 +50,7 @@ impl LlmInvoker {
             self.invocation.cancellation(),
         )
         .await?;
-        self.record_model_evidence(observation).await?;
+        let usage_binding = self.record_model_evidence(observation).await?;
 
         let response = tokio::select! {
             biased;
@@ -63,6 +65,13 @@ impl LlmInvoker {
             &response.usage,
         )
         .await;
+        record_model_usage(
+            &self.invocation,
+            usage_binding.as_ref(),
+            &response.usage,
+            self.invocation.cancellation(),
+        )
+        .await?;
         Ok(response)
     }
 
@@ -84,7 +93,7 @@ impl LlmInvoker {
             self.invocation.cancellation(),
         )
         .await?;
-        self.record_model_evidence(observation).await?;
+        let usage_binding = self.record_model_evidence(observation).await?;
 
         let caller_signal = caller_cancellation.clone();
         let (provider_cancellation, cancellation_watcher) =
@@ -109,19 +118,26 @@ impl LlmInvoker {
             }
         };
 
-        Ok(self.proxy_stream(inner_rx, provider_cancellation, cancellation_watcher))
+        Ok(self.proxy_stream(
+            inner_rx,
+            provider_cancellation,
+            cancellation_watcher,
+            usage_binding,
+        ))
     }
 
     async fn record_model_evidence(
         &self,
         observation: ModelCallObservation<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<ModelUsageBinding>> {
         let Some(tx) = self.invocation.event_tx() else {
-            return Ok(());
+            return Ok(None);
         };
         let Some(evidence) = self.invocation.capture_model_evidence(observation)? else {
-            return Ok(());
+            return Ok(None);
         };
+        let usage_binding =
+            ModelUsageBinding::from_input(&evidence.input, evidence.tool_result_context);
         if !self
             .invocation
             .send_capability_if_changed(tx, evidence.input.call_sequence, evidence.capability)
@@ -139,7 +155,7 @@ impl LlmInvoker {
             }) => result,
         };
         let _ = send_result;
-        Ok(())
+        Ok(Some(usage_binding))
     }
 
     fn combine_cancellation(
@@ -164,10 +180,12 @@ impl LlmInvoker {
         mut inner_rx: mpsc::Receiver<StreamEvent>,
         provider_cancellation: CancellationToken,
         cancellation_watcher: JoinHandle<()>,
+        usage_binding: Option<ModelUsageBinding>,
     ) -> mpsc::Receiver<StreamEvent> {
         let (tx, rx) = mpsc::channel(64);
         let budget_guard = self.invocation.governance().budget_guard().cloned();
         let session_id = self.invocation.session_id().to_string();
+        let invocation = self.invocation.clone();
 
         tokio::spawn(async move {
             loop {
@@ -182,6 +200,23 @@ impl LlmInvoker {
                 };
                 if let StreamEvent::Done(response) = &event {
                     record_after_llm(budget_guard.as_ref(), &session_id, &response.usage).await;
+                    if let Err(error) = record_model_usage(
+                        &invocation,
+                        usage_binding.as_ref(),
+                        &response.usage,
+                        &provider_cancellation,
+                    )
+                    .await
+                    {
+                        if provider_cancellation.is_cancelled() {
+                            break;
+                        }
+                        tracing::warn!(
+                            error = %error,
+                            call_sequence = usage_binding.as_ref().map(|binding| binding.call_sequence()),
+                            "Failed to record model usage evidence"
+                        );
+                    }
                 }
                 let finished = matches!(event, StreamEvent::Done(_));
                 if tx.send(event).await.is_err() || finished {
@@ -417,6 +452,27 @@ async fn record_after_llm(
     if let Some(guard) = budget_guard {
         guard.record_after_llm(session_id, usage).await;
     }
+}
+
+async fn record_model_usage(
+    invocation: &InvocationContext,
+    binding: Option<&ModelUsageBinding>,
+    usage: &TokenUsage,
+    cancellation: &CancellationToken,
+) -> anyhow::Result<()> {
+    let (Some(tx), Some(binding)) = (invocation.event_tx(), binding) else {
+        return Ok(());
+    };
+    let snapshot = ModelUsageSnapshotV1::from_binding(binding, usage)?;
+    let send_result = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            anyhow::bail!("Operation cancelled")
+        }
+        result = tx.send(AgentEvent::ModelUsageBound { snapshot }) => result,
+    };
+    let _ = send_result;
+    Ok(())
 }
 
 #[cfg(test)]
