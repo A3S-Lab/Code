@@ -320,6 +320,68 @@ async fn run_bound_helpers_share_one_evidence_sequence_and_capability_state() {
 }
 
 #[tokio::test]
+async fn detached_helper_does_not_append_evidence_to_the_bound_run() {
+    let observed_sessions = Arc::new(Mutex::new(Vec::new()));
+    let client: Arc<dyn LlmClient> = Arc::new(SessionBindingClient {
+        bound_session: None,
+        observed_sessions,
+    });
+    let agent = AgentLoop::new(
+        client,
+        Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string())),
+        crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp")),
+        crate::agent::AgentConfig::default(),
+    );
+    let (event_tx, mut event_rx) = mpsc::channel(8);
+    let event_tx = Some(event_tx);
+    let cancellation = CancellationToken::new();
+    let invocation = agent.invocation_context(
+        "evidence-run",
+        Some("evidence-session"),
+        event_tx.clone(),
+        cancellation.clone(),
+    );
+    let run_agent = invocation.bind_agent_loop(&agent);
+
+    let journaled =
+        run_agent.scoped_llm_client_for_parts(Some("evidence-session"), &event_tx, &cancellation);
+    journaled
+        .complete(&[Message::user("journaled")], None, &[])
+        .await
+        .unwrap();
+    assert!(matches!(
+        event_rx.recv().await.unwrap(),
+        AgentEvent::RunCapabilityBound { .. }
+    ));
+    assert!(matches!(
+        event_rx.recv().await.unwrap(),
+        AgentEvent::ModelInputBound { .. }
+    ));
+
+    let detached =
+        run_agent.scoped_llm_client_for_parts(Some("evidence-session"), &None, &cancellation);
+    detached
+        .complete(&[Message::user("detached")], None, &[])
+        .await
+        .unwrap();
+    assert!(matches!(
+        event_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+
+    let journaled_again =
+        run_agent.scoped_llm_client_for_parts(Some("evidence-session"), &event_tx, &cancellation);
+    journaled_again
+        .complete(&[Message::user("journaled again")], None, &[])
+        .await
+        .unwrap();
+    let AgentEvent::ModelInputBound { snapshot } = event_rx.recv().await.unwrap() else {
+        panic!("unchanged capability must not be re-emitted")
+    };
+    assert_eq!(snapshot.call_sequence, 2);
+}
+
+#[tokio::test]
 async fn run_cancellation_interrupts_evidence_channel_backpressure_before_provider_use() {
     let observed_sessions = Arc::new(Mutex::new(Vec::new()));
     let client: Arc<dyn LlmClient> = Arc::new(SessionBindingClient {

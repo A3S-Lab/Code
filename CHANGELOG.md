@@ -95,6 +95,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Kept post-terminal background model helpers out of a completed Run's bound
+  evidence sequence, and made the deterministic convergence benchmark disable
+  unrelated LLM memory extraction instead of depending on task scheduling.
 - Forced the Agent release ACL contract fixture to LF so Windows
   `include_str!` tests exercise multiline duplicate and collision attacks
   instead of silently retaining the original valid fixture after a CRLF

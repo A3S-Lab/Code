@@ -168,6 +168,19 @@ impl InvocationContext {
         &self.event_tx
     }
 
+    pub(super) fn matches_parts(
+        &self,
+        session_id: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+    ) -> bool {
+        let same_events = match (&self.event_tx, event_tx) {
+            (None, None) => true,
+            (Some(bound), Some(requested)) => bound.same_channel(requested),
+            _ => false,
+        };
+        self.session_id() == session_id.unwrap_or("") && same_events
+    }
+
     pub(crate) fn governance(&self) -> &InvocationGovernance {
         &self.governance
     }

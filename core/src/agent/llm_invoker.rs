@@ -328,13 +328,21 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &CancellationToken,
     ) -> Arc<dyn LlmClient> {
-        if let Some(invocation) = &self.bound_invocation {
+        if let Some(invocation) = self
+            .bound_invocation
+            .as_ref()
+            .filter(|invocation| invocation.matches_parts(session_id, event_tx))
+        {
             return self.scoped_llm_client(invocation);
         }
-        let run_id = self
-            .checkpoint_run_id
-            .clone()
-            .unwrap_or_else(|| format!("standalone-{}", uuid::Uuid::new_v4()));
+        let run_id = self.bound_invocation.as_ref().map_or_else(
+            || {
+                self.checkpoint_run_id
+                    .clone()
+                    .unwrap_or_else(|| format!("standalone-{}", uuid::Uuid::new_v4()))
+            },
+            |bound| format!("{}-aux-{}", bound.run_id(), uuid::Uuid::new_v4()),
+        );
         let invocation =
             self.invocation_context(run_id, session_id, event_tx.clone(), cancel_token.clone());
         self.scoped_llm_client(&invocation)

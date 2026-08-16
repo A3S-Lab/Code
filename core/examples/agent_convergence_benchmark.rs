@@ -161,7 +161,7 @@ struct BenchmarkReport {
 }
 
 fn config() -> CodeConfig {
-    CodeConfig::from_acl(
+    let mut config = CodeConfig::from_acl(
         r#"
         default_model = "openai/benchmark"
         providers "openai" {
@@ -170,7 +170,15 @@ fn config() -> CodeConfig {
         }
         "#,
     )
-    .expect("benchmark config must be valid")
+    .expect("benchmark config must be valid");
+    // This benchmark measures foreground convergence and crash recovery. LLM
+    // memory extraction is an intentionally detached background workload and
+    // would make provider-call counts depend on task scheduling.
+    config.memory = Some(a3s_code_core::memory::MemoryConfig {
+        llm_extraction: false,
+        ..Default::default()
+    });
+    config
 }
 
 fn response(content: Vec<ContentBlock>, stop_reason: &str) -> LlmResponse {

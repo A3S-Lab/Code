@@ -22,6 +22,9 @@ The same path covers completion, streaming, structured completion, and
 structured streaming. Higher-level retries, repair calls, compaction, and
 helper calls that re-enter the run-scoped `LlmClient` pass through this boundary
 as well; an internal transport retry remains part of its owning model call.
+Work that explicitly detaches from the Run event channel, such as post-terminal
+background memory extraction, receives a separate auxiliary invocation and
+cannot append evidence after the Run's terminal event.
 
 ## Capability snapshot
 
