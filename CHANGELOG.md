@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added versioned `run_capability_bound` and `model_input_bound` Run events at
+  the unified provider-neutral model boundary. They bind actual model-visible
+  tools, workspace capabilities, run-owned governance bindings, serializable
+  policy identities, execution ceilings, semantic readiness/generation, input
+  shape, and retrieval Tool-result evidence through bounded
+  counters and domain-separated SHA-256 digests without retaining new prompt,
+  Tool-result, source, vector, credential, or endpoint plaintext. Capability
+  emission is concurrency-safe and deduplicated by digest; every model call has
+  a positive sequence and exact persisted replay coverage.
 - Added an opt-in semantic readiness barrier for asynchronous workspace
   retrieval. A host can bind a query to the current catalog generation for up
   to 30 seconds without making session construction synchronous. Publication
@@ -83,6 +92,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one-Search protocols with Recall@5 1.0, MRR 0.5, 1.0x document-request
   amplification, zero non-text inputs, and complete release. The small matrix
   qualifies portability but does not change the compatible defaults.
+
+### Fixed
+
+- Forced the Agent release ACL contract fixture to LF so Windows
+  `include_str!` tests exercise multiline duplicate and collision attacks
+  instead of silently retaining the original valid fixture after a CRLF
+  checkout.
 
 ## [6.9.0] - 2026-08-12
 

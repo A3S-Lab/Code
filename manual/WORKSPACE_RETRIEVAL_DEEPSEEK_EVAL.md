@@ -5,7 +5,9 @@ the built-in chunk-strategy matrix and real CLI ACL-host composition passed on
 2026-08-15. The `CODE-B2` cross-file batching rerun passed the same day. The
 public Node.js, Python, and Go SDK matrix then passed at Code `cde887b`. The
 Rust whole-file custom-strategy negative control remained observable but was
-not quality qualified.
+not quality qualified. The opt-in in-process CLI CPU route passed its final
+multilingual DeepSeek and four-target offline-runtime gates on 2026-08-16 at
+CLI `e03b06e`.
 
 This report records the reproducible real-chat-model ablation for A3S Code's
 session-bound, in-memory Workspace Retrieval. It complements the deterministic
@@ -436,6 +438,41 @@ prove that no partial file becomes visible, already valid siblings survive a
 later failure, retries are counted, stable sibling IDs are retained, and the
 superseded batch is cancelled before publication.
 
+## In-process local CPU host qualification
+
+The final A3S CLI profile replaced the HTTP embedding route with the trusted
+typed `local_cpu` ACL block while retaining the same recursive 512/64 corpus,
+real `deepseek/deepseek-v4-pro` chat route, exact task prompts, permissions, and
+fresh-session lifecycle. The revision-locked multilingual FastEmbed/ONNX model
+was installed before the run; session startup performed no download and needed
+no source-egress grant.
+
+| Metric | In-process local CPU result |
+| --- | ---: |
+| Exact task/tool completion | 3/3 / 3/3 |
+| Relevant ranks | 5 / 2 / 3 |
+| Recall@5 / MRR / nDCG@5 | 1.0000 / 0.3444 / 0.5059 |
+| Files / chunks / non-text inputs | 30 / 39 / 0 |
+| Document calls / configured lower bound | 20 / 20 (1.0x) |
+| First publication p50 / p95 | 12,163 / 12,342 ms |
+| End-to-end task p50 / p95 | 27,460 / 28,661 ms |
+| Total DeepSeek tokens | 40,241 |
+| Post-close vectors / bytes | 0 / 0 |
+
+The isolated Windows provider record reports 7,045/19 ms cold/warm calls,
+0 ms caller cancellation, 267 ms recovery to the next successful request, and
+a 1,018,519,552-byte peak-RSS increase below 1 GiB. Two-input microbatching is
+part of the qualified contract: a 64-input cancellation probe reached about
+1.60 GiB and was rejected. Deterministic MMR remains optional because it did
+not improve this corpus.
+
+[CLI CI #31917686424](https://github.com/A3S-Lab/CLI/actions/runs/31917686424)
+passes real offline smoke-model admission, inference, cancellation, recovery,
+and RSS checks on Linux x64/ARM64, Windows x64, and macOS ARM64. Artifact
+substitution/shape failures, simulated missing x86-64-v3, and a 32-waiter
+cancellation storm are separate adversarial gates. Intel macOS remains
+model-free/remote because the pinned ONNX Runtime does not ship that target.
+
 ## Reproduction
 
 From the A3S Code repository on PowerShell:
@@ -488,6 +525,11 @@ cargo test --offline --locked `
 ```
 
 It prints one `WSR_DEEPSEEK_ACL_HOST_EVAL=<json>` record after all gates pass.
+For the in-process profile, set `A3S_LOCAL_CPU_MODEL_MANIFEST` to the already
+installed `model.acl` and add `--features local-cpu-embedding` to that CLI test
+command. The provider-only qualification command and complete immutable
+artifact schema are documented in the CLI
+[local CPU guide](https://github.com/A3S-Lab/CLI/blob/main/docs/local-cpu-workspace-embedding.md).
 
 The Node.js, Python, and Go runners and their hermetic fixture commands are
 listed in [`sdk/evaluation/README.md`](../sdk/evaluation/README.md). Each live

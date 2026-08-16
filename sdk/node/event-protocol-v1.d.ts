@@ -28,6 +28,8 @@ export type KnownAgentEventTypeV1 =
   | 'permission_denied'
   | 'context_resolving'
   | 'context_resolved'
+  | 'run_capability_bound'
+  | 'model_input_bound'
   | 'cognitive_context_bound'
   | 'command_dead_lettered'
   | 'command_retry'

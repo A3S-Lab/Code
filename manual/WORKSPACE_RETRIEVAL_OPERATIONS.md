@@ -34,10 +34,11 @@ in-process CPU callback.
 
 Rust, Node, Python, and Go hosts can already inject a local CPU implementation
 through the typed `EmbeddingProvider` boundary. The qualified Python generation
-run used the locked multilingual model on CPU. A built-in in-process CLI CPU
-adapter is not yet shipped; the current CLI adapter is OpenAI-compatible HTTP,
-which may point at a loopback CPU service. `HOST-LCPU1` in the roadmap owns the
-remaining direct CLI experience without changing Core or Memory dependencies.
+run used the locked multilingual model on CPU. A3S CLI `e03b06e` now also ships
+a qualified, default-off FastEmbed/ONNX adapter on Linux x64/ARM64, Windows x64,
+and Apple Silicon. It is a host adapter behind the same Core contract: Code and
+Memory still have no model-runtime dependency, and Intel macOS remains
+model-free/remote because the pinned ONNX Runtime has no supported target.
 
 A Rust host enables the capability only by injecting a typed
 `WorkspaceRetrievalOptions` with an `EmbeddingProvider`. It disables an inherited
@@ -45,12 +46,29 @@ choice with `SessionOptions::without_workspace_retrieval()`. Node, Python, and
 Go use their corresponding typed provider and option objects; a primitive
 backend name is not a supported extension boundary.
 
-The current A3S CLI HTTP adapter additionally requires both `enabled = true` and
+The A3S CLI remote HTTP route additionally requires both `enabled = true` and
 `allow_source_egress = true` in a trusted user ACL or an explicitly selected
-configuration file. The embedding route is independent from the chat model.
-An automatically discovered workspace ACL cannot grant source egress. Use
-`a3s config validate` and inspect the non-sensitive `workspaceRetrieval`
-projection from `a3s config show` before starting a session.
+configuration file. Its embedding route is independent from the chat model. A
+local route instead selects one typed `local_cpu` block with an admitted
+`artifact_manifest` and bounded `intra_threads`; it requires no source-egress
+grant and is mutually exclusive with remote route fields. Model installation is
+explicit and session startup never downloads artifacts. An automatically
+discovered workspace ACL cannot enable either route. Use `a3s config validate`
+and inspect `localCpuAvailable`, `localCpuUnavailableReason`, the two-input
+microbatch limit, and the other non-sensitive `workspaceRetrieval` fields from
+`a3s config show` before starting a session.
+
+```acl
+workspace_retrieval {
+  enabled = true
+  semantic_readiness_timeout_ms = 30000
+
+  local_cpu {
+    artifact_manifest = "models/multilingual-mini/model.acl"
+    intra_threads = 2
+  }
+}
+```
 
 Only admitted UTF-8 text enters the catalog, chunker, or Embedding Provider.
 PDF, Office, image, audio, archive, database, font, and other non-text inputs
@@ -84,10 +102,17 @@ profile.
 | Runtime memory, 25,000-vector profile | <= 256 MiB default session budget | 41,397,932 accounted bytes | Reduce admitted scope or close the session; never spill vectors implicitly |
 | Close p95 and post-close vectors, generation fixture | <= 6,000 ms and 0 records/bytes | 5,018 ms and 0/0 | Stop rollout if cleanup exceeds its bound or retains vectors |
 | Repeated single-file replacement | Constant live record count | 64 generations, one live vector | Treat growth as a generation leak and close the session |
+| Local CPU cold / warm provider call | < 30,000 / 5,000 ms | 7,045 / 19 ms | Keep exact/BM25 active; inspect artifact media, CPU support, and native thread limits |
+| Local CPU cancellation / next-success recovery | < 1,000 / 30,000 ms | 0 / 267 ms | Reject promotion if a cancelled caller holds admission or starves the next live request |
+| Local CPU peak RSS increase | < 1 GiB | 1,018,519,552 bytes | Reduce native microbatch/thread limits or disable the local route; never spill vectors implicitly |
 
 DeepSeek turn latency (7,701/30,660 ms p50/p95 in the generation run), token
 usage, and hidden Cargo compilation time are diagnostic. They are end-to-end
 cost and capacity inputs, but they are not attributed to local retrieval SLOs.
+The local CPU ACL-host run similarly reports 27,460/28,661 ms task p50/p95 and
+12,163/12,342 ms first-publication p50/p95; those fresh-process values include
+artifact admission, cold ONNX load, asynchronous indexing, and remote DeepSeek
+latency rather than representing query-only latency.
 
 ## Required telemetry
 
@@ -167,10 +192,15 @@ For a private qualification environment, build the Python SDK, install the
 optional locked Sentence Transformers runtime, set `A3S_REAL_EVAL_ROOT` to the
 monorepo containing the authorized `.a3s/config.acl`, and run the generation
 matrix documented in `sdk/evaluation/README.md`. Never move repository secrets
-into shared CI. Shared CI uses deterministic embeddings and must pass the
+into shared CI. Shared Code CI uses deterministic embeddings and must pass the
 64-generation soak on Ubuntu, macOS, and Windows. Code
 [CI #249](https://github.com/A3S-Lab/Code/actions/runs/31862118069) is the first
-complete passing portability run for this gate.
+complete passing portability run for that gate. CLI
+[CI #31917686424](https://github.com/A3S-Lab/CLI/actions/runs/31917686424)
+separately provisions a digest-locked smoke artifact and performs real offline
+admission, inference, cancellation, recovery, and RSS checks on Linux x64/
+ARM64, Windows x64, and macOS ARM64. It also fails before model loading for a
+simulated missing x86-64-v3 baseline.
 
 Promote only when the real generation report, deterministic quality and
 security suites, release benchmark, three-platform soak, SDK alignment check,

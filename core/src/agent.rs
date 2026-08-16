@@ -445,6 +445,22 @@ pub enum AgentEvent {
         total_tokens: usize,
     },
 
+    /// The model-visible capability surface observed before a provider call.
+    /// Repeated calls reuse the digest until tools, policy, workspace services,
+    /// or retrieval readiness/generation changes.
+    #[serde(rename = "run_capability_bound")]
+    RunCapabilityBound {
+        call_sequence: u64,
+        snapshot: crate::harness_evidence::RunCapabilitySnapshotV1,
+    },
+
+    /// Bounded content-addressed evidence for the actual provider-neutral
+    /// arguments submitted to one model call.
+    #[serde(rename = "model_input_bound")]
+    ModelInputBound {
+        snapshot: crate::harness_evidence::ModelInputSnapshotV1,
+    },
+
     /// One run is using the exact cognitive-package generation retained by
     /// the surrounding session snapshot.
     #[serde(rename = "cognitive_context_bound")]
@@ -854,6 +870,9 @@ pub(crate) struct AgentLoop {
     /// Run id under which checkpoints are stored. Reset per execution
     /// via [`AgentLoop::set_checkpoint_run`].
     pub(crate) checkpoint_run_id: Option<String>,
+    /// The invocation shared by every model helper in the currently scoped
+    /// run. Base session loops keep this empty and bind it on execution.
+    bound_invocation: Option<InvocationContext>,
 }
 
 #[cfg(test)]

@@ -448,6 +448,19 @@ changed file replaces rather than accumulates vectors. These results qualify a
 bounded opt-in generation workflow; they still do not justify automatic
 enablement. See the [operations runbook](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)
 for SLOs and rollback.
+
+The A3S CLI also ships a qualified, default-off `local_cpu` host adapter on
+Linux x64/ARM64, Windows x64, and Apple Silicon. It admits a separately
+installed revision- and SHA-256-bound FastEmbed/ONNX artifact set, performs no
+runtime download or source egress, uses two-input microbatches and one native
+job per process, and fails before model loading on unsupported x64 CPUs. Native
+[CLI CI](https://github.com/A3S-Lab/CLI/actions/runs/31917686424) performs real
+offline inference, cancellation, recovery, and RSS checks on every enabled
+target. The locked multilingual DeepSeek task remains 3/3 with Recall@5 1.0,
+exact 1.0x request amplification, and zero non-text inputs. This adds an
+embedding route, not a new ranking default: RRF-only remains compatible and
+the deterministic reranker remains optional.
+
 Results report the versioned algorithm, selection/redundancy scores,
 candidate and byte accounting, truncation, and fallback without exposing query
 or source text. Fusion and reranking precede authoritative source access, so
@@ -551,6 +564,23 @@ memory, compaction, budgets, verification, and terminal state. SDKs and run
 replay project these values through `EventEnvelopeV1`, which preserves its
 version, event type, complete payload, and optional metadata. Older SDK clients
 can retain future event names and payloads they do not yet understand.
+
+Governed model calls add two audit events at the same unified provider-neutral
+boundary. `run_capability_bound` records a versioned digest-bound snapshot of
+the actual model-visible tools, workspace service surface, run-owned governance
+bindings, configured serializable policy identities, execution ceilings, and
+current semantic readiness/generation; it is repeated only when that
+surface changes. Every completion, streaming, structured, or streaming-
+structured call emits `model_input_bound` with a unique positive call sequence,
+bounded counters/serialized-byte measurements, and domain-separated SHA-256
+digests of the actual messages, system input, tool definitions, provider-facing
+structured directive, and identified semantic/hybrid Tool results. Host-only
+validation schemas are excluded because they are not sent to the model. The
+new evidence stores no prompt, Tool result, source text, vector, credential, or
+endpoint plaintext and exact Run replay preserves it without a parallel audit
+store. Digests provide integrity and correlation, not encryption; do not export
+them to a less-trusted boundary merely because plaintext is absent. See
+[Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md).
 
 A configured `SessionStore` can persist complete `SessionSnapshotV1`
 generations. Runs expose status, active tools, ordered event replay, exclusive
@@ -695,6 +725,7 @@ the v1 schema.
 | [User Guide](manual/USER_GUIDE.md) · [Chinese](manual/USER_GUIDE_CN.md) | Installation, configuration, sessions, tools, and common workflows |
 | [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) | Extension contracts, security, lifecycle, and production integration |
 | [SDK API Design](manual/SDK_API_DESIGN.md) | Cross-language API conventions and alignment |
+| [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md) | Capability/input snapshots, event ordering, redaction boundary, validation, and replay |
 | [Go SDK](sdk/go/README.md) | Bridge installation, sessions, event streaming, direct tools, errors, and release compatibility |
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) | Language runtime, capability boundary, lifecycle, and verification |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md) | Architecture, quality budgets, lifecycle, and adversarial trust boundaries |

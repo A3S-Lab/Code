@@ -23,6 +23,7 @@ impl AgentLoop {
             command_queue: None,
             checkpoint_sink: None,
             checkpoint_run_id: None,
+            bound_invocation: None,
         }
     }
 

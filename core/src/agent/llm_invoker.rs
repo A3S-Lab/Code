@@ -7,6 +7,7 @@
 
 use super::{AgentEvent, AgentLoop, InvocationContext};
 use crate::budget::{BudgetDecision, BudgetGuard};
+use crate::harness_evidence::{ModelCallObservation, ModelInputKindV1};
 use crate::llm::structured::{NativeStructuredSupport, StructuredDirective};
 use crate::llm::{
     estimate_prompt_tokens, LlmClient, LlmResponse, Message, ModelGenerationConcurrency,
@@ -33,9 +34,7 @@ impl LlmInvoker {
 
     async fn invoke_response<F>(
         &self,
-        messages: &[Message],
-        system: Option<&str>,
-        tools: &[ToolDefinition],
+        observation: ModelCallObservation<'_>,
         invocation: F,
     ) -> anyhow::Result<LlmResponse>
     where
@@ -44,11 +43,12 @@ impl LlmInvoker {
         check_before_llm(
             self.invocation.governance().budget_guard(),
             self.invocation.session_id(),
-            estimate_prompt_tokens(messages, system, tools),
+            observation.estimated_prompt_tokens,
             self.invocation.event_tx(),
             self.invocation.cancellation(),
         )
         .await?;
+        self.record_model_evidence(observation).await?;
 
         let response = tokio::select! {
             biased;
@@ -68,9 +68,7 @@ impl LlmInvoker {
 
     async fn invoke_stream<F, Fut>(
         &self,
-        messages: &[Message],
-        system: Option<&str>,
-        tools: &[ToolDefinition],
+        observation: ModelCallObservation<'_>,
         caller_cancellation: CancellationToken,
         setup: F,
     ) -> anyhow::Result<mpsc::Receiver<StreamEvent>>
@@ -81,11 +79,12 @@ impl LlmInvoker {
         check_before_llm(
             self.invocation.governance().budget_guard(),
             self.invocation.session_id(),
-            estimate_prompt_tokens(messages, system, tools),
+            observation.estimated_prompt_tokens,
             self.invocation.event_tx(),
             self.invocation.cancellation(),
         )
         .await?;
+        self.record_model_evidence(observation).await?;
 
         let caller_signal = caller_cancellation.clone();
         let (provider_cancellation, cancellation_watcher) =
@@ -111,6 +110,36 @@ impl LlmInvoker {
         };
 
         Ok(self.proxy_stream(inner_rx, provider_cancellation, cancellation_watcher))
+    }
+
+    async fn record_model_evidence(
+        &self,
+        observation: ModelCallObservation<'_>,
+    ) -> anyhow::Result<()> {
+        let Some(tx) = self.invocation.event_tx() else {
+            return Ok(());
+        };
+        let Some(evidence) = self.invocation.capture_model_evidence(observation)? else {
+            return Ok(());
+        };
+        if !self
+            .invocation
+            .send_capability_if_changed(tx, evidence.input.call_sequence, evidence.capability)
+            .await
+        {
+            anyhow::bail!("Operation cancelled by user");
+        }
+        let send_result = tokio::select! {
+            biased;
+            _ = self.invocation.cancellation().cancelled() => {
+                anyhow::bail!("Operation cancelled by user")
+            }
+            result = tx.send(AgentEvent::ModelInputBound {
+                snapshot: evidence.input,
+            }) => result,
+        };
+        let _ = send_result;
+        Ok(())
     }
 
     fn combine_cancellation(
@@ -190,13 +219,16 @@ impl LlmClient for LlmInvoker {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
-        self.invoke_response(
+        let observation = ModelCallObservation::new(
+            ModelInputKindV1::Completion,
             messages,
             system,
             tools,
-            self.inner.complete(messages, system, tools),
-        )
-        .await
+            None,
+            estimate_prompt_tokens(messages, system, tools),
+        );
+        self.invoke_response(observation, self.inner.complete(messages, system, tools))
+            .await
     }
 
     async fn complete_streaming(
@@ -206,7 +238,15 @@ impl LlmClient for LlmInvoker {
         tools: &[ToolDefinition],
         cancel_token: CancellationToken,
     ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
-        self.invoke_stream(messages, system, tools, cancel_token, |provider_token| {
+        let observation = ModelCallObservation::new(
+            ModelInputKindV1::Streaming,
+            messages,
+            system,
+            tools,
+            None,
+            estimate_prompt_tokens(messages, system, tools),
+        );
+        self.invoke_stream(observation, cancel_token, |provider_token| {
             self.inner
                 .complete_streaming(messages, system, tools, provider_token)
         })
@@ -224,10 +264,16 @@ impl LlmClient for LlmInvoker {
         tools: &[ToolDefinition],
         directive: &StructuredDirective,
     ) -> anyhow::Result<LlmResponse> {
-        self.invoke_response(
+        let observation = ModelCallObservation::new(
+            ModelInputKindV1::Structured,
             messages,
             system,
             tools,
+            Some(directive),
+            estimate_prompt_tokens(messages, system, tools),
+        );
+        self.invoke_response(
+            observation,
             self.inner
                 .complete_structured(messages, system, tools, directive),
         )
@@ -242,7 +288,15 @@ impl LlmClient for LlmInvoker {
         directive: &StructuredDirective,
         cancel_token: CancellationToken,
     ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
-        self.invoke_stream(messages, system, tools, cancel_token, |provider_token| {
+        let observation = ModelCallObservation::new(
+            ModelInputKindV1::StreamingStructured,
+            messages,
+            system,
+            tools,
+            Some(directive),
+            estimate_prompt_tokens(messages, system, tools),
+        );
+        self.invoke_stream(observation, cancel_token, |provider_token| {
             self.inner.complete_streaming_structured(
                 messages,
                 system,
@@ -265,7 +319,8 @@ impl AgentLoop {
     }
 
     /// Compatibility helper for internal paths not yet carrying the aggregate
-    /// context explicitly. The resulting client still snapshots one immutable
+    /// context explicitly. A run-bound loop reuses its aggregate invocation so
+    /// helpers share one evidence sequence; a standalone loop snapshots a new
     /// scope and applies the same provider boundary.
     pub(crate) fn scoped_llm_client_for_parts(
         &self,
@@ -273,6 +328,9 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &CancellationToken,
     ) -> Arc<dyn LlmClient> {
+        if let Some(invocation) = &self.bound_invocation {
+            return self.scoped_llm_client(invocation);
+        }
         let run_id = self
             .checkpoint_run_id
             .clone()
@@ -354,203 +412,4 @@ async fn record_after_llm(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agent::invocation_context::InvocationGovernance;
-    use std::sync::Mutex;
-
-    struct PendingStreamingClient {
-        provider_cancelled: Arc<tokio::sync::Notify>,
-    }
-
-    #[test]
-    fn prompt_estimator_counts_tool_results() {
-        let messages = vec![Message::tool_result("tool-1", &"x".repeat(4_000), false)];
-
-        assert!(estimate_prompt_tokens(&messages, None, &[]) >= 1_000);
-    }
-
-    #[test]
-    fn prompt_estimator_counts_tool_definitions() {
-        let tools = vec![ToolDefinition {
-            name: "large_tool".to_string(),
-            description: "x".repeat(2_000),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "payload": { "type": "string", "description": "y".repeat(2_000) }
-                }
-            }),
-        }];
-
-        assert!(estimate_prompt_tokens(&[], None, &tools) >= 1_000);
-    }
-
-    #[derive(Clone)]
-    struct SessionBindingClient {
-        bound_session: Option<String>,
-        observed_sessions: Arc<Mutex<Vec<String>>>,
-    }
-
-    #[async_trait]
-    impl LlmClient for SessionBindingClient {
-        fn fork_for_session(&self, session_id: &str) -> Option<Arc<dyn LlmClient>> {
-            Some(Arc::new(Self {
-                bound_session: Some(session_id.to_string()),
-                observed_sessions: Arc::clone(&self.observed_sessions),
-            }))
-        }
-
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-        ) -> anyhow::Result<LlmResponse> {
-            self.observed_sessions
-                .lock()
-                .unwrap()
-                .push(self.bound_session.clone().unwrap_or_default());
-            Ok(LlmResponse {
-                message: Message::assistant("ok"),
-                usage: TokenUsage::default(),
-                stop_reason: Some("stop".to_string()),
-                token_logprobs: Vec::new(),
-                meta: None,
-            })
-        }
-
-        async fn complete_streaming(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-            _cancel_token: CancellationToken,
-        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
-            anyhow::bail!("streaming is not used by this test")
-        }
-    }
-
-    #[async_trait]
-    impl LlmClient for PendingStreamingClient {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-        ) -> anyhow::Result<LlmResponse> {
-            anyhow::bail!("non-streaming is not used by this test")
-        }
-
-        async fn complete_streaming(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-            cancel_token: CancellationToken,
-        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
-            let (tx, rx) = mpsc::channel(1);
-            let provider_cancelled = Arc::clone(&self.provider_cancelled);
-            tokio::spawn(async move {
-                cancel_token.cancelled().await;
-                drop(tx);
-                provider_cancelled.notify_one();
-            });
-            Ok(rx)
-        }
-    }
-
-    #[tokio::test]
-    async fn dropping_proxy_receiver_cancels_pending_provider_stream() {
-        let provider_cancelled = Arc::new(tokio::sync::Notify::new());
-        let client: Arc<dyn LlmClient> = Arc::new(PendingStreamingClient {
-            provider_cancelled: Arc::clone(&provider_cancelled),
-        });
-        let invocation = InvocationContext::new(
-            Arc::<str>::from("run-stream-drop"),
-            Arc::<str>::from("session-stream-drop"),
-            CancellationToken::new(),
-            None,
-            InvocationGovernance::default(),
-        );
-        let invoker = LlmInvoker::new(client, invocation);
-        let rx = invoker
-            .complete_streaming(
-                &[Message::user("hello")],
-                None,
-                &[],
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-
-        drop(rx);
-
-        tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            provider_cancelled.notified(),
-        )
-        .await
-        .expect("dropping the consumer must cancel the provider stream");
-    }
-
-    #[tokio::test]
-    async fn scoped_client_forks_provider_for_logical_session() {
-        let observed_sessions = Arc::new(Mutex::new(Vec::new()));
-        let client: Arc<dyn LlmClient> = Arc::new(SessionBindingClient {
-            bound_session: None,
-            observed_sessions: Arc::clone(&observed_sessions),
-        });
-        let agent = AgentLoop::new(
-            client,
-            Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string())),
-            crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp")),
-            crate::agent::AgentConfig::default(),
-        );
-        let scoped = agent.scoped_llm_client_for_parts(
-            Some("child-session"),
-            &None,
-            &CancellationToken::new(),
-        );
-
-        scoped
-            .complete(&[Message::user("hello")], None, &[])
-            .await
-            .unwrap();
-
-        assert_eq!(
-            *observed_sessions.lock().unwrap(),
-            vec!["child-session".to_string()]
-        );
-    }
-
-    #[tokio::test]
-    async fn governed_client_keeps_provider_session_forking_available() {
-        let observed_sessions = Arc::new(Mutex::new(Vec::new()));
-        let client: Arc<dyn LlmClient> = Arc::new(SessionBindingClient {
-            bound_session: None,
-            observed_sessions: Arc::clone(&observed_sessions),
-        });
-        let invocation = InvocationContext::new(
-            Arc::<str>::from("parent-run"),
-            Arc::<str>::from("parent-session"),
-            CancellationToken::new(),
-            None,
-            InvocationGovernance::default(),
-        );
-        let governed: Arc<dyn LlmClient> = Arc::new(LlmInvoker::new(client, invocation));
-        let forked = governed
-            .fork_for_session("nested-child-session")
-            .expect("governed client must preserve provider session forking");
-
-        forked
-            .complete(&[Message::user("hello")], None, &[])
-            .await
-            .unwrap();
-
-        assert_eq!(
-            *observed_sessions.lock().unwrap(),
-            vec!["nested-child-session".to_string()]
-        );
-    }
-}
+mod tests;

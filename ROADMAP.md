@@ -57,14 +57,18 @@ execution world.
 
 | Gate | State | Code-owned outcome | Exit criteria |
 | --- | --- | --- | --- |
-| `HARNESS-CAP1` | In progress | Versioned per-run capability snapshot covering model-visible tools, workspace services, policy ceiling, and readiness/generation identities | Snapshot digest changes on capability or readiness drift; authorization still executes against the same bound generation |
-| `HARNESS-IN1` | Planned | Immutable `ModelInputSnapshotV1` for the actual system/user/context/tool-definition payload and policy/retrieval references submitted to one model call | Replay and audit can distinguish intended configuration from transmitted input without persisting secrets or unbounded plaintext |
+| `HARNESS-CAP1` | Delivered | Versioned per-run capability snapshots cover actual model-visible tools, workspace services, run-owned governance bindings, configured serializable policy identities, execution ceilings, and semantic readiness/generation identities | `run_capability_bound` is emitted before provider use and its digest changes on tool, serializable policy, service, readiness, or generation drift; authorization still executes through the same run-owned governance scope |
+| `HARNESS-IN1` | In progress | `ModelInputSnapshotV1` records bounded content-addressed evidence for the actual system/message/tool-definition/provider-facing structured directive submitted to each provider-neutral model call, plus identified semantic/hybrid Tool-result evidence | Digest/counter evidence and exact event replay are delivered; immutable authorized references to retained original content remain part of `CAR-02` rather than being copied into the event journal |
 | `HARNESS-SCOPE1` | Planned | Scoped, reversible capability leases for one run/turn/subtask with cancellation-safe teardown | A temporary capability cannot survive its declared scope or broaden a child run beyond the parent ceiling |
 | `HARNESS-PROFILE1` | Planned | Typed tool-presentation and code-mode profiles over the existing governed executor | Profiles change model-facing presentation and token cost, never authorization, workspace identity, or audit semantics |
 
-`CODE-RDY1` below is the first delivered slice of `HARNESS-CAP1`: a configured
-semantic capability can now bind a query to an event-driven readiness
-transition instead of exposing only a static enabled/disabled bit.
+`CODE-RDY1` below was the first delivered slice of `HARNESS-CAP1`. The completed
+capability snapshot now observes the current readiness phase, catalog/source/
+vector revisions, coverage, and model-descriptor digest immediately before each
+provider call. The companion `model_input_bound` event is emitted for every
+completion, streaming, structured, and streaming-structured call. Both events
+reuse the existing Run journal and `EventEnvelopeV1`; no parallel audit store is
+introduced. See [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md).
 
 ## 4. Invariants
 
@@ -460,7 +464,7 @@ Current implementation status:
 | `CODE-RDY1` | Delivered | Core adds an opt-in event-driven semantic-readiness barrier with a 30-second hard ceiling. The zero-duration default preserves immediate partial fallback; ready/degraded publication wakes waiters, timeout retains `building`, and caller/session cancellation interrupts the wait without blocking session construction |
 | `WSR-EVAL2` | Delivered | The Core rerank adversary, built-in strategy matrix, Rust custom negative control, real CLI ACL host, and public SDK real-model matrix are complete. Code `cde887b` locks one corpus/report contract across Node.js, Python, and Go; each SDK completes `3/3` exact tasks and one-Search protocols with Precision@5 `0.2`, returned-result precision `0.4286`, Recall@5 `1.0`, MRR `0.5`, nDCG@5 `0.6309`, 39 vectors/9,595 bytes per session, 1.0x document-request amplification, zero non-text inputs, and complete release. Remote timing remains diagnostic, the whole-file control remains unqualified, and no default change is justified |
 | `WSR-PROD1` | Delivered | Code `beac7cb` qualifies the revision-locked 384-dimensional multilingual CPU model with RRF Recall@5 `1.0`, MRR `0.5`, 1.0x amplification, zero non-text inputs, and complete release; the English model remains a CJK negative control and deterministic MMR remains optional after lowering MRR to `0.3444`. CLI `5a27e81` passes the same model through trusted ACL and the real loopback HTTP adapter into DeepSeek at `3/3`, with `435/454` ms p50/p95 first-ready publication and a strict UTF-8 process boundary. Code `eddeeea` then passes 9/9 compile-gated generation trials across three tasks: pass rate `1.0`, 95% Wilson lower bound `0.7008`, tool/evidence/compile/integrity/release `1.0`, 1.0x amplification, zero non-text inputs, `402/919` ms initial-publication/full-ready p95, and `40` ms edited-generation publication p95. The 64-generation replacement soak retains one live vector and releases zero/zero records/bytes on close; [CI #249](https://github.com/A3S-Lab/Code/actions/runs/31862118069) passes it on Ubuntu, macOS, and Windows together with all Code checks. The versioned SLO, telemetry, and configuration-only rollback runbook is delivered |
-| `HOST-LCPU1` | In progress | CLI `main` commit `a5794bf` pins Code `5612bed` and adds an opt-in FastEmbed/ONNX CPU adapter behind an empty default feature set. A trusted typed ACL block, revision/SHA-256-bound offline manifest, lazy bounded blocking inference, one-model/one-inference process ceilings, sanitized failures, and the Core readiness barrier are delivered. The default graph contains no FastEmbed/ORT dependency and the enabled graph contains no runtime downloader. On the Windows reference host, the provider gate records 7,568/20 ms cold/warm calls, 0 ms caller cancellation, and a 971 MiB peak-RSS increase below 1 GiB; real DeepSeek completes 3/3 tasks with Recall@5 1.0, MRR 0.3444, nDCG@5 0.5059, 1.0x document-request amplification, and zero non-text inputs. Cross-platform runtime fixtures, unsupported-CPU handling, and the comparative runtime decision remain promotion gates |
+| `HOST-LCPU1` | Delivered | CLI `main` commit `e03b06e` qualifies the opt-in FastEmbed/ONNX CPU adapter while the default feature graph remains model-free and contains no FastEmbed/ORT dependency. Trusted typed ACL, revision/SHA-256-bound offline admission, lazy bounded blocking inference, two-input microbatching, one-model/one-native-job process ceilings, sanitized failures, stable unsupported-platform/x86-64-v3 diagnostics, cancellation recovery, and the Core readiness barrier are delivered. Native CI performs real offline inference on Linux x64/ARM64, Windows x64, and macOS ARM64; [CLI CI #31917686424](https://github.com/A3S-Lab/CLI/actions/runs/31917686424) passes every job. The Windows multilingual gate records 7,045/19 ms cold/warm calls, 0 ms caller cancellation, 267 ms recovery, and a 1,018,519,552-byte peak-RSS increase below 1 GiB. Real DeepSeek completes 3/3 tasks with Recall@5 1.0, MRR 0.3444, nDCG@5 0.5059, exact 1.0x lower-bound request amplification, and zero non-text inputs. RRF-only remains default because deterministic MMR did not improve this corpus |
 | `WSR-DOC` | Delivered | README, changelog, baseline, operator QA report, DeepSeek task evaluation, SDK examples, ACL host guidance, text/knowledge-compiler boundary, privacy boundaries, final revisions, and release disposition are aligned; obsolete query-time-BM25 and sqlite-vec guidance is excluded |
 
 The detailed baseline and threat model are in
@@ -533,11 +537,12 @@ RRF-only defaults.
 1. Freeze the model-free path as a negative dependency gate: Core, Memory, and
    default SDK/CLI builds must continue to work without an inference runtime or
    model artifact.
-2. Compare a ready embedding-oriented ONNX adapter such as `fastembed-rs`
-   against a self-contained `tract` adapter on the locked multilingual corpus.
-   Record supported operators, binary delta, cold load, document/query
-   throughput, p50/p95, peak RSS, cancellation latency, and all three desktop
-   platforms before selecting a runtime.
+2. Select the smallest maintained runtime that satisfies the locked model,
+   packaging, offline, quality, latency, RSS, cancellation, and supported-target
+   gates. Build a second adapter only when the selected runtime fails one of
+   those observable requirements; feature-count comparison alone is not a
+   release oracle. Record the binary delta, cold/warm calls, recovery, peak RSS,
+   and every supported release target.
 3. Define one typed local-provider ACL block and immutable artifact manifest
    containing model identity, revision, files, SHA-256 digests, tokenizer,
    dimension, normalization, license metadata, and runtime compatibility. Model
@@ -554,27 +559,33 @@ RRF-only defaults.
    has zero behavior/dependency regression and local CPU mode passes the same
    source, revision, amplification, non-text, and release gates as remote mode.
 
-CLI `a5794bf` delivers steps 1, 3, and 4 plus the Windows reference slice of
-step 5. Its exact default dependency gate excludes `fastembed`, `ort`, and
-`ort-sys`; the local feature graph excludes `hf-hub`, so admitted sessions make
-no runtime model download. The revision-locked multilingual model produces
-384-dimensional unit vectors with a 7,568 ms cold call, 20 ms warm call, 0 ms
-caller cancellation, and a 1,018,261,504-byte peak-RSS increase. The same
-source adds 28,013,568 bytes (15.22%) to the Windows debug binary. Three real
-DeepSeek tool tasks pass at target ranks 5/2/3, reach ready publication in
-9,102/9,498 ms p50/p95, retain 39 vectors / 68,251 accounted bytes, batch all
-39 document chunks into one request, and send zero non-text inputs.
+CLI `e03b06e` completes steps 1-5. Its exact default dependency gate excludes
+`fastembed`, `ort`, and `ort-sys`; the local feature graph excludes `hf-hub`, so
+admitted sessions make no runtime model download. The revision-locked
+multilingual model produces 384-dimensional unit vectors with a 7,045 ms cold
+call, 19 ms warm call, 0 ms caller cancellation, 267 ms recovery to the next
+successful request, and a 1,018,519,552-byte peak-RSS increase. A two-input
+microbatch replaced the former 64-input path after the latter reached about
+1.60 GiB under cancellation load. The same source adds 28,013,568 bytes
+(15.22%) to the Windows debug binary.
 
-FastEmbed/ONNX is therefore an opt-in production candidate, not the completed
-runtime selection. Step 2 still requires a measured `tract` or equivalently
-self-contained control rather than a feature-count comparison. Step 5 still
-requires Linux and Apple Silicon runtime fixtures for RSS, cancellation under
-load, offline startup, and the locked model corpus; explicit unsupported-CPU
-diagnostics; close-during-native-inference and panic/failure injection; and a
-larger memory margin than the current 971 MiB Windows result. Intel macOS stays
-model-free while the pinned ONNX Runtime lacks that target. These gates may
-reject or replace the candidate without changing Code Core, Memory, the ACL
-shape, or the model-free retrieval path.
+Three real DeepSeek tool tasks pass at target ranks 5/2/3, reach full readiness
+in 12,163/12,342 ms p50/p95, retain 39 vectors / 68,251 accounted bytes, execute
+20 two-input document microbatches plus one query call at the exact configured
+lower bound, and send zero non-text inputs. End-to-end task p50/p95 is
+27,460/28,661 ms with 40,241 total DeepSeek tokens. A smaller digest-locked
+smoke model performs real offline admission, inference, cancellation, recovery,
+and RSS checks on native Linux x64/ARM64, Windows x64, and macOS ARM64 CI. The
+gate also rejects malformed/substituted artifacts, simulates missing x86-64-v3
+before model loading, and proves a 32-waiter cancellation storm cannot exceed
+one native job or starve recovery.
+
+FastEmbed/ONNX is therefore the qualified opt-in host runtime. A second adapter
+is not required merely to create a comparison: the hard observable gates above
+are the decision oracle and remain reusable if the runtime is replaced later.
+Intel macOS stays model-free while the pinned ONNX Runtime lacks that target.
+This choice does not change Code Core, A3S Memory, the ACL shape, RRF-only
+ranking, or the model-free retrieval path.
 
 `CODE-R2` was executed in this order:
 
@@ -724,10 +735,10 @@ tool modes, and retain existing exact, lexical, and Code Intelligence paths.
 No migration or index deletion procedure is required because the baseline
 index is session-ephemeral.
 
-`WSR-PROD1` completes the stable opt-in evidence for the current provider-
-injected design. In-progress `HOST-LCPU1` improves the CLI's local CPU experience;
-it does not block model-free search, require a new default, or move inference
-and model-artifact ownership into Code Core or A3S Memory.
+`WSR-PROD1` completes the stable opt-in evidence for the provider-injected
+design. Delivered `HOST-LCPU1` adds the qualified CLI-local CPU route; it does
+not block model-free search, require a new default, or move inference and
+model-artifact ownership into Code Core or A3S Memory.
 
 ### 6.12 WSR non-goals
 

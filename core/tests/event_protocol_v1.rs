@@ -3,8 +3,10 @@ use a3s_code_core::queue::SessionLane;
 use a3s_code_core::verification::VerificationSummary;
 use a3s_code_core::{
     run_event_envelope_v1, AgentEvent, AgentEventProjectionV1, CognitiveContextLimits,
-    CognitiveKnowledgeBindingV1, CognitivePackageBindingV1, EventEnvelopeV1, TokenUsage,
-    AGENT_EVENT_TYPES_V1,
+    CognitiveKnowledgeBindingV1, CognitivePackageBindingV1, EventEnvelopeV1, ModelInputKindV1,
+    ModelInputSnapshotV1, RunCapabilitySnapshotV1, RunPolicyCeilingSnapshotV1, TokenUsage,
+    WorkspaceCapabilitySnapshotV1, WorkspaceRetrievalCapabilitySnapshotV1, WorkspaceRetrievalPhase,
+    AGENT_EVENT_TYPES_V1, MODEL_INPUT_SNAPSHOT_V1_SCHEMA, RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA,
 };
 use serde_json::json;
 
@@ -50,6 +52,78 @@ fn cognitive_binding() -> CognitivePackageBindingV1 {
         CognitiveContextLimits::default(),
     )
     .unwrap()
+}
+
+fn digest(character: char) -> String {
+    format!("sha256:{}", character.to_string().repeat(64))
+}
+
+fn capability_snapshot() -> RunCapabilitySnapshotV1 {
+    RunCapabilitySnapshotV1 {
+        schema: RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA.to_string(),
+        model_visible_tool_count: 1,
+        model_visible_tools_digest: digest('a'),
+        workspace: WorkspaceCapabilitySnapshotV1 {
+            read: true,
+            write: false,
+            exec: false,
+            search: true,
+            git: false,
+            code_intelligence: false,
+        },
+        policy: RunPolicyCeilingSnapshotV1 {
+            permission_checker_bound: true,
+            permission_policy_digest: Some(digest('b')),
+            confirmation_manager_bound: false,
+            confirmation_policy_digest: None,
+            budget_guard_bound: true,
+            active_skill_tool_restrictions: false,
+            max_tool_rounds: 12,
+            max_parallel_tasks: 4,
+            tool_timeout_ms: Some(30_000),
+            llm_api_timeout_ms: Some(60_000),
+            max_execution_time_ms: Some(300_000),
+        },
+        retrieval: WorkspaceRetrievalCapabilitySnapshotV1 {
+            enabled: true,
+            phase: WorkspaceRetrievalPhase::Ready,
+            catalog_revision: 7,
+            source_revision: 8,
+            vector_revision: 9,
+            coverage_bps: 10_000,
+            model_digest: Some(digest('c')),
+        },
+        snapshot_digest: digest('d'),
+    }
+}
+
+fn model_input_snapshot() -> ModelInputSnapshotV1 {
+    ModelInputSnapshotV1 {
+        schema: MODEL_INPUT_SNAPSHOT_V1_SCHEMA.to_string(),
+        call_sequence: 1,
+        kind: ModelInputKindV1::Streaming,
+        message_count: 3,
+        content_block_count: 4,
+        image_block_count: 0,
+        tool_result_count: 1,
+        tool_count: 1,
+        retrieval_result_count: 1,
+        retrieval_result_bytes: 128,
+        retrieval_results_digest: Some(digest('e')),
+        system_bytes: 64,
+        message_payload_bytes: 256,
+        tool_definition_bytes: 512,
+        structured_output_bytes: 0,
+        payload_bytes: 900,
+        estimated_prompt_tokens: 225,
+        messages_digest: digest('f'),
+        system_digest: Some(digest('1')),
+        tool_definitions_digest: digest('a'),
+        structured_output_digest: None,
+        input_digest: digest('2'),
+        capability_snapshot_digest: digest('d'),
+        snapshot_digest: digest('3'),
+    }
 }
 
 fn representative_events() -> Vec<EventCase> {
@@ -262,6 +336,23 @@ fn representative_events() -> Vec<EventCase> {
             },
             "total_items",
             json!(3),
+        ),
+        case(
+            "run_capability_bound",
+            AgentEvent::RunCapabilityBound {
+                call_sequence: 1,
+                snapshot: capability_snapshot(),
+            },
+            "call_sequence",
+            json!(1),
+        ),
+        case(
+            "model_input_bound",
+            AgentEvent::ModelInputBound {
+                snapshot: model_input_snapshot(),
+            },
+            "snapshot",
+            serde_json::to_value(model_input_snapshot()).unwrap(),
         ),
         case(
             "cognitive_context_bound",

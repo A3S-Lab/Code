@@ -93,6 +93,7 @@ pub mod error;
 pub mod event_protocol;
 pub mod flow_graph;
 pub(crate) mod git;
+pub mod harness_evidence;
 pub mod hitl;
 pub mod hooks;
 pub mod host_env;
@@ -207,6 +208,12 @@ pub use flow_graph::{
     FlowDecisionLedger, FlowDecisionRequest, FlowDecisionSink, FlowDecisionStep,
     FlowGraphHealthSnapshot, FlowGraphHealthStatus, FlowGraphObserver, MemoryFlowDecisionLedger,
     FLOW_GRAPH_SOURCE,
+};
+pub use harness_evidence::{
+    HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, RunCapabilitySnapshotV1,
+    RunPolicyCeilingSnapshotV1, WorkspaceCapabilitySnapshotV1,
+    WorkspaceRetrievalCapabilitySnapshotV1, MODEL_INPUT_SNAPSHOT_V1_SCHEMA,
+    RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA,
 };
 pub use llm::{
     clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,

@@ -2,10 +2,16 @@
 
 use super::{AgentEvent, AgentLoop};
 use crate::budget::BudgetGuard;
+use crate::harness_evidence::{
+    HarnessEvidenceError, ModelCallObservation, ModelInputSnapshotV1, RunCapabilityEvidenceSource,
+    RunCapabilitySnapshotV1,
+};
 use crate::hitl::ConfirmationProvider;
 use crate::permissions::PermissionChecker;
 use crate::tools::{AgentEventBarrier, ToolContext};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -57,6 +63,19 @@ pub(crate) struct InvocationContext {
     agent_event_tx: Option<broadcast::Sender<AgentEvent>>,
     agent_event_barrier: Option<AgentEventBarrier>,
     governance: InvocationGovernance,
+    model_evidence: Option<ModelEvidenceState>,
+}
+
+#[derive(Clone)]
+struct ModelEvidenceState {
+    source: Arc<RunCapabilityEvidenceSource>,
+    call_sequence: Arc<AtomicU64>,
+    last_capability_digest: Arc<Mutex<Option<String>>>,
+}
+
+pub(super) struct CapturedModelEvidence {
+    pub(super) capability: RunCapabilitySnapshotV1,
+    pub(super) input: ModelInputSnapshotV1,
 }
 
 impl std::fmt::Debug for InvocationContext {
@@ -80,6 +99,7 @@ impl std::fmt::Debug for InvocationContext {
                 "has_confirmation_manager",
                 &self.governance.confirmation_manager.is_some(),
             )
+            .field("has_model_evidence", &self.model_evidence.is_some())
             .finish()
     }
 }
@@ -100,7 +120,17 @@ impl InvocationContext {
             agent_event_tx: None,
             agent_event_barrier: None,
             governance,
+            model_evidence: None,
         }
+    }
+
+    fn with_model_evidence(mut self, source: RunCapabilityEvidenceSource) -> Self {
+        self.model_evidence = Some(ModelEvidenceState {
+            source: Arc::new(source),
+            call_sequence: Arc::new(AtomicU64::new(0)),
+            last_capability_digest: Arc::new(Mutex::new(None)),
+        });
+        self
     }
 
     /// Bind high-level tool events to the run that owns this invocation.
@@ -142,6 +172,52 @@ impl InvocationContext {
         &self.governance
     }
 
+    pub(super) fn capture_model_evidence(
+        &self,
+        observation: ModelCallObservation<'_>,
+    ) -> Result<Option<CapturedModelEvidence>, HarnessEvidenceError> {
+        let Some(state) = &self.model_evidence else {
+            return Ok(None);
+        };
+        let previous = state
+            .call_sequence
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| HarnessEvidenceError::CallSequenceExhausted)?;
+        let call_sequence = previous + 1;
+        let (capability, input) = state.source.capture(call_sequence, observation)?;
+        Ok(Some(CapturedModelEvidence { capability, input }))
+    }
+
+    pub(super) async fn send_capability_if_changed(
+        &self,
+        tx: &mpsc::Sender<AgentEvent>,
+        call_sequence: u64,
+        capability: RunCapabilitySnapshotV1,
+    ) -> bool {
+        let Some(state) = &self.model_evidence else {
+            return true;
+        };
+        let digest = capability.snapshot_digest.clone();
+        let mut last_digest = state.last_capability_digest.lock().await;
+        if last_digest.as_deref() == Some(digest.as_str()) {
+            return true;
+        }
+        let send_result = tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => return false,
+            result = tx.send(AgentEvent::RunCapabilityBound {
+                call_sequence,
+                snapshot: capability,
+            }) => result,
+        };
+        if send_result.is_ok() {
+            *last_digest = Some(digest);
+        }
+        true
+    }
+
     /// Install run identity and cancellation into a tool context before any
     /// direct, queued, nested, or delegated tool invocation begins.
     pub(crate) fn bind_tool_context(&self, mut context: ToolContext) -> ToolContext {
@@ -170,6 +246,7 @@ impl InvocationContext {
         scoped.config.permission_checker = self.governance.permission_checker.clone();
         scoped.config.confirmation_manager = self.governance.confirmation_manager.clone();
         scoped.tool_context = self.bind_tool_context(scoped.tool_context);
+        scoped.bound_invocation = Some(self.clone());
         scoped
     }
 }
@@ -182,21 +259,29 @@ impl AgentLoop {
         event_tx: Option<mpsc::Sender<AgentEvent>>,
         cancellation: CancellationToken,
     ) -> InvocationContext {
+        let governance = InvocationGovernance {
+            budget_guard: self.config.budget_guard.clone(),
+            permission_checker: snapshot_permission_checker(
+                self.config.permission_checker.as_ref(),
+            ),
+            confirmation_manager: snapshot_confirmation_manager(
+                self.config.confirmation_manager.as_ref(),
+            ),
+        };
+        let evidence = RunCapabilityEvidenceSource::from_agent(
+            &self.config,
+            Arc::clone(&self.tool_context.workspace_services),
+            governance.permission_checker.is_some(),
+            governance.confirmation_manager.is_some(),
+        );
         InvocationContext::new(
             run_id,
             Arc::<str>::from(session_id.unwrap_or("")),
             cancellation,
             event_tx,
-            InvocationGovernance {
-                budget_guard: self.config.budget_guard.clone(),
-                permission_checker: snapshot_permission_checker(
-                    self.config.permission_checker.as_ref(),
-                ),
-                confirmation_manager: snapshot_confirmation_manager(
-                    self.config.confirmation_manager.as_ref(),
-                ),
-            },
+            governance,
         )
+        .with_model_evidence(evidence)
     }
 }
 

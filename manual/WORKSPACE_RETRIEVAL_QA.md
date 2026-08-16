@@ -11,7 +11,9 @@ The subsequent `CODE-B2` qualification passed the complete serial Core suite,
 strict Core and SDK bridge Clippy, the 25,000-record release gate, and a
 schema-v2 paired DeepSeek rerun with 1.0x document-request amplification.
 Code `cde887b` then completed the public Node.js, Python, and Go real-DeepSeek
-matrix from one versioned fixture and schema-v1 report contract.
+matrix from one versioned fixture and schema-v1 report contract. CLI `e03b06e`
+then completed the default-off in-process CPU host gate, including real
+DeepSeek quality and real offline inference on four native release targets.
 
 This report qualifies the first session-bound Workspace Retrieval (`WSR`)
 release across A3S Memory, A3S Code, and the A3S CLI host. The release uses an
@@ -462,6 +464,24 @@ same ignored test on Ubuntu, macOS, and Windows. Operational state handling and
 configuration-only rollback are defined in the
 [Workspace Retrieval Operations runbook](WORKSPACE_RETRIEVAL_OPERATIONS.md).
 
+### In-process CLI CPU boundary
+
+CLI `e03b06e` qualifies FastEmbed/ONNX as an optional host adapter, not a Core
+or Memory dependency and not a ranking default. The default feature graph has
+no model runtime; enabled sessions admit an explicit revision/SHA-256-bound
+artifact set, perform no runtime download, use two-input microbatches and one
+native job per process, and require no remote source-egress grant.
+
+The locked multilingual DeepSeek run completes 3/3 tasks at ranks 5/2/3 with
+Recall@5 1.0, MRR 0.3444, nDCG@5 0.5059, 1.0x document-request amplification,
+and zero non-text inputs. The Windows provider gate records 7,045/19 ms cold/
+warm calls, 0 ms cancellation, 267 ms recovery, and a 1,018,519,552-byte peak-
+RSS increase below 1 GiB. Native
+[CLI CI #31917686424](https://github.com/A3S-Lab/CLI/actions/runs/31917686424)
+passes offline admission, inference, cancellation, recovery, and RSS on Linux
+x64/ARM64, Windows x64, and macOS ARM64, plus artifact substitution, simulated
+unsupported CPU, and cancellation-storm adversaries. RRF-only remains default.
+
 ## A3S Test coverage boundary
 
 `a3s-test capabilities --json` and `a3s-test agent schema` were run from the
@@ -479,6 +499,7 @@ a browser.
 Pass for opt-in retrieval-dependent generation. Keep retrieval opt-in and source
 egress double-gated. The deterministic quality, adversarial, lifecycle,
 confidentiality, performance, host, compile-gated generation, three-platform
-churn, and real DeepSeek integration gates passed. Keep line chunking and
-RRF-only as compatible defaults because the real-model samples qualify a bounded
-workflow, not a universal default advantage.
+churn, four-target local CPU runtime, and real DeepSeek integration gates
+passed. Keep line chunking and RRF-only as compatible defaults because the
+real-model samples qualify a bounded workflow, not a universal default
+advantage.

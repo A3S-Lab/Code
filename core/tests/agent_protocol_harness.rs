@@ -4,8 +4,8 @@ use a3s_code_core::store::{MemorySessionStore, SessionStore};
 use a3s_code_core::{
     Agent, AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandV1,
     AgentProtocolEventPageRequestV1, AgentProtocolHarness, AgentProtocolHarnessError,
-    AgentProtocolRunIdentityV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1, PlanningMode,
-    SessionOptions, AGENT_PROTOCOL_V1,
+    AgentProtocolRunIdentityV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1,
+    ModelInputSnapshotV1, PlanningMode, RunCapabilitySnapshotV1, SessionOptions, AGENT_PROTOCOL_V1,
 };
 use base64::Engine as _;
 use std::collections::HashMap;
@@ -307,6 +307,82 @@ async fn harness_multiplexes_sessions_through_code_owned_hosts() {
 
     harness.close().await;
     assert!(agent.is_closed());
+}
+
+#[tokio::test]
+async fn harness_replay_binds_redacted_capability_and_model_input_evidence() {
+    let workspace = tempfile::tempdir().unwrap();
+    let manifest = manifest();
+    let identity = manifest.artifact().digest().to_string();
+    let harness = AgentProtocolHarness::new(
+        manifest,
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .unwrap()
+    .with_session_options(
+        SessionOptions::new()
+            .with_planning_mode(PlanningMode::Disabled)
+            .with_llm_client(Arc::new(StaticStreamingClient)),
+    );
+    let mut command = start(&identity, "evidence-conversation", "evidence-execution");
+    let AgentProtocolCommandV1::Start { request } = &mut command else {
+        unreachable!()
+    };
+    request.prompt = "top-secret Harness prompt".to_string();
+
+    let receipt = harness.execute(&command).await.unwrap();
+    assert!(!receipt.replayed);
+    let first_page = wait_for_terminal(&harness, &command).await;
+    let capability = first_page
+        .events
+        .iter()
+        .find(|record| record.event.event_type == "run_capability_bound")
+        .expect("Harness run must retain a capability snapshot");
+    let capability: RunCapabilitySnapshotV1 =
+        serde_json::from_value(capability.event.payload["snapshot"].clone()).unwrap();
+    capability.validate().unwrap();
+    let input = first_page
+        .events
+        .iter()
+        .find(|record| record.event.event_type == "model_input_bound")
+        .expect("Harness run must retain a model-input snapshot");
+    let input: ModelInputSnapshotV1 =
+        serde_json::from_value(input.event.payload["snapshot"].clone()).unwrap();
+    input.validate_against(&capability).unwrap();
+    assert_eq!(input.call_sequence, 1);
+    let evidence_json = serde_json::to_string(&(capability.clone(), input.clone())).unwrap();
+    assert!(!evidence_json.contains("top-secret Harness prompt"));
+
+    let replay = harness.execute(&command).await.unwrap();
+    assert!(replay.replayed);
+    let replay_page = wait_for_terminal(&harness, &command).await;
+    let replay_capability: RunCapabilitySnapshotV1 = serde_json::from_value(
+        replay_page
+            .events
+            .iter()
+            .find(|record| record.event.event_type == "run_capability_bound")
+            .unwrap()
+            .event
+            .payload["snapshot"]
+            .clone(),
+    )
+    .unwrap();
+    let replay_input: ModelInputSnapshotV1 = serde_json::from_value(
+        replay_page
+            .events
+            .iter()
+            .find(|record| record.event.event_type == "model_input_bound")
+            .unwrap()
+            .event
+            .payload["snapshot"]
+            .clone(),
+    )
+    .unwrap();
+    assert_eq!(replay_capability, capability);
+    assert_eq!(replay_input, input);
+
+    harness.close().await;
 }
 
 #[tokio::test]

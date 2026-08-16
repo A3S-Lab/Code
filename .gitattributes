@@ -1,3 +1,4 @@
-# Force LF line endings for prompt files to ensure cross-platform string matching
+# Force LF line endings where tests require cross-platform string matching
 prompts/*.md text eol=lf
 core/tests/fixtures/agentic-ontology/r0-cross-project-v1/** text eol=lf
+fixtures/agent-release-contract/.a3s/asset.acl text eol=lf
