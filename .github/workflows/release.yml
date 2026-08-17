@@ -15,8 +15,21 @@ env:
   CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
+  registry-preflight:
+    name: Registry dependency preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test registry dependency preflight
+        run: python3 -m unittest scripts.tests.test_check_publish_dependencies
+
+      - name: Verify publish dependencies are available
+        run: python3 scripts/check_publish_dependencies.py core/Cargo.toml
+
   retrieval-soak:
     name: Retrieval soak
+    needs: registry-preflight
     uses: ./.github/workflows/workspace-retrieval-soak.yml
 
   # ───────────────────────────────────────────────
@@ -24,6 +37,7 @@ jobs:
   # ───────────────────────────────────────────────
   ci:
     name: CI Checks
+    needs: registry-preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -104,6 +118,7 @@ jobs:
   # ───────────────────────────────────────────────
   ci-windows:
     name: CI Checks (Windows)
+    needs: registry-preflight
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
