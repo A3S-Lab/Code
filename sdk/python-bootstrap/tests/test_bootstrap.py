@@ -108,7 +108,7 @@ class CacheDirTests(unittest.TestCase):
 
     def test_default_uses_xdg_or_home(self):
         cache = _bootstrap._cache_root()
-        self.assertTrue(str(cache).endswith(f"a3s-code/{_bootstrap.__version__}"))
+        self.assertEqual(cache.parts[-2:], ("a3s-code", _bootstrap.__version__))
 
     def test_xdg_cache_home_honored(self):
         os.environ["XDG_CACHE_HOME"] = "/tmp/xdg-test"

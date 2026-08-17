@@ -1,0 +1,77 @@
+---
+title: '记忆'
+description: '会话记忆存储与显式召回'
+---
+
+# 记忆
+
+记忆用于记录可复用事实，帮助驾驭层复用经验。
+
+## 默认存储
+
+每个会话默认都有记忆存储。普通 SDK 会话若不传入自定义存储，会使用
+`<workspace>/.a3s/memory` 下的文件存储。`a3s code` TUI 使用和 `/memory` 面板相同的
+`memory_dir`；默认是 `~/.a3s/memory`，所以不同项目会共享这份长期记忆，除非你配置
+项目本地路径。可以通过配置中的 `memory_dir` 移动默认位置，也可以给单个会话
+传入带类型的存储对象来覆盖默认后端。若文件存储初始化失败，会话会降级到
+内存存储，并通过初始化警告暴露该问题。
+
+## 大语言模型抽取
+
+有可用记忆存储时，默认启用大语言模型记忆抽取。每个已完成且非空的回合都会提交给
+当前模型。是否存在能改变未来回答或行动的信息，由模型判断，而不是由关键词列表、
+工具类型或回合长度启发式规则判断。没有符合条件的内容时，模型必须返回空的
+`items` 数组。工具调用及其结果只作为判断上下文，绝不会被机械地复制进长期记忆。
+
+系统只接受持久的 `semantic`（语义）或 `procedural`（过程）记忆，并要求来源、
+重要度、置信度、作用域以及未来价值理由均通过校验。运行时会拒绝格式错误的输出和
+明显的凭据；这些是结构与安全检查，不负责判断语义价值。
+
+模型会收到一组有数量上限的相关记忆，并可把给定标识标记为 `supersedes`
+（取代）或 `conflicts_with`（冲突）。运行时会校验这些关系、移除已确认被取代的
+条目并保留冲突。流式宿主会在发布最终事件前注册抽取任务，按先进先出顺序处理回合，
+并在优雅关闭时等待已经受理的抽取任务。
+
+`rememberSuccess` 和 `rememberFailure` 仍是显式 SDK 操作。普通智能体运行时不会
+因为工具结果而自动调用它们。
+
+## 存储清理
+
+默认存储只会合并规范化后完全重复的内容。标点仍有意义；表述不同但相关的内容会保持
+独立，除非大语言模型通过 `supersedes` 显式合并。存储层不会根据关键词重叠推断
+语义等价。
+
+配置自动清理后，系统会删除陈旧且重要度低的记忆；但精选记忆会受到强保护：
+固定或受保护的条目、频繁召回的条目、已合并的记忆，以及带 `supersedes` 或
+`conflicts_with` 关系元数据的条目，都不会因为容量上限被直接裁掉。
+
+可以在 `config.acl` 中调整抽取上限：
+
+```acl
+memory {
+  llmExtraction = true
+  llmExtractionMaxItems = 5
+  llmExtractionMaxInputChars = 8000
+}
+```
+
+## 手动写入与召回
+
+```ts
+import { FileMemoryStore } from '@a3s-lab/code';
+
+const session = agent.session('/repo', {
+  memoryStore: new FileMemoryStore('./.a3s/memory'),
+});
+
+await session.rememberSuccess(
+  'release preflight',
+  ['bash', 'grep'],
+  'provider 验证通过',
+);
+const related = await session.recallSimilar('release provider verification', 5);
+const recent = await session.memoryRecent(10);
+const tagged = await session.recallByTags(['grep'], 10);
+```
+
+Memory 是辅助上下文，当前任务的验证证据仍来自当前命令和 trace。

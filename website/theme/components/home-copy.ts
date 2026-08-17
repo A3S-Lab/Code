@@ -4,7 +4,7 @@ export const copy = {
     titleLead: '把 A3S Code',
     titleAccent: '接进现有产品',
     subtitle:
-      'A3S Code 提供 Agent 会话、共享优先级调度、受治理的工具执行、事件流和任务恢复。你可以直接使用 a3s code，也可以通过 Rust、Node.js、Python 或 Go SDK 嵌入现有应用。',
+      'A3S Code 7 提供受治理的 Agent 会话、异步工作区检索、模型边界证据、事件流和任务恢复。可以直接运行 a3s code，也可以通过 Rust、Node.js、Python 或 Go SDK 嵌入现有应用。',
     docs: '开始使用',
     github: '查看 GitHub',
     copy: '复制',
@@ -33,7 +33,7 @@ export const copy = {
     capabilitiesEyebrow: 'WHAT YOU GET',
     capabilitiesTitle: 'Runtime 提供的五类能力',
     capabilitiesBody:
-      '工具、模型、任务记录、扩展接口和 Workspace 各自独立。应用可以只配置当前场景需要的部分。',
+      '工具、模型、任务记录、扩展接口和 Workspace 检索各自独立。语义检索由宿主主动开启；基础搜索不依赖 Embedding、Rerank 模型或向量数据库。',
     surfacesEyebrow: 'USE IT YOUR WAY',
     surfacesTitle: '直接运行 CLI，或使用四种 SDK',
     surfacesBody:
@@ -116,7 +116,7 @@ export const copy = {
     titleLead: 'Add A3S Code',
     titleAccent: 'to an existing product',
     subtitle:
-      'A3S Code provides agent sessions, shared priority scheduling, governed tool execution, event streaming, and task recovery. Run a3s code directly or embed the Rust, Node.js, Python, or Go SDK.',
+      'A3S Code 7 provides governed agent sessions, asynchronous workspace retrieval, model-bound evidence, event streaming, and task recovery. Run a3s code directly or embed the Rust, Node.js, Python, or Go SDK.',
     docs: 'Get started',
     github: 'View on GitHub',
     copy: 'Copy',
@@ -145,7 +145,7 @@ export const copy = {
     capabilitiesEyebrow: 'WHAT YOU GET',
     capabilitiesTitle: 'Five parts of the runtime',
     capabilitiesBody:
-      'Tools, models, run data, extension interfaces, and workspaces are configured separately. An application can enable only the parts it needs.',
+      'Tools, models, run data, extensions, and workspace retrieval are configured separately. The host opts into semantics; baseline search needs no embedding model, reranker model, or vector database.',
     surfacesEyebrow: 'USE IT YOUR WAY',
     surfacesTitle: 'Run the CLI or use one of four SDKs',
     surfacesBody:

@@ -11,6 +11,10 @@ function read(relativePath) {
   return readFileSync(path.join(root, relativePath), 'utf8');
 }
 
+function normalizeLineEndings(value) {
+  return value.replace(/\r\n?/g, '\n');
+}
+
 function protocolDefinition() {
   const source = read('core/src/event_protocol.rs');
   const versionMatch = source.match(/pub const EVENT_ENVELOPE_V1_VERSION: u16 = (\d+);/);
@@ -192,7 +196,9 @@ for (const [relativePath, expected] of outputs) {
     if (error.code !== 'ENOENT') throw error;
   }
 
-  if (actual === expected) continue;
+  if (actual !== null && normalizeLineEndings(actual) === normalizeLineEndings(expected)) {
+    continue;
+  }
   stale = true;
   if (checkOnly) {
     console.error(`${relativePath} is stale or missing`);

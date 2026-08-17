@@ -683,6 +683,26 @@ for (const pending of await session.pendingConfirmations()) {
 For the streaming event-driven loop used by UIs, see
 `examples/streaming/hitl_confirmation_loop.ts`.
 
+For unattended execution, prefer a deny-by-default allow-list and omit
+`confirmationPolicy`. Any unexpected `Ask` or tool-level escalation then fails
+closed because no confirmation channel exists:
+
+```js
+const session = await agent.sessionAsync('.', {
+  permissionPolicy: {
+    allow: ['read(*)', 'search(*)', 'ls(*)'],
+    defaultDecision: 'deny',
+  },
+  securityProvider: new DefaultSecurityProvider(),
+})
+```
+
+Do not use `{ enabled: false }` as an unattended policy: that compatibility
+mode deliberately auto-approves `Ask`. `DefaultSecurityProvider` sanitizes
+data but does not sandbox processes, and `tool()` remains a trusted
+control-plane API; use `governedTool()` for invocations not already authorized
+by the host.
+
 ## Run Replay
 
 Each `send(...)` or `stream(...)` call records a run snapshot and replayable

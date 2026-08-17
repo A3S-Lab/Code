@@ -1,0 +1,194 @@
+---
+title: 'Batch'
+description: 'Compose deterministic SDK helpers for grouped, model-free operations'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Batch
+
+There is no `batch()` method in the SDK. When a host workflow or agent turn has a
+clear list of independent, deterministic steps, compose them directly from the
+session's deterministic helpers (`readFile`, `grep`, `glob`, `ls`, `git`) and
+aggregate the results yourself. That keeps the "batch" fully under your control:
+no model calls, explicit ordering, and no destructive operations unless you
+invoke them.
+
+The example below reads package metadata, the changelog, and the release script,
+then reports version mismatches without editing any files.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+use serde_json::Value;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/path/to/project")
+        .build()
+        .await?;
+
+    let (package, changelog, release_script) = tokio::try_join!(
+        session.read_file("package.json"),
+        session.read_file("CHANGELOG.md"),
+        session.read_file("scripts/release.sh"),
+    )?;
+
+    let package: Value = serde_json::from_str(&package)?;
+    let version = package["version"].as_str().unwrap_or_default();
+    let mut mismatches = Vec::new();
+    if !changelog.contains(version) {
+        mismatches.push(format!("CHANGELOG.md is missing {version}"));
+    }
+    if !release_script.contains(version) {
+        mismatches.push(format!("release.sh is missing {version}"));
+    }
+
+    if mismatches.is_empty() {
+        println!("All files agree on the version.");
+    } else {
+        println!("{}", mismatches.join("\n"));
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/path/to/project');
+
+// Node helpers are async — group independent reads with Promise.all.
+const [pkg, changelog, releaseScript] = await Promise.all([
+  session.readFile('package.json'),
+  session.readFile('CHANGELOG.md'),
+  session.readFile('scripts/release.sh'),
+]);
+
+const pkgVersion = JSON.parse(pkg).version;
+const mismatches = [];
+if (!changelog.includes(pkgVersion))
+  mismatches.push(`CHANGELOG.md is missing ${pkgVersion}`);
+if (!releaseScript.includes(pkgVersion))
+  mismatches.push(`release.sh is missing ${pkgVersion}`);
+
+console.log(
+  mismatches.length ? mismatches.join('\n') : 'All files agree on the version.',
+);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import json
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session("/path/to/project", SessionOptions())
+
+# Python helpers are synchronous — call them in sequence, no await.
+pkg = session.read_file("package.json")
+changelog = session.read_file("CHANGELOG.md")
+release_script = session.read_file("scripts/release.sh")
+
+pkg_version = json.loads(pkg)["version"]
+mismatches = []
+if pkg_version not in changelog:
+    mismatches.append(f"CHANGELOG.md is missing {pkg_version}")
+if pkg_version not in release_script:
+    mismatches.append(f"release.sh is missing {pkg_version}")
+
+print("\n".join(mismatches) if mismatches else "All files agree on the version.")
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v7"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, "/path/to/project", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	pkg, err := session.ReadFile(ctx, "package.json", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	changelog, err := session.ReadFile(ctx, "CHANGELOG.md", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	releaseScript, err := session.ReadFile(ctx, "scripts/release.sh", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var metadata struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(pkg), &metadata); err != nil {
+		log.Fatal(err)
+	}
+	var mismatches []string
+	if !strings.Contains(changelog, metadata.Version) {
+		mismatches = append(mismatches, "CHANGELOG.md is missing "+metadata.Version)
+	}
+	if !strings.Contains(releaseScript, metadata.Version) {
+		mismatches = append(mismatches, "release.sh is missing "+metadata.Version)
+	}
+	if len(mismatches) == 0 {
+		fmt.Println("All files agree on the version.")
+	} else {
+		fmt.Println(strings.Join(mismatches, "\n"))
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+Do not mix destructive operations into these grouped reads. Any destructive host
+workflow (writes, `git` commits, `bash`) should sit behind explicit application
+confirmation or your automation gates, constrained with `permissionPolicy` /
+`permission_policy` so no unexpected step runs silently.
+
+When the steps are **not** independent — each one depends on the previous result
+and you want an agent to drive them — use
+[`session.pipeline(...)`](/guide/examples/orchestration) instead, which runs
+the work in stages where each stage receives the prior stage's output.

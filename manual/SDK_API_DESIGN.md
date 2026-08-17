@@ -149,6 +149,21 @@ Rules:
   suggestions. Agent-selected programs use the full model policy; direct
   `program(...)` calls and their nested tools inherit the trusted host policy.
 
+#### Standard governance configurations
+
+- Interactive hosts use `default_decision = ask`, an enabled confirmation
+  provider, a finite timeout with `reject`, and a typed security provider.
+- Unattended hosts use a narrow allow-list with `default_decision = deny` and
+  no confirmation provider. An unexpected `Ask` or tool-level escalation then
+  fails closed.
+- `ConfirmationPolicy.enabled = false` is an explicit compatibility mode that
+  auto-approves `Ask`; it is not a headless safety profile.
+- A security provider performs taint tracking and output sanitization. It does
+  not replace a shell sandbox or a workspace credential boundary.
+- SDK conversion must reject unknown typed store, backend, and security
+  provider objects. Silently dropping a requested boundary is not compatible
+  fallback behavior.
+
 ### 4. Runtime Observability
 
 Product UIs should build from replayable state rather than parsing text.

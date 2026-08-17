@@ -1,0 +1,435 @@
+---
+title: '安全'
+description: '通过权限策略、人工确认流程和安全提供器对特权操作进行管控'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 安全
+
+智能体可能产生的每一个副作用——写文件、运行 `bash`、执行 git 推送——都会经过权限策略。
+先从 `ask` 或 `deny` 兜底开始，再列出应被 `allow`（放行）、`deny`（拒绝）或进入 `ask`（询问）
+路径的模式。若要引入人工把关，可加上确认策略：`ask` 决策会在 `confirmation_required`
+事件处暂停，让你的应用（或人工）对每次调用进行批准或拒绝。只要智能体面向真实仓库运行，
+就应使用这套机制。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    hitl::{ConfirmationPolicy, TimeoutAction},
+    permissions::PermissionPolicy,
+    Agent, AgentEvent, SessionOptions,
+};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let permission_policy = PermissionPolicy::new()
+        .allow("read(*)")
+        .allow("search(*)")
+        .allow("ls(*)")
+        .allow("bash(git status:*)")
+        .deny("write(**/.env*)")
+        .deny("bash(rm -rf*)")
+        .ask("write(*)")
+        .ask("edit(*)")
+        .ask("bash(git push:*)")
+        .ask("bash(npm publish:*)")
+        .ask("bash(*)");
+    let confirmation_policy =
+        ConfirmationPolicy::enabled().with_timeout(120_000, TimeoutAction::Reject);
+
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_permission_policy(permission_policy)
+                .with_confirmation_policy(confirmation_policy),
+        )
+        .build()
+        .await?;
+
+    let (mut events, lifecycle) = session
+        .stream("提升版本号并推送发布。", None)
+        .await?;
+    while let Some(event) = events.recv().await {
+        if let AgentEvent::ConfirmationRequired {
+            tool_id,
+            tool_name,
+            args,
+            ..
+        } = event
+        {
+            println!("[confirm] {tool_name}\n{args:#}");
+            session
+                .confirm_tool_use(
+                    &tool_id,
+                    false,
+                    Some("Rejected by the host review".into()),
+                )
+                .await?;
+        }
+    }
+    let _ = lifecycle.await;
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session(process.cwd(), {
+  permissionPolicy: {
+    allow: ['read(*)', 'search(*)', 'ls(*)', 'bash(git status:*)'],
+    deny: ['write(**/.env*)', 'bash(rm -rf*)'],
+    ask: [
+      'write(*)',
+      'edit(*)',
+      'bash(git push:*)',
+      'bash(npm publish:*)',
+      'bash(*)',
+    ],
+    defaultDecision: 'ask',
+  },
+  // 把 `ask` 模式转为人工确认流程。
+  confirmationPolicy: {
+    enabled: true,
+    defaultTimeoutMs: 120000,
+    timeoutAction: 'reject',
+  },
+});
+
+// 以流式方式执行，并在确认请求到达时逐个处理。
+const stream = await session.stream('Bump the version and push the release');
+while (true) {
+  const next = await stream.next();
+  if (next.done || !next.value) break;
+
+  const event = next.value;
+  if (event.type === 'confirmation_required') {
+    // 查询待处理请求，以显示更完整的信息。
+    const [pending] = await session.pendingConfirmations();
+    const toolId = pending?.toolId ?? event.toolId;
+    console.log(`[confirm] ${pending?.toolName ?? event.toolName}`);
+    console.log(JSON.stringify(pending?.args ?? {}, null, 2));
+
+    // 实际应用应在这里询问用户。
+    const approved = false; // deny risky operations by default
+    if (toolId)
+      await session.confirmToolUse(toolId, approved, 'Reviewed by host');
+  }
+}
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, PermissionPolicy, ConfirmationPolicy
+
+
+def main() -> None:
+    agent = Agent.create("agent.acl")
+
+    opts = SessionOptions()
+    opts.permission_policy = PermissionPolicy(
+        allow=["read(*)", "search(*)", "ls(*)", "bash(git status:*)"],
+        deny=["write(**/.env*)", "bash(rm -rf*)"],
+        ask=["write(*)", "edit(*)", "bash(git push:*)", "bash(npm publish:*)", "bash(*)"],
+        default_decision="ask",
+    )
+    # 把 `ask` 模式转为人工确认流程。
+    opts.confirmation_policy = ConfirmationPolicy(
+        enabled=True,
+        default_timeout_ms=120_000,
+        timeout_action="reject",
+    )
+
+    session = agent.session(".", opts)
+
+    # 以流式方式执行，并在确认请求到达时逐个处理。
+    for event in session.stream("Bump the version and push the release"):
+        if event.event_type == "confirmation_required":
+            # 查询待处理请求，以显示更完整的信息。
+            pending = session.pending_confirmations()
+            first = pending[0] if pending else {}
+            tool_id = first.get("tool_id") or event.tool_id
+            print(f"[confirm] {first.get('tool_name') or event.tool_name}")
+
+            # 实际应用应在这里询问用户。
+            approved = False  # deny risky operations by default
+            if tool_id:
+                session.confirm_tool_use(tool_id, approved, "Reviewed by host")
+
+    session.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v7"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	enabled := true
+	timeoutMS := uint64(120_000)
+	session, err := agent.Session(
+		ctx,
+		".",
+		&code.SessionOptions{
+			PermissionPolicy: &code.PermissionPolicy{
+				Allow:           []string{"read(*)", "search(*)", "ls(*)", "bash(git status:*)"},
+				Deny:            []string{"write(**/.env*)", "bash(rm -rf*)"},
+				Ask:             []string{"write(*)", "edit(*)", "bash(git push:*)", "bash(npm publish:*)", "bash(*)"},
+				DefaultDecision: "ask",
+			},
+			ConfirmationPolicy: &code.ConfirmationPolicy{
+				Enabled:          &enabled,
+				DefaultTimeoutMS: &timeoutMS,
+				TimeoutAction:    "reject",
+			},
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	stream, err := session.Stream(ctx, "提升版本号并推送发布。", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for event := range stream.Events {
+		if event.Type != code.EventConfirmationRequired {
+			continue
+		}
+		pending, err := session.PendingConfirmations(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(pending) == 0 {
+			continue
+		}
+		request := pending[0]
+		args, _ := json.MarshalIndent(request.Args, "", "  ")
+		fmt.Printf("[confirm] %s\n%s\n", request.ToolName, args)
+		if _, err = session.ConfirmToolUse(
+			ctx,
+			request.ToolID,
+			false,
+			"Rejected by the Go host review",
+		); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if err := <-stream.Done; err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+## 添加安全提供器
+
+`DefaultSecurityProvider` 会启用输入污点追踪和输出净化，独立于权限策略对工具的输入输出
+进行筛查。通过 `securityProvider`（Node）、`security_provider`（Python）传入，或把
+Go 的 `SessionOptions.DefaultSecurity` 设为 `true`；省略则关闭安全功能。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{permissions::PermissionPolicy, Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_default_security()
+                .with_permission_policy(
+                    PermissionPolicy::new()
+                        .allow("bash(echo:*)")
+                        .ask("bash(*)"),
+                ),
+        )
+        .build()
+        .await?;
+
+    let result = session
+        .send(
+            "使用 bash 准确运行：echo screened-by-security-provider",
+            None,
+        )
+        .await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, DefaultSecurityProvider } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session(process.cwd(), {
+  securityProvider: new DefaultSecurityProvider(),
+  permissionPolicy: {
+    allow: ['bash(echo:*)'],
+    ask: ['bash(*)'],
+    defaultDecision: 'ask',
+  },
+});
+
+// 模型选择的工具调用会同时经过提供程序与策略。
+const result = await session.run(
+  'Use bash to run exactly: echo screened-by-security-provider',
+);
+console.log(result.text);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, PermissionPolicy, DefaultSecurityProvider
+
+
+def main() -> None:
+    agent = Agent.create("agent.acl")
+
+    opts = SessionOptions()
+    opts.security_provider = DefaultSecurityProvider()
+    opts.permission_policy = PermissionPolicy(
+        allow=["bash(echo:*)"],
+        ask=["bash(*)"],
+        default_decision="ask",
+    )
+
+    session = agent.session(".", opts)
+
+    # 模型选择的工具调用会同时经过提供程序与策略。
+    result = session.run(
+        "Use bash to run exactly: echo screened-by-security-provider"
+    )
+    print(result.text)
+
+    session.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v7"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		DefaultSecurity: code.Ptr(true),
+		PermissionPolicy: &code.PermissionPolicy{
+			Allow:           []string{"bash(echo:*)"},
+			Ask:             []string{"bash(*)"},
+			DefaultDecision: "ask",
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	result, err := session.Run(
+		ctx,
+		"Use bash to run exactly: echo screened-by-security-provider",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+任意自定义 `SecurityProvider` trait 实现仍是 Rust 原生扩展点；四种 SDK 都暴露
+这里使用的内置提供器。
+
+</Tab>
+</Tabs>
+
+## 说明
+
+- `defaultDecision` 是所有未被 `allow` / `deny` / `ask` 匹配到的模式的兜底决策（取值为
+  `allow`、`deny` 或 `ask` 之一）。真实仓库优先使用 `ask`，仅对自动化确实需要的部分逐步放开。
+- 设置 `enabled: true` 的 `confirmationPolicy` 才会把 `ask` 决策变成会暂停的
+  `confirmation_required` 事件。通过 `session.confirmToolUse(toolId, approved, reason?)`
+  逐个处理；若在 `defaultTimeoutMs` 内未收到答复，则由 `timeoutAction`（`reject`）决定结果。
+- 除非最终步骤由受控自动化负责，否则 release 和 publish 操作（`bash(git push*)`、
+  `bash(npm publish*)`）应保持在 `ask` 或 `deny` 路径上。
+- `session.tool()`、`session.bash()`、`session.git()` 这类宿主直接调用都是特权操作。
+  它们由你的应用代码发起，应在调用 SDK 前先由宿主授权；上面的 permission policy 管控的是
+  `send`、`run` 和 `stream` 内由模型选择的工具调用。
+
+可运行的确认循环示例位于
+`sdk/node/examples/streaming/hitl_confirmation_loop.ts` 和
+`sdk/python/examples/hitl_confirmation_loop.py`。

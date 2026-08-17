@@ -682,31 +682,47 @@ pub(super) fn js_session_options_to_rust(
             .with_tool_result_transform_policy(js_tool_result_transform_policy_to_rust(policy)?);
     }
     if let Some(ref store) = o.memory_store {
-        if store.backend == "file" {
-            if let Some(ref dir) = store.dir {
-                opts = opts.with_file_memory(dir);
-            }
+        if store.backend != "file" {
+            return Err(napi::Error::from_reason(
+                "memoryStore must be a FileMemoryStore instance",
+            ));
         }
+        let dir = store.dir.as_ref().ok_or_else(|| {
+            napi::Error::from_reason(
+                "FileMemoryStore directory is missing; pass the original FileMemoryStore instance",
+            )
+        })?;
+        opts = opts.with_file_memory(dir);
     }
     if let Some(ref store) = o.session_store {
         match store.backend.as_str() {
             "file" => {
-                if let Some(ref dir) = store.dir {
-                    opts = opts.with_file_session_store(dir);
-                }
+                let dir = store.dir.as_ref().ok_or_else(|| {
+                    napi::Error::from_reason(
+                        "FileSessionStore directory is missing; pass the original FileSessionStore instance",
+                    )
+                })?;
+                opts = opts.with_file_session_store(dir);
             }
             "memory" => {
                 let memory_store = resolve_node_memory_session_store(store.instance_id.as_deref())?;
                 let s: std::sync::Arc<dyn a3s_code_core::store::SessionStore> = memory_store;
                 opts = opts.with_session_store(s);
             }
-            _ => {}
+            _ => {
+                return Err(napi::Error::from_reason(
+                    "sessionStore must be a FileSessionStore or MemorySessionStore instance",
+                ));
+            }
         }
     }
     if let Some(ref sec) = o.security_provider {
-        if sec.kind.is_empty() || sec.kind == "default" {
-            opts = opts.with_default_security();
+        if sec.kind != "default" {
+            return Err(napi::Error::from_reason(
+                "securityProvider must be a DefaultSecurityProvider instance",
+            ));
         }
+        opts = opts.with_default_security();
     }
     if let Some(ref backend) = o.workspace_backend {
         let services: std::sync::Arc<a3s_code_core::WorkspaceServices> = match backend.kind.as_str()

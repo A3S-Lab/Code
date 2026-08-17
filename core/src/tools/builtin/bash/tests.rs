@@ -323,6 +323,8 @@ async fn test_bash_sandbox_nonzero_exit() {
 
 #[tokio::test]
 async fn test_bash_echo() {
+    #[cfg(windows)]
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let tool = BashTool;
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
@@ -425,6 +427,7 @@ async fn test_bash_bounds_long_single_line_and_reports_exact_capture_metadata() 
 #[tokio::test]
 #[cfg(windows)]
 async fn test_bash_head_compat_shim() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let tool = BashTool;
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
@@ -440,7 +443,37 @@ async fn test_bash_head_compat_shim() {
 
 #[tokio::test]
 #[cfg(windows)]
+async fn missing_powershell_fails_closed_without_cmd_fallback() {
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("cmd-fallback-marker.txt");
+    let missing = temp.path().join("missing-powershell.exe");
+
+    let result = spawn_windows_shell(
+        missing.as_os_str(),
+        "echo fallback>cmd-fallback-marker.txt",
+        temp.path(),
+        None,
+    );
+
+    let error = match result {
+        Ok(mut child) => {
+            let _ = child.wait().await;
+            panic!(
+                "a missing PowerShell executable must fail closed; cmd fallback created marker: {}",
+                marker.exists()
+            );
+        }
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert!(error.to_string().contains("refusing to reinterpret"));
+    assert!(!marker.exists());
+}
+
+#[tokio::test]
+#[cfg(windows)]
 async fn test_bash_json_normalizer_repairs_unquoted_object_literal() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let tool = BashTool;
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
@@ -465,6 +498,7 @@ async fn test_bash_json_normalizer_repairs_unquoted_object_literal() {
 #[tokio::test]
 #[cfg(windows)]
 async fn test_bash_json_normalizer_preserves_valid_json() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let tool = BashTool;
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
@@ -554,6 +588,8 @@ async fn test_bash_curl_json_literal_is_normalized_end_to_end() {
 
 #[tokio::test]
 async fn test_bash_inherits_command_env() {
+    #[cfg(windows)]
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let tool = BashTool;
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf()).with_command_env(std::sync::Arc::new(
@@ -597,12 +633,13 @@ async fn test_bash_exit_code() {
 #[tokio::test]
 #[cfg(windows)]
 async fn test_bash_exit_code() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let tool = BashTool;
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
 
     let result = tool
-        .execute(&serde_json::json!({"command": "exit /b 1"}), &ctx)
+        .execute(&serde_json::json!({"command": "exit 1"}), &ctx)
         .await
         .unwrap();
 
@@ -704,6 +741,7 @@ async fn test_bash_workspace_dir() {
 #[tokio::test]
 #[cfg(windows)]
 async fn test_bash_workspace_dir() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();
     let tool = BashTool;
     let ctx = ToolContext::new(temp.path().to_path_buf());

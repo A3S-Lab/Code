@@ -2520,6 +2520,7 @@ struct BridgeSessionOptions {
     enforce_active_skill_tool_restrictions: Option<bool>,
     file_memory_dir: Option<String>,
     file_session_store_dir: Option<String>,
+    security_provider: Option<BridgeDefaultSecurityProvider>,
     default_security: Option<bool>,
     workspace_backend: Option<BridgeWorkspaceBackend>,
     remote_git: Option<BridgeRemoteGitConfig>,
@@ -2563,6 +2564,10 @@ struct BridgeSessionOptions {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct BridgeDefaultSecurityProvider {}
+
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct BridgePromptSlots {
     role: Option<String>,
@@ -2583,6 +2588,12 @@ impl BridgeSessionOptions {
         self,
         callbacks: Option<Arc<CallbackClient>>,
     ) -> Result<SessionOptions, BridgeFailure> {
+        if self.security_provider.is_some() && self.default_security.is_some() {
+            return Err(BridgeFailure::new(
+                "INVALID_REQUEST",
+                "security_provider and deprecated default_security cannot both be set",
+            ));
+        }
         let mut options = SessionOptions::new();
         if let Some(value) = self.model {
             options = options.with_model(value);
@@ -2622,7 +2633,7 @@ impl BridgeSessionOptions {
         if let Some(value) = self.file_session_store_dir {
             options = options.with_file_session_store(value);
         }
-        if self.default_security.unwrap_or(false) {
+        if self.security_provider.is_some() || self.default_security.unwrap_or(false) {
             options = options.with_default_security();
         }
         if let Some(value) = self.workspace_backend {
@@ -3448,6 +3459,36 @@ mod tests {
         let slots = options.prompt_slots.unwrap();
         assert_eq!(slots.role.as_deref(), Some("reviewer"));
         assert_eq!(slots.guidelines.as_deref(), Some("be precise"));
+    }
+
+    #[test]
+    fn typed_security_provider_is_closed_and_legacy_flag_remains_compatible() {
+        let typed: BridgeSessionOptions = serde_json::from_value(json!({
+            "security_provider": {}
+        }))
+        .unwrap();
+        assert!(typed.into_core(None).unwrap().security_provider.is_some());
+
+        let legacy: BridgeSessionOptions = serde_json::from_value(json!({
+            "default_security": true
+        }))
+        .unwrap();
+        assert!(legacy.into_core(None).unwrap().security_provider.is_some());
+
+        let conflicting: BridgeSessionOptions = serde_json::from_value(json!({
+            "security_provider": {},
+            "default_security": true
+        }))
+        .unwrap();
+        let error = conflicting.into_core(None).unwrap_err();
+        assert_eq!(error.code, "INVALID_REQUEST");
+        assert!(error.message.contains("security_provider"));
+        assert!(error.message.contains("default_security"));
+
+        assert!(serde_json::from_value::<BridgeSessionOptions>(json!({
+            "security_provider": { "kind": "unknown" }
+        }))
+        .is_err());
     }
 
     #[test]

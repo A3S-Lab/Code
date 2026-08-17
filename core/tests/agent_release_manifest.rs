@@ -8,7 +8,14 @@ use a3s_code_core::release::{
 };
 use std::path::Path;
 
-const FIXTURE: &str = include_str!("../../fixtures/agent-release-contract/.a3s/asset.acl");
+const RAW_FIXTURE: &str = include_str!("../../fixtures/agent-release-contract/.a3s/asset.acl");
+
+fn fixture() -> &'static str {
+    static NORMALIZED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NORMALIZED
+        .get_or_init(|| RAW_FIXTURE.replace("\r\n", "\n").replace('\r', "\n"))
+        .as_str()
+}
 
 fn compatibility() -> AgentReleaseCompatibility {
     AgentReleaseCompatibility::new(
@@ -38,7 +45,7 @@ fn native_harness_compatibility_is_code_owned_and_exact() {
             ("workspace.local", 1),
         ]
     );
-    AgentReleaseManifest::parse(FIXTURE)
+    AgentReleaseManifest::parse(fixture())
         .unwrap()
         .verify_compatibility(&compatibility)
         .unwrap();
@@ -46,7 +53,7 @@ fn native_harness_compatibility_is_code_owned_and_exact() {
 
 #[test]
 fn fixture_is_typed_canonical_and_digest_bound() {
-    let manifest = AgentReleaseManifest::parse(FIXTURE).expect("fixture should be admitted");
+    let manifest = AgentReleaseManifest::parse(fixture()).expect("fixture should be admitted");
 
     assert_eq!(manifest.contract(), AGENT_RELEASE_CONTRACT_V1);
     assert_eq!(manifest.protocol(), AGENT_PROTOCOL_V1);
@@ -149,8 +156,8 @@ fn fixture_is_typed_canonical_and_digest_bound() {
 
 #[test]
 fn identity_ignores_formatting_and_set_like_block_order_only() {
-    let first = AgentReleaseManifest::parse(FIXTURE).unwrap();
-    let equivalent = FIXTURE
+    let first = AgentReleaseManifest::parse(fixture()).unwrap();
+    let equivalent = fixture()
         .replace(
             "  capability \"runtime.service\" {\n    level = 1\n  }\n\n  capability \"secrets.external\" {\n    level = 1\n  }\n\n  capability \"workspace.local\" {\n    level = 1\n  }",
             "  # Capability requirements are a set.\n  capability \"workspace.local\" { level = 1 }\n  capability \"runtime.service\" { level = 1 }\n  capability \"secrets.external\" { level = 1 }",
@@ -172,7 +179,7 @@ fn identity_ignores_formatting_and_set_like_block_order_only() {
     assert_eq!(second.identity(), first.identity());
     assert_eq!(second.canonical_acl(), first.canonical_acl());
 
-    let changed = FIXTURE.replace(
+    let changed = fixture().replace(
         "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "sha256:3333333333333333333333333333333333333333333333333333333333333333",
     );
@@ -184,12 +191,12 @@ fn identity_ignores_formatting_and_set_like_block_order_only() {
 
 #[test]
 fn entrypoint_is_locked_to_the_a3s_code_harness() {
-    let separate_harness = FIXTURE.replace("/usr/bin/a3s", "/usr/bin/custom-agent-harness");
+    let separate_harness = fixture().replace("/usr/bin/a3s", "/usr/bin/custom-agent-harness");
     let error = AgentReleaseManifest::parse(&separate_harness)
         .expect_err("a separate Harness executable must not be admitted");
     assert_eq!(error.field(), Some(AgentReleaseField::EntrypointCommand));
 
-    let bypassed_code = FIXTURE.replace(
+    let bypassed_code = fixture().replace(
         "args = [\"code\", \"harness\", \"--manifest\", \"/app/.a3s/asset.acl\"]",
         "args = [\"harness\", \"--manifest\", \"/app/.a3s/asset.acl\"]",
     );
@@ -197,7 +204,7 @@ fn entrypoint_is_locked_to_the_a3s_code_harness() {
         .expect_err("the release must select the Code-owned Harness");
     assert_eq!(error.field(), Some(AgentReleaseField::EntrypointArgument));
 
-    let reordered_args = FIXTURE.replace(
+    let reordered_args = fixture().replace(
         "args = [\"code\", \"harness\", \"--manifest\", \"/app/.a3s/asset.acl\"]",
         "args = [\"harness\", \"code\", \"--manifest\", \"/app/.a3s/asset.acl\"]",
     );
@@ -208,7 +215,7 @@ fn entrypoint_is_locked_to_the_a3s_code_harness() {
 
 #[test]
 fn admission_is_bounded_closed_and_value_redacting() {
-    let unknown = FIXTURE.replace(
+    let unknown = fixture().replace(
         "  protocol = \"a3s.code.agent.v1\"",
         "  protocol = \"a3s.code.agent.v1\"\n  secret = \"TOP_SECRET\"",
     );
@@ -216,7 +223,7 @@ fn admission_is_bounded_closed_and_value_redacting() {
     assert_eq!(error.code(), "a3s.code.agent_release.schema");
     assert!(!error.to_string().contains("TOP_SECRET"));
 
-    let call = FIXTURE.replace(
+    let call = fixture().replace(
         "digest = \"sha256:1111111111111111111111111111111111111111111111111111111111111111\"",
         "digest = env(\"TOP_SECRET\")",
     );
@@ -224,7 +231,7 @@ fn admission_is_bounded_closed_and_value_redacting() {
     assert_eq!(error.code(), "a3s.code.agent_release.schema");
     assert!(!error.to_string().contains("TOP_SECRET"));
 
-    let uppercase_digest = FIXTURE.replace(
+    let uppercase_digest = fixture().replace(
         "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     );
@@ -233,7 +240,7 @@ fn admission_is_bounded_closed_and_value_redacting() {
     assert_eq!(error.code(), "a3s.code.agent_release.invalid_field");
     assert!(!error.to_string().contains("AAAA"));
 
-    let duplicate = FIXTURE.replace(
+    let duplicate = fixture().replace(
         "  capability \"runtime.service\" {\n    level = 1\n  }",
         "  capability \"runtime.service\" {\n    level = 1\n  }\n  capability \"runtime.service\" { level = 2 }",
     );
@@ -241,12 +248,12 @@ fn admission_is_bounded_closed_and_value_redacting() {
         AgentReleaseManifest::parse(&duplicate).expect_err("duplicate requirement must fail");
     assert_eq!(error.code(), "a3s.code.agent_release.duplicate_capability");
 
-    let duplicate_provenance = FIXTURE.replace("provenance \"source\"", "provenance \"builder\"");
+    let duplicate_provenance = fixture().replace("provenance \"source\"", "provenance \"builder\"");
     let error = AgentReleaseManifest::parse(&duplicate_provenance)
         .expect_err("provenance kinds must be unique");
     assert_eq!(error.code(), "a3s.code.agent_release.duplicate_provenance");
 
-    let plaintext_secret = FIXTURE.replace(
+    let plaintext_secret = fixture().replace(
         "target = \"environment\"\n    destination = \"PROVIDER_API_KEY\"",
         "target = \"environment\"\n    destination = \"PROVIDER_API_KEY\"\n    value = \"TOP_SECRET\"",
     );
@@ -255,7 +262,7 @@ fn admission_is_bounded_closed_and_value_redacting() {
     assert_eq!(error.code(), "a3s.code.agent_release.schema");
     assert!(!error.to_string().contains("TOP_SECRET"));
 
-    let duplicate_secret = FIXTURE.replace(
+    let duplicate_secret = fixture().replace(
         "  secret \"provider-api-key\" {\n    target = \"environment\"\n    destination = \"PROVIDER_API_KEY\"\n  }",
         "  secret \"provider-api-key\" {\n    target = \"environment\"\n    destination = \"PROVIDER_API_KEY\"\n  }\n  secret \"provider-api-key\" { target = \"file\" destination = \"/run/secrets/other\" }",
     );
@@ -263,7 +270,7 @@ fn admission_is_bounded_closed_and_value_redacting() {
         AgentReleaseManifest::parse(&duplicate_secret).expect_err("secret slots must be unique");
     assert_eq!(error.code(), "a3s.code.agent_release.duplicate_secret");
 
-    let missing_secret_capability = FIXTURE.replace(
+    let missing_secret_capability = fixture().replace(
         "  capability \"secrets.external\" {\n    level = 1\n  }\n\n",
         "",
     );
@@ -275,7 +282,7 @@ fn admission_is_bounded_closed_and_value_redacting() {
     let error = AgentReleaseManifest::parse(&oversized).expect_err("input must be bounded");
     assert_eq!(error.code(), "a3s.code.agent_release.parse");
 
-    let attacker_named_field = FIXTURE.replace(
+    let attacker_named_field = fixture().replace(
         "  protocol = \"a3s.code.agent.v1\"",
         "  protocol = \"a3s.code.agent.v1\"\n  TOP_SECRET_VALUE = true",
     );
@@ -287,7 +294,7 @@ fn admission_is_bounded_closed_and_value_redacting() {
 
 #[test]
 fn compatibility_fails_before_activation_with_typed_reasons() {
-    let manifest = AgentReleaseManifest::parse(FIXTURE).unwrap();
+    let manifest = AgentReleaseManifest::parse(fixture()).unwrap();
 
     let wrong_protocol = AgentReleaseCompatibility::new(
         "a3s.code.agent.v2",
@@ -303,7 +310,7 @@ fn compatibility_fails_before_activation_with_typed_reasons() {
         .expect_err("protocol mismatch must fail");
     assert_eq!(error.code(), "a3s.code.agent_release.incompatible_protocol");
 
-    let future_source = FIXTURE.replace(AGENT_PROTOCOL_V1, "a3s.code.agent.v2");
+    let future_source = fixture().replace(AGENT_PROTOCOL_V1, "a3s.code.agent.v2");
     let future_manifest =
         AgentReleaseManifest::parse(&future_source).expect("schema and protocol are independent");
     let error = future_manifest
@@ -335,7 +342,7 @@ fn compatibility_fails_before_activation_with_typed_reasons() {
         .expect_err("zero capability level must fail");
     assert_eq!(invalid_level.code(), "a3s.code.agent_release.invalid_field");
 
-    let demanding_source = FIXTURE.replacen(
+    let demanding_source = fixture().replacen(
         "capability \"workspace.local\" {\n    level = 1",
         "capability \"workspace.local\" {\n    level = 2",
         1,
@@ -378,7 +385,7 @@ fn storage_and_secret_destinations_are_closed_and_collision_free() {
             AgentReleaseField::PersistentDataMode,
         ),
     ] {
-        let invalid = FIXTURE.replace(source, replacement);
+        let invalid = fixture().replace(source, replacement);
         let error = AgentReleaseManifest::parse(&invalid)
             .expect_err("unknown storage mode must fail admission");
         assert_eq!(error.field(), Some(field));
@@ -402,21 +409,21 @@ fn storage_and_secret_destinations_are_closed_and_collision_free() {
                 format!("destination = \"{invalid_destination}\""),
             )
         };
-        let invalid = FIXTURE.replace(source, &replacement);
+        let invalid = fixture().replace(source, &replacement);
         let error = AgentReleaseManifest::parse(&invalid)
             .expect_err("non-canonical secret destination must fail admission");
         assert_eq!(error.field(), Some(AgentReleaseField::SecretDestination));
         assert!(!error.to_string().contains(invalid_destination));
     }
 
-    let nested_file = FIXTURE.replace(
+    let nested_file = fixture().replace(
         "destination = \"/run/secrets/signing-key\"",
         "destination = \"/run/secrets/signing/key.pem\"",
     );
     AgentReleaseManifest::parse(&nested_file)
         .expect("a canonical nested /run/secrets path should be admitted");
 
-    let duplicate_destination = FIXTURE.replace(
+    let duplicate_destination = fixture().replace(
         "target = \"file\"\n    destination = \"/run/secrets/signing-key\"",
         "target = \"environment\"\n    destination = \"PROVIDER_API_KEY\"",
     );
@@ -447,7 +454,7 @@ fn compatibility_inputs_are_canonical_unique_and_value_redacting() {
     }
 
     let secret_looking_name = "top-secret-token";
-    let source = FIXTURE.replace("workspace.local", secret_looking_name);
+    let source = fixture().replace("workspace.local", secret_looking_name);
     let manifest = AgentReleaseManifest::parse(&source).unwrap();
     let error = manifest
         .verify_compatibility(&compatibility())

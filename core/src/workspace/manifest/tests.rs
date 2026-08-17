@@ -125,6 +125,7 @@ fn recent_files_are_bounded_and_ranked_by_heat() {
 
 #[tokio::test]
 async fn manifest_search_matches_glob_and_grep() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();
     write(
         &temp.path().join("src/main.rs"),
@@ -134,10 +135,13 @@ async fn manifest_search_matches_glob_and_grep() {
 
     let backend = ManifestWorkspaceBackend::new(temp.path());
     let mut rx = backend.manifest().subscribe();
-    tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+        rx.recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     let glob = backend
         .glob(WorkspaceGlobRequest {
@@ -189,6 +193,7 @@ async fn manifest_search_matches_glob_and_grep() {
 
 #[tokio::test]
 async fn manifest_credential_boundary_filters_sensitive_grep_candidates() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();
     write(
         &temp.path().join("src/lib.rs"),
@@ -204,10 +209,13 @@ async fn manifest_credential_boundary_filters_sensitive_grep_candidates() {
         LocalWorkspaceAccessPolicy::CredentialBoundary,
     );
     let mut rx = backend.manifest().subscribe();
-    tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+        rx.recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     let grep = backend
         .grep(WorkspaceGrepRequest {
@@ -302,15 +310,19 @@ async fn host_can_configure_the_manifest_catalog_exactly_once_before_services_at
 
 #[tokio::test]
 async fn manifest_backend_read_write_touch_recent_files() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();
     write(&temp.path().join("src/main.rs"), b"fn main() {}\n");
 
     let backend = ManifestWorkspaceBackend::new(temp.path());
     let mut rx = backend.manifest().subscribe();
-    tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+        rx.recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     let path = backend.normalize("src/main.rs").unwrap();
     backend.read_text(&path).await.unwrap();
@@ -330,16 +342,20 @@ async fn manifest_backend_read_write_touch_recent_files() {
 
 #[tokio::test]
 async fn manifest_glob_prioritizes_recent_matching_files() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();
     write(&temp.path().join("src/a.rs"), b"pub fn a() {}\n");
     write(&temp.path().join("src/z.rs"), b"pub fn z() {}\n");
 
     let backend = ManifestWorkspaceBackend::new(temp.path());
     let mut rx = backend.manifest().subscribe();
-    tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+        rx.recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     backend.manifest().touch_file("src/z.rs");
     let glob = backend
@@ -356,6 +372,7 @@ async fn manifest_glob_prioritizes_recent_matching_files() {
 
 #[tokio::test]
 async fn manifest_grep_prioritizes_recent_matches_when_truncated() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();
     write(
         &temp.path().join("src/a.rs"),
@@ -368,10 +385,13 @@ async fn manifest_grep_prioritizes_recent_matches_when_truncated() {
 
     let backend = ManifestWorkspaceBackend::new(temp.path());
     let mut rx = backend.manifest().subscribe();
-    tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+        rx.recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     backend.manifest().touch_file("src/z.rs");
     let grep = backend
@@ -392,14 +412,18 @@ async fn manifest_grep_prioritizes_recent_matches_when_truncated() {
 
 #[tokio::test]
 async fn manifest_refreshes_after_file_event() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();
     write(&temp.path().join("README.md"), b"# hello\n");
     let manifest = LocalWorkspaceManifest::start(temp.path());
     let mut rx = manifest.subscribe();
-    let initial = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    let initial = tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+        rx.recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(initial.files.iter().any(|file| file.path == "README.md"));
 
     write(&temp.path().join("src/lib.rs"), b"pub fn lib() {}\n");
@@ -529,16 +553,20 @@ fn file_change_batch_ignores_external_and_invalid_paths() {
 
 #[tokio::test]
 async fn manifest_change_subscription_reports_same_size_content_changes() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("src/lib.rs");
     write(&path, b"aaaa\n");
     let manifest = LocalWorkspaceManifest::start(temp.path());
     let mut snapshots = manifest.subscribe();
     let mut changes = manifest.subscribe_changes();
-    tokio::time::timeout(Duration::from_secs(5), snapshots.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+        snapshots.recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     let received = tokio::time::timeout(Duration::from_secs(10), async {
         let contents = [b"bbbb\n".as_slice(), b"cccc\n".as_slice()];
@@ -561,6 +589,7 @@ async fn manifest_change_subscription_reports_same_size_content_changes() {
 
 #[tokio::test]
 async fn manifest_search_falls_back_before_initial_scan() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();
     write(&temp.path().join("src/main.rs"), b"fn main() {}\n");
     let backend = ManifestWorkspaceBackend::new(temp.path());

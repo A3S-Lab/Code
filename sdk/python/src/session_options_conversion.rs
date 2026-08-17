@@ -119,9 +119,10 @@ fn build_rust_session_options_inner(
                 .ok()
                 .map(|s| s.dir.clone())
         });
-        if let Some(dir) = dir {
-            o = o.with_file_memory(dir);
-        }
+        let dir = dir.ok_or_else(|| {
+            PyTypeError::new_err("memory_store must be a FileMemoryStore instance")
+        })?;
+        o = o.with_file_memory(dir);
     }
     if let Some(ref store) = so.session_store {
         enum SessionStoreKind {
@@ -146,7 +147,11 @@ fn build_rust_session_options_inner(
                 let s: Arc<dyn a3s_code_core::store::SessionStore> = memory_store;
                 o = o.with_session_store(s);
             }
-            None => {}
+            None => {
+                return Err(PyTypeError::new_err(
+                    "session_store must be a FileSessionStore or MemorySessionStore instance",
+                ));
+            }
         }
     }
     if let Some(ref sec) = so.security_provider {
@@ -154,9 +159,12 @@ fn build_rust_session_options_inner(
             sec.extract::<pyo3::PyRef<PyDefaultSecurityProvider>>(py)
                 .is_ok()
         });
-        if is_default {
-            o = o.with_default_security();
+        if !is_default {
+            return Err(PyTypeError::new_err(
+                "security_provider must be a DefaultSecurityProvider instance",
+            ));
         }
+        o = o.with_default_security();
     }
     if let Some(ref backend) = so.workspace_backend {
         // S3BackendConfig is significantly larger than the other variants;

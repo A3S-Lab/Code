@@ -279,6 +279,62 @@ fn unique_temp_suffix() -> String {
     format!("{}.{}.{}", nanos, std::process::id(), counter)
 }
 
+fn persist_temp_path(temp_path: PathBuf, target_path: PathBuf) -> std::io::Result<()> {
+    let mut temp_path = tempfile::TempPath::try_from_path(temp_path)?;
+    let mut failed_attempts = 0usize;
+
+    loop {
+        match temp_path.persist(&target_path) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                failed_attempts += 1;
+                let Some(delay) = windows_atomic_replace_retry_delay(&error.error, failed_attempts)
+                else {
+                    return Err(error.error);
+                };
+                temp_path = error.path;
+                std::thread::sleep(delay);
+            }
+        }
+    }
+}
+
+pub(super) fn windows_atomic_replace_retry_delay(
+    error: &std::io::Error,
+    failed_attempts: usize,
+) -> Option<std::time::Duration> {
+    #[cfg(windows)]
+    {
+        const MAX_ATTEMPTS: usize = 6;
+        const BASE_DELAY_MS: u64 = 5;
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        const ERROR_LOCK_VIOLATION: i32 = 33;
+
+        if failed_attempts >= MAX_ATTEMPTS
+            || !matches!(
+                error.raw_os_error(),
+                Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+            )
+        {
+            return None;
+        }
+
+        let exponent = u32::try_from(failed_attempts.saturating_sub(1))
+            .unwrap_or(u32::MAX)
+            .min(4);
+        Some(std::time::Duration::from_millis(
+            BASE_DELAY_MS * 2u64.pow(exponent),
+        ))
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (error, failed_attempts);
+        None
+    }
+}
+
 fn encoded_storage_key(id: &str) -> String {
     format!(
         "id_{}",
@@ -375,20 +431,16 @@ async fn write_json_atomic<T: serde::Serialize + ?Sized>(
         drop(file);
         let temp_path = temp_path.clone();
         let target_path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            tempfile::TempPath::try_from_path(temp_path)?
-                .persist(target_path)
-                .map_err(|error| error.error)
-        })
-        .await
-        .context("Atomic session replace task failed")?
-        .with_context(|| {
-            format!(
-                "Failed to atomically replace {} with {}",
-                description,
-                path.display()
-            )
-        })?;
+        tokio::task::spawn_blocking(move || persist_temp_path(temp_path, target_path))
+            .await
+            .context("Atomic session replace task failed")?
+            .with_context(|| {
+                format!(
+                    "Failed to atomically replace {} with {}",
+                    description,
+                    path.display()
+                )
+            })?;
         Ok(())
     }
     .await;

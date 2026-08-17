@@ -208,10 +208,14 @@ impl LanguageRuntime {
         let initialized = match initialize(&client, &config, cancellation.clone(), timeout).await {
             Ok(initialized) => initialized,
             Err(source) => {
+                let cancelled = cancellation.is_cancelled();
+                if cancelled {
+                    process.force_kill();
+                }
                 let _ = process.shutdown(timeout, timeout).await;
                 notification_task.abort();
                 let _ = notification_task.await;
-                return if cancellation.is_cancelled() {
+                return if cancelled {
                     Err(LanguageRuntimeError::Cancelled)
                 } else {
                     Err(LanguageRuntimeError::Client {
@@ -243,6 +247,9 @@ impl LanguageRuntime {
             .wait_for_settle(runtime.profile.initialization_settle_delay(), &cancellation)
             .await
         {
+            if matches!(&error, LanguageRuntimeError::Cancelled) {
+                runtime.force_kill();
+            }
             let _ = runtime.shutdown().await;
             return Err(error);
         }

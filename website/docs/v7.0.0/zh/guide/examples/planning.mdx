@@ -1,0 +1,134 @@
+---
+title: '规划模式'
+description: '使用 planningMode 让智能体先规划再行动'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 规划模式
+
+Planning 模式让 session 在开始调用工具之前先生成一份结构化计划。它适合多步骤工作
+（重构、发布评审、审计），你希望 agent 先把目标拆解清楚，而不是直接动手修改。
+
+通过会话的规划选项设置：Rust 和 Go 使用 `PlanningMode`，Node.js 使用
+`planningMode`，Python 使用 `planning_mode`。可接受的值为：
+
+| 值           | 行为                                      |
+| ------------ | ----------------------------------------- |
+| `"auto"`     | 由 runtime 根据消息内容判断何时值得规划。 |
+| `"enabled"`  | 对每个请求都强制规划，即使是简单请求。    |
+| `"disabled"` | 完全跳过规划，走最低延迟路径。            |
+
+`"auto"` 是默认的结构化预分析路径。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, PlanningMode, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_planning_mode(PlanningMode::Auto))
+        .build()
+        .await?;
+
+    let result = session.send("规划并完成发布就绪审查。", None).await?;
+    println!("{}", result.text);
+    println!("执行了 {} 次工具调用", result.tool_calls_count);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  planningMode: 'auto',
+});
+
+const result = await session.send(
+  'Plan and complete the release-readiness review.',
+);
+console.log(result.text);
+console.log(`${result.toolCallsCount} tool calls executed`);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.planning_mode = "auto"
+session = agent.session("/repo", opts)
+
+result = session.send("Plan and complete the release-readiness review.")
+print(result.text)
+print(f"{result.tool_calls_count} tool calls executed")
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v7"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		PlanningMode: code.PlanningAuto,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "规划并完成发布就绪审查。")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+	fmt.Printf("执行了 %d 次工具调用\n", result.ToolCallsCount)
+}
+```
+
+</Tab>
+</Tabs>
+
+Planning 状态会挂到 run 上，因此宿主 UI 可以从 run events 渲染任务清单，并在 agent
+工作时更新完成情况。Planning 负责组织工作；完成证据仍然来自验证命令。
+
+可运行的 session 示例位于
+`sdk/node/examples/orchestration/parallel-pipeline.mjs` 和
+`sdk/python/examples/orchestration_workflow.py`。

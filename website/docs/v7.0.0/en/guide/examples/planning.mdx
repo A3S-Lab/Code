@@ -1,0 +1,140 @@
+---
+title: 'Planning'
+description: 'Make the agent plan before it acts with planningMode'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Planning
+
+Planning mode tells the session to produce a structured plan before it starts
+calling tools. Use it for multi-step work (refactors, release reviews, audits)
+where you want the agent to decompose the goal first instead of jumping straight
+into edits.
+
+Set it through the session planning option: `PlanningMode` in Rust and Go,
+`planningMode` in Node.js, and `planning_mode` in Python. The accepted values
+are:
+
+| Value        | Behavior                                                        |
+| ------------ | --------------------------------------------------------------- |
+| `"auto"`     | The runtime detects from the message when a plan is worthwhile. |
+| `"enabled"`  | Force a plan on every request, even simple ones.                |
+| `"disabled"` | Skip planning entirely for the lowest-latency path.             |
+
+`"auto"` is the default structured pre-analysis path.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, PlanningMode, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_planning_mode(PlanningMode::Auto))
+        .build()
+        .await?;
+
+    let result = session
+        .send("Plan and complete the release-readiness review.", None)
+        .await?;
+    println!("{}", result.text);
+    println!("{} tool calls executed", result.tool_calls_count);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  planningMode: 'auto',
+});
+
+const result = await session.send(
+  'Plan and complete the release-readiness review.',
+);
+console.log(result.text);
+console.log(`${result.toolCallsCount} tool calls executed`);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.planning_mode = "auto"
+session = agent.session("/repo", opts)
+
+result = session.send("Plan and complete the release-readiness review.")
+print(result.text)
+print(f"{result.tool_calls_count} tool calls executed")
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v7"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		PlanningMode: code.PlanningAuto,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "Plan and complete the release-readiness review.")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+	fmt.Printf("%d tool calls executed\n", result.ToolCallsCount)
+}
+```
+
+</Tab>
+</Tabs>
+
+Planning state is attached to the run, so a host UI can render a task list from
+run events and update completion as the agent works. Planning organizes the
+work; verification commands still provide the completion evidence.
+
+Runnable session examples ship at
+`sdk/node/examples/orchestration/parallel-pipeline.mjs` and
+`sdk/python/examples/orchestration_workflow.py`.

@@ -24,6 +24,7 @@ const SWAP_SENTINEL: &str = "WSR_QA_HARDLINK_SWAP_SECRET_20260814";
 
 #[tokio::test]
 async fn embedding_egress_contains_only_path_and_identity_admitted_source() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_egress_fixture(workspace.path());
     let provider = Arc::new(RecordingProvider::new());
@@ -59,6 +60,7 @@ async fn embedding_egress_contains_only_path_and_identity_admitted_source() {
 
 #[tokio::test]
 async fn hard_link_swap_after_admission_never_reaches_the_embedding_provider() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(workspace.path().join("src")).unwrap();
     let admitted = workspace.path().join("src/admitted.rs");
@@ -75,16 +77,21 @@ async fn hard_link_swap_after_admission_never_reaches_the_embedding_provider() {
 
     std::fs::remove_file(&admitted).unwrap();
     std::fs::hard_link(&credential, &admitted).unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let status = session.workspace_retrieval_status();
-            if status.catalog_files == 0 && status.indexed_files == 0 && status.vector_records == 0
-            {
-                return;
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(10)),
+        async {
+            loop {
+                let status = session.workspace_retrieval_status();
+                if status.catalog_files == 0
+                    && status.indexed_files == 0
+                    && status.vector_records == 0
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+        },
+    )
     .await
     .unwrap_or_else(|_| {
         panic!(
@@ -101,6 +108,7 @@ async fn hard_link_swap_after_admission_never_reaches_the_embedding_provider() {
 
 #[tokio::test]
 async fn sessions_do_not_share_retrieval_results_status_or_cancellation() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace_a = tempfile::tempdir().unwrap();
     let workspace_b = tempfile::tempdir().unwrap();
     std::fs::write(workspace_a.path().join("only-a.rs"), "workspace alpha\n").unwrap();
@@ -151,6 +159,7 @@ async fn sessions_do_not_share_retrieval_results_status_or_cancellation() {
 
 #[tokio::test]
 async fn persisted_session_snapshot_excludes_source_vectors_and_provider_identity() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     let source_sentinel = "WSR_QA_SNAPSHOT_SOURCE_20260814";
     std::fs::write(
@@ -191,6 +200,7 @@ async fn persisted_session_snapshot_excludes_source_vectors_and_provider_identit
 
 #[tokio::test]
 async fn repeated_session_lifecycle_releases_every_ephemeral_index() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("soak.rs"), "session lifecycle soak\n").unwrap();
     let provider = Arc::new(RecordingProvider::new());
@@ -213,6 +223,7 @@ async fn repeated_session_lifecycle_releases_every_ephemeral_index() {
 #[tokio::test]
 #[ignore = "bounded workspace retrieval soak; run in the portability workflow"]
 async fn repeated_source_generations_replace_vectors_without_accumulation() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     const GENERATIONS: usize = 64;
 
     let workspace = tempfile::tempdir().unwrap();
@@ -283,19 +294,22 @@ async fn retrieval_session(
 }
 
 async fn wait_for_ready_files(session: &AgentSession, expected_files: usize) {
-    let result = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let status = session.workspace_retrieval_status();
-            if status.phase == WorkspaceRetrievalPhase::Ready
-                && status.eligible_files == expected_files
-                && status.indexed_files == expected_files
-            {
-                return;
+    let result = tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(10)),
+        async {
+            loop {
+                let status = session.workspace_retrieval_status();
+                if status.phase == WorkspaceRetrievalPhase::Ready
+                    && status.eligible_files == expected_files
+                    && status.indexed_files == expected_files
+                {
+                    return;
+                }
+                assert_ne!(status.phase, WorkspaceRetrievalPhase::Closed);
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            assert_ne!(status.phase, WorkspaceRetrievalPhase::Closed);
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+        },
+    )
     .await;
     if result.is_err() {
         panic!(
@@ -310,19 +324,22 @@ async fn wait_for_new_ready_generation(
     previous_source_revision: u64,
     previous_vector_revision: u64,
 ) -> WorkspaceRetrievalStatus {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let status = session.workspace_retrieval_status();
-            if status.phase == WorkspaceRetrievalPhase::Ready
-                && status.source_revision > previous_source_revision
-                && status.vector_revision > previous_vector_revision
-            {
-                return status;
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(10)),
+        async {
+            loop {
+                let status = session.workspace_retrieval_status();
+                if status.phase == WorkspaceRetrievalPhase::Ready
+                    && status.source_revision > previous_source_revision
+                    && status.vector_revision > previous_vector_revision
+                {
+                    return status;
+                }
+                assert_ne!(status.phase, WorkspaceRetrievalPhase::Closed);
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            assert_ne!(status.phase, WorkspaceRetrievalPhase::Closed);
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+        },
+    )
     .await
     .unwrap_or_else(|_| {
         panic!(
@@ -346,20 +363,23 @@ async fn wait_for_degraded_files(
     expected_indexed: usize,
     expected_failed: usize,
 ) {
-    let result = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let status = session.workspace_retrieval_status();
-            if status.phase == WorkspaceRetrievalPhase::Degraded
-                && status.eligible_files == expected_eligible
-                && status.indexed_files == expected_indexed
-                && status.failed_files == expected_failed
-            {
-                return;
+    let result = tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(10)),
+        async {
+            loop {
+                let status = session.workspace_retrieval_status();
+                if status.phase == WorkspaceRetrievalPhase::Degraded
+                    && status.eligible_files == expected_eligible
+                    && status.indexed_files == expected_indexed
+                    && status.failed_files == expected_failed
+                {
+                    return;
+                }
+                assert_ne!(status.phase, WorkspaceRetrievalPhase::Closed);
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            assert_ne!(status.phase, WorkspaceRetrievalPhase::Closed);
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+        },
+    )
     .await;
     if result.is_err() {
         panic!(

@@ -1,4 +1,4 @@
-use std::{path::Path, process::Command, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
@@ -6,8 +6,8 @@ use super::LanguageRuntime;
 use crate::{
     code_intelligence::{
         diagnostics::DiagnosticsStore, document_store::DocumentStore,
-        language_profile::LanguageServerProfile, project_layout::ProjectLayoutResolver,
-        CodePosition, NavigationKind,
+        integration_test_support::compile_fake_server, language_profile::LanguageServerProfile,
+        project_layout::ProjectLayoutResolver, CodePosition, NavigationKind,
     },
     workspace::{
         LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifestSnapshot,
@@ -27,25 +27,9 @@ fn manifest_file(path: &str) -> LocalWorkspaceFile {
     }
 }
 
-fn compile_fake_server(output: &Path) {
-    let source =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/code_intelligence_fake_lsp.rs");
-    let result = Command::new("rustc")
-        .arg("--edition=2021")
-        .arg(source)
-        .arg("-o")
-        .arg(output)
-        .output()
-        .expect("rustc must be available while Cargo tests are running");
-    assert!(
-        result.status.success(),
-        "failed to compile fake language server: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-}
-
 #[tokio::test]
 async fn saved_document_runtime_completes_a_real_process_protocol_lifecycle() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     let source_dir = workspace.path().join("src");
     std::fs::create_dir(&source_dir).unwrap();
@@ -171,6 +155,7 @@ async fn saved_document_runtime_completes_a_real_process_protocol_lifecycle() {
 
 #[tokio::test]
 async fn publish_only_diagnostics_wait_for_the_current_document_revision() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     let source_dir = workspace.path().join("src");
     std::fs::create_dir(&source_dir).unwrap();
@@ -225,16 +210,17 @@ async fn publish_only_diagnostics_wait_for_the_current_document_revision() {
 
 #[tokio::test]
 async fn initialization_settle_delays_readiness_and_honors_cancellation() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("Cargo.toml"), "[workspace]\n").unwrap();
     let canonical_root = std::fs::canonicalize(workspace.path()).unwrap();
     let server_dir = tempfile::tempdir().unwrap();
-    let server = server_dir.path().join(if cfg!(windows) {
-        "code-intelligence-initialization-settle-lsp.exe"
+    let readiness_server = server_dir.path().join(if cfg!(windows) {
+        "code-intelligence-initialization-readiness-lsp.exe"
     } else {
-        "code-intelligence-initialization-settle-lsp"
+        "code-intelligence-initialization-readiness-lsp"
     });
-    compile_fake_server(&server);
+    compile_fake_server(&readiness_server);
     let snapshot = LocalWorkspaceManifestSnapshot {
         version: 1,
         root: canonical_root.clone(),
@@ -245,7 +231,7 @@ async fn initialization_settle_delays_readiness_and_honors_cancellation() {
 
     let started = tokio::time::Instant::now();
     let runtime = LanguageRuntime::start(
-        LanguageServerProfile::rust(&server)
+        LanguageServerProfile::rust(&readiness_server)
             .with_settle_delays(Duration::from_millis(75), Duration::ZERO),
         canonical_root.clone(),
         layout.clone(),
@@ -259,27 +245,51 @@ async fn initialization_settle_delays_readiness_and_honors_cancellation() {
     assert!(started.elapsed() >= Duration::from_millis(60));
     runtime.shutdown().await.unwrap();
 
-    let cancellation = CancellationToken::new();
-    let trigger = cancellation.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        trigger.cancel();
+    let cancellation_server = server_dir.path().join(if cfg!(windows) {
+        "code-intelligence-initialization-cancellation-lsp.exe"
+    } else {
+        "code-intelligence-initialization-cancellation-lsp"
     });
-    let cancelled = tokio::time::timeout(
-        Duration::from_secs(1),
-        LanguageRuntime::start(
-            LanguageServerProfile::rust(&server)
-                .with_settle_delays(Duration::from_secs(5), Duration::ZERO),
-            canonical_root,
-            layout,
-            Arc::new(DocumentStore::new(1)),
-            Arc::new(DiagnosticsStore::new(1)),
-            cancellation,
-            Duration::from_secs(5),
-        ),
+    compile_fake_server(&cancellation_server);
+    let log_path = cancellation_server.with_extension("log");
+    let cancellation = CancellationToken::new();
+    let startup = tokio::spawn({
+        let cancellation = cancellation.clone();
+        async move {
+            LanguageRuntime::start(
+                LanguageServerProfile::rust(&cancellation_server)
+                    .with_settle_delays(Duration::from_secs(5), Duration::ZERO),
+                canonical_root,
+                layout,
+                Arc::new(DocumentStore::new(1)),
+                Arc::new(DiagnosticsStore::new(1)),
+                cancellation,
+                Duration::from_secs(5),
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(10)),
+        async {
+            loop {
+                if std::fs::read_to_string(&log_path)
+                    .is_ok_and(|log| log.contains("\"method\":\"initialized\""))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        },
     )
     .await
-    .expect("cancellation must interrupt initialization settling");
+    .expect("the language runtime must enter initialization settling");
+
+    cancellation.cancel();
+    let cancelled = tokio::time::timeout(Duration::from_secs(3), startup)
+        .await
+        .expect("cancellation must interrupt initialization settling")
+        .expect("language runtime startup task must not panic");
     assert!(matches!(
         cancelled,
         Err(super::LanguageRuntimeError::Cancelled)
@@ -288,6 +298,7 @@ async fn initialization_settle_delays_readiness_and_honors_cancellation() {
 
 #[tokio::test]
 async fn first_navigation_waits_for_empty_and_partial_cold_results_to_settle() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     for mode in ["cold-empty", "cold-partial"] {
         let workspace = tempfile::tempdir().unwrap();
         let source_dir = workspace.path().join("src");
@@ -367,6 +378,7 @@ async fn first_navigation_waits_for_empty_and_partial_cold_results_to_settle() {
 
 #[tokio::test]
 async fn navigation_stabilization_is_cancellable() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     let source_dir = workspace.path().join("src");
     std::fs::create_dir(&source_dir).unwrap();
@@ -434,6 +446,7 @@ async fn navigation_stabilization_is_cancellable() {
 
 #[tokio::test]
 async fn unexpected_process_exit_exposes_state_and_bounded_stderr() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("Cargo.toml"), "[workspace]\n").unwrap();
     let canonical_root = std::fs::canonicalize(workspace.path()).unwrap();

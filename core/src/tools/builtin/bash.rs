@@ -7,6 +7,8 @@ use crate::workspace::{CommandOutputObserver, CommandOutputSummary, CommandReque
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::ffi::OsStr;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use tokio::process::Command;
@@ -53,11 +55,59 @@ impl CommandOutputObserver for ToolEventObserver {
 
 pub struct BashTool;
 
+#[cfg(windows)]
+fn prepare_windows_command(
+    command: &mut Command,
+    workspace: &std::path::Path,
+    command_env: Option<&HashMap<String, String>>,
+) {
+    command
+        .current_dir(workspace)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .creation_flags(CREATE_NO_WINDOW);
+    if let Some(env) = command_env {
+        command.envs(env);
+    }
+}
+
+#[cfg(windows)]
+fn spawn_windows_shell(
+    powershell_program: &OsStr,
+    command: &str,
+    workspace: &std::path::Path,
+    command_env: Option<&HashMap<String, String>>,
+) -> std::io::Result<tokio::process::Child> {
+    let wrapped_command = build_powershell_command(command);
+    let encoded_command = encode_powershell_command(&wrapped_command);
+    let mut powershell = Command::new(powershell_program);
+    powershell.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        &encoded_command,
+    ]);
+    prepare_windows_command(&mut powershell, workspace, command_env);
+
+    powershell.spawn().map_err(|source| {
+        std::io::Error::new(
+            source.kind(),
+            format!(
+                "failed to spawn PowerShell executable {powershell_program:?}: {source}; refusing to reinterpret the command with another shell"
+            ),
+        )
+    })
+}
+
 /// Spawn a shell command cross-platform.
 ///
 /// - Unix: `bash -c <command>`
-/// - Windows: `powershell.exe -Command <command>` with hidden console window,
-///   falling back to `cmd.exe /C <command>` if PowerShell cannot be started.
+/// - Windows: `powershell.exe -EncodedCommand <command>` with hidden console window.
+///   Startup failures are returned without reinterpreting the command as cmd.
 pub(crate) fn spawn_shell(
     command: &str,
     workspace: &std::path::Path,
@@ -65,51 +115,12 @@ pub(crate) fn spawn_shell(
 ) -> std::io::Result<tokio::process::Child> {
     #[cfg(windows)]
     {
-        fn prepare_command(
-            cmd: &mut Command,
-            workspace: &std::path::Path,
-            command_env: Option<&HashMap<String, String>>,
-        ) {
-            cmd.current_dir(workspace)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .creation_flags(CREATE_NO_WINDOW);
-            if let Some(env) = command_env {
-                cmd.envs(env);
-            }
-        }
-
-        let wrapped_command = build_powershell_command(command);
-        let encoded_command = encode_powershell_command(&wrapped_command);
-        let mut powershell = Command::new("powershell.exe");
-        powershell.args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            &encoded_command,
-        ]);
-        prepare_command(&mut powershell, workspace, command_env);
-
-        match powershell.spawn() {
-            Ok(child) => Ok(child),
-            Err(ps_error) => {
-                let mut cmd = Command::new("cmd.exe");
-                cmd.args(["/C", command]);
-                prepare_command(&mut cmd, workspace, command_env);
-                cmd.spawn().map_err(|cmd_error| {
-                    std::io::Error::new(
-                        cmd_error.kind(),
-                        format!(
-                            "failed to spawn powershell.exe ({ps_error}); fallback cmd.exe also failed: {cmd_error}"
-                        ),
-                    )
-                })
-            }
-        }
+        spawn_windows_shell(
+            OsStr::new("powershell.exe"),
+            command,
+            workspace,
+            command_env,
+        )
     }
     #[cfg(not(windows))]
     {

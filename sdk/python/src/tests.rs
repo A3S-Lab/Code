@@ -298,6 +298,61 @@ fn session_options_preserve_serializable_permission_policy() {
 }
 
 #[test]
+fn session_options_security_provider_is_typed_and_fail_closed() {
+    pyo3::prepare_freethreaded_python();
+
+    let valid = Python::with_gil(|py| {
+        let provider = Py::new(py, PyDefaultSecurityProvider::new()).unwrap();
+        let mut session_options = PySessionOptions::new();
+        session_options.security_provider = Some(provider.into_any());
+        build_rust_session_options(session_options)
+    })
+    .unwrap();
+    assert!(valid.security_provider.is_some());
+
+    let invalid = Python::with_gil(|py| {
+        let provider = PyDict::new(py);
+        provider.set_item("kind", "unknown").unwrap();
+        let mut session_options = PySessionOptions::new();
+        session_options.security_provider = Some(provider.into_any().unbind());
+        build_rust_session_options(session_options)
+    });
+    let error = invalid.expect_err("unknown security providers must not be ignored");
+    assert!(error.to_string().contains("DefaultSecurityProvider"));
+}
+
+#[test]
+fn session_options_store_providers_are_typed_and_fail_closed() {
+    pyo3::prepare_freethreaded_python();
+
+    let valid = Python::with_gil(|py| {
+        let memory = Py::new(py, PyFileMemoryStore::new("./memory".to_string())).unwrap();
+        let sessions = Py::new(py, PyFileSessionStore::new("./sessions".to_string())).unwrap();
+        let mut session_options = PySessionOptions::new();
+        session_options.memory_store = Some(memory.into_any());
+        session_options.session_store = Some(sessions.into_any());
+        build_rust_session_options(session_options)
+    });
+    assert!(valid.is_ok());
+
+    let invalid_memory = Python::with_gil(|py| {
+        let mut session_options = PySessionOptions::new();
+        session_options.memory_store = Some(PyDict::new(py).into_any().unbind());
+        build_rust_session_options(session_options)
+    });
+    let error = invalid_memory.expect_err("unknown memory stores must not be ignored");
+    assert!(error.to_string().contains("FileMemoryStore"));
+
+    let invalid_session = Python::with_gil(|py| {
+        let mut session_options = PySessionOptions::new();
+        session_options.session_store = Some(PyDict::new(py).into_any().unbind());
+        build_rust_session_options(session_options)
+    });
+    let error = invalid_session.expect_err("unknown session stores must not be ignored");
+    assert!(error.to_string().contains("SessionStore"));
+}
+
+#[test]
 fn session_options_map_active_skill_tool_restriction_control() {
     let default_opts = build_rust_session_options(PySessionOptions::new()).unwrap();
     assert_eq!(default_opts.enforce_active_skill_tool_restrictions, None);

@@ -1,0 +1,209 @@
+---
+title: 'Streaming'
+description: 'Read incremental AgentEvent values as a turn runs'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Streaming
+
+`session.stream(prompt)` yields incremental events as the turn runs, so you can render text as it arrives and react to tool activity in real time. Use it when you want a live UI or a CLI that prints output token-by-token instead of waiting for the full result from `send` or `run`.
+
+Each event carries the stable envelope fields `version`, `type`, `payload`, and optional `metadata`. The common kinds are `agent_start`, `text_delta` / `reasoning_delta`, `tool_start` / `tool_end`, `agent_end`, and `error`. Verification data is carried by the `agent_end` payload and convenience fields.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, AgentEvent, CodeError, PlanningMode, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_planning_mode(PlanningMode::Disabled))
+        .build()
+        .await?;
+
+    let (mut events, lifecycle) = session
+        .stream(
+            "Use the bash tool to run the tests, then summarize the result.",
+            None,
+        )
+        .await?;
+
+    while let Some(event) = events.recv().await {
+        match event {
+            AgentEvent::TextDelta { text } => print!("{text}"),
+            AgentEvent::ToolStart { name, .. } => println!("\n[tool:start] {name}"),
+            AgentEvent::ToolEnd {
+                name, exit_code, ..
+            } => println!("\n[tool:end] {name} exit={exit_code}"),
+            AgentEvent::End {
+                verification_summary,
+                ..
+            } => println!("\n[verification] {verification_summary:?}"),
+            AgentEvent::Error { message } => return Err(CodeError::Llm(message)),
+            _ => {}
+        }
+    }
+    lifecycle
+        .await
+        .map_err(|error| CodeError::Internal(error.into()))??;
+    println!("\n[stream] complete");
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session(process.cwd(), { planningMode: 'disabled' });
+
+const stream = await session.stream(
+  'Use the bash tool to run the tests, then summarize the result.',
+);
+
+while (true) {
+  const next = await stream.next();
+  if (next.done || !next.value) break;
+
+  const event = next.value;
+  if (event.type === 'text_delta' && event.text) {
+    process.stdout.write(event.text);
+  } else if (event.type === 'tool_start') {
+    console.log(`\n[tool:start] ${event.toolName ?? 'unknown'}`);
+  } else if (event.type === 'tool_end') {
+    console.log(
+      `\n[tool:end] ${event.toolName ?? 'unknown'} exit=${event.exitCode ?? 0}`,
+    );
+  } else if (event.type === 'agent_end') {
+    console.log(`\n[verification] ${event.verificationSummaryText ?? ''}`);
+  } else if (event.type === 'error') {
+    throw new Error(event.error ?? 'stream error');
+  }
+}
+
+console.log('\n[stream] complete');
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import os
+
+from a3s_code import Agent, SessionOptions
+
+
+def main() -> None:
+    agent = Agent.create("agent.acl")
+
+    opts = SessionOptions()
+    opts.planning_mode = "disabled"
+    session = agent.session(".", opts)
+
+    prompt = "Use the bash tool to run the tests, then summarize the result."
+
+    try:
+        for event in session.stream(prompt):
+            if event.type == "text_delta" and event.text:
+                print(event.text, end="", flush=True)
+            elif event.type == "tool_start":
+                print(f"\n[tool:start] {event.tool_name or 'unknown'}")
+            elif event.type == "tool_end":
+                print(f"\n[tool:end] {event.tool_name or 'unknown'} exit={event.exit_code or 0}")
+            elif event.type == "agent_end":
+                print(f"\n[verification] {event.verification_summary_text or ''}")
+            elif event.type == "error":
+                raise RuntimeError(event.error or "stream error")
+        print("\n[stream] complete")
+    finally:
+        session.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v7"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		PlanningMode: code.PlanningDisabled,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	stream, err := session.Stream(
+		ctx,
+		"Use the bash tool to run the tests, then summarize the result.",
+		nil,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for event := range stream.Events {
+		switch event.Type {
+		case code.EventTextDelta:
+			var payload struct {
+				Text string `json:"text"`
+			}
+			if err := event.DecodePayload(&payload); err != nil {
+				log.Fatal(err)
+			}
+			fmt.Print(payload.Text)
+		default:
+			// Forward event.Payload and event.Metadata to the UI as needed.
+		}
+	}
+	if err := <-stream.Done; err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+Notes:
+
+- Rust receives `AgentEvent` values from a Tokio channel, Node.js iterates with `stream.next()`, Python uses a synchronous iterator, and Go drains `stream.Events` before reading the terminal error from `stream.Done`. Canceling the Go context also requests cancellation of the active native run.
+- All four SDKs expose the canonical event type. Node.js and Python add convenience projections; Go keeps `Payload` and `Metadata` as `json.RawMessage` and provides `DecodePayload`. Unknown future event types remain lossless in every SDK.
+- Streamed events can also include human-in-the-loop confirmation signals (`confirmation_required`, `confirmation_received`, `confirmation_timeout`) when a confirmation policy is enabled.
+
+Runnable streaming examples ship under `sdk/node/examples/streaming/`.
+A complete human-in-the-loop confirmation loop ships at
+`sdk/node/examples/streaming/hitl_confirmation_loop.ts`, with the
+matching Python version under `sdk/python/examples/` and Go stream
+coverage in `sdk/go/session_test.go`.

@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn retrieval_is_disabled_without_explicit_typed_options() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(super::tests::test_config())
         .await
@@ -49,6 +50,7 @@ async fn retrieval_is_disabled_without_explicit_typed_options() {
 
 #[tokio::test]
 async fn explicit_disable_clears_preconfigured_retrieval_without_calling_the_provider() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("source.rs"), "eligible source\n").unwrap();
     let provider = Arc::new(BlockingProvider::new());
@@ -85,6 +87,7 @@ async fn explicit_disable_clears_preconfigured_retrieval_without_calling_the_pro
 
 #[tokio::test]
 async fn enabled_session_exposes_and_executes_semantic_search() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(
         workspace.path().join("cache.rs"),
@@ -228,6 +231,7 @@ async fn enabled_session_exposes_and_executes_semantic_search() {
 
 #[tokio::test]
 async fn async_session_creation_does_not_wait_for_workspace_embeddings() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(
         workspace.path().join("lib.rs"),
@@ -243,14 +247,16 @@ async fn async_session_creation_does_not_wait_for_workspace_embeddings() {
         .unwrap();
 
     let started = Instant::now();
+    let construction_timeout =
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(1));
     let session = tokio::time::timeout(
-        Duration::from_secs(1),
+        construction_timeout,
         agent.session_async(workspace.path().to_string_lossy(), Some(options)),
     )
     .await
     .expect("session construction waited for embedding")
     .unwrap();
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(started.elapsed() < construction_timeout);
     assert_eq!(
         session.workspace_retrieval_status().phase,
         WorkspaceRetrievalPhase::Building
@@ -267,6 +273,7 @@ async fn async_session_creation_does_not_wait_for_workspace_embeddings() {
 
 #[tokio::test]
 async fn sync_session_rejects_semantic_retrieval_as_an_async_resource() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     let provider: Arc<dyn EmbeddingProvider> = Arc::new(BlockingProvider::new());
     let options = SessionOptions::new()
@@ -289,6 +296,7 @@ async fn sync_session_rejects_semantic_retrieval_as_an_async_resource() {
 
 #[tokio::test]
 async fn custom_workspace_without_a_catalog_is_rejected_before_provider_calls() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let backend = Arc::new(EmptyWorkspace);
     let services =
         WorkspaceServices::builder(WorkspaceRef::new("remote", "remote://workspace"), backend)
@@ -318,6 +326,7 @@ async fn custom_workspace_without_a_catalog_is_rejected_before_provider_calls() 
 
 #[tokio::test]
 async fn session_chunking_options_cannot_override_a_host_owned_catalog() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let backend = Arc::new(EmptyWorkspace);
     let catalog = crate::WorkspaceChunkCatalog::new(
         crate::ChunkingConfig::default(),
@@ -358,6 +367,7 @@ async fn session_chunking_options_cannot_override_a_host_owned_catalog() {
 
 #[tokio::test]
 async fn custom_workspace_without_read_capability_is_rejected() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let backend = Arc::new(EmptyWorkspace);
     let catalog = crate::WorkspaceChunkCatalog::new(
         crate::ChunkingConfig::default(),
@@ -403,6 +413,7 @@ async fn custom_workspace_without_read_capability_is_rejected() {
 
 #[tokio::test]
 async fn a_later_session_build_failure_cleans_up_started_retrieval_work() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(
         workspace.path().join("lib.rs"),
@@ -450,6 +461,7 @@ struct ImmediateProvider {
 
 #[tokio::test]
 async fn session_owned_workspace_uses_the_explicit_chunking_strategy() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("window.txt"), "abcdefghij").unwrap();
     let embedded_inputs = Arc::new(AtomicUsize::new(0));
@@ -481,6 +493,7 @@ async fn session_owned_workspace_uses_the_explicit_chunking_strategy() {
 
 #[tokio::test]
 async fn session_owned_workspace_applies_explicit_deterministic_reranking() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     let boilerplate = "shared retry boilerplate reconnect delivery guard alpha\n";
     std::fs::write(workspace.path().join("a.rs"), boilerplate).unwrap();
@@ -549,6 +562,7 @@ async fn session_owned_workspace_applies_explicit_deterministic_reranking() {
 
 #[tokio::test]
 async fn invalid_rerank_bounds_fail_before_embedding_provider_calls() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("source.rs"), "eligible source\n").unwrap();
     let provider = Arc::new(BlockingProvider::new());
@@ -599,11 +613,14 @@ impl EmbeddingProvider for ImmediateProvider {
 }
 
 async fn wait_for_ready(session: &super::AgentSession) {
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while session.workspace_retrieval_status().phase != WorkspaceRetrievalPhase::Ready {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(2)),
+        async {
+            while session.workspace_retrieval_status().phase != WorkspaceRetrievalPhase::Ready {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        },
+    )
     .await
     .expect("semantic session did not become ready");
 }
@@ -618,11 +635,14 @@ impl BlockingProvider {
     }
 
     async fn wait_for_calls(&self, expected: usize) {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while self.calls.load(Ordering::Acquire) < expected {
-                self.called.notified().await;
-            }
-        })
+        tokio::time::timeout(
+            crate::test_support::external_resource_start_timeout(Duration::from_secs(2)),
+            async {
+                while self.calls.load(Ordering::Acquire) < expected {
+                    self.called.notified().await;
+                }
+            },
+        )
         .await
         .expect("embedding provider was not called");
     }

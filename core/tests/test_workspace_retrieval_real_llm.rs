@@ -46,7 +46,7 @@ const NON_TEXT_FILE_COUNT: usize = 3;
 const EXPECTED_CHUNK_COUNT: usize = 31;
 const QUERY_ID: &str = "workspace-query";
 const TURN_TIMEOUT: Duration = Duration::from_secs(240);
-const READY_TIMEOUT: Duration = Duration::from_secs(10);
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const COLLISION_COPIES_PER_TASK: usize = 8;
 const TEST_GUIDELINES: &str = "This is a deterministic repository retrieval evaluation. Follow the requested one-tool protocol exactly. Never guess an identifier that is absent from the tool evidence.";
 
@@ -424,7 +424,9 @@ async fn wait_until_ready(session: &AgentSession) -> WorkspaceRetrievalStatus {
                 WorkspaceRetrievalPhase::Ready | WorkspaceRetrievalPhase::Degraded => {
                     break status;
                 }
-                WorkspaceRetrievalPhase::Building => tokio::task::yield_now().await,
+                WorkspaceRetrievalPhase::Building => {
+                    tokio::time::sleep(Duration::from_millis(10)).await
+                }
                 phase => panic!("unexpected retrieval phase while building: {phase:?}"),
             }
         }

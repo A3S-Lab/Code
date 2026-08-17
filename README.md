@@ -13,17 +13,42 @@
 
 **A3S Code** is an async Rust runtime for building governed coding agents. It
 keeps the agent loop, workspace tools, model adapters, policy decisions,
-versioned events, and durable evidence behind explicit contracts. Use it from
-Rust, Node.js, Python, Go, or through the `a3s code` terminal application.
+versioned events, ephemeral workspace retrieval, and durable evidence behind
+explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
+`a3s code` terminal application.
 
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
+  <a href="#whats-new-in-70">v7</a> ·
   <a href="#why-a3s-code">Why Code</a> ·
   <a href="#capability-map">Capabilities</a> ·
   <a href="#configure-the-runtime">Configure</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#documentation">Documentation</a>
 </p>
+
+## What's new in 7.0
+
+- **Session-owned workspace retrieval.** A bounded chunk catalog, incremental
+  BM25, optional host-injected embeddings, exact in-memory vector partitions,
+  and deterministic hybrid RRF are built asynchronously and released with the
+  session. A3S Code does not require a vector database.
+- **Useful without embedding or reranking models.** Exact search, glob, BM25,
+  Code Intelligence, RRF fusion, and the optional deterministic MMR reranker
+  run locally on CPU. Dense semantic search is opt-in and can use an in-process
+  CPU callback supplied by the host.
+- **Typed retrieval across every SDK.** Rust, Node.js, Python, and Go expose
+  explicit enable/disable controls, line/fixed/recursive chunking, readiness,
+  lifecycle metrics, source verification, and bounded cleanup. Non-text assets
+  are rejected before chunking or embedding.
+- **Evidence at the model boundary.** Versioned run records bind the effective
+  tools, policy identities, retrieval generation, repeated Tool-result
+  context, input shape, and normalized model usage without retaining new
+  prompt, source, vector, credential, or endpoint plaintext.
+
+Go consumers must update the module path to
+`github.com/A3S-Lab/Code/sdk/go/v7`. See [CHANGELOG.md](CHANGELOG.md) for the
+complete compatibility and release record.
 
 ## Start in 60 seconds
 
@@ -123,6 +148,7 @@ telemetry remain opt-in.
 | Agent runtime | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, and replay | Baseline |
 | Governed tools | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence | Exposed only when workspace and policy allow |
 | Code intelligence | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata | Host-selected local workspace |
+| Workspace retrieval | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database |
 | Context and memory | Ranked context, repeated compaction, three-tier memory, typed stores, recall, extraction, relations, and pruning | Host-selected and configurable |
 | Cognitive packages | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages |
 | Model adapters | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations | Configuration or host injection |
@@ -221,6 +247,57 @@ async fn main() -> a3s_code_core::Result<()> {
 Typed session options accept custom model clients, context providers, memory
 stores, session stores, workspace backends, security providers, confirmation
 providers, permission checkers, and other host-owned extensions.
+
+### Recommended governance configurations
+
+Keep governance explicit at the session boundary. For an interactive host,
+ask by default, enable a real confirmation channel, reject on timeout, and
+enable output sanitization:
+
+```rust,no_run
+use a3s_code_core::{
+    hitl::{ConfirmationPolicy, TimeoutAction},
+    permissions::PermissionPolicy,
+    SessionOptions,
+};
+
+let interactive = SessionOptions::new()
+    .with_permission_policy(PermissionPolicy::strict())
+    .with_confirmation_policy(
+        ConfirmationPolicy::enabled().with_timeout(30_000, TimeoutAction::Reject),
+    )
+    .with_default_security();
+```
+
+For an unattended host, use an explicit allow-list and deny everything else.
+Do not install a disabled confirmation policy: `enabled = false` intentionally
+auto-approves `Ask` decisions for compatibility. Omitting the confirmation
+provider makes any unexpected `Ask` or tool-level escalation fail closed.
+
+```rust,no_run
+use a3s_code_core::{
+    permissions::{PermissionDecision, PermissionPolicy},
+    SessionOptions,
+};
+
+let read_only = PermissionPolicy {
+    default_decision: PermissionDecision::Deny,
+    ..PermissionPolicy::default()
+}
+.allow("read(*)")
+.allow("search(*)")
+.allow("ls(*)");
+
+let unattended = SessionOptions::new()
+    .with_permission_policy(read_only)
+    .with_default_security();
+```
+
+`DefaultSecurityProvider` performs taint tracking and output sanitization; it
+is not process isolation. Attach a `BashSandbox` for shell isolation and choose
+an appropriate workspace access policy for in-process file tools. Direct
+`tool()` helpers are trusted control-plane calls; use `governed_tool()` when
+the host has not already authorized the exact invocation.
 
 ### Bind one exact cognitive package
 
@@ -620,7 +697,7 @@ multiple agents or behaviors need one auditable shared model.
 | Rust | [`a3s-code-core`](https://crates.io/crates/a3s-code-core) | Complete runtime API and extension traits |
 | Node.js | [`@a3s-lab/code`](https://www.npmjs.com/package/@a3s-lab/code) | Native N-API bindings for async lifecycle, streams, tools, stores, orchestration, MCP, and state graph |
 | Python | [`a3s-code`](https://pypi.org/project/a3s-code/) | Native PyO3/bootstrap package with sync and async application APIs |
-| Go | [`github.com/A3S-Lab/Code/sdk/go/v6`](sdk/go/README.md) | Pure-Go client with a versioned local bridge for sessions, streams, tools, ephemeral semantic retrieval, runs, verification, and MCP |
+| Go | [`github.com/A3S-Lab/Code/sdk/go/v7`](sdk/go/README.md) | Pure-Go client with a versioned local bridge for sessions, streams, tools, ephemeral semantic retrieval, runs, verification, and MCP |
 
 ```bash
 # Node.js
@@ -630,7 +707,7 @@ npm install @a3s-lab/code
 python -m pip install a3s-code
 
 # Go
-go get github.com/A3S-Lab/Code/sdk/go/v6
+go get github.com/A3S-Lab/Code/sdk/go/v7
 ```
 
 The native SDK crates explicitly enable the Core `headless-search`, `s3`, and
@@ -773,6 +850,20 @@ A3S_CONTEXT_TOOLS_USE_CODEX_LOGIN=1 scripts/context_tools_real_llm.sh
 
 Alternatively, point `A3S_CONFIG_FILE` at an ACL provider configuration and
 run the same script without `A3S_CONTEXT_TOOLS_USE_CODEX_LOGIN`.
+
+Run the serial, quota-consuming DeepSeek adversarial E2E suite against an ACL
+configuration whose `default_model` uses the `deepseek` provider:
+
+```bash
+A3S_CONFIG_FILE=/abs/path/.a3s/config.acl \
+  cargo test -p a3s-code-core --test test_deepseek_adversarial_e2e -- \
+  --ignored --test-threads=1 --nocapture
+```
+
+The suite uses disposable workspaces and an in-memory memory store. It proves
+model-driven prompt-injection containment, absolute-path workspace isolation,
+secret redaction, and cancellation of an already-started command before its
+post-cancellation side effect. It never logs provider credentials.
 
 ## License
 

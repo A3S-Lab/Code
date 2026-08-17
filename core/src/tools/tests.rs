@@ -319,6 +319,8 @@ async fn test_bash_uses_workspace_command_runner() {
 
 #[tokio::test]
 async fn test_command_env_is_available_on_default_context() {
+    #[cfg(windows)]
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();
     let mut env = HashMap::new();
     env.insert(

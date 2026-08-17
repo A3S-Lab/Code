@@ -1,4 +1,11 @@
 # Force LF line endings where tests require cross-platform string matching
 prompts/*.md text eol=lf
 core/tests/fixtures/agentic-ontology/r0-cross-project-v1/** text eol=lf
+
+# Generated protocol declarations are compared across all supported CI hosts.
+sdk/node/event-protocol-v1.d.ts text eol=lf
+sdk/python/python/a3s_code/event_protocol_v1.py text eol=lf
+sdk/go/event_protocol_v1.go text eol=lf
+
+# ACL fixtures with multiline mutation coverage must have stable source bytes.
 fixtures/agent-release-contract/.a3s/asset.acl text eol=lf

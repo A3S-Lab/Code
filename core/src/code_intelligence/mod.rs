@@ -7,6 +7,8 @@
 pub(crate) mod diagnostics;
 pub(crate) mod document_store;
 mod error;
+#[cfg(test)]
+mod integration_test_support;
 pub(crate) mod language_profile;
 pub(crate) mod language_runtime;
 mod local_provider;

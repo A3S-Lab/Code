@@ -454,20 +454,24 @@ mod tests {
             return manifest.snapshot();
         }
         let mut snapshots = manifest.subscribe();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let snapshot = snapshots.recv().await.unwrap();
-                if snapshot.version > 0 {
-                    break snapshot;
+        tokio::time::timeout(
+            crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+            async {
+                loop {
+                    let snapshot = snapshots.recv().await.unwrap();
+                    if snapshot.version > 0 {
+                        break snapshot;
+                    }
                 }
-            }
-        })
+            },
+        )
         .await
         .expect("initial manifest scan should finish")
     }
 
     #[tokio::test]
     async fn provider_reuses_unchanged_layout_and_shutdown_is_idempotent() {
+        let _permit = crate::test_support::resource_intensive_test_permit().await;
         let workspace = tempfile::tempdir().unwrap();
         std::fs::create_dir(workspace.path().join("src")).unwrap();
         std::fs::write(workspace.path().join("Cargo.toml"), "[workspace]\n").unwrap();

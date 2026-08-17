@@ -90,14 +90,18 @@ mod tests {
 
     #[tokio::test]
     async fn returns_recent_files_as_context() {
+        let _permit = crate::test_support::resource_intensive_test_permit().await;
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("src.rs"), "fn main() {}\n").unwrap();
         let manifest = LocalWorkspaceManifest::start(temp.path());
         let mut rx = manifest.subscribe();
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        tokio::time::timeout(
+            crate::test_support::external_resource_start_timeout(std::time::Duration::from_secs(5)),
+            rx.recv(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         manifest.touch_file("src.rs");
         let provider = RecentWorkspaceFilesContextProvider::new(manifest);

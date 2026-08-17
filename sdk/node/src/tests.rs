@@ -804,6 +804,79 @@ fn session_options_reject_invalid_permission_decision() {
 }
 
 #[test]
+fn session_options_security_provider_is_typed_and_fail_closed() {
+    let valid = js_session_options_to_rust(Some(SessionOptions {
+        security_provider: Some(JsSecurityProvider {
+            kind: "default".to_string(),
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+    assert!(valid.security_provider.is_some());
+
+    let invalid = js_session_options_to_rust(Some(SessionOptions {
+        security_provider: Some(JsSecurityProvider {
+            kind: "unknown".to_string(),
+        }),
+        ..Default::default()
+    }));
+    let error = invalid.expect_err("unknown security providers must not be ignored");
+    assert!(error.to_string().contains("DefaultSecurityProvider"));
+}
+
+#[test]
+fn session_options_store_providers_are_typed_and_fail_closed() {
+    let file_memory = js_session_options_to_rust(Some(SessionOptions {
+        memory_store: Some(JsMemoryStore {
+            backend: "file".to_string(),
+            dir: Some("./memory".to_string()),
+        }),
+        ..Default::default()
+    }));
+    assert!(file_memory.is_ok());
+
+    let unknown_memory = js_session_options_to_rust(Some(SessionOptions {
+        memory_store: Some(JsMemoryStore {
+            backend: "unknown".to_string(),
+            dir: None,
+        }),
+        ..Default::default()
+    }));
+    let error = unknown_memory.expect_err("unknown memory stores must not be ignored");
+    assert!(error.to_string().contains("FileMemoryStore"));
+
+    let missing_memory_dir = js_session_options_to_rust(Some(SessionOptions {
+        memory_store: Some(JsMemoryStore {
+            backend: "file".to_string(),
+            dir: None,
+        }),
+        ..Default::default()
+    }));
+    assert!(missing_memory_dir.is_err());
+
+    let unknown_session = js_session_options_to_rust(Some(SessionOptions {
+        session_store: Some(JsSessionStore {
+            backend: "unknown".to_string(),
+            dir: None,
+            instance_id: None,
+        }),
+        ..Default::default()
+    }));
+    let error = unknown_session.expect_err("unknown session stores must not be ignored");
+    assert!(error.to_string().contains("SessionStore"));
+
+    let missing_session_dir = js_session_options_to_rust(Some(SessionOptions {
+        session_store: Some(JsSessionStore {
+            backend: "file".to_string(),
+            dir: None,
+            instance_id: None,
+        }),
+        ..Default::default()
+    }));
+    assert!(missing_session_dir.is_err());
+}
+
+#[test]
 fn queue_config_rejects_invalid_lane_handler() {
     let mut lane_handlers = std::collections::HashMap::new();
     lane_handlers.insert(

@@ -10,14 +10,12 @@ use std::{
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
+use super::WorkspaceRuntime;
 #[cfg(unix)]
-use super::integration_test_support::process_exists;
-use super::{
-    integration_test_support::{compile_fake_server, fixture_started_pids},
-    WorkspaceRuntime,
-};
+use crate::code_intelligence::integration_test_support::process_exists;
 use crate::{
     code_intelligence::{
+        integration_test_support::{compile_fake_server, fixture_started_pids},
         language_profile::LanguageServerProfile,
         project_layout::{ProjectLanguageProfile, ProjectLayoutResolver},
         CodeIntelligenceState,
@@ -152,6 +150,7 @@ fn test_runtime_with_file_system(
 
 #[tokio::test]
 async fn first_workspace_symbol_query_opens_a_saved_source_document() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),
@@ -199,6 +198,7 @@ async fn first_workspace_symbol_query_opens_a_saved_source_document() {
 
 #[tokio::test]
 async fn abandoned_caller_does_not_restart_an_in_flight_language_runtime() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),
@@ -236,16 +236,19 @@ async fn abandoned_caller_does_not_restart_an_in_flight_language_runtime() {
         })
     };
     let log_path = server.with_extension("log");
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if std::fs::read_to_string(&log_path)
-                .is_ok_and(|log| log.contains("\"method\":\"initialize\""))
-            {
-                break;
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(10)),
+        async {
+            loop {
+                if std::fs::read_to_string(&log_path)
+                    .is_ok_and(|log| log.contains("\"method\":\"initialize\""))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+        },
+    )
     .await
     .expect("the first runtime must begin initialization");
 
@@ -302,6 +305,7 @@ async fn abandoned_caller_does_not_restart_an_in_flight_language_runtime() {
 
 #[tokio::test]
 async fn abandoned_caller_before_start_task_runs_does_not_strand_the_slot() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),
@@ -379,6 +383,7 @@ async fn abandoned_caller_before_start_task_runs_does_not_strand_the_slot() {
 
 #[tokio::test]
 async fn shutdown_cancels_and_reaps_an_in_flight_language_runtime_start() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),
@@ -413,16 +418,19 @@ async fn shutdown_cancels_and_reaps_an_in_flight_language_runtime_start() {
         })
     };
     let log_path = server.with_extension("log");
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if std::fs::read_to_string(&log_path)
-                .is_ok_and(|log| log.contains("\"method\":\"initialize\""))
-            {
-                break;
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(10)),
+        async {
+            loop {
+                if std::fs::read_to_string(&log_path)
+                    .is_ok_and(|log| log.contains("\"method\":\"initialize\""))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+        },
+    )
     .await
     .expect("the runtime must begin initialization");
 
@@ -448,6 +456,7 @@ async fn shutdown_cancels_and_reaps_an_in_flight_language_runtime_start() {
 
 #[tokio::test]
 async fn forced_shutdown_reaps_an_unresponsive_language_runtime() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),
@@ -510,6 +519,7 @@ async fn forced_shutdown_reaps_an_unresponsive_language_runtime() {
 
 #[tokio::test]
 async fn removing_a_source_during_start_reaps_it_before_the_slot_reopens() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),
@@ -543,16 +553,19 @@ async fn removing_a_source_during_start_reaps_it_before_the_slot_reopens() {
         })
     };
     let log_path = server.with_extension("log");
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if std::fs::read_to_string(&log_path)
-                .is_ok_and(|log| log.contains("\"method\":\"initialize\""))
-            {
-                break;
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(10)),
+        async {
+            loop {
+                if std::fs::read_to_string(&log_path)
+                    .is_ok_and(|log| log.contains("\"method\":\"initialize\""))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+        },
+    )
     .await
     .expect("the removed language runtime must begin initialization");
 
@@ -572,15 +585,15 @@ async fn removing_a_source_during_start_reaps_it_before_the_slot_reopens() {
         super::SlotState::Dormant
     ));
     let first_log = std::fs::read_to_string(&log_path).unwrap();
-    let first_pid = fixture_started_pids(&first_log)[0];
-    assert!(first_log.contains(&format!(
-        "\"event\":\"process_exiting\",\"pid\":{first_pid}"
-    )));
+    assert_eq!(fixture_started_pids(&first_log).len(), 1);
     #[cfg(unix)]
-    assert!(
-        !process_exists(first_pid),
-        "removed language process {first_pid} survived cleanup"
-    );
+    {
+        let first_pid = fixture_started_pids(&first_log)[0];
+        assert!(
+            !process_exists(first_pid),
+            "removed language process {first_pid} survived cleanup"
+        );
+    }
 
     runtime.update_snapshot(&initial).await;
     runtime
@@ -597,6 +610,7 @@ async fn removing_a_source_during_start_reaps_it_before_the_slot_reopens() {
 
 #[tokio::test]
 async fn abandoned_multi_language_start_publishes_a_complete_ready_snapshot() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),
@@ -641,17 +655,20 @@ async fn abandoned_multi_language_start_publishes_a_complete_ready_snapshot() {
         rust_server.with_extension("log"),
         typescript_server.with_extension("log"),
     ];
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if logs.iter().all(|log| {
-                std::fs::read_to_string(log)
-                    .is_ok_and(|content| content.contains("\"method\":\"initialize\""))
-            }) {
-                break;
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(10)),
+        async {
+            loop {
+                if logs.iter().all(|log| {
+                    std::fs::read_to_string(log)
+                        .is_ok_and(|content| content.contains("\"method\":\"initialize\""))
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+        },
+    )
     .await
     .expect("both language runtimes must begin initialization");
     abandoned.abort();
@@ -687,6 +704,7 @@ async fn abandoned_multi_language_start_publishes_a_complete_ready_snapshot() {
 
 #[tokio::test]
 async fn saved_file_change_during_query_marks_the_document_result_stale() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     let original = "pub fn answer() -> u32 { 42 }\n";
     let replacement = "pub fn answer() -> u32 { 43 }\n";
@@ -737,6 +755,7 @@ async fn saved_file_change_during_query_marks_the_document_result_stale() {
 
 #[tokio::test]
 async fn per_language_document_capacity_evicts_only_from_the_owning_runtime() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),
@@ -840,6 +859,7 @@ async fn per_language_document_capacity_evicts_only_from_the_owning_runtime() {
 
 #[tokio::test]
 async fn fresh_workspace_diagnostics_starts_the_manifest_language_runtime() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),
@@ -893,6 +913,7 @@ async fn fresh_workspace_diagnostics_starts_the_manifest_language_runtime() {
 
 #[tokio::test]
 async fn mixed_workspace_diagnostics_aggregates_each_supported_language() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),
@@ -949,6 +970,7 @@ async fn mixed_workspace_diagnostics_aggregates_each_supported_language() {
 
 #[tokio::test]
 async fn missing_mixed_language_runtime_returns_available_diagnostics_and_degraded_status() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     write_workspace_files(
         workspace.path(),

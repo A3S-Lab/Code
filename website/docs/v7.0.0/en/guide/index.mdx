@@ -1,0 +1,262 @@
+---
+title: 'Overview'
+description: 'Install A3S Code, understand its main features, and choose an SDK'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# A3S Code
+
+A3S Code is the Rust runtime behind the `a3s code` terminal application. You can
+also embed it in an IDE, runner, service, or desktop application. It handles the
+agent loop, context, tool calls, permission checks, child tasks, asynchronous
+Workspace retrieval, durable evidence, and session recovery.
+
+Install the [`a3s` CLI](https://github.com/A3S-Lab/a3s) when you want to work in
+a terminal. When building a product, use the Rust crate, Node.js package,
+Python package, or Go module with its matching native bridge. They emit the
+same events, so every UI does not need its own agent loop.
+
+## Choose an entry point
+
+| Entry                             | Use it when                                                    | Repository                                                    |
+| --------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- |
+| Rust / Node.js / Python / Go SDKs | Adding a coding agent to an IDE, runner, service, or custom UI | [A3S-Lab/Code](https://github.com/A3S-Lab/Code)               |
+| `a3s code`                        | Running a coding agent directly in your terminal               | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)                 |
+| `a3s-tui`                         | Building a terminal UI; it does not include the agent runtime  | [A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)                 |
+| A3S Web                           | Studying the desktop task UI and its component implementation  | [apps/web](https://github.com/A3S-Lab/a3s/tree/main/apps/web) |
+| A3S Flow                          | Saving and resuming flows used by `DynamicWorkflowRuntime`     | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow)               |
+
+## What it includes
+
+| Area            | What A3S Code provides                                                                                                                                                                                                                                                |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent sessions  | Create a Workspace-bound `AgentSession` with `SessionBuilder`; send, run, stream, cancel, save, resume, and close it. Concurrent transcript operations fail immediately instead of racing.                                                                            |
+| User interfaces | [`a3s code`](/guide/tui) renders the event stream in a terminal. Applications can render the same `AgentEvent` stream in their own interface.                                                                                                                         |
+| Project files   | [Filesystem-first](/guide/filesystem-first) explains `AGENTS.md`, ACL config, `.a3s/agents/`, `skills/`, `tools/`, and `schedules/`.                                                                                                                                  |
+| Tools           | Built-in files, binary-safe local downloads, search, shell, Git, web, batch, structured output, QuickJS, Skills, MCP, and child-task tools. Model calls pass through argument, permission, confirmation, cancellation, deterministic result projection, and evidence. |
+| Commands        | [Commands](/guide/commands) covers TUI slash commands and custom `/command` handlers registered by an application.                                                                                                                                                    |
+| Child tasks     | Use the model-visible `task` tool or the host-side `session.task(...)` and `session.tasks(...)` helpers with built-in and custom agents. One item is focused; multiple independent items fan out concurrently.                                                        |
+| Scheduling      | One [Agent-wide priority scheduler](/guide/tasks#agent-wide-priority-scheduler) shares local execution capacity across sessions, direct tools, detached children, and host workflows, with FIFO ordering, aging, cancellation, and occupancy snapshots.               |
+| Workflows       | Use [`session.parallel`](/guide/orchestration), pipelines, phases, checkpoints, loop limits, and budget records for fixed, recoverable workflows.                                                                                                                     |
+| Scheduled work  | Run scheduled AgentDir turns through `serveAgentDir` / `serve_agent_dir`; each schedule keeps a stable `schedule:<name>` session.                                                                                                                                     |
+| Access control  | Apply permission rules, user confirmation, budgets, Workspace path checks, tool timeouts, lifecycle hooks, and output cleanup during execution.                                                                                                                       |
+| Workspaces      | [Workspace backends](/guide/workspace-backends) support local files, application-provided workspaces, optional S3-compatible storage, and remote Git services. The native Harness can isolate conversations in detached Git worktrees.                                |
+| Retrieval       | [Workspace retrieval](/guide/context#workspace-retrieval) adds an asynchronous session-owned text catalog, incremental BM25, optional host embeddings, exact in-memory vectors, hybrid RRF, and optional deterministic CPU reranking without a vector database.       |
+| Events          | `EventEnvelopeV1` is shared by Rust, Node.js, Python, and Go. Unknown event payloads and metadata are preserved.                                                                                                                                                      |
+| Save and resume | Session snapshots, run events, traces, artifacts, loop/workflow checkpoints, and memory stores make sessions recoverable.                                                                                                                                             |
+| Verification    | [Verification](/guide/verification) runs named checks and returns reports, summaries, artifacts, traces, and replay data.                                                                                                                                             |
+
+## What is new in v7.0
+
+- Session-owned Workspace Retrieval builds one bounded text catalog
+  asynchronously, reuses incremental BM25 postings, and can publish exact
+  in-memory vector partitions without delaying session construction or adding
+  a vector database.
+- Dense semantics are explicitly host-enabled. Exact search, glob, BM25, Code
+  Intelligence, RRF, and the optional deterministic reranker run locally on
+  CPU; a host can inject an in-process CPU embedding callback when semantic
+  search is useful.
+- Rust, Node.js, Python, and Go expose typed line, fixed-window, and recursive
+  chunking, readiness and batching metrics, optional deterministic reranking,
+  cancellation, current-source digest verification, and bounded cleanup.
+  Non-text assets are rejected before chunking or embedding.
+- Model-bound run evidence records the effective capability and policy
+  identity, retrieval generation, input shape, repeated Tool-result context,
+  and normalized usage without retaining new prompt, source, vector,
+  credential, or endpoint plaintext.
+
+Go consumers must use the v7 module path:
+`github.com/A3S-Lab/Code/sdk/go/v7`.
+
+v6.9 introduced the shared priority/FIFO scheduler, bounded personal and
+project instruction chains, governed lifecycle hooks, isolated Harness Git
+worktrees, deterministic Tool-result evidence, and exact cognitive-package
+generation bindings.
+
+v6.8 presents one compact `search` schema for grep, glob, and dependency-free
+BM25 ranking, plus one model-visible `task` schema for focused or bounded
+fan-out delegation. Legacy direct host aliases remain readable without
+consuming model schema tokens. The same release adds exact, replay-safe run
+admission for headless hosts and exposes its snapshot/replay result through the
+Node.js, Python, and Go SDKs.
+
+The v6.7 local `download` tool streams HTTP(S) resources through SSRF-safe
+redirect validation into adjacent temporary files, supports adaptive 1–4
+connection Range transfers, and can verify a 64-character
+`expected_sha256` before atomic promotion. It is a permission- and HITL-governed
+workspace mutation and is not registered for remote workspace backends. See
+[Tools](/guide/tools#binary-safe-local-downloads).
+
+Search uses a structurally gated cascade: a Chrome/Chromium tier included in
+the default Core feature set, HTTP/RSS engines, then native APIs. A completed
+cascade that remains below the structural retrieval requirements fails closed
+instead of presenting weak candidates as successful evidence. No external
+semantic verifier or reranker is required. Delegated contexts share bulkheads,
+retry budgets, and identical-request coalescing; see
+[Tools](/guide/tools#structurally-gated-web-search).
+
+A run roughly follows this path:
+
+```text
+Agent / AgentSession
+  -> collect project context
+  -> optional plan
+  -> select tools or child tasks
+  -> check permission and ask the user when needed
+  -> execution
+  -> publish events and verification results
+  -> save the session
+```
+
+## Install
+
+For the interactive terminal workspace, run the installer for your platform:
+
+<Tabs>
+<Tab label="macOS / Linux">
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.sh | sh
+```
+
+</Tab>
+<Tab label="Windows">
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
+```
+
+</Tab>
+</Tabs>
+
+The scripts select the release archive for the current system and architecture
+and verify its SHA-256 digest. You can also use
+`brew install a3s-lab/tap/a3s` or `cargo install a3s`.
+
+Install an SDK when embedding A3S Code:
+
+```bash
+npm install @a3s-lab/code
+pip install a3s-code
+cargo add a3s-code-core
+go get github.com/A3S-Lab/Code/sdk/go/v7
+```
+
+## Configure
+
+A3S Code uses ACL. Keep real API keys, private model endpoints, local config
+paths, and tenant/user identifiers out of commits. Commit templates that resolve
+credentials from the environment.
+
+```acl
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+
+storage_backend = "file"
+sessions_dir = ".a3s/sessions"
+```
+
+`auto_parallel = false` disables automatic parallel child-agent fan-out only.
+Manual `task` calls and SDK `session.tasks(...)` fan-out remain available unless
+manual delegation is disabled separately.
+
+## Use the TUI
+
+Run `a3s code` from the workspace you want the agent to inspect:
+
+```bash
+a3s code
+a3s code resume <session-id>
+a3s code update
+```
+
+The TUI discovers config from `A3S_CONFIG_FILE`, then `.a3s/config.acl` walking
+upward from the current directory, then `~/.a3s/config.acl`.
+
+Common first-run flow:
+
+```text
+/init          # inspect the repository and create or update AGENTS.md
+/model         # pick a configured provider or account-backed model
+/effort        # choose low, medium, high, xhigh, max, or ultracode
+/ide           # open the workspace tree and terminal editor
+/help          # open the full command and shortcut guide
+```
+
+## Rust Runtime Quick Start
+
+```rust
+use a3s_code_core::{Agent, AgentEvent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/path/to/workspace")
+        .options(
+            SessionOptions::new()
+                .with_planning(true)
+                .with_max_parallel_tasks(4)
+                .with_tool_timeout(120_000),
+        )
+        .build()
+        .await?;
+
+    let result = session
+        .send("Find the authentication entry points.", None)
+        .await?;
+    println!("{}", result.text);
+
+    let (mut rx, _handle) = session
+        .stream("Summarize the test strategy.", None)
+        .await?;
+    while let Some(event) = rx.recv().await {
+        match event {
+            AgentEvent::TextDelta { text } => print!("{text}"),
+            AgentEvent::End { .. } => break,
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+```
+
+Rust construction is async-first. The synchronous `Agent::session` method only
+works when memory and the other required resources are already initialized;
+options that require async setup return
+`CodeError::AsyncSessionBuildRequired`. A session-option MCP manager always uses
+the async path while discovering tools.
+
+Calls such as `session.tool(...)` come from your application, not the model.
+Check access in your application before exposing them to users.
+
+## Continue reading
+
+- [A3S Code TUI](/guide/tui) explains installation, config discovery, slash commands, and effort profiles.
+- [SDKs and APIs](/api/#go-module-and-bridge) explains Go module and bridge installation; the Go examples then stay beside Node.js and Python throughout the shared guides.
+- [Filesystem-first](/guide/filesystem-first) covers `AGENTS.md`, ACL, AgentDir, Skills, tools, and schedules.
+- [API contract](/guide/api-contract) lists the Node.js API covered by integration tests.
+- [Sessions](/guide/sessions) covers creation, streaming, run state, saving, resuming, and cancellation.
+- [Tools](/guide/tools) covers direct calls, typed errors, structured output, and QuickJS programs.
+- [Workspace retrieval](/guide/context#workspace-retrieval) covers opt-in semantics, chunking, lifecycle, quality metrics, and safe CPU-only defaults.
+- [Tasks](/guide/tasks) and [orchestration](/guide/orchestration) cover child agents and fixed workflows.
+- [Security](/guide/security), [hooks](/guide/hooks), and [verification](/guide/verification) cover checks before, during, and after execution.
+- [Memory](/guide/memory) and [persistence](/guide/persistence) cover reusable facts and session recovery.

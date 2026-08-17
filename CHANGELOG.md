@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-08-17
+
 ### Added
 
 - Added versioned `run_capability_bound`, `model_input_bound`, and
@@ -96,6 +98,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   amplification, zero non-text inputs, and complete release. The small matrix
   qualifies portability but does not change the compatible defaults.
 
+### Changed
+
+- Bumped the Rust, Node.js, Python, bootstrap, and Go bridge release line to
+  7.0.0. The Go module now uses the required major-version path
+  `github.com/A3S-Lab/Code/sdk/go/v7`.
+- The Go SDK now selects Core's built-in security provider through the typed
+  `DefaultSecurityProvider` session option. The legacy `DefaultSecurity`
+  boolean remains deprecated wire compatibility, and ambiguous or unknown
+  provider specifications fail closed in the bridge.
+- Node.js and Python session construction now reject unknown security, memory,
+  and session-store objects instead of silently disabling the requested
+  security or persistence boundary.
+
 ### Fixed
 
 - Kept post-terminal background model helpers out of a completed Run's bound
@@ -105,6 +120,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `include_str!` tests exercise multiline duplicate and collision attacks
   instead of silently retaining the original valid fixture after a CRLF
   checkout.
+- Made generated event-protocol checks insensitive to host line endings while
+  continuing to reject any semantic drift across the Rust, Node.js, Python,
+  and Go declarations.
+- Made the Windows local shell fail closed when PowerShell cannot start instead
+  of reinterpreting PowerShell syntax through `cmd.exe`.
+- Made cancellation during language-server initialization or settling kill and
+  reap the child process before returning, with deterministic lifecycle tests
+  that reuse one compiled fake server and bound watcher/process concurrency.
+- Made atomic file-session replacement tolerate bounded transient Windows
+  sharing, lock, and access-denied races while continuing to fail closed for
+  permanent filesystem errors.
 
 ## [6.9.0] - 2026-08-12
 

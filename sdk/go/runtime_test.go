@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/A3S-Lab/Code/sdk/go/v6/internal/bridge"
+	"github.com/A3S-Lab/Code/sdk/go/v7/internal/bridge"
 )
 
 func TestBridgeHelperProcess(t *testing.T) {

@@ -639,6 +639,26 @@ for pending in session.pending_confirmations():
 For the streaming event-driven loop used by UIs, see
 `examples/hitl_confirmation_loop.py`.
 
+For unattended execution, use a deny-by-default allow-list and omit
+`confirmation_policy`. Any unexpected `Ask` or tool-level escalation then
+fails closed because no confirmation channel exists:
+
+```python
+opts = SessionOptions()
+opts.permission_policy = PermissionPolicy(
+    allow=["read(*)", "search(*)", "ls(*)"],
+    default_decision="deny",
+)
+opts.security_provider = DefaultSecurityProvider()
+session = agent.session(".", opts)
+```
+
+Do not use `ConfirmationPolicy(enabled=False)` as an unattended policy: that
+compatibility mode deliberately auto-approves `Ask`. The security provider
+sanitizes data but does not sandbox processes, and `tool()` remains a trusted
+control-plane API; use `governed_tool()` for invocations not already authorized
+by the host.
+
 ## Delegation
 
 Routine multi-agent work uses the model-visible `task` tool. Use

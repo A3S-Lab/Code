@@ -1,0 +1,215 @@
+---
+title: '执行通道队列'
+description: '将某条执行通道路由到外部工作进程，并显式排空其待处理任务。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 执行通道队列
+
+默认情况下，A3S Code 会在进程内运行每一个任务，没有任何队列。lane 队列属于**可选基础设施**：为某条 lane 注册一个外部 handler 后，路由到该 lane 的工具不会由 agent 执行，而是排入队列、等待外部 worker 取走。随后你自己排空这些待处理任务，按需运行它们，再把结果回报回来。只有当外部 worker 确实是你架构的一部分时，才需要用到它。
+
+共有四条 lane：`control`、`query`、`execute` 和 `generate`。每个 handler 的 `mode` 可以是 `internal`（默认）、`external` 或 `hybrid`。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    queue::{
+        ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
+        TaskHandlerMode,
+    },
+    Agent, SessionOptions,
+};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_queue_config(SessionQueueConfig::default()),
+        )
+        .build()
+        .await?;
+
+    session
+        .set_lane_handler(
+            SessionLane::Execute,
+            LaneHandlerConfig {
+                mode: TaskHandlerMode::External,
+                timeout_ms: 300_000,
+            },
+        )
+        .await?;
+    println!("队列已启用：{}", session.has_queue());
+
+    for task in session.pending_external_tasks().await {
+        println!(
+            "待处理：{} {:?} {}",
+            task.task_id, task.lane, task.command_type
+        );
+        session
+            .complete_external_task(
+                &task.task_id,
+                ExternalTaskResult {
+                    success: true,
+                    result: json!({ "note": "由外部 worker 完成" }),
+                    error: None,
+                },
+            )
+            .await;
+    }
+
+    println!("lane 队列已清空");
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('./agent.acl');
+const session = agent.session(process.cwd(), { queueConfig: {} });
+
+// 把 "execute" 执行通道路由到外部工作进程。
+// 智能体不会运行这条通道上的工具，而是把它们放入队列，
+// 等待外部工作进程领取并完成。
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+
+// 会话配置了 queueConfig，因此 hasQueue() 返回 true。
+console.log('queue active:', session.hasQueue());
+
+// 排空等待外部工作进程处理的任务。
+const pending = await session.pendingExternalTasks();
+for (const task of pending) {
+  console.log('pending:', task.task_id, task.lane, task.command_type);
+
+  // ... hand off to your worker, run it, then report the outcome back:
+  await session.completeExternalTask(task.task_id, {
+    success: true,
+    result: { note: 'done by external worker' },
+  });
+}
+
+console.log('lane queue drained');
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, SessionQueueConfig
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.queue_config = SessionQueueConfig()
+session = agent.session(".", opts)
+
+# 把 "execute" 执行通道路由到外部工作进程。
+# 智能体不会运行这条通道上的工具，而是把它们放入队列，
+# 等待外部工作进程领取并完成。
+session.set_lane_handler("execute", "external", 300000)
+
+# 会话配置了 queue_config，因此 has_queue() 返回 True。
+print("queue active:", session.has_queue())
+
+# 排空等待外部工作进程处理的任务。
+pending = session.pending_external_tasks()
+for task in pending:
+    print("pending:", task["task_id"], task["lane"], task["command_type"])
+
+    # ... hand off to your worker, run it, then report the outcome back:
+    session.complete_external_task(
+        task["task_id"],
+        success=True,
+        result={"note": "done by external worker"},
+    )
+
+print("lane queue drained")
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v7"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		QueueConfig: &code.SessionQueueConfig{},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	err = session.SetLaneHandler(ctx, code.LaneExecute, code.LaneHandlerConfig{
+		Mode:      "external",
+		TimeoutMS: 300_000,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	active, err := session.HasQueue(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("queue active:", active)
+
+	pending, err := session.PendingExternalTasks(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, task := range pending {
+		fmt.Println("pending:", task.TaskID, task.Lane, task.CommandType)
+		_, err = session.CompleteExternalTask(ctx, task.TaskID, code.ExternalTaskResult{
+			Success: true,
+			Result:  json.RawMessage(`{"note":"done by external worker"}`),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+说明：
+
+- **默认路径不含队列。** 仅当会话创建时传入 `queueConfig` / `queue_config` /
+  `QueueConfig`，`hasQueue()` / `has_queue()` / `HasQueue()` 才返回 `true`。未配置
+  queue 时，lane handler 没有可修改的队列。
+- 每个待处理任务都带有 `task_id`、`session_id`、`lane`、`command_type`、`payload` 和 `timeout_ms`。工作完成后，把 `task_id` 传回给 `completeExternalTask` / `complete_external_task` / `CompleteExternalTask`。
+- 结果结构为 `{ success, result?, error? }`——`result` 可承载任意可 JSON 序列化的载荷，`error` 是失败时的可选消息。`completeExternalTask` / `complete_external_task` 在找到并完成任务时返回 `true`，否则返回 `false`。
+- 在 Python 中这些队列方法是同步的；在 Node 中 `setLaneHandler`、`pendingExternalTasks` 和 `completeExternalTask` 返回 promise，而 `hasQueue` 是同步的。
+- Go 队列调用接收 `context.Context`；Node 返回 promise；Python 使用同步方法。

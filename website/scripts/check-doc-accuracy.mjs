@@ -410,7 +410,7 @@ function nodeClassMethods(className, nextClassName) {
   for (const match of classBody.matchAll(
     /^\s{2}(?:static\s+)?([A-Za-z][A-Za-z0-9_]*)\s*(?:<[^>\n]+>)?\s*\(/gm,
   )) {
-    methods.add(match[1]);
+    if (match[1] !== 'constructor') methods.add(match[1]);
   }
   return methods;
 }
@@ -431,6 +431,7 @@ const pythonSessionSources = await Promise.all(
     'session_memory.rs',
     'session_queue_api.rs',
     'session_tools.rs',
+    'workspace_retrieval.rs',
   ].map((file) =>
     readFile(path.join(repositoryRoot, 'sdk', 'python', 'src', file), 'utf8'),
   ),
@@ -466,7 +467,12 @@ const nodeOnlySessionConvenienceMethods = new Set([
   'closeAsync',
 ]);
 const pythonSessionCapabilities = new Set(
-  [...pythonMethodsByReceiver.Session].map(normalizedMethodName),
+  [...pythonMethodsByReceiver.Session].flatMap((method) => {
+    const normalized = normalizedMethodName(method);
+    return normalized.endsWith('async')
+      ? [normalized, normalized.slice(0, -'async'.length)]
+      : [normalized];
+  }),
 );
 const goSessionCapabilities = new Set(
   [...goMethods.Session].map(normalizedMethodName),

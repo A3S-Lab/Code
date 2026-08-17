@@ -4,6 +4,8 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-08-17
+
 ### Added
 
 - Added typed, session-bound ephemeral workspace retrieval with host-injected
@@ -11,6 +13,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
   hybrid search DTOs.
 - Added the typed `DeterministicWorkspaceReranker` opt-in with Core-aligned
   defaults and pre-provider validation; omitting it preserves RRF-only.
+
+### Changed
+
+- Added typed line, fixed-window, and recursive workspace chunking choices,
+  semantic readiness controls, batching metrics, and model-bound retrieval
+  evidence from Core 7.0.0.
+- Unknown security, memory, and session-store extension objects now fail
+  session construction instead of silently disabling the requested boundary.
 
 ## [6.9.0] - 2026-08-12
 

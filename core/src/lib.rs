@@ -132,6 +132,8 @@ pub mod task_scheduler;
 pub mod telemetry;
 #[cfg(feature = "telemetry")]
 pub mod telemetry_otel;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) mod text;
 pub(crate) mod tool_confirmation;
 pub mod tools;

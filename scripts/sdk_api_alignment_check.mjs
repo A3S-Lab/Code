@@ -550,6 +550,7 @@ assertContainsAll('Go SessionOptions', goSessionOptions, [
   'SkillDirs',
   'FileMemoryDir',
   'FileSessionStoreDir',
+  'SecurityProvider',
   'SessionID',
   'TenantID',
   'Principal',
@@ -568,6 +569,16 @@ assertContainsAll('Go SessionOptions', goSessionOptions, [
   'MaxParallelTasks',
   'PromptSlots',
 ]);
+assert.match(
+  go,
+  /^\s*SecurityProvider\s+\*DefaultSecurityProvider\s+`json:"security_provider,omitempty"`/m,
+  'Go SessionOptions.SecurityProvider must remain a typed provider object',
+);
+assert.match(
+  go,
+  /^func\s+NewDefaultSecurityProvider\(\)\s+\*DefaultSecurityProvider\s*\{/m,
+  'Go must expose the DefaultSecurityProvider constructor',
+);
 
 const eventCatalog = eventProtocolCatalog(eventProtocol);
 for (const { constant, wireName } of eventCatalog) {

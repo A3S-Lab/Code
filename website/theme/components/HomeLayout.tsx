@@ -159,16 +159,16 @@ const capabilityCards = [
   },
   {
     className: 'a3s-bento-card--workspace',
-    eyebrow: { zh: '工作区', en: 'WORKSPACE' },
+    eyebrow: { zh: '工作区检索', en: 'WORKSPACE RETRIEVAL' },
     title: {
-      zh: '本地、S3 与远程 Workspace 分开声明能力',
-      en: 'Local, S3, and remote workspaces declare capabilities',
+      zh: '异步构建，会话关闭时完整释放',
+      en: 'Build asynchronously; release with the session',
     },
     body: {
-      zh: '代码导航与文件工具都来自你选择的 Workspace。远程或对象存储后端不能运行本地命令时，Bash 和 Git 就不会暴露给模型。',
-      en: 'Code navigation and file tools come from the workspace you select. If a remote or object-backed workspace cannot run local commands, Bash and Git are not shown to the model.',
+      zh: '增量 BM25、可选宿主 Embedding、内存向量分区和 Hybrid RRF 共用一个有界文本目录；不需要向量数据库，非文本文件不会进入切块或向量化。',
+      en: 'Incremental BM25, optional host embeddings, in-memory vector partitions, and hybrid RRF share one bounded text catalog. No vector database is required, and non-text files never enter chunking or embeddings.',
     },
-    tags: ['symbols', 'diagnostics', 'local / S3 / remote'],
+    tags: ['BM25', 'semantic', 'RRF', 'CPU rerank'],
   },
 ];
 
@@ -220,13 +220,13 @@ const surfaces = [
   {
     key: 'go',
     name: 'Go',
-    packageName: 'sdk/go/v6',
-    href: 'https://pkg.go.dev/github.com/A3S-Lab/Code/sdk/go/v6',
+    packageName: 'sdk/go/v7',
+    href: 'https://pkg.go.dev/github.com/A3S-Lab/Code/sdk/go/v7',
     description: {
       zh: '纯 Go API 通过长驻桥接进程提供会话、事件流、工具、验证和 MCP，无需 CGO。',
       en: 'A pure-Go API for sessions, event streams, tools, verification, and MCP through a long-lived bridge, without CGO.',
     },
-    command: 'go get github.com/A3S-Lab/Code/sdk/go/v6',
+    command: 'go get github.com/A3S-Lab/Code/sdk/go/v7',
   },
 ];
 
@@ -256,10 +256,10 @@ const runtimeLayers = [
     code: 'L03 / INTELLIGENCE',
     title: { zh: '上下文、记忆与模型', en: 'Context, memory, and models' },
     body: {
-      zh: 'ContextAssembler 挑选输入并控制大小，Memory 保存可复用信息，模型适配器负责流式输出、工具调用、结构化结果和取消。',
-      en: 'ContextAssembler selects and sizes inputs, memory keeps reusable information, and model adapters handle streaming, tool calls, structured output, and cancellation.',
+      zh: 'ContextAssembler 控制输入；会话目录异步提供 BM25 与可选语义检索；Memory 保存可复用信息；模型适配器负责流式输出、工具调用和取消。',
+      en: 'ContextAssembler bounds input; the session catalog serves BM25 and optional semantic retrieval asynchronously; memory keeps reusable information; model adapters handle streaming, tools, and cancellation.',
     },
-    tags: ['ContextAssembler', 'Memory', 'LlmClient'],
+    tags: ['ContextAssembler', 'BM25 / RRF', 'Memory', 'LlmClient'],
   },
   {
     id: 'governance',

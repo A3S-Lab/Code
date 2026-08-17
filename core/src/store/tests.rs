@@ -1166,6 +1166,29 @@ async fn test_file_store_concurrent_save() {
     assert_eq!(loaded.unwrap().id, id);
 }
 
+#[cfg(windows)]
+#[test]
+fn test_file_store_atomic_replace_retries_only_transient_windows_errors() {
+    use std::io::Error;
+
+    for raw_os_error in [5, 32, 33] {
+        assert!(super::file_store::windows_atomic_replace_retry_delay(
+            &Error::from_raw_os_error(raw_os_error),
+            1,
+        )
+        .is_some());
+    }
+    assert!(super::file_store::windows_atomic_replace_retry_delay(
+        &Error::from_raw_os_error(87),
+        1,
+    )
+    .is_none());
+    assert!(
+        super::file_store::windows_atomic_replace_retry_delay(&Error::from_raw_os_error(5), 6,)
+            .is_none()
+    );
+}
+
 #[tokio::test]
 async fn test_file_store_load_nonexistent_returns_none() {
     let dir = tempdir().unwrap();

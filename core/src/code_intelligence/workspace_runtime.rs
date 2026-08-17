@@ -1,8 +1,6 @@
 //! One lazily-started semantic runtime generation for a workspace layout.
 
 #[cfg(test)]
-mod integration_test_support;
-#[cfg(test)]
 mod integration_tests;
 mod lifecycle;
 mod support;

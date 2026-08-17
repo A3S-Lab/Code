@@ -1,0 +1,168 @@
+---
+title: '自动压缩'
+description: '让运行时自动将长会话保持在上下文预算内'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 自动压缩
+
+A3S Code 可以替你将长对话保持在模型的上下文预算内。启用 `autoCompact` 后，
+runtime 会持续监测上下文用量；一旦超过 `autoCompactThreshold`，较早的轮次就会被
+压缩成一份持续更新的摘要，让 agent 在大量步骤中始终保持连贯，而无需你手动管理
+token。续写则处理另一个方向：当单条回复因长度被截断时，runtime 会自动继续生成，
+拼出完整回复。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let options = SessionOptions::new()
+        .with_auto_compact(true)
+        .with_auto_compact_threshold(0.75)
+        .with_continuation(true)
+        .with_max_continuation_turns(3);
+    let session = agent
+        .session_builder("/repo")
+        .options(options)
+        .build()
+        .await?;
+
+    for step in 0..50 {
+        session
+            .send(&format!("第 {step} 步：继续重构解析器"), None)
+            .await?;
+    }
+
+    println!("历史消息数：{}", session.history().len());
+    if let Some(memory) = session.memory() {
+        println!("最近记忆：{:#?}", memory.get_recent(5).await?);
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = agent.session('/repo', {
+  // 上下文用量超过阈值后压缩较早的回合。
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  // 模型因长度截断单次响应时自动续写。
+  continuationEnabled: true,
+  maxContinuationTurns: 3,
+});
+
+// 运行较长的多步骤任务。运行时会按需压缩较早的回合，
+// 应用不需要自行计算令牌。
+for (let i = 0; i < 50; i++) {
+  await session.send(`Step ${i}: continue refactoring the parser`);
+}
+
+// 检查会话当前携带的内容。
+console.log('history turns:', session.history().length);
+console.log('recent memory:', await session.memoryRecent(5));
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+# 上下文用量超过阈值后压缩较早的回合。
+opts.auto_compact = True
+opts.auto_compact_threshold = 0.75
+# 模型因长度截断单次响应时自动续写。
+opts.continuation_enabled = True
+opts.max_continuation_turns = 3
+session = agent.session("/repo", opts)
+
+# 运行较长的多步骤任务。运行时会按需压缩较早的回合，
+# 应用不需要自行计算令牌。
+for i in range(50):
+    session.send(f"Step {i}: continue refactoring the parser")
+
+# 检查会话当前携带的内容。
+print("history turns:", len(session.history()))
+print("recent memory:", session.memory_recent(5))
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v7"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	options := &code.SessionOptions{
+		AutoCompact:          code.Ptr(true),
+		AutoCompactThreshold: code.Ptr(float32(0.75)),
+		ContinuationEnabled:  code.Ptr(true),
+		MaxContinuationTurns: code.Ptr(uint32(3)),
+	}
+	session, err := agent.Session(ctx, "/repo", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	for step := 0; step < 50; step++ {
+		prompt := fmt.Sprintf("第 %d 步：继续重构解析器", step)
+		if _, err := session.Run(ctx, prompt); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	history, err := session.History(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("历史消息数：", len(history))
+}
+```
+
+</Tab>
+</Tabs>
+
+长 session 若希望由 runtime 替你管理 context pressure，就使用自动压缩。
+`autoCompactThreshold` / `auto_compact_threshold` 是触发压缩的上下文窗口占比
+（0.0–1.0，默认 0.8）；调低它可以更早触发压缩。四种 SDK 都能通过各自的
+history API 检查当前会话。四种 SDK 也都提供直接读取最近记忆的接口：
+`memoryRecent` / `memory_recent` / `MemoryRecent`。

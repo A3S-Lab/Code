@@ -4769,6 +4769,8 @@ async fn test_resume_session_restores_verification_reports() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_verify_commands_builds_report_from_shell_results() {
+    #[cfg(windows)]
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp_dir = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent

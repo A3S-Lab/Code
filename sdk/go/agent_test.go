@@ -2,11 +2,12 @@ package code
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
 
-	"github.com/A3S-Lab/Code/sdk/go/v6/internal/bridge"
+	"github.com/A3S-Lab/Code/sdk/go/v7/internal/bridge"
 )
 
 func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
@@ -53,6 +54,18 @@ func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
 	want := []string{"agent_task_scheduler_stats", "session_task_scheduler_stats"}
 	if got := runtime.operations(); !slices.Equal(got, want) {
 		t.Fatalf("operations = %v, want %v", got, want)
+	}
+}
+
+func TestDefaultSecurityProviderUsesTypedSessionOption(t *testing.T) {
+	encoded, err := json.Marshal(SessionOptions{
+		SecurityProvider: NewDefaultSecurityProvider(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `{"security_provider":{}}` {
+		t.Fatalf("typed security provider JSON = %s", encoded)
 	}
 }
 

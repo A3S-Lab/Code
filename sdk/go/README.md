@@ -14,7 +14,7 @@ versioned JSONL protocol.
 Add the Go module:
 
 ```bash
-go get github.com/A3S-Lab/Code/sdk/go/v6
+go get github.com/A3S-Lab/Code/sdk/go/v7
 ```
 
 Download the `a3s-code-go-bridge` asset for the same A3S Code release from
@@ -52,7 +52,7 @@ import (
 	"fmt"
 	"log"
 
-	code "github.com/A3S-Lab/Code/sdk/go/v6"
+	code "github.com/A3S-Lab/Code/sdk/go/v7"
 )
 
 func main() {
@@ -64,9 +64,10 @@ func main() {
 	defer agent.Close(context.Background())
 
 	session, err := agent.Session(ctx, ".", &code.SessionOptions{
-		PlanningMode:     code.PlanningAuto,
-		MaxToolRounds:    code.Ptr(uint(24)),
-		MaxParallelTasks: code.Ptr(uint(4)),
+		PlanningMode:      code.PlanningAuto,
+		MaxToolRounds:     code.Ptr(uint(24)),
+		MaxParallelTasks:  code.Ptr(uint(4)),
+		SecurityProvider: code.NewDefaultSecurityProvider(),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -263,6 +264,10 @@ drift. Decode `ToolCallResult.Metadata` and read `a3s_tool_result_evidence` for
 the original/projected sizes and token estimates, SHA-256 digests, loss mode,
 repeat key, transform algorithm, and immutable inline or artifact reference.
 
+`SecurityProvider` selects the built-in taint-tracking and output-sanitization
+provider through a typed object. The older `DefaultSecurity` boolean remains
+available for wire compatibility but is deprecated; do not set both options.
+
 ## Streaming
 
 Every event uses the shared, lossless `EventEnvelopeV1` shape. `Event.Type` is
@@ -323,6 +328,37 @@ report, err := session.VerifyCommands(ctx, "release", []code.VerificationCommand
 })
 _, _, _, _, _ = content, result, matches, governed, report
 ```
+
+For an interactive host, ask by default and enable a rejecting confirmation
+channel. For an unattended host, omit the confirmation policy and allow only
+the exact tools it needs:
+
+```go
+interactive := &code.SessionOptions{
+	PermissionPolicy: &code.PermissionPolicy{DefaultDecision: "ask"},
+	ConfirmationPolicy: &code.ConfirmationPolicy{
+		Enabled:          code.Ptr(true),
+		DefaultTimeoutMS: code.Ptr(uint64(30_000)),
+		TimeoutAction:    "reject",
+	},
+	SecurityProvider: code.NewDefaultSecurityProvider(),
+}
+
+unattended := &code.SessionOptions{
+	PermissionPolicy: &code.PermissionPolicy{
+		Allow:           []string{"read(*)", "search(*)", "ls(*)"},
+		DefaultDecision: "deny",
+	},
+	SecurityProvider: code.NewDefaultSecurityProvider(),
+}
+_, _ = interactive, unattended
+```
+
+Do not use `ConfirmationPolicy{Enabled: code.Ptr(false)}` as an unattended
+policy: that compatibility mode deliberately auto-approves `Ask`. The security
+provider sanitizes data but does not sandbox processes, and `Tool` remains a
+trusted control-plane API; use `GovernedTool` for invocations not already
+authorized by the host.
 
 The stable surface is aligned with the Node.js and Python SDKs for
 serializable Agent and Session capabilities, including:

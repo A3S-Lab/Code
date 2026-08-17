@@ -1,0 +1,209 @@
+---
+title: 'Lifecycle Hooks'
+description: 'Register, count, and unregister lifecycle event callbacks that observe and gate agent activity.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Lifecycle Hooks
+
+Hooks let you observe and gate agent activity as it happens. You register a named
+callback against a lifecycle event, the runtime invokes it at that point, and the
+callback returns a decision such as `{ action: "continue" }`. Use hooks for
+auditing, redaction, logging, or enforcing policy without changing the agent's
+prompt.
+
+The lifecycle is symmetric: `registerHook` adds a callback by name, `hookCount`
+tells you how many are active, and `unregisterHook` removes one by its name.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::{
+    hooks::{
+        Hook, HookConfig, HookEvent, HookEventType, HookHandler, HookMatcher, HookResponse,
+    },
+    Agent,
+};
+
+struct ContinueHandler;
+
+impl HookHandler for ContinueHandler {
+    fn handle(&self, event: &HookEvent) -> HookResponse {
+        println!("observed {}", event.event_type());
+        HookResponse::continue_()
+    }
+}
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let hook = Hook::new("observe-env-read", HookEventType::PreToolUse)
+        .with_matcher(HookMatcher::path("**/.env*"))
+        .with_config(HookConfig {
+            priority: 100,
+            ..HookConfig::default()
+        });
+    session.register_hook(hook)?;
+    session.register_hook_handler("observe-env-read", Arc::new(ContinueHandler))?;
+
+    println!("active hooks: {}", session.hook_count());
+    session
+        .send("Read the project README and summarize it.", None)
+        .await?;
+
+    session.unregister_hook_handler("observe-env-read")?;
+    session.unregister_hook("observe-env-read")?;
+    println!("active hooks: {}", session.hook_count());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session(process.cwd());
+
+// Register a named hook on a lifecycle event. The callback must NOT throw —
+// always return a decision such as { action: 'continue' }.
+session.registerHook(
+  'observe-env-read',
+  'pre_tool_use',
+  { pathPattern: '**/.env*' },
+  { priority: 100 },
+  () => ({ action: 'continue' }),
+);
+
+console.log('active hooks:', session.hookCount()); // 1
+
+await session.run('Read the project README and summarize it.');
+
+// Remove the hook by name when you no longer need it.
+session.unregisterHook('observe-env-read');
+console.log('active hooks:', session.hookCount()); // 0
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session('.', SessionOptions())
+
+# Register a named hook on a lifecycle event. The callback returns a decision.
+session.register_hook(
+    'observe-env-read',
+    'pre_tool_use',
+    {'pathPattern': '**/.env*'},
+    {'priority': 100},
+    lambda: {'action': 'continue'},
+)
+
+print("active hooks:", session.hook_count())  # 1
+
+session.run("Read the project README and summarize it.")
+
+# Remove the hook by name when you no longer need it.
+session.unregister_hook('observe-env-read')
+print("active hooks:", session.hook_count())  # 0
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v7"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(ctx)
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(ctx)
+
+	priority := 100
+	err = session.RegisterHookWithHandler(ctx, code.Hook{
+		ID:        "observe-env-read",
+		EventType: "pre_tool_use",
+		Matcher:   &code.HookMatcher{PathPattern: "**/.env*"},
+		Config:    &code.HookConfig{Priority: &priority},
+	}, func(_ context.Context, event json.RawMessage) (*code.HookResponse, error) {
+		fmt.Println("hook event:", string(event))
+		return &code.HookResponse{Action: "continue"}, nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	count, err := session.HookCount(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("active hooks:", count)
+
+	if _, err = session.Run(ctx, "Read the project README and summarize it."); err != nil {
+		log.Fatal(err)
+	}
+
+	if _, err = session.UnregisterHook(ctx, "observe-env-read"); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+Notes:
+
+- A hook callback returns a decision. Return `{ action: "continue" }`
+  (Node) / `{"action": "continue"}` (Python) /
+  `&code.HookResponse{Action: "continue"}` (Go) to let the agent proceed.
+- Permanent denials return `block` with a reason. Temporary denials return
+  `retry` with a reason and `delayMs` (Node), `delay_ms` (Python), or `DelayMS`
+  (Go). The denied tool result exposes `error_kind.type = "hook_denied"`, plus
+  `retryable` and `retry_after_ms`, so hosts do not need to parse output text.
+- The matcher (`{ pathPattern: '**/.env*' }`) scopes the hook to events whose
+  path matches the pattern, and `{ priority: 100 }` orders hooks on the same
+  event (lower values run first).
+- Node hook callbacks must **not** throw — an uncaught throw can abort the
+  process. Keep the handler body total and always return a decision.
+- `hookCount` / `hook_count` / `HookCount` reflects the number of currently
+  registered hooks, which is handy in tests to assert that registration and
+  cleanup happened.
+- `unregisterHook` / `unregister_hook` / `UnregisterHook` takes the name you registered with.
+  Always tear down hooks you no longer need so they do not leak across runs.
+- Validate the event path you depend on before using a hook as a production gate.
