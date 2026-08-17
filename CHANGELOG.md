@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.0.0] - 2026-08-17
 
+### Fixed
+
+- Updated the publishable `a3s-memory` baseline to 0.1.3 so crates.io builds
+  retain the in-memory vector API used by workspace retrieval.
+
 ### Added
 
 - Added versioned `run_capability_bound`, `model_input_bound`, and
