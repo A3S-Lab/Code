@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [7.0.1] - 2026-08-17
+
+### Fixed
+
+- Updated the bundled Core release to use the crates.io-compatible
+  `a3s-memory` 0.1.3 baseline. The public Python API is unchanged.
+
 ## [7.0.0] - 2026-08-17
 
 ### Added

@@ -42,9 +42,9 @@ export default defineConfig({
     ],
   },
   multiVersion: {
-    default: 'v7.0.0',
+    default: 'v7.0.1',
     versions: [
-      'v7.0.0',
+      'v7.0.1',
       'v6.9.0',
       'v6.8.0',
       'v6.7.0',

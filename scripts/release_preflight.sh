@@ -11,8 +11,48 @@ for candidate in "$WORKSPACE/../.." "$WORKSPACE" "$WORKSPACE/../../.."; do
     break
   fi
 done
+CONFIG_FILE="${A3S_CONFIG_FILE:-$CONFIG_ROOT/.a3s/config.acl}"
+unset A3S_CONFIG_FILE
+
+raise_open_file_limit() {
+  local soft_limit hard_limit target_limit
+  soft_limit="$(ulimit -Sn)"
+  hard_limit="$(ulimit -Hn)"
+  target_limit=10240
+
+  if [ "$soft_limit" = "unlimited" ]; then
+    return
+  fi
+  case "$soft_limit" in
+    ''|*[!0-9]*)
+      echo "unable to determine the open-file soft limit: $soft_limit" >&2
+      exit 2
+      ;;
+  esac
+
+  if [ "$hard_limit" != "unlimited" ]; then
+    case "$hard_limit" in
+      ''|*[!0-9]*)
+        echo "unable to determine the open-file hard limit: $hard_limit" >&2
+        exit 2
+        ;;
+    esac
+    if [ "$hard_limit" -lt "$target_limit" ]; then
+      target_limit="$hard_limit"
+    fi
+  fi
+
+  if [ "$soft_limit" -lt "$target_limit" ]; then
+    if ! ulimit -Sn "$target_limit"; then
+      echo "failed to raise the open-file soft limit to $target_limit" >&2
+      exit 2
+    fi
+    echo "raised open-file soft limit from $soft_limit to $target_limit"
+  fi
+}
 
 cd "$WORKSPACE"
+raise_open_file_limit
 
 echo "[1/13] Checking patch hygiene"
 git diff --check
@@ -60,10 +100,9 @@ fi
 )
 
 echo "[11/13] Checking ACL env injection dry run"
-scripts/real_config_env_integration.sh --dry-run
+A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh --dry-run
 
 echo "[12/13] Checking real-provider ACL env smoke availability"
-CONFIG_FILE="${A3S_CONFIG_FILE:-$CONFIG_ROOT/.a3s/config.acl}"
 CONFIG_HAS_LITERAL_OPENAI_CREDS=0
 if [ -f "$CONFIG_FILE" ]; then
   CONFIG_HAS_LITERAL_OPENAI_CREDS="$(
@@ -93,13 +132,13 @@ if [ "${SKIP_REAL_PROVIDER:-0}" = "1" ]; then
   echo "skipped real-provider smoke by explicit SKIP_REAL_PROVIDER=1" >&2
   echo "[13/13] Skipping SDK real-provider smoke"
 elif [ -n "${A3S_OPENAI_API_KEY:-${MINIMAX_API_KEY:-}}" ] && [ -n "${A3S_OPENAI_BASE_URL:-${MINIMAX_BASE_URL:-}}" ]; then
-  scripts/real_config_env_integration.sh
+  A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh
   echo "[13/13] Running SDK real-provider smoke"
-  scripts/sdk_real_config_env_integration.sh
+  A3S_CONFIG_FILE="$CONFIG_FILE" scripts/sdk_real_config_env_integration.sh
 elif [ "$CONFIG_HAS_LITERAL_OPENAI_CREDS" = "1" ]; then
-  scripts/real_config_env_integration.sh
+  A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh
   echo "[13/13] Running SDK real-provider smoke"
-  scripts/sdk_real_config_env_integration.sh
+  A3S_CONFIG_FILE="$CONFIG_FILE" scripts/sdk_real_config_env_integration.sh
 elif [ "${REQUIRE_REAL_PROVIDER:-0}" = "1" ]; then
   echo "missing A3S_OPENAI_* / MINIMAX_* variables or literal openai credentials in config; real-provider smoke is required" >&2
   exit 2

@@ -7,12 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [7.0.0] - 2026-08-17
+## [7.0.1] - 2026-08-17
 
 ### Fixed
 
 - Updated the publishable `a3s-memory` baseline to 0.1.3 so crates.io builds
   retain the in-memory vector API used by workspace retrieval.
+- Added a registry dependency preflight that rejects unpublished Git dependency
+  baselines before the release build and publish jobs start.
+- Hardened the release preflight by isolating real-provider configuration to
+  its targeted smoke steps and raising low per-process open-file limits before
+  the parallel Rust test suites.
+
+## [7.0.0] - 2026-08-17
 
 ### Added
 
