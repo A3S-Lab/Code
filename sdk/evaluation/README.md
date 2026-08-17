@@ -76,6 +76,21 @@ $env:A3S_CODE_GO_BRIDGE_TEST_BINARY = `
 go -C .\sdk\go test -run '^TestWorkspaceRetrievalRealDeepSeek$' -count=1 -v
 ```
 
+Equivalent Bash commands are:
+
+```bash
+export A3S_REAL_EVAL_ROOT=/absolute/path/to/a3s
+
+node sdk/node/test_workspace_retrieval_real_deepseek.mjs
+
+PYTHONPATH="$PWD/sdk/python/python" \
+  python3 sdk/python/tests/test_workspace_retrieval_real_deepseek.py
+
+cargo build --locked -p a3s-code-go-bridge --bin a3s-code-go-bridge
+A3S_CODE_GO_BRIDGE_TEST_BINARY="$PWD/target/debug/a3s-code-go-bridge" \
+  go -C sdk/go test -run '^TestWorkspaceRetrievalRealDeepSeek$' -count=1 -v
+```
+
 Every successful language runner prints one
 `WSR_SDK_DEEPSEEK_EVAL=<json>` record using `report_schema_version = 1`.
 The normalized report includes:
@@ -123,6 +138,29 @@ zero non-text provider inputs, and zero vectors after close.
 | DeepSeek turn | 4,347 / 24,820 ms | 3,418 / 6,588 ms | 25,000 / 25,052 ms |
 | Session close | 5,008 / 5,013 ms | 5,012 / 5,017 ms | 5,012 / 5,015 ms |
 | Total DeepSeek tokens, three tasks | 14,140 | 14,609 | 14,093 |
+
+### v7.0.1 post-release rerun
+
+The 2026-08-17 rerun at Code `5aa9642` used the same fixture digest, typed
+options, embedding oracle, and `deepseek/deepseek-v4-pro` route. All three SDKs
+again passed 3/3 exact tasks and 3/3 one-Search protocols. Precision@5 remained
+0.2, returned-result precision 0.4286, Recall@5 1.0, MRR 0.5, nDCG@5 0.6309,
+and expected-path ranks 2/2/2. Each session retained the same 30-file,
+39-vector, 9,595-byte, 1.0x request-amplification, zero-non-text, and
+zero-post-close-vector evidence.
+
+| Observed metric, p50 / p95 | Node.js | Python | Go |
+| --- | ---: | ---: | ---: |
+| Session construction | 25 / 97 ms | 16 / 268 ms | 15 / 23 ms |
+| Index ready | 320 / 395 ms | 279 / 376 ms | 81 / 151 ms |
+| Time to first ready publication | 5 / 12 ms | 7 / 13 ms | 2 / 3 ms |
+| DeepSeek turn | 16,033 / 16,538 ms | 15,552 / 23,751 ms | 16,636 / 19,009 ms |
+| Session close | 3 / 10 ms | 1 / 2 ms | 0 / 14 ms |
+| Total DeepSeek tokens, three tasks | 14,540 | 14,784 | 14,171 |
+
+The rerun consumed 43,495 DeepSeek tokens across the nine SDK tasks. These
+remote timing samples remain diagnostic; the deterministic benchmark remains
+the release latency gate.
 
 The first Node live attempt passed the Search-call contract but returned the
 file stem `replay_fence` rather than the required declaration name, so it was

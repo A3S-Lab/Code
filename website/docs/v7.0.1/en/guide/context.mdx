@@ -102,11 +102,19 @@ API, GPU, bundled model, or runtime model download. Model revision, license,
 artifact verification, caching, and credentials remain the host's
 responsibility.
 
-### Lifecycle and ranking
+### Asynchronous vector projection lifecycle
+
+This is a session-owned, exact in-memory vector index, not a durable or shared
+vector database. Session construction returns before corpus embedding finishes.
+The background indexer reads admitted text, publishes immutable per-file
+partitions atomically, and reconciles later source revisions without
+re-embedding unchanged files. Reopening a session builds a new projection;
+closing it cancels outstanding provider work and must return vector records and
+accounted bytes to zero.
 
 ```text
 session construction -> return immediately
-                     `-> build text catalog in the background
+                     `-> build text catalog and vector partitions in the background
 
 query -> fuse independent ranks -> verify current source -> render evidence
 
@@ -118,6 +126,15 @@ use published coverage while construction continues. Hosts that need a
 stronger first-query boundary can wait for readiness for up to 30 seconds;
 timeout preserves the partial fallback, while cancellation or session close
 interrupts the wait.
+
+| State      | Vector projection                                       | Query behavior                                                    |
+| ---------- | ------------------------------------------------------- | ----------------------------------------------------------------- |
+| `building` | Valid file partitions publish atomically as they finish | Exact/BM25 stay available; semantic coverage may be partial       |
+| `ready`    | The observed source generation has full coverage        | Semantic and hybrid queries use the complete published generation |
+| `degraded` | Valid partitions remain; bounded failures are reported  | Lexical paths continue and semantic results expose partial status |
+| `closed`   | Indexing is cancelled and vectors are released          | Recreate a session before using semantic retrieval again          |
+
+### Ranking
 
 One immutable chunk catalog backs incremental BM25, optional exact in-memory
 vectors, stable source anchors, and exact-literal or Code Intelligence
@@ -166,6 +183,19 @@ egress, and cleanup. The locked cross-SDK DeepSeek fixture completes 3/3 exact
 tasks with Recall@5 1.0, MRR 0.5, 1.0x document request amplification, zero
 non-text inputs, and complete vector release. This is a portability gate, not
 a claim that one model or reranker is best for every repository.
+
+The `v7.0.1` post-release rerun at Code `5aa9642` repeated every gate on
+2026-08-17:
+
+| SDK     | Exact tasks / one-Search protocols | DeepSeek turn p50 / p95 | Tokens |
+| ------- | ---------------------------------: | ----------------------: | -----: |
+| Node.js |                              3 / 3 |      16,033 / 16,538 ms | 14,540 |
+| Python  |                              3 / 3 |      15,552 / 23,751 ms | 14,784 |
+| Go      |                              3 / 3 |      16,636 / 19,009 ms | 14,171 |
+
+All three arms retained Recall@5 1.0, MRR 0.5, 1.0x document-request
+amplification, zero non-text inputs, and complete post-close release. These
+remote timings are diagnostic rather than local retrieval latency objectives.
 
 Before rendering a result, A3S Code rereads the authoritative file and verifies
 the full-file digest and exact chunk byte range. Deleted, stale, unreadable, or

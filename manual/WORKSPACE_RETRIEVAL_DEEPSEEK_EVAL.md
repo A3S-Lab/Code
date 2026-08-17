@@ -8,6 +8,9 @@ Rust whole-file custom-strategy negative control remained observable but was
 not quality qualified. The opt-in in-process CLI CPU route passed its final
 multilingual DeepSeek and four-target offline-runtime gates on 2026-08-16 at
 CLI `e03b06e`.
+The published `v7.0.1` checkout at Code `5aa9642` repeated the public
+three-SDK DeepSeek matrix and the Core adversarial suite on 2026-08-17; every
+gate passed again.
 
 This report records the reproducible real-chat-model ablation for A3S Code's
 session-bound, in-memory Workspace Retrieval. It complements the deterministic
@@ -309,6 +312,34 @@ document-request amplification, zero non-text inputs, and complete release.
 The normalized report, latency/token values, rejected prompt ambiguity, and
 commands are in the [cross-SDK contract](../sdk/evaluation/README.md). These
 three-task arms close `WSR-EVAL2` for API parity, not for a default change.
+
+### v7.0.1 post-release rerun
+
+On 2026-08-17 Code `5aa9642` loaded the repository-authorized
+`deepseek/deepseek-v4-pro` route and repeated the same locked fixture through
+the published-version Node.js, Python, and Go SDK surfaces. All nine exact
+tasks and all nine one-Search protocols passed. Every arm retained Precision@5
+0.2, returned-result precision 0.4286, Recall@5 1.0, MRR 0.5, nDCG@5 0.6309,
+expected-path ranks 2/2/2, one document request for the one-request lower
+bound, zero non-text provider inputs, and complete vector release after close.
+
+| Observed metric, p50 / p95 | Node.js | Python | Go |
+| --- | ---: | ---: | ---: |
+| Session construction | 25 / 97 ms | 16 / 268 ms | 15 / 23 ms |
+| Index ready | 320 / 395 ms | 279 / 376 ms | 81 / 151 ms |
+| Time to first ready publication | 5 / 12 ms | 7 / 13 ms | 2 / 3 ms |
+| DeepSeek turn | 16,033 / 16,538 ms | 15,552 / 23,751 ms | 16,636 / 19,009 ms |
+| Session close | 3 / 10 ms | 1 / 2 ms | 0 / 14 ms |
+| Total DeepSeek tokens, three tasks | 14,540 | 14,784 | 14,171 |
+
+The three SDK arms consumed 43,495 model tokens in total. The same checkout
+also passed all three serial Core adversarial scenarios covering prompt
+injection containment, absolute-path workspace isolation, and cancellation
+before a post-cancellation side effect. Lightweight Node.js and Python
+real-config smoke runs completed a model turn in 3,938 ms and 4,592 ms,
+respectively. These remote timings remain diagnostic samples rather than
+release latency gates; the rerun changes no chunking, retrieval, or reranking
+default.
 
 ## Pre-CODE-B2 construction, model, and lifecycle measurements
 

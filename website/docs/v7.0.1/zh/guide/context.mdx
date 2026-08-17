@@ -70,11 +70,17 @@ Dense Semantic Search 必然需要 Text-to-vector 函数，但该函数可以是
 回调。A3S Code 不要求远程 API、GPU、内置模型或运行时下载。模型 Revision、License、
 Artifact 校验、Cache 与凭据仍由宿主负责。
 
-### 生命周期与排序
+### 异步向量投影生命周期（非持久化向量库）
+
+这里使用的是 Session 独占的精确内存向量索引，不是持久化或跨 Session 共享的
+Vector Database。Session 构建会在 Corpus Embedding 完成前返回；后台 Indexer 读取
+已准入文本，以 File 为单位原子发布不可变 Partition，并在源文件 Revision 变化后异步
+Reconcile，未变化的文件不会重复 Embedding。重新创建 Session 会生成新的 Projection；
+关闭 Session 会取消未完成的 Provider Work，并要求 Vector Record 与已计量 Byte 归零。
 
 ```text
 构建 Session -> 立即返回
-            `-> 后台构建文本目录
+            `-> 后台构建文本目录与向量 Partition
 
 查询 -> 融合独立 Rank -> 校验当前源 -> 输出证据
 
@@ -84,6 +90,15 @@ Artifact 校验、Cache 与凭据仍由宿主负责。
 状态依次为 `building`、`ready`、`degraded` 和 `closed`。构建期间，查询可以使用已经
 发布的 Coverage。需要更强首查边界的宿主可等待 Ready，最长 30 秒；超时后保留
 Partial Fallback，取消查询或关闭 Session 会中断等待。
+
+| 状态       | 向量投影                              | 查询行为                                              |
+| ---------- | ------------------------------------- | ----------------------------------------------------- |
+| `building` | 完成的 File Partition 会逐个原子发布  | Exact/BM25 始终可用，Semantic Coverage 可能不完整     |
+| `ready`    | 当前源 Generation 已达到完整 Coverage | Semantic 与 Hybrid Query 使用完整的已发布 Generation  |
+| `degraded` | 保留有效 Partition，并报告有界失败    | 词法路径继续服务，Semantic Result 显示 Partial Status |
+| `closed`   | 取消 Indexing 并释放全部向量          | 再次使用 Semantic Retrieval 前必须重建 Session        |
+
+### 排序
 
 同一个不可变 Chunk Catalog 支持增量 BM25、可选的精确内存向量、稳定源 Anchor，
 以及 Exact-literal 或 Code Intelligence Candidate。Hybrid Mode 使用
@@ -125,6 +140,17 @@ Recall@5、MRR、Latency、Memory、Non-text Egress 和 Cleanup。锁定的 Cros
 DeepSeek Fixture 完成 3/3 精确任务，Recall@5 为 1.0、MRR 为 0.5、Document Request
 Amplification 为 1.0x、Non-text Input 为零，并完整释放向量。它是 Portability Gate，
 不代表某个模型或 Reranker 对所有仓库都最优。
+
+Code `5aa9642` 在 2026-08-17 完成了 `v7.0.1` 发布后复验：
+
+| SDK     | 精确任务 / 单次 Search 协议 | DeepSeek Turn p50 / p95 | Tokens |
+| ------- | --------------------------: | ----------------------: | -----: |
+| Node.js |                       3 / 3 |      16,033 / 16,538 ms | 14,540 |
+| Python  |                       3 / 3 |      15,552 / 23,751 ms | 14,784 |
+| Go      |                       3 / 3 |      16,636 / 19,009 ms | 14,171 |
+
+三个 SDK 均保持 Recall@5 1.0、MRR 0.5、1.0x Document Request Amplification、
+零 Non-text Input 与完整的关闭后释放。这些远程耗时只用于诊断，不是本地检索延迟目标。
 
 渲染结果前，A3S Code 会重新读取权威文件，并校验 Full-file Digest 与精确 Chunk Byte
 Range。Deleted、Stale、Unreadable 或 Superseded Candidate 不会暴露。生产阈值、回滚

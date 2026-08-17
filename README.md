@@ -440,7 +440,10 @@ typed bounded retries, and rejects partial, duplicate, unknown, dimension-
 mismatched, non-finite, non-normalized, or descriptor-drifted responses. Input
 text and vector values are redacted from Code-owned `Debug` output and errors.
 `SessionOptions::with_workspace_retrieval(WorkspaceRetrievalOptions::new(...))`
-binds that contract to a session. Code reuses the admitted chunk catalog,
+binds that contract to a session. The resulting vector index is an exact,
+session-owned in-memory projection: it is neither durable nor shared across
+sessions, and recreating a session rebuilds it from admitted source. Code
+reuses the admitted chunk catalog,
 starts indexing without delaying `session_async`, coalesces chunks from the
 same catalog generation across files up to the configured input, text-byte,
 and expected-vector-byte limits, and publishes completed files as atomic A3S
@@ -514,8 +517,17 @@ control. The real CLI ACL-host composition and the public Node.js, Python, and
 Go SDKs now also pass recursive 512/64 plus deterministic reranking against one
 versioned corpus and normalized report contract. Each SDK completes 3/3 exact
 tasks and tool protocols with Recall@5 1.0, MRR 0.5, 1.0x document-request
- amplification, zero non-text inputs, and complete post-close vector release.
+amplification, zero non-text inputs, and complete post-close vector release.
 These three-task parity runs do not qualify a new default.
+A `v7.0.1` post-release rerun at Code `5aa9642` on 2026-08-17 repeated all nine
+exact tasks and one-Search protocols through the public Node.js, Python, and Go
+SDKs. The three arms consumed 14,540, 14,784, and 14,171 DeepSeek tokens,
+respectively; Recall@5, MRR, request amplification, non-text egress, and
+post-close release remained unchanged. The same checkout also passed all three
+Core DeepSeek adversarial scenarios and the Node.js/Python real-config smoke
+paths. See the
+[cross-SDK evaluation](sdk/evaluation/README.md#v701-post-release-rerun) for the
+full diagnostic timing table and reproduction commands.
 The separate compile-gated generation matrix combines the locked multilingual
 embedding model with the repository-authorized DeepSeek route and passes 9/9
 target-only Rust edits across three tasks, with a 0.7008 Wilson lower bound,

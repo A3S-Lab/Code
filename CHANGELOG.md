@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Recorded the `v7.0.1` post-release `deepseek/deepseek-v4-pro` validation at
+  Code `5aa9642`: the Core adversarial suite passed 3/3, the Node.js and Python
+  real-config smoke tests passed, and the public Node.js, Python, and Go
+  Workspace Retrieval matrix repeated 9/9 exact tasks and one-Search protocols
+  with Recall@5 1.0, MRR 0.5, zero non-text inputs, and complete vector release.
+- Clarified that the `real_config_env_integration.sh` wrappers rewrite only a
+  provider named `openai`; native `providers "deepseek"` configurations should
+  use the DeepSeek-specific Core or cross-SDK runners directly.
+
 ## [7.0.1] - 2026-08-17
 
 ### Fixed

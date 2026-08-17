@@ -108,6 +108,24 @@ A3S_CONFIG_FILE=/path/to/local/config.acl \
   scripts/sdk_real_config_env_integration.sh
 ```
 
-Keep the provider evidence with the release or CI artifact, not in the public
-documentation. For the complete local API surface, see
+These two wrappers deliberately rewrite credentials only inside a
+`providers "openai"` block. For a native OpenAI-compatible provider name such
+as `providers "deepseek"`, load the ACL directly through the provider-specific
+runner instead of using the wrappers:
+
+```bash
+A3S_CONFIG_FILE=/absolute/path/to/.a3s/config.acl \
+  cargo test -p a3s-code-core --test test_deepseek_adversarial_e2e -- \
+  --ignored --test-threads=1 --nocapture
+```
+
+The complete Node.js, Python, and Go DeepSeek retrieval matrix uses
+`A3S_REAL_EVAL_ROOT=/absolute/path/to/a3s`; see the
+[cross-SDK evaluation contract](https://github.com/A3S-Lab/Code/blob/main/sdk/evaluation/README.md#real-deepseek-matrix)
+for platform-specific commands and gates.
+
+Keep secret-bearing raw provider evidence with the release or CI artifact, not
+in public documentation. Aggregate redacted metrics may be published when they
+contain no endpoint, header, environment-variable name, credential, prompt, or
+source text. For the complete local API surface, see
 [API Contract](/guide/api-contract).

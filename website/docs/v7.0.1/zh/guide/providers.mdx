@@ -101,5 +101,20 @@ A3S_CONFIG_FILE=/path/to/local/config.acl \
   scripts/sdk_real_config_env_integration.sh
 ```
 
-把 provider 证据保存在发布记录或 CI artifact 中，不写进公开文档。完整本地 API
-表面见 [API Contract](/guide/api-contract)。
+这两个 Wrapper 只会重写 `providers "openai"` Block 中的凭据。若配置使用
+`providers "deepseek"` 等原生 OpenAI-compatible Provider Name，应让专项 Runner
+直接加载 ACL，不要经过 Wrapper：
+
+```bash
+A3S_CONFIG_FILE=/absolute/path/to/.a3s/config.acl \
+  cargo test -p a3s-code-core --test test_deepseek_adversarial_e2e -- \
+  --ignored --test-threads=1 --nocapture
+```
+
+完整的 Node.js、Python 与 Go DeepSeek Retrieval Matrix 使用
+`A3S_REAL_EVAL_ROOT=/absolute/path/to/a3s`；各平台命令与 Gate 见
+[Cross-SDK Evaluation Contract](https://github.com/A3S-Lab/Code/blob/main/sdk/evaluation/README.md#real-deepseek-matrix)。
+
+包含 Secret 的原始 Provider Evidence 应留在发布记录或 CI Artifact，不写入公开文档。
+只有不包含 Endpoint、Header、环境变量名、Credential、Prompt 或源文本的聚合脱敏指标
+才可发布。完整本地 API 表面见 [API Contract](/guide/api-contract)。

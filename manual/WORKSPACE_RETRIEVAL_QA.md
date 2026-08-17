@@ -14,6 +14,8 @@ Code `cde887b` then completed the public Node.js, Python, and Go real-DeepSeek
 matrix from one versioned fixture and schema-v1 report contract. CLI `e03b06e`
 then completed the default-off in-process CPU host gate, including real
 DeepSeek quality and real offline inference on four native release targets.
+Code `5aa9642` repeated the public three-SDK matrix and Core adversarial suite
+from the published `v7.0.1` checkout on 2026-08-17; every gate passed.
 
 This report qualifies the first session-bound Workspace Retrieval (`WSR`)
 release across A3S Memory, A3S Code, and the A3S CLI host. The release uses an
@@ -419,6 +421,31 @@ attributed to retained retrieval state. Remote turn samples are diagnostic;
 the release benchmark remains the latency gate. Reproduction commands and the
 machine-readable field contract are in
 [`sdk/evaluation/README.md`](../sdk/evaluation/README.md).
+
+#### v7.0.1 post-release verification
+
+Code `5aa9642` repeated the matrix on 2026-08-17 from the published `v7.0.1`
+checkout and the repository-authorized `deepseek/deepseek-v4-pro` route. All
+nine exact tasks and one-Search protocols passed again. Precision@5 remained
+0.2, returned-result precision 0.4286, Recall@5 1.0, MRR 0.5, nDCG@5 0.6309,
+and every expected path ranked second. Each session again indexed 30/30 text
+files into 39 vectors/9,595 bytes, made one document request against a
+one-request lower bound, admitted zero non-text inputs, and released all vector
+records and bytes after close.
+
+| Observed metric, p50 / p95 | Node.js | Python | Go |
+| --- | ---: | ---: | ---: |
+| Session construction | 25 / 97 ms | 16 / 268 ms | 15 / 23 ms |
+| Index ready | 320 / 395 ms | 279 / 376 ms | 81 / 151 ms |
+| Time to first ready publication | 5 / 12 ms | 7 / 13 ms | 2 / 3 ms |
+| DeepSeek turn | 16,033 / 16,538 ms | 15,552 / 23,751 ms | 16,636 / 19,009 ms |
+| Session close | 3 / 10 ms | 1 / 2 ms | 0 / 14 ms |
+| Total DeepSeek tokens, three tasks | 14,540 | 14,784 | 14,171 |
+
+The same checkout passed the three serial Core adversarial scenarios and the
+Node.js/Python real-config smoke paths. As with the original qualification,
+remote turn timing is diagnostic and does not replace the deterministic
+release latency gates.
 
 ### Real embedding model boundary
 
