@@ -342,14 +342,14 @@ regression indistinguishable from provider or network variance.
 The 2026-08-18 release-profile run on four logical x86-64 Linux CPUs passed all
 six reports:
 
-| Profile             | Fixed workload                               |                    Observed p95 |         Objective |
-| ------------------- | -------------------------------------------- | ------------------------------: | ----------------: |
-| Agent convergence   | Four completion, guard, and recovery cases   |                       4/4 cases |         4/4 cases |
-| Workspace Retrieval | 25,000 × 384 exact / deterministic hybrid    |              15.590 / 38.506 ms |    <= 30 / 100 ms |
-| Flow / State Graph  | 1,000-step projection / 11,008-record replay |            130.067 / 125.526 ms |  each <= 2,000 ms |
-| Code Intelligence   | 5,000 files; cold / warm workspace symbols   | 754.397 ms cold / 0.519 ms warm | <= 5,000 / 250 ms |
-| Context / memory    | 25,000 context inputs / 2,500 memories       |              136.740 / 0.123 ms |   <= 500 / 250 ms |
-| File persistence    | 1,272,624-byte synchronized save / load      |              338.887 / 1.028 ms | <= 1,000 / 500 ms |
+| Profile             | Fixed workload                               |                    Observed p95 |        Objective |
+| ------------------- | -------------------------------------------- | ------------------------------: | ---------------: |
+| Agent convergence   | Four completion, guard, and recovery cases   |                       4/4 cases |        4/4 cases |
+| Workspace Retrieval | 25,000 × 384 exact / deterministic hybrid    |              15.590 / 38.506 ms |    ≤ 30 / 100 ms |
+| Flow / State Graph  | 1,000-step projection / 11,008-record replay |            130.067 / 125.526 ms |  each ≤ 2,000 ms |
+| Code Intelligence   | 5,000 files; cold / warm workspace symbols   | 754.397 ms cold / 0.519 ms warm | ≤ 5,000 / 250 ms |
+| Context / memory    | 25,000 context inputs / 2,500 memories       |              136.740 / 0.123 ms |   ≤ 500 / 250 ms |
+| File persistence    | 1,272,624-byte synchronized save / load      |              338.887 / 1.028 ms | ≤ 1,000 / 500 ms |
 
 Resource gates also passed for request amplification, vector and rerank bytes,
 RSS deltas, serialized graph bytes, process cleanup, overwrite without

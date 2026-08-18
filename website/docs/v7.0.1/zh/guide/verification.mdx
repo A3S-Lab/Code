@@ -319,14 +319,14 @@ Space、Retry 与关闭后留存等确定性上限。专用 Release Profile 工�
 2026-08-18 的 Release Profile 在四个逻辑 CPU 的 x86-64 Linux Runner 上运行，六份报告
 全部通过：
 
-| Profile             | 固定负载                                     |                        实测 p95 |              目标 |
-| ------------------- | -------------------------------------------- | ------------------------------: | ----------------: |
-| Agent 收敛          | 四个完成、Guard 与恢复 Case                  |                        4/4 Case |          4/4 Case |
-| Workspace Retrieval | 25,000 × 384 Exact / Deterministic Hybrid    |              15.590 / 38.506 ms |    <= 30 / 100 ms |
-| Flow / State Graph  | 1,000 Step Projection / 11,008 Record Replay |            130.067 / 125.526 ms |    均 <= 2,000 ms |
-| Code Intelligence   | 5,000 File；Cold / Warm Workspace Symbol     | Cold 754.397 ms / Warm 0.519 ms | <= 5,000 / 250 ms |
-| Context / Memory    | 25,000 Context Input / 2,500 Memory          |              136.740 / 0.123 ms |   <= 500 / 250 ms |
-| File Persistence    | 1,272,624 Byte 同步 Save / Load              |              338.887 / 1.028 ms | <= 1,000 / 500 ms |
+| Profile             | 固定负载                                     |                        实测 p95 |             目标 |
+| ------------------- | -------------------------------------------- | ------------------------------: | ---------------: |
+| Agent 收敛          | 四个完成、Guard 与恢复 Case                  |                        4/4 Case |         4/4 Case |
+| Workspace Retrieval | 25,000 × 384 Exact / Deterministic Hybrid    |              15.590 / 38.506 ms |    ≤ 30 / 100 ms |
+| Flow / State Graph  | 1,000 Step Projection / 11,008 Record Replay |            130.067 / 125.526 ms |    均 ≤ 2,000 ms |
+| Code Intelligence   | 5,000 File；Cold / Warm Workspace Symbol     | Cold 754.397 ms / Warm 0.519 ms | ≤ 5,000 / 250 ms |
+| Context / Memory    | 25,000 Context Input / 2,500 Memory          |              136.740 / 0.123 ms |   ≤ 500 / 250 ms |
+| File Persistence    | 1,272,624 Byte 同步 Save / Load              |              338.887 / 1.028 ms | ≤ 1,000 / 500 ms |
 
 Provider Request Amplification、Vector 与 Rerank Byte、RSS Delta、Serialized Graph Byte、
 Process Cleanup、无累积覆盖写入与删除清理等资源门禁也全部通过。配套 Hermetic CI 完成了
