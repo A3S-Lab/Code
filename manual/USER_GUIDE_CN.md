@@ -218,6 +218,13 @@ Superseded Chunk 不会暴露给模型。
 不同 Session 不共享索引。如果产品需要持久化或共享 Vector Service，应由 Embedding Host
 独立提供，同时保留 Code 的当前源校验边界。
 
+`a3s` CLI 只能从受信任用户 ACL，或通过 `--config` 显式选择的文件启用检索。自动发现的
+工作区 `.a3s/config.acl` 可以关闭继承的检索能力，但不能授权源代码出站，也不能选择
+Backend。应在远程 Embedding 路由与互斥的 `local_cpu` Artifact Manifest 之间选择；前者
+必须显式设置 `allow_source_egress = true`。Chat `default_model` 与 Embedding 路由相互独立，
+因此 DeepSeek Chat 路由不会自动变成 Embedding Endpoint。两种 ACL 和验证命令见
+[工作区检索运维手册](WORKSPACE_RETRIEVAL_OPERATIONS.md)。
+
 ## 6. 在正确边界应用治理
 
 模型选择的 Tool Call 会经过 Active-skill Restriction、Permission Policy、Confirmation、
@@ -321,7 +328,12 @@ Suite、Workspace Retrieval Churn、文档检查和 Capability-ledger Validation
 Remote Model、Public Search Engine 与第三方服务延迟必须和 Local Core Latency 分开报告。
 Job Timeout 只能防止任务挂死，不能当作产品性能数据。
 
-20 个领域的证据台账和未解决缺口见
+Release 工作流会验证收敛、25,000 Record 检索、Flow/State Graph、5,000 File Code
+Intelligence Workspace、25,000 Item Context Assembly 与 2,500 Item Memory Recall，以及
+1–2 MiB Session Persistence。[性能资格认证](PERFORMANCE_QUALIFICATION.md)记录成功运行、
+精确包含范围、p50/p95/Max、资源测量与 Artifact Digest。
+
+20 个领域的证据台账、已关闭的 Code-owned Gap 与仍需部署环境验证的外部边界见
 [能力验证](CAPABILITY_VERIFICATION.md)。向量质量、资源、生命周期与 DeepSeek 资格认证见
 [工作区检索 QA](WORKSPACE_RETRIEVAL_QA.md)。
 

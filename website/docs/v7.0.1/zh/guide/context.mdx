@@ -55,6 +55,11 @@ Workspace Retrieval 是宿主能力，不是模型可以自行打开的开关。
 即可保持关闭。关闭状态不会构建额外目录、不会调用 Embedding Provider，也不会向
 模型暴露 Semantic 或 Hybrid Search Mode。
 
+启用后不会另外注册一个 `vector_db` 工具。模型侧唯一的 `search` Schema 会增加
+`mode: "semantic"` 与 `mode: "hybrid"`。这两个模式和 Grep、Glob、BM25 一样经过
+统一的受治理工具路径，并查询 Session 独占的 Projection；关闭状态会直接从 Schema
+移除这两个模式，而不是暴露无法执行的调用。
+
 ### 选择能完成任务的最小检索面
 
 | 需求                     | 使用方式            | 是否需要 Embedding 模型              |
@@ -126,6 +131,43 @@ Primitive Strategy Name 会被拒绝。
 | Node.js | 在 Session Option 中设置 Typed `workspaceRetrieval` | 省略                            | `workspaceRetrievalStatus()`、`semanticSearch()`、`hybridSearch()` |
 | Python  | 设置 `SessionOptions.workspace_retrieval`           | 赋值 `None`                     | `workspace_retrieval_status()`、异步 Semantic 与 Hybrid Search     |
 | Go      | 设置 `SessionOptions.WorkspaceRetrieval`            | 使用 `nil`                      | `WorkspaceRetrievalStatus`、`SemanticSearch`、`HybridSearch`       |
+
+### CLI 启用方式
+
+`a3s` CLI 默认关闭语义检索。只有受信任的用户 ACL，或通过 `--config` 显式选择的文件，
+才能启用它。自动发现的工作区 `.a3s/config.acl` 只能关闭继承的检索路由，不能授权源代码
+出站，也不能选择 Embedding Backend。
+
+远程 Embedding 需要独立 Provider 路由，并显式授权源代码出站：
+
+```acl
+workspace_retrieval {
+  enabled = true
+  allow_source_egress = true
+  model = "openai/text-embedding-3-small"
+  dimension = 1536
+  normalization = "none"
+}
+```
+
+本地 CPU Embedding 与远程字段互斥，不需要出站授权：
+
+```acl
+workspace_retrieval {
+  enabled = true
+  semantic_readiness_timeout_ms = 30000
+
+  local_cpu {
+    artifact_manifest = "models/multilingual-mini/model.acl"
+    intra_threads = 2
+  }
+}
+```
+
+本地 Artifact Manifest 会锁定 Revision 与 SHA-256，Runtime 不会下载模型文件。创建
+Session 前，应运行 `a3s config validate`，并检查 `a3s config show` 中已脱敏的
+`workspaceRetrieval` 段。Embedding 路由与 `default_model` 相互独立，因此选择 DeepSeek
+执行 Chat 和 Tool Call，不会把该 Chat Endpoint 自动当作 Embedding 服务。
 
 Provider Descriptor 会锁定 Identity、Model、Dimension 与 Normalization。Runtime 会
 拒绝 Partial、Duplicate、Unknown、Dimension-mismatched、Non-finite、

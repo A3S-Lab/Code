@@ -253,8 +253,13 @@ and remaining limits resume without repeating completed lines.
 
 `search` is the single model-facing workspace search tool. Always pass `mode`
 and `query`: use `grep` for regular-expression content search, `glob` for path
-discovery, and `bm25` for native lexical relevance ranking. The shared `path`
-field scopes all modes; `include` filters candidate files for grep and BM25.
+discovery, and `bm25` for native lexical relevance ranking. When the host
+explicitly enables Workspace Retrieval, the same schema also advertises
+`semantic` for exact cosine ranking over the session-owned in-memory index and
+`hybrid` for reciprocal-rank fusion across exact, lexical, symbol, and semantic
+evidence. Disabled sessions omit those two modes. The shared `path` field
+scopes all modes; `include` filters candidate files for grep, BM25, semantic,
+and hybrid search.
 
 In `mode: "grep"`, `output_mode` selects the smallest useful result shape:
 
@@ -289,6 +294,25 @@ const ranked = await session.tool('search', {
   context: 2,
 });
 ```
+
+Semantic and hybrid calls use the same tool rather than a separate vector
+database tool:
+
+```json
+{
+  "mode": "hybrid",
+  "query": "where session shutdown releases temporary indexes",
+  "path": "core/src",
+  "include": "*.rs",
+  "limit": 8
+}
+```
+
+Index construction is asynchronous and file-atomic. Results are reread and
+digest-verified against current source before rendering, and closing the
+session releases every vector. See
+[Workspace Retrieval](/guide/context#workspace-retrieval) for activation,
+partial-readiness behavior, embedding routes, resource bounds, and lifecycle.
 
 For exact-string changes, call `edit` with `dry_run: true` to return the same
 before/after diff metadata without writing. Then apply the edit with

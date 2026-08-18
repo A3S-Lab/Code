@@ -214,8 +214,11 @@ const result = await session.tool('download', {
 会从未完成位置继续，不重复已经返回的行。
 
 `search` 是模型侧唯一的工作区搜索工具，必须传入 `mode` 和 `query`：正则内容搜索使用
-`grep`，路径发现使用 `glob`，原生词汇相关性排序使用 `bm25`。三个模式共用 `path`；
-grep 与 BM25 使用 `include` 过滤候选文件。
+`grep`，路径发现使用 `glob`，原生词汇相关性排序使用 `bm25`。宿主显式启用 Workspace
+Retrieval 后，同一个 Schema 还会提供 `semantic`，在 Session 独占的内存索引上执行
+Exact Cosine Ranking，以及 `hybrid`，对 Exact、Lexical、Symbol 与 Semantic Evidence
+执行 Reciprocal-rank Fusion。关闭状态不会暴露这两个 Mode。所有模式共用 `path`；Grep、
+BM25、Semantic 与 Hybrid 使用 `include` 过滤候选文件。
 
 在 `mode: "grep"` 下，`output_mode` 用于选择满足任务所需的最小结果形状：
 
@@ -247,6 +250,22 @@ const ranked = await session.tool('search', {
   context: 2,
 });
 ```
+
+Semantic 与 Hybrid 仍使用同一个工具，不会额外注册 Vector Database 工具：
+
+```json
+{
+  "mode": "hybrid",
+  "query": "where session shutdown releases temporary indexes",
+  "path": "core/src",
+  "include": "*.rs",
+  "limit": 8
+}
+```
+
+索引构建异步运行，并按 File 原子发布。返回前会重新读取当前源文件并校验 Digest；关闭
+Session 会释放全部向量。启用方式、Partial Readiness、Embedding Route、资源上限与
+Lifecycle 见[工作区检索](/guide/context#workspace-retrieval)。
 
 对固定字符串修改，先以 `dry_run: true` 调用 `edit`，获取与真实写入相同的前后差异
 元数据，但不写文件。应用修改时，把预览得到的数量放入 `expected_replacements`，并可用

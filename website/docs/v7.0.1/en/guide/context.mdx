@@ -85,6 +85,12 @@ Omit the typed option to keep it disabled. A disabled session constructs no
 additional catalog, invokes no embedding provider, and exposes no semantic or
 hybrid search mode to the model.
 
+Enabled sessions do not register a separate `vector_db` tool. Instead, the
+single model-facing `search` schema adds `mode: "semantic"` and
+`mode: "hybrid"`. Both modes query the session-owned projection through the
+same governed tool path as grep, glob, and BM25; disabled sessions omit them
+from the schema rather than advertising calls that cannot run.
+
 ### Choose the smallest useful retrieval surface
 
 | Requirement                                 | Use                         | Embedding model                                                        |
@@ -167,6 +173,48 @@ objects; primitive strategy names are rejected.
 | Node.js | Set typed `workspaceRetrieval` in session options | Omit it                         | `workspaceRetrievalStatus()`, `semanticSearch()`, `hybridSearch()` |
 | Python  | Set `SessionOptions.workspace_retrieval`          | Assign `None`                   | `workspace_retrieval_status()`, async semantic and hybrid search   |
 | Go      | Set `SessionOptions.WorkspaceRetrieval`           | Use `nil`                       | `WorkspaceRetrievalStatus`, `SemanticSearch`, `HybridSearch`       |
+
+### CLI activation
+
+The `a3s` CLI keeps semantic retrieval disabled unless a trusted user ACL or a
+file selected explicitly with `--config` enables it. An automatically
+discovered workspace `.a3s/config.acl` may only disable an inherited retrieval
+route; it cannot authorize source egress or choose an embedding backend.
+
+Remote embedding needs a separate provider route and an explicit source-egress
+grant:
+
+```acl
+workspace_retrieval {
+  enabled = true
+  allow_source_egress = true
+  model = "openai/text-embedding-3-small"
+  dimension = 1536
+  normalization = "none"
+}
+```
+
+Local CPU embedding is mutually exclusive with the remote fields and does not
+need a source-egress grant:
+
+```acl
+workspace_retrieval {
+  enabled = true
+  semantic_readiness_timeout_ms = 30000
+
+  local_cpu {
+    artifact_manifest = "models/multilingual-mini/model.acl"
+    intra_threads = 2
+  }
+}
+```
+
+The local artifact manifest is revision- and SHA-256-bound; the runtime never
+downloads model files. Run `a3s config validate` and inspect the redacted
+`workspaceRetrieval` section from `a3s config show` before creating a session.
+The embedding route is independent from `default_model`, so selecting DeepSeek
+for chat and tool calls does not implicitly turn that chat endpoint into an
+embedding service.
 
 Provider descriptors lock identity, model, dimension, and normalization.
 Runtime validation rejects partial, duplicate, unknown, dimension-mismatched,

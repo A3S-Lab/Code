@@ -303,8 +303,8 @@ fmt.Println(text)
 | Release 性能资格认证 | 对稳定本地工作记录 Release Build 的 p50、p95、最大值、资源计量、负载参数和机器信息 | 远程模型或公共搜索服务的延迟            |
 | 外部资格认证         | 在已记录条件下验证指定真实模型、浏览器、Collector 或存储服务的兼容性               | Hermetic 可复现性或普遍性能结论         |
 
-能力台账把 README 宣称的 20 个产品领域逐项连接到可执行证据，并明确保留尚未解决的
-缺口。能力地图发生变化而台账没有同步时，CI 会直接失败。Node.js 和 Python 门禁会先
+能力台账把 README 宣称的 20 个产品领域逐项连接到可执行证据，并明确显示任何尚未解决
+的缺口。能力地图发生变化而台账没有同步时，CI 会直接失败。Node.js 和 Python 门禁会先
 构建并加载 Native Module，再通过公开 Wrapper 执行测试；仅通过 Rust `cargo check`
 不算 SDK Runtime 证据。Go 会通过带版本的 Bridge 并使用 Race Detector 运行。
 
@@ -314,7 +314,30 @@ Space、Retry 与关闭后留存等确定性上限。专用 Release Profile 工�
 耗时会单独报告，因为把这些时间混入本地执行后，就无法区分 Code Regression 与 Provider
 或网络波动。
 
-当前证据台账、已知缺口、资格认证命令和完成规则见
+### 最新受控资格认证
+
+2026-08-18 的 Release Profile 在四个逻辑 CPU 的 x86-64 Linux Runner 上运行，六份报告
+全部通过：
+
+| Profile             | 固定负载                                     |                        实测 p95 |              目标 |
+| ------------------- | -------------------------------------------- | ------------------------------: | ----------------: |
+| Agent 收敛          | 四个完成、Guard 与恢复 Case                  |                        4/4 Case |          4/4 Case |
+| Workspace Retrieval | 25,000 × 384 Exact / Deterministic Hybrid    |              15.590 / 38.506 ms |    <= 30 / 100 ms |
+| Flow / State Graph  | 1,000 Step Projection / 11,008 Record Replay |            130.067 / 125.526 ms |    均 <= 2,000 ms |
+| Code Intelligence   | 5,000 File；Cold / Warm Workspace Symbol     | Cold 754.397 ms / Warm 0.519 ms | <= 5,000 / 250 ms |
+| Context / Memory    | 25,000 Context Input / 2,500 Memory          |              136.740 / 0.123 ms |   <= 500 / 250 ms |
+| File Persistence    | 1,272,624 Byte 同步 Save / Load              |              338.887 / 1.028 ms | <= 1,000 / 500 ms |
+
+Provider Request Amplification、Vector 与 Rerank Byte、RSS Delta、Serialized Graph Byte、
+Process Cleanup、无累积覆盖写入与删除清理等资源门禁也全部通过。配套 Hermetic CI 完成了
+MinIO Roundtrip、受控 HTTPS 上的生产 Chrome/CDP 与 Google Parser 路径，以及本地
+OpenTelemetry Collector 对指定 Service/Span 的精确接收。
+
+[性能资格认证记录](https://github.com/A3S-Lab/Code/blob/main/manual/PERFORMANCE_QUALIFICATION.md)
+包含 p50/p95/Max、精确包含规则、机器信息、资源计数、Workflow 链接与 Artifact SHA-256
+Digest。这些数据是锁定 Profile 的回归上限，不是所有硬件或远程服务的 SLA。
+
+当前证据台账、缺口关闭情况、外部边界、资格认证命令和完成规则见
 [能力验证与性能合同](https://github.com/A3S-Lab/Code/blob/main/manual/CAPABILITY_VERIFICATION.md)。
 只要台账中仍有未解决的 Code-owned Gap，就不能声称仓库级目标已经完成。
 

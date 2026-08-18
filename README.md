@@ -819,7 +819,8 @@ the v1 schema.
 | [User Guide](manual/USER_GUIDE.md) · [Chinese](manual/USER_GUIDE_CN.md)                                              | Installation, configuration, sessions, tools, and common workflows                                                                                            |
 | [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) | Extension contracts, security, lifecycle, and production integration                                                                                          |
 | [SDK API Design](manual/SDK_API_DESIGN.md)                                                                           | Cross-language API conventions and alignment                                                                                                                  |
-| [Capability Verification](manual/CAPABILITY_VERIFICATION.md)                                                         | First-principles evidence ledger for every advertised capability, SDK runtime gates, known gaps, and performance policy                                       |
+| [Capability Verification](manual/CAPABILITY_VERIFICATION.md)                                                         | First-principles evidence ledger for every advertised capability, SDK runtime gates, evidence-gap closure, and performance policy                             |
+| [Performance Qualification](manual/PERFORMANCE_QUALIFICATION.md)                                                     | Release-profile workloads, inclusion rules, p50/p95/max results, resource ceilings, hermetic integrations, run links, and artifact digests                    |
 | [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md)                                                            | Capability/input/usage snapshots, repeated-context diagnostics, event ordering, redaction boundary, validation, and replay                                    |
 | [Go SDK](sdk/go/README.md)                                                                                           | Bridge installation, sessions, event streaming, direct tools, errors, and release compatibility                                                               |
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md)                                                       | Language runtime, capability boundary, lifecycle, and verification                                                                                            |
@@ -859,14 +860,20 @@ exact-vector or hybrid p95 budgets are exceeded. See the
 profile, inclusion rules, and measured results.
 
 The targeted [Performance Qualification](.github/workflows/performance.yml)
-workflow runs release-mode convergence and retrieval profiles when their
-critical paths change and on a weekly schedule. It retains machine-readable
-JSON artifacts. Ordinary CI gates deterministic work amplification and
-resource ceilings; remote model and public search-engine latency is reported
-separately rather than treated as a stable Core speed measurement.
+workflow runs release-mode convergence, retrieval, Flow/State Graph, Code
+Intelligence, context/memory, and persistence profiles when their critical
+paths change and on a weekly schedule. It retains machine-readable JSON
+artifacts. The [qualification record](manual/PERFORMANCE_QUALIFICATION.md)
+captures workload and inclusion rules, observed percentiles, resource results,
+run links, and artifact digests. Ordinary CI gates deterministic work
+amplification and resource ceilings; remote model and public search-engine
+latency is reported separately rather than treated as a stable Core speed
+measurement.
 
-Real-provider, browser-runtime, and S3 tests are ignored unless their external
-prerequisites are configured. The normal test suite is hermetic.
+Real-provider and public search-engine tests are ignored unless their external
+prerequisites are configured. Required hermetic CI separately drives pinned
+MinIO, workflow-managed Chrome/CDP, and a local OpenTelemetry Collector through
+the production integration boundaries.
 
 Run the context-tool real-LLM suite through a local Codex login:
 

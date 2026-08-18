@@ -229,6 +229,16 @@ session rebuilds its projection; sessions do not share it. If persistence or a
 shared vector service is required, the embedding host owns that separate
 system and must preserve Code's source-verification boundary.
 
+For `a3s` CLI sessions, enable retrieval only from a trusted user ACL or a file
+selected explicitly with `--config`. An automatically discovered workspace
+`.a3s/config.acl` may disable inherited retrieval but cannot authorize source
+egress or select a backend. Configure either a remote embedding route with
+`allow_source_egress = true`, or a mutually exclusive `local_cpu` artifact
+manifest. The chat `default_model` remains independent, so a DeepSeek chat
+route does not become an embedding endpoint implicitly. See the
+[Workspace Retrieval operations runbook](WORKSPACE_RETRIEVAL_OPERATIONS.md)
+for both ACL forms and validation commands.
+
 ## 6. Apply governance at the correct boundary
 
 Model-selected calls pass through active-skill restrictions, permission policy,
@@ -341,8 +351,15 @@ Remote model, public search-engine, and third-party service latency must be
 reported separately from local Core latency. A job timeout prevents hangs; it
 is not a product-performance measurement.
 
+The release workflow qualifies convergence, 25,000-record retrieval,
+Flow/State Graph, a 5,000-file Code Intelligence workspace, 25,000-item context
+assembly with 2,500-item memory recall, and 1–2 MiB session persistence. See
+[Performance Qualification](PERFORMANCE_QUALIFICATION.md) for the successful
+run, exact inclusion rules, p50/p95/max values, resource measurements, and
+artifact digests.
+
 See [Capability Verification](CAPABILITY_VERIFICATION.md) for the 20-area
-evidence ledger and unresolved gaps. See
+evidence ledger, closed Code-owned gaps, and remaining external boundaries. See
 [Workspace Retrieval QA](WORKSPACE_RETRIEVAL_QA.md) for vector quality,
 resource, lifecycle, and DeepSeek qualification evidence.
 

@@ -7,8 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a first-principles capability ledger covering all 20 advertised areas
+  and five runtime surfaces, dedicated native Node.js/Python runtime jobs,
+  cross-platform retrieval churn, and required hermetic MinIO, Chrome/CDP, and
+  OpenTelemetry Collector qualification.
+- Added release performance profiles for deterministic agent convergence,
+  25,000-record Workspace Retrieval, Flow/State Graph, a 5,000-file Code
+  Intelligence workspace, context/memory corpora, and synchronized session
+  persistence. The workflow emits and retains six machine-readable reports
+  with workload, percentile, resource, machine, and inclusion metadata.
+
+### Fixed
+
+- Synchronized the Node.js lockfile with all six `7.0.1` native optional
+  packages so `npm ci` can build and execute the published wrapper contract.
+- Added the common top-level `passed` verdict to the convergence report so the
+  performance workflow validates every profile through the same fail-closed
+  contract.
+
 ### Documentation
 
+- Added the bilingual CLI activation boundary for asynchronous session-owned
+  in-memory retrieval, including independent chat/embedding routes, trusted ACL
+  requirements, remote source-egress consent, and local CPU model admission.
+- Recorded the successful 2026-08-18 performance and hermetic integration runs
+  with p50/p95/max results, resource ceilings, workflow links, and Artifact
+  SHA-256 digests.
 - Recorded the `v7.0.1` post-release `deepseek/deepseek-v4-pro` validation at
   Code `5aa9642`: the Core adversarial suite passed 3/3, the Node.js and Python
   real-config smoke tests passed, and the public Node.js, Python, and Go
