@@ -39,7 +39,9 @@
     "build": "napi build --platform --release --js index.js --dts generated.d.ts && node scripts/patch-loader.mjs",
     "build:debug": "napi build --platform --js index.js --dts generated.d.ts && node scripts/patch-loader.mjs",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "node test.mjs && node test_callback_safety.mjs && node test_workspace_retrieval.mjs && node test_workspace_retrieval_real_deepseek.mjs --validate-fixture && node test_serve.mjs",
+    "test": "npm run test:runtime && npm run test:fixtures",
+    "test:runtime": "node test.mjs && node test_budget_guard.mjs && node test_callback_safety.mjs && node test_confirmation_inheritance.mjs && node test_session_close.mjs && node test_workspace_retrieval.mjs && node test_serve.mjs && node test-helpers.mjs",
+    "test:fixtures": "node test_workspace_retrieval_real_deepseek.mjs --validate-fixture",
     "test:types": "tsc --noEmit --module nodenext --moduleResolution nodenext --target es2022 --strict --skipLibCheck test-types.ts",
     "test:helpers": "node test-helpers.mjs"
   },

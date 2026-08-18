@@ -1,715 +1,360 @@
-# A3S Code User & Developer Guide
+# A3S Code User and Developer Guide
 
-> **Agentic Agent Framework** - A3S Code is a Rust library with native Python and Node.js bindings
+This guide describes the current A3S Code 7.x contract. It is intentionally
+shorter than the versioned website reference: examples here cover the stable
+entry points, while the website documents every option and wire shape.
 
----
+## 1. Choose a host surface
 
-## Table of Contents
+| Host    | Install                                    | Runtime boundary                                               |
+| ------- | ------------------------------------------ | -------------------------------------------------------------- |
+| Rust    | `cargo add a3s-code-core`                  | Native async Core API                                          |
+| Node.js | `npm install @a3s-lab/code`                | N-API native module                                            |
+| Python  | `pip install a3s-code`                     | PyO3 native module downloaded from the matching GitHub release |
+| Go      | `go get github.com/A3S-Lab/Code/sdk/go/v7` | Pure-Go client plus the version-matched bridge process         |
 
-- [Part 1: User Guide](#part-1-user-guide)
-  - [1. Introduction](#1-introduction)
-  - [2. Installation & Configuration](#2-installation--configuration)
-  - [3. Quick Start](#3-quick-start)
-  - [4. Core Concepts](#4-core-concepts)
-  - [5. Tools System](#5-tools-system)
-  - [6. Skills System](#6-skills-system)
-  - [7. Multi-Agent Collaboration](#7-multi-agent-collaboration)
-  - [8. Security & Permissions](#8-security--permissions)
-  - [9. Slash Commands](#9-slash-commands)
-  - [11. Session Management](#11-session-management)
-- [Part 2: Developer Guide](#part-2-developer-guide)
-  - [12. Architecture Overview](#12-architecture-overview)
-  - [13. Development Environment](#13-development-environment)
-  - [14. Core Modules](#14-core-modules)
-  - [15. Extension Development](#15-extension-development)
-  - [16. Hook System](#16-hook-system)
-  - [17. Custom Tools and Skills](#17-custom-tools-and-skills)
-  - [18. Testing & Debugging](#18-testing--debugging)
-  - [19. Contributing Guidelines](#19-contributing-guidelines)
+Node.js and Python applications should prefer their async lifecycle methods.
+Go applications must deploy a bridge asset from the same release as the Go
+module. Rust session construction is async-first because stores, MCP discovery,
+workspace services, and retrieval providers may require I/O.
 
----
+## 2. Configure models with ACL
 
-# Part 1: User Guide
+ACL is the supported product configuration format. `Agent.create` accepts
+either a path to an `.acl` file or an inline ACL string.
 
-## 1. Introduction
+```acl
+default_model = "openai/my-model"
 
-A3S Code is a powerful **Agentic Agent Framework** that enables Large Language Models (LLMs) to:
-
-- **File Operations** - Read, write, edit, and patch files
-- **Code Search** - Search codebases using Grep, Glob, and more
-- **Command Execution** - Run shell commands in sandboxed environments
-- **Web Access** - Web scraping and search capabilities
-- **Task Delegation** - Distribute bounded work through `task` and `parallel_task`
-
-### Supported Platforms
-
-| Platform | Installation |
-|----------|-------------|
-| Python | `pip install a3s-code` |
-| Node.js | `npm install @a3s-lab/code` |
-| Rust | `cargo add a3s-code-core` |
-
-### Supported LLM Providers
-
-- **Anthropic** (Claude series)
-- **OpenAI** (GPT series)
-- **DeepSeek**
-- **Kimi** (Moonshot)
-- **Together**
-- **Groq**
-
-## 2. Installation & Configuration
-
-### 2.1 Python Installation
-
-```bash
-pip install a3s-code
-```
-
-### 2.2 Node.js Installation
-
-```bash
-npm install @a3s-lab/code
-```
-
-### 2.3 Agent Configuration (agent.acl)
-
-Create `agent.acl` configuration file:
-
-```hcl
-# Default model
-default_model = "anthropic/claude-sonnet-4-20250514"
-
-# LLM Provider Configuration
-providers {
-  name    = "anthropic"
-  api_key = env("ANTHROPIC_API_KEY")
-}
-
-providers {
-  name    = "openai"
+providers "openai" {
   api_key = env("OPENAI_API_KEY")
+  base_url = "https://api.openai.com/v1"
+
+  models "my-model" {
+    name = "My Model"
+    tool_call = true
+    temperature = true
+    limit = { context = 200000, output = 8192 }
+  }
 }
 
-# Storage backend: "memory", "file", or "custom"
-storage_backend = "file"
-
-# Sessions directory
-sessions_dir = "./sessions"
-
-# Skill directories
-skill_dirs = ["./skills"]
-
-# Maximum tool execution rounds
-max_tool_rounds = 50
+task_scheduler {
+  max_active = 4
+  aging_interval_ms = 30000
+}
 ```
 
-### 2.4 Environment Variables
+Keep credentials in environment-backed ACL values. Model identifiers use the
+`provider/model` form. A chat model and an embedding model are independent
+routes; configuring one does not silently configure the other.
 
-```bash
-export ANTHROPIC_API_KEY="your-key-here"
-export OPENAI_API_KEY="your-key-here"
+## 3. Create, use, and close a session
+
+### Node.js
+
+```js
+import { Agent } from "@a3s-lab/code";
+
+const agent = await Agent.create("agent.acl");
+const session = await agent.sessionAsync("/repo", {
+  planningMode: "auto",
+  goalTracking: true,
+});
+
+try {
+  const result = await session.send("Find the authentication entry points.");
+  console.log(result.text);
+} finally {
+  await session.closeAsync();
+  await agent.closeAsync();
+}
 ```
 
-## 3. Quick Start
-
-### 3.1 Python Example
-
-```python
-from a3s_code import Agent
-
-# Create agent
-agent = Agent.create("agent.acl")
-
-# Create session
-session = agent.session("/my-project")
-
-# Send request
-result = session.send("Analyze project architecture")
-print(result.text)
-```
-
-### 3.2 Node.js Example
-
-```typescript
-import { Agent } from '@a3s-lab/code';
-
-const agent = await Agent.create('agent.acl');
-const session = agent.session('/my-project');
-
-const result = await session.send('Analyze project architecture');
-console.log(result.text);
-```
-
-### 3.3 First Tasks
-
-```python
-# Find authentication error handling
-result = session.send("Find all places handling authentication errors")
-
-# Review code quality
-result = session.send("Review main.py code quality and suggest improvements")
-
-# Run tests
-result = session.send("Run test suite and report results")
-```
-
-## 4. Core Concepts
-
-### 4.1 Architecture Layers
-
-```
-Agent (Config + Provider Registry)
-  └── AgentSession (Workspace-bound execution API)
-        ├── LlmClient      → Send messages, receive tool calls
-        ├── ToolExecutor   → Run tools, enforce permissions
-        ├── SkillRegistry  → Expose/invoke skills
-        └── Context/trace/verification evidence
-```
-
-### 4.2 Core Components
-
-| Component | Description |
-|-----------|-------------|
-| **Agent** | Top-level configuration and factory |
-| **AgentSession** | Workspace-bound execution API for send/stream/tools/state |
-| **Skill** | Markdown files defining behavior and capabilities |
-| **Tool** | Functions the agent can invoke |
-
-### 4.3 SessionOptions Configuration
+### Python
 
 ```python
 from a3s_code import Agent, SessionOptions
 
-opts = SessionOptions()
+agent = await Agent.create_async("agent.acl")
+options = SessionOptions()
+options.planning_mode = "auto"
+options.goal_tracking = True
+session = await agent.session_async("/repo", options)
 
-# Specify model
-opts.model = "openai/gpt-4o"
-
-# Compatibility flag; A3S Code currently ships no embedded built-in skills.
-opts.builtin_skills = True
-
-# Load custom skills
-opts.skill_dirs = ["./skills"]
-
-# Core tools are registered by the runtime.
-# Use session.tool_names() / session.tool_definitions() to inspect availability.
-
-session = agent.session(".", opts)
+try:
+    result = await session.send_async("Find the authentication entry points.")
+    print(result.text)
+finally:
+    await session.close_async()
+    await agent.close_async()
 ```
 
-
-## 5. Tools System
-
-### 5.1 Built-in And Session Tools
-
-#### File Tools
-
-| Tool | Description | Example |
-|------|-------------|---------|
-| `read` | Read one file range or 1-32 ordered file ranges under one shared output budget | `read: /path/to/file.py` |
-| `write` | Write file | `write: /path/to/file.py` |
-| `edit` | Preview or apply a CAS-protected exact-string edit with replacement-count guards | `edit: /path/to/file.py` |
-| `patch` | Apply patch | `patch: /path/to/file.py` |
-
-#### Search Tools
-
-| Tool | Description | Example |
-|------|-------------|---------|
-| `grep` | Content, matching-file, per-file-count, or summary regex search | `grep: "function name"` |
-| `glob` | Cursor-paginated file matching with backend or stable path ordering | `glob: "**/*.py"` |
-| `ls` | Directory listing | `ls: /path/to/dir` |
-
-#### Bounded repository context
-
-Use `read.files` when the relevant paths are already known:
-
-```json
-{
-  "files": [
-    { "path": "src/lib.rs" },
-    { "path": "src/config.rs", "offset": 20, "limit": 60 }
-  ],
-  "max_output_bytes": 65536
-}
-```
-
-The response preserves request order and isolates member errors. When
-`metadata.batch.truncated` is true, pass `metadata.batch.continuation` back as
-the next `files` value. The continuation text is already included in the byte
-budget.
-
-Choose a grep result shape with `output_mode`:
-
-- `content` returns matching lines and optional context.
-- `files_with_matches` returns lexically cursor-paginated paths.
-- `count` returns lexically cursor-paginated matching-line counts per file.
-- `summary` completes the scan and returns totals without match text.
-
-`glob` defaults to `sort: "backend"` to retain backend recency or relevance
-order. Use `sort: "path"` when deterministic lexical cursor pages are more
-important.
-
-For mechanical changes, first call `edit` with `dry_run: true`. Then apply the
-same edit with `expected_replacements` set to the previewed count; add
-`max_replacements` when an independent upper bound is required. A dry run is a
-read-only tool invocation and never writes the workspace.
-
-#### Other Tools
-
-| Tool | Description |
-|------|-------------|
-| `bash` | Execute shell commands |
-| `web_fetch` | Fetch web page content |
-| `web_search` | Perform web search |
-| `download` | Download a binary file into the local workspace |
-| `git` | Git status, diff, branch, and worktree operations |
-| `program` | Bounded programmatic tool calling (PTC) |
-
-`download` accepts a public HTTP(S) URL and an optional workspace-relative
-`file_path`. It streams binary data through a size limit, uses validated Range
-requests only when the server supplies a representation validator, and publishes
-the destination atomically after optional SHA-256 verification. It is available
-only for local workspace backends.
-
-### 5.2 Delegation Tools
-
-| Tool | Description |
-|------|-------------|
-| `task` | Delegate to single agent |
-| `parallel_task` | Delegate multiple tasks in parallel |
-| `batch` | Batch execute tasks |
-| `Skill` | Invoke specific skill |
-
-### 5.3 Programmatic Tool Calling
-
-```python
-result = session.program({
-    "source": """
-        export default async function run(ctx, inputs) {
-          const hits = await ctx.grep(inputs.query, { glob: "*.py" });
-          return { hits };
-        }
-    """,
-    "inputs": {"query": "PermissionPolicy"},
-    "allowed_tools": ["grep"],
-})
-print(result.output)
-```
-
-## 6. Skills System
-
-Skills are Markdown files that shape LLM behavior.
-
-### 6.1 Skill File Structure
-
-```markdown
----
-name: safe-reviewer
-description: Review code without modifying files
-allowed-tools: "read(*), grep(*), glob(*)"
----
-
-Review code in the workspace. You may read and search files,
-but you must not write, edit, or execute anything.
-
-Review checklist:
-1. Check for potential security issues
-2. Verify error handling
-3. Evaluate code readability
-4. Provide improvement suggestions
-```
-
-### 6.2 Using Skills
-
-```python
-opts = SessionOptions()
-opts.skill_dirs = ["./skills"]
-opts.builtin_skills = True  # Compatibility no-op; no embedded built-in skills ship by default
-session = agent.session(".", opts)
-```
-
-### 6.3 Skill Loading
-
-A3S Code no longer ships default embedded skills. Load reusable behavior from
-`skill_dirs`, inline skills, or an explicit `SkillRegistry`.
-
-## 7. Multi-Agent Collaboration
-
-### 7.1 Single Delegated Task
-
-```python
-result = session.send('task: explore codebase and summarize architecture')
-```
-
-### 7.2 Parallel Tasks
-
-```python
-result = session.send('parallel_task: [audit security, check performance, review tests]')
-```
-
-### 7.3 Delegation Model
-
-The 2.x runtime uses a single delegation surface: `task` for one bounded child
-run and `parallel_task` for independent fan-out. Planning mode can also route
-plan steps to these tools deterministically when the generated step declares
-`tool = "task"` or `tool = "parallel_task"`.
-
-### 7.4 Agent Types
-
-| Type | Description |
-|------|-------------|
-| `explore` | Read-only exploration |
-| `general` | Full capabilities |
-| `plan` | Analysis only |
-| `verification` | Adversarial validation |
-| `review` | Code review |
-
-## 8. Security & Permissions
-
-### 8.1 Permission Policy
-
-```python
-from a3s_code import SessionOptions, PermissionPolicy
-
-opts = SessionOptions()
-opts.permission_policy = PermissionPolicy(
-    allow=[
-        "read(*)",
-        "grep(*)"
-    ],
-    deny=[
-        "bash(*)"
-    ],
-    default_decision="deny",
-)
-session = agent.session(".", opts)
-```
-
-### 8.2 Human-in-the-Loop (HITL)
-
-```python
-# Prompt confirmation before each tool call
-opts.hitl_enabled = True
-```
-
-### 8.3 Security Features
-
-| Feature | Description |
-|---------|-------------|
-| **Explicit Permissions** | Deny by default, explicit allow required |
-| **Human Confirmation** | Prompt before tool execution |
-| **Skill Restrictions** | `allowed-tools` limits callable tools |
-| **Auto-compact** | Auto compress context before token limits |
-| **Circuit Breaker** | Stop after 3 consecutive failures |
-
-
-## 9. Slash Commands
-
-Type `/help` in any session to see available commands:
-
-| Command | Description |
-|---------|-------------|
-| `/help` | List available commands |
-| `/model [provider/model]` | Show or switch current model |
-| `/cost` | Show token usage and estimated cost |
-| `/clear` | Clear conversation history |
-| `/compact` | Manually trigger context compaction |
-| `/tools` | List registered tools |
-
-### 9.1 Custom Commands
-
-```python
-session.register_command(
-    "status", 
-    "Show status", 
-    lambda args, ctx: f"Model: {ctx['model']}"
-)
-result = session.send("/status")
-```
-
-## 11. Session Management
-
-### 11.1 Session Persistence
-
-```python
-from a3s_code import SessionOptions, FileSessionStore, FileMemoryStore
-
-opts = SessionOptions()
-opts.session_store = FileSessionStore('./sessions')
-opts.memory_store = FileMemoryStore('./memory')
-opts.session_id = 'my-session'
-opts.auto_save = True
-
-session = agent.session(".", opts)
-
-# Resume session
-resumed = agent.resume_session('my-session', opts)
-```
-
-### 11.3 Multi-Provider Switching
-
-```python
-# Switch model per session
-session = agent.session(".", model="openai/gpt-4o")
-```
-
----
-
-# Part 2: Developer Guide
-
-## 12. Architecture Overview
-
-### 12.1 System Architecture
-
-```
-A3S Code
-├── Python SDK (PyO3)
-├── Node.js SDK (NAPI)
-└── Rust Core
-    ├── Agent (configuration facade)
-    ├── AgentSession (workspace-bound execution API)
-    ├── Context assembly
-    ├── Tool selection and execution
-    ├── Skills and delegated task execution
-    ├── Permission / HITL / hooks
-    └── Trace, artifacts, and verification evidence
-```
-
-### 12.2 Core Modules
-
-| Module | Path | Description |
-|--------|------|-------------|
-| `agent_api.rs` | `core/src/` | Public `Agent` / `AgentSession` facade |
-| `agent.rs` | `core/src/` | Internal turn runner |
-| `context/` | `core/src/context/` | Context assembly and providers |
-| `tools/` | `core/src/tools/` | Tool implementations |
-| `skills/` | `core/src/skills/` | Skill system |
-| `llm/` | `core/src/llm/` | LLM clients |
-| `permissions.rs` | `core/src/` | Permission control |
-| `hooks/` | `core/src/hooks/` | Hook system |
-| `trace.rs` | `core/src/` | Execution traces |
-| `verification.rs` | `core/src/` | Completion evidence and verification summaries |
-
-## 13. Development Environment
-
-### 13.1 Prerequisites
-
-```bash
-# Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Python (for Python SDK)
-python -m pip install maturin
-
-# Node.js (for Node.js SDK)
-npm install -g napi-rs
-```
-
-### 13.2 Clone and Build
-
-```bash
-git clone <repository-url>
-cd a3s-code
-
-# Build core
-cargo build --release
-
-# Build Python SDK
-cd sdk/python
-maturin develop
-
-# Build Node.js SDK
-cd sdk/node
-npm install
-npm run build
-```
-
-### 13.3 Development Tools
-
-```bash
-# Run tests
-cargo test
-
-# Linting
-cargo clippy
-
-# Formatting
-cargo fmt
-
-# Use just for tasks
-just --list
-```
-
-
-## 14. Core Modules
-
-### 14.1 Agent Module (`agent_api.rs`)
+### Rust
 
 ```rust
-let agent = Agent::create("agent.acl").await?;
+use a3s_code_core::{Agent, SessionOptions};
+
+let agent = Agent::new("agent.acl").await?;
 let session = agent
     .session_builder("/repo")
-    .options(options)
+    .options(SessionOptions::new())
     .build()
     .await?;
 
-let resumed = agent
-    .resume_session_async("session-id", resume_options)
-    .await?;
+let result = session.send("Find the authentication entry points.", None).await?;
+println!("{}", result.text);
+session.close().await;
 ```
 
-Rust construction is async-first. `session_async`, the async agent/worker
-factories, and `resume_session_async` share the same resolved construction
-kernel. The synchronous `session` factory is compatibility-only: it requires an
-explicitly pre-initialized memory store, never blocks an async runtime, and
-returns `AsyncSessionBuildRequired` for resources that still need async setup.
-A host MCP manager in `SessionOptions` always requires the async path for tool
-discovery; the sync path can only inherit already-cached agent-global tools.
+Every session owns one conversation lifecycle. Transcript-changing operations
+are fail-fast single-flight: overlapping `send`, `stream`, attachment, slash
+command, or resume operations return a busy-session error instead of entering
+an invisible queue. Fully consume or cancel a stream before starting the next
+turn.
 
-### 14.2 AgentSession Module (`agent_api.rs`)
+## 4. Understand the tool surface
 
-`AgentSession` exposes async `send`, `stream`, and direct tool calls. Conversation
-operations are fail-fast single-flight and return `SessionBusy` on overlap.
-Every run shares one invocation context for identity, cancellation, events, and
-governance. SDK events project the stable, lossless `EventEnvelopeV1` wire shape.
+The workspace backend determines which tools can be registered. Inspect
+`toolNames()` and `toolDefinitions()` rather than assuming a local filesystem.
 
-### 14.3 Tool Module (`tools/`)
+| Layer     | Model-visible tools                                                         | Notes                                                                                                      |
+| --------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Workspace | `read`, `write`, `edit`, `patch`, `download`, `search`, `ls`, `bash`, `git` | Each tool is capability-gated; `download` additionally requires a writable local workspace.                |
+| Runtime   | `web_fetch`, `web_search`, `batch`, `program`                               | Nested calls retain the current invocation scope, cancellation, and budgets.                               |
+| Session   | `task`, `generate_object`, `search_skills`, `Skill`                         | Delegation can be disabled. The legacy `parallel_task` alias is callable but hidden from the model schema. |
+| Dynamic   | MCP and host-registered tools                                               | MCP tools use the `mcp__<server>__<tool>` namespace.                                                       |
 
-```rust
-pub trait Tool: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    fn execute(&self, input: ToolInput) -> Result<ToolOutput>;
+`search` is the single model-facing repository search contract. Always pass a
+mode and query.
+
+```json
+{
+  "mode": "bm25",
+  "query": "workspace permission policy",
+  "path": "core/src",
+  "include": "*.rs",
+  "limit": 8
 }
 ```
 
-## 15. Extension Development
+| Mode       | Purpose                                                     | Embeddings required                            |
+| ---------- | ----------------------------------------------------------- | ---------------------------------------------- |
+| `grep`     | Regular-expression content search                           | No                                             |
+| `glob`     | Path discovery                                              | No                                             |
+| `bm25`     | Native lexical relevance ranking                            | No                                             |
+| `semantic` | Exact cosine ranking over session vectors                   | Yes                                            |
+| `hybrid`   | RRF fusion of exact, lexical, symbol, and semantic evidence | Optional; non-vector channels remain available |
 
-### 15.1 Creating Custom Tools
+Use `read.files` for a bounded ordered batch when paths are already known.
+Preview mechanical edits with `dry_run: true`, then apply the same edit with
+`expected_replacements` and an independent `max_replacements` when appropriate.
 
-```rust
-use a3s_code_core::tools::{Tool, ToolInput, ToolOutput};
+## 5. Enable asynchronous in-memory workspace retrieval
 
-pub struct MyTool;
+Dense retrieval is an explicit host capability. It is not a durable vector
+database and it is not enabled by the selected chat model. The host supplies a
+typed embedding provider; A3S Code owns text admission, chunking, batching,
+response validation, exact in-memory vector partitions, hybrid ranking,
+current-source verification, accounting, and cleanup.
 
-impl Tool for MyTool {
-    fn name(&self) -> &str { "my_tool" }
-    fn description(&self) -> &str { "My custom tool description" }
-    fn execute(&self, input: ToolInput) -> Result<ToolOutput> {
-        Ok(ToolOutput::new("result"))
-    }
-}
+```js
+import {
+  CallbackEmbeddingProvider,
+  RecursiveWorkspaceChunkingStrategy,
+  WorkspaceRetrievalOptions,
+} from "@a3s-lab/code";
+
+const provider = new CallbackEmbeddingProvider(
+  {
+    provider: "host-embeddings",
+    model: "code-search-v1",
+    dimension: 768,
+    normalization: "unit",
+  },
+  async ({ inputs, signal }) => {
+    const response = await embeddingClient.embed(
+      inputs.map(({ text }) => text),
+      { signal },
+    );
+    return {
+      vectors: inputs.map((input, index) => ({
+        id: input.id,
+        values: response[index],
+      })),
+    };
+  },
+);
+
+const retrieval = new WorkspaceRetrievalOptions(
+  provider,
+  null,
+  new RecursiveWorkspaceChunkingStrategy(8 * 1024, 512, [
+    "\n\n",
+    "\n",
+    ". ",
+    " ",
+  ]),
+);
+retrieval.maxRecords = 100_000;
+retrieval.maxBytes = 128 * 1024 * 1024;
+
+const session = await agent.sessionAsync("/repo", {
+  workspaceRetrieval: retrieval,
+});
+
+console.log(session.workspaceRetrievalStatus());
+console.log(
+  await session.hybridSearch({
+    query: "where session shutdown releases temporary indexes",
+    limit: 8,
+  }),
+);
+await session.closeAsync();
 ```
 
-### 15.2 Creating Custom Skills
+Session construction returns before corpus embedding finishes. Status moves
+through `building`, `ready`, `degraded`, and `closed`. Completed file partitions
+publish atomically, so queries may use partial coverage while building. Closing
+the session cancels provider work, joins the indexer within a deadline, and
+releases all accounted vector records and bytes.
 
-Create Markdown file in `skills/` directory:
+Only manifest-admitted UTF-8 text enters chunking and embeddings. Generated,
+oversized, credential-bearing, `.a3s` control, and non-text files are excluded.
+Before returning a hit, Code rereads the source and verifies its full-file
+digest and exact chunk range. Stale, deleted, unreadable, or superseded chunks
+are not exposed.
 
-```markdown
----
-name: my-skill
-description: My custom skill
-allowed-tools: "read(*), grep(*)"
----
+The built-in index is an exact, bounded `InMemoryVectorIndex`. Recreating a
+session rebuilds its projection; sessions do not share it. If persistence or a
+shared vector service is required, the embedding host owns that separate
+system and must preserve Code's source-verification boundary.
 
-# My Skill
+## 6. Apply governance at the correct boundary
 
-Detailed description for LLM to use when executing tasks.
+Model-selected calls pass through active-skill restrictions, permission policy,
+confirmation, hooks, budget checks, lane admission, timeouts, cancellation,
+recursive-call protection, output sanitization, artifact limits, and workspace
+path checks.
+
+Direct SDK calls such as `session.tool(...)` are trusted host control-plane
+operations. They skip model-facing permission and confirmation because the
+embedding application selected the call. Use the governed direct API when a
+host-coordinated call must still pass session permission and confirmation.
+
+```python
+from a3s_code import PermissionPolicy, SessionOptions
+
+options = SessionOptions()
+options.permission_policy = PermissionPolicy(
+    allow=["read(*)", "search(*)"],
+    deny=["bash(*)"],
+    default_decision="deny",
+)
 ```
 
-## 16. Hook System
+The host must authenticate and authorize its own user before translating a
+request into a trusted direct call. Tool visibility is not an authorization
+grant.
 
-### 16.1 Available Hook Events
+## 7. Use typed stores and bounded context
 
-| Event | Description | Blockable |
-|-------|-------------|-----------|
-| `PreToolUse` | Before tool use | Yes |
-| `PostToolUse` | After tool use | No |
-| `GenerateStart` | Before generation | Yes |
-| `GenerateEnd` | After generation | No |
-| `SessionStart` | Session start | No |
-| `SessionEnd` | Session end | No |
+Backend choices are typed objects, not primitive backend names.
 
-### 16.2 Implementing HookHandler
+```python
+from a3s_code import FileMemoryStore, FileSessionStore, SessionOptions
 
-```rust
-use a3s_code::HookHandler;
-
-struct MyHook;
-
-impl HookHandler for MyHook {
-    fn pre_tool_use(&self, tool_name: &str, tool_input: &Value, ctx: &Context) -> HookResult {
-        if tool_name == "bash" && tool_input.contains("rm -rf") {
-            return HookResult::block("Refusing destructive command");
-        }
-        HookResult::continue_()
-    }
-}
+options = SessionOptions()
+options.memory_store = FileMemoryStore("./.a3s/memory")
+options.session_store = FileSessionStore("./.a3s/sessions")
+options.session_id = "review-session"
+options.auto_save = True
+options.auto_compact = True
+options.auto_compact_threshold = 0.75
 ```
 
-## 17. Custom Tools and Skills
+Session snapshots persist the conversation and supported runtime contracts;
+they do not serialize live provider callbacks, credentials, MCP processes, or
+the ephemeral workspace vector index. Resume must re-inject required live
+resources and rejects incompatible persisted policy.
 
-### 17.1 Extension Surface
+Memory stores hold learned items. Workspace retrieval indexes current source.
+They are separate systems and should not be described as interchangeable.
 
-A3S Code 2.x keeps extension points explicit and SDK-owned. Extend the runtime with:
+## 8. Compose skills, MCP, delegation, and workflows
 
-- Custom tools registered in the host SDK
-- Markdown skills loaded from `skill_dirs`
-- Hooks for policy, telemetry, and workflow integration
-- MCP servers for external capabilities
+- Skills are Markdown packages loaded from explicit directories or registries.
+  A3S Code ships no hidden default Skill catalog.
+- MCP managers discover external tools over their configured transports.
+  Child sessions inherit only the managers and policy the parent host supplies.
+- `task` starts one bounded specialist run. Independent fan-out uses the typed
+  host helpers or the hidden compatibility alias rather than expanding the
+  model-visible schema.
+- Agent-wide priority scheduling applies one capacity boundary across sessions,
+  direct tools, detached children, and host workflows.
+- `program` executes bounded QuickJS orchestration. Dynamic workflows integrate
+  with A3S Flow for replay and shared budgets.
 
-## 18. Testing & Debugging
+Always set explicit worker count, depth, step, token, timeout, and output limits
+for unattended workloads. Closing the parent session must cancel or join owned
+children before returning.
 
-### 18.1 Unit Tests
+## 9. Verify outcomes and observe runs
 
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_my_tool() {
-        let tool = MyTool;
-        let input = ToolInput::new(json!({"key": "value"}));
-        let output = tool.execute(input).unwrap();
-        assert_eq!(output.text(), "expected");
-    }
-}
+Verification commands turn a completion claim into recorded evidence.
+
+```js
+const report = await session.verifyCommands("release-readiness", [
+  {
+    id: "tests",
+    kind: "test",
+    description: "Focused tests pass",
+    command: "npm test",
+    required: true,
+    timeoutMs: 120000,
+  },
+]);
+
+console.log(report);
+console.log(session.verificationSummaryText());
 ```
 
-### 18.2 Debugging Tips
+Run and event APIs expose stable versioned records for headless hosts. Trace
+events, verification reports, tool-result evidence, artifacts, and scheduler
+snapshots are observations, not permissions or capacity reservations.
 
-```bash
-# Enable verbose logs
-export RUST_LOG=debug
-export A3S_DEBUG=1
-```
+## 10. Test and qualify changes
 
-## 19. Contributing Guidelines
+Run focused tests from the affected crate or SDK. The repository's required
+remote gates include formatting, strict Clippy, default and all-feature Rust
+tests, Go race tests, native Node.js and Python runtime suites, workspace
+retrieval churn, documentation checks, and capability-ledger validation.
 
-### 19.1 Code Style
+Performance evidence uses two different kinds of gates:
 
-- Follow Rust standard style
-- Use `cargo fmt` for formatting
-- Use `cargo clippy` for linting
-- Document all public APIs
+1. deterministic work and resource ceilings, such as provider requests,
+   retries, records, bytes, candidates, queue depth, tool rounds, and complete
+   post-close release;
+2. release-build latency qualification with a fixed corpus, warmups, repeated
+   samples, p50/p95/maximum, machine metadata, and retained JSON artifacts.
 
-### 19.2 Commit Convention
+Remote model, public search-engine, and third-party service latency must be
+reported separately from local Core latency. A job timeout prevents hangs; it
+is not a product-performance measurement.
 
-```
-feat: new feature
-fix: bug fix
-docs: documentation
-style: formatting
-refactor: refactoring
-test: testing
-chore: build/tools
-```
+See [Capability Verification](CAPABILITY_VERIFICATION.md) for the 20-area
+evidence ledger and unresolved gaps. See
+[Workspace Retrieval QA](WORKSPACE_RETRIEVAL_QA.md) for vector quality,
+resource, lifecycle, and DeepSeek qualification evidence.
 
----
+## 11. Authoritative references
 
-**License**: MIT  
-**Version**: See CHANGELOG in each SDK
+- [Versioned website documentation](https://a3s-lab.github.io/Code/)
+- [Node.js SDK](../sdk/node/README.md)
+- [Python SDK](../sdk/python/README.md)
+- [Go SDK](../sdk/go/README.md)
+- [Advanced Developer Manual](ADVANCED_DEVELOPER_MANUAL.md)
+- [SDK API Design](SDK_API_DESIGN.md)
+- [Workspace Retrieval Operations](WORKSPACE_RETRIEVAL_OPERATIONS.md)
 
-*Last Updated: 2026-03-24*
+When this overview and a versioned SDK declaration disagree, treat the SDK
+declaration and executable contract tests for that release as authoritative.

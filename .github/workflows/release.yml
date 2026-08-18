@@ -32,6 +32,21 @@ jobs:
     needs: registry-preflight
     uses: ./.github/workflows/workspace-retrieval-soak.yml
 
+  sdk-runtime:
+    name: SDK runtime
+    needs: registry-preflight
+    uses: ./.github/workflows/sdk-runtime.yml
+
+  hermetic-integrations:
+    name: Hermetic integrations
+    needs: registry-preflight
+    uses: ./.github/workflows/hermetic-integrations.yml
+
+  performance:
+    name: Performance qualification
+    needs: registry-preflight
+    uses: ./.github/workflows/performance.yml
+
   # ───────────────────────────────────────────────
   # Gate: CI checks must pass before any publishing
   # ───────────────────────────────────────────────
@@ -54,6 +69,12 @@ jobs:
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Verify capability evidence ledger
+        run: python3 scripts/check_capability_verification.py
+
+      - name: Test repository validation scripts
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -83,12 +104,6 @@ jobs:
           node scripts/generate_event_protocol_artifacts.mjs --check
           node scripts/sdk_api_alignment_check.mjs
 
-      - name: Check Node SDK
-        run: cargo check --manifest-path sdk/node/Cargo.toml
-
-      - name: Check Python SDK
-        run: cargo check --manifest-path sdk/python/Cargo.toml
-
       - uses: actions/setup-go@v6
         with:
           go-version: "1.23.x"
@@ -102,10 +117,7 @@ jobs:
         working-directory: sdk/go
 
       - name: Reclaim build space before tests
-        run: |
-          cargo clean --manifest-path sdk/node/Cargo.toml
-          cargo clean --manifest-path sdk/python/Cargo.toml
-          cargo clean
+        run: cargo clean
 
       - name: Default tests
         run: cargo test --workspace
@@ -141,7 +153,15 @@ jobs:
   # ───────────────────────────────────────────────
   publish-crate:
     name: Publish to crates.io
-    needs: [ci, ci-windows, retrieval-soak]
+    needs:
+      [
+        ci,
+        ci-windows,
+        retrieval-soak,
+        sdk-runtime,
+        hermetic-integrations,
+        performance,
+      ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -219,7 +239,14 @@ jobs:
   # ───────────────────────────────────────────────
   github-release:
     name: GitHub Release
-    needs: [publish-crate, publish-node, publish-python, publish-python-bootstrap, publish-go]
+    needs:
+      [
+        publish-crate,
+        publish-node,
+        publish-python,
+        publish-python-bootstrap,
+        publish-go,
+      ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

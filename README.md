@@ -107,12 +107,12 @@ replays.
 
 ## Why A3S Code
 
-| Requirement | Runtime mechanism |
-| --- | --- |
-| **Govern every side effect** | JSON argument validation, typed tool capabilities, permission policy, human confirmation, hooks, budgets, security providers, and cancellation share one invocation path. |
-| **Keep context bounded** | Reads, searches, command output, Git results, and fetched pages expose ranges or cursors. Large evidence moves into bounded artifacts with previews, sizes, and hashes. |
+| Requirement                             | Runtime mechanism                                                                                                                                                                 |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Govern every side effect**            | JSON argument validation, typed tool capabilities, permission policy, human confirmation, hooks, budgets, security providers, and cancellation share one invocation path.         |
+| **Keep context bounded**                | Reads, searches, command output, Git results, and fetched pages expose ranges or cursors. Large evidence moves into bounded artifacts with previews, sizes, and hashes.           |
 | **Own the UI without forking the loop** | Core emits `AgentEvent`; SDK streams and persisted runs use the lossless `EventEnvelopeV1` protocol. The host chooses presentation, identity, credentials, and deployment policy. |
-| **Resume from evidence, not guesswork** | `SessionSnapshotV1` can atomically commit session state, runs, artifacts, traces, verification reports, and child-task records as one generation. |
+| **Resume from evidence, not guesswork** | `SessionSnapshotV1` can atomically commit session state, runs, artifacts, traces, verification reports, and child-task records as one generation.                                 |
 
 One turn follows a visible chain of responsibility:
 
@@ -143,28 +143,28 @@ The Core crate enables lazy Chrome/Chromium-backed search by default. Minimal
 embeddings can use `default-features = false`; cloud backends, serving, and
 telemetry remain opt-in.
 
-| Area | What is available | Activation |
-| --- | --- | --- |
-| Agent runtime | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, and replay | Baseline |
-| Governed tools | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence | Exposed only when workspace and policy allow |
-| Code intelligence | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata | Host-selected local workspace |
-| Workspace retrieval | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database |
-| Context and memory | Ranked context, repeated compaction, three-tier memory, typed stores, recall, extraction, relations, and pruning | Host-selected and configurable |
-| Cognitive packages | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages |
-| Model adapters | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations | Configuration or host injection |
-| Structured output | Native provider formats or schema-validated prompt, partial parse, and repair fallback | Baseline |
-| MCP and Skills | Isolated MCP transports plus filesystem, registry, inline, and live session Skills | Configuration or live registration |
-| Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation | Manual tools independently configurable; automation opt-in |
-| Priority scheduling | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, and occupancy snapshots | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()` |
-| Programmable workflows | Bounded QuickJS `program` calls and replayable A3S Flow-backed dynamic workflows | `program` baseline; dynamic runtime explicitly registered |
-| Persistence | Atomic snapshots, run events, traces, artifacts, verification, checkpoints, and optional RL trajectories | Configured store and host policy |
-| State graph | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow 0.11 lifecycle projection including cancellation, terminal outcomes, progress, and child operations | Explicit application use |
-| Agent release contract | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks | Baseline admission API |
-| Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, bounded `EventEnvelopeV1` pages, per-conversation detached Git worktrees, and immutable `/v1/agent/changes` patches | `AgentProtocolHarness` multiplexes ordinary Code sessions and `AgentProtocolHost` executes through each `AgentSession`; the `a3s code` process supplies service transport |
-| Headless web search | Lazy Chrome/Chromium-backed Google/Baidu engines and managed browser lifecycle APIs; Lightpanda remains configurable | Default Cargo feature `headless-search`; disable with `default-features = false` |
-| S3 workspace | S3-compatible object backend | Cargo feature `s3` |
-| Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown | Cargo feature `serve` |
-| OpenTelemetry | OTLP export in addition to baseline `tracing` | Cargo feature `telemetry` |
+| Area                    | What is available                                                                                                                                                                                                                       | Activation                                                                                                                                                                |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent runtime           | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, and replay                                                                                                                                 | Baseline                                                                                                                                                                  |
+| Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
+| Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
+| Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
+| Context and memory      | Ranked context, repeated compaction, three-tier memory, typed stores, recall, extraction, relations, and pruning                                                                                                                        | Host-selected and configurable                                                                                                                                            |
+| Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
+| Model adapters          | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations                                                                                                                                                        | Configuration or host injection                                                                                                                                           |
+| Structured output       | Native provider formats or schema-validated prompt, partial parse, and repair fallback                                                                                                                                                  | Baseline                                                                                                                                                                  |
+| MCP and Skills          | Isolated MCP transports plus filesystem, registry, inline, and live session Skills                                                                                                                                                      | Configuration or live registration                                                                                                                                        |
+| Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation                                                                                                                    | Manual tools independently configurable; automation opt-in                                                                                                                |
+| Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, and occupancy snapshots                                        | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()`                                                                      |
+| Programmable workflows  | Bounded QuickJS `program` calls and replayable A3S Flow-backed dynamic workflows                                                                                                                                                        | `program` baseline; dynamic runtime explicitly registered                                                                                                                 |
+| Persistence             | Atomic snapshots, run events, traces, artifacts, verification, checkpoints, and optional RL trajectories                                                                                                                                | Configured store and host policy                                                                                                                                          |
+| State graph             | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow 0.11 lifecycle projection including cancellation, terminal outcomes, progress, and child operations                          | Explicit application use                                                                                                                                                  |
+| Agent release contract  | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks                                                                                                                                    | Baseline admission API                                                                                                                                                    |
+| Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, bounded `EventEnvelopeV1` pages, per-conversation detached Git worktrees, and immutable `/v1/agent/changes` patches                                       | `AgentProtocolHarness` multiplexes ordinary Code sessions and `AgentProtocolHost` executes through each `AgentSession`; the `a3s code` process supplies service transport |
+| Headless web search     | Lazy Chrome/Chromium-backed Google/Baidu engines and managed browser lifecycle APIs; Lightpanda remains configurable                                                                                                                    | Default Cargo feature `headless-search`; disable with `default-features = false`                                                                                          |
+| S3 workspace            | S3-compatible object backend                                                                                                                                                                                                            | Cargo feature `s3`                                                                                                                                                        |
+| Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown                                                                                                                          | Cargo feature `serve`                                                                                                                                                     |
+| OpenTelemetry           | OTLP export in addition to baseline `tracing`                                                                                                                                                                                           | Cargo feature `telemetry`                                                                                                                                                 |
 
 Availability never bypasses policy. Auto-save, automatic compaction, goals,
 automatic delegation, sandboxing, human approval, trajectory recording, and
@@ -331,15 +331,15 @@ A tool is registered only when its workspace exposes the capability it needs.
 An object-only backend does not advertise local `bash` or `git` definitions to
 the model.
 
-| Concern | Built-in surface |
-| --- | --- |
-| Files and directories | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, native BM25, semantic diagnostics, and hybrid retrieval modes |
-| Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination |
-| Code intelligence | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools |
-| Web evidence | Quality-gated headless → HTTP/RSS → API `web_search` with shared admission, session circuits, and request coalescing; plus bounded `web_fetch`, source normalization, and SSRF protections |
-| Downloads | Workspace-confined binary `download` with strict range validation, bounded parallelism, retries, checksums, and atomic publication |
-| Composition | Safe `batch`, sandboxed QuickJS `program`, structured `generate_object`, and unified `task` delegation; the hidden `parallel_task` alias remains host-compatible |
-| Extensibility | `Skill`, `search_skills`, namespaced `mcp__<server>__<tool>`, and explicit `dynamic_workflow` |
+| Concern                     | Built-in surface                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Files and directories       | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, native BM25, semantic diagnostics, and hybrid retrieval modes |
+| Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination                                                                                               |
+| Code intelligence           | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools                                                                                |
+| Web evidence                | Quality-gated headless → HTTP/RSS → API `web_search` with shared admission, session circuits, and request coalescing; plus bounded `web_fetch`, source normalization, and SSRF protections |
+| Downloads                   | Workspace-confined binary `download` with strict range validation, bounded parallelism, retries, checksums, and atomic publication                                                         |
+| Composition                 | Safe `batch`, sandboxed QuickJS `program`, structured `generate_object`, and unified `task` delegation; the hidden `parallel_task` alias remains host-compatible                           |
+| Extensibility               | `Skill`, `search_skills`, namespaced `mcp__<server>__<tool>`, and explicit `dynamic_workflow`                                                                                              |
 
 Every invocation declares `ToolCapabilities`, including read-only,
 idempotent, resumable, cancellation-safe, paginated, output-kind, and parallel
@@ -388,12 +388,12 @@ the other files continue.
 For `search` calls with `mode: "grep"`, `output_mode` controls how much
 evidence enters the context:
 
-| Mode | Result |
-| --- | --- |
-| `content` | Matching lines with optional context (default) |
-| `files_with_matches` | Lexically cursor-paginated matching paths only |
-| `count` | Lexically cursor-paginated matching-line counts per file |
-| `summary` | Full-scan line and file totals without rendered matches |
+| Mode                 | Result                                                   |
+| -------------------- | -------------------------------------------------------- |
+| `content`            | Matching lines with optional context (default)           |
+| `files_with_matches` | Lexically cursor-paginated matching paths only           |
+| `count`              | Lexically cursor-paginated matching-line counts per file |
+| `summary`            | Full-scan line and file totals without rendered matches  |
 
 The non-content modes ask built-in workspace backends to count matches without
 constructing discarded match text. In `mode: "glob"`, `search` retains a
@@ -703,13 +703,13 @@ multiple agents or behaviors need one auditable shared model.
 
 ## Runtime surfaces
 
-| Surface | Package | Intended use |
-| --- | --- | --- |
-| Terminal | [`a3s code`](https://github.com/A3S-Lab/CLI) | Interactive coding product built on Core and the shared [A3S TUI](https://github.com/A3S-Lab/TUI) |
-| Rust | [`a3s-code-core`](https://crates.io/crates/a3s-code-core) | Complete runtime API and extension traits |
-| Node.js | [`@a3s-lab/code`](https://www.npmjs.com/package/@a3s-lab/code) | Native N-API bindings for async lifecycle, streams, tools, stores, orchestration, MCP, and state graph |
-| Python | [`a3s-code`](https://pypi.org/project/a3s-code/) | Native PyO3/bootstrap package with sync and async application APIs |
-| Go | [`github.com/A3S-Lab/Code/sdk/go/v7`](sdk/go/README.md) | Pure-Go client with a versioned local bridge for sessions, streams, tools, ephemeral semantic retrieval, runs, verification, and MCP |
+| Surface  | Package                                                        | Intended use                                                                                                                         |
+| -------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Terminal | [`a3s code`](https://github.com/A3S-Lab/CLI)                   | Interactive coding product built on Core and the shared [A3S TUI](https://github.com/A3S-Lab/TUI)                                    |
+| Rust     | [`a3s-code-core`](https://crates.io/crates/a3s-code-core)      | Complete runtime API and extension traits                                                                                            |
+| Node.js  | [`@a3s-lab/code`](https://www.npmjs.com/package/@a3s-lab/code) | Native N-API bindings for async lifecycle, streams, tools, stores, orchestration, MCP, and state graph                               |
+| Python   | [`a3s-code`](https://pypi.org/project/a3s-code/)               | Native PyO3/bootstrap package with sync and async application APIs                                                                   |
+| Go       | [`github.com/A3S-Lab/Code/sdk/go/v7`](sdk/go/README.md)        | Pure-Go client with a versioned local bridge for sessions, streams, tools, ephemeral semantic retrieval, runs, verification, and MCP |
 
 ```bash
 # Node.js
@@ -814,28 +814,30 @@ the v1 schema.
 
 ## Documentation
 
-| Guide | Focus |
-| --- | --- |
-| [User Guide](manual/USER_GUIDE.md) · [Chinese](manual/USER_GUIDE_CN.md) | Installation, configuration, sessions, tools, and common workflows |
-| [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) | Extension contracts, security, lifecycle, and production integration |
-| [SDK API Design](manual/SDK_API_DESIGN.md) | Cross-language API conventions and alignment |
-| [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md) | Capability/input/usage snapshots, repeated-context diagnostics, event ordering, redaction boundary, validation, and replay |
-| [Go SDK](sdk/go/README.md) | Bridge installation, sessions, event streaming, direct tools, errors, and release compatibility |
-| [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) | Language runtime, capability boundary, lifecycle, and verification |
-| [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md) | Architecture, quality budgets, lifecycle, and adversarial trust boundaries |
-| [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md) | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope |
-| [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) | Paired task/rerank ablations, built-in chunk matrix, cross-SDK real-model parity, custom negative control, non-text boundary, metrics, and batching follow-up |
-| [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md) | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan |
-| [Workspace Retrieval Operations](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md) | Production SLOs, telemetry, state response, generation gates, and configuration-only rollback |
-| [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md) | Filesystem-first tool and agent definitions |
-| [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) | Admission schema, identity, compatibility, and security boundary |
-| [Changelog](CHANGELOG.md) | Release history and migration-relevant changes |
+| Guide                                                                                                                | Focus                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [User Guide](manual/USER_GUIDE.md) · [Chinese](manual/USER_GUIDE_CN.md)                                              | Installation, configuration, sessions, tools, and common workflows                                                                                            |
+| [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) | Extension contracts, security, lifecycle, and production integration                                                                                          |
+| [SDK API Design](manual/SDK_API_DESIGN.md)                                                                           | Cross-language API conventions and alignment                                                                                                                  |
+| [Capability Verification](manual/CAPABILITY_VERIFICATION.md)                                                         | First-principles evidence ledger for every advertised capability, SDK runtime gates, known gaps, and performance policy                                       |
+| [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md)                                                            | Capability/input/usage snapshots, repeated-context diagnostics, event ordering, redaction boundary, validation, and replay                                    |
+| [Go SDK](sdk/go/README.md)                                                                                           | Bridge installation, sessions, event streaming, direct tools, errors, and release compatibility                                                               |
+| [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md)                                                       | Language runtime, capability boundary, lifecycle, and verification                                                                                            |
+| [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md)                                               | Architecture, quality budgets, lifecycle, and adversarial trust boundaries                                                                                    |
+| [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md)                                                | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope                                                                              |
+| [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md)                               | Paired task/rerank ablations, built-in chunk matrix, cross-SDK real-model parity, custom negative control, non-text boundary, metrics, and batching follow-up |
+| [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md)                                               | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan                                                                   |
+| [Workspace Retrieval Operations](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)                                           | Production SLOs, telemetry, state response, generation gates, and configuration-only rollback                                                                 |
+| [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md)                                                            | Filesystem-first tool and agent definitions                                                                                                                   |
+| [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md)                                                           | Admission schema, identity, compatibility, and security boundary                                                                                              |
+| [Changelog](CHANGELOG.md)                                                                                            | Release history and migration-relevant changes                                                                                                                |
 
 ## Development
 
 Run checks from the A3S Code repository directory:
 
 ```bash
+python3 scripts/check_capability_verification.py
 cargo fmt --all -- --check
 cargo test -p a3s-code-core
 cargo test -p a3s-code-core --all-features
@@ -846,10 +848,22 @@ go -C sdk/go test ./...
 cargo run --release -p a3s-code-core --example workspace_retrieval_benchmark
 ```
 
+The capability checker keeps all 20 advertised product areas connected to the
+evidence ledger. Dedicated CI jobs build and load the Node.js and Python native
+modules before running their host-language contracts; a successful Rust
+`cargo check` alone is not counted as SDK runtime evidence.
+
 The retrieval benchmark emits JSON and fails when the locked 25,000 x 384
 exact-vector or hybrid p95 budgets are exceeded. See the
 [qualification report](manual/WORKSPACE_RETRIEVAL_QA.md) for the reference
 profile, inclusion rules, and measured results.
+
+The targeted [Performance Qualification](.github/workflows/performance.yml)
+workflow runs release-mode convergence and retrieval profiles when their
+critical paths change and on a weekly schedule. It retains machine-readable
+JSON artifacts. Ordinary CI gates deterministic work amplification and
+resource ceilings; remote model and public search-engine latency is reported
+separately rather than treated as a stable Core speed measurement.
 
 Real-provider, browser-runtime, and S3 tests are ignored unless their external
 prerequisites are configured. The normal test suite is hermetic.

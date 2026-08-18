@@ -305,6 +305,44 @@ files such as `Cargo.toml`, `package.json`, `pyproject.toml`, and `go.mod`.
 Treat them as starting points: review the commands, timeouts, and required
 flags for the project before gating releases or user-visible automation.
 
+## How A3S Code Itself Is Qualified
+
+Turn verification answers whether one agent task produced its claimed result.
+Repository qualification answers a different question: whether every public
+A3S Code capability still satisfies its contract across Core, SDKs, resource
+limits, and supported deployment surfaces. A green build alone cannot answer
+that question.
+
+The repository therefore separates four evidence classes:
+
+| Evidence class                    | What it proves                                                                                                                    | What it does not prove                                    |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Deterministic correctness         | Activation, successful behavior, invalid input, permissions, cancellation, lifecycle, ordering, and cleanup against fixed oracles | Real provider, browser, or object-store availability      |
+| Deterministic resource gates      | Bounds on calls, retries, records, bytes, queues, candidates, tool rounds, and retained state                                     | Wall-clock latency on every machine                       |
+| Release performance qualification | Release-build p50, p95, maximum, resource accounting, workload parameters, and machine metadata for stable local work             | Remote model or public-search latency                     |
+| External qualification            | Compatibility with a named live model, browser, collector, or storage service under recorded conditions                           | Hermetic reproducibility or a universal performance claim |
+
+The capability ledger maps all 20 advertised product areas to executable
+evidence and keeps unresolved gaps visible. CI rejects a capability-map change
+that is not reflected in that ledger. Node.js and Python gates build and load
+their native modules before exercising the public wrappers; compile-only Rust
+checks are not counted as SDK runtime evidence. Go runs through its versioned
+bridge with the race detector.
+
+Performance checks distinguish work amplification from timing. Ordinary CI
+gates deterministic ceilings such as provider requests, vector bytes, scratch
+space, retries, and post-close retention. The dedicated release-profile
+workflow uses warmups and repeated samples, emits machine-readable JSON, and
+retains it as a CI artifact. Network-dependent DeepSeek and browser timings are
+reported separately, because combining them with local execution would make a
+regression indistinguishable from provider or network variance.
+
+See the
+[capability verification and performance contract](https://github.com/A3S-Lab/Code/blob/main/manual/CAPABILITY_VERIFICATION.md)
+for the current evidence ledger, known gaps, qualification commands, and the
+completion rule. A repository-wide claim is not complete while that ledger
+contains an unresolved Code-owned gap.
+
 ## Why This Matters
 
 Without verification, an agent run ends on the model's word. With it, the run

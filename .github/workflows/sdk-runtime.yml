@@ -1,0 +1,92 @@
+name: SDK Runtime
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  node:
+    name: Node.js
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdk/node -> target
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: sdk/node/package-lock.json
+
+      - name: Install Node SDK dependencies
+        run: npm ci
+        working-directory: sdk/node
+
+      - name: Build Node SDK native module
+        run: npm run build:debug
+        working-directory: sdk/node
+
+      - name: Test Node SDK types
+        run: npm run test:types
+        working-directory: sdk/node
+
+      - name: Test Node SDK runtime
+        run: npm test
+        working-directory: sdk/node
+
+  python:
+    name: Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      A3S_CODE_SDK_REAL_AGENT_SMOKE: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdk/python -> target
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build and test Python SDK runtime
+        shell: bash
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install 'maturin>=1,<2' pytest
+          maturin develop --locked --manifest-path sdk/python/Cargo.toml
+          python -m pytest -q sdk/python/tests sdk/python/test_confirmation_inheritance.py
+          python sdk/python/tests/test_budget_guard.py
+          python sdk/python/tests/test_parallel_budget.py
+          python sdk/python/tests/test_session_close.py
+          python sdk/python/tests/test_subagent_query_api.py

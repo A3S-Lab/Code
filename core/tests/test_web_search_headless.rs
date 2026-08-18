@@ -9,6 +9,7 @@ use a3s_code_core::config::{BrowserBackend, HeadlessConfig, SearchConfig};
 use a3s_code_core::tools::{ToolContext, ToolExecutor};
 
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -176,4 +177,63 @@ async fn test_google_headless_search_actual() {
         "Search output should not be empty"
     );
     println!("Search output: {}", result.output);
+}
+
+#[tokio::test]
+#[ignore = "requires the controlled local HTTPS fixture and Chrome"]
+async fn test_google_headless_search_controlled_local_cdp() {
+    let browser_path = env::var("A3S_HEADLESS_TEST_BROWSER")
+        .expect("A3S_HEADLESS_TEST_BROWSER must identify the workflow-managed Chrome binary");
+    assert_eq!(
+        env::var("A3S_HEADLESS_TEST_FIXTURE")
+            .expect("A3S_HEADLESS_TEST_FIXTURE must select the controlled fixture"),
+        "controlled-local-https-v1",
+        "the ignored qualification must never run against the public Google endpoint"
+    );
+
+    let marker = "controlled-cdp-v1";
+    let headless_config = HeadlessConfig {
+        backend: BrowserBackend::Chrome,
+        max_tabs: 1,
+        browser_path: Some(browser_path),
+        launch_args: vec![
+            "--ignore-certificate-errors".to_string(),
+            "--disable-background-networking".to_string(),
+            "--disable-quic".to_string(),
+            "--no-proxy-server".to_string(),
+            "--host-resolver-rules=MAP www.google.com 127.0.0.1".to_string(),
+            format!("--a3s-headless-fixture={marker}"),
+        ],
+        proxy_url: None,
+    };
+    let context = make_context(Some(headless_config));
+    let executor = ToolExecutor::new("/tmp".to_string());
+    let output = executor
+        .execute_with_context(
+            "web_search",
+            &serde_json::json!({
+                "query": "a3s controlled cdp fixture",
+                "engines": ["google"],
+                "limit": 1,
+                "timeout": 15,
+                "format": "json"
+            }),
+            &context,
+        )
+        .await
+        .expect("controlled headless search must dispatch");
+
+    assert_eq!(output.exit_code, 0, "{}", output.output);
+    assert!(
+        output.output.contains("A3S Controlled CDP Fixture"),
+        "the production Google parser must return the controlled result: {}",
+        output.output
+    );
+    assert!(
+        output
+            .output
+            .contains("https://docs.a3s.dev/controlled-cdp-fixture"),
+        "the controlled result must retain its independently asserted source URL: {}",
+        output.output
+    );
 }

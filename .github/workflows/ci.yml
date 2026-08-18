@@ -14,9 +14,18 @@ jobs:
     name: Retrieval soak
     uses: ./.github/workflows/workspace-retrieval-soak.yml
 
+  sdk-runtime:
+    name: SDK runtime
+    uses: ./.github/workflows/sdk-runtime.yml
+
+  hermetic-integrations:
+    name: Hermetic integrations
+    uses: ./.github/workflows/hermetic-integrations.yml
+
   check:
     name: Check
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +41,12 @@ jobs:
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Verify capability evidence ledger
+        run: python3 scripts/check_capability_verification.py
+
+      - name: Test repository validation scripts
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -68,8 +83,9 @@ jobs:
         run: cargo run -p a3s-code-core --example agent_convergence_benchmark
 
   sdk-check:
-    name: SDK build check
+    name: SDK contract and Go runtime
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -84,20 +100,10 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      # The Node and Python SDKs are excluded from the core workspace and are
-      # otherwise only compiled at release time (napi / maturin). Type-check them
-      # here so a core change that breaks an SDK (e.g. a new struct field that an
-      # SDK constructs with a literal) fails on the PR instead of the release.
       - name: Check SDK protocol and API alignment
         run: |
           node scripts/generate_event_protocol_artifacts.mjs --check
           node scripts/sdk_api_alignment_check.mjs
-
-      - name: Check Node SDK
-        run: cargo check --manifest-path sdk/node/Cargo.toml
-
-      - name: Check Python SDK
-        run: cargo check --manifest-path sdk/python/Cargo.toml
 
       - uses: actions/setup-go@v6
         with:
@@ -114,6 +120,7 @@ jobs:
   windows-check:
     name: Windows check
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 

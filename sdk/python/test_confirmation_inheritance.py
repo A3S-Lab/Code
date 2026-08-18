@@ -1,91 +1,90 @@
-"""
-Integration test for ConfirmationInheritance in Python SDK.
+"""Deterministic Python SDK coverage for confirmation inheritance.
 
-Tests that the new confirmation_inheritance field is properly exposed
-and works end-to-end with real LLM calls.
-
-Requires: A3S_CONFIG_FILE environment variable pointing to config.acl
+The public wrapper contract is hermetic by default. Set ``A3S_CONFIG_FILE``
+and ``A3S_CODE_SDK_REAL_AGENT_SMOKE=1`` to add a real delegated LLM turn.
 """
+
+from __future__ import annotations
 
 import os
-import sys
 import tempfile
 from pathlib import Path
 
-# Import from the built native module
-try:
-    from a3s_code import Agent, WorkerAgentSpec, SessionOptions, PermissionPolicy
-except ImportError:
-    print("ERROR: a3s_code module not found. Build with: cd sdk/python && maturin develop")
-    sys.exit(1)
+from a3s_code import Agent, PermissionPolicy, SessionOptions, WorkerAgentSpec
 
-config_file = os.environ.get('A3S_CONFIG_FILE')
-if not config_file:
-    print("ERROR: A3S_CONFIG_FILE must point to the ACL config")
-    sys.exit(1)
 
-print('[python-sdk-confirmation] Starting integration test...')
-print(f'[python-sdk-confirmation] Config: {config_file}')
+INLINE_CONFIG = """
+default_model = "openai/confirmation-test"
 
-# Read config file content
-with open(config_file, 'r') as f:
-    config_content = f.read()
+providers "openai" {
+  api_key = "hermetic-test-key"
+  models "confirmation-test" {
+    name = "Confirmation Test"
+    tool_call = true
+  }
+}
+""".strip()
 
-agent = Agent.create(config_content)
-workspace = tempfile.mkdtemp(prefix='a3s-python-confirmation-')
-print(f'[python-sdk-confirmation] Workspace: {workspace}')
 
-# Test 1: WorkerAgentSpec with confirmation_inheritance field
-print('[python-sdk-confirmation] Test 1: Create WorkerAgentSpec with confirmation_inheritance')
-worker_spec = WorkerAgentSpec('test-writer', 'Test worker with auto-approve confirmation', 'implementer')
-worker_spec.confirmation_inheritance = 'auto_approve'
-worker_spec.max_steps = 3
+def config_source() -> str:
+    configured = os.environ.get("A3S_CONFIG_FILE")
+    if configured:
+        return Path(configured).read_text(encoding="utf-8")
+    return INLINE_CONFIG
 
-# Create SessionOptions properly
-policy = PermissionPolicy(default_decision='allow')
-opts = SessionOptions()
-opts.permission_policy = policy
-opts.worker_agents = [worker_spec]
 
-session = agent.session(workspace, opts)
+def test_confirmation_inheritance_surface() -> None:
+    agent = Agent.create(config_source())
+    try:
+        workspace = tempfile.mkdtemp(prefix="a3s-python-confirmation-")
 
-# Test 2: Verify worker was registered
-print('[python-sdk-confirmation] Test 2: Verify worker registration')
-tool_names = session.tool_names()
-assert 'task' in tool_names, 'task tool should be registered'
+        worker_spec = WorkerAgentSpec(
+            "test-writer",
+            "Test worker with auto-approve confirmation",
+            "implementer",
+        )
+        worker_spec.confirmation_inheritance = "auto_approve"
+        worker_spec.max_steps = 3
 
-# Test 3: Register another worker and check AgentDefinition
-print('[python-sdk-confirmation] Test 3: Register worker and check AgentDefinition')
-worker_spec2 = WorkerAgentSpec('test-reader', 'Test worker with deny-on-ask confirmation', 'read_only')
-worker_spec2.confirmation_inheritance = 'deny_on_ask'
-worker_spec2.max_steps = 2
+        options = SessionOptions()
+        options.permission_policy = PermissionPolicy(default_decision="allow")
+        options.worker_agents = [worker_spec]
+        session = agent.session(workspace, options)
 
-agent_def = session.register_worker_agent(worker_spec2)
-assert agent_def.name == 'test-reader'
-assert agent_def.confirmation_inheritance == 'deny_on_ask'
-print(f'[python-sdk-confirmation] AgentDefinition.confirmation_inheritance: {agent_def.confirmation_inheritance}')
+        assert "task" in session.tool_names()
 
-# Test 4: Real LLM task delegation with confirmation_inheritance
-if os.environ.get('A3S_CODE_SDK_REAL_AGENT_SMOKE') != '0':
-    print('[python-sdk-confirmation] Test 4: Real LLM task delegation')
+        reader_spec = WorkerAgentSpec(
+            "test-reader",
+            "Test worker with deny-on-ask confirmation",
+            "read_only",
+        )
+        reader_spec.confirmation_inheritance = "deny_on_ask"
+        reader_spec.max_steps = 2
 
-    # Create a test file for the worker to read
-    test_file = Path(workspace) / 'test.txt'
-    test_file.write_text('CONFIRMATION_TEST_CONTENT')
+        definition = session.register_worker_agent(reader_spec)
+        assert definition.name == "test-reader"
+        assert definition.confirmation_inheritance == "deny_on_ask"
 
-    task_result = session.task({
-        'agent': 'test-reader',
-        'description': 'Read test file',
-        'prompt': 'Read the file test.txt and reply with its content',
-        'max_steps': 2,
-    })
+        if os.environ.get("A3S_CODE_SDK_REAL_AGENT_SMOKE") == "1":
+            test_file = Path(workspace) / "test.txt"
+            test_file.write_text("CONFIRMATION_TEST_CONTENT", encoding="utf-8")
+            result = session.task(
+                {
+                    "agent": "test-reader",
+                    "description": "Read test file",
+                    "prompt": "Read test.txt and reply with its content",
+                    "max_steps": 2,
+                }
+            )
+            assert result.exit_code == 0, result.output
+            assert (
+                "CONFIRMATION_TEST_CONTENT" in result.output
+                or "test.txt" in result.output
+            )
+    finally:
+        agent.close()
 
-    assert task_result.exit_code == 0, f"Task should succeed: {task_result.output}"
-    output = task_result.output
-    assert 'CONFIRMATION_TEST_CONTENT' in output or 'test.txt' in output, \
-        'Task output should reference the test file'
-    print('[python-sdk-confirmation] Task delegation successful')
-else:
-    print('[python-sdk-confirmation] Test 4: Skipped (set A3S_CODE_SDK_REAL_AGENT_SMOKE=1 to enable)')
 
-print('[python-sdk-confirmation] All tests passed ✓')
+if __name__ == "__main__":
+    test_confirmation_inheritance_surface()
+    print("python sdk confirmation inheritance ok")

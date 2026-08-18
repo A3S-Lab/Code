@@ -1,10 +1,9 @@
 /**
  * Integration test for ConfirmationInheritance in Node SDK.
  *
- * Tests that the new confirmation_inheritance field is properly exposed
- * and works end-to-end with real LLM calls.
- *
- * Requires: A3S_CONFIG_FILE environment variable pointing to config.acl
+ * Tests that confirmation inheritance is exposed through the native runtime.
+ * The public surface is hermetic by default. Set A3S_CONFIG_FILE and
+ * A3S_CODE_SDK_REAL_AGENT_SMOKE=1 to add a real delegated LLM turn.
  */
 
 import assert from 'node:assert/strict';
@@ -16,15 +15,25 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const { Agent } = await import(join(__dirname, 'index.js'));
 
-const configFile = process.env.A3S_CONFIG_FILE;
-if (!configFile) {
-  throw new Error('A3S_CONFIG_FILE must point to the ACL config');
+const inlineConfig = `
+default_model = "openai/confirmation-test"
+
+providers "openai" {
+  api_key = "hermetic-test-key"
+  models "confirmation-test" {
+    name = "Confirmation Test"
+    tool_call = true
+  }
 }
+`.trim();
+const configSource = process.env.A3S_CONFIG_FILE || inlineConfig;
 
 console.log('[node-sdk-confirmation] Starting integration test...');
-console.log(`[node-sdk-confirmation] Config: ${configFile}`);
+console.log(
+  `[node-sdk-confirmation] Config source: ${process.env.A3S_CONFIG_FILE ? 'external ACL' : 'hermetic inline ACL'}`,
+);
 
-const agent = await Agent.create(configFile);
+const agent = await Agent.create(configSource);
 const workspace = mkdtempSync(join(tmpdir(), 'a3s-node-confirmation-'));
 console.log(`[node-sdk-confirmation] Workspace: ${workspace}`);
 
@@ -70,7 +79,7 @@ assert.equal(agentDef.confirmationInheritance, 'deny_on_ask');
 console.log(`[node-sdk-confirmation] AgentDefinition.confirmationInheritance: ${agentDef.confirmationInheritance}`);
 
 // Test 4: Real LLM task delegation with confirmation_inheritance
-if (process.env.A3S_CODE_SDK_REAL_AGENT_SMOKE !== '0') {
+if (process.env.A3S_CODE_SDK_REAL_AGENT_SMOKE === '1') {
   console.log('[node-sdk-confirmation] Test 4: Real LLM task delegation');
 
   // Create a test file for the worker to read
@@ -95,4 +104,5 @@ if (process.env.A3S_CODE_SDK_REAL_AGENT_SMOKE !== '0') {
   console.log('[node-sdk-confirmation] Test 4: Skipped (set A3S_CODE_SDK_REAL_AGENT_SMOKE=1 to enable)');
 }
 
+await agent.close();
 console.log('[node-sdk-confirmation] All tests passed ✓');

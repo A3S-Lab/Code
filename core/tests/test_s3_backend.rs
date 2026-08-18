@@ -194,10 +194,16 @@ async fn s3_backend_roundtrips_via_session_executor() {
     );
 
     // Cleanup keys under our test prefix.
-    cleanup_prefix(backend.client(), &bucket_for_cleanup, &prefix_for_cleanup).await;
+    cleanup_prefix(backend.client(), &bucket_for_cleanup, &prefix_for_cleanup)
+        .await
+        .expect("the integration fixture must remove every object it created");
 }
 
-async fn cleanup_prefix(client: &aws_sdk_s3::Client, bucket: &str, prefix: &str) {
+async fn cleanup_prefix(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    prefix: &str,
+) -> anyhow::Result<()> {
     let prefix = if prefix.ends_with('/') {
         prefix.to_string()
     } else {
@@ -209,16 +215,15 @@ async fn cleanup_prefix(client: &aws_sdk_s3::Client, bucket: &str, prefix: &str)
         if let Some(ref token) = continuation {
             req = req.continuation_token(token);
         }
-        let resp = match req.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("cleanup list_objects_v2 failed: {e}");
-                return;
-            }
-        };
+        let resp = req.send().await?;
         for obj in resp.contents() {
             if let Some(key) = obj.key() {
-                let _ = client.delete_object().bucket(bucket).key(key).send().await;
+                client
+                    .delete_object()
+                    .bucket(bucket)
+                    .key(key)
+                    .send()
+                    .await?;
             }
         }
         if resp.is_truncated().unwrap_or(false) {
@@ -230,4 +235,15 @@ async fn cleanup_prefix(client: &aws_sdk_s3::Client, bucket: &str, prefix: &str)
             break;
         }
     }
+
+    let remaining = client
+        .list_objects_v2()
+        .bucket(bucket)
+        .prefix(&prefix)
+        .send()
+        .await?;
+    if !remaining.contents().is_empty() {
+        anyhow::bail!("S3 integration cleanup left objects under {prefix}");
+    }
+    Ok(())
 }

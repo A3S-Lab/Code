@@ -1,0 +1,154 @@
+name: Performance Qualification
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/performance.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "core/Cargo.toml"
+      - "core/examples/agent_convergence_benchmark.rs"
+      - "core/examples/code_intelligence_benchmark.rs"
+      - "core/examples/context_memory_benchmark.rs"
+      - "core/examples/flow_graph_benchmark.rs"
+      - "core/examples/persistence_benchmark.rs"
+      - "core/examples/workspace_retrieval_benchmark.rs"
+      - "core/src/code_intelligence/**"
+      - "core/src/context/**"
+      - "core/src/agent/**"
+      - "core/src/agent_api/**"
+      - "core/src/embedding/**"
+      - "core/src/memory.rs"
+      - "core/src/store/**"
+      - "core/src/task_scheduler.rs"
+      - "core/src/tools/**"
+      - "core/src/flow_graph/**"
+      - "core/src/state_graph/**"
+      - "core/src/workspace/retrieval/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/performance.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "core/Cargo.toml"
+      - "core/examples/agent_convergence_benchmark.rs"
+      - "core/examples/code_intelligence_benchmark.rs"
+      - "core/examples/context_memory_benchmark.rs"
+      - "core/examples/flow_graph_benchmark.rs"
+      - "core/examples/persistence_benchmark.rs"
+      - "core/examples/workspace_retrieval_benchmark.rs"
+      - "core/src/code_intelligence/**"
+      - "core/src/context/**"
+      - "core/src/agent/**"
+      - "core/src/agent_api/**"
+      - "core/src/embedding/**"
+      - "core/src/memory.rs"
+      - "core/src/store/**"
+      - "core/src/task_scheduler.rs"
+      - "core/src/tools/**"
+      - "core/src/flow_graph/**"
+      - "core/src/state_graph/**"
+      - "core/src/workspace/retrieval/**"
+
+concurrency:
+  group: performance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  qualify:
+    name: Release profiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Create report directory
+        run: mkdir -p performance-results
+
+      - name: Build controlled fake language server
+        run: |
+          set -euo pipefail
+          mkdir -p performance-fixtures
+          rustc --edition=2021 core/tests/fixtures/code_intelligence_fake_lsp.rs \
+            -O -o performance-fixtures/rust-analyzer
+          echo "$PWD/performance-fixtures" >> "$GITHUB_PATH"
+          echo "A3S_CODE_BENCH_FAKE_LSP=$PWD/performance-fixtures/rust-analyzer" >> "$GITHUB_ENV"
+
+      - name: Qualify agent convergence and work amplification
+        run: >-
+          cargo run --locked --release -p a3s-code-core
+          --example agent_convergence_benchmark
+          | tee performance-results/agent-convergence.json
+
+      - name: Qualify workspace retrieval latency and resources
+        run: >-
+          cargo run --locked --release -p a3s-code-core
+          --example workspace_retrieval_benchmark
+          | tee performance-results/workspace-retrieval.json
+
+      - name: Qualify Flow projection and State Graph replay
+        run: >-
+          cargo run --locked --release -p a3s-code-core
+          --example flow_graph_benchmark
+          | tee performance-results/flow-state-graph.json
+
+      - name: Qualify Code Intelligence large-workspace lifecycle
+        run: >-
+          cargo run --locked --release -p a3s-code-core
+          --example code_intelligence_benchmark
+          | tee performance-results/code-intelligence.json
+
+      - name: Qualify context assembly and memory recall
+        run: >-
+          cargo run --locked --release -p a3s-code-core
+          --example context_memory_benchmark
+          | tee performance-results/context-memory.json
+
+      - name: Qualify session persistence backends
+        run: >-
+          cargo run --locked --release -p a3s-code-core
+          --example persistence_benchmark
+          | tee performance-results/persistence.json
+
+      - name: Validate performance reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          reports=(performance-results/*.json)
+          test "${#reports[@]}" -eq 6
+          for report in "${reports[@]}"; do
+            jq -e '.passed == true' "$report" >/dev/null
+          done
+
+      - name: Upload machine-readable performance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: performance-results/*.json
+          if-no-files-found: error
+          retention-days: 30

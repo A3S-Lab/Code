@@ -4,6 +4,10 @@
 *.pdb
 Cargo.lock
 
+# Python test and validation caches
+__pycache__/
+*.py[cod]
+
 # Coverage
 *.lcov
 lcov.info

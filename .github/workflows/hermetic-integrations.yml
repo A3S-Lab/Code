@@ -1,0 +1,216 @@
+name: Hermetic Integrations
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  qualify:
+    name: S3, CDP, and OTLP
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install controlled Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
+
+      - name: Start pinned local services
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p hermetic-results
+          docker run --detach --name a3s-code-minio \
+            --publish 9000:9000 \
+            --env MINIO_ROOT_USER=minioadmin \
+            --env MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2025-04-22T22-12-26Z \
+            server /data --address :9000
+          docker run --detach --name a3s-code-otel \
+            --publish 4317:4317 \
+            --publish 13133:13133 \
+            --volume "$PWD/.github/fixtures/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro" \
+            otel/opentelemetry-collector:0.123.0 \
+            --config=/etc/otelcol/config.yaml
+
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+              break
+            fi
+            test "$attempt" -lt 60
+            sleep 1
+          done
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:13133/ >/dev/null; then
+              break
+            fi
+            test "$attempt" -lt 60
+            sleep 1
+          done
+
+          docker run --rm --network host --entrypoint /bin/sh \
+            --env MINIO_ROOT_USER=minioadmin \
+            --env MINIO_ROOT_PASSWORD=minioadmin \
+            minio/mc:RELEASE.2025-04-16T18-13-26Z \
+            -c 'mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc mb --ignore-existing local/a3s-code-tests'
+
+      - name: Qualify S3 workspace against MinIO
+        shell: bash
+        env:
+          A3S_S3_TEST_ENDPOINT: http://127.0.0.1:9000
+          A3S_S3_TEST_REGION: us-east-1
+          A3S_S3_TEST_ACCESS_KEY_ID: minioadmin
+          A3S_S3_TEST_SECRET_ACCESS_KEY: minioadmin
+          A3S_S3_TEST_BUCKET: a3s-code-tests
+          A3S_S3_TEST_FORCE_PATH_STYLE: "true"
+        run: |
+          set -euo pipefail
+          cargo test --locked -p a3s-code-core --features s3 \
+            --test test_s3_backend s3_backend_roundtrips_via_session_executor \
+            -- --ignored --exact --nocapture
+          jq -n '{
+            schemaVersion: 1,
+            profile: "s3-minio-hermetic-v1",
+            endpoint: "controlled-local-minio",
+            roundtrip: ["write", "read", "list", "edit", "patch", "cleanup"],
+            providerNetworkIncluded: false,
+            passed: true
+          }' > hermetic-results/s3-minio.json
+
+      - name: Qualify controlled local Chrome CDP path
+        shell: bash
+        env:
+          A3S_HEADLESS_TEST_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
+          A3S_HEADLESS_TEST_FIXTURE: controlled-local-https-v1
+        run: |
+          set -euo pipefail
+          fixture_directory=$(mktemp -d)
+          fixture_log="$PWD/hermetic-results/headless-fixture.log"
+          fixture_pid=""
+          cleanup_fixture() {
+            if test -n "$fixture_pid"; then
+              sudo kill "$fixture_pid" >/dev/null 2>&1 || true
+            fi
+            sudo rm -rf "$fixture_directory"
+          }
+          trap cleanup_fixture EXIT
+
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=www.google.com' \
+            -keyout "$fixture_directory/key.pem" \
+            -out "$fixture_directory/cert.pem" >/dev/null 2>&1
+          sudo -E python3 core/tests/fixtures/headless_search_https_fixture.py \
+            --cert "$fixture_directory/cert.pem" \
+            --key "$fixture_directory/key.pem" \
+            --log "$fixture_log" \
+            --port 443 \
+            > hermetic-results/headless-fixture-server.log 2>&1 &
+          fixture_pid=$!
+          for attempt in $(seq 1 30); do
+            if curl --insecure --fail --silent https://127.0.0.1/health >/dev/null; then
+              break
+            fi
+            test "$attempt" -lt 30
+            sleep 1
+          done
+
+          cargo test --locked -p a3s-code-core --features headless-search \
+            --test test_web_search_headless \
+            test_google_headless_search_controlled_local_cdp \
+            -- --ignored --exact --nocapture
+
+          request_count=$(grep -c '"path": "/search"' "$fixture_log")
+          test "$request_count" -eq 1
+          browser_cleanup=false
+          for _attempt in $(seq 1 10); do
+            if ! pgrep -f -- '--a3s-headless-fixture=controlled-cdp-v1' >/dev/null; then
+              browser_cleanup=true
+              break
+            fi
+            sleep 1
+          done
+          test "$browser_cleanup" = true
+          jq -n --argjson requestCount "$request_count" '{
+            schemaVersion: 1,
+            profile: "headless-search-controlled-cdp-v1",
+            browser: "workflow-managed-chrome",
+            fixtureRequests: $requestCount,
+            browserCleanupPassed: true,
+            publicSearchEngineNetworkIncluded: false,
+            passed: true
+          }' > hermetic-results/headless-cdp.json
+
+      - name: Qualify OpenTelemetry collector receipt and shutdown
+        shell: bash
+        env:
+          A3S_CODE_OTLP_TEST_ENDPOINT: http://127.0.0.1:4317
+        run: |
+          set -euo pipefail
+          cargo run --locked -p a3s-code-core --features telemetry \
+            --example telemetry_collector_qualification \
+            > hermetic-results/opentelemetry.raw
+          sed -n '/^{/,$p' hermetic-results/opentelemetry.raw \
+            > hermetic-results/opentelemetry.json
+          jq -e '.passed == true' hermetic-results/opentelemetry.json >/dev/null
+
+          collector_received=false
+          for _attempt in $(seq 1 20); do
+            docker logs a3s-code-otel > hermetic-results/otel-collector.log 2>&1
+            if grep -q 'a3s.telemetry.qualification' hermetic-results/otel-collector.log \
+              && grep -q 'a3s-code-hermetic' hermetic-results/otel-collector.log; then
+              collector_received=true
+              break
+            fi
+            sleep 1
+          done
+          test "$collector_received" = true
+
+      - name: Validate hermetic evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          for report in \
+            hermetic-results/s3-minio.json \
+            hermetic-results/headless-cdp.json \
+            hermetic-results/opentelemetry.json; do
+            jq -e '.passed == true' "$report" >/dev/null
+          done
+
+      - name: Upload hermetic integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermetic-integrations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: hermetic-results/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Stop local services
+        if: always()
+        shell: bash
+        run: |
+          docker rm --force a3s-code-minio >/dev/null 2>&1 || true
+          docker rm --force a3s-code-otel >/dev/null 2>&1 || true
