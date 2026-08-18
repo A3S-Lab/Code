@@ -147,6 +147,7 @@ impl CaseResult {
 struct BenchmarkReport {
     schema_version: u32,
     deterministic: bool,
+    passed: bool,
     cases: Vec<CaseResult>,
     passed_cases: usize,
     total_cases: usize,
@@ -424,9 +425,11 @@ async fn main() -> Result<()> {
         })
         .filter(|case| case.passed)
         .count();
+    let passed = passed_cases == cases.len();
     let report = BenchmarkReport {
         schema_version: 1,
         deterministic: true,
+        passed,
         passed_cases,
         total_cases: cases.len(),
         completion_rate: passed_cases as f64 / cases.len() as f64,
@@ -440,7 +443,7 @@ async fn main() -> Result<()> {
         cases,
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
-    if passed_cases != report.total_cases {
+    if !report.passed {
         anyhow::bail!(
             "agent convergence benchmark failed: {passed_cases}/{} cases passed",
             report.total_cases
