@@ -23,8 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Qualified the durable workflow integration against the exact
   `a3s-flow` `1.0.0-rc.1` candidate, migrated downstream fixtures and
-  benchmarks to its public constructors, and made the State Graph observer
-  retain unknown compatible `1.x` events without guessing their projection.
+  benchmarks to its public constructors, synchronized the standalone Node.js
+  and Python SDK Cargo locks, and made the State Graph observer retain unknown
+  compatible `1.x` events without guessing their projection.
 - Synchronized the Node.js lockfile with all six `7.0.1` native optional
   packages so `npm ci` can build and execute the published wrapper contract.
 - Added the common top-level `passed` verdict to the convergence report so the
