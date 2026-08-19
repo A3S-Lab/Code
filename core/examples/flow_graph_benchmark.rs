@@ -22,16 +22,16 @@ const REPLAY_P95_BUDGET_MS: f64 = 2_000.0;
 const SERIALIZED_EVENT_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
 fn envelope(sequence: u64, event: FlowEvent) -> FlowEventEnvelope {
-    FlowEventEnvelope {
-        run_id: "benchmark-run".to_string(),
+    FlowEventEnvelope::new(
+        "benchmark-run",
         sequence,
-        event_id: Uuid::from_u128(u128::from(sequence).saturating_add(1)),
+        Uuid::from_u128(u128::from(sequence).saturating_add(1)),
         // Resource accounting must not change with wall-clock formatting or
         // fractional-second precision. Sequence and event id still provide
         // the stable event ordering and identity this profile needs.
-        timestamp: DateTime::<Utc>::UNIX_EPOCH,
+        DateTime::<Utc>::UNIX_EPOCH,
         event,
-    }
+    )
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]

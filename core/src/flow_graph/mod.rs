@@ -611,6 +611,10 @@ fn projection_patch(
             [("status", json!("disposed"))],
             &mut operations,
         )?,
+        // Flow events added compatibly during the 1.x line remain durably
+        // observed by the external cursor even before Code projects their
+        // domain-specific fields.
+        _ => {}
     }
     Ok(GraphPatch::new(graph.version(), operations))
 }

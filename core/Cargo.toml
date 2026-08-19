@@ -21,7 +21,7 @@ a3s-common = "0.1.1"
 a3s-memory = { version = "0.1.3", git = "https://github.com/A3S-Lab/Memory.git", rev = "216505634d81089cda89531d1b2d828c26170d62" }
 a3s-lane = "0.5"
 a3s-search = { version = "3.0.9", git = "https://github.com/A3S-Lab/Search.git", rev = "2b7ec07d9a1b99758a3e8c950c6d4b6ca5b51fa9", default-features = false }
-a3s-flow = { version = "=0.11.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "280e470563996203b176a4fb5a2fdf7e96a7b1f2", default-features = false }
+a3s-flow = { version = "=1.0.0-rc.1", git = "https://github.com/A3S-Lab/Flow.git", rev = "878df66915ca9c1c8c5454b0872043937b60f0e7", default-features = false }
 
 # Async runtime
 tokio = { version = "1.35", features = [

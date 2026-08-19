@@ -294,13 +294,13 @@ async function run(ctx, inputs) {
         });
     let run = tokio::spawn(async move {
         runtime
-            .run_step(StepInvocation {
-                run_id: "model-admission-before-program-timeout".to_string(),
-                step_id: "generate".to_string(),
-                step_name: GENERATE_OBJECT_TOOL.to_string(),
-                input: json!({}),
-                history: Vec::new(),
-            })
+            .run_step(StepInvocation::new(
+                "model-admission-before-program-timeout",
+                "generate",
+                GENERATE_OBJECT_TOOL,
+                json!({}),
+                Vec::new(),
+            ))
             .await
     });
 
@@ -385,12 +385,14 @@ async function run(ctx, inputs) {
                 max_concurrent_generations: Some(2),
             }),
     );
-    let invocation = |step_id: &str| StepInvocation {
-        run_id: "bounded-generation-fanout".to_string(),
-        step_id: step_id.to_string(),
-        step_name: GENERATE_OBJECT_TOOL.to_string(),
-        input: json!({}),
-        history: Vec::new(),
+    let invocation = |step_id: &str| {
+        StepInvocation::new(
+            "bounded-generation-fanout",
+            step_id,
+            GENERATE_OBJECT_TOOL,
+            json!({}),
+            Vec::new(),
+        )
     };
     let (first, second) = tokio::join!(
         runtime.run_step(invocation("first")),
