@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Advanced the exact `a3s-flow` `1.0.0` source to latest-main revision
+  `006e988b`, keeping the root, Node.js, and Python Cargo locks on one Flow
+  authority while admitting its additive bounded child-workflow batch API.
 - Qualified the durable workflow integration against the exact
   `a3s-flow` `1.0.0-rc.1` candidate, migrated downstream fixtures and
   benchmarks to its public constructors, synchronized the standalone Node.js
