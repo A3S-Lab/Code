@@ -3,7 +3,7 @@
 ## Decision
 
 A3S Code provides Code Intelligence as a native, workspace-scoped Core
-capability shared by agent tools, the terminal editor, and A3S Web. The Rust
+capability shared by agent tools and the terminal editor. The Rust
 runtime owns language-process discovery, framed stdio JSON-RPC, lifecycle,
 capability negotiation, saved-document synchronization, result normalization,
 and bounded caching. It does not use MCP or a separate helper service.
@@ -42,9 +42,9 @@ avoids competing file indexes, mutation paths, or persistence formats.
 ## Shared Architecture
 
 ```text
-agent tools       TUI /ide       Web + Monaco
-     \                |                /
-      +------ WorkspaceServices ------+
+agent tools       TUI /ide
+     \                /
+      +-- WorkspaceServices --+
                      |
        WorkspaceCodeIntelligence
                      |
@@ -59,9 +59,8 @@ shared manifest + FS      runtime registry
 
 `WorkspaceServices` is the host boundary. Local hosts attach one
 `LocalCodeIntelligence` provider to the same `ManifestWorkspaceBackend` used by
-file tools and workspace UI. Web caches that bundle by canonical workspace;
-sessions for the same workspace reuse it. The TUI owns one bundle for its
-active workspace.
+file tools and the terminal UI. The TUI owns one bundle for its active
+workspace.
 
 The registry key includes the canonical workspace, project layout, and host
 isolation scope; the workspace runtime owns its per-language processes.
@@ -91,8 +90,8 @@ language remains visible in per-language status.
 
 - Paths are normalized, workspace-relative `WorkspacePath` values.
 - Lines and characters are zero-based.
-- Characters count UTF-16 code units. This matches the language protocol and
-  Monaco without lossy column conversion.
+- Characters count UTF-16 code units. This matches language protocol positions
+  without lossy column conversion.
 - Queries operate on saved files only. An editor with unsaved changes must say
   that results are based on the saved version.
 - A document-scoped result includes a monotonic revision, an opaque saved
@@ -135,10 +134,8 @@ Code Intelligence provider:
   implementations;
 - `code_diagnostics` for document or bounded workspace diagnostics.
 
-The TUI maps the same service to `/ide` commands and a navigable result list.
-A3S Web maps it to typed read-only endpoints and Monaco providers/actions. Both
-surfaces reuse the existing file-selection flow when opening a returned
-location.
+The TUI maps the same service to `/ide` commands and a navigable result list,
+reusing the existing file-selection flow when opening a returned location.
 
 ## Security and Failure Model
 
@@ -162,8 +159,8 @@ location.
    registry.
 2. Agent integration: capability-gated semantic tools with bounded structured
    output.
-3. Product integration: asynchronous TUI commands plus Web endpoints and
-   Monaco diagnostics, symbols, and navigation.
+3. Product integration: asynchronous TUI diagnostics, symbols, and navigation
+   commands.
 4. Hardening: real child-process fixtures, crash/restart and shutdown tests,
    mixed-workspace isolation, dirty-editor messaging, and end-to-end product
    checks.

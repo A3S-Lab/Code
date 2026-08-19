@@ -133,12 +133,12 @@ export const capabilityStories: CapabilityStory[] = [
     index: '04',
     eyebrow: 'CODE INTELLIGENCE',
     title: {
-      zh: 'Agent、TUI 与 Web 共享同一份代码语义',
-      en: 'Agent, TUI, and Web share one semantic code runtime',
+      zh: 'Agent 与 TUI 共享同一份代码语义',
+      en: 'Agent and TUI share one semantic code runtime',
     },
     body: {
-      zh: '基于已保存文件提供符号、定义、声明、引用、实现与诊断。Agent 工具、/ide 和 Monaco 使用同一运行时，脏缓冲区不会伪装成已发布语义。',
-      en: 'Saved files provide symbols, definitions, declarations, references, implementations, and diagnostics. Agent tools, /ide, and Monaco share the runtime; dirty buffers never masquerade as published semantics.',
+      zh: '基于已保存文件提供符号、定义、声明、引用、实现与诊断。Agent 工具与 /ide 使用同一运行时，脏缓冲区不会伪装成已发布语义。',
+      en: 'Saved files provide symbols, definitions, declarations, references, implementations, and diagnostics. Agent tools and /ide share the runtime; dirty buffers never masquerade as published semantics.',
     },
     prompt: {
       zh: '/ide',

@@ -54,8 +54,8 @@ superseded items, preserves conflicts, and includes relation annotations in
 future recall. The storage layer otherwise merges only normalized exact
 duplicates; it does not infer semantic equivalence from term overlap.
 
-Streaming hosts such as the TUI and Code Web register extraction before they
-publish the final event, then process completed turns in FIFO order in the
+The TUI registers extraction before publishing the final event, then processes
+completed turns in FIFO order in the
 background. A slow extraction does not delay the final response, and a later
 turn is queued rather than dropped. Graceful session close waits up to its
 bounded extraction deadline for work accepted before close, preventing an

@@ -456,7 +456,7 @@ mod tests {
         let launch = profile
             .launch(
                 workspace.path(),
-                &layout(&["apps/web/package.json", "apps/web/tsconfig.json"]),
+                &layout(&["apps/frontend/package.json", "apps/frontend/tsconfig.json"]),
             )
             .await;
 
@@ -500,7 +500,7 @@ mod tests {
         let launch = profile
             .launch(
                 workspace.path(),
-                &layout(&["apps/web/package.json", "apps/web/tsconfig.json"]),
+                &layout(&["apps/frontend/package.json", "apps/frontend/tsconfig.json"]),
             )
             .await;
 
@@ -544,7 +544,7 @@ mod tests {
         let launch = profile
             .launch(
                 workspace.path(),
-                &layout(&["apps/web/package.json", "packages/ui/package.json"]),
+                &layout(&["apps/frontend/package.json", "packages/ui/package.json"]),
             )
             .await;
 
@@ -558,8 +558,8 @@ mod tests {
     fn project_roots_are_stable_and_deduplicated() {
         let profile = LanguageServerProfile::typescript_javascript("server");
         let layout = layout(&[
-            "apps/web/package.json",
-            "apps/web/tsconfig.json",
+            "apps/frontend/package.json",
+            "apps/frontend/tsconfig.json",
             "packages/ui/package.json",
         ]);
 
@@ -569,7 +569,7 @@ mod tests {
                 .into_iter()
                 .map(|path| path.as_str().to_string())
                 .collect::<Vec<_>>(),
-            ["apps/web", "packages/ui"]
+            ["apps/frontend", "packages/ui"]
         );
         assert_eq!(
             LanguageServerProfile::rust("server").project_roots(&layout),

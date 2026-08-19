@@ -252,7 +252,7 @@ the chunk strategy in per-session options while also supplying host-owned
 workspace services. Core's ownership guard correctly rejected that conflict.
 The host fix now configures `ManifestWorkspaceBackend` once, attaches its
 catalog to the shared services, and passes only provider/index/rerank options to
-each session. Exec, TUI, and Code Web use the same ownership split.
+each session. Exec and TUI use the same ownership split.
 
 | Quality metric | ACL-host result |
 | --- | ---: |

@@ -131,7 +131,7 @@ DeepResearch writes progressively publishable artifacts to
 `.a3s/research/artifacts/<run-id>/report.md` and
 `.a3s/research/artifacts/<run-id>/index.html`. The independent
 `a3s-deep-research` crate owns orchestration, evidence admission, typed
-claim-graph compilation, quality gates, and rendering; CLI, TUI, and A3S Web
+claim-graph compilation, quality gates, and rendering; CLI and TUI
 share one typed runner and supply only product adapters.
 
 The request language is pinned across planning, admission, and publication.
@@ -144,7 +144,7 @@ A closed narrative plan selects natural headings and paragraph groups without
 changing evidence; rendering uses continuous prose and keeps traceability in a
 collapsed disclosure.
 
-The self-contained HTML follows A3S Web's design tokens with a sticky left
+The self-contained HTML follows A3S Code's design tokens with a sticky left
 action menu, centered editable report, sticky right table of contents, save and
 print actions, and a responsive stacked layout. Each run also records a bounded
 `.a3s/research/runs/<run-id>/journal-v2.jsonl` projection without absolute

@@ -288,8 +288,8 @@ The host qualification covers default-off ACL parsing, the separate
 OpenAI-compatible embedding route, trusted-layer egress authorization,
 endpoint validation, redirect rejection, sensitive-header isolation,
 duplicate-index rejection, cancellation, rate-limit mapping, oversized
-responses, error-body redaction, exec/TUI session injection, and Code Web
-session propagation/status. Retrieval-focused tests passed 71/71; all targets
+responses, error-body redaction, and exec/TUI session injection. Retrieval-focused
+tests passed 71/71; all targets
 and strict Clippy compiled. The complete Windows suite had the same 23
 pre-existing failures and 10 ignored tests as clean CLI baseline `f4377c2`,
 with no WSR regression.
@@ -300,12 +300,11 @@ post-pin retrieval filter (19/19), formatting, all-target Clippy, and release
 build gates.
 
 Follow-up CLI `main` commit `d1c8c25` pins Code `b7a496b` and closes the
-host-catalog ownership gap exposed by the real ACL-host test: exec, TUI, and
-Code Web now configure the shared manifest catalog exactly once and keep
+host-catalog ownership gap exposed by the real ACL-host test: exec and TUI
+configure the shared manifest catalog exactly once and keep
 catalog options out of the session-owned semantic runtime. Retrieval tests
-pass 28/28, exec policy 7/7, ACL authority 5/5, Web host/cache 5/5, config
-projection 2/2, locked all-target check, format, and baseline-aware changed-
-target Clippy.
+pass 28/28, exec policy 7/7, ACL authority 5/5, config projection 2/2, locked
+all-target check, format, and baseline-aware changed-target Clippy.
 
 CLI `main` commit `f435950` subsequently pins Code `bdb86e17`, upgrades the
 host report to schema v2, and passes the 29-test retrieval filter plus the real
@@ -515,9 +514,8 @@ unsupported CPU, and cancellation-storm adversaries. RRF-only remains default.
 checked-out A3S Test implementation. The Web driver reported
 `test.driver.web.capability_unavailable` because the browser command is not
 installed in this environment. Therefore no browser screenshot is claimed.
-Code Web host injection and retrieval-status behavior are covered by
-deterministic contract tests. The real DeepSeek evidence covers the CLI read
-workflow, the Core Search tool loop, production CLI hybrid retrieval, and
+The real DeepSeek evidence covers the CLI read workflow, the Core Search tool
+loop, production CLI hybrid retrieval, and
 Node.js/Python/Go public API parity with typed chunking/reranking; none requires
 a browser.
 

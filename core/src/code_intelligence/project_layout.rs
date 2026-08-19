@@ -199,17 +199,20 @@ mod tests {
             17,
             vec![
                 workspace_file("crates/runtime/Cargo.toml", 220, 30),
-                workspace_file("apps/web/tsconfig.build.json", 180, 20),
-                workspace_file("apps/web/package.json", 140, 10),
-                workspace_file("apps/web/src/main.ts", 900, 40),
+                workspace_file("apps/frontend/tsconfig.build.json", 180, 20),
+                workspace_file("apps/frontend/package.json", 140, 10),
+                workspace_file("apps/frontend/src/main.ts", 900, 40),
                 workspace_file("README.md", 500, 50),
             ],
         ));
 
         assert_eq!(layout.workspace_revision, 17);
         assert_eq!(layout.markers.len(), 3);
-        assert_eq!(layout.markers[0].path.as_str(), "apps/web/package.json");
-        assert_eq!(layout.markers[0].root.as_str(), "apps/web");
+        assert_eq!(
+            layout.markers[0].path.as_str(),
+            "apps/frontend/package.json"
+        );
+        assert_eq!(layout.markers[0].root.as_str(), "apps/frontend");
         assert_eq!(
             layout.markers[0].profile,
             ProjectLanguageProfile::TypeScriptJavaScript
@@ -217,9 +220,9 @@ mod tests {
         assert_eq!(layout.markers[0].kind, ProjectMarkerKind::PackageManifest);
         assert_eq!(
             layout.markers[1].path.as_str(),
-            "apps/web/tsconfig.build.json"
+            "apps/frontend/tsconfig.build.json"
         );
-        assert_eq!(layout.markers[1].root.as_str(), "apps/web");
+        assert_eq!(layout.markers[1].root.as_str(), "apps/frontend");
         assert_eq!(layout.markers[1].kind, ProjectMarkerKind::TypeScriptConfig);
         assert_eq!(layout.markers[2].path.as_str(), "crates/runtime/Cargo.toml");
         assert_eq!(layout.markers[2].root.as_str(), "crates/runtime");
@@ -231,8 +234,8 @@ mod tests {
     #[test]
     fn marker_order_and_duplicates_do_not_change_layout() {
         let cargo = workspace_file("services/api/Cargo.toml", 100, 10);
-        let package = workspace_file("apps/web/package.json", 200, 20);
-        let tsconfig = workspace_file("apps/web/tsconfig.json", 300, 30);
+        let package = workspace_file("apps/frontend/package.json", 200, 20);
+        let tsconfig = workspace_file("apps/frontend/tsconfig.json", 300, 30);
 
         let first = ProjectLayoutResolver::resolve(&snapshot(
             8,
@@ -274,11 +277,11 @@ mod tests {
     fn marker_metadata_changes_do_not_change_layout_hash() {
         let first = ProjectLayoutResolver::resolve(&snapshot(
             1,
-            vec![workspace_file("apps/web/package.json", 100, 10)],
+            vec![workspace_file("apps/frontend/package.json", 100, 10)],
         ));
         let second = ProjectLayoutResolver::resolve(&snapshot(
             2,
-            vec![workspace_file("apps/web/package.json", 101, 11)],
+            vec![workspace_file("apps/frontend/package.json", 101, 11)],
         ));
 
         assert_eq!(first.layout_hash, second.layout_hash);
@@ -289,13 +292,13 @@ mod tests {
     fn adding_or_removing_markers_changes_layout_hash() {
         let baseline = ProjectLayoutResolver::resolve(&snapshot(
             1,
-            vec![workspace_file("apps/web/package.json", 100, 10)],
+            vec![workspace_file("apps/frontend/package.json", 100, 10)],
         ));
         let added = ProjectLayoutResolver::resolve(&snapshot(
             2,
             vec![
-                workspace_file("apps/web/package.json", 100, 10),
-                workspace_file("apps/web/tsconfig.json", 200, 20),
+                workspace_file("apps/frontend/package.json", 100, 10),
+                workspace_file("apps/frontend/tsconfig.json", 200, 20),
             ],
         ));
         let removed = ProjectLayoutResolver::resolve(&snapshot(3, Vec::new()));
@@ -308,7 +311,7 @@ mod tests {
     fn generated_and_binary_markers_are_ignored() {
         let baseline = ProjectLayoutResolver::resolve(&snapshot(
             1,
-            vec![workspace_file("apps/web/package.json", 100, 10)],
+            vec![workspace_file("apps/frontend/package.json", 100, 10)],
         ));
         let mut generated = workspace_file("generated/client/tsconfig.json", 200, 20);
         generated.generated = true;
@@ -317,7 +320,7 @@ mod tests {
         let with_ignored = ProjectLayoutResolver::resolve(&snapshot(
             2,
             vec![
-                workspace_file("apps/web/package.json", 100, 10),
+                workspace_file("apps/frontend/package.json", 100, 10),
                 generated,
                 binary,
             ],

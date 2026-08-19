@@ -2,7 +2,7 @@
 //!
 //! This module defines read-only, language-aware queries over saved workspace
 //! documents. Concrete runtimes live behind [`WorkspaceCodeIntelligence`] so
-//! TUI, web, and agent integrations can share one source of semantic results.
+//! TUI and agent integrations can share one source of semantic results.
 
 pub(crate) mod diagnostics;
 pub(crate) mod document_store;
