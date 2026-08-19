@@ -437,7 +437,7 @@ mod tests {
         let package = workspace
             .path()
             .join("apps")
-            .join("web")
+            .join("frontend")
             .join("node_modules")
             .join("typescript");
         tokio::fs::create_dir_all(package.join("lib"))
@@ -481,7 +481,7 @@ mod tests {
         let package = workspace
             .path()
             .join("apps")
-            .join("web")
+            .join("frontend")
             .join("node_modules")
             .join("typescript");
         tokio::fs::create_dir_all(package.join("lib"))
