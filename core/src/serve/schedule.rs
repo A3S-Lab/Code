@@ -67,11 +67,17 @@ pub struct Scheduler {
 impl Scheduler {
     /// Build from specs, skipping disabled ones. Errors on any invalid cron.
     pub fn new(specs: impl IntoIterator<Item = ScheduleSpec>) -> Result<Self> {
-        let jobs = specs
-            .into_iter()
-            .filter(|s| s.enabled)
-            .map(ScheduledJob::parse)
-            .collect::<Result<Vec<_>>>()?;
+        let mut jobs = Vec::new();
+        let mut names = std::collections::HashSet::new();
+        for spec in specs.into_iter().filter(|spec| spec.enabled) {
+            if !names.insert(spec.name.clone()) {
+                return Err(CodeError::Context(format!(
+                    "duplicate enabled schedule name: {}",
+                    spec.name
+                )));
+            }
+            jobs.push(ScheduledJob::parse(spec)?);
+        }
         Ok(Self { jobs })
     }
 
@@ -210,6 +216,26 @@ mod tests {
         assert_eq!(s.job_count(), 1);
 
         assert!(Scheduler::new([spec("bad", "xyz", true)]).is_err());
+    }
+
+    #[test]
+    fn scheduler_rejects_duplicate_enabled_names() {
+        let error = Scheduler::new([
+            spec("daily", "0 9 * * *", true),
+            spec("daily", "0 10 * * *", true),
+        ])
+        .err()
+        .expect("duplicate enabled schedule names must fail startup");
+        assert!(error
+            .to_string()
+            .contains("duplicate enabled schedule name: daily"));
+
+        let scheduler = Scheduler::new([
+            spec("daily", "0 9 * * *", true),
+            spec("daily", "0 10 * * *", false),
+        ])
+        .unwrap();
+        assert_eq!(scheduler.job_count(), 1);
     }
 
     #[tokio::test]
