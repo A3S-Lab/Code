@@ -409,6 +409,15 @@ workspace backends keep the compatible scanner path unless they provide a
 catalog capability. Plain manifest and Code Intelligence sessions do not start
 this additional catalog work.
 
+Latency-sensitive hosts may construct
+`ManifestWorkspaceBackend::new_deferred` or
+`new_deferred_with_access_policy`. The backend keeps ordinary local fallback
+search available while its manifest is empty; calling
+`backend.manifest().activate()` opens a one-way gate that starts the initial
+scan and platform watcher. This lets a terminal or GUI host render its first
+interactive frame before repository-scale discovery begins without weakening
+workspace access or changing the eager constructors.
+
 The compatibility default is deterministic, non-overlapping, UTF-8-safe
 line/byte chunking (80 lines or 64 KiB, at most 128 chunks per file). Typed
 strategies also support fixed byte windows, recursive caller-ordered separators

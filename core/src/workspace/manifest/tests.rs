@@ -192,6 +192,57 @@ async fn manifest_search_matches_glob_and_grep() {
 }
 
 #[tokio::test]
+async fn deferred_manifest_keeps_fallback_search_ready_until_one_way_activation() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
+    let temp = tempfile::tempdir().unwrap();
+    write(&temp.path().join("src/main.rs"), b"fn main() {}\n");
+
+    let backend = ManifestWorkspaceBackend::new_deferred(temp.path());
+    let manifest = backend.manifest();
+    let mut snapshots = manifest.subscribe();
+
+    assert!(!manifest.is_active());
+    assert_eq!(manifest.snapshot().version, 0);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(manifest.snapshot().version, 0);
+    assert!(snapshots.try_recv().is_err());
+
+    // Manifest-backed search deliberately falls back to the local backend
+    // while discovery is deferred, so latency-sensitive hosts remain usable.
+    let glob = backend
+        .glob(WorkspaceGlobRequest {
+            base: WorkspacePath::root(),
+            pattern: "**/*.rs".to_string(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(glob.matches[0].as_str(), "src/main.rs");
+    assert_eq!(manifest.snapshot().version, 0);
+
+    assert!(manifest.activate());
+    assert!(manifest.is_active());
+    assert!(!manifest.activate());
+    let ready = tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+        snapshots.recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(ready.version > 0);
+    assert!(ready.files.iter().any(|file| file.path == "src/main.rs"));
+}
+
+#[tokio::test]
+async fn eager_manifest_is_active_at_construction() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = LocalWorkspaceManifest::start(temp.path());
+
+    assert!(manifest.is_active());
+    assert!(!manifest.activate());
+}
+
+#[tokio::test]
 async fn manifest_credential_boundary_filters_sensitive_grep_candidates() {
     let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();

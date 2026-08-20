@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added an explicit one-way activation gate for local workspace manifests.
+  Latency-sensitive hosts can construct a `ManifestWorkspaceBackend` without
+  starting its scanner or platform watcher, retain local fallback search while
+  the manifest is empty, and activate asynchronous discovery after their first
+  interactive frame.
 - Added a first-principles capability ledger covering all 20 advertised areas
   and five runtime surfaces, dedicated native Node.js/Python runtime jobs,
   cross-platform retrieval churn, and required hermetic MinIO, Chrome/CDP, and

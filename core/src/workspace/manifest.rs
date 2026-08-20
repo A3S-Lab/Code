@@ -35,7 +35,7 @@ use std::sync::{
 #[cfg(test)]
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 mod file_kind;
 mod scanner;
@@ -128,6 +128,7 @@ pub struct LocalWorkspaceManifest {
     recent: Arc<RwLock<RecentFiles>>,
     snapshots: broadcast::Sender<LocalWorkspaceManifestSnapshot>,
     changes: broadcast::Sender<WorkspaceFileChange>,
+    activation: watch::Sender<bool>,
     scan_cancelled: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -135,6 +136,21 @@ pub struct LocalWorkspaceManifest {
 impl LocalWorkspaceManifest {
     /// Start the manifest scanner/watcher for `root`.
     pub fn start(root: impl Into<PathBuf>) -> Arc<Self> {
+        Self::start_with_activation(root, true)
+    }
+
+    /// Create an empty manifest whose scanner and watcher start only after
+    /// [`Self::activate`] is called.
+    ///
+    /// Search-capable hosts can use this during a latency-sensitive bootstrap:
+    /// manifest-backed operations retain their local filesystem fallback while
+    /// the initial snapshot is empty, so deferring discovery does not make the
+    /// workspace inaccessible.
+    pub fn start_deferred(root: impl Into<PathBuf>) -> Arc<Self> {
+        Self::start_with_activation(root, false)
+    }
+
+    fn start_with_activation(root: impl Into<PathBuf>, active: bool) -> Arc<Self> {
         let root = root.into();
         let root = root.canonicalize().unwrap_or_else(|_| root.clone());
         let initial = LocalWorkspaceManifestSnapshot::empty(root.clone());
@@ -146,12 +162,19 @@ impl LocalWorkspaceManifest {
         let recent = Arc::new(RwLock::new(RecentFiles::default()));
         let (snapshots, _) = broadcast::channel(SNAPSHOT_CHANNEL_CAPACITY);
         let (changes, _) = broadcast::channel(FILE_CHANGE_CHANNEL_CAPACITY);
+        let (activation, mut activation_rx) = watch::channel(active);
         let scan_cancelled = Arc::new(AtomicBool::new(false));
         let task_state = Arc::clone(&state);
         let task_snapshots = snapshots.clone();
         let task_changes = changes.clone();
         let task_scan_cancelled = Arc::clone(&scan_cancelled);
         let task = tokio::spawn(async move {
+            if !*activation_rx.borrow() && activation_rx.wait_for(|active| *active).await.is_err() {
+                return;
+            }
+            if task_scan_cancelled.load(Ordering::Acquire) {
+                return;
+            }
             run_manifest_task(
                 root,
                 task_state,
@@ -166,9 +189,31 @@ impl LocalWorkspaceManifest {
             recent,
             snapshots,
             changes,
+            activation,
             scan_cancelled,
             task,
         })
+    }
+
+    /// Open a deferred manifest's one-way startup gate.
+    ///
+    /// Returns `true` only for the call that transitions the manifest from
+    /// deferred to active. Calling this on an eagerly started or already active
+    /// manifest is harmless and returns `false`.
+    pub fn activate(&self) -> bool {
+        self.activation.send_if_modified(|active| {
+            if *active {
+                false
+            } else {
+                *active = true;
+                true
+            }
+        })
+    }
+
+    /// Whether discovery has been activated for this manifest.
+    pub fn is_active(&self) -> bool {
+        *self.activation.borrow()
     }
 
     pub fn snapshot(&self) -> LocalWorkspaceManifestSnapshot {
@@ -425,6 +470,29 @@ impl ManifestWorkspaceBackend {
         root: impl Into<PathBuf>,
         access_policy: LocalWorkspaceAccessPolicy,
     ) -> Arc<Self> {
+        Self::new_with_access_policy_and_activation(root, access_policy, true)
+    }
+
+    /// Create a manifest-backed local workspace whose initial discovery is
+    /// explicitly activated through [`LocalWorkspaceManifest::activate`].
+    pub fn new_deferred(root: impl Into<PathBuf>) -> Arc<Self> {
+        Self::new_deferred_with_access_policy(root, LocalWorkspaceAccessPolicy::Unrestricted)
+    }
+
+    /// Create a policy-constrained manifest backend without starting its
+    /// scanner or platform watcher until the manifest is activated.
+    pub fn new_deferred_with_access_policy(
+        root: impl Into<PathBuf>,
+        access_policy: LocalWorkspaceAccessPolicy,
+    ) -> Arc<Self> {
+        Self::new_with_access_policy_and_activation(root, access_policy, false)
+    }
+
+    fn new_with_access_policy_and_activation(
+        root: impl Into<PathBuf>,
+        access_policy: LocalWorkspaceAccessPolicy,
+        active: bool,
+    ) -> Arc<Self> {
         let root = root.into();
         let local = Arc::new(LocalWorkspaceBackend::new_with_access_policy(
             root,
@@ -433,7 +501,11 @@ impl ManifestWorkspaceBackend {
         let catalog_local = Arc::new(LocalWorkspaceBackend::new_with_source_egress_policy(
             local.root.clone(),
         ));
-        let manifest = LocalWorkspaceManifest::start(local.root.clone());
+        let manifest = if active {
+            LocalWorkspaceManifest::start(local.root.clone())
+        } else {
+            LocalWorkspaceManifest::start_deferred(local.root.clone())
+        };
         Arc::new(Self {
             local,
             catalog_local,
