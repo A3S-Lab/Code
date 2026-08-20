@@ -96,7 +96,7 @@ jobs:
 
       - name: Check public API compatibility with v5.3.5
         run: |
-          cargo install cargo-semver-checks --version 0.48.0 --locked
+          cargo install cargo-semver-checks --version 0.50.0 --locked
           bash scripts/check_semver.sh 5.3.5
 
       - name: Check SDK protocol and API alignment
