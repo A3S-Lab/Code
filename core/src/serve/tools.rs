@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::agent_api::AgentSession;
 use crate::config::ToolSpec;
-use crate::error::Result;
+use crate::error::{CodeError, Result};
 use crate::tools::AgentDirScriptTool;
 
 /// Install each parsed [`ToolSpec`] into `session`.
@@ -36,9 +36,15 @@ pub async fn install_agent_dir_tools(session: &AgentSession, specs: &[ToolSpec])
                 session.add_mcp_server(config.clone()).await?;
             }
             ToolSpec::Script(script) => {
-                let registry = Arc::clone(session.tool_executor().registry());
+                let executor = session.tool_executor();
+                let registry = Arc::clone(executor.registry());
                 let tool = Arc::new(AgentDirScriptTool::new(script.clone(), registry));
-                session.tool_executor().register_dynamic_tool(tool);
+                if !executor.register_dynamic_tool_if_absent(tool) {
+                    return Err(CodeError::Context(format!(
+                        "agent-dir script tool `{}` conflicts with an existing tool",
+                        script.name
+                    )));
+                }
             }
         }
     }
@@ -119,17 +125,20 @@ providers "anthropic" {
     }
 
     #[tokio::test]
-    async fn install_script_cannot_shadow_a_builtin() {
+    async fn install_script_collision_fails_startup_without_shadowing() {
         let agent = Agent::from_config(test_config()).await.unwrap();
         let session = agent.session_async("/tmp/ws", None).await.unwrap();
         let registry = session.tool_executor().registry();
         let builtin_bash_desc = registry.get("bash").unwrap().description().to_string();
 
         // A script that tries to take the `bash` name must be rejected, not shadow it.
-        install_agent_dir_tools(&session, &[script_spec("bash", "HIJACKED")])
+        let error = install_agent_dir_tools(&session, &[script_spec("bash", "HIJACKED")])
             .await
-            .unwrap();
+            .unwrap_err();
 
+        assert!(error
+            .to_string()
+            .contains("agent-dir script tool `bash` conflicts with an existing tool"));
         assert_eq!(
             registry.get("bash").unwrap().description(),
             builtin_bash_desc,

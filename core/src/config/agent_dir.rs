@@ -190,18 +190,33 @@ fn md_files(dir: &Path, exts: &[&str]) -> Result<Vec<PathBuf>> {
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+    let entries = std::fs::read_dir(dir)
         .map_err(|e| CodeError::Context(format!("read {}: {e}", dir.display())))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension()
-                .and_then(|s| s.to_str())
-                .map(|e| exts.contains(&e))
-                .unwrap_or(false)
-        })
-        .collect();
-    entries.sort();
-    Ok(entries)
+        .map(|entry| entry.map(|entry| entry.path()));
+    collect_md_paths(dir, entries, exts)
+}
+
+fn collect_md_paths(
+    dir: &Path,
+    entries: impl IntoIterator<Item = std::io::Result<PathBuf>>,
+    exts: &[&str],
+) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| {
+            CodeError::Context(format!("read directory entry in {}: {e}", dir.display()))
+        })?;
+        if path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| exts.contains(&e))
+            .unwrap_or(false)
+        {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
 }
 
 fn load_schedules(dir: &Path) -> Result<Vec<ScheduleSpec>> {
@@ -505,6 +520,23 @@ mod tests {
         assert_eq!(s.limits.max_tool_calls, Some(10));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn directory_entry_errors_are_not_silently_ignored() {
+        let error = collect_md_paths(
+            Path::new("schedules"),
+            [Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "fixture entry denied",
+            ))],
+            &["md"],
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("read directory entry in schedules"));
+        assert!(message.contains("fixture entry denied"));
     }
 
     /// One script tool per file, written under a unique temp dir, must fail to load.

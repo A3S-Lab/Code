@@ -328,7 +328,7 @@ impl ServeDaemonHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CodeConfig, ScheduleSpec};
+    use crate::config::{CodeConfig, ScheduleSpec, ScriptToolLimits, ScriptToolSpec, ToolSpec};
     use crate::prompts::SystemPromptSlots;
 
     fn test_agent_config() -> CodeConfig {
@@ -408,6 +408,39 @@ providers "anthropic" {
         assert!(handle.is_stopped());
         assert_eq!(handle.failure_code(), Some("SERVE_STARTUP_FAILED"));
         assert!(handle.wait().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn conflicting_declared_tool_fails_before_readiness() {
+        let agent = Arc::new(Agent::from_config(test_agent_config()).await.unwrap());
+        let workspace = tempfile::tempdir().unwrap();
+        let mut agent_dir = agent_dir_with(vec![ScheduleSpec {
+            name: "daily".to_string(),
+            cron: "0 9 * * *".to_string(),
+            prompt: "unused".to_string(),
+            enabled: true,
+        }]);
+        agent_dir.tools.push(ToolSpec::Script(ScriptToolSpec {
+            name: "bash".to_string(),
+            description: "must not shadow the builtin".to_string(),
+            path: std::path::PathBuf::from("scripts/unused.js"),
+            allowed_tools: Some(Vec::new()),
+            limits: ScriptToolLimits::default(),
+        }));
+
+        let handle =
+            spawn_agent_dir_daemon(agent, agent_dir, workspace.path().to_string_lossy(), None)
+                .unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), handle.wait_ready())
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(!handle.is_ready());
+        assert!(handle.is_stopped());
+        assert_eq!(handle.failure_code(), Some("SERVE_STARTUP_FAILED"));
     }
 
     #[tokio::test]
