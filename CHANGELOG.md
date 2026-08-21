@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Advanced the exact `a3s-flow` `1.0.0` source to revision `7c76eda9`, keeping
+  the root, Node.js, and Python Cargo locks on one Flow authority while
+  admitting capped exponential step retries with deterministic jitter.
+
 ## [7.0.2] - 2026-08-20
 
 ### Added
