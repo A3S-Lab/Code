@@ -9,6 +9,15 @@ use anyhow::Context;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub(crate) enum SkillRegistrySnapshotError {
+    #[error("projected skill name '{name}' conflicts with the compatibility registry")]
+    NameConflict { name: String },
+    #[error("projected skill '{name}' failed Session validation: {message}")]
+    Validation { name: String, message: String },
+}
 
 /// Skill registry for managing available skills
 ///
@@ -56,6 +65,38 @@ impl SkillRegistry {
             builtin_names: Arc::new(RwLock::new(builtin_names)),
             validator: Arc::new(RwLock::new(self.validator.read().unwrap().clone())),
         }
+    }
+
+    /// Freeze the compatibility registry and add one external generation.
+    /// Existing names fail closed; no projected Skill may silently shadow a
+    /// built-in, host, or session registration.
+    pub(crate) fn snapshot_with_external_skills(
+        &self,
+        external: impl IntoIterator<Item = Arc<Skill>>,
+    ) -> Result<Self, SkillRegistrySnapshotError> {
+        let mut skills = self.skills.read().unwrap().clone();
+        let builtin_names = self.builtin_names.read().unwrap().clone();
+        let validator = self.validator.read().unwrap().clone();
+        for skill in external {
+            let name = skill.name.clone();
+            if skills.contains_key(&name) {
+                return Err(SkillRegistrySnapshotError::NameConflict { name });
+            }
+            if let Some(validator) = &validator {
+                validator.validate(&skill).map_err(|error| {
+                    SkillRegistrySnapshotError::Validation {
+                        name: name.clone(),
+                        message: error.to_string(),
+                    }
+                })?;
+            }
+            skills.insert(name, skill);
+        }
+        Ok(Self {
+            skills: Arc::new(RwLock::new(skills)),
+            builtin_names: Arc::new(RwLock::new(builtin_names)),
+            validator: Arc::new(RwLock::new(validator)),
+        })
     }
 
     /// Set the skill validator (safety gate)

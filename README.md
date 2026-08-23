@@ -802,9 +802,18 @@ commit through the catalog's generation-and-digest CAS. Failed preparation,
 validation, cancellation, or a lost commit race leaves the current generation
 unchanged and moves prepared effects to bounded reverse cleanup. Retired effects
 remain pinned until the last old projection lease is released. UI descriptors
-fail closed until Core has a typed UI runtime contract. Existing live Tool,
-Skill, and MCP registration APIs remain compatibility paths until `HOST-CAP1`
-switches each complete Use generation through this catalog as one batch.
+fail closed until Core has a typed UI runtime contract.
+
+The first `HOST-CAP1` Core cut now lets a Session apply a complete Tool/Skill
+generation through `SessionCapabilityBatch`. Publication atomically binds the
+projection and its generation-specific A3S Use lease provider. Every Run pins
+one projection, freezes the compatibility Tool/Skill maps, acquires a fresh
+real Use snapshot lease for the exact cursor, and uses the same Tool `Arc` for
+model definition and governed execution. Old Runs keep N while later Runs see
+N+1; cancellation, close, preparation failure, and name conflict do not expose
+a partial generation. Compatibility Tool, Skill, and MCP-wrapper APIs cannot
+shadow a published projection. `HOST-CAP1` remains in progress until CLI and
+Desktop use this batch path; other capability kinds still fail closed here.
 
 The readiness slice derives a bounded `CapabilityReadinessPlan` from only the
 surface edges already present in that immutable set. Deterministic minimal

@@ -1,5 +1,5 @@
 use super::{
-    agent_loop_runtime::build_agent_loop,
+    agent_loop_runtime::build_pinned_agent_loop,
     run_lifecycle::{
         BlockingRunLifecycle, RunControlState, StreamRunLifecycle, StreamRunWorkerState,
     },
@@ -8,7 +8,7 @@ use super::{
     AgentSession,
 };
 use crate::agent::{AgentEvent, AgentLoop, AgentResult, InvocationContext};
-use crate::error::{read_or_recover, Result};
+use crate::error::{read_or_recover, CodeError, Result};
 use crate::llm::{Attachment, Message};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -47,6 +47,7 @@ impl ConversationInput {
 
 pub(super) struct BlockingRunContext {
     agent_loop: AgentLoop,
+    capability_run: crate::capability::SessionCapabilityRun,
     invocation: InvocationContext,
     runtime_collector: JoinHandle<()>,
     lifecycle: BlockingRunLifecycle,
@@ -57,12 +58,12 @@ impl BlockingRunContext {
         session: &AgentSession,
         prompt: &str,
         persistence: Option<SessionPersistenceContext>,
-    ) -> Self {
+    ) -> Result<Self> {
+        let (mut agent_loop, capability_run) = build_pinned_agent_loop(session).await?;
         let run = RunControlState::from_session(session)
             .start_run(prompt)
             .await;
         let run_id = run.id().to_string();
-        let mut agent_loop = build_agent_loop(session);
         agent_loop.set_checkpoint_run(&run_id);
         let (runtime_tx, runtime_rx) = mpsc::channel(2048);
         let lifecycle = BlockingRunLifecycle::from_session(session, &run_id, persistence);
@@ -80,12 +81,13 @@ impl BlockingRunContext {
         let runtime_collector = RuntimeEventSink::from_session(session, &run_id)
             .spawn_collector(runtime_rx, Some(agent_events));
 
-        Self {
+        Ok(Self {
             agent_loop,
+            capability_run,
             invocation,
             runtime_collector,
             lifecycle,
-        }
+        })
     }
 
     pub(super) async fn execute_with_prompt(
@@ -96,13 +98,18 @@ impl BlockingRunContext {
     ) -> Result<AgentResult> {
         let Self {
             agent_loop,
+            capability_run,
             invocation,
             runtime_collector,
             lifecycle,
         } = self;
-        let result = agent_loop
-            .execute_with_invocation(messages, prompt, &invocation)
-            .await;
+        let result = settle_capability_run(
+            agent_loop
+                .execute_with_invocation(messages, prompt, &invocation)
+                .await,
+            capability_run,
+        )
+        .await;
         // Drop the run-owned event sender before waiting for the collector;
         // otherwise the receiver can never observe channel closure.
         drop(invocation);
@@ -130,13 +137,18 @@ impl BlockingRunContext {
     ) -> Result<AgentResult> {
         let Self {
             agent_loop,
+            capability_run,
             invocation,
             runtime_collector,
             lifecycle,
         } = self;
-        let result = agent_loop
-            .execute_from_messages_with_invocation_seeded(messages, &invocation, seed)
-            .await;
+        let result = settle_capability_run(
+            agent_loop
+                .execute_from_messages_with_invocation_seeded(messages, &invocation, seed)
+                .await,
+            capability_run,
+        )
+        .await;
         drop(invocation);
         lifecycle.complete(runtime_collector, result).await
     }
@@ -144,6 +156,7 @@ impl BlockingRunContext {
 
 pub(super) struct StreamRunContext {
     agent_loop: AgentLoop,
+    capability_run: crate::capability::SessionCapabilityRun,
     invocation: InvocationContext,
     worker_state: StreamRunWorkerState,
     forwarder: JoinHandle<()>,
@@ -156,21 +169,39 @@ impl StreamRunContext {
         session: &AgentSession,
         prompt: &str,
         persistence: Option<SessionPersistenceContext>,
-    ) -> Self {
+    ) -> Result<Self> {
+        let (agent_loop, capability_run) = build_pinned_agent_loop(session).await?;
         let run = RunControlState::from_session(session)
             .start_run(prompt)
             .await;
-        Self::for_run(session, run.id().to_string(), persistence).await
+        Ok(Self::for_prepared_run(
+            session,
+            run.id().to_string(),
+            persistence,
+            agent_loop,
+            capability_run,
+        )
+        .await)
     }
 
     pub(super) async fn for_run(
         session: &AgentSession,
         run_id: String,
         persistence: Option<SessionPersistenceContext>,
+    ) -> Result<Self> {
+        let (agent_loop, capability_run) = build_pinned_agent_loop(session).await?;
+        Ok(Self::for_prepared_run(session, run_id, persistence, agent_loop, capability_run).await)
+    }
+
+    async fn for_prepared_run(
+        session: &AgentSession,
+        run_id: String,
+        persistence: Option<SessionPersistenceContext>,
+        mut agent_loop: AgentLoop,
+        capability_run: crate::capability::SessionCapabilityRun,
     ) -> Self {
         let (tx, rx) = mpsc::channel(256);
         let (runtime_tx, runtime_rx) = mpsc::channel(256);
-        let mut agent_loop = build_agent_loop(session);
         agent_loop.set_checkpoint_run(&run_id);
         let lifecycle = StreamRunLifecycle::from_session(session, &run_id, persistence);
         let cancel_token = session.session_cancel.child_token();
@@ -193,6 +224,7 @@ impl StreamRunContext {
 
         Self {
             agent_loop,
+            capability_run,
             invocation,
             worker_state,
             forwarder,
@@ -212,6 +244,7 @@ impl StreamRunContext {
     ) {
         let Self {
             agent_loop,
+            capability_run,
             invocation,
             worker_state,
             forwarder,
@@ -219,9 +252,13 @@ impl StreamRunContext {
             rx,
         } = self;
         let handle = tokio::spawn(async move {
-            let result = agent_loop
-                .execute_with_invocation(&messages, &prompt, &invocation)
-                .await;
+            let result = settle_capability_run(
+                agent_loop
+                    .execute_with_invocation(&messages, &prompt, &invocation)
+                    .await,
+                capability_run,
+            )
+            .await;
             worker_state.complete(result).await;
         });
         let (lifecycle, worker_aborts) = lifecycle.wrap(handle, forwarder);
@@ -250,6 +287,7 @@ impl StreamRunContext {
     ) {
         let Self {
             agent_loop,
+            capability_run,
             invocation,
             worker_state,
             forwarder,
@@ -257,12 +295,32 @@ impl StreamRunContext {
             rx,
         } = self;
         let handle = tokio::spawn(async move {
-            let result = agent_loop
-                .execute_from_messages_with_invocation_seeded(messages, &invocation, seed)
-                .await;
+            let result = settle_capability_run(
+                agent_loop
+                    .execute_from_messages_with_invocation_seeded(messages, &invocation, seed)
+                    .await,
+                capability_run,
+            )
+            .await;
             worker_state.complete(result).await;
         });
         let (lifecycle, worker_aborts) = lifecycle.wrap(handle, forwarder);
         (rx, lifecycle, worker_aborts)
+    }
+}
+
+async fn settle_capability_run(
+    execution: anyhow::Result<AgentResult>,
+    capability_run: crate::capability::SessionCapabilityRun,
+) -> Result<AgentResult> {
+    let close = capability_run.close().await;
+    match (execution, close) {
+        (Ok(result), Ok(_)) => Ok(result),
+        (Ok(_), Err(error)) => Err(CodeError::Capability(error)),
+        (Err(error), Ok(_)) => Err(CodeError::Internal(error)),
+        (Err(error), Err(close_error)) => {
+            tracing::warn!(error = %close_error, "Capability Run close also failed after execution failure");
+            Err(CodeError::Internal(error))
+        }
     }
 }

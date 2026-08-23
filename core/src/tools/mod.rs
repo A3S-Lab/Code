@@ -36,6 +36,7 @@ pub(crate) use invocation::{
 };
 pub use program_tool::{ProgramTool, MAX_PROGRAM_SCRIPT_SOURCE_BYTES};
 pub use registry::ToolRegistry;
+pub(crate) use registry::ToolRegistrySnapshotError;
 pub use result_transform::{
     ToolResultTransformPolicyV1, TOOL_RESULT_TRANSFORM_ALGORITHM_V1,
     TOOL_RESULT_TRANSFORM_SCHEMA_V1,
@@ -522,6 +523,17 @@ impl ToolExecutor {
 
     pub fn registry(&self) -> &Arc<ToolRegistry> {
         &self.registry
+    }
+
+    pub(crate) fn snapshot_with_external_tools(
+        &self,
+        external: impl IntoIterator<Item = Arc<dyn Tool>>,
+    ) -> Result<Self, ToolRegistrySnapshotError> {
+        Ok(Self {
+            workspace: self.workspace.clone(),
+            registry: Arc::new(self.registry.snapshot_with_external_tools(external)?),
+            command_env: self.command_env.clone(),
+        })
     }
 
     /// Get a stored tool artifact by URI.

@@ -335,7 +335,37 @@ For A3S Use projections, Run admission requires an all-or-nothing upstream
 snapshot lease. Acquisition uses the exact capability generation, revision,
 and sorted package-generation identities, then rechecks the publication after
 all underlying leases are held. If the old generation has already been hidden,
-admission refreshes the source instead of starting a new Run with stale Tools.
+admission fails before Run execution; the host must refresh and publish the
+new source instead of starting a Run with stale Tools.
+
+### HOST-CAP1 Core runtime cut
+
+The first host-runtime cut is implemented for Session Tool and Skill values.
+`SessionCapabilityBatch` owns the complete next projection plus a
+generation-specific `UseGenerationLeaseProvider`. `AgentSession` prepares the
+whole batch without changing visibility, validates it against the frozen
+compatibility Tool and Skill maps, and publishes the projection and provider
+in one catalog CAS. Unsupported capability kinds fail before preparation, so
+this cut does not claim Agent, Command, Hook, MCP, Flow, Knowledge, Context, or
+UI migration.
+
+Run admission pins three things at one linearization point: the immutable Code
+projection, a frozen compatibility Tool/Skill map, and the governance ceiling.
+It then asks the published provider for a fresh, non-clone retained generation.
+The provider implementation must own the concrete A3S Use
+`CapabilitySnapshotLease`; a generation number or cached projection pointer is
+not a substitute. Code rechecks generation, capability revision, and Registry
+revision before the Run scope accepts the lease.
+
+The same projected Tool `Arc` creates the model definition and services the
+governed execution call. Skill catalog context, `search_skills`, and nested
+Skill execution are rebound to the same frozen Skill registry. A concurrent
+N+1 commit cannot rewrite an admitted N Run, and it cannot release N's Use
+lease before Run teardown. Compatibility registration cannot shadow a name
+already owned by the published projection. Preparation cancellation, name
+conflict, Session close, or a lost CAS leaves the visible generation unchanged
+and transfers every prepared effect to bounded cleanup. A non-clean Run scope
+close is a typed Run failure rather than a warning-only condition.
 
 ## Contribution and conflict rules
 
@@ -381,6 +411,7 @@ capability/
 ├── value.rs
 ├── set.rs
 ├── readiness.rs
+├── runtime.rs
 ├── transaction.rs
 ├── scope.rs
 ├── ceiling.rs
@@ -405,16 +436,17 @@ concerns and produce typed contributions.
 | `CAP-SCOPE1` | Delivered | Session/Run/Turn/Subtask markers, catalog-bound ceilings, borrowed leases, reversible effects, exact Use Run leases, and a structured-concurrency supervisor | Compile-fail and runtime tests prevent lease escape or child expansion; close is reverse-order, cancellation-safe, idempotent, bounded, and releases the Use lease last |
 | `CAP-PROJ1` | Delivered | Closed typed runtime values, immutable projected catalogs, typestate contribution transactions, generation/digest CAS publication, and final-lease retirement | Failed prepare, validation, cancellation, dropped transaction, and commit-race paths leave the current generation unchanged and retain every prepared effect for reverse cleanup |
 | `CAP-DEP1` | Delivered | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
-| `HOST-CAP1` | Planned | CLI and Desktop apply each Use generation to each Session as one batch | Old Runs retain the old lease, new Runs see the new generation, and host generation never advances after partial reconciliation |
+| `HOST-CAP1` | In progress | Core atomically applies one Tool/Skill projection per Session; CLI and Desktop migration remain | Old Runs retain N and its exact Use lease, new Runs see N+1, and failures never advance the generation; official hosts must adopt the batch API |
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
 `CAP-PROJ1` attaches runtime values and atomic typestate transactions to the
 identity and scope kernels. `CAP-DEP1` now orders only their published surface
-edges through a bounded generation-bound readiness plan. Tool and Skill
-compatibility projection next migrates in `HOST-CAP1`, Agent/Command/Hook
-second, and MCP or other asynchronous resources last. Host integration must
-use the atomic Core transaction instead of adding another reconciliation
+edges through a bounded generation-bound readiness plan. The first
+`HOST-CAP1` Core cut now hosts Tool and Skill projections atomically, but the
+gate remains open until CLI and Desktop use it. Agent/Command/Hook migrate in a
+later cut, with MCP and other asynchronous resources last. Host integration
+must use the atomic Core transaction instead of adding another reconciliation
 abstraction.
 
 ## Verification matrix

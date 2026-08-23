@@ -6,18 +6,186 @@
 
 use super::AgentSession;
 use crate::agent::AgentLoop;
+use crate::capability::{
+    CapabilityKind, CapabilityProjection, CapabilityRuntimeError, CapabilityValue,
+    SessionCapabilityRun,
+};
+use crate::context::SkillCatalogContextProvider;
+use crate::skills::{SkillRegistry, SkillRegistrySnapshotError};
+use crate::tools::ToolExecutor;
 use std::sync::Arc;
 
+const MAX_RUNTIME_VALIDATION_MESSAGE_BYTES: usize = 1_024;
+
+struct PinnedRuntimeProjection {
+    skill_registry: Arc<SkillRegistry>,
+    tool_executor: Arc<ToolExecutor>,
+}
+
 pub(super) fn build_agent_loop(session: &AgentSession) -> AgentLoop {
+    let tool_executor = Arc::clone(&session.tool_executor);
+    let mut config = live_config(session);
+
+    // Compatibility APIs remain mutable until CAP-GA1. A host-direct runtime
+    // observes their latest definitions when it is constructed.
+    config.tools = tool_executor.definitions();
+    finish_agent_loop(session, tool_executor, config)
+}
+
+pub(super) async fn build_pinned_agent_loop(
+    session: &AgentSession,
+) -> crate::error::Result<(AgentLoop, SessionCapabilityRun)> {
+    // Pin the Code generation and compatibility registries under the same
+    // mutation boundary. A Run therefore linearizes either before or after a
+    // host mutation and never combines a capability projection with a newer
+    // compatibility name map.
+    let (projection, ceiling, runtime_projection) = {
+        let _admission = session
+            .close_handle
+            .immediate_extension_mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if session.is_closed() {
+            return Err(CapabilityRuntimeError::SessionClosed.into());
+        }
+        let projection = session.capability_catalog.pin();
+        let ceiling = session.capability_run_ceiling(projection.projection().set())?;
+        let runtime_projection = pin_runtime_projection(session, projection.projection())?;
+        (projection, ceiling, runtime_projection)
+    };
+
+    let capability_run = SessionCapabilityRun::admit(
+        projection,
+        "active",
+        "active",
+        ceiling,
+        session.session_cancel.child_token(),
+    )
+    .await?;
+    let closed_during_admission = {
+        let _admission = session
+            .close_handle
+            .immediate_extension_mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        session.is_closed()
+    };
+    if closed_during_admission {
+        if let Err(error) = capability_run.close().await {
+            tracing::warn!(error = %error, "Capability Run close failed after Session close won admission");
+        }
+        return Err(CapabilityRuntimeError::SessionClosed.into());
+    }
+
+    let PinnedRuntimeProjection {
+        skill_registry,
+        tool_executor,
+    } = runtime_projection;
+    let mut config = live_config(session);
+    config.skill_registry = Some(Arc::clone(&skill_registry));
+    config
+        .context_providers
+        .retain(|provider| provider.name() != "skills_catalog");
+    config
+        .context_providers
+        .push(Arc::new(SkillCatalogContextProvider::new(Arc::clone(
+            &skill_registry,
+        ))));
+    config.tools = tool_executor.definitions();
+
+    // The Skill and search_skills built-ins capture a registry and executor.
+    // Rebind them inside the Run snapshot so nested Skill execution cannot
+    // resolve through the mutable Session-latest compatibility registries.
+    crate::tools::register_skill(
+        tool_executor.registry(),
+        Arc::clone(&session.llm_client),
+        skill_registry,
+        Arc::clone(&tool_executor),
+        config.clone(),
+    );
+    config.tools = tool_executor.definitions();
+
+    Ok((
+        finish_agent_loop(session, tool_executor, config),
+        capability_run,
+    ))
+}
+
+pub(super) fn validate_capability_projection_runtime(
+    session: &AgentSession,
+    projection: &CapabilityProjection,
+) -> Result<(), CapabilityRuntimeError> {
+    pin_runtime_projection(session, projection).map(|_| ())
+}
+
+fn pin_runtime_projection(
+    session: &AgentSession,
+    projection: &CapabilityProjection,
+) -> Result<PinnedRuntimeProjection, CapabilityRuntimeError> {
+    let mut projected_tools = Vec::new();
+    let mut projected_skills = Vec::new();
+    for (_, value) in projection.iter() {
+        match value {
+            CapabilityValue::Tool(tool) => projected_tools.push(Arc::clone(tool)),
+            CapabilityValue::Skill(skill) => projected_skills.push(Arc::clone(skill)),
+            _ => return Err(CapabilityRuntimeError::UnsupportedSessionKind { kind: value.kind() }),
+        }
+    }
+
+    let skill_registry = Arc::new(
+        session
+            .close_handle
+            .skill_registry
+            .snapshot_with_external_skills(projected_skills)
+            .map_err(|error| match error {
+                SkillRegistrySnapshotError::NameConflict { name } => {
+                    CapabilityRuntimeError::RuntimeNameConflict {
+                        kind: CapabilityKind::Skill,
+                        public_name: name,
+                    }
+                }
+                SkillRegistrySnapshotError::Validation { name, message } => {
+                    CapabilityRuntimeError::RuntimeValueInvalid {
+                        kind: CapabilityKind::Skill,
+                        public_name: name,
+                        message: truncate_utf8(message, MAX_RUNTIME_VALIDATION_MESSAGE_BYTES),
+                    }
+                }
+            })?,
+    );
+    let tool_executor = Arc::new(
+        session
+            .tool_executor
+            .snapshot_with_external_tools(projected_tools)
+            .map_err(|error| CapabilityRuntimeError::RuntimeNameConflict {
+                kind: CapabilityKind::Tool,
+                public_name: error.name().to_owned(),
+            })?,
+    );
+    Ok(PinnedRuntimeProjection {
+        skill_registry,
+        tool_executor,
+    })
+}
+
+fn truncate_utf8(mut value: String, max: usize) -> String {
+    if value.len() <= max {
+        return value;
+    }
+    let mut boundary = max;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+    value
+}
+
+fn live_config(session: &AgentSession) -> crate::agent::AgentConfig {
     let mut config = session.config.clone();
     config.hook_engine = Some(match &session.hook_executor {
         Some(executor) => executor.clone(),
         None => Arc::clone(&session.hook_engine) as Arc<dyn crate::hooks::HookExecutor>,
     });
-
-    // Dynamic MCP additions mutate the executor after session construction, so
-    // every run snapshots live definitions instead of using the stale config copy.
-    config.tools = session.tool_executor.definitions();
 
     // Runtime budget-guard override (set via AgentSession::set_budget_guard)
     // takes precedence over the value baked in at session-build time.
@@ -26,10 +194,17 @@ pub(super) fn build_agent_loop(session: &AgentSession) -> AgentLoop {
     if let Some(runtime_guard) = session.budget_guard() {
         config.budget_guard = Some(runtime_guard);
     }
+    config
+}
 
+fn finish_agent_loop(
+    session: &AgentSession,
+    tool_executor: Arc<crate::tools::ToolExecutor>,
+    config: crate::agent::AgentConfig,
+) -> AgentLoop {
     let mut agent_loop = AgentLoop::new(
         session.llm_client.clone(),
-        session.tool_executor.clone(),
+        tool_executor,
         session.tool_context.clone(),
         config,
     )

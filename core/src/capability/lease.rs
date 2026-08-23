@@ -18,6 +18,15 @@ pub trait RetainedUseGeneration: Send + Sync + 'static {
     fn use_generation(&self) -> &UseCapabilityGeneration;
 }
 
+impl<T> RetainedUseGeneration for Box<T>
+where
+    T: RetainedUseGeneration + ?Sized,
+{
+    fn use_generation(&self) -> &UseCapabilityGeneration {
+        self.as_ref().use_generation()
+    }
+}
+
 /// Borrowed capability access tied to one typed scope owner.
 ///
 /// A lease cannot be returned after its owner is dropped:

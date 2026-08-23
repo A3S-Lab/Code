@@ -122,6 +122,39 @@ impl RunControlState {
         Ok(reservation)
     }
 
+    /// Settle a newly reserved exact Run when admission fails before its
+    /// runtime lifecycle exists. This prevents a failed capability lease from
+    /// leaving a permanent `Created` record or a stale current-run pointer.
+    pub(super) async fn fail_reserved_run_start(&self, run_id: &str, error: &CodeError) {
+        let cancelled = matches!(
+            error,
+            CodeError::SessionClosed { .. }
+                | CodeError::Capability(
+                    crate::capability::CapabilityRuntimeError::Cancelled
+                        | crate::capability::CapabilityRuntimeError::SessionClosed
+                )
+        );
+        if cancelled {
+            let _ = self.run_store.mark_cancelled(run_id).await;
+            if let Some(executor) = &self.hook_executor {
+                executor
+                    .record_run_cancelled(
+                        run_id,
+                        &self.session_id,
+                        Some("cancelled during Run admission"),
+                    )
+                    .await;
+            }
+        } else {
+            let _ = self.run_store.mark_failed(run_id, error.to_string()).await;
+        }
+
+        let mut current = self.current_run_id.lock().await;
+        if current.as_deref() == Some(run_id) {
+            *current = None;
+        }
+    }
+
     pub(super) async fn cancel(&self) -> bool {
         let token = self.cancel_token.lock().await.clone();
         if let Some(token) = token {

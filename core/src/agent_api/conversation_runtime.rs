@@ -68,7 +68,7 @@ pub(super) async fn send(
 
     warn_deferred_init(session);
     let input = ConversationInput::from_history(session, history);
-    let blocking_run = BlockingRunContext::start(session, prompt, input.persistence).await;
+    let blocking_run = BlockingRunContext::start(session, prompt, input.persistence).await?;
     blocking_run
         .execute_with_prompt(&input.messages, prompt, &session.session_id)
         .await
@@ -86,7 +86,7 @@ pub(super) async fn send_with_attachments(
     // Build one user message containing text and images, then execute from the
     // resulting message list so the loop does not append a duplicate prompt.
     let input = ConversationInput::with_attachments(session, history, prompt, attachments);
-    let blocking_run = BlockingRunContext::start(session, prompt, input.persistence).await;
+    let blocking_run = BlockingRunContext::start(session, prompt, input.persistence).await?;
     blocking_run
         .execute_from_messages(input.messages, &session.session_id)
         .await
@@ -101,7 +101,7 @@ pub(super) async fn stream_with_attachments(
     let lease = admit(session, "stream-with-attachments").await?;
 
     let input = ConversationInput::with_attachments(session, history, prompt, attachments);
-    let stream_run = StreamRunContext::start(session, prompt, input.persistence).await;
+    let stream_run = StreamRunContext::start(session, prompt, input.persistence).await?;
     let (rx, handle, worker_aborts) = stream_run.spawn_from_messages(input.messages);
     Ok((
         rx,
@@ -127,7 +127,7 @@ pub(super) async fn stream(
     }
 
     let input = ConversationInput::from_history(session, history);
-    let stream_run = StreamRunContext::start(session, prompt, input.persistence).await;
+    let stream_run = StreamRunContext::start(session, prompt, input.persistence).await?;
     let (rx, handle, worker_aborts) =
         stream_run.spawn_with_prompt(input.messages, prompt.to_string());
     Ok((
@@ -147,16 +147,21 @@ pub(super) async fn spawn_run_with_id(
     }
     let lease = admit(session, "spawn-run").await?;
     let input = ConversationInput::from_history(session, None);
-    let reservation = RunControlState::from_session(session)
-        .reserve_run_with_id(run_id, prompt)
-        .await?;
+    let run_control = RunControlState::from_session(session);
+    let reservation = run_control.reserve_run_with_id(run_id, prompt).await?;
     let snapshot = reservation.snapshot().clone();
     if reservation.replayed() {
         return Ok(AgentRunSpawn::Replayed { snapshot });
     }
 
     let stream_run =
-        StreamRunContext::for_run(session, run_id.to_string(), input.persistence).await;
+        match StreamRunContext::for_run(session, run_id.to_string(), input.persistence).await {
+            Ok(run) => run,
+            Err(error) => {
+                run_control.fail_reserved_run_start(run_id, &error).await;
+                return Err(error);
+            }
+        };
     let (events, worker, worker_aborts) =
         stream_run.spawn_with_prompt(input.messages, prompt.to_string());
     let worker = run_admission::guard_stream_handle(worker, worker_aborts, lease);
@@ -179,9 +184,8 @@ pub(super) async fn spawn_recovery_with_run_id(
 
     let lease = admit(session, "spawn-recovery").await?;
     let checkpoint = load_resume_checkpoint(session, checkpoint_run_id).await?;
-    let reservation = RunControlState::from_session(session)
-        .reserve_run_with_id(run_id, &prompt)
-        .await?;
+    let run_control = RunControlState::from_session(session);
+    let reservation = run_control.reserve_run_with_id(run_id, &prompt).await?;
     let snapshot = reservation.snapshot().clone();
     if reservation.replayed() {
         return Ok(AgentRunSpawn::Replayed { snapshot });
@@ -189,7 +193,14 @@ pub(super) async fn spawn_recovery_with_run_id(
 
     let persistence =
         Some(super::session_persistence::SessionPersistenceContext::from_session(session));
-    let stream_run = StreamRunContext::for_run(session, run_id.to_string(), persistence).await;
+    let stream_run = match StreamRunContext::for_run(session, run_id.to_string(), persistence).await
+    {
+        Ok(run) => run,
+        Err(error) => {
+            run_control.fail_reserved_run_start(run_id, &error).await;
+            return Err(error);
+        }
+    };
     let seed = crate::agent::ExecutionSeed {
         turn: checkpoint.turn,
         total_usage: checkpoint.total_usage.clone(),
@@ -230,7 +241,7 @@ pub(super) async fn resume_run(
         &format!("<resume run={checkpoint_run_id} turn={}>", checkpoint.turn),
         persistence,
     )
-    .await;
+    .await?;
     // Seed the resumed run's loop state with the cumulative metrics from
     // the checkpoint so token usage and tool-call counts continue from
     // where the crashed/migrated run left off rather than re-starting at

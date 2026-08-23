@@ -70,9 +70,10 @@ inside Core. `CapabilitySet::from_contributions` canonicalizes those complete
 batches, rejects mixed Use cursors and conflicts, and returns an immutable
 `Arc<CapabilitySet>`. `from_use_projection` retains the exact upstream cursor
 even when product filtering yields no package descriptors. It does not
-activate a Tool, start MCP, or mutate a live Session. Those operations remain
-on the existing compatibility APIs until `HOST-CAP1` switches a complete host
-generation to the new catalog.
+activate a Tool, start MCP, or mutate a live Session. Tool and Skill activation
+now uses the explicit `SessionCapabilityBatch` host boundary below; other
+runtime categories remain on compatibility APIs until their later migration
+cuts.
 
 `CAP-SCOPE1` adds the lifecycle boundary over that set. Construct a root
 `CapabilityCeiling` against the exact `CapabilitySet`, create a typed Session
@@ -124,6 +125,37 @@ then order the resulting surface descriptors while retaining that exact Use
 cursor. `CapabilityReadinessPlan` is neither a package graph nor a service
 locator, and surface adapters must not use it to perform SemVer resolution,
 installation, Grants, lifecycle cutover, or recovery.
+
+The first `HOST-CAP1` Core cut exposes
+`AgentSession::apply_capability_batch`. Construct the complete next
+`CapabilitySet`, create a `SessionCapabilityBatch`, and stage every Tool or
+Skill value before calling the method. For a Use-backed set, construct the
+batch with `from_use_projection` and a generation-specific
+`UseGenerationLeaseProvider`. Its `acquire` implementation must call A3S Use
+`CapabilityRegistry::acquire_snapshot_lease` with the exact cursor and return a
+wrapper that owns the resulting non-clone `CapabilitySnapshotLease` while
+implementing `RetainedUseGeneration`.
+
+Do not acquire one Use lease during Session publication and share it through
+an `Arc`. Every Run calls the provider again so A3S Use can reject a hidden or
+stale generation at its own visibility boundary. Code checks the returned
+generation, capability revision, and Registry revision again, then keeps the
+lease in the Run supervisor until child scopes, tasks, and effects settle.
+
+Tool and Skill values are currently the only Session kinds accepted by this
+API. The batch is validated against the compatibility registries immediately
+before commit. A public-name conflict, cancellation, Session close, preparation
+failure, or CAS loss leaves the current catalog stamp unchanged. Once a name is
+owned by the published projection, compatibility Tool, Skill, and MCP-wrapper
+registration cannot shadow it. Model definitions and governed execution use
+the same frozen Tool `Arc`; Skill discovery and invocation use one frozen Skill
+registry. Inspect `CapabilityRuntimeError`, close every Run, and call
+`drain_capability_cleanup` when a host owns cleanup outside normal Session
+close.
+
+This is not yet the complete `HOST-CAP1` gate. CLI and Desktop must migrate to
+the batch API, and Agent, Command, Hook, MCP, and the remaining asynchronous
+capability kinds still fail closed in this Session runtime cut.
 
 # Chapter 2: Advanced Configuration
 

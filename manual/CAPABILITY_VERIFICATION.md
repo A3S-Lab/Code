@@ -112,6 +112,20 @@ must update or strengthen the same behavioral evidence rather than deleting it.
 | Explicit graph bounds | [`maximum-width and maximum-depth tests`](../core/tests/capability_readiness.rs) | Planning accepts at most 4,096 capabilities, 32,768 edges, 128 direct dependencies, and 4,096 iterative waves without recursion |
 | A3S Use authority | [`cross-package cursor test`](../core/tests/capability_readiness.rs) | Cross-package surface edges retain one exact Use cursor; Code never reads manifests or resolves, installs, activates, or retires packages |
 
+The in-progress `HOST-CAP1` gate now has a deterministic Core Tool/Skill host
+slice. The official CLI and Desktop migrations remain required before the gate
+can be marked delivered.
+
+| Core host behavior | Deterministic evidence | Bound or failure rule |
+| --- | --- | --- |
+| Complete Session batch | [`capability_runtime_tests`](../core/src/agent_api/capability_runtime_tests.rs) | Every target value prepares before one generation/digest CAS; failure or cancellation leaves the visible stamp unchanged and closes prepared effects |
+| Real Use lease per Run | [`exact lease and cursor mismatch tests`](../core/src/agent_api/capability_runtime_tests.rs) | The published provider is generation-specific, every Run acquires again, and Code rejects a returned generation, capability revision, or Registry revision mismatch |
+| Tool N/N+1 isolation | [`definition/executor cutover test`](../core/src/agent_api/capability_runtime_tests.rs) | An admitted N Run keeps one Tool `Arc` for definition and execution plus N's Use lease while N+1 becomes visible only to a later Run |
+| Skill discovery N/N+1 isolation | [`Skill search cutover test`](../core/src/agent_api/capability_runtime_tests.rs) | `search_skills` resolves the Run-frozen Skill registry while N+1 is published, rather than consulting the Session-latest map |
+| Compatibility conflict boundary | [`pre-commit and post-publication conflict tests`](../core/src/agent_api/capability_runtime_tests.rs) | Tool/Skill conflicts fail before generation advance, and compatibility Tool, Skill, or MCP-wrapper mutation cannot shadow a published projection |
+| Close and cancellation linearization | [`prepare cancellation, close/commit race, and exact-Run admission tests`](../core/src/agent_api/capability_runtime_tests.rs) | Close and commit have one order, prepared effects cannot become orphaned, exact Run reservations settle on admission failure, and non-clean scope teardown becomes a typed Run failure |
+| Explicit migration boundary | [`SessionCapabilityBatch`](../core/src/capability/runtime.rs) | This cut accepts only Tool and Skill values; every other capability kind fails closed until its product-owned adapter is migrated |
+
 ## Capability evidence ledger
 
 The area names and order intentionally match the README capability map. The

@@ -278,13 +278,43 @@ impl<'a> SessionExtensionRuntime<'a> {
             tools,
             Arc::clone(&self.session.mcp_manager),
         );
-        let count = self
-            .session
-            .close_handle
-            .mcp_tool_ownership
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .install(&server_name, &self.session.tool_executor, wrappers);
+        let install = {
+            let _publication = self
+                .session
+                .close_handle
+                .immediate_extension_mutation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.session.close_handle.is_closed() {
+                Err(crate::error::CodeError::SessionClosed {
+                    session_id: self.session.session_id.clone(),
+                })
+            } else if let Some(error) = wrappers.iter().find_map(|tool| {
+                self.session
+                    .ensure_compatibility_name_available(
+                        crate::capability::CapabilityKind::Tool,
+                        tool.name(),
+                    )
+                    .err()
+            }) {
+                Err(error)
+            } else {
+                Ok(self
+                    .session
+                    .close_handle
+                    .mcp_tool_ownership
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .install(&server_name, &self.session.tool_executor, wrappers))
+            }
+        };
+        let count = match install {
+            Ok(count) => count,
+            Err(error) => {
+                self.rollback_server(&server_name).await;
+                return Err(error);
+            }
+        };
 
         tracing::info!(
             session_id = %self.session.session_id,

@@ -15,6 +15,7 @@ use thiserror::Error;
 /// Async resource whose initialization is part of building a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionBuildResource {
+    Capability,
     MemoryStore,
     SessionStore,
     Queue,
@@ -26,6 +27,7 @@ pub enum SessionBuildResource {
 impl std::fmt::Display for SessionBuildResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Capability => "capability runtime",
             Self::MemoryStore => "memory store",
             Self::SessionStore => "session store",
             Self::Queue => "session queue",
@@ -133,6 +135,10 @@ pub enum CodeError {
     #[error("Queue error: {0}")]
     Queue(String),
 
+    /// Atomic Session capability publication or Run admission failure.
+    #[error("Capability runtime error: {0}")]
+    Capability(#[from] crate::capability::CapabilityRuntimeError),
+
     /// I/O error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -171,6 +177,7 @@ impl CodeError {
             Self::Context(_) => "CONTEXT_ERROR",
             Self::Mcp(_) => "MCP_ERROR",
             Self::Queue(_) => "QUEUE_ERROR",
+            Self::Capability(_) => "CAPABILITY_RUNTIME_ERROR",
             Self::Io(_) => "IO_ERROR",
             Self::Serialization(_) => "SERIALIZATION_ERROR",
             Self::Internal(_) => "INTERNAL_ERROR",

@@ -427,6 +427,9 @@ pub struct AgentSession {
     /// Base priority for this session's top-level operations.
     task_priority: crate::task_scheduler::TaskPriority,
     tool_executor: Arc<ToolExecutor>,
+    /// Session-owned atomic host capability catalog. A Run pins one immutable
+    /// generation before its model definitions and executor are assembled.
+    capability_catalog: Arc<crate::capability::CapabilityCatalog>,
     tool_context: ToolContext,
     config: AgentConfig,
     tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1,
@@ -526,6 +529,8 @@ pub struct AgentSession {
 // Tests
 // ============================================================================
 
+#[cfg(test)]
+mod capability_runtime_tests;
 #[cfg(test)]
 mod replacement_tests;
 #[cfg(test)]

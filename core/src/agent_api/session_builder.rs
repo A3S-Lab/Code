@@ -284,6 +284,7 @@ fn finish_agent_session(
     });
 
     let hook_engine = Arc::new(crate::hooks::HookEngine::new());
+    let capability_catalog = empty_capability_catalog()?;
     let lifecycle_hook_executor: Arc<dyn crate::hooks::HookExecutor> = opts
         .hook_executor
         .clone()
@@ -304,6 +305,7 @@ fn finish_agent_session(
         memory: memory.clone(),
         mcp_manager: Arc::clone(&resolved.mcp_manager),
         tool_executor: Arc::clone(&tool_executor),
+        capability_catalog: Arc::clone(&capability_catalog),
         extension_mutation: tokio::sync::Mutex::new(()),
         immediate_extension_mutation: std::sync::Mutex::new(()),
         mcp_tool_ownership: std::sync::Mutex::new(
@@ -323,6 +325,7 @@ fn finish_agent_session(
         task_scheduler: Arc::clone(&agent.task_scheduler),
         task_priority: opts.task_priority,
         tool_executor,
+        capability_catalog,
         tool_context,
         memory: config.memory.clone(),
         config,
@@ -369,4 +372,22 @@ fn finish_agent_session(
     };
     session.refresh_task_delegation_tools();
     Ok(session)
+}
+
+fn empty_capability_catalog() -> Result<Arc<crate::capability::CapabilityCatalog>> {
+    let set = crate::capability::CapabilitySet::empty().map_err(|error| {
+        crate::error::CodeError::SessionInitialization {
+            resource: crate::error::SessionBuildResource::Capability,
+            message: format!("failed to build the initial capability identity set: {error}"),
+        }
+    })?;
+    let projection =
+        crate::capability::CapabilityProjection::new(set, std::collections::BTreeMap::new())
+            .map_err(|error| crate::error::CodeError::SessionInitialization {
+                resource: crate::error::SessionBuildResource::Capability,
+                message: format!("failed to build the initial capability projection: {error}"),
+            })?;
+    Ok(Arc::new(crate::capability::CapabilityCatalog::new(
+        projection,
+    )))
 }

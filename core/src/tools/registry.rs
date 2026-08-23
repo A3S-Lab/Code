@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use thiserror::Error;
 
 const MAX_TOOL_SCHEMA_BYTES: usize = 256 * 1024;
 const MAX_ARGUMENT_VALIDATION_ERRORS: usize = 8;
@@ -25,6 +26,18 @@ const MAX_INLINE_CHANGE_BYTES: usize = 64 * 1024;
 const CHANGE_SIDE_PREVIEW_BYTES: usize = 8 * 1024;
 const CHANGE_DIFF_PREVIEW_BYTES: usize = 32 * 1024;
 const MAX_DIFF_COMPUTE_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Error)]
+#[error("projected tool name '{name}' conflicts with the compatibility registry")]
+pub(crate) struct ToolRegistrySnapshotError {
+    name: String,
+}
+
+impl ToolRegistrySnapshotError {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+}
 
 #[derive(Clone)]
 enum CachedArgumentValidator {
@@ -81,6 +94,36 @@ impl ToolRegistry {
             argument_validators: RwLock::new(HashMap::new()),
             transform_policy: RwLock::new(ToolResultTransformPolicyV1::default()),
         }
+    }
+
+    /// Freeze the current compatibility registry and add one conflict-free
+    /// external generation. The returned registry shares service handles and
+    /// exact Tool `Arc`s but no mutable name map with the source registry.
+    pub(crate) fn snapshot_with_external_tools(
+        &self,
+        external: impl IntoIterator<Item = Arc<dyn Tool>>,
+    ) -> Result<Self, ToolRegistrySnapshotError> {
+        // Preserve the registry's established lock order: tools before
+        // builtins. The remaining fields have no operation that takes either
+        // lock while holding their own lock.
+        let mut tools = self.tools.read().unwrap().clone();
+        let builtins = self.builtins.read().unwrap().clone();
+        for tool in external {
+            let name = tool.name().to_owned();
+            if tools.contains_key(&name) {
+                return Err(ToolRegistrySnapshotError { name });
+            }
+            tools.insert(name, tool);
+        }
+        Ok(Self {
+            tools: RwLock::new(tools),
+            builtins: RwLock::new(builtins),
+            context: RwLock::new(self.context.read().unwrap().clone()),
+            artifact_store: self.artifact_store.clone(),
+            trace_sink: RwLock::new(Arc::clone(&self.trace_sink.read().unwrap())),
+            argument_validators: RwLock::new(self.argument_validators.read().unwrap().clone()),
+            transform_policy: RwLock::new(self.transform_policy.read().unwrap().clone()),
+        })
     }
 
     pub(crate) fn set_tool_result_transform_policy(

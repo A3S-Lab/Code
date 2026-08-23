@@ -64,6 +64,8 @@ pub(crate) struct SessionCloseHandle {
     /// Session tool executor used to unwind exact local MCP registrations at
     /// close while restoring their captured shadows.
     pub(crate) tool_executor: Arc<crate::tools::ToolExecutor>,
+    /// Atomic host projection catalog whose effects retire at Session close.
+    pub(crate) capability_catalog: Arc<crate::capability::CapabilityCatalog>,
     /// Serializes session-local extension mutation. `closed` is the admission
     /// bit; close takes this mutex before its final MCP cleanup so a mutation
     /// admitted before close either rolls back or is subsequently cleaned up.
@@ -259,6 +261,20 @@ impl SessionCloseHandle {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .remove_all(&self.skill_registry);
+
+        // No conversation Run remains after the admission drain above. Retire
+        // the current projection's prepared effects, then close every retired
+        // or rolled-back batch through the bounded catalog cleanup policy.
+        self.capability_catalog.retire_current_effects();
+        let capability_cleanup = self.capability_catalog.drain_cleanup().await;
+        if !capability_cleanup.is_clean() {
+            tracing::warn!(
+                session_id = %self.session_id,
+                effects_failed = capability_cleanup.effects_failed,
+                effects_timed_out = capability_cleanup.effects_timed_out,
+                "Session capability cleanup did not finish cleanly"
+            );
+        }
 
         if let Some(hook) = &self.hook_executor {
             let duration_ms = self.started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;

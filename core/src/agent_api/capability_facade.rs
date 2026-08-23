@@ -130,8 +130,13 @@ impl AgentSession {
     /// next turn. Removing the live definition restores any session skill it
     /// shadowed at installation time.
     pub fn add_skill(&self, skill: Arc<crate::skills::Skill>) -> crate::error::Result<()> {
-        self.close_handle
-            .mutate_immediate(|| SessionExtensionRuntime::from_session(self).add_skill(skill))?
+        self.close_handle.mutate_immediate(|| {
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Skill,
+                &skill.name,
+            )?;
+            SessionExtensionRuntime::from_session(self).add_skill(skill)
+        })?
     }
 
     /// Remove a skill previously installed through [`Self::add_skill`].
@@ -181,8 +186,14 @@ impl AgentSession {
         &self,
         tool: Arc<dyn crate::tools::Tool>,
     ) -> crate::error::Result<()> {
-        self.close_handle
-            .mutate_immediate(|| self.tool_executor.register_dynamic_tool(tool))
+        self.close_handle.mutate_immediate(|| {
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Tool,
+                tool.name(),
+            )?;
+            self.tool_executor.register_dynamic_tool(tool);
+            Ok(())
+        })?
     }
 
     /// Register the A3S Flow-backed dynamic workflow tool for this live session.
@@ -193,8 +204,13 @@ impl AgentSession {
     /// the script can still call A3S Code tools.
     pub fn register_dynamic_workflow_runtime(&self) -> crate::error::Result<()> {
         self.close_handle.mutate_immediate(|| {
-            crate::tools::register_dynamic_workflow(self.tool_executor.registry())
-        })
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Tool,
+                "dynamic_workflow",
+            )?;
+            crate::tools::register_dynamic_workflow(self.tool_executor.registry());
+            Ok(())
+        })?
     }
 
     /// Remove a previously host-registered dynamic tool by name (e.g. on logout).
@@ -221,5 +237,165 @@ impl AgentSession {
         SessionExtensionRuntime::from_session(self)
             .mcp_status()
             .await
+    }
+
+    /// Return the exact generation and digest currently visible to new Runs.
+    pub fn capability_catalog_stamp(&self) -> crate::capability::CapabilityCatalogStamp {
+        self.capability_catalog.current_stamp()
+    }
+
+    /// Prepare and atomically publish one complete host capability generation.
+    ///
+    /// Preparation may perform asynchronous work, but no value becomes visible
+    /// until every adapter has succeeded and the complete projection wins its
+    /// generation-and-digest compare-and-swap. A Use-backed batch publishes its
+    /// generation-specific lease provider in that same commit.
+    pub async fn apply_capability_batch(
+        &self,
+        batch: crate::capability::SessionCapabilityBatch,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> std::result::Result<
+        crate::capability::CapabilityCommitReceipt,
+        crate::capability::CapabilityRuntimeError,
+    > {
+        let _mutation = self.close_handle.extension_mutation.lock().await;
+        if self.is_closed() {
+            return Err(crate::capability::CapabilityRuntimeError::SessionClosed);
+        }
+
+        let preparation_cancellation = tokio_util::sync::CancellationToken::new();
+        let prepared = tokio::select! {
+            biased;
+            _ = self.session_cancel.cancelled() => {
+                preparation_cancellation.cancel();
+                return Err(if self.is_closed() {
+                    crate::capability::CapabilityRuntimeError::SessionClosed
+                } else {
+                    crate::capability::CapabilityRuntimeError::Cancelled
+                });
+            }
+            _ = cancellation.cancelled() => {
+                preparation_cancellation.cancel();
+                return Err(crate::capability::CapabilityRuntimeError::Cancelled);
+            }
+            result = batch.prepare(
+                &self.capability_catalog,
+                preparation_cancellation.clone(),
+            ) => result?,
+        };
+
+        // The close boundary and Run pinning use this same short mutex. The
+        // prepared transaction holds no registry write lock while waiting.
+        let _publication = self
+            .close_handle
+            .immediate_extension_mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_closed() {
+            return Err(crate::capability::CapabilityRuntimeError::SessionClosed);
+        }
+        if cancellation.is_cancelled() || self.session_cancel.is_cancelled() {
+            return Err(crate::capability::CapabilityRuntimeError::Cancelled);
+        }
+        super::agent_loop_runtime::validate_capability_projection_runtime(
+            self,
+            prepared.projection()?,
+        )?;
+        prepared.commit()
+    }
+
+    /// Drain prepared effects from failed or retired host generations.
+    pub async fn drain_capability_cleanup(&self) -> crate::capability::CapabilityCleanupReport {
+        self.capability_catalog.drain_cleanup().await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn admit_capability_run(
+        &self,
+    ) -> std::result::Result<
+        crate::capability::SessionCapabilityRun,
+        crate::capability::CapabilityRuntimeError,
+    > {
+        let projection = {
+            let _admission = self
+                .close_handle
+                .immediate_extension_mutation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.is_closed() {
+                return Err(crate::capability::CapabilityRuntimeError::SessionClosed);
+            }
+            self.capability_catalog.pin()
+        };
+        let ceiling = self.capability_run_ceiling(projection.projection().set())?;
+        crate::capability::SessionCapabilityRun::admit(
+            projection,
+            "active",
+            "active",
+            ceiling,
+            self.session_cancel.child_token(),
+        )
+        .await
+    }
+
+    pub(super) fn capability_run_ceiling(
+        &self,
+        set: &crate::capability::CapabilitySet,
+    ) -> std::result::Result<
+        crate::capability::CapabilityCeiling,
+        crate::capability::CapabilityRuntimeError,
+    > {
+        let mut governance = crate::capability::GovernanceCapabilityCeiling::none_required();
+        if self.config.permission_checker.is_some() || self.config.permission_policy.is_some() {
+            governance = governance.require_permission_guard();
+        }
+        if self.config.confirmation_manager.is_some() || self.config.confirmation_policy.is_some() {
+            governance = governance.require_confirmation_guard();
+        }
+        if self.config.security_provider.is_some() {
+            governance = governance.require_security_guard();
+        }
+        if self.config.budget_guard.is_some() || self.budget_guard().is_some() {
+            governance = governance.require_budget_guard();
+        }
+        if self.config.enforce_active_skill_tool_restrictions {
+            governance = governance.require_active_skill_restrictions();
+        }
+        let execution = crate::capability::CapabilityExecutionCeiling::new(
+            self.config.max_tool_rounds,
+            self.config.max_parallel_tasks,
+            self.config.tool_timeout_ms,
+            self.config.llm_api_timeout_ms,
+            self.config.max_execution_time_ms,
+        )?;
+        crate::capability::CapabilityCeiling::all(
+            set,
+            crate::capability::WorkspaceCapabilityCeiling::all(),
+            governance,
+            execution,
+        )
+        .map_err(Into::into)
+    }
+
+    pub(super) fn ensure_compatibility_name_available(
+        &self,
+        kind: crate::capability::CapabilityKind,
+        public_name: &str,
+    ) -> crate::error::Result<()> {
+        let projection = self.capability_catalog.pin();
+        if projection
+            .projection()
+            .iter()
+            .any(|(_, value)| value.kind() == kind && value.public_name() == Some(public_name))
+        {
+            return Err(
+                crate::capability::CapabilityRuntimeError::RuntimeNameConflict {
+                    kind,
+                    public_name: public_name.to_owned(),
+                }
+                .into(),
+            );
+        }
+        Ok(())
     }
 }

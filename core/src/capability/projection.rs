@@ -16,7 +16,7 @@ use crate::tools::Tool;
 use super::{
     CapabilityEffect, CapabilityId, CapabilityKind, CapabilityProjectionError,
     CapabilityReadinessPlan, CapabilitySet, CapabilityValue, CodeCatalogGeneration, McpBinding,
-    ScopeClosePolicy, Sha256Digest,
+    ScopeClosePolicy, Sha256Digest, UseGenerationLeaseProvider,
 };
 
 /// Immutable pairing of one identity set with exactly one typed runtime value
@@ -105,6 +105,10 @@ impl CapabilityProjection {
         &self.set
     }
 
+    pub(crate) fn set_arc(&self) -> &Arc<CapabilitySet> {
+        &self.set
+    }
+
     pub fn readiness_plan(&self) -> &CapabilityReadinessPlan {
         &self.readiness
     }
@@ -119,6 +123,10 @@ impl CapabilityProjection {
 
     pub fn contains(&self, id: &CapabilityId) -> bool {
         self.values.contains_key(id)
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&CapabilityId, &CapabilityValue)> {
+        self.values.iter()
     }
 
     pub fn tool(&self, id: &CapabilityId) -> Option<&dyn Tool> {
@@ -273,6 +281,7 @@ impl CleanupQueue {
 struct PublishedGeneration {
     projection: Arc<CapabilityProjection>,
     stamp: CapabilityCatalogStamp,
+    use_lease_provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
     effects: Mutex<Vec<Box<dyn CapabilityEffect>>>,
     cleanup: Arc<CleanupQueue>,
 }
@@ -280,6 +289,7 @@ struct PublishedGeneration {
 impl PublishedGeneration {
     fn new(
         projection: Arc<CapabilityProjection>,
+        use_lease_provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
         effects: Vec<Box<dyn CapabilityEffect>>,
         cleanup: Arc<CleanupQueue>,
     ) -> Self {
@@ -287,6 +297,7 @@ impl PublishedGeneration {
         Self {
             projection,
             stamp,
+            use_lease_provider,
             effects: Mutex::new(effects),
             cleanup,
         }
@@ -331,6 +342,7 @@ impl CatalogInner {
         &self,
         base: &CapabilityCatalogStamp,
         projection: Arc<CapabilityProjection>,
+        use_lease_provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
         effects: Vec<Box<dyn CapabilityEffect>>,
     ) -> Result<CapabilityCommitReceipt, CapabilityProjectionError> {
         let committed = CapabilityCatalogStamp::from_projection(&projection);
@@ -353,6 +365,7 @@ impl CatalogInner {
             }
             let published = Arc::new(PublishedGeneration::new(
                 projection,
+                use_lease_provider,
                 effects,
                 Arc::clone(&self.cleanup),
             ));
@@ -381,6 +394,7 @@ impl CapabilityCatalog {
         let cleanup = Arc::new(CleanupQueue::default());
         let current = Arc::new(PublishedGeneration::new(
             initial,
+            None,
             Vec::new(),
             Arc::clone(&cleanup),
         ));
@@ -410,6 +424,24 @@ impl CapabilityCatalog {
 
     pub fn pending_cleanup_batches(&self) -> usize {
         self.inner.cleanup.len()
+    }
+
+    pub(crate) fn retire_current_effects(&self) {
+        let generation = Arc::clone(
+            &self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .current,
+        );
+        let effects = std::mem::take(
+            &mut *generation
+                .effects
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        self.inner.cleanup.enqueue(CleanupReason::Retired, effects);
     }
 
     pub async fn drain_cleanup(&self) -> CapabilityCleanupReport {
@@ -474,6 +506,10 @@ impl CapabilityProjectionLease {
 
     pub fn projection(&self) -> &CapabilityProjection {
         &self.generation.projection
+    }
+
+    pub(super) fn use_lease_provider(&self) -> Option<&Arc<dyn UseGenerationLeaseProvider>> {
+        self.generation.use_lease_provider.as_ref()
     }
 }
 

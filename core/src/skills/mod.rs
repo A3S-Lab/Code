@@ -29,6 +29,7 @@ pub mod validator;
 
 pub use builtin::builtin_skills;
 pub use registry::SkillRegistry;
+pub(crate) use registry::SkillRegistrySnapshotError;
 pub use validator::{
     DefaultSkillValidator, SkillValidationError, SkillValidator, ValidationErrorKind,
 };

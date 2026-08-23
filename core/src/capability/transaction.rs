@@ -10,7 +10,7 @@ use super::projection::CatalogInner;
 use super::{
     CapabilityAdapterError, CapabilityCatalog, CapabilityCatalogStamp, CapabilityCommitReceipt,
     CapabilityEffect, CapabilityId, CapabilityProjection, CapabilityProjectionError,
-    CapabilityReadinessPlan, CapabilitySet, CapabilityValue,
+    CapabilityReadinessPlan, CapabilitySet, CapabilityValue, UseGenerationLeaseProvider,
 };
 
 pub const MAX_CAPABILITY_TRANSACTION_EFFECTS: usize = 4_096;
@@ -207,6 +207,29 @@ impl CapabilityTxn<Staged> {
         self.stage(id, ReadyValueAdapter(value))
     }
 
+    pub(crate) fn stage_boxed(
+        &mut self,
+        id: CapabilityId,
+        adapter: Box<dyn CapabilityProjectionAdapter>,
+    ) -> Result<&mut Self, CapabilityProjectionError> {
+        let body = self
+            .body
+            .as_ref()
+            .ok_or(CapabilityProjectionError::InvalidTransactionState)?;
+        if !body.target.contains(&id) {
+            return Err(CapabilityProjectionError::UnknownStagedCapability {
+                capability: id.to_string(),
+            });
+        }
+        if self.staged.contains_key(&id) {
+            return Err(CapabilityProjectionError::DuplicateStagedCapability {
+                capability: id.to_string(),
+            });
+        }
+        self.staged.insert(id, adapter);
+        Ok(self)
+    }
+
     pub async fn prepare(
         mut self,
         cancellation: CancellationToken,
@@ -290,7 +313,27 @@ impl CapabilityTxn<Prepared> {
 }
 
 impl CapabilityTxn<Validated> {
+    pub(crate) fn projection(&self) -> Result<&CapabilityProjection, CapabilityProjectionError> {
+        self.projection
+            .as_deref()
+            .ok_or(CapabilityProjectionError::InvalidTransactionState)
+    }
+
     pub fn commit(mut self) -> Result<CapabilityCommitReceipt, CapabilityProjectionError> {
+        self.commit_inner(None)
+    }
+
+    pub(crate) fn commit_with_use_lease_provider(
+        mut self,
+        provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
+    ) -> Result<CapabilityCommitReceipt, CapabilityProjectionError> {
+        self.commit_inner(provider)
+    }
+
+    fn commit_inner(
+        &mut self,
+        provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
+    ) -> Result<CapabilityCommitReceipt, CapabilityProjectionError> {
         let projection = self
             .projection
             .take()
@@ -300,7 +343,9 @@ impl CapabilityTxn<Validated> {
             .take()
             .ok_or(CapabilityProjectionError::InvalidTransactionState)?;
         let effects = std::mem::take(&mut body.effects);
-        let result = body.catalog.publish(&body.base, projection, effects);
+        let result = body
+            .catalog
+            .publish(&body.base, projection, provider, effects);
         // `publish` owns the effect batch on both success and CAS conflict.
         body.rollback_armed = false;
         result
