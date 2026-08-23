@@ -23,6 +23,7 @@
 //! | workspace_services      | Yes       | Child tools must operate on the same workspace |
 //! | sandbox_handle          | Yes       | Child shell commands must keep the parent boundary |
 //! | budget_guard            | Yes       | One shared cost ledger spans the whole fan-out |
+//! | Tool presentation profile | Yes     | A child cannot broaden the parent's model surface |
 //! | memory                  | No        | Child has isolated context                     |
 //! | queue_config            | No        | Child runs are synchronous within parent       |
 //! | planning_mode           | No        | Child tasks are pre-planned by parent          |
@@ -63,6 +64,9 @@ pub struct ChildRunContext {
     pub enforce_active_skill_tool_restrictions: Option<bool>,
     pub workspace_services: Option<Arc<crate::workspace::WorkspaceServices>>,
     pub sandbox_handle: Option<Arc<dyn crate::sandbox::BashSandbox>>,
+    /// Parent presentation ceiling. Current delegated roles inherit it
+    /// exactly; future child-local modes must pass `ensure_within` first.
+    pub tool_presentation_profile: Option<crate::tools::ToolPresentationProfileV1>,
     /// Shared budget/quota guard. When inherited, every child run feeds the same
     /// guard, so a single ledger can cap an entire delegated fan-out / workflow
     /// rather than each child counting independently.
@@ -593,6 +597,12 @@ impl ChildRunContext {
         }
         if config.budget_guard.is_none() {
             config.budget_guard = self.budget_guard.clone();
+        }
+        if let Some(profile) = &self.tool_presentation_profile {
+            // Delegated task definitions currently have no independent profile
+            // field, so exact inheritance is both the least surprising default
+            // and a compile-time-owned monotonic boundary.
+            config.tool_presentation_profile = profile.clone();
         }
     }
 }

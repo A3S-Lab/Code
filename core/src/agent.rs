@@ -72,6 +72,9 @@ pub(crate) struct AgentConfig {
     /// (tool usage, autonomous behavior, completion criteria) is always preserved.
     pub prompt_slots: SystemPromptSlots,
     pub tools: Vec<ToolDefinition>,
+    /// Immutable model-facing Tool presentation policy for this loop.
+    /// Execution continues through the separately owned `ToolExecutor`.
+    pub tool_presentation_profile: crate::tools::ToolPresentationProfileV1,
     pub max_tool_rounds: usize,
     /// Optional security provider for input taint tracking and output sanitization
     pub security_provider: Option<Arc<dyn crate::security::SecurityProvider>>,
@@ -193,6 +196,7 @@ impl std::fmt::Debug for AgentConfig {
         f.debug_struct("AgentConfig")
             .field("prompt_slots", &self.prompt_slots)
             .field("tools", &self.tools)
+            .field("tool_presentation_profile", &self.tool_presentation_profile)
             .field("max_tool_rounds", &self.max_tool_rounds)
             .field("security_provider", &self.security_provider.is_some())
             .field("permission_checker", &self.permission_checker.is_some())
@@ -243,6 +247,7 @@ impl Default for AgentConfig {
         Self {
             prompt_slots: SystemPromptSlots::default(),
             tools: Vec::new(), // Tools are provided by ToolExecutor
+            tool_presentation_profile: crate::tools::ToolPresentationProfileV1::default(),
             max_tool_rounds: MAX_TOOL_ROUNDS,
             security_provider: None,
             permission_checker: None,
@@ -452,6 +457,13 @@ pub enum AgentEvent {
     RunCapabilityBound {
         call_sequence: u64,
         snapshot: crate::harness_evidence::RunCapabilitySnapshotV1,
+    },
+
+    /// The frozen presentation-profile identity, candidate definition cost,
+    /// and exact presented definition cost for one model call.
+    #[serde(rename = "model_presentation_bound")]
+    ModelPresentationBound {
+        snapshot: crate::harness_evidence::ModelPresentationSnapshotV1,
     },
 
     /// Bounded content-addressed evidence for the actual provider-neutral

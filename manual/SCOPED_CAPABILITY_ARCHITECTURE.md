@@ -1,6 +1,6 @@
 # Scoped Capability Architecture
 
-Status: accepted foundation; A3S Use bridge, immutable set, scoped lifecycle, atomic runtime projection, surface readiness DAG, and official Tool/Skill host adoption delivered
+Status: accepted foundation; A3S Use bridge, immutable set, scoped lifecycle, atomic runtime projection, surface readiness DAG, official Tool/Skill host adoption, and Run-frozen Tool presentation delivered
 
 ## Decision
 
@@ -405,6 +405,76 @@ offline reuse, missing and incompatible optional Use, no provider egress when
 required setup is forbidden, exact Skill visibility and evidence, watcher
 cleanup, and the absence of MCP startup.
 
+### CAP-PROFILE1 model-presentation cut
+
+`CAP-PROFILE1` is a Code-owned view over the exact Tool values already admitted
+by `HOST-CAP1`. It introduces no package, Registry, capability-generation, or
+execution ownership. The complete path is:
+
+```text
+A3S Use capability snapshot + non-clone Run lease
+                         │
+                         ▼
+        Code Run-frozen Tool Arc values
+                         │
+                         ▼
+          permission visibility ceiling
+                         │
+                         ▼
+        ToolPresentationProfileV1 projection
+                         │
+                         ▼
+              provider Tool definitions
+
+model Tool call ──▶ existing ToolInvoker ──▶ same pinned Tool Arc
+```
+
+`ToolPresentationProfileV1` is a serializable Rust closed value with schema
+`a3s.code.tool-presentation-profile.v1`. Its four exhaustive modes are
+Adaptive, Direct, Code, and Disabled. Adaptive preserves the prior
+prompt-sensitive selector. Direct exposes every permission-visible definition.
+Code exposes only the already registered `program` Tool and replaces only its
+description with a bounded compact signature catalog. Disabled sends no Tool
+definitions. All outputs are canonical by Tool name; no mode can add a name or
+change a parameter schema.
+
+Permission filtering runs before projection. This order is part of the
+security boundary because a code-mode catalog must never reveal a hidden Tool
+name. The Profile receives definitions, not `Arc<dyn Tool>` values, and main
+turn execution continues through the existing Run-owned `ToolExecutor`,
+permission, confirmation, budget, hook, cancellation, security, and audit
+paths. Host-direct execution is unchanged because Disabled is a presentation
+choice rather than a deny policy.
+
+The Session resolves and persists one exact Profile. Run construction copies
+it into `AgentConfig`; delegated tasks and workflows copy the parent's value
+exactly. `ensure_within` defines the version-1 partial order for future
+child-local selection: Disabled is always narrower, equal modes are valid, and
+Direct may narrow to another mode; Adaptive and Code are otherwise
+incomparable. Resume inherits the persisted value or rejects an explicitly
+different Profile before a new Session becomes live.
+
+`HARNESS-PROFILE1` records `ModelPresentationSnapshotV1` before every model
+input. A profiled call binds the exact Profile identity, permission-filtered
+source count/digest/token estimate, and actual presented count/digest/token
+estimate. The capture re-derives the expected projection and fails before
+provider use if the request contains an unknown name or changes a schema or
+description. Auxiliary helper protocols record an identity projection instead
+of pretending that the Session Profile governed their host-owned Tool list.
+The event is part of the existing `EventEnvelopeV1` journal and SDK catalogs.
+
+Node.js exposes a typed Profile object with a closed generated mode enum.
+Python exposes four static Profile constructors with read-only identity. Go
+exposes a named mode type, constants, and a Profile constructor. These SDK
+values all map to the same Rust type; no SDK accepts a primitive Profile name
+as the Session extension option.
+
+This cut deliberately does not consume an A3S Use cursor, publish a Code
+catalog generation, resolve a package, compute a Grant, install a Tool, or own
+drain and recovery. A3S Use remains authoritative for all of those operations;
+Profile evidence only explains which definitions from the already admitted
+Run were placed in one model request.
+
 ## Contribution and conflict rules
 
 Each contribution records its `CapabilityId`, source, surface, precedence
@@ -428,9 +498,9 @@ readiness, and owned effects.
 | `CAP-I01` | A3S Use is the sole authority for package plan/apply, verification, dependency resolution, Grants, lifecycle generation, capability cutover, and recovery. |
 | `CAP-I02` | One source generation is projected into a Session as one atomic contribution batch. |
 | `CAP-I03` | A failed transaction cannot change the visible catalog generation or leave a partially visible batch. |
-| `CAP-I04` | A Run's model definition and execution resolve through the same pinned capability value. |
+| `CAP-I04` | A Run's model definition and execution resolve through the same pinned capability value; a presentation Profile can only remove definitions or rephrase the existing code gateway. |
 | `CAP-I05` | External hot-plug affects the next admitted Run; an admitted Run retains its exact local and upstream generation leases. |
-| `CAP-I06` | A child scope cannot broaden its parent's permission, confirmation, security, budget, workspace, or execution ceiling. |
+| `CAP-I06` | A child scope cannot broaden its parent's permission, confirmation, security, budget, workspace, Tool-presentation, or execution ceiling. |
 | `CAP-I07` | Required dependencies must be ready in the same upstream generation before a contribution becomes visible. |
 | `CAP-I08` | Built-in capabilities cannot be replaced or removed by an external source. |
 | `CAP-I09` | Steady-state Run execution performs no global catalog write and does not resolve through a mutable latest-value registry. |
@@ -475,7 +545,7 @@ concerns and produce typed contributions.
 | `CAP-PROJ1` | Delivered | Closed typed runtime values, immutable projected catalogs, typestate contribution transactions, generation/digest CAS publication, and final-lease retirement | Failed prepare, validation, cancellation, dropped transaction, and commit-race paths leave the current generation unchanged and retain every prepared effect for reverse cleanup |
 | `CAP-DEP1` | Delivered | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
 | `HOST-CAP1` | Delivered | Core, CLI, and Desktop use one atomic Tool/Skill projection per Session or one-shot execution | Old Runs retain N and its exact Use lease, new Runs see N+1, failed preparation never advances the generation, one-shot watchers stop before Run admission, and Desktop requires exact Code/Use evidence |
-| `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
+| `CAP-PROFILE1` | Delivered | Run-frozen typed Tool presentation over the same pinned executor values | Permission filtering precedes Profile projection; name/schema identity and deterministic order are preserved, code mode rephrases only the existing `program` definition, child runs cannot broaden, and exact Session resume plus Rust/Node.js/Python/Go parity pass |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
 `CAP-PROJ1` attaches runtime values and atomic typestate transactions to the
@@ -486,6 +556,12 @@ resident CLI, one-shot Code Exec, and Desktop. Agent/Command/Hook migrate in a
 later cut, with MCP and other asynchronous resources last. Host integration
 must use the atomic Core transaction instead of adding another reconciliation
 abstraction.
+
+`CAP-PROFILE1` operates only after that atomic admission boundary. It projects
+the Run-frozen permission-visible definition list, never the Session-latest
+registry, and preserves the Tool name/schema identity used by the same pinned
+executor. Profile selection therefore cannot advance or weaken the A3S Use or
+Code catalog generation.
 
 ## Verification matrix
 

@@ -112,9 +112,8 @@ must update or strengthen the same behavioral evidence rather than deleting it.
 | Explicit graph bounds | [`maximum-width and maximum-depth tests`](../core/tests/capability_readiness.rs) | Planning accepts at most 4,096 capabilities, 32,768 edges, 128 direct dependencies, and 4,096 iterative waves without recursion |
 | A3S Use authority | [`cross-package cursor test`](../core/tests/capability_readiness.rs) | Cross-package surface edges retain one exact Use cursor; Code never reads manifests or resolves, installs, activates, or retires packages |
 
-The in-progress `HOST-CAP1` gate now has a deterministic Core Tool/Skill host
-slice. The official CLI and Desktop migrations remain required before the gate
-can be marked delivered.
+Delivered `HOST-CAP1` has a deterministic Core Tool/Skill host slice plus the
+official CLI and Desktop adoption evidence.
 
 | Core host behavior | Deterministic evidence | Bound or failure rule |
 | --- | --- | --- |
@@ -125,6 +124,18 @@ can be marked delivered.
 | Compatibility conflict boundary | [`pre-commit and post-publication conflict tests`](../core/src/agent_api/capability_runtime_tests.rs) | Tool/Skill conflicts fail before generation advance, and compatibility Tool, Skill, or MCP-wrapper mutation cannot shadow a published projection |
 | Close and cancellation linearization | [`prepare cancellation, close/commit race, and exact-Run admission tests`](../core/src/agent_api/capability_runtime_tests.rs) | Close and commit have one order, prepared effects cannot become orphaned, exact Run reservations settle on admission failure, and non-clean scope teardown becomes a typed Run failure |
 | Explicit migration boundary | [`SessionCapabilityBatch`](../core/src/capability/runtime.rs) | This cut accepts only Tool and Skill values; every other capability kind fails closed until its product-owned adapter is migrated |
+
+`CAP-PROFILE1` and `HARNESS-PROFILE1` add deterministic model-presentation
+evidence without adding another capability or package lifecycle:
+
+| Delivered behavior | Deterministic evidence | Bound or failure rule |
+| --- | --- | --- |
+| Closed Profile values | [`Tool presentation tests`](../core/src/tools/presentation.rs) | Only Adaptive, Direct, Code, and Disabled exist; outputs are canonical, bounded, and cannot add a name or change a parameter schema |
+| Permission-first model projection | [`actual model-request tests`](../core/src/agent/tests.rs) | The permission checker removes definitions before code-mode catalog generation, so a hidden Tool cannot reappear by name or schema |
+| Definition/execution separation | [`governed Tool instance test`](../core/src/agent/tests.rs) | A disabled Profile changes only model definitions; the existing `ToolInvoker` still resolves the original registered Tool instance under normal governance |
+| Child and resume ceilings | [`child inheritance test`](../core/src/child_run/tests.rs) and [`Session persistence tests`](../core/src/agent_api/session_persistence.rs) | Delegated runs inherit the exact parent Profile, and resume inherits the persisted value or rejects an explicit mismatch |
+| Per-call Profile evidence | [`Harness evidence tests`](../core/src/harness_evidence/tests.rs) and [`LLM invoker tests`](../core/src/agent/llm_invoker/tests.rs) | Profile identity, application kind, source/presented cost, and actual input agree; unknown, schema-modified, or description-injected definitions fail before provider use |
+| SDK parity | [`Node conversion`](../sdk/node/src/session_options.rs), [`Python conversion`](../sdk/python/src/session_options_conversion.rs), and [`Go bridge conversion`](../sdk/go/bridge/src/lib.rs) | Every SDK accepts a typed Profile object and maps to the same Rust closed value; no Session option accepts a primitive Profile name |
 
 ## Capability evidence ledger
 

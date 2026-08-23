@@ -207,6 +207,10 @@ fn finish_agent_session(
     let config = AgentConfig {
         prompt_slots,
         tools: tool_defs,
+        tool_presentation_profile: opts
+            .tool_presentation_profile
+            .clone()
+            .unwrap_or_else(|| base.tool_presentation_profile.clone()),
         security_provider: opts.security_provider.clone(),
         permission_checker: opts.permission_checker.clone(),
         permission_policy: opts.permission_policy.clone(),

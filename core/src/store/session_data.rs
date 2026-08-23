@@ -101,6 +101,9 @@ pub struct SessionConfig {
     /// Enable goal tracking.
     #[serde(default)]
     pub goal_tracking: bool,
+    /// Exact model-facing Tool presentation profile pinned by the host.
+    #[serde(default)]
+    pub tool_presentation_profile: crate::tools::ToolPresentationProfileV1,
     /// Exact deterministic Tool-result projection policy pinned by the host.
     #[serde(default)]
     pub tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1,
@@ -127,6 +130,7 @@ impl Default for SessionConfig {
             hook_engine: None,
             planning_mode: PlanningMode::default(),
             goal_tracking: false,
+            tool_presentation_profile: crate::tools::ToolPresentationProfileV1::default(),
             tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1::default(),
         }
     }

@@ -169,6 +169,7 @@ impl AgentSession {
             ),
             workspace_services: Some(Arc::clone(&self.tool_context.workspace_services)),
             sandbox_handle: self.tool_context.sandbox.clone(),
+            tool_presentation_profile: Some(self.config.tool_presentation_profile.clone()),
             budget_guard: self
                 .budget_guard()
                 .or_else(|| self.config.budget_guard.clone()),

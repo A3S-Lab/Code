@@ -69,6 +69,19 @@ func TestDefaultSecurityProviderUsesTypedSessionOption(t *testing.T) {
 	}
 }
 
+func TestToolPresentationProfileUsesTypedSessionOption(t *testing.T) {
+	encoded, err := json.Marshal(SessionOptions{
+		ToolPresentationProfile: NewToolPresentationProfile(ToolPresentationCode),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"tool_presentation_profile":{"schema":"a3s.code.tool-presentation-profile.v1","mode":"code"}}`
+	if string(encoded) != want {
+		t.Fatalf("typed Tool presentation profile JSON = %s, want %s", encoded, want)
+	}
+}
+
 func TestCreateSessionAndCloseWithInjectedRuntime(t *testing.T) {
 	runtime := &fakeRuntime{
 		request: func(

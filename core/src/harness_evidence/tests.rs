@@ -9,6 +9,20 @@ fn source(workspace: &std::path::Path) -> RunCapabilityEvidenceSource {
     RunCapabilityEvidenceSource::from_agent(&AgentConfig::default(), services, false, false)
 }
 
+fn source_with_profile(
+    workspace: &std::path::Path,
+    profile: crate::tools::ToolPresentationProfileV1,
+    tools: Vec<ToolDefinition>,
+) -> RunCapabilityEvidenceSource {
+    let services = WorkspaceServices::local(workspace);
+    let config = AgentConfig {
+        tools,
+        tool_presentation_profile: profile,
+        ..AgentConfig::default()
+    };
+    RunCapabilityEvidenceSource::from_agent(&config, services, false, false)
+}
+
 fn search_tool() -> ToolDefinition {
     ToolDefinition {
         name: "search".to_string(),
@@ -30,9 +44,174 @@ fn public_evidence_types_are_send_and_sync() {
     assert_send_sync::<RunPolicyCeilingSnapshotV1>();
     assert_send_sync::<WorkspaceRetrievalCapabilitySnapshotV1>();
     assert_send_sync::<RunCapabilitySnapshotV1>();
+    assert_send_sync::<ModelPresentationApplicationV1>();
+    assert_send_sync::<ModelPresentationSnapshotV1>();
     assert_send_sync::<ModelInputSnapshotV1>();
     assert_send_sync::<ToolResultContextUsageV1>();
     assert_send_sync::<ModelUsageSnapshotV1>();
+}
+
+#[test]
+fn presentation_evidence_binds_profile_source_and_actual_model_input() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tool = search_tool();
+    let messages = [Message::user("inspect the workspace")];
+    let source = source_with_profile(
+        workspace.path(),
+        crate::tools::ToolPresentationProfileV1::direct(),
+        vec![tool.clone()],
+    );
+    let (_, presentation, input, _) = source
+        .capture_with_presentation(
+            1,
+            ModelCallObservation::with_presentation_application(
+                ModelInputKindV1::Completion,
+                &messages,
+                None,
+                std::slice::from_ref(&tool),
+                None,
+                7,
+                ModelPresentationApplicationV1::Profiled,
+            ),
+        )
+        .unwrap();
+
+    presentation.validate_against(&input).unwrap();
+    assert_eq!(presentation.source_tool_count, 1);
+    assert_eq!(presentation.presented_tool_count, input.tool_count);
+    assert_eq!(
+        presentation.presented_tool_definitions_digest,
+        input.tool_definitions_digest
+    );
+    assert_eq!(
+        presentation.application,
+        ModelPresentationApplicationV1::Profiled
+    );
+
+    let adaptive = source_with_profile(
+        workspace.path(),
+        crate::tools::ToolPresentationProfileV1::adaptive(),
+        vec![tool.clone()],
+    )
+    .capture_with_presentation(
+        1,
+        ModelCallObservation::new(
+            ModelInputKindV1::Completion,
+            &messages,
+            None,
+            std::slice::from_ref(&tool),
+            None,
+            7,
+        ),
+    )
+    .unwrap()
+    .1;
+    let direct = source
+        .capture_with_presentation(
+            1,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &messages,
+                None,
+                std::slice::from_ref(&tool),
+                None,
+                7,
+            ),
+        )
+        .unwrap()
+        .1;
+    assert_ne!(adaptive.snapshot_digest, direct.snapshot_digest);
+}
+
+#[test]
+fn profiled_presentation_rejects_unknown_or_rewritten_definitions() {
+    let workspace = tempfile::tempdir().unwrap();
+    let expected = search_tool();
+    let messages = [Message::user("search")];
+    let source = source_with_profile(
+        workspace.path(),
+        crate::tools::ToolPresentationProfileV1::direct(),
+        vec![expected.clone()],
+    );
+    let capture = |tools: &[ToolDefinition]| {
+        source.capture_with_presentation(
+            1,
+            ModelCallObservation::with_presentation_application(
+                ModelInputKindV1::Completion,
+                &messages,
+                None,
+                tools,
+                None,
+                3,
+                ModelPresentationApplicationV1::Profiled,
+            ),
+        )
+    };
+
+    let mut unknown = expected.clone();
+    unknown.name = "unknown".to_string();
+    assert!(matches!(
+        capture(&[unknown]),
+        Err(HarnessEvidenceError::ToolPresentation(
+            crate::tools::ToolPresentationError::UnknownProjectedTool { .. }
+        ))
+    ));
+
+    let mut changed_schema = expected.clone();
+    changed_schema.parameters = serde_json::json!({"type": "string"});
+    assert!(matches!(
+        capture(&[changed_schema]),
+        Err(HarnessEvidenceError::ToolPresentation(
+            crate::tools::ToolPresentationError::ParameterSchemaChanged { .. }
+        ))
+    ));
+
+    let mut changed_description = expected;
+    changed_description.description = "Host-injected replacement".to_string();
+    assert!(matches!(
+        capture(&[changed_description]),
+        Err(HarnessEvidenceError::ToolPresentation(
+            crate::tools::ToolPresentationError::DescriptionChanged { .. }
+        ))
+    ));
+}
+
+#[test]
+fn auxiliary_presentation_records_an_identity_projection() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tools = [search_tool()];
+    let messages = [Message::user("validate")];
+    let (_, presentation, input, _) = source(workspace.path())
+        .capture_with_presentation(
+            1,
+            ModelCallObservation::new(
+                ModelInputKindV1::Structured,
+                &messages,
+                None,
+                &tools,
+                None,
+                4,
+            ),
+        )
+        .unwrap();
+
+    presentation.validate_against(&input).unwrap();
+    assert_eq!(
+        presentation.application,
+        ModelPresentationApplicationV1::Auxiliary
+    );
+    assert_eq!(
+        presentation.source_tool_count,
+        presentation.presented_tool_count
+    );
+    assert_eq!(
+        presentation.source_tool_definitions_digest,
+        presentation.presented_tool_definitions_digest
+    );
+    assert_eq!(
+        presentation.source_estimated_tokens,
+        presentation.presented_estimated_tokens
+    );
 }
 
 #[test]

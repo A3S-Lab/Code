@@ -164,6 +164,10 @@ fn test_agent_config_default() {
     let config = AgentConfig::default();
     assert!(config.prompt_slots.is_empty());
     assert!(config.tools.is_empty()); // Tools are provided externally
+    assert_eq!(
+        config.tool_presentation_profile,
+        crate::tools::ToolPresentationProfileV1::adaptive()
+    );
     assert_eq!(config.max_tool_rounds, MAX_TOOL_ROUNDS);
     assert_eq!(config.max_parallel_tasks, DEFAULT_MAX_PARALLEL_TASKS);
     assert!(config.permission_checker.is_none());
@@ -188,6 +192,8 @@ pub(crate) struct MockLlmClient {
     pub(crate) request_texts: std::sync::Mutex<Vec<String>>,
     /// Tool definition names sent to the client, in call order.
     pub(crate) request_tools: std::sync::Mutex<Vec<Vec<String>>>,
+    /// Full Tool definitions sent to the client, in call order.
+    pub(crate) request_tool_definitions: std::sync::Mutex<Vec<Vec<ToolDefinition>>>,
     /// Number of calls made
     pub(crate) call_count: AtomicUsize,
 }
@@ -349,6 +355,7 @@ impl MockLlmClient {
             responses: std::sync::Mutex::new(responses),
             request_texts: std::sync::Mutex::new(Vec::new()),
             request_tools: std::sync::Mutex::new(Vec::new()),
+            request_tool_definitions: std::sync::Mutex::new(Vec::new()),
             call_count: AtomicUsize::new(0),
         }
     }
@@ -478,6 +485,10 @@ impl LlmClient for MockLlmClient {
                 .map(|tool| tool.name.clone())
                 .collect::<Vec<_>>(),
         );
+        self.request_tool_definitions
+            .lock()
+            .unwrap()
+            .push(tools.to_vec());
         self.call_count.fetch_add(1, Ordering::SeqCst);
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
@@ -503,6 +514,10 @@ impl LlmClient for MockLlmClient {
                 .map(|tool| tool.name.clone())
                 .collect::<Vec<_>>(),
         );
+        self.request_tool_definitions
+            .lock()
+            .unwrap()
+            .push(tools.to_vec());
         self.call_count.fetch_add(1, Ordering::SeqCst);
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
@@ -704,11 +719,137 @@ async fn permission_checker_default_exposes_selected_tools_to_llm() {
     assert_eq!(
         *mock_client.request_tools.lock().unwrap(),
         vec![vec![
-            "read".to_string(),
             "bash".to_string(),
+            "read".to_string(),
             "web_search".to_string(),
         ]]
     );
+}
+
+async fn requested_tools_for_profile(
+    profile: crate::tools::ToolPresentationProfileV1,
+) -> Vec<ToolDefinition> {
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+        "Presentation test complete.",
+    )]));
+    let config = AgentConfig {
+        tools: vec![
+            model_tool_definition("web_search"),
+            model_tool_definition("read"),
+            model_tool_definition("program"),
+        ],
+        tool_presentation_profile: profile,
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        continuation_enabled: false,
+        ..Default::default()
+    };
+    AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        config,
+    )
+    .execute(&[], "Hello", None)
+    .await
+    .unwrap();
+
+    let first_request = mock_client
+        .request_tool_definitions
+        .lock()
+        .unwrap()
+        .first()
+        .cloned()
+        .unwrap();
+    first_request
+}
+
+#[tokio::test]
+async fn presentation_profiles_control_actual_model_requests() {
+    let adaptive =
+        requested_tools_for_profile(crate::tools::ToolPresentationProfileV1::adaptive()).await;
+    let direct =
+        requested_tools_for_profile(crate::tools::ToolPresentationProfileV1::direct()).await;
+    let code = requested_tools_for_profile(crate::tools::ToolPresentationProfileV1::code()).await;
+    let disabled =
+        requested_tools_for_profile(crate::tools::ToolPresentationProfileV1::disabled()).await;
+
+    assert!(
+        adaptive.is_empty(),
+        "a standalone greeting keeps adaptive empty"
+    );
+    assert_eq!(
+        direct
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["program", "read", "web_search"]
+    );
+    assert_eq!(
+        code.iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["program"]
+    );
+    assert!(disabled.is_empty());
+}
+
+#[tokio::test]
+async fn permission_visibility_precedes_code_profile_catalog_generation() {
+    use crate::permissions::{PermissionChecker, PermissionDecision};
+
+    struct HideSecretTool;
+
+    impl PermissionChecker for HideSecretTool {
+        fn expose_to_model(&self, tool_name: &str) -> bool {
+            tool_name != "secret_admin"
+        }
+
+        fn check(&self, _tool_name: &str, _args: &serde_json::Value) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+    }
+
+    let program = model_tool_definition("program");
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+        "Permission-first presentation complete.",
+    )]));
+    let config = AgentConfig {
+        tools: vec![
+            model_tool_definition("secret_admin"),
+            program.clone(),
+            model_tool_definition("read"),
+        ],
+        tool_presentation_profile: crate::tools::ToolPresentationProfileV1::code(),
+        permission_checker: Some(Arc::new(HideSecretTool)),
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        continuation_enabled: false,
+        ..Default::default()
+    };
+    AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        config,
+    )
+    .execute(&[], "Inspect the workspace", None)
+    .await
+    .unwrap();
+
+    let requests = mock_client.request_tool_definitions.lock().unwrap();
+    let presented = requests.first().unwrap();
+    assert_eq!(presented.len(), 1);
+    assert_eq!(presented[0].name, "program");
+    assert_eq!(presented[0].parameters, program.parameters);
+    assert!(presented[0].description.contains("read()"));
+    assert!(!presented[0].description.contains("secret_admin"));
 }
 
 #[tokio::test]
@@ -3905,6 +4046,38 @@ mod nested_tool_governance_tests {
             AgentLoop::new(client.clone(), executor, test_tool_context(), config),
             client,
         )
+    }
+
+    #[tokio::test]
+    async fn presentation_profile_does_not_replace_or_disable_the_tool_instance() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let config = AgentConfig {
+            tools: vec![model_tool_definition("side_effect")],
+            tool_presentation_profile: crate::tools::ToolPresentationProfileV1::disabled(),
+            permission_checker: Some(Arc::new(TargetPermission {
+                target: "side_effect",
+                decision: PermissionDecision::Allow,
+            })),
+            ..Default::default()
+        };
+        let (agent, _) = governed_agent(Vec::new(), Arc::clone(&calls), config);
+        let result = agent
+            .invoke_model_tool(
+                crate::tools::ToolInvocation::agent(
+                    "side-effect-1",
+                    "side_effect",
+                    serde_json::json!({}),
+                    Vec::new(),
+                ),
+                None,
+                &None,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await;
+
+        assert_eq!(result.exit_code, 0, "{}", result.output);
+        assert_eq!(result.output, "side-effect-ok");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

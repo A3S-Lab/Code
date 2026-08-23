@@ -29,6 +29,7 @@ export type KnownAgentEventTypeV1 =
   | 'context_resolving'
   | 'context_resolved'
   | 'run_capability_bound'
+  | 'model_presentation_bound'
   | 'model_input_bound'
   | 'model_usage_bound'
   | 'cognitive_context_bound'

@@ -297,6 +297,11 @@ pub struct SessionOptions {
     /// `None` selects the conservative compatibility profile. The resolved
     /// policy is persisted and cannot drift when the session is resumed.
     pub tool_result_transform_policy: Option<crate::tools::ToolResultTransformPolicyV1>,
+    /// Typed model-facing Tool presentation policy.
+    ///
+    /// The resolved value is frozen per Run and persisted for exact resume.
+    /// It never changes the Session's governed executor or A3S Use generation.
+    pub tool_presentation_profile: Option<crate::tools::ToolPresentationProfileV1>,
     /// Max consecutive parse errors before aborting (overrides default of 2).
     /// `None` uses the `AgentConfig` default.
     pub max_parse_retries: Option<u32>,

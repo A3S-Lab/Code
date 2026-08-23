@@ -10,6 +10,7 @@ const requiredExports = [
   'EventStream',
   'StateGraphRuntime',
   'LocalWorkspaceBackend',
+  'ToolPresentationMode',
   'builtinSkills',
   'agentEventTypesV1',
   'eventEnvelopeV1Version',
@@ -126,6 +127,28 @@ assert.deepEqual(initialSchedulerStats.activeByPriority, {
       }),
     /MemorySessionStore identity is invalid or expired/,
     'unknown memory store handles must fail closed',
+  )
+}
+
+{
+  const profileSession = await agent.sessionAsync(workspace, {
+    sessionId: `tool-presentation-profile-${Date.now()}`,
+    toolPresentationProfile: {
+      schema: 'a3s.code.tool-presentation-profile.v1',
+      mode: mod.ToolPresentationMode.Code,
+    },
+  })
+  await profileSession.closeAsync()
+
+  await assert.rejects(
+    agent.sessionAsync(workspace, {
+      toolPresentationProfile: {
+        schema: 'a3s.code.tool-presentation-profile.v2',
+        mode: mod.ToolPresentationMode.Code,
+      },
+    }),
+    /toolPresentationProfile\.schema/,
+    'unknown Tool presentation schemas must fail closed',
   )
 }
 

@@ -153,9 +153,34 @@ registry. Inspect `CapabilityRuntimeError`, close every Run, and call
 `drain_capability_cleanup` when a host owns cleanup outside normal Session
 close.
 
-This is not yet the complete `HOST-CAP1` gate. CLI and Desktop must migrate to
-the batch API, and Agent, Command, Hook, MCP, and the remaining asynchronous
-capability kinds still fail closed in this Session runtime cut.
+The official CLI and Desktop adapters complete the `HOST-CAP1` Tool/Skill host
+gate. Agent, Command, Hook, MCP, and the remaining asynchronous capability kinds
+still fail closed in this Session runtime cut and remain separate migration
+work.
+
+### Tool presentation profiles
+
+Choose model-facing Tool shape with a typed Profile, not a backend name:
+
+```rust
+use a3s_code_core::{SessionOptions, ToolPresentationProfileV1};
+
+let options = SessionOptions::new()
+    .with_tool_presentation_profile(ToolPresentationProfileV1::code());
+```
+
+Adaptive preserves historical prompt-sensitive selection. Direct presents all
+permission-visible definitions. Code presents the existing `program` Tool with
+a bounded compact catalog. Disabled presents no definitions. Permission
+visibility runs first, and every mode preserves Tool name and parameter-schema
+identity. `AgentSession::presented_tool_definitions` provides a diagnostic live
+preview; it is not execution authority because Run admission freezes the exact
+permission and capability generation.
+
+The Profile persists with the Session and must match on resume. Delegated runs
+inherit it exactly. It never installs a Tool, selects an A3S Use generation, or
+replaces governed execution; calls still pass through the pinned Tool instance,
+permission, confirmation, budget, hooks, cancellation, security, and audit.
 
 # Chapter 2: Advanced Configuration
 

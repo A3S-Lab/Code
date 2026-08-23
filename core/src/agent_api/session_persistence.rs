@@ -279,6 +279,18 @@ pub(super) fn apply_persisted_runtime_options(
     {
         opts.max_context_tokens = Some(data.config.max_context_length as usize);
     }
+    match opts.tool_presentation_profile.as_ref() {
+        Some(requested) if requested != &data.config.tool_presentation_profile => {
+            return Err(CodeError::SessionConfiguration {
+                field: "tool_presentation_profile",
+                message: "resume profile differs from the exact Tool presentation profile retained by the session snapshot".to_string(),
+            });
+        }
+        Some(_) => {}
+        None => {
+            opts.tool_presentation_profile = Some(data.config.tool_presentation_profile.clone());
+        }
+    }
     match opts.tool_result_transform_policy.as_ref() {
         Some(requested) if requested != &data.config.tool_result_transform_policy => {
             return Err(CodeError::SessionConfiguration {
@@ -450,6 +462,7 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
     data.config.auto_delegation = Some(input.config.auto_delegation.clone());
     data.config.planning_mode = input.config.planning_mode;
     data.config.goal_tracking = input.config.goal_tracking;
+    data.config.tool_presentation_profile = input.config.tool_presentation_profile.clone();
     data.config.tool_result_transform_policy = input.tool_result_transform_policy.clone();
     data.messages = input.history;
     data.total_usage = input.seed.total_usage;
@@ -829,6 +842,40 @@ mod tests {
             error,
             CodeError::SessionConfiguration {
                 field: "tool_result_transform_policy",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn persisted_tool_presentation_profile_is_inherited_and_cannot_drift() {
+        let mut data = persisted_data(Some("openai/gpt-4o"), None);
+        let profile = crate::tools::ToolPresentationProfileV1::code();
+        data.config.tool_presentation_profile = profile.clone();
+
+        let inherited = apply_persisted_runtime_options(SessionOptions::new(), &data).unwrap();
+        assert_eq!(inherited.tool_presentation_profile, Some(profile.clone()));
+
+        let matching = apply_persisted_runtime_options(
+            SessionOptions::new().with_tool_presentation_profile(profile),
+            &data,
+        )
+        .unwrap();
+        assert_eq!(
+            matching.tool_presentation_profile,
+            Some(crate::tools::ToolPresentationProfileV1::code())
+        );
+
+        let error = apply_persisted_runtime_options(
+            SessionOptions::new()
+                .with_tool_presentation_profile(crate::tools::ToolPresentationProfileV1::direct()),
+            &data,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CodeError::SessionConfiguration {
+                field: "tool_presentation_profile",
                 ..
             }
         ));

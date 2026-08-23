@@ -1444,6 +1444,7 @@ fn child_context_with_budget(
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
         sandbox_handle: None,
+        tool_presentation_profile: None,
         budget_guard: Some(budget_guard),
     }
 }
@@ -2183,6 +2184,7 @@ fn redacting_parent_context() -> crate::child_run::ChildRunContext {
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
         sandbox_handle: None,
+        tool_presentation_profile: None,
         budget_guard: None,
     }
 }
@@ -2639,6 +2641,7 @@ async fn background_task_keeps_the_admitted_run_permission_snapshot_across_turn_
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
         sandbox_handle: None,
+        tool_presentation_profile: None,
         budget_guard: None,
     };
     let executor = Arc::new(
@@ -3002,6 +3005,7 @@ async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
         sandbox_handle: Some(Arc::new(RecordingSandbox {
             called: Arc::clone(&sandbox_called),
         })),
+        tool_presentation_profile: None,
         budget_guard: None,
     };
 
@@ -4431,6 +4435,7 @@ async fn child_source_anchor_is_sanitized_before_task_metadata_persistence() {
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
         sandbox_handle: None,
+        tool_presentation_profile: None,
         budget_guard: None,
     };
     let executor = TaskExecutor::new(

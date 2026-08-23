@@ -16,6 +16,7 @@ import type {
   AgentRunSpawnObject,
   ReadFileOptions,
   SessionOptions,
+  ToolPresentationProfile,
   TaskSchedulerStats,
   CallbackEmbeddingProvider,
   DeterministicWorkspaceReranker,
@@ -43,6 +44,7 @@ import type {
   EventEnvelopeV1,
   KnownAgentEventTypeV1,
 } from './index.js'
+import { ToolPresentationMode } from './index.js'
 
 // Forced uses so unused-import lint stays quiet.
 declare const _session: Session
@@ -55,6 +57,18 @@ declare const _result: ToolResult
 declare const _runSpawn: AgentRunSpawnObject
 declare const _readOptions: ReadFileOptions
 declare const _sessionOptions: SessionOptions
+const _toolPresentationProfile: ToolPresentationProfile = {
+  schema: 'a3s.code.tool-presentation-profile.v1',
+  mode: ToolPresentationMode.Code,
+}
+const _sessionOptionsWithProfile: SessionOptions = {
+  toolPresentationProfile: _toolPresentationProfile,
+}
+const _primitivePresentationProfileIsRejected: 'code' extends NonNullable<
+  SessionOptions['toolPresentationProfile']
+>
+  ? false
+  : true = true
 declare const _schedulerStats: TaskSchedulerStats
 declare const _embeddingProvider: CallbackEmbeddingProvider
 declare const _deterministicReranker: DeterministicWorkspaceReranker

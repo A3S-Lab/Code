@@ -78,4 +78,8 @@ session.setBudgetGuard(null)
 // Throw, timeout, malformed-return, and host-process survival regressions run
 // independently in test_callback_safety.mjs.
 
+await session.closeAsync()
+await agent.close()
+fs.rmSync(tmpRoot, { recursive: true, force: true })
+
 console.log('node sdk budget guard ok')

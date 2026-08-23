@@ -70,6 +70,7 @@ define_agent_event_types_v1! {
     ContextResolving => CONTEXT_RESOLVING = "context_resolving",
     ContextResolved => CONTEXT_RESOLVED = "context_resolved",
     RunCapabilityBound => RUN_CAPABILITY_BOUND = "run_capability_bound",
+    ModelPresentationBound => MODEL_PRESENTATION_BOUND = "model_presentation_bound",
     ModelInputBound => MODEL_INPUT_BOUND = "model_input_bound",
     ModelUsageBound => MODEL_USAGE_BOUND = "model_usage_bound",
     CognitiveContextBound => COGNITIVE_CONTEXT_BOUND = "cognitive_context_bound",

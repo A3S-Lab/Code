@@ -56,6 +56,7 @@ impl std::fmt::Debug for SessionOptions {
                 "tool_result_transform_policy",
                 &self.tool_result_transform_policy,
             )
+            .field("tool_presentation_profile", &self.tool_presentation_profile)
             .field("max_parse_retries", &self.max_parse_retries)
             .field("tool_timeout_ms", &self.tool_timeout_ms)
             .field("llm_api_timeout_ms", &self.llm_api_timeout_ms)
@@ -450,6 +451,15 @@ impl SessionOptions {
         policy: crate::tools::ToolResultTransformPolicyV1,
     ) -> Self {
         self.tool_result_transform_policy = Some(policy);
+        self
+    }
+
+    /// Select the typed model-facing Tool presentation profile.
+    pub fn with_tool_presentation_profile(
+        mut self,
+        profile: crate::tools::ToolPresentationProfileV1,
+    ) -> Self {
+        self.tool_presentation_profile = Some(profile);
         self
     }
 

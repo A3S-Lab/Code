@@ -213,10 +213,11 @@ pub use flow_graph::{
     FLOW_GRAPH_SOURCE,
 };
 pub use harness_evidence::{
-    HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, ModelUsageSnapshotV1,
-    RunCapabilitySnapshotV1, RunPolicyCeilingSnapshotV1, ToolResultContextUsageV1,
-    WorkspaceCapabilitySnapshotV1, WorkspaceRetrievalCapabilitySnapshotV1,
-    MODEL_INPUT_SNAPSHOT_V1_SCHEMA, MODEL_USAGE_SNAPSHOT_V1_SCHEMA,
+    HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, ModelPresentationApplicationV1,
+    ModelPresentationSnapshotV1, ModelUsageSnapshotV1, RunCapabilitySnapshotV1,
+    RunPolicyCeilingSnapshotV1, ToolResultContextUsageV1, WorkspaceCapabilitySnapshotV1,
+    WorkspaceRetrievalCapabilitySnapshotV1, MODEL_INPUT_SNAPSHOT_V1_SCHEMA,
+    MODEL_PRESENTATION_SNAPSHOT_V1_SCHEMA, MODEL_USAGE_SNAPSHOT_V1_SCHEMA,
     RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA,
 };
 pub use llm::{
@@ -256,6 +257,10 @@ pub use task_scheduler::{
     TaskSchedulerStats,
 };
 pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind};
+pub use tools::{
+    ToolPresentationError, ToolPresentationModeV1, ToolPresentationProfileV1,
+    TOOL_PRESENTATION_PROFILE_V1_SCHEMA,
+};
 pub use workspace::{
     ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, CommandOutput, CommandOutputObserver,
     CommandOutputSummary, CommandRequest, CustomWorkspaceChunkingStrategy,

@@ -61,15 +61,18 @@ execution world.
 | `HARNESS-IN1` | In progress | `ModelInputSnapshotV1` records bounded content-addressed evidence for the actual system/message/tool-definition/provider-facing structured directive submitted to each provider-neutral model call, plus identified semantic/hybrid Tool-result evidence | Digest/counter evidence and exact event replay are delivered; immutable authorized references to retained original content remain part of `CAR-02` rather than being copied into the event journal |
 | `HARNESS-USAGE1` | Delivered | `ModelUsageSnapshotV1` measures exact repeated Tool-result context and binds the prompt estimate and normalized `LlmClient` token/cache usage to its input snapshot | Successful completion and streaming calls emit validated `model_usage_bound` evidence before returning their terminal response; replay is exact and run/stream cancellation releases evidence backpressure |
 | `HARNESS-SCOPE1` | Delivered | Typed Session/Run/Turn/Subtask scopes, borrowed capability leases, monotonic ceilings, and cancellation-safe supervised teardown | Compile-fail leases cannot escape or cross marker kinds; runtime tests reject every child expansion and settle tasks, child scopes, effects, and exact Use leases in bounded order |
-| `HARNESS-PROFILE1` | Planned | Typed tool-presentation and code-mode profiles over the existing governed executor | Profiles change model-facing presentation and token cost, never authorization, workspace identity, or audit semantics |
+| `HARNESS-PROFILE1` | Delivered | Closed typed Adaptive, Direct, Code, and Disabled Tool-presentation Profiles over the existing governed executor | Permission-filtered source and exact presented definition digests/counts/token estimates are bound before every model input; Profile identity, application kind, persistence, and replay validate without retaining definition plaintext |
 
 `CODE-RDY1` below was the first delivered slice of `HARNESS-CAP1`. The completed
 capability snapshot now observes the current readiness phase, catalog/source/
 vector revisions, coverage, and model-descriptor digest immediately before each
 provider call. The companion `model_input_bound` event is emitted before every
 completion, streaming, structured, and streaming-structured call, and
-`model_usage_bound` binds its successful result to the same call sequence. All
-three events reuse the existing Run journal and `EventEnvelopeV1`; no parallel
+`model_usage_bound` binds its successful result to the same call sequence. The
+companion `model_presentation_bound` event binds the frozen Profile, its
+permission-filtered source cost, and exact provider-facing projection before
+each input. All four events reuse the existing Run journal and
+`EventEnvelopeV1`; no parallel
 audit store is introduced. See
 [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md).
 
@@ -93,7 +96,7 @@ Session- and Run-owned capability scopes.
 | `CAP-PROJ1` | Delivered | Closed typed runtime values, immutable projected catalogs, typestate contribution transactions, generation/digest CAS publication, and final-lease retirement | Failed prepare, validation, cancellation, dropped transaction, and commit-race paths leave the current generation unchanged and retain every prepared effect for reverse cleanup |
 | `CAP-DEP1` | Delivered | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
 | `HOST-CAP1` | Delivered | Core, CLI, and Desktop use one atomic Tool/Skill projection per Session or one-shot execution | Old Runs retain N and its exact Use lease, new Runs see N+1, failed preparation never advances the generation, one-shot watchers stop before Run admission, and Desktop requires exact Code/Use evidence |
-| `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
+| `CAP-PROFILE1` | Delivered | Run-frozen typed Tool presentation over the same pinned executor values | Permission filtering precedes Profile projection; name/schema identity and deterministic order are preserved, code mode rephrases only the existing `program` definition, child runs cannot broaden, and exact Session resume plus Rust/Node.js/Python/Go parity pass |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
 [`USE-BRIDGE1`](https://github.com/A3S-Lab/Use/commit/6ed0b4e) is the upstream
@@ -114,6 +117,18 @@ support and rejects success without canonical Code catalog and Use cursor
 evidence. Agent/Command/Hook and asynchronous MCP categories remain later
 migration cuts. `CAP-GA1` starts only after official hosts have delegated to
 that path for one major release.
+
+Delivered `CAP-PROFILE1` adds a presentation plane after Run admission, not a
+second capability registry. The Session persists one
+`ToolPresentationProfileV1`; each main turn first applies the Run-frozen
+permission visibility boundary and then projects Adaptive, Direct, Code, or
+Disabled definitions in canonical order. Code mode retains the existing
+`program` Tool name and parameter schema while generating a bounded compact
+signature catalog from only permission-visible definitions. Execution still
+resolves through the pinned `ToolExecutor` and the same Tool `Arc`; the Profile
+does not acquire, publish, mutate, or retire an A3S Use generation. Delegated
+runs inherit the exact parent Profile, and resume rejects a different explicit
+Profile.
 
 ## 4. Invariants
 

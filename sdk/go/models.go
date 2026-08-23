@@ -115,6 +115,7 @@ type SessionOptions struct {
 	MaxContextTokens           *uint                      `json:"max_context_tokens,omitempty"`
 	ArtifactStoreLimits        *ArtifactStoreLimits       `json:"artifact_store_limits,omitempty"`
 	ToolResultTransformPolicy  *ToolResultTransformPolicy `json:"tool_result_transform_policy,omitempty"`
+	ToolPresentationProfile    *ToolPresentationProfile   `json:"tool_presentation_profile,omitempty"`
 	ContinuationEnabled        *bool                      `json:"continuation_enabled,omitempty"`
 	MaxContinuationTurns       *uint32                    `json:"max_continuation_turns,omitempty"`
 	Temperature                *float32                   `json:"temperature,omitempty"`
@@ -534,6 +535,35 @@ type ToolResultTransformPolicy struct {
 	FoldRepeatedLines     bool   `json:"fold_repeated_lines"`
 	RepeatedLineThreshold uint   `json:"repeated_line_threshold"`
 	StructuredSampleItems uint   `json:"structured_sample_items"`
+}
+
+// ToolPresentationProfileV1Schema identifies the closed version-1 model-facing
+// Tool presentation contract.
+const ToolPresentationProfileV1Schema = "a3s.code.tool-presentation-profile.v1"
+
+// ToolPresentationMode is a closed model-facing presentation choice.
+type ToolPresentationMode string
+
+const (
+	ToolPresentationAdaptive ToolPresentationMode = "adaptive"
+	ToolPresentationDirect   ToolPresentationMode = "direct"
+	ToolPresentationCode     ToolPresentationMode = "code"
+	ToolPresentationDisabled ToolPresentationMode = "disabled"
+)
+
+// ToolPresentationProfile changes only definitions submitted to the model. It
+// does not select an A3S Use generation or replace the governed Tool executor.
+type ToolPresentationProfile struct {
+	Schema string               `json:"schema"`
+	Mode   ToolPresentationMode `json:"mode"`
+}
+
+// NewToolPresentationProfile constructs a version-1 typed profile.
+func NewToolPresentationProfile(mode ToolPresentationMode) *ToolPresentationProfile {
+	return &ToolPresentationProfile{
+		Schema: ToolPresentationProfileV1Schema,
+		Mode:   mode,
+	}
 }
 
 type RetentionLimits struct {

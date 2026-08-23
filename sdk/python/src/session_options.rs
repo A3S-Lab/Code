@@ -21,6 +21,7 @@ pub(super) struct PySessionOptions {
     /// Retention limits for large tool/program artifacts.
     pub(super) artifact_store_limits: Option<PyArtifactStoreLimits>,
     pub(super) tool_result_transform_policy: Option<PyToolResultTransformPolicy>,
+    pub(super) tool_presentation_profile: Option<PyToolPresentationProfile>,
     /// Long-term memory store backend override. Sessions resolve a default store
     /// when this is not set. Set to a ``FileMemoryStore`` instance to customize it.
     pub(super) memory_store: Option<pyo3::PyObject>,
@@ -182,6 +183,7 @@ impl Clone for PySessionOptions {
             max_context_tokens: self.max_context_tokens,
             artifact_store_limits: self.artifact_store_limits.clone(),
             tool_result_transform_policy: self.tool_result_transform_policy.clone(),
+            tool_presentation_profile: self.tool_presentation_profile.clone(),
             memory_store: pyo3::Python::with_gil(|py| {
                 self.memory_store.as_ref().map(|o| o.clone_ref(py))
             }),
@@ -262,6 +264,7 @@ impl PySessionOptions {
             max_context_tokens: None,
             artifact_store_limits: None,
             tool_result_transform_policy: None,
+            tool_presentation_profile: None,
             memory_store: None,
             session_store: None,
             security_provider: None,
@@ -498,6 +501,17 @@ impl PySessionOptions {
     #[setter]
     fn set_tool_result_transform_policy(&mut self, value: Option<PyToolResultTransformPolicy>) {
         self.tool_result_transform_policy = value;
+    }
+
+    /// Closed model-facing Tool presentation profile.
+    #[getter]
+    fn get_tool_presentation_profile(&self) -> Option<PyToolPresentationProfile> {
+        self.tool_presentation_profile.clone()
+    }
+
+    #[setter]
+    fn set_tool_presentation_profile(&mut self, value: Option<PyToolPresentationProfile>) {
+        self.tool_presentation_profile = value;
     }
 
     /// Long-term memory store backend override.
@@ -1057,7 +1071,7 @@ impl PySessionOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, max_context_tokens={:?}, artifact_store_limits={}, tool_result_transform_policy={}, memory_store={}, session_store={}, security_provider={}, workspace_backend={}, inline_skills={}, max_parallel_tasks={:?}, auto_parallel={:?})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, max_context_tokens={:?}, artifact_store_limits={}, tool_result_transform_policy={}, tool_presentation_profile={}, memory_store={}, session_store={}, security_provider={}, workspace_backend={}, inline_skills={}, max_parallel_tasks={:?}, auto_parallel={:?})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
@@ -1065,6 +1079,7 @@ impl PySessionOptions {
             self.max_context_tokens,
             if self.artifact_store_limits.is_some() { "Some(...)" } else { "None" },
             if self.tool_result_transform_policy.is_some() { "Some(...)" } else { "None" },
+            if self.tool_presentation_profile.is_some() { "Some(...)" } else { "None" },
             if self.memory_store.is_some() { "Some(...)" } else { "None" },
             if self.session_store.is_some() { "Some(...)" } else { "None" },
             if self.security_provider.is_some() { "Some(...)" } else { "None" },

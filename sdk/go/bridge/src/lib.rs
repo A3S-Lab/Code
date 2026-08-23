@@ -2544,6 +2544,7 @@ struct BridgeSessionOptions {
     max_context_tokens: Option<usize>,
     artifact_store_limits: Option<BridgeArtifactStoreLimits>,
     tool_result_transform_policy: Option<a3s_code_core::tools::ToolResultTransformPolicyV1>,
+    tool_presentation_profile: Option<a3s_code_core::tools::ToolPresentationProfileV1>,
     continuation_enabled: Option<bool>,
     max_continuation_turns: Option<u32>,
     temperature: Option<f32>,
@@ -2772,6 +2773,15 @@ impl BridgeSessionOptions {
         }
         if let Some(value) = self.tool_result_transform_policy {
             options = options.with_tool_result_transform_policy(value);
+        }
+        if let Some(value) = self.tool_presentation_profile {
+            value.validate().map_err(|error| {
+                BridgeFailure::new(
+                    "INVALID_REQUEST",
+                    format!("tool_presentation_profile: {error}"),
+                )
+            })?;
+            options = options.with_tool_presentation_profile(value);
         }
         if let Some(value) = self.continuation_enabled {
             options = options.with_continuation(value);
@@ -3400,6 +3410,10 @@ mod tests {
             "auto_compact": true,
             "auto_compact_threshold": 0.7,
             "max_context_tokens": 32_000,
+            "tool_presentation_profile": {
+                "schema": "a3s.code.tool-presentation-profile.v1",
+                "mode": "code"
+            },
             "continuation_enabled": false,
             "max_continuation_turns": 7,
             "temperature": 0.25,
@@ -3445,6 +3459,10 @@ mod tests {
         assert!(options.auto_compact);
         assert_eq!(options.auto_compact_threshold, Some(0.7));
         assert_eq!(options.max_context_tokens, Some(32_000));
+        assert_eq!(
+            options.tool_presentation_profile,
+            Some(a3s_code_core::tools::ToolPresentationProfileV1::code())
+        );
         assert_eq!(options.continuation_enabled, Some(false));
         assert_eq!(options.max_continuation_turns, Some(7));
         assert_eq!(options.temperature, Some(0.25));
@@ -3487,6 +3505,28 @@ mod tests {
 
         assert!(serde_json::from_value::<BridgeSessionOptions>(json!({
             "security_provider": { "kind": "unknown" }
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn tool_presentation_profile_rejects_unknown_schema_or_mode() {
+        let unknown_schema: BridgeSessionOptions = serde_json::from_value(json!({
+            "tool_presentation_profile": {
+                "schema": "a3s.code.tool-presentation-profile.v2",
+                "mode": "code"
+            }
+        }))
+        .unwrap();
+        let error = unknown_schema.into_core(None).unwrap_err();
+        assert_eq!(error.code, "INVALID_REQUEST");
+        assert!(error.message.contains("tool_presentation_profile"));
+
+        assert!(serde_json::from_value::<BridgeSessionOptions>(json!({
+            "tool_presentation_profile": {
+                "schema": "a3s.code.tool-presentation-profile.v1",
+                "mode": "automatic"
+            }
         }))
         .is_err());
     }

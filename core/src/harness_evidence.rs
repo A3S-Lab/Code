@@ -22,9 +22,11 @@ pub(crate) use usage::ModelUsageBinding;
 pub use usage::{ModelUsageSnapshotV1, ToolResultContextUsageV1, MODEL_USAGE_SNAPSHOT_V1_SCHEMA};
 
 pub const RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA: &str = "a3s.code.run-capability-snapshot.v1";
+pub const MODEL_PRESENTATION_SNAPSHOT_V1_SCHEMA: &str = "a3s.code.model-presentation-snapshot.v1";
 pub const MODEL_INPUT_SNAPSHOT_V1_SCHEMA: &str = "a3s.code.model-input-snapshot.v1";
 
 const CAPABILITY_SNAPSHOT_DOMAIN: &str = "a3s.code.run-capability-snapshot.v1";
+const MODEL_PRESENTATION_SNAPSHOT_DOMAIN: &str = "a3s.code.model-presentation-snapshot.v1";
 const MODEL_INPUT_SNAPSHOT_DOMAIN: &str = "a3s.code.model-input-snapshot.v1";
 const MODEL_INPUT_PAYLOAD_DOMAIN: &str = "a3s.code.model-input-payload.v1";
 const MODEL_MESSAGES_DOMAIN: &str = "a3s.code.model-input-messages.v1";
@@ -54,6 +56,8 @@ pub enum HarnessEvidenceError {
     DigestMismatch(&'static str),
     #[error("Harness model-call sequence is exhausted")]
     CallSequenceExhausted,
+    #[error(transparent)]
+    ToolPresentation(#[from] crate::tools::ToolPresentationError),
 }
 
 /// Model-call shape used by one provider-neutral [`crate::llm::LlmClient`]
@@ -65,6 +69,15 @@ pub enum ModelInputKindV1 {
     Streaming,
     Structured,
     StreamingStructured,
+}
+
+/// Whether a provider-neutral call used the Session's Tool-presentation
+/// profile or a host-owned auxiliary protocol such as structured validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelPresentationApplicationV1 {
+    Profiled,
+    Auxiliary,
 }
 
 /// Non-sensitive workspace service surface visible to one model call.
@@ -234,6 +247,152 @@ impl RunCapabilitySnapshotV1 {
                 workspace: &self.workspace,
                 policy: &self.policy,
                 retrieval: &self.retrieval,
+            },
+        )?
+        .digest)
+    }
+}
+
+/// Per-call evidence binding a frozen presentation-profile identity to both
+/// its canonical source definitions and the definitions actually submitted to
+/// the provider-neutral LLM boundary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPresentationSnapshotV1 {
+    pub schema: String,
+    pub call_sequence: u64,
+    pub profile: crate::tools::ToolPresentationProfileV1,
+    pub application: ModelPresentationApplicationV1,
+    pub source_tool_count: usize,
+    pub source_tool_definitions_digest: String,
+    pub source_estimated_tokens: usize,
+    pub presented_tool_count: usize,
+    pub presented_tool_definitions_digest: String,
+    pub presented_estimated_tokens: usize,
+    pub snapshot_digest: String,
+}
+
+impl ModelPresentationSnapshotV1 {
+    pub(crate) fn new(
+        call_sequence: u64,
+        profile: crate::tools::ToolPresentationProfileV1,
+        application: ModelPresentationApplicationV1,
+        source_tools: &[crate::llm::ToolDefinition],
+        source_tool_definitions_digest: String,
+        presented_tools: &[crate::llm::ToolDefinition],
+        presented_tool_definitions_digest: String,
+    ) -> Result<Self, HarnessEvidenceError> {
+        let mut snapshot = Self {
+            schema: MODEL_PRESENTATION_SNAPSHOT_V1_SCHEMA.to_owned(),
+            call_sequence,
+            profile,
+            application,
+            source_tool_count: source_tools.len(),
+            source_tool_definitions_digest,
+            source_estimated_tokens: crate::tools::estimated_definition_tokens(source_tools),
+            presented_tool_count: presented_tools.len(),
+            presented_tool_definitions_digest,
+            presented_estimated_tokens: crate::tools::estimated_definition_tokens(presented_tools),
+            snapshot_digest: String::new(),
+        };
+        snapshot.snapshot_digest = snapshot.expected_digest()?;
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
+    pub fn validate(&self) -> Result<(), HarnessEvidenceError> {
+        if self.schema != MODEL_PRESENTATION_SNAPSHOT_V1_SCHEMA {
+            return Err(HarnessEvidenceError::UnsupportedSchema);
+        }
+        if self.call_sequence == 0 {
+            return Err(HarnessEvidenceError::InvalidContents(
+                "presentation call_sequence is positive",
+            ));
+        }
+        self.profile.validate()?;
+        require_digest(
+            "source_tool_definitions_digest",
+            &self.source_tool_definitions_digest,
+        )?;
+        require_digest(
+            "presented_tool_definitions_digest",
+            &self.presented_tool_definitions_digest,
+        )?;
+        require_digest("snapshot_digest", &self.snapshot_digest)?;
+        if self.application == ModelPresentationApplicationV1::Profiled
+            && self.presented_tool_count > self.source_tool_count
+        {
+            return Err(HarnessEvidenceError::InvalidContents(
+                "profiled presentation cannot add Tool definitions",
+            ));
+        }
+        if self.application == ModelPresentationApplicationV1::Auxiliary
+            && (self.source_tool_count != self.presented_tool_count
+                || self.source_tool_definitions_digest != self.presented_tool_definitions_digest
+                || self.source_estimated_tokens != self.presented_estimated_tokens)
+        {
+            return Err(HarnessEvidenceError::InvalidContents(
+                "auxiliary presentation source and submitted definitions agree",
+            ));
+        }
+        if self.snapshot_digest != self.expected_digest()? {
+            return Err(HarnessEvidenceError::DigestMismatch("snapshot_digest"));
+        }
+        Ok(())
+    }
+
+    pub fn validate_against(
+        &self,
+        input: &ModelInputSnapshotV1,
+    ) -> Result<(), HarnessEvidenceError> {
+        self.validate()?;
+        input.validate()?;
+        if self.call_sequence != input.call_sequence {
+            return Err(HarnessEvidenceError::InvalidContents(
+                "presentation and input call sequences agree",
+            ));
+        }
+        if self.presented_tool_count != input.tool_count {
+            return Err(HarnessEvidenceError::InvalidContents(
+                "presentation and input Tool counts agree",
+            ));
+        }
+        if self.presented_tool_definitions_digest != input.tool_definitions_digest {
+            return Err(HarnessEvidenceError::DigestMismatch(
+                "presented_tool_definitions_digest",
+            ));
+        }
+        Ok(())
+    }
+
+    fn expected_digest(&self) -> Result<String, HarnessEvidenceError> {
+        #[derive(Serialize)]
+        struct Identity<'a> {
+            schema: &'a str,
+            call_sequence: u64,
+            profile: &'a crate::tools::ToolPresentationProfileV1,
+            application: ModelPresentationApplicationV1,
+            source_tool_count: usize,
+            source_tool_definitions_digest: &'a str,
+            source_estimated_tokens: usize,
+            presented_tool_count: usize,
+            presented_tool_definitions_digest: &'a str,
+            presented_estimated_tokens: usize,
+        }
+
+        Ok(measure(
+            MODEL_PRESENTATION_SNAPSHOT_DOMAIN,
+            &Identity {
+                schema: &self.schema,
+                call_sequence: self.call_sequence,
+                profile: &self.profile,
+                application: self.application,
+                source_tool_count: self.source_tool_count,
+                source_tool_definitions_digest: &self.source_tool_definitions_digest,
+                source_estimated_tokens: self.source_estimated_tokens,
+                presented_tool_count: self.presented_tool_count,
+                presented_tool_definitions_digest: &self.presented_tool_definitions_digest,
+                presented_estimated_tokens: self.presented_estimated_tokens,
             },
         )?
         .digest)

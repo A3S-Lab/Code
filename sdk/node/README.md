@@ -195,6 +195,31 @@ drift. Parse `ToolResult.metadataJson` and read `a3s_tool_result_evidence` for
 the original/projected sizes and token estimates, SHA-256 digests, loss mode,
 repeat key, transform algorithm, and immutable inline or artifact reference.
 
+## Model-facing Tool presentation
+
+Choose a closed, typed profile for the Tool definitions sent to the model:
+
+```js
+const { ToolPresentationMode } = require('@a3s-lab/code')
+
+const codeFirst = await agent.sessionAsync('/my-project', {
+  toolPresentationProfile: {
+    schema: 'a3s.code.tool-presentation-profile.v1',
+    mode: ToolPresentationMode.Code,
+  },
+})
+```
+
+The modes are `Adaptive` (prompt-sensitive selection and the default),
+`Direct` (all visible definitions), `Code` (the existing governed `program`
+Tool as a compact code gateway), and `Disabled` (no model-facing Tools). A3S
+Use remains authoritative for package resolution, grants, generations, and
+run leases. The profile is applied only after permission visibility and never
+changes Tool names, parameter schemas, execution, or authorization.
+
+The exact profile is frozen into the session and run snapshots. Resume rejects
+profile drift, and child runs inherit the parent profile without broadening it.
+
 ## Session Operation Concurrency
 
 A session admits one transcript-affecting operation at a time. `send`, `stream`,

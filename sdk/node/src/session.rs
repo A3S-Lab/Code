@@ -962,20 +962,30 @@ impl Session {
             Ok(vec![ctx.env.to_js_value(&ctx.value)?])
         };
 
-        let check_llm_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> = h
+        let mut check_llm_tsfn: Option<
+            ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>,
+        > = h
             .check_before_llm
             .map(|f| wrap_sync_callback(&env, f)?.create_threadsafe_function(0, single_obj))
             .transpose()?;
 
-        let record_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> = h
-            .record_after_llm
+        let mut record_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> =
+            h.record_after_llm
+                .map(|f| wrap_sync_callback(&env, f)?.create_threadsafe_function(0, single_obj))
+                .transpose()?;
+
+        let mut check_tool_tsfn: Option<
+            ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>,
+        > = h
+            .check_before_tool
             .map(|f| wrap_sync_callback(&env, f)?.create_threadsafe_function(0, single_obj))
             .transpose()?;
 
-        let check_tool_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> =
-            h.check_before_tool
-                .map(|f| wrap_sync_callback(&env, f)?.create_threadsafe_function(0, single_obj))
-                .transpose()?;
+        for tsfn in [&mut check_llm_tsfn, &mut record_tsfn, &mut check_tool_tsfn] {
+            if let Some(tsfn) = tsfn.as_mut() {
+                tsfn.unref(&env)?;
+            }
+        }
 
         let guard: Arc<dyn a3s_code_core::budget::BudgetGuard> = Arc::new(NodeBudgetGuard {
             check_before_llm: check_llm_tsfn,

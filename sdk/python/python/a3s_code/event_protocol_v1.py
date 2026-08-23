@@ -31,6 +31,7 @@ KnownAgentEventTypeV1 = Literal[
     "context_resolving",
     "context_resolved",
     "run_capability_bound",
+    "model_presentation_bound",
     "model_input_bound",
     "model_usage_bound",
     "cognitive_context_bound",
@@ -86,6 +87,7 @@ AGENT_EVENT_TYPES_V1: Final[Tuple[KnownAgentEventTypeV1, ...]] = (
     "context_resolving",
     "context_resolved",
     "run_capability_bound",
+    "model_presentation_bound",
     "model_input_bound",
     "model_usage_bound",
     "cognitive_context_bound",
@@ -140,6 +142,7 @@ class EventType:
     CONTEXT_RESOLVING: Final[str] = "context_resolving"
     CONTEXT_RESOLVED: Final[str] = "context_resolved"
     RUN_CAPABILITY_BOUND: Final[str] = "run_capability_bound"
+    MODEL_PRESENTATION_BOUND: Final[str] = "model_presentation_bound"
     MODEL_INPUT_BOUND: Final[str] = "model_input_bound"
     MODEL_USAGE_BOUND: Final[str] = "model_usage_bound"
     COGNITIVE_CONTEXT_BOUND: Final[str] = "cognitive_context_bound"

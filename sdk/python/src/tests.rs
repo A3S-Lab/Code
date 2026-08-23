@@ -482,6 +482,22 @@ fn tool_result_transform_policy_maps_to_rust_session_options() {
 }
 
 #[test]
+fn tool_presentation_profile_maps_to_rust_session_options() {
+    for profile in [
+        a3s_code_core::tools::ToolPresentationProfileV1::adaptive(),
+        a3s_code_core::tools::ToolPresentationProfileV1::direct(),
+        a3s_code_core::tools::ToolPresentationProfileV1::code(),
+        a3s_code_core::tools::ToolPresentationProfileV1::disabled(),
+    ] {
+        let mut session_options = PySessionOptions::new();
+        session_options.tool_presentation_profile = Some(profile.clone().into());
+
+        let opts = build_rust_session_options(session_options).unwrap();
+        assert_eq!(opts.tool_presentation_profile, Some(profile));
+    }
+}
+
+#[test]
 fn verification_reports_from_value_accepts_array_and_single_report() {
     let single = verification_reports_from_value(verification_report_json()).unwrap();
     assert_eq!(single.len(), 1);

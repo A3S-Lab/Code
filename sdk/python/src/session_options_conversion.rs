@@ -112,6 +112,9 @@ fn build_rust_session_options_inner(
     if let Some(policy) = so.tool_result_transform_policy {
         o = o.with_tool_result_transform_policy(policy.into());
     }
+    if let Some(profile) = so.tool_presentation_profile {
+        o = o.with_tool_presentation_profile(profile.into());
+    }
     if let Some(ref store) = so.memory_store {
         let dir = Python::with_gil(|py| {
             store

@@ -250,6 +250,48 @@ fn tool_result_transform_policy_maps_to_rust_session_options() {
 }
 
 #[test]
+fn tool_presentation_profile_maps_to_rust_session_options() {
+    for (mode, expected) in [
+        (
+            ToolPresentationMode::Adaptive,
+            a3s_code_core::tools::ToolPresentationProfileV1::adaptive(),
+        ),
+        (
+            ToolPresentationMode::Direct,
+            a3s_code_core::tools::ToolPresentationProfileV1::direct(),
+        ),
+        (
+            ToolPresentationMode::Code,
+            a3s_code_core::tools::ToolPresentationProfileV1::code(),
+        ),
+        (
+            ToolPresentationMode::Disabled,
+            a3s_code_core::tools::ToolPresentationProfileV1::disabled(),
+        ),
+    ] {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            tool_presentation_profile: Some(ToolPresentationProfile {
+                schema: a3s_code_core::tools::TOOL_PRESENTATION_PROFILE_V1_SCHEMA.to_string(),
+                mode,
+            }),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(opts.tool_presentation_profile, Some(expected));
+    }
+
+    let invalid_profile = ToolPresentationProfile {
+        schema: "a3s.code.tool-presentation-profile.v2".to_string(),
+        mode: ToolPresentationMode::Code,
+    };
+    assert!(js_session_options_to_rust(Some(SessionOptions {
+        tool_presentation_profile: Some(invalid_profile),
+        ..Default::default()
+    }))
+    .is_err());
+}
+
+#[test]
 fn session_options_maps_model_context_window() {
     let opts = js_session_options_to_rust(Some(SessionOptions {
         auto_compact: Some(true),

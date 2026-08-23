@@ -187,6 +187,11 @@ pub struct SessionOptions {
     pub artifact_store_limits: Option<ArtifactStoreLimits>,
     /// Host-pinned deterministic policy for projecting large tool results.
     pub tool_result_transform_policy: Option<ToolResultTransformPolicy>,
+    /// Closed, versioned policy for model-facing Tool definitions.
+    ///
+    /// This changes presentation only; the governed executor and A3S Use
+    /// generation remain unchanged.
+    pub tool_presentation_profile: Option<ToolPresentationProfile>,
     /// Long-term memory store backend override.
     ///
     /// Sessions resolve a default store when this is not set.
@@ -383,6 +388,24 @@ pub struct ToolResultTransformPolicy {
     pub repeated_line_threshold: f64,
     pub structured_sample_items: f64,
 }
+
+/// Closed model-facing Tool presentation mode.
+#[napi(string_enum = "snake_case")]
+pub enum ToolPresentationMode {
+    Adaptive,
+    Direct,
+    Code,
+    Disabled,
+}
+
+/// Versioned model-facing Tool presentation profile.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ToolPresentationProfile {
+    /// Must be `a3s.code.tool-presentation-profile.v1`.
+    pub schema: String,
+    pub mode: ToolPresentationMode,
+}
 #[napi(object)]
 #[derive(Clone, Default)]
 pub struct SessionQueueConfig {
@@ -576,6 +599,29 @@ pub(super) fn js_tool_result_transform_policy_to_rust(
         )?,
     })
 }
+
+pub(super) fn js_tool_presentation_profile_to_rust(
+    profile: ToolPresentationProfile,
+) -> napi::Result<a3s_code_core::tools::ToolPresentationProfileV1> {
+    if profile.schema != a3s_code_core::tools::TOOL_PRESENTATION_PROFILE_V1_SCHEMA {
+        return Err(napi::Error::from_reason(format!(
+            "toolPresentationProfile.schema must be '{}'",
+            a3s_code_core::tools::TOOL_PRESENTATION_PROFILE_V1_SCHEMA
+        )));
+    }
+    match profile.mode {
+        ToolPresentationMode::Adaptive => {
+            Ok(a3s_code_core::tools::ToolPresentationProfileV1::adaptive())
+        }
+        ToolPresentationMode::Direct => {
+            Ok(a3s_code_core::tools::ToolPresentationProfileV1::direct())
+        }
+        ToolPresentationMode::Code => Ok(a3s_code_core::tools::ToolPresentationProfileV1::code()),
+        ToolPresentationMode::Disabled => {
+            Ok(a3s_code_core::tools::ToolPresentationProfileV1::disabled())
+        }
+    }
+}
 pub(super) fn js_auto_delegation_to_rust(
     options: AutoDelegationOptions,
 ) -> a3s_code_core::AutoDelegationConfig {
@@ -680,6 +726,9 @@ pub(super) fn js_session_options_to_rust(
     if let Some(policy) = o.tool_result_transform_policy {
         opts = opts
             .with_tool_result_transform_policy(js_tool_result_transform_policy_to_rust(policy)?);
+    }
+    if let Some(profile) = o.tool_presentation_profile {
+        opts = opts.with_tool_presentation_profile(js_tool_presentation_profile_to_rust(profile)?);
     }
     if let Some(ref store) = o.memory_store {
         if store.backend != "file" {

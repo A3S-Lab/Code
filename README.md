@@ -112,6 +112,7 @@ replays.
 | **Govern every side effect**            | JSON argument validation, typed tool capabilities, permission policy, human confirmation, hooks, budgets, security providers, and cancellation share one invocation path.         |
 | **Keep context bounded**                | Reads, searches, command output, Git results, and fetched pages expose ranges or cursors. Large evidence moves into bounded artifacts with previews, sizes, and hashes.           |
 | **Own the UI without forking the loop** | Core emits `AgentEvent`; SDK streams and persisted runs use the lossless `EventEnvelopeV1` protocol. The host chooses presentation, identity, credentials, and deployment policy. |
+| **Change model shape without authority drift** | A closed Tool-presentation Profile runs after permission visibility and before the model request; execution keeps the same pinned Tool values and governance. |
 | **Resume from evidence, not guesswork** | `SessionSnapshotV1` can atomically commit session state, runs, artifacts, traces, verification reports, and child-task records as one generation.                                 |
 
 One turn follows a visible chain of responsibility:
@@ -663,13 +664,16 @@ replay project these values through `EventEnvelopeV1`, which preserves its
 version, event type, complete payload, and optional metadata. Older SDK clients
 can retain future event names and payloads they do not yet understand.
 
-Governed model calls add three audit events at the same unified provider-neutral
+Governed model calls add four audit events at the same unified provider-neutral
 boundary. `run_capability_bound` records a versioned digest-bound snapshot of
 the actual model-visible tools, workspace service surface, run-owned governance
 bindings, configured serializable policy identities, execution ceilings, and
 current semantic readiness/generation; it is repeated only when that
-surface changes. Every completion, streaming, structured, or streaming-
-structured call emits `model_input_bound` with a unique positive call sequence,
+surface changes. Before every completion, streaming, structured, or streaming-
+structured input, `model_presentation_bound` binds the frozen typed Profile,
+its permission-filtered source count/digest/token estimate, and the exact
+presented definition count/digest/token estimate. The subsequent
+`model_input_bound` carries the same unique positive call sequence,
 bounded counters/serialized-byte measurements, and domain-separated SHA-256
 digests of the actual messages, system input, tool definitions, provider-facing
 structured directive, and identified semantic/hybrid Tool results. After each
@@ -818,6 +822,18 @@ Run admission. Desktop probes and requires that exact host contract, then
 accepts success only with canonical Code catalog and Use snapshot evidence.
 Other capability kinds still fail closed in the atomic batch and retain their
 explicit compatibility owners.
+
+Delivered `CAP-PROFILE1` adds one closed
+`ToolPresentationProfileV1` to the Session and Run. Adaptive preserves the
+historical prompt-sensitive selector, Direct presents every permission-visible
+definition, Code presents the existing `program` Tool with a bounded compact
+signature catalog, and Disabled presents none. Permission filtering always
+runs first; Profile projection cannot add a Tool name or change its parameter
+schema. The exact Profile persists across resume, delegated runs inherit the
+parent ceiling, and Node.js, Python, and Go expose typed Profile objects. This
+is a model-presentation plane only: A3S Use still owns package resolution,
+Grants, generations, cutover, leases, and recovery, while governed execution
+uses the same pinned Tool `Arc` values.
 
 The readiness slice derives a bounded `CapabilityReadinessPlan` from only the
 surface edges already present in that immutable set. Deterministic minimal

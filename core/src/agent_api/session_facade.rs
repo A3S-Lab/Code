@@ -363,21 +363,48 @@ impl AgentSession {
         self.session_store.clone()
     }
 
-    /// Return the model-visible definitions for this session.
+    /// Return the governed source definitions available to this session.
     ///
     /// The list reflects the live state of the tool executor — tools added via
     /// `add_mcp_server()` appear immediately; tools removed via
     /// `remove_mcp_server()` disappear immediately. Hidden host compatibility
     /// aliases remain executable by name but are omitted to avoid schema cost.
+    /// A Run applies [`Self::tool_presentation_profile`] and its frozen
+    /// permission visibility boundary before sending a subset to the model.
     pub fn tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
         DirectToolRuntime::from_session(self).definitions()
     }
 
-    /// Return the names of all model-visible tools on this session.
+    /// Return the exact typed Tool-presentation profile configured for new
+    /// Runs in this session.
+    pub fn tool_presentation_profile(&self) -> &crate::tools::ToolPresentationProfileV1 {
+        &self.config.tool_presentation_profile
+    }
+
+    /// Preview the current model-facing definition projection for a prompt.
+    ///
+    /// Run admission snapshots permission providers, so this live preview is
+    /// diagnostic rather than execution authority.
+    pub fn presented_tool_definitions(
+        &self,
+        prompt: &str,
+    ) -> std::result::Result<Vec<crate::llm::ToolDefinition>, crate::tools::ToolPresentationError>
+    {
+        let mut source = self.tool_definitions();
+        if let Some(permission_checker) = &self.config.permission_checker {
+            source.retain(|tool| permission_checker.expose_to_model(&tool.name));
+        }
+        self.config
+            .tool_presentation_profile
+            .present_for_prompt(&source, prompt)
+    }
+
+    /// Return the names of all governed source tools on this session.
     ///
     /// Equivalent to `tool_definitions().into_iter().map(|t| t.name).collect()`.
     /// Tools added via [`Self::add_mcp_server`] appear immediately; tools
-    /// removed via [`Self::remove_mcp_server`] disappear immediately.
+    /// removed via [`Self::remove_mcp_server`] disappear immediately. Use
+    /// [`Self::presented_tool_definitions`] to preview Profile projection.
     pub fn tool_names(&self) -> Vec<String> {
         DirectToolRuntime::from_session(self).names()
     }

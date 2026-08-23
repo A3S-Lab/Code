@@ -8,7 +8,8 @@
 use super::{AgentEvent, AgentLoop, InvocationContext};
 use crate::budget::{BudgetDecision, BudgetGuard};
 use crate::harness_evidence::{
-    ModelCallObservation, ModelInputKindV1, ModelUsageBinding, ModelUsageSnapshotV1,
+    ModelCallObservation, ModelInputKindV1, ModelPresentationApplicationV1, ModelUsageBinding,
+    ModelUsageSnapshotV1,
 };
 use crate::llm::structured::{NativeStructuredSupport, StructuredDirective};
 use crate::llm::{
@@ -27,11 +28,24 @@ use tokio_util::sync::CancellationToken;
 struct LlmInvoker {
     inner: Arc<dyn LlmClient>,
     invocation: InvocationContext,
+    presentation_application: ModelPresentationApplicationV1,
 }
 
 impl LlmInvoker {
     fn new(inner: Arc<dyn LlmClient>, invocation: InvocationContext) -> Self {
-        Self { inner, invocation }
+        Self {
+            inner,
+            invocation,
+            presentation_application: ModelPresentationApplicationV1::Auxiliary,
+        }
+    }
+
+    fn profiled(inner: Arc<dyn LlmClient>, invocation: InvocationContext) -> Self {
+        Self {
+            inner,
+            invocation,
+            presentation_application: ModelPresentationApplicationV1::Profiled,
+        }
     }
 
     async fn invoke_response<F>(
@@ -150,6 +164,16 @@ impl LlmInvoker {
             _ = self.invocation.cancellation().cancelled() => {
                 anyhow::bail!("Operation cancelled by user")
             }
+            result = tx.send(AgentEvent::ModelPresentationBound {
+                snapshot: evidence.presentation,
+            }) => result,
+        };
+        let _ = send_result;
+        let send_result = tokio::select! {
+            biased;
+            _ = self.invocation.cancellation().cancelled() => {
+                anyhow::bail!("Operation cancelled by user")
+            }
             result = tx.send(AgentEvent::ModelInputBound {
                 snapshot: evidence.input,
             }) => result,
@@ -237,15 +261,25 @@ impl LlmClient for LlmInvoker {
     }
 
     fn fork_for_session(&self, session_id: &str) -> Option<Arc<dyn LlmClient>> {
-        self.inner
-            .fork_for_session(session_id)
-            .map(|inner| Arc::new(Self::new(inner, self.invocation.clone())) as Arc<dyn LlmClient>)
+        self.inner.fork_for_session(session_id).map(|inner| {
+            Arc::new(Self {
+                inner,
+                invocation: self.invocation.clone(),
+                presentation_application: self.presentation_application,
+            }) as Arc<dyn LlmClient>
+        })
     }
 
     fn with_active_generation_timeout(&self, timeout: Duration) -> Option<Arc<dyn LlmClient>> {
         self.inner
             .with_active_generation_timeout(timeout)
-            .map(|inner| Arc::new(Self::new(inner, self.invocation.clone())) as Arc<dyn LlmClient>)
+            .map(|inner| {
+                Arc::new(Self {
+                    inner,
+                    invocation: self.invocation.clone(),
+                    presentation_application: self.presentation_application,
+                }) as Arc<dyn LlmClient>
+            })
     }
 
     async fn complete(
@@ -254,13 +288,14 @@ impl LlmClient for LlmInvoker {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
-        let observation = ModelCallObservation::new(
+        let observation = ModelCallObservation::with_presentation_application(
             ModelInputKindV1::Completion,
             messages,
             system,
             tools,
             None,
             estimate_prompt_tokens(messages, system, tools),
+            self.presentation_application,
         );
         self.invoke_response(observation, self.inner.complete(messages, system, tools))
             .await
@@ -273,13 +308,14 @@ impl LlmClient for LlmInvoker {
         tools: &[ToolDefinition],
         cancel_token: CancellationToken,
     ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
-        let observation = ModelCallObservation::new(
+        let observation = ModelCallObservation::with_presentation_application(
             ModelInputKindV1::Streaming,
             messages,
             system,
             tools,
             None,
             estimate_prompt_tokens(messages, system, tools),
+            self.presentation_application,
         );
         self.invoke_stream(observation, cancel_token, |provider_token| {
             self.inner
@@ -299,13 +335,14 @@ impl LlmClient for LlmInvoker {
         tools: &[ToolDefinition],
         directive: &StructuredDirective,
     ) -> anyhow::Result<LlmResponse> {
-        let observation = ModelCallObservation::new(
+        let observation = ModelCallObservation::with_presentation_application(
             ModelInputKindV1::Structured,
             messages,
             system,
             tools,
             Some(directive),
             estimate_prompt_tokens(messages, system, tools),
+            self.presentation_application,
         );
         self.invoke_response(
             observation,
@@ -323,13 +360,14 @@ impl LlmClient for LlmInvoker {
         directive: &StructuredDirective,
         cancel_token: CancellationToken,
     ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
-        let observation = ModelCallObservation::new(
+        let observation = ModelCallObservation::with_presentation_application(
             ModelInputKindV1::StreamingStructured,
             messages,
             system,
             tools,
             Some(directive),
             estimate_prompt_tokens(messages, system, tools),
+            self.presentation_application,
         );
         self.invoke_stream(observation, cancel_token, |provider_token| {
             self.inner.complete_streaming_structured(
@@ -351,6 +389,14 @@ impl AgentLoop {
             .fork_for_session(invocation.session_id())
             .unwrap_or_else(|| Arc::clone(&self.llm_client));
         Arc::new(LlmInvoker::new(provider_client, invocation.clone()))
+    }
+
+    fn scoped_profiled_llm_client(&self, invocation: &InvocationContext) -> Arc<dyn LlmClient> {
+        let provider_client = self
+            .llm_client
+            .fork_for_session(invocation.session_id())
+            .unwrap_or_else(|| Arc::clone(&self.llm_client));
+        Arc::new(LlmInvoker::profiled(provider_client, invocation.clone()))
     }
 
     /// Compatibility helper for internal paths not yet carrying the aggregate
@@ -381,6 +427,34 @@ impl AgentLoop {
         let invocation =
             self.invocation_context(run_id, session_id, event_tx.clone(), cancel_token.clone());
         self.scoped_llm_client(&invocation)
+    }
+
+    /// Build the run-owned provider facade for a main agent turn whose Tool
+    /// definitions were produced by the frozen presentation profile.
+    pub(super) fn scoped_profiled_llm_client_for_parts(
+        &self,
+        session_id: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &CancellationToken,
+    ) -> Arc<dyn LlmClient> {
+        if let Some(invocation) = self
+            .bound_invocation
+            .as_ref()
+            .filter(|invocation| invocation.matches_parts(session_id, event_tx))
+        {
+            return self.scoped_profiled_llm_client(invocation);
+        }
+        let run_id = self.bound_invocation.as_ref().map_or_else(
+            || {
+                self.checkpoint_run_id
+                    .clone()
+                    .unwrap_or_else(|| format!("standalone-{}", uuid::Uuid::new_v4()))
+            },
+            |bound| format!("{}-aux-{}", bound.run_id(), uuid::Uuid::new_v4()),
+        );
+        let invocation =
+            self.invocation_context(run_id, session_id, event_tx.clone(), cancel_token.clone());
+        self.scoped_profiled_llm_client(&invocation)
     }
 }
 

@@ -319,6 +319,13 @@ fn register_task_capability(
         enforce_active_skill_tool_restrictions: input.opts.enforce_active_skill_tool_restrictions,
         workspace_services: Some(tool_executor.registry().context().workspace_services),
         sandbox_handle: input.opts.sandbox_handle.clone(),
+        tool_presentation_profile: Some(
+            input
+                .opts
+                .tool_presentation_profile
+                .clone()
+                .unwrap_or_else(|| input.base_config.tool_presentation_profile.clone()),
+        ),
         budget_guard: input.opts.budget_guard.clone(),
     };
 

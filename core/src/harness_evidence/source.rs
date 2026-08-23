@@ -1,10 +1,10 @@
 use super::digest::measure;
 use super::input::{capture_model_input, ModelInputCapture};
 use super::{
-    HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, RunCapabilitySnapshotV1,
-    RunPolicyCeilingSnapshotV1, ToolResultContextUsageV1, WorkspaceRetrievalCapabilitySnapshotV1,
-    CONFIRMATION_POLICY_DOMAIN, MODEL_TOOLS_DOMAIN, PERMISSION_POLICY_DOMAIN,
-    RETRIEVAL_MODEL_DOMAIN,
+    HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, ModelPresentationApplicationV1,
+    ModelPresentationSnapshotV1, RunCapabilitySnapshotV1, RunPolicyCeilingSnapshotV1,
+    ToolResultContextUsageV1, WorkspaceRetrievalCapabilitySnapshotV1, CONFIRMATION_POLICY_DOMAIN,
+    MODEL_TOOLS_DOMAIN, PERMISSION_POLICY_DOMAIN, RETRIEVAL_MODEL_DOMAIN,
 };
 use crate::agent::AgentConfig;
 use crate::llm::structured::StructuredDirective;
@@ -21,9 +21,11 @@ pub(crate) struct ModelCallObservation<'a> {
     pub(crate) tools: &'a [ToolDefinition],
     pub(crate) directive: Option<&'a StructuredDirective>,
     pub(crate) estimated_prompt_tokens: usize,
+    pub(crate) presentation_application: ModelPresentationApplicationV1,
 }
 
 impl<'a> ModelCallObservation<'a> {
+    #[cfg(test)]
     pub(crate) fn new(
         kind: ModelInputKindV1,
         messages: &'a [Message],
@@ -32,6 +34,26 @@ impl<'a> ModelCallObservation<'a> {
         directive: Option<&'a StructuredDirective>,
         estimated_prompt_tokens: usize,
     ) -> Self {
+        Self::with_presentation_application(
+            kind,
+            messages,
+            system,
+            tools,
+            directive,
+            estimated_prompt_tokens,
+            ModelPresentationApplicationV1::Auxiliary,
+        )
+    }
+
+    pub(crate) fn with_presentation_application(
+        kind: ModelInputKindV1,
+        messages: &'a [Message],
+        system: Option<&'a str>,
+        tools: &'a [ToolDefinition],
+        directive: Option<&'a StructuredDirective>,
+        estimated_prompt_tokens: usize,
+        presentation_application: ModelPresentationApplicationV1,
+    ) -> Self {
         Self {
             kind,
             messages,
@@ -39,6 +61,7 @@ impl<'a> ModelCallObservation<'a> {
             tools,
             directive,
             estimated_prompt_tokens,
+            presentation_application,
         }
     }
 }
@@ -57,15 +80,53 @@ pub(crate) struct RunCapabilityEvidenceSource {
     tool_timeout_ms: Option<u64>,
     llm_api_timeout_ms: Option<u64>,
     max_execution_time_ms: Option<u64>,
+    tool_presentation_profile: crate::tools::ToolPresentationProfileV1,
+    presentation_source_tools: Vec<ToolDefinition>,
 }
 
 impl RunCapabilityEvidenceSource {
+    #[cfg(test)]
     pub(crate) fn from_agent(
         config: &AgentConfig,
         workspace_services: Arc<WorkspaceServices>,
         permission_checker_bound: bool,
         confirmation_manager_bound: bool,
     ) -> Self {
+        Self::from_agent_inner(
+            config,
+            workspace_services,
+            None,
+            permission_checker_bound,
+            confirmation_manager_bound,
+        )
+    }
+
+    pub(crate) fn from_agent_with_permission_checker(
+        config: &AgentConfig,
+        workspace_services: Arc<WorkspaceServices>,
+        permission_checker: Option<&Arc<dyn crate::permissions::PermissionChecker>>,
+        confirmation_manager_bound: bool,
+    ) -> Self {
+        Self::from_agent_inner(
+            config,
+            workspace_services,
+            permission_checker,
+            permission_checker.is_some(),
+            confirmation_manager_bound,
+        )
+    }
+
+    fn from_agent_inner(
+        config: &AgentConfig,
+        workspace_services: Arc<WorkspaceServices>,
+        permission_checker: Option<&Arc<dyn crate::permissions::PermissionChecker>>,
+        permission_checker_bound: bool,
+        confirmation_manager_bound: bool,
+    ) -> Self {
+        let mut presentation_source_tools = config.tools.clone();
+        if let Some(permission_checker) = permission_checker {
+            presentation_source_tools.retain(|tool| permission_checker.expose_to_model(&tool.name));
+        }
         Self {
             workspace_services,
             permission_checker_bound,
@@ -79,9 +140,12 @@ impl RunCapabilityEvidenceSource {
             tool_timeout_ms: config.tool_timeout_ms,
             llm_api_timeout_ms: config.llm_api_timeout_ms,
             max_execution_time_ms: config.max_execution_time_ms,
+            tool_presentation_profile: config.tool_presentation_profile.clone(),
+            presentation_source_tools,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn capture(
         &self,
         call_sequence: u64,
@@ -94,7 +158,51 @@ impl RunCapabilityEvidenceSource {
         ),
         HarnessEvidenceError,
     > {
+        let (capability, _presentation, input, usage) =
+            self.capture_with_presentation(call_sequence, observation)?;
+        Ok((capability, input, usage))
+    }
+
+    pub(crate) fn capture_with_presentation(
+        &self,
+        call_sequence: u64,
+        observation: ModelCallObservation<'_>,
+    ) -> Result<
+        (
+            RunCapabilitySnapshotV1,
+            ModelPresentationSnapshotV1,
+            ModelInputSnapshotV1,
+            ToolResultContextUsageV1,
+        ),
+        HarnessEvidenceError,
+    > {
         let tools_measurement = measure(MODEL_TOOLS_DOMAIN, observation.tools)?;
+        let (presentation_source, source_measurement) = match observation.presentation_application {
+            ModelPresentationApplicationV1::Profiled => {
+                let source =
+                    crate::tools::canonical_presentation_source(&self.presentation_source_tools)?;
+                let expected = self
+                    .tool_presentation_profile
+                    .present_for_messages(&source, observation.messages)?;
+                crate::tools::is_definition_subset(&expected, observation.tools)?;
+                let measurement = measure(MODEL_TOOLS_DOMAIN, &source)?;
+                (source, measurement)
+            }
+            ModelPresentationApplicationV1::Auxiliary => {
+                let source = observation.tools.to_vec();
+                let measurement = measure(MODEL_TOOLS_DOMAIN, &source)?;
+                (source, measurement)
+            }
+        };
+        let presentation = ModelPresentationSnapshotV1::new(
+            call_sequence,
+            self.tool_presentation_profile.clone(),
+            observation.presentation_application,
+            &presentation_source,
+            source_measurement.digest,
+            observation.tools,
+            tools_measurement.digest.clone(),
+        )?;
         let capability =
             self.capability_snapshot(observation.tools.len(), &tools_measurement.digest)?;
         let (input, tool_result_context) = capture_model_input(ModelInputCapture {
@@ -109,7 +217,8 @@ impl RunCapabilityEvidenceSource {
             capability_snapshot_digest: &capability.snapshot_digest,
         })?;
         input.validate_against(&capability)?;
-        Ok((capability, input, tool_result_context))
+        presentation.validate_against(&input)?;
+        Ok((capability, presentation, input, tool_result_context))
     }
 
     fn capability_snapshot(

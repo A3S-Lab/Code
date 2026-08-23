@@ -38,9 +38,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   maximum-depth tests exercise the configured 4,096-capability bound without
   recursion. Cross-package edges retain one exact A3S Use cursor while package
   resolution, SemVer, Grants, cutover, and recovery remain exclusively in Use.
+- Added closed Adaptive, Direct, Code, and Disabled Tool-presentation Profiles
+  over the existing governed executor. Permission visibility is applied before
+  deterministic projection; code mode keeps the existing `program` name and
+  parameter schema while emitting a bounded compact signature catalog. The
+  exact Profile persists across Session resume, delegated runs cannot broaden
+  it, and execution continues through the same pinned Tool values and
+  permission, confirmation, budget, hook, cancellation, security, and audit
+  boundaries.
+- Added `model_presentation_bound` evidence with source/presented definition
+  counts, digests, token estimates, Profile identity, and profiled/auxiliary
+  application kind. Node.js, Python, and Go expose typed Profile values and the
+  generated event catalogs include the new event without introducing package,
+  Grant, generation, or lifecycle ownership outside A3S Use.
 
 ### Fixed
 
+- Prevented Node.js BudgetGuard callback bridges from retaining the event loop
+  after Session and Agent shutdown. The thread-safe callbacks no longer own
+  process liveness, and the runtime smoke test now closes its native resources
+  and removes its temporary workspace explicitly.
 - Advanced the exact `a3s-flow` `1.0.0` source to revision `7c76eda9`, keeping
   the root, Node.js, and Python Cargo locks on one Flow authority while
   admitting capped exponential step retries with deterministic jitter.

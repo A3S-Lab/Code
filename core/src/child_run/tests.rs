@@ -169,6 +169,7 @@ fn parent_context(
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
         sandbox_handle: None,
+        tool_presentation_profile: None,
         budget_guard: None,
     }
 }
@@ -188,6 +189,24 @@ fn delegated_config(
     };
     parent_context(parent_decision, parent_confirmation).apply_to(&mut config);
     config
+}
+
+#[test]
+fn delegated_child_inherits_the_parent_presentation_ceiling_exactly() {
+    let parent_profile = crate::tools::ToolPresentationProfileV1::code();
+    let mut context = parent_context(PermissionDecision::Allow, None);
+    context.tool_presentation_profile = Some(parent_profile.clone());
+    let mut child_config = AgentConfig {
+        tool_presentation_profile: crate::tools::ToolPresentationProfileV1::direct(),
+        ..AgentConfig::default()
+    };
+
+    context.apply_to(&mut child_config);
+
+    assert_eq!(child_config.tool_presentation_profile, parent_profile);
+    assert!(crate::tools::ToolPresentationProfileV1::direct()
+        .ensure_within(&child_config.tool_presentation_profile)
+        .is_err());
 }
 
 fn confirmation(config: &AgentConfig) -> Arc<dyn ConfirmationProvider> {

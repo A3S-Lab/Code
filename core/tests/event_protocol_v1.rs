@@ -4,11 +4,12 @@ use a3s_code_core::verification::VerificationSummary;
 use a3s_code_core::{
     run_event_envelope_v1, AgentEvent, AgentEventProjectionV1, CognitiveContextLimits,
     CognitiveKnowledgeBindingV1, CognitivePackageBindingV1, EventEnvelopeV1, ModelInputKindV1,
-    ModelInputSnapshotV1, ModelUsageSnapshotV1, RunCapabilitySnapshotV1,
-    RunPolicyCeilingSnapshotV1, TokenUsage, ToolResultContextUsageV1,
-    WorkspaceCapabilitySnapshotV1, WorkspaceRetrievalCapabilitySnapshotV1, WorkspaceRetrievalPhase,
-    AGENT_EVENT_TYPES_V1, MODEL_INPUT_SNAPSHOT_V1_SCHEMA, MODEL_USAGE_SNAPSHOT_V1_SCHEMA,
-    RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA,
+    ModelInputSnapshotV1, ModelPresentationApplicationV1, ModelPresentationSnapshotV1,
+    ModelUsageSnapshotV1, RunCapabilitySnapshotV1, RunPolicyCeilingSnapshotV1, TokenUsage,
+    ToolPresentationProfileV1, ToolResultContextUsageV1, WorkspaceCapabilitySnapshotV1,
+    WorkspaceRetrievalCapabilitySnapshotV1, WorkspaceRetrievalPhase, AGENT_EVENT_TYPES_V1,
+    MODEL_INPUT_SNAPSHOT_V1_SCHEMA, MODEL_PRESENTATION_SNAPSHOT_V1_SCHEMA,
+    MODEL_USAGE_SNAPSHOT_V1_SCHEMA, RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA,
 };
 use serde_json::json;
 
@@ -125,6 +126,22 @@ fn model_input_snapshot() -> ModelInputSnapshotV1 {
         input_digest: digest('2'),
         capability_snapshot_digest: digest('d'),
         snapshot_digest: digest('3'),
+    }
+}
+
+fn model_presentation_snapshot() -> ModelPresentationSnapshotV1 {
+    ModelPresentationSnapshotV1 {
+        schema: MODEL_PRESENTATION_SNAPSHOT_V1_SCHEMA.to_string(),
+        call_sequence: 1,
+        profile: ToolPresentationProfileV1::adaptive(),
+        application: ModelPresentationApplicationV1::Profiled,
+        source_tool_count: 3,
+        source_tool_definitions_digest: digest('9'),
+        source_estimated_tokens: 120,
+        presented_tool_count: 1,
+        presented_tool_definitions_digest: digest('a'),
+        presented_estimated_tokens: 40,
+        snapshot_digest: digest('8'),
     }
 }
 
@@ -373,6 +390,14 @@ fn representative_events() -> Vec<EventCase> {
             },
             "call_sequence",
             json!(1),
+        ),
+        case(
+            "model_presentation_bound",
+            AgentEvent::ModelPresentationBound {
+                snapshot: model_presentation_snapshot(),
+            },
+            "snapshot",
+            serde_json::to_value(model_presentation_snapshot()).unwrap(),
         ),
         case(
             "model_input_bound",

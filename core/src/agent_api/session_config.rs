@@ -215,6 +215,14 @@ async fn resolve_rl_trajectory_recorder(
 }
 
 fn validate_session_options(options: &SessionOptions) -> Result<String> {
+    if let Some(profile) = &options.tool_presentation_profile {
+        profile
+            .validate()
+            .map_err(|error| CodeError::SessionConfiguration {
+                field: "tool_presentation_profile",
+                message: error.to_string(),
+            })?;
+    }
     if let Some(policy) = &options.tool_result_transform_policy {
         policy
             .validate()
@@ -851,6 +859,23 @@ mod tests {
             error,
             CodeError::SessionConfiguration {
                 field: "tool_result_transform_policy",
+                ..
+            }
+        ));
+
+        let invalid_profile = serde_json::from_value(serde_json::json!({
+            "schema": "a3s.code.tool-presentation-profile.v2",
+            "mode": "direct"
+        }))
+        .unwrap();
+        let options = SessionOptions::new()
+            .with_session_id("invalid-presentation-profile")
+            .with_tool_presentation_profile(invalid_profile);
+        let error = validate_session_options(&options).unwrap_err();
+        assert!(matches!(
+            error,
+            CodeError::SessionConfiguration {
+                field: "tool_presentation_profile",
                 ..
             }
         ));

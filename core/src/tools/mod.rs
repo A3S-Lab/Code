@@ -14,6 +14,7 @@ mod artifacts;
 pub(crate) mod builtin;
 mod invocation;
 mod pagination;
+mod presentation;
 pub(crate) mod process;
 mod program_tool;
 mod registry;
@@ -33,6 +34,14 @@ pub use builtin::{
 pub(crate) use builtin::{register_skill, register_task_with_mcp_managers_and_scheduler};
 pub(crate) use invocation::{
     registry_tool_invoker, HostDirectPolicy, InvocationOrigin, ToolInvocation, ToolInvoker,
+};
+pub(crate) use presentation::{
+    canonical_source as canonical_presentation_source, estimated_definition_tokens,
+    is_definition_subset,
+};
+pub use presentation::{
+    ToolPresentationError, ToolPresentationModeV1, ToolPresentationProfileV1,
+    TOOL_PRESENTATION_PROFILE_V1_SCHEMA,
 };
 pub use program_tool::{ProgramTool, MAX_PROGRAM_SCRIPT_SOURCE_BYTES};
 pub use registry::ToolRegistry;

@@ -3,8 +3,8 @@
 use super::{AgentEvent, AgentLoop};
 use crate::budget::BudgetGuard;
 use crate::harness_evidence::{
-    HarnessEvidenceError, ModelCallObservation, ModelInputSnapshotV1, RunCapabilityEvidenceSource,
-    RunCapabilitySnapshotV1, ToolResultContextUsageV1,
+    HarnessEvidenceError, ModelCallObservation, ModelInputSnapshotV1, ModelPresentationSnapshotV1,
+    RunCapabilityEvidenceSource, RunCapabilitySnapshotV1, ToolResultContextUsageV1,
 };
 use crate::hitl::ConfirmationProvider;
 use crate::permissions::PermissionChecker;
@@ -75,6 +75,7 @@ struct ModelEvidenceState {
 
 pub(super) struct CapturedModelEvidence {
     pub(super) capability: RunCapabilitySnapshotV1,
+    pub(super) presentation: ModelPresentationSnapshotV1,
     pub(super) input: ModelInputSnapshotV1,
     pub(super) tool_result_context: ToolResultContextUsageV1,
 }
@@ -200,10 +201,12 @@ impl InvocationContext {
             })
             .map_err(|_| HarnessEvidenceError::CallSequenceExhausted)?;
         let call_sequence = previous + 1;
-        let (capability, input, tool_result_context) =
-            state.source.capture(call_sequence, observation)?;
+        let (capability, presentation, input, tool_result_context) = state
+            .source
+            .capture_with_presentation(call_sequence, observation)?;
         Ok(Some(CapturedModelEvidence {
             capability,
+            presentation,
             input,
             tool_result_context,
         }))
@@ -287,10 +290,10 @@ impl AgentLoop {
                 self.config.confirmation_manager.as_ref(),
             ),
         };
-        let evidence = RunCapabilityEvidenceSource::from_agent(
+        let evidence = RunCapabilityEvidenceSource::from_agent_with_permission_checker(
             &self.config,
             Arc::clone(&self.tool_context.workspace_services),
-            governance.permission_checker.is_some(),
+            governance.permission_checker.as_ref(),
             governance.confirmation_manager.is_some(),
         );
         InvocationContext::new(

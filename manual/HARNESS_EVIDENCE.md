@@ -1,8 +1,8 @@
 # Harness Model-Call Evidence
 
-Status: the digest-only capability, model-input, and client-reported usage
-diagnostic slices are delivered. Durable references to authorized original
-content remain a separate `CAR-02` gate.
+Status: the digest-only capability, Tool-presentation, model-input, and
+client-reported usage diagnostic slices are delivered. Durable references to
+authorized original content remain a separate `CAR-02` gate.
 
 ## Purpose
 
@@ -11,11 +11,12 @@ model could actually use and what arguments reached the provider-neutral model
 boundary. A3S Code records that evidence in the existing Run event journal; it
 does not introduce a second audit database or a provider-specific request model.
 
-Three versioned events provide the boundary:
+Four versioned events provide the boundary:
 
 | Event | Emission | Purpose |
 | --- | --- | --- |
 | `run_capability_bound` | Before the first model call and again when its digest changes | Bind model-visible tools, workspace services, run-owned governance bindings, serializable policy identities, execution ceilings, and current semantic generation |
+| `model_presentation_bound` | Before every model input event | Bind the frozen Profile identity, permission-filtered source definition cost, application kind, and exact definitions submitted to the model |
 | `model_input_bound` | Before every model call | Bind bounded counters and digests for the actual provider-neutral input |
 | `model_usage_bound` | After every successful model call and before its response is released | Bind the input estimate and normalized `LlmClient` token/cache usage to the exact input snapshot |
 
@@ -26,6 +27,11 @@ as well; an internal transport retry remains part of its owning model call.
 Work that explicitly detaches from the Run event channel, such as post-terminal
 background memory extraction, receives a separate auxiliary invocation and
 cannot append evidence after the Run's terminal event.
+
+For one call the causal order is `run_capability_bound` when its digest changed,
+then `model_presentation_bound`, `model_input_bound`, and finally
+`model_usage_bound` after a successful provider result. Concurrent calls may
+interleave, so consumers still correlate every per-call event by call sequence.
 
 ## Capability snapshot
 
@@ -55,6 +61,40 @@ ceiling, and the exact A3S Use Run lease while borrowed marker-specific leases
 control access. Existing evidence remains derived from the live governed
 executor during migration. A future separately versioned scope snapshot may
 expose the new internal identity; fields are not appended to v1.
+
+## Model-presentation snapshot
+
+`ModelPresentationSnapshotV1` uses schema
+`a3s.code.model-presentation-snapshot.v1`. It binds one closed
+`ToolPresentationProfileV1` value to the canonical Tool-definition source and
+the exact provider-facing projection for a call. It records source and
+presented counts, domain-separated definition digests, Code token estimates,
+the positive call sequence, and one application kind:
+
+- `profiled` means the main agent turn applied the Session's frozen Profile;
+- `auxiliary` means a host-owned helper protocol supplied its own Tool list, so
+  source and presented count, digest, and token estimate must be identical.
+
+The version-1 Profile has four modes:
+
+| Mode | Model-facing result |
+| --- | --- |
+| `adaptive` | Preserve the historical prompt-sensitive selector over the permission-visible source |
+| `direct` | Present every permission-visible definition in canonical Tool-name order |
+| `code` | Present only the existing `program` definition, with its parameter schema unchanged and a bounded compact catalog in its description |
+| `disabled` | Present no Tool definitions |
+
+Permission visibility is evaluated before the Profile. Consequently, code-mode
+catalog generation cannot restore or name a permission-hidden Tool. A Profile
+owns no Tool value and cannot add a name, alter a parameter schema, select an
+A3S Use generation, or replace the governed executor. The main turn executes
+through the same Run-owned `ToolExecutor` and pinned `Arc<dyn Tool>` values.
+
+The Profile is persisted in the Session snapshot and an explicit different
+Profile is rejected during resume. Delegated child runs inherit the parent
+Profile exactly in this version; the public partial-order check also rejects a
+future child mode that would broaden its parent. Node.js, Python, and Go expose
+typed Profile objects rather than a primitive backend selector.
 
 ## Model-input snapshot
 
@@ -101,7 +141,7 @@ call sequence and input snapshot digest rather than event adjacency.
 
 ## Data boundary
 
-The three snapshots never retain prompt text, Tool-result text, source text,
+The four snapshots never retain prompt text, Tool-result text, source text,
 vectors, credentials, headers, artifact paths, or provider endpoints. They are
 small even when the underlying input is large because JSON is streamed directly
 through the digest writer instead of first allocating a duplicate serialized
@@ -121,7 +161,7 @@ work remains owned by `CAR-02`/`CAR-03` and Cloud projection policy.
 
 ## Validation and replay
 
-All three public snapshot types provide `validate()`. Validation rejects:
+All four public snapshot types provide `validate()`. Validation rejects:
 
 - an unsupported schema;
 - malformed or non-canonical SHA-256 values;
@@ -134,6 +174,11 @@ count, and Tool-definition digest to agree. Consumers should use this paired
 method after resolving `capabilitySnapshotDigest` from the Run journal.
 `ModelUsageSnapshotV1::validate_against()` requires the call sequence, input
 snapshot digest, and prompt estimate to agree with the exact input snapshot.
+`ModelPresentationSnapshotV1::validate_against()` requires its call sequence,
+presented Tool count, and presented-definition digest to agree with that same
+input snapshot. A profiled capture also verifies that the actual definition
+list is an exact-description subset of the expected projection; unknown names,
+schema changes, and description injection fail before provider use.
 Keeping context-usage fields in this new schema leaves the existing
 `ModelInputSnapshotV1` wire shape and snapshot-digest identity unchanged.
 
@@ -164,5 +209,7 @@ events exactly.
   per-call context waste before enabling a deterministic projection policy.
 - Investigate a capability digest change during a run: expected causes include
   retrieval moving from building to ready or a new catalog/vector generation.
+- Compare source and presented token estimates to measure a Profile's context
+  effect without treating that estimate as provider billing.
 - Do not log the underlying input to explain a digest mismatch. Reproduce in an
   authorized environment and compare versioned component digests and counters.

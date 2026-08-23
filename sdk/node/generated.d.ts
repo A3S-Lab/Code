@@ -424,6 +424,13 @@ export interface SessionOptions {
   /** Host-pinned deterministic policy for projecting large tool results. */
   toolResultTransformPolicy?: ToolResultTransformPolicy
   /**
+   * Closed, versioned policy for model-facing Tool definitions.
+   *
+   * This changes presentation only; the governed executor and A3S Use
+   * generation remain unchanged.
+   */
+  toolPresentationProfile?: ToolPresentationProfile
+  /**
    * Long-term memory store backend override.
    *
    * Sessions resolve a default store when this is not set.
@@ -659,6 +666,19 @@ export interface ToolResultTransformPolicy {
   foldRepeatedLines: boolean
   repeatedLineThreshold: number
   structuredSampleItems: number
+}
+/** Closed model-facing Tool presentation mode. */
+export const enum ToolPresentationMode {
+  Adaptive = 'adaptive',
+  Direct = 'direct',
+  Code = 'code',
+  Disabled = 'disabled'
+}
+/** Versioned model-facing Tool presentation profile. */
+export interface ToolPresentationProfile {
+  /** Must be `a3s.code.tool-presentation-profile.v1`. */
+  schema: string
+  mode: ToolPresentationMode
 }
 export interface SessionQueueConfig {
   /** Max concurrency for Query lane (default: 4). */

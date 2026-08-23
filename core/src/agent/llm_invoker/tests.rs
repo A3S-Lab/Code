@@ -226,9 +226,16 @@ async fn streaming_done_binds_usage_before_the_response_reaches_the_caller() {
         event_rx.recv().await.unwrap(),
         AgentEvent::RunCapabilityBound { .. }
     ));
+    let AgentEvent::ModelPresentationBound {
+        snapshot: presentation,
+    } = event_rx.recv().await.unwrap()
+    else {
+        panic!("streaming call must bind its Tool presentation")
+    };
     let AgentEvent::ModelInputBound { snapshot: input } = event_rx.recv().await.unwrap() else {
         panic!("streaming call must bind its input")
     };
+    presentation.validate_against(&input).unwrap();
     let AgentEvent::ModelUsageBound { snapshot: usage } = event_rx.recv().await.unwrap() else {
         panic!("streaming call must bind its usage before forwarding Done")
     };
@@ -256,7 +263,7 @@ async fn caller_cancellation_interrupts_streaming_usage_backpressure() {
             ..crate::agent::AgentConfig::default()
         },
     );
-    let (event_tx, _event_rx) = mpsc::channel(2);
+    let (event_tx, _event_rx) = mpsc::channel(3);
     let scoped = agent.scoped_llm_client_for_parts(
         Some("stream-usage-backpressure-session"),
         &Some(event_tx),
@@ -386,11 +393,15 @@ async fn concurrent_governed_calls_record_inputs_and_deduplicate_capabilities() 
         }
         event => panic!("unexpected first evidence event: {event:?}"),
     };
+    let mut presentations = HashMap::new();
     let mut inputs = HashMap::new();
     let mut usage_sequences = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..6 {
         let event = event_rx.recv().await.unwrap();
         match event {
+            AgentEvent::ModelPresentationBound { snapshot } => {
+                presentations.insert(snapshot.call_sequence, snapshot);
+            }
             AgentEvent::ModelInputBound { snapshot } => {
                 snapshot.validate_against(&capability_snapshot).unwrap();
                 let encoded = serde_json::to_string(&snapshot).unwrap();
@@ -408,6 +419,14 @@ async fn concurrent_governed_calls_record_inputs_and_deduplicate_capabilities() 
             }
             event => panic!("unexpected model evidence event: {event:?}"),
         }
+    }
+    assert_eq!(presentations.len(), 2);
+    for (call_sequence, input) in &inputs {
+        presentations
+            .get(call_sequence)
+            .expect("presentation evidence must precede input evidence")
+            .validate_against(input)
+            .unwrap();
     }
     let mut input_sequences = inputs.keys().copied().collect::<Vec<_>>();
     input_sequences.sort_unstable();
@@ -460,10 +479,14 @@ async fn run_bound_helpers_share_one_evidence_sequence_and_capability_state() {
         AgentEvent::RunCapabilityBound { snapshot, .. } => snapshot,
         event => panic!("unexpected first evidence event: {event:?}"),
     };
+    let mut presentations = HashMap::new();
     let mut inputs = HashMap::new();
     let mut usage_sequences = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..6 {
         match event_rx.recv().await.unwrap() {
+            AgentEvent::ModelPresentationBound { snapshot } => {
+                presentations.insert(snapshot.call_sequence, snapshot);
+            }
             AgentEvent::ModelInputBound { snapshot } => {
                 snapshot.validate_against(&capability).unwrap();
                 inputs.insert(snapshot.call_sequence, snapshot);
@@ -480,6 +503,14 @@ async fn run_bound_helpers_share_one_evidence_sequence_and_capability_state() {
             }
             event => panic!("unexpected model evidence event: {event:?}"),
         }
+    }
+    assert_eq!(presentations.len(), 2);
+    for (call_sequence, input) in &inputs {
+        presentations
+            .get(call_sequence)
+            .expect("presentation evidence must precede input evidence")
+            .validate_against(input)
+            .unwrap();
     }
     let mut input_sequences = inputs.keys().copied().collect::<Vec<_>>();
     input_sequences.sort_unstable();
@@ -527,6 +558,10 @@ async fn detached_helper_does_not_append_evidence_to_the_bound_run() {
     ));
     assert!(matches!(
         event_rx.recv().await.unwrap(),
+        AgentEvent::ModelPresentationBound { .. }
+    ));
+    assert!(matches!(
+        event_rx.recv().await.unwrap(),
         AgentEvent::ModelInputBound { .. }
     ));
     assert!(matches!(
@@ -551,10 +586,17 @@ async fn detached_helper_does_not_append_evidence_to_the_bound_run() {
         .complete(&[Message::user("journaled again")], None, &[])
         .await
         .unwrap();
+    let AgentEvent::ModelPresentationBound {
+        snapshot: presentation,
+    } = event_rx.recv().await.unwrap()
+    else {
+        panic!("journaled model call must emit presentation evidence")
+    };
     let AgentEvent::ModelInputBound { snapshot } = event_rx.recv().await.unwrap() else {
         panic!("unchanged capability must not be re-emitted")
     };
     assert_eq!(snapshot.call_sequence, 2);
+    presentation.validate_against(&snapshot).unwrap();
     let AgentEvent::ModelUsageBound {
         snapshot: usage_snapshot,
     } = event_rx.recv().await.unwrap()
@@ -628,7 +670,7 @@ async fn run_cancellation_interrupts_usage_backpressure_after_provider_use() {
             ..crate::agent::AgentConfig::default()
         },
     );
-    let (event_tx, _event_rx) = mpsc::channel(2);
+    let (event_tx, _event_rx) = mpsc::channel(3);
     let cancellation = CancellationToken::new();
     let scoped = agent.scoped_llm_client_for_parts(
         Some("usage-backpressure-session"),

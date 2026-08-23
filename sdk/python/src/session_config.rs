@@ -314,6 +314,75 @@ impl From<PyToolResultTransformPolicy> for a3s_code_core::tools::ToolResultTrans
     }
 }
 
+/// Closed, versioned policy for model-facing Tool definitions.
+#[pyclass(name = "ToolPresentationProfile")]
+#[derive(Clone)]
+pub(super) struct PyToolPresentationProfile {
+    inner: a3s_code_core::tools::ToolPresentationProfileV1,
+}
+
+#[pymethods]
+impl PyToolPresentationProfile {
+    #[new]
+    fn new() -> Self {
+        Self::adaptive()
+    }
+
+    #[staticmethod]
+    fn adaptive() -> Self {
+        Self {
+            inner: a3s_code_core::tools::ToolPresentationProfileV1::adaptive(),
+        }
+    }
+
+    #[staticmethod]
+    fn direct() -> Self {
+        Self {
+            inner: a3s_code_core::tools::ToolPresentationProfileV1::direct(),
+        }
+    }
+
+    #[staticmethod]
+    fn code() -> Self {
+        Self {
+            inner: a3s_code_core::tools::ToolPresentationProfileV1::code(),
+        }
+    }
+
+    #[staticmethod]
+    fn disabled() -> Self {
+        Self {
+            inner: a3s_code_core::tools::ToolPresentationProfileV1::disabled(),
+        }
+    }
+
+    #[getter]
+    fn schema(&self) -> &str {
+        self.inner.schema()
+    }
+
+    #[getter]
+    fn mode(&self) -> &str {
+        self.inner.mode().as_str()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ToolPresentationProfile(mode='{}')", self.inner.mode().as_str())
+    }
+}
+
+impl From<PyToolPresentationProfile> for a3s_code_core::tools::ToolPresentationProfileV1 {
+    fn from(profile: PyToolPresentationProfile) -> Self {
+        profile.inner
+    }
+}
+
+impl From<a3s_code_core::tools::ToolPresentationProfileV1> for PyToolPresentationProfile {
+    fn from(inner: a3s_code_core::tools::ToolPresentationProfileV1) -> Self {
+        Self { inner }
+    }
+}
+
 /// Reproducible recipe for a disposable worker/subagent.
 #[pyclass(name = "WorkerAgentSpec")]
 #[derive(Clone)]

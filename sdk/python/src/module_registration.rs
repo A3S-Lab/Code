@@ -21,6 +21,7 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyConfirmationPolicy>()?;
     m.add_class::<PyArtifactStoreLimits>()?;
     m.add_class::<PyToolResultTransformPolicy>()?;
+    m.add_class::<PyToolPresentationProfile>()?;
     m.add_class::<PyWorkerAgentSpec>()?;
     m.add_class::<PyAgentDefinition>()?;
     m.add_class::<PyAutoDelegationConfig>()?;

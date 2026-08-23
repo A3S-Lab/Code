@@ -73,14 +73,7 @@ impl AgentLoop {
             .await?;
         self.emit_turn_start(turn, event_tx).await;
 
-        let mut selected_tools = if force_no_tools {
-            Vec::new()
-        } else {
-            crate::tools::select_tools_for_messages(&self.config.tools, &state.messages)
-        };
-        if let Some(permission_checker) = &self.config.permission_checker {
-            selected_tools.retain(|tool| permission_checker.expose_to_model(&tool.name));
-        }
+        let mut selected_tools = self.presented_tools(&state.messages, force_no_tools)?;
         let estimated_prompt_tokens = estimate_prompt_tokens(
             &state.messages,
             augmented_system.as_deref(),
@@ -101,14 +94,7 @@ impl AgentLoop {
 
         // Compaction can change the history-sensitive tool selection. Rebuild
         // the request definitions from the context that will actually be sent.
-        selected_tools = if force_no_tools {
-            Vec::new()
-        } else {
-            crate::tools::select_tools_for_messages(&self.config.tools, &state.messages)
-        };
-        if let Some(permission_checker) = &self.config.permission_checker {
-            selected_tools.retain(|tool| permission_checker.expose_to_model(&tool.name));
-        }
+        selected_tools = self.presented_tools(&state.messages, force_no_tools)?;
         let request_fixed_prompt_tokens =
             estimate_prompt_tokens(&[], augmented_system.as_deref(), &selected_tools);
 
@@ -130,8 +116,13 @@ impl AgentLoop {
             ),
         );
 
-        self.fire_generate_start(session_id.unwrap_or(""), effective_prompt, augmented_system)
-            .await;
+        self.fire_generate_start(
+            session_id.unwrap_or(""),
+            effective_prompt,
+            augmented_system,
+            &selected_tools,
+        )
+        .await;
 
         let llm_start = std::time::Instant::now();
         let response = self
@@ -177,6 +168,27 @@ impl AgentLoop {
             response,
             tool_calls,
         })
+    }
+
+    fn presented_tools(
+        &self,
+        messages: &[Message],
+        force_no_tools: bool,
+    ) -> anyhow::Result<Vec<ToolDefinition>> {
+        if force_no_tools {
+            return Ok(Vec::new());
+        }
+        // Permission visibility is an authorization-derived upper bound. The
+        // presentation profile receives only that subset, so code-mode catalog
+        // rephrasing cannot leak or restore a permission-hidden Tool name.
+        let mut visible_source = self.config.tools.clone();
+        if let Some(permission_checker) = &self.config.permission_checker {
+            visible_source.retain(|tool| permission_checker.expose_to_model(&tool.name));
+        }
+        self.config
+            .tool_presentation_profile
+            .present_for_messages(&visible_source, messages)
+            .map_err(Into::into)
     }
 
     async fn ensure_turn_can_start(
@@ -228,7 +240,7 @@ impl AgentLoop {
         let threshold = self.config.circuit_breaker_threshold.max(1);
         let mut attempt = 0u32;
         let mut stream_retries = 0u32;
-        let llm_client = self.scoped_llm_client_for_parts(
+        let llm_client = self.scoped_profiled_llm_client_for_parts(
             request.session_id,
             request.event_tx,
             request.cancel_token,
@@ -700,6 +712,7 @@ impl AgentLoop {
         session_id: &str,
         prompt: &str,
         system_prompt: &Option<String>,
+        available_tools: &[ToolDefinition],
     ) {
         if let Some(he) = &self.config.hook_engine {
             let event = HookEvent::GenerateStart(GenerateStartEvent {
@@ -708,7 +721,10 @@ impl AgentLoop {
                 system_prompt: system_prompt.clone(),
                 model_provider: String::new(),
                 model_name: String::new(),
-                available_tools: self.config.tools.iter().map(|t| t.name.clone()).collect(),
+                available_tools: available_tools
+                    .iter()
+                    .map(|tool| tool.name.clone())
+                    .collect(),
             });
             let _ = he.fire(&event).await;
         }
