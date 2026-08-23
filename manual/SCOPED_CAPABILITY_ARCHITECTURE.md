@@ -1,6 +1,6 @@
 # Scoped Capability Architecture
 
-Status: accepted foundation; implementation gates remain incremental
+Status: accepted foundation; A3S Use bridge delivered; Code gates remain incremental
 
 ## Decision
 
@@ -42,6 +42,29 @@ The authoritative Use design is the
 [A3S Use Plugin Platform Architecture](https://github.com/A3S-Lab/Use/blob/main/docs/plugin-platform-architecture.md).
 Code adapters must consume that contract instead of inferring capability state
 from package directories or implementing another plan/apply path.
+
+## Delivered A3S Use bridge
+
+A3S Use
+[`6ed0b4e`](https://github.com/A3S-Lab/Use/commit/6ed0b4eaf75c464f20690787e7d86471717158df)
+delivers the upstream half of Run admission. The implementation exposes two
+strict, canonical cursor protocols and retains package lifecycle authority in
+Use:
+
+| Contract | Public Use boundary | Verification evidence |
+| --- | --- | --- |
+| `a3s.use.extension-snapshot-cursor.v1` | `ExtensionRegistrySnapshot::cursor` and `ExtensionRegistry::acquire_published_snapshot` bind the Registry digest and every exact package, manifest, route, and lifecycle generation | [atomic Registry lease tests](https://github.com/A3S-Lab/Use/blob/6ed0b4eaf75c464f20690787e7d86471717158df/crates/extension/src/registry_tests/snapshot_lease.rs) |
+| `a3s.use.capability-snapshot-cursor.v1` | An injected `CapabilityRegistry` projects one complete Registry and `CapabilityRegistry::acquire_snapshot_lease` returns its immutable projection plus all upstream route leases | [facade cursor and injected-Registry tests](https://github.com/A3S-Lab/Use/blob/6ed0b4eaf75c464f20690787e7d86471717158df/src/capability_registry/lease.rs) |
+| Capability snapshot JSON v2 | The cursor remains an in-process Rust contract and is skipped by the separately released CLI serialization schema | [compatibility assertion](https://github.com/A3S-Lab/Use/blob/6ed0b4eaf75c464f20690787e7d86471717158df/src/capability_registry/lease.rs#L346) |
+
+Acquisition sorts exact package identities, obtains every shared route lease,
+and rechecks the immutable publication while the complete batch is held. A
+hidden, mixed, contended, stale, digest-mismatched, or legacy unleasable route
+cannot yield a partial lease. Rust RAII releases locks acquired by a failed
+attempt. The successful `CapabilitySnapshotLease` is deliberately non-clone
+and `Send + Sync`; Code will own it at Run scope. Its synchronous `Drop` only
+releases route locks, while Use continues to own asynchronous drain,
+retirement, and recovery.
 
 ## Current baseline
 
@@ -223,7 +246,7 @@ concerns and produce typed contributions.
 | Gate | State | Outcome | Exit criteria |
 | --- | --- | --- | --- |
 | `CAP-FND1` | Delivered | Accepted ownership, lifetime, identity, failure, verification, and migration contract | The contract and Roadmap are mechanically aligned; existing lifecycle and concurrency evidence is recorded and green |
-| `USE-BRIDGE1` | Planned | Public typed Use snapshot/cursor contract plus atomic exact-generation snapshot lease | Acquisition is all-or-nothing and rejects hidden, mixed, stale, or digest-mismatched generations |
+| `USE-BRIDGE1` | Delivered | Use `6ed0b4e` publishes `a3s.use.extension-snapshot-cursor.v1`, `a3s.use.capability-snapshot-cursor.v1`, and a non-clone atomic exact-generation snapshot lease | Full Use tests and strict Clippy pass; acquisition is all-or-nothing and rejects hidden, mixed, contended, stale, unleasable, or digest-mismatched generations without changing capability snapshot JSON v2 |
 | `CAP-SET1` | Planned | Typed identities, immutable `CapabilitySet`, canonical digest, and source contribution model | Digests are deterministic and readers pin an `Arc` without a global writer lock |
 | `CAP-SCOPE1` | Planned | Session/Run/Turn/Subtask scopes, ceilings, leases, effects, and structured-concurrency supervisor | Temporary capabilities cannot escape their scope or broaden a child; `HARNESS-SCOPE1` is delivered |
 | `CAP-PROJ1` | Planned | Typestate contribution transaction and projection adapters | Failed prepare/validate/commit races never publish a partial generation |
@@ -232,8 +255,8 @@ concerns and produce typed contributions.
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
-`USE-BRIDGE1` and `CAP-SET1` may proceed in parallel after this foundation.
-Tool and Skill projection migrate first, Agent/Command/Hook second, and MCP or
+`CAP-SET1` now consumes the delivered Use cursor and lease. Tool and Skill
+projection migrate first, Agent/Command/Hook second, and MCP or
 other asynchronous resources last. Host integration follows the atomic Core
 transaction instead of adding another reconciliation abstraction.
 

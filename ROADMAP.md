@@ -87,7 +87,7 @@ Session- and Run-owned capability scopes.
 | Gate | State | Code-owned outcome | Exit criteria |
 | --- | --- | --- | --- |
 | `CAP-FND1` | Delivered | Accepted ownership, lifetime, identity, failure, verification, and migration contract | The contract and Roadmap are mechanically aligned; existing lifecycle and concurrency evidence is recorded and green |
-| `USE-BRIDGE1` | Planned | Public typed Use snapshot/cursor contract plus atomic exact-generation snapshot lease | Acquisition is all-or-nothing and rejects hidden, mixed, stale, or digest-mismatched generations |
+| `USE-BRIDGE1` | Delivered | Use `6ed0b4e` publishes `a3s.use.extension-snapshot-cursor.v1`, `a3s.use.capability-snapshot-cursor.v1`, and a non-clone atomic exact-generation snapshot lease | Full Use tests and strict Clippy pass; acquisition is all-or-nothing and rejects hidden, mixed, contended, stale, unleasable, or digest-mismatched generations without changing capability snapshot JSON v2 |
 | `CAP-SET1` | Planned | Typed identities, immutable `CapabilitySet`, canonical digest, and source contribution model | Digests are deterministic and readers pin an `Arc` without a global writer lock |
 | `CAP-SCOPE1` | Planned | Session/Run/Turn/Subtask scopes, ceilings, leases, effects, and structured-concurrency supervisor | Temporary capabilities cannot escape their scope or broaden a child; `HARNESS-SCOPE1` is delivered |
 | `CAP-PROJ1` | Planned | Typestate contribution transaction and projection adapters | Failed prepare/validate/commit races never publish a partial generation |
@@ -96,8 +96,9 @@ Session- and Run-owned capability scopes.
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
-`USE-BRIDGE1` and `CAP-SET1` may proceed in parallel after `CAP-FND1`.
-Projection then migrates Tool and Skill, Agent/Command/Hook, and finally MCP or
+[`USE-BRIDGE1`](https://github.com/A3S-Lab/Use/commit/6ed0b4e) is now the
+upstream admission boundary. `CAP-SET1` consumes its typed cursor and lease;
+projection then migrates Tool and Skill, Agent/Command/Hook, and finally MCP or
 other asynchronous resources. `CAP-GA1` starts only after the compatibility
 adapters have delegated to the new transaction path for one major release.
 
