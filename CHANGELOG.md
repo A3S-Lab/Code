@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added the first scoped-capability Core kernel slice: typed A3S Use package
+  and cursor generations, typed local catalog generations, sealed source-owned
+  descriptor batches, and bounded immutable `Arc<CapabilitySet>` snapshots.
+  An empty product projection retains its exact Use cursor. Canonical
+  `BTreeMap` ordering and a domain-separated golden digest are stable across
+  input order; mixed Use cursors, Built-in shadowing, conflicts, unresolved
+  dependencies, and aggregate resource overflow fail before a set can escape
+  construction.
+
 ### Fixed
 
 - Advanced the exact `a3s-flow` `1.0.0` source to revision `7c76eda9`, keeping

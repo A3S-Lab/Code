@@ -88,7 +88,7 @@ Session- and Run-owned capability scopes.
 | --- | --- | --- | --- |
 | `CAP-FND1` | Delivered | Accepted ownership, lifetime, identity, failure, verification, and migration contract | The contract and Roadmap are mechanically aligned; existing lifecycle and concurrency evidence is recorded and green |
 | `USE-BRIDGE1` | Delivered | Use `6ed0b4e` publishes `a3s.use.extension-snapshot-cursor.v1`, `a3s.use.capability-snapshot-cursor.v1`, and a non-clone atomic exact-generation snapshot lease | Full Use tests and strict Clippy pass; acquisition is all-or-nothing and rejects hidden, mixed, contended, stale, unleasable, or digest-mismatched generations without changing capability snapshot JSON v2 |
-| `CAP-SET1` | Planned | Typed identities, immutable `CapabilitySet`, canonical digest, and source contribution model | Digests are deterministic and readers pin an `Arc` without a global writer lock |
+| `CAP-SET1` | Delivered | Typed Use package/cursor and Code catalog generations, sealed source classes, complete source-owned descriptor batches, and a bounded immutable `CapabilitySet` | `BTreeMap` ordering plus a domain-separated golden digest is insertion-order independent; mixed Use cursors, conflicts, missing edges, forged Built-in precedence, and every configured bound fail before an `Arc` can escape |
 | `CAP-SCOPE1` | Planned | Session/Run/Turn/Subtask scopes, ceilings, leases, effects, and structured-concurrency supervisor | Temporary capabilities cannot escape their scope or broaden a child; `HARNESS-SCOPE1` is delivered |
 | `CAP-PROJ1` | Planned | Typestate contribution transaction and projection adapters | Failed prepare/validate/commit races never publish a partial generation |
 | `CAP-DEP1` | Planned | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
@@ -96,9 +96,10 @@ Session- and Run-owned capability scopes.
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
-[`USE-BRIDGE1`](https://github.com/A3S-Lab/Use/commit/6ed0b4e) is now the
-upstream admission boundary. `CAP-SET1` consumes its typed cursor and lease;
-projection then migrates Tool and Skill, Agent/Command/Hook, and finally MCP or
+[`USE-BRIDGE1`](https://github.com/A3S-Lab/Use/commit/6ed0b4e) is the upstream
+admission boundary, and `CAP-SET1` now freezes its normalized identity plane.
+`CAP-SCOPE1` adds lifetimes, ceilings, leases, and supervised effects before
+projection migrates Tool and Skill, Agent/Command/Hook, and finally MCP or
 other asynchronous resources. `CAP-GA1` starts only after the compatibility
 adapters have delegated to the new transaction path for one major release.
 

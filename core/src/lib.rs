@@ -80,6 +80,7 @@ pub mod agent_protocol;
 pub mod agent_protocol_harness;
 pub mod agent_protocol_host;
 pub mod budget;
+pub mod capability;
 pub(crate) mod child_run;
 pub mod code_intelligence;
 pub mod cognitive_context;

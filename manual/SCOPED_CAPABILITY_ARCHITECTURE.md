@@ -1,6 +1,6 @@
 # Scoped Capability Architecture
 
-Status: accepted foundation; A3S Use bridge delivered; Code gates remain incremental
+Status: accepted foundation; A3S Use bridge and Code immutable set delivered
 
 ## Decision
 
@@ -122,6 +122,33 @@ Every immutable set uses canonical ordering and a domain-separated digest.
 `BTreeMap` is the baseline representation. More specialized atomics or
 `arc-swap` require benchmark evidence; they are not foundation dependencies.
 
+## Delivered immutable identity set
+
+`CAP-SET1` is implemented under [`core/src/capability/`](../core/src/capability/).
+It deliberately freezes the identity plane before attaching runtime values or
+effects:
+
+| Rust boundary | Delivered invariant |
+| --- | --- |
+| `UseCapabilityGeneration` | Binds `a3s.use.capability-snapshot-cursor.v1`, the Use capability revision, and the authoritative Extension Registry revision without aliasing the local Code generation |
+| `UsePackageGeneration` | Binds package, component, route, version, lifecycle generation, package digest, and manifest digest from one exact Use cursor |
+| `CapabilitySource` and `CapabilityContribution` | Assign source class through typed host constructors, keep Built-in construction crate-private, and require one non-empty complete descriptor batch per exact source |
+| `CapabilitySet` | `from_use_projection` retains the upstream cursor even for an empty product projection; construction rejects mixed Use cursors, duplicate sources or identities, public-name conflicts, Built-in shadowing, unresolved dependencies, and bounded-input overflow before returning `Arc<CapabilitySet>` |
+| `a3s.code.capability-set.v1` | Hashes canonical `BTreeMap` order through a bounded streaming, domain-separated SHA-256 writer; the local `CodeCatalogGeneration` is part of the identity |
+
+The [public contract tests](../core/tests/capability_set.rs) lock typed input
+validation, aggregate bounds, source ownership, insertion-order parity, one
+golden digest, mixed-Use rejection, and `Send + Sync` `Arc` pinning. The
+[crate-private set test](../core/src/capability/set.rs) proves an external
+source cannot manufacture or shadow a sealed Built-in contribution.
+
+This gate does not publish into live Session registries and does not carry
+runtime trait objects. `CAP-SCOPE1` adds lifetime and ceiling ownership;
+`CAP-PROJ1` later attaches closed category-specific values through a typestate
+transaction. Keeping those fallible and asynchronous concerns out of
+`CAP-SET1` makes the immutable set small, deterministic, and lock-free for
+readers.
+
 ## Rust model
 
 The public model is strongly typed and does not expose `Any`:
@@ -217,7 +244,7 @@ readiness, and owned effects.
 | `CAP-I11` | Canonical capability identity and digest are deterministic across insertion order and supported platforms. |
 | `CAP-I12` | SDKs expose stable descriptors and explicit registration methods, not Rust heterogeneous storage or package-manager authority. |
 
-## Planned module boundary
+## Incremental module boundary
 
 The implementation belongs under `core/src/capability/`, split by concern:
 
@@ -247,7 +274,7 @@ concerns and produce typed contributions.
 | --- | --- | --- | --- |
 | `CAP-FND1` | Delivered | Accepted ownership, lifetime, identity, failure, verification, and migration contract | The contract and Roadmap are mechanically aligned; existing lifecycle and concurrency evidence is recorded and green |
 | `USE-BRIDGE1` | Delivered | Use `6ed0b4e` publishes `a3s.use.extension-snapshot-cursor.v1`, `a3s.use.capability-snapshot-cursor.v1`, and a non-clone atomic exact-generation snapshot lease | Full Use tests and strict Clippy pass; acquisition is all-or-nothing and rejects hidden, mixed, contended, stale, unleasable, or digest-mismatched generations without changing capability snapshot JSON v2 |
-| `CAP-SET1` | Planned | Typed identities, immutable `CapabilitySet`, canonical digest, and source contribution model | Digests are deterministic and readers pin an `Arc` without a global writer lock |
+| `CAP-SET1` | Delivered | Typed Use package/cursor and Code catalog generations, sealed source classes, complete source-owned descriptor batches, and a bounded immutable `CapabilitySet` | `BTreeMap` ordering plus a domain-separated golden digest is insertion-order independent; mixed Use cursors, conflicts, missing edges, forged Built-in precedence, and every configured bound fail before an `Arc` can escape |
 | `CAP-SCOPE1` | Planned | Session/Run/Turn/Subtask scopes, ceilings, leases, effects, and structured-concurrency supervisor | Temporary capabilities cannot escape their scope or broaden a child; `HARNESS-SCOPE1` is delivered |
 | `CAP-PROJ1` | Planned | Typestate contribution transaction and projection adapters | Failed prepare/validate/commit races never publish a partial generation |
 | `CAP-DEP1` | Planned | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
@@ -255,8 +282,9 @@ concerns and produce typed contributions.
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
-`CAP-SET1` now consumes the delivered Use cursor and lease. Tool and Skill
-projection migrate first, Agent/Command/Hook second, and MCP or
+`CAP-SCOPE1` now adds scoped ceilings, leases, and effect supervision over the
+delivered identity set. Tool and Skill projection migrate first,
+Agent/Command/Hook second, and MCP or
 other asynchronous resources last. Host integration follows the atomic Core
 transaction instead of adding another reconciliation abstraction.
 

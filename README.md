@@ -778,6 +778,15 @@ scopes with atomic publication and reversible effects. The ownership,
 generation, lifecycle, and compatibility contract is defined in the
 [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md).
 
+The first Core slice is delivered in [`core/src/capability`](core/src/capability):
+typed Use package/cursor and local catalog generations, sealed source-owned
+descriptor batches, and a bounded canonical `CapabilitySet`. Construction
+returns an immutable `Arc`; an empty product projection still retains its Use
+cursor, while mixed cursors, Built-in shadowing, conflicts, missing
+dependencies, and resource-bound overflow fail before a reader can pin the
+set. Runtime projection remains on the migration path and is not implied by
+this identity-only API.
+
 Source is grouped by concern under `agent_api/`, `tools/`, `workspace/`,
 `context/`, `llm/`, `mcp/`, `orchestration/`, `store/`, and `state_graph/`.
 Node.js and Python bindings remain separate native crates over the same Core.

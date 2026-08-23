@@ -71,6 +71,16 @@ These tests characterize required safety while later gates replace mutable
 registries and pointer shadow chains. A later gate may change the mechanism but
 must update or strengthen the same behavioral evidence rather than deleting it.
 
+`CAP-SET1` adds executable evidence for the first new Core kernel slice:
+
+| Delivered behavior | Deterministic evidence | Bound or failure rule |
+| --- | --- | --- |
+| Typed upstream and local identity | [`capability/id.rs`](../core/src/capability/id.rs) and [`capability_set`](../core/tests/capability_set.rs) | Invalid identifiers, digests, package generations, and unsafe segments fail construction |
+| Complete source ownership | [`capability/descriptor.rs`](../core/src/capability/descriptor.rs) | Empty batches, mismatched owners, duplicate identities, self-dependencies, and duplicate edges fail closed |
+| Immutable canonical set | [`capability/set.rs`](../core/src/capability/set.rs) | Sources, capabilities, dependency edges, per-capability dependencies, and canonical encoded bytes have explicit ceilings |
+| Exact Use projection | [`mixed and empty projection tests`](../core/tests/capability_set.rs) | Package contributions from different capability or Registry revisions cannot share one Code set; an empty product projection still retains its upstream cursor identity |
+| Lock-free frozen readers | [`Arc pinning and golden digest tests`](../core/tests/capability_set.rs) | Construction returns `Arc<CapabilitySet>`; insertion order cannot alter iteration or `a3s.code.capability-set.v1` identity |
+
 ## Capability evidence ledger
 
 The area names and order intentionally match the README capability map. The

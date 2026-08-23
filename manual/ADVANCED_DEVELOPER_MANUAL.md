@@ -63,6 +63,17 @@ single Use package authority, atomic source-generation publication, exact
 definition/execution identity, child-ceiling intersection, and bounded explicit
 asynchronous close semantics.
 
+The delivered `CAP-SET1` identity plane is available as
+`a3s_code_core::capability`. Hosts can construct validated Host, Session, and
+exact Use-package source batches; Built-in source construction remains sealed
+inside Core. `CapabilitySet::from_contributions` canonicalizes those complete
+batches, rejects mixed Use cursors and conflicts, and returns an immutable
+`Arc<CapabilitySet>`. `from_use_projection` retains the exact upstream cursor
+even when product filtering yields no package descriptors. It does not
+activate a Tool, start MCP, or mutate a live Session. Those operations remain
+on the existing APIs until the scoped and typestate projection gates own their
+complete lifecycle.
+
 # Chapter 2: Advanced Configuration
 
 ## 2.1 Queue System Configuration
