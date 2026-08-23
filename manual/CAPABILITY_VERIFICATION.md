@@ -91,6 +91,17 @@ must update or strengthen the same behavioral evidence rather than deleting it.
 | Structured teardown | [`scope supervisor tests`](../core/tests/capability_scope.rs) | Tasks settle first, children and effects close in reverse order, and one shared deadline bounds ignored cancellation |
 | Cancellation-safe ownership | [`waiter and parent-drop tests`](../core/tests/capability_scope.rs) | Cancelling a close waiter does not cancel the owned close driver; parent `Drop` synchronously aborts descendant futures without spawning cleanup |
 
+`CAP-PROJ1` adds deterministic publication and runtime-identity evidence:
+
+| Delivered behavior | Deterministic evidence | Bound or failure rule |
+| --- | --- | --- |
+| Closed typed values | [`projection value validation`](../core/tests/capability_projection.rs) | Missing, extra, kind-mismatched, public-name-mismatched, and unsupported UI values fail before an immutable projection can escape |
+| Typestate publication | [`CapabilityTxn` compile-fail example](../core/src/capability/transaction.rs) | Only `CapabilityTxn<Validated>` exposes `commit`; prepared values cannot bypass complete validation |
+| Failure rollback | [`prepare, cancellation, validation, and dropped-transaction tests`](../core/tests/capability_projection.rs) | Every completed effect transfers to reverse cleanup while the visible generation remains unchanged |
+| Atomic commit race | [`catalog CAS race`](../core/tests/capability_projection.rs) | Generation and digest are compared under one short writer lock; exactly one competing complete generation becomes visible |
+| Exact reader identity | [`old/new lease identity test`](../core/tests/capability_projection.rs) | A non-clone reader resolves definition and execution through one borrowed value; old effects retire only after the final old lease drops |
+| A3S Use boundary | [`CapabilityProjection` retains `CapabilitySet`](../core/src/capability/projection.rs) | Code consumes the complete Use cursor but performs no package resolution, Grants, Use cutover, or receipt retirement; Run admission still requires the real Use lease |
+
 ## Capability evidence ledger
 
 The area names and order intentionally match the README capability map. The

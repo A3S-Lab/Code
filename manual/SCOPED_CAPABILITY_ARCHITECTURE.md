@@ -1,6 +1,6 @@
 # Scoped Capability Architecture
 
-Status: accepted foundation; A3S Use bridge, immutable set, and scoped lifecycle kernel delivered
+Status: accepted foundation; A3S Use bridge, immutable set, scoped lifecycle, and atomic runtime projection delivered
 
 ## Decision
 
@@ -142,12 +142,12 @@ golden digest, mixed-Use rejection, and `Send + Sync` `Arc` pinning. The
 [crate-private set test](../core/src/capability/set.rs) proves an external
 source cannot manufacture or shadow a sealed Built-in contribution.
 
-This gate does not publish into live Session registries and does not carry
-runtime trait objects. `CAP-SCOPE1` now owns lifetimes, ceilings, leases, and
-supervised effects; `CAP-PROJ1` later attaches closed category-specific values
-through a typestate transaction. Keeping those fallible and asynchronous
-concerns out of `CAP-SET1` makes the immutable set small, deterministic, and
-lock-free for readers.
+`CapabilitySet` still does not publish into live Session registries or carry
+runtime trait objects. `CAP-SCOPE1` owns lifetimes, ceilings, leases, and
+supervised effects; `CAP-PROJ1` attaches closed category-specific values in a
+separate immutable `CapabilityProjection`. Keeping those fallible and
+asynchronous concerns out of `CapabilitySet` makes the identity plane small,
+deterministic, and lock-free for readers.
 
 ## Delivered scoped lifecycle kernel
 
@@ -180,6 +180,36 @@ tasks/effects, descendant abort on parent drop, idempotence, and `Send + Sync`.
 The compile-fail examples live with
 [`CapabilityLease`](../core/src/capability/lease.rs).
 
+## Delivered atomic runtime projection
+
+`CAP-PROJ1` is implemented as a parallel Core catalog. It does not yet rewrite
+the mutable compatibility registries; that host cutover belongs to
+`HOST-CAP1`.
+
+| Rust boundary | Delivered invariant |
+| --- | --- |
+| `CapabilityValue` | A closed enum accepts Tool, Skill, Agent, Command, Hook, per-server MCP binding, Flow, Knowledge, and context values without `Any`; UI fails closed until Core owns a typed UI runtime contract |
+| `CapabilityProjection` | Pairs one immutable `Arc<CapabilitySet>` with exactly one canonically ordered value per descriptor and rejects missing, extra, kind-mismatched, unsupported, or public-name-mismatched values |
+| `CapabilityTxn<Staged/Prepared/Validated>` | Surface-owned adapters prepare in canonical identity order; only `Validated` exposes `commit`, and a compile-fail contract prevents early publication |
+| `CapabilityCatalog` | Readers pin one non-clone immutable generation; writers compare both base generation and digest under one short mutex before swapping the complete projected `Arc` |
+| Retirement and rollback | Transaction ownership synchronously transfers all completed effects to a catalog cleanup queue on prepare failure, cancellation, validation failure, dropped transaction, or lost CAS; an `Arc`-owned published generation transfers its effects only after the final old reader lease drops |
+
+The catalog never parses a package, selects a version, computes Grants, or
+advances an A3S Use lifecycle generation. Its `CapabilitySet` retains the
+complete Use cursor produced by `USE-BRIDGE1`. The future host admission path
+must pair the Code projection lease with the real non-clone Use
+`CapabilitySnapshotLease`; neither lease substitutes for the other.
+
+The public tests in
+[`capability_projection.rs`](../core/tests/capability_projection.rs) cover
+complete value validation, unsupported UI rejection, cancellation during
+prepare, reverse rollback, validation failure, an exact commit CAS race,
+definition/execution pointer identity, an old generation surviving cutover,
+final-lease effect retirement, dropped-transaction recovery, and `Send + Sync`
+catalog readers. Cleanup is explicit and bounded through
+`drain_cleanup_with_policy`; `Drop` only transfers effect ownership and never
+spawns an asynchronous task.
+
 ## Rust model
 
 The public model is strongly typed and does not expose `Any`:
@@ -200,8 +230,9 @@ pub trait RetainedUseGeneration: Send + Sync + 'static {
 }
 
 pub struct CapabilityTxn<S> {
-    staged: Vec<CapabilityContribution>,
-    effects: EffectStack,
+    staged: BTreeMap<CapabilityId, Box<dyn CapabilityProjectionAdapter>>,
+    prepared: BTreeMap<CapabilityId, CapabilityValue>,
+    projection: Option<Arc<CapabilityProjection>>,
     _state: PhantomData<S>,
 }
 
@@ -212,6 +243,9 @@ pub enum CapabilityValue {
     Command(Arc<dyn SlashCommand>),
     Hook(Arc<dyn HookHandler>),
     Mcp(Arc<McpBinding>),
+    Flow(Arc<DynamicWorkflowRuntime>),
+    Knowledge(Arc<CognitiveContextSession>),
+    Context(Arc<dyn ContextProvider>),
 }
 ```
 
@@ -223,27 +257,33 @@ a Turn or Subtask lease from being passed where a Session lease is required.
 Rust has no asynchronous `Drop`. A scope's `Drop` may only cancel tokens and
 abort owned task futures. The delivered supervisor owns a `CancellationToken`,
 `JoinSet`, child registry, effect stack, exact upstream generation lease, and
-bounded idempotent `close().await`. Publication adds the retired-generation
-queue in `CAP-PROJ1`; `Drop` must never spawn an unowned Tokio task.
+bounded idempotent `close().await`. Projection `Drop` only moves owned effects
+into the delivered cleanup queue; explicit bounded drain performs asynchronous
+close. Neither path spawns an unowned Tokio task.
 
 ## Publication lifecycle
 
 One source update follows a prepare, validate, commit, drain lifecycle:
 
 1. Observe one exact upstream generation and digest.
-2. Stage the source's complete contribution batch.
-3. Prepare fallible resources without changing model-visible state.
-4. Validate identities, conflicts, dependencies, ceilings, resource bounds,
-   and upstream evidence for the complete batch.
-5. Build a canonical immutable `CapabilitySet`.
-6. Commit with one short writer critical section and publish the new `Arc`.
+2. Build the complete canonical `CapabilitySet`, retaining its exact Use
+   cursor after product filtering.
+3. Begin against the current Code generation/digest and stage one adapter for
+   every target descriptor.
+4. Prepare fallible resources in canonical identity order without changing
+   model-visible state.
+5. Validate the complete descriptor/value pairing, kinds, public identities,
+   resource bounds, and unsupported categories.
+6. Commit with one short generation-and-digest CAS and publish the new `Arc`.
 7. Stop new Run admission against the prior set.
 8. Let already admitted Runs retain their exact set and upstream leases.
 9. Teardown retired effects in reverse order after the final lease is released.
 
-A failed prepare or validation leaves the current set untouched. Cancellation
-rolls back staged effects. After commit, recovery completes retirement; it must
-not reconstruct a mixed old/new visible set.
+A failed prepare, cancellation, validation, dropped transaction, or commit CAS
+leaves the current set untouched and transfers every completed effect for
+reverse cleanup. After commit, `Arc` ownership delays retirement until the last
+old projection lease is released; cleanup never reconstructs a mixed old/new
+visible set.
 
 For A3S Use projections, Run admission requires an all-or-nothing upstream
 snapshot lease. Acquisition uses the exact capability generation, revision,
@@ -316,16 +356,17 @@ concerns and produce typed contributions.
 | `USE-BRIDGE1` | Delivered | Use `6ed0b4e` publishes `a3s.use.extension-snapshot-cursor.v1`, `a3s.use.capability-snapshot-cursor.v1`, and a non-clone atomic exact-generation snapshot lease | Full Use tests and strict Clippy pass; acquisition is all-or-nothing and rejects hidden, mixed, contended, stale, unleasable, or digest-mismatched generations without changing capability snapshot JSON v2 |
 | `CAP-SET1` | Delivered | Typed Use package/cursor and Code catalog generations, sealed source classes, complete source-owned descriptor batches, and a bounded immutable `CapabilitySet` | `BTreeMap` ordering plus a domain-separated golden digest is insertion-order independent; mixed Use cursors, conflicts, missing edges, forged Built-in precedence, and every configured bound fail before an `Arc` can escape |
 | `CAP-SCOPE1` | Delivered | Session/Run/Turn/Subtask markers, catalog-bound ceilings, borrowed leases, reversible effects, exact Use Run leases, and a structured-concurrency supervisor | Compile-fail and runtime tests prevent lease escape or child expansion; close is reverse-order, cancellation-safe, idempotent, bounded, and releases the Use lease last |
-| `CAP-PROJ1` | Planned | Typestate contribution transaction and projection adapters | Failed prepare/validate/commit races never publish a partial generation |
+| `CAP-PROJ1` | Delivered | Closed typed runtime values, immutable projected catalogs, typestate contribution transactions, generation/digest CAS publication, and final-lease retirement | Failed prepare, validation, cancellation, dropped transaction, and commit-race paths leave the current generation unchanged and retain every prepared effect for reverse cleanup |
 | `CAP-DEP1` | Planned | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
 | `HOST-CAP1` | Planned | CLI and Desktop apply each Use generation to each Session as one batch | Old Runs retain the old lease, new Runs see the new generation, and host generation never advances after partial reconciliation |
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
 `CAP-PROJ1` now attaches runtime values and atomic typestate transactions to
-the delivered identity and scope kernels. Tool and Skill projection migrate
-first, Agent/Command/Hook second, and MCP or
-other asynchronous resources last. Host integration follows the atomic Core
+the delivered identity and scope kernels. `CAP-DEP1` adds bounded readiness
+ordering over published surface edges. Tool and Skill compatibility projection
+then migrates in `HOST-CAP1`, Agent/Command/Hook second, and MCP or other
+asynchronous resources last. Host integration must use the atomic Core
 transaction instead of adding another reconciliation abstraction.
 
 ## Verification matrix

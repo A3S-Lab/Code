@@ -778,24 +778,33 @@ scopes with atomic publication and reversible effects. The ownership,
 generation, lifecycle, and compatibility contract is defined in the
 [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md).
 
-The first Core slice is delivered in [`core/src/capability`](core/src/capability):
+The identity slice is delivered in [`core/src/capability`](core/src/capability):
 typed Use package/cursor and local catalog generations, sealed source-owned
 descriptor batches, and a bounded canonical `CapabilitySet`. Construction
 returns an immutable `Arc`; an empty product projection still retains its Use
 cursor, while mixed cursors, Built-in shadowing, conflicts, missing
 dependencies, and resource-bound overflow fail before a reader can pin the
-set. Runtime projection remains on the migration path and is not implied by
-this identity-only API.
+set. Runtime values remain outside that deterministic identity type.
 
-The second slice adds sealed `CapabilityScope<Session/Run/Turn/Subtask>`
+The lifecycle slice adds sealed `CapabilityScope<Session/Run/Turn/Subtask>`
 markers and catalog-bound `CapabilityCeiling` values. Borrowed typed leases
 cannot outlive or impersonate another scope kind; child scopes can only remove
 capabilities, workspace operations, and execution budget while retaining every
 required parent governance guard. A Run over a Use-backed catalog must consume
 the exact non-clone Use snapshot lease. Its supervisor owns all child scopes,
 tasks, reversible effects, and that upstream lease, then closes them in bounded
-reverse order with the Use lease released last. This lifecycle kernel still
-does not activate runtime surfaces; atomic value projection is the next gate.
+reverse order with the Use lease released last.
+
+The projection slice adds a closed `CapabilityValue` plane, immutable
+`CapabilityProjection` generations, non-clone reader leases, and
+`CapabilityTxn<Staged/Prepared/Validated>`. Only a validated transaction can
+commit through the catalog's generation-and-digest CAS. Failed preparation,
+validation, cancellation, or a lost commit race leaves the current generation
+unchanged and moves prepared effects to bounded reverse cleanup. Retired effects
+remain pinned until the last old projection lease is released. UI descriptors
+fail closed until Core has a typed UI runtime contract. Existing live Tool,
+Skill, and MCP registration APIs remain compatibility paths until `HOST-CAP1`
+switches each complete Use generation through this catalog as one batch.
 
 Source is grouped by concern under `agent_api/`, `tools/`, `workspace/`,
 `context/`, `llm/`, `mcp/`, `orchestration/`, `store/`, and `state_graph/`.

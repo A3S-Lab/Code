@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   structured-concurrency supervisor owns tasks, child scopes, reverse-order
   effects, and final lease release; close is cancellation-safe and idempotent,
   while `Drop` only propagates cancellation and aborts owned futures.
+- Added closed typed capability runtime values, immutable
+  `CapabilityProjection` catalogs, non-clone exact-generation reader leases,
+  and `CapabilityTxn<Staged/Prepared/Validated>`. Only validated transactions
+  can publish through a generation-and-digest CAS. Failed preparation,
+  validation, cancellation, dropped transactions, and lost commit races retain
+  prepared effects for bounded reverse cleanup without changing the visible
+  generation; retired effects remain pinned until the last old lease drops.
 
 ### Fixed
 

@@ -5,8 +5,8 @@
 //! one complete contribution, and [`CapabilitySet`] freezes the validated
 //! descriptors behind an [`std::sync::Arc`]. Typed scopes add monotonic
 //! ceilings, borrowed leases, reversible effects, and bounded structured
-//! teardown. Later projection gates attach category-specific runtime values
-//! and publication transactions to this kernel.
+//! teardown. Closed runtime values and typestate transactions publish one
+//! complete projected generation through a short catalog CAS.
 
 mod ceiling;
 mod descriptor;
@@ -14,11 +14,15 @@ mod effect;
 mod error;
 mod id;
 mod lease;
+mod projection;
+mod projection_error;
 mod scope;
 mod scope_error;
 mod set;
 mod source;
 mod supervisor;
+mod transaction;
+mod value;
 
 pub use ceiling::{
     CapabilityCeiling, CapabilityExecutionCeiling, GovernanceCapabilityCeiling,
@@ -33,6 +37,11 @@ pub use id::{
     USE_CAPABILITY_SNAPSHOT_CURSOR_SCHEMA,
 };
 pub use lease::{CapabilityLease, RetainedUseGeneration};
+pub use projection::{
+    CapabilityCatalog, CapabilityCatalogStamp, CapabilityCleanupReport, CapabilityCommitReceipt,
+    CapabilityProjection, CapabilityProjectionLease,
+};
+pub use projection_error::{CapabilityAdapterError, CapabilityProjectionError};
 pub use scope::{
     CapabilityScope, CapabilityScopeId, CapabilityScopeKind, Run, ScopeKind, Session, Subtask, Turn,
 };
@@ -46,3 +55,8 @@ pub use supervisor::{
     ScopeClosePolicy, ScopeCloseReport, SupervisedTaskId, DEFAULT_SCOPE_CLOSE_TIMEOUT,
     MAX_SCOPE_CHILDREN, MAX_SCOPE_CLOSE_TIMEOUT, MAX_SCOPE_EFFECTS, MAX_SCOPE_TASKS,
 };
+pub use transaction::{
+    CapabilityProjectionAdapter, CapabilityTxn, Prepared, PreparedCapability, Staged, Validated,
+    MAX_CAPABILITY_TRANSACTION_EFFECTS,
+};
+pub use value::{CapabilityValue, McpBinding};

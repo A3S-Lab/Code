@@ -71,8 +71,8 @@ batches, rejects mixed Use cursors and conflicts, and returns an immutable
 `Arc<CapabilitySet>`. `from_use_projection` retains the exact upstream cursor
 even when product filtering yields no package descriptors. It does not
 activate a Tool, start MCP, or mutate a live Session. Those operations remain
-on the existing APIs until the scoped and typestate projection gates own their
-complete lifecycle.
+on the existing compatibility APIs until `HOST-CAP1` switches a complete host
+generation to the new catalog.
 
 `CAP-SCOPE1` adds the lifecycle boundary over that set. Construct a root
 `CapabilityCeiling` against the exact `CapabilitySet`, create a typed Session
@@ -89,6 +89,25 @@ background futures through the scope supervisor. Always call the idempotent
 futures but cannot perform asynchronous effect teardown. Child tasks settle
 first, child scopes and effects close in reverse order, and the Run's Use lease
 is dropped last.
+
+`CAP-PROJ1` supplies the atomic value plane beside those scopes. Start a
+transaction with the complete next-generation `Arc<CapabilitySet>`, stage one
+`CapabilityProjectionAdapter` for each descriptor, await `prepare` with a
+`CancellationToken`, call `validate`, and commit only the resulting
+`CapabilityTxn<Validated>`. The closed `CapabilityValue` enum does not accept
+`Any`; a missing runtime category such as UI fails validation until Core owns a
+typed contract for it. Value kinds and published names must match their exact
+descriptors.
+
+Runs read through a non-clone `CapabilityProjectionLease`, so definition and
+execution borrow the same immutable value instead of consulting a latest-value
+registry. A lost generation/digest CAS cannot publish. Prepared effects from
+failed, cancelled, or dropped transactions move to the catalog cleanup queue,
+and retired-generation effects enter that queue only after the last old lease
+drops. Call `drain_cleanup_with_policy(policy).await` from the owning Session
+supervisor. This Code lease pins the local projection only; a Use-backed Run
+must still separately retain the real A3S Use `CapabilitySnapshotLease` through
+`RetainedUseGeneration`.
 
 # Chapter 2: Advanced Configuration
 
