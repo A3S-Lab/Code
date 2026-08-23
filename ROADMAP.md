@@ -92,7 +92,7 @@ Session- and Run-owned capability scopes.
 | `CAP-SCOPE1` | Delivered | Session/Run/Turn/Subtask markers, catalog-bound ceilings, borrowed leases, reversible effects, exact Use Run leases, and a structured-concurrency supervisor | Compile-fail and runtime tests prevent lease escape or child expansion; close is reverse-order, cancellation-safe, idempotent, bounded, and releases the Use lease last |
 | `CAP-PROJ1` | Delivered | Closed typed runtime values, immutable projected catalogs, typestate contribution transactions, generation/digest CAS publication, and final-lease retirement | Failed prepare, validation, cancellation, dropped transaction, and commit-race paths leave the current generation unchanged and retain every prepared effect for reverse cleanup |
 | `CAP-DEP1` | Delivered | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
-| `HOST-CAP1` | In progress | Core atomically applies one Tool/Skill projection per Session; CLI and Desktop migration remain | Old Runs retain N and its exact Use lease, new Runs see N+1, and failures never advance the generation; official hosts must adopt the batch API |
+| `HOST-CAP1` | Delivered | Core, CLI, and Desktop use one atomic Tool/Skill projection per Session or one-shot execution | Old Runs retain N and its exact Use lease, new Runs see N+1, failed preparation never advances the generation, one-shot watchers stop before Run admission, and Desktop requires exact Code/Use evidence |
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
@@ -104,13 +104,16 @@ and publishes one complete Code generation through a typestate transaction.
 `CAP-DEP1` now derives deterministic dependency-first waves from one immutable
 surface set, rejects cycles and incomplete adapter batches before preparation,
 and retains the exact Use cursor without inspecting package manifests or
-resolving packages. The first `HOST-CAP1` Core cut now admits Tool and Skill
-projections as one Session batch, pins the exact projected values and a real
-Use snapshot lease per Run, and drains retired effects at Session close. The
-gate remains in progress until CLI and Desktop stop piecemeal reconciliation;
-Agent/Command/Hook and asynchronous MCP categories remain later migration
-cuts. `CAP-GA1` starts only after official hosts have delegated to that path
-for one major release.
+resolving packages. Delivered `HOST-CAP1` admits Tool and Skill projections as
+one Session batch, pins the exact projected values and a real Use snapshot
+lease per Run, and drains retired effects at Session close. The CLI now uses
+that path for resident sessions and for a short-lived Code Exec host that
+quiesces Use discovery before Run admission. Ordinary Code Exec performs only
+installed-component discovery; Desktop negotiates required `scoped-v1`
+support and rejects success without canonical Code catalog and Use cursor
+evidence. Agent/Command/Hook and asynchronous MCP categories remain later
+migration cuts. `CAP-GA1` starts only after official hosts have delegated to
+that path for one major release.
 
 ## 4. Invariants
 

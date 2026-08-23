@@ -804,7 +804,7 @@ unchanged and moves prepared effects to bounded reverse cleanup. Retired effects
 remain pinned until the last old projection lease is released. UI descriptors
 fail closed until Core has a typed UI runtime contract.
 
-The first `HOST-CAP1` Core cut now lets a Session apply a complete Tool/Skill
+Delivered `HOST-CAP1` lets a Session apply a complete Tool/Skill
 generation through `SessionCapabilityBatch`. Publication atomically binds the
 projection and its generation-specific A3S Use lease provider. Every Run pins
 one projection, freezes the compatibility Tool/Skill maps, acquires a fresh
@@ -812,8 +812,12 @@ real Use snapshot lease for the exact cursor, and uses the same Tool `Arc` for
 model definition and governed execution. Old Runs keep N while later Runs see
 N+1; cancellation, close, preparation failure, and name conflict do not expose
 a partial generation. Compatibility Tool, Skill, and MCP-wrapper APIs cannot
-shadow a published projection. `HOST-CAP1` remains in progress until CLI and
-Desktop use this batch path; other capability kinds still fail closed here.
+shadow a published projection. The CLI now uses the batch for resident
+sessions and a short-lived Code Exec runtime that stops Use discovery before
+Run admission. Desktop probes and requires that exact host contract, then
+accepts success only with canonical Code catalog and Use snapshot evidence.
+Other capability kinds still fail closed in the atomic batch and retain their
+explicit compatibility owners.
 
 The readiness slice derives a bounded `CapabilityReadinessPlan` from only the
 surface edges already present in that immutable set. Deterministic minimal

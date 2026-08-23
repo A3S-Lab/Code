@@ -1,6 +1,6 @@
 # Scoped Capability Architecture
 
-Status: accepted foundation; A3S Use bridge, immutable set, scoped lifecycle, atomic runtime projection, and surface readiness DAG delivered
+Status: accepted foundation; A3S Use bridge, immutable set, scoped lifecycle, atomic runtime projection, surface readiness DAG, and official Tool/Skill host adoption delivered
 
 ## Decision
 
@@ -83,10 +83,10 @@ must preserve:
 The baseline also exposes the migration pressure. Tool, Skill, Agent, Command,
 Hook, and MCP state is held in separate mutable registries. Dynamic Tool and
 Skill replacement uses pointer identity and manually maintained shadow chains.
-The CLI host reconciles one Use generation through multiple independent live
-Session mutations. A failure can leave prepared runtime resources and visible
-surfaces at different convergence points even when the host has not advanced
-its reported generation.
+The remaining compatibility host still reconciles asynchronous MCP, Flow,
+Knowledge, and Runtime Task surfaces independently. Tool and Skill projection
+has moved to one atomic Core batch; later gates must preserve that boundary as
+the asynchronous categories migrate.
 
 ## Capability lifetimes
 
@@ -182,9 +182,9 @@ The compile-fail examples live with
 
 ## Delivered atomic runtime projection
 
-`CAP-PROJ1` is implemented as a parallel Core catalog. It does not yet rewrite
-the mutable compatibility registries; that host cutover belongs to
-`HOST-CAP1`.
+`CAP-PROJ1` is implemented as a parallel Core catalog. `HOST-CAP1` now binds
+official Tool/Skill hosts to it without claiming that the remaining mutable
+compatibility registries have migrated.
 
 | Rust boundary | Delivered invariant |
 | --- | --- |
@@ -338,7 +338,7 @@ all underlying leases are held. If the old generation has already been hidden,
 admission fails before Run execution; the host must refresh and publish the
 new source instead of starting a Run with stale Tools.
 
-### HOST-CAP1 Core runtime cut
+### HOST-CAP1 host runtime cut
 
 The first host-runtime cut is implemented for Session Tool and Skill values.
 `SessionCapabilityBatch` owns the complete next projection plus a
@@ -366,6 +366,44 @@ already owned by the published projection. Preparation cancellation, name
 conflict, Session close, or a lost CAS leaves the visible generation unchanged
 and transfers every prepared effect to bounded cleanup. A non-clean Run scope
 close is a typed Run failure rather than a warning-only condition.
+
+The official
+[CLI adapter](https://github.com/A3S-Lab/CLI/commit/df2e081aff168bb0d5d7db895962583559979ad6)
+and
+[Desktop adapter](https://github.com/A3S-Lab/Desktop/commit/23f00e2bc8b555b406f6bcfe2df92b7c8c17a163)
+complete the first host cut over Core
+[`d1f70d5`](https://github.com/A3S-Lab/Code/commit/d1f70d57bcdbb3459d3205b647d61ebc0a00a940).
+The resident CLI watcher builds one complete verified Skill batch for every
+Use cursor and lets each admitted Run acquire its own real non-clone Use
+snapshot lease. One-shot Code Exec uses an `AtomicToolSkill` projection mode,
+so MCP, Flow, Knowledge, and Runtime Task compatibility effects are never
+started by that path.
+
+Ordinary Code Exec performs read-only discovery of an already-ready Use
+component and never installs it. A missing component preserves the no-Use
+execution path. An incompatible optional component can be skipped only after
+its Registry watcher has been cancelled and joined and the Session catalog is
+proven equal to its pre-setup stamp. Any visible catalog change or incomplete
+shutdown fails closed.
+
+A3S Desktop requires the reserved `scoped-v1` process contract. Discovery
+probes the exact side-effect-free help route rather than trusting SemVer alone,
+and every launch passes the mode as shell-free arguments. Required setup may
+perform policy-authorized first-use installation, but offline and
+no-auto-install boundaries fail before provider egress. Before Run admission,
+Code waits for the atomic receipt, stops discovery, and verifies that the final
+Session stamp still matches it. A successful result returns
+`a3s.code.scoped-capability-runtime.v1` with the positive Code generation and
+digest plus the complete `a3s.use.capability-snapshot-cursor.v1` cursor.
+Desktop rejects absent or malformed evidence as
+`protocol.capability-runtime-invalid`.
+
+Cancellation during setup remains `operation.cancelled`. Stream creation,
+worker failure, normal completion, and setup failure all converge on explicit
+Session close. Integration tests cover first-use installation, installed-only
+offline reuse, missing and incompatible optional Use, no provider egress when
+required setup is forbidden, exact Skill visibility and evidence, watcher
+cleanup, and the absence of MCP startup.
 
 ## Contribution and conflict rules
 
@@ -436,15 +474,15 @@ concerns and produce typed contributions.
 | `CAP-SCOPE1` | Delivered | Session/Run/Turn/Subtask markers, catalog-bound ceilings, borrowed leases, reversible effects, exact Use Run leases, and a structured-concurrency supervisor | Compile-fail and runtime tests prevent lease escape or child expansion; close is reverse-order, cancellation-safe, idempotent, bounded, and releases the Use lease last |
 | `CAP-PROJ1` | Delivered | Closed typed runtime values, immutable projected catalogs, typestate contribution transactions, generation/digest CAS publication, and final-lease retirement | Failed prepare, validation, cancellation, dropped transaction, and commit-race paths leave the current generation unchanged and retain every prepared effect for reverse cleanup |
 | `CAP-DEP1` | Delivered | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
-| `HOST-CAP1` | In progress | Core atomically applies one Tool/Skill projection per Session; CLI and Desktop migration remain | Old Runs retain N and its exact Use lease, new Runs see N+1, and failures never advance the generation; official hosts must adopt the batch API |
+| `HOST-CAP1` | Delivered | Core, CLI, and Desktop use one atomic Tool/Skill projection per Session or one-shot execution | Old Runs retain N and its exact Use lease, new Runs see N+1, failed preparation never advances the generation, one-shot watchers stop before Run admission, and Desktop requires exact Code/Use evidence |
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
 `CAP-PROJ1` attaches runtime values and atomic typestate transactions to the
 identity and scope kernels. `CAP-DEP1` now orders only their published surface
-edges through a bounded generation-bound readiness plan. The first
-`HOST-CAP1` Core cut now hosts Tool and Skill projections atomically, but the
-gate remains open until CLI and Desktop use it. Agent/Command/Hook migrate in a
+edges through a bounded generation-bound readiness plan. Delivered
+`HOST-CAP1` hosts Tool and Skill projections atomically in Core, the
+resident CLI, one-shot Code Exec, and Desktop. Agent/Command/Hook migrate in a
 later cut, with MCP and other asynchronous resources last. Host integration
 must use the atomic Core transaction instead of adding another reconciliation
 abstraction.
