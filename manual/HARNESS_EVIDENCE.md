@@ -49,6 +49,13 @@ events for the same observed digest.
 Consumers correlate an input with `capabilitySnapshotDigest`; they should not
 depend on event adjacency.
 
+`HARNESS-SCOPE1` leaves this strict v1 wire shape unchanged. The internal
+`CapabilityScope` kernel now pins one immutable catalog, a monotonic governance
+ceiling, and the exact A3S Use Run lease while borrowed marker-specific leases
+control access. Existing evidence remains derived from the live governed
+executor during migration. A future separately versioned scope snapshot may
+expose the new internal identity; fields are not appended to v1.
+
 ## Model-input snapshot
 
 `ModelInputSnapshotV1` uses schema `a3s.code.model-input-snapshot.v1` and a

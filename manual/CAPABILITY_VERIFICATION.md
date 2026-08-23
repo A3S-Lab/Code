@@ -81,6 +81,16 @@ must update or strengthen the same behavioral evidence rather than deleting it.
 | Exact Use projection | [`mixed and empty projection tests`](../core/tests/capability_set.rs) | Package contributions from different capability or Registry revisions cannot share one Code set; an empty product projection still retains its upstream cursor identity |
 | Lock-free frozen readers | [`Arc pinning and golden digest tests`](../core/tests/capability_set.rs) | Construction returns `Arc<CapabilitySet>`; insertion order cannot alter iteration or `a3s.code.capability-set.v1` identity |
 
+`CAP-SCOPE1` and `HARNESS-SCOPE1` add deterministic lifecycle evidence:
+
+| Delivered behavior | Deterministic evidence | Bound or failure rule |
+| --- | --- | --- |
+| Typed lifetime and kind | [`CapabilityLease` compile-fail examples](../core/src/capability/lease.rs) | A borrowed lease cannot escape its owner, and a Turn lease cannot enter a Run-only API |
+| Monotonic child authority | [`child ceiling tests`](../core/tests/capability_scope.rs) | Capability, workspace, governance, and execution expansion each fail before child publication |
+| Exact Use Run admission | [`Use lease tests`](../core/tests/capability_scope.rs) | Missing, unexpected, or cursor-mismatched leases fail; the accepted non-clone lease is released only after effects and descendants |
+| Structured teardown | [`scope supervisor tests`](../core/tests/capability_scope.rs) | Tasks settle first, children and effects close in reverse order, and one shared deadline bounds ignored cancellation |
+| Cancellation-safe ownership | [`waiter and parent-drop tests`](../core/tests/capability_scope.rs) | Cancelling a close waiter does not cancel the owned close driver; parent `Drop` synchronously aborts descendant futures without spawning cleanup |
+
 ## Capability evidence ledger
 
 The area names and order intentionally match the README capability map. The

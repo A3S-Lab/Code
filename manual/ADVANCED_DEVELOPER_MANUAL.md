@@ -74,6 +74,22 @@ activate a Tool, start MCP, or mutate a live Session. Those operations remain
 on the existing APIs until the scoped and typestate projection gates own their
 complete lifecycle.
 
+`CAP-SCOPE1` adds the lifecycle boundary over that set. Construct a root
+`CapabilityCeiling` against the exact `CapabilitySet`, create a typed Session
+scope, and admit child scopes only with ceilings that are subsets of the
+parent. A Use-backed Run uses `admit_use_run` and consumes a host adapter that
+implements `RetainedUseGeneration` while owning the real non-clone A3S Use
+snapshot lease. Do not replace that adapter with a generation number or a
+fresh Registry lookup.
+
+Capability access is a borrowed `CapabilityLease<'scope, K>`, not a cloneable
+ambient context. Register asynchronous resources as `CapabilityEffect`s and
+background futures through the scope supervisor. Always call the idempotent
+`close().await` and inspect `ScopeCloseReport`; `Drop` cancels and aborts task
+futures but cannot perform asynchronous effect teardown. Child tasks settle
+first, child scopes and effects close in reverse order, and the Run's Use lease
+is dropped last.
+
 # Chapter 2: Advanced Configuration
 
 ## 2.1 Queue System Configuration

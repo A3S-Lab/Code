@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input order; mixed Use cursors, Built-in shadowing, conflicts, unresolved
   dependencies, and aggregate resource overflow fail before a set can escape
   construction.
+- Added typed Session, Run, Turn, and Subtask capability scopes with
+  catalog-bound monotonic ceilings and borrowed marker-specific leases. A
+  Use-backed Run must consume the exact upstream generation lease. One bounded
+  structured-concurrency supervisor owns tasks, child scopes, reverse-order
+  effects, and final lease release; close is cancellation-safe and idempotent,
+  while `Drop` only propagates cancellation and aborts owned futures.
 
 ### Fixed
 

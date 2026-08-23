@@ -1,6 +1,6 @@
 # Scoped Capability Architecture
 
-Status: accepted foundation; A3S Use bridge and Code immutable set delivered
+Status: accepted foundation; A3S Use bridge, immutable set, and scoped lifecycle kernel delivered
 
 ## Decision
 
@@ -143,11 +143,42 @@ golden digest, mixed-Use rejection, and `Send + Sync` `Arc` pinning. The
 source cannot manufacture or shadow a sealed Built-in contribution.
 
 This gate does not publish into live Session registries and does not carry
-runtime trait objects. `CAP-SCOPE1` adds lifetime and ceiling ownership;
-`CAP-PROJ1` later attaches closed category-specific values through a typestate
-transaction. Keeping those fallible and asynchronous concerns out of
-`CAP-SET1` makes the immutable set small, deterministic, and lock-free for
-readers.
+runtime trait objects. `CAP-SCOPE1` now owns lifetimes, ceilings, leases, and
+supervised effects; `CAP-PROJ1` later attaches closed category-specific values
+through a typestate transaction. Keeping those fallible and asynchronous
+concerns out of `CAP-SET1` makes the immutable set small, deterministic, and
+lock-free for readers.
+
+## Delivered scoped lifecycle kernel
+
+`CAP-SCOPE1` is implemented beside the identity plane without moving package
+authority out of Use:
+
+| Rust boundary | Delivered invariant |
+| --- | --- |
+| `CapabilityCeiling` | Binds one catalog digest, a canonical capability subset, workspace flags, required parent governance guards, and numeric execution maxima; every child dimension must be equal or narrower |
+| `CapabilityScope<Session/Run/Turn/Subtask>` | Sealed marker types permit only Session-to-Run, Run-to-Turn/Subtask, and Turn-to-Subtask construction; every child shares the same immutable set and a derived cancellation token |
+| `CapabilityLease<'scope, K>` | Borrows its typed owner, filters descriptors through the ceiling, and fails after cancellation; compile-fail tests prevent lifetime escape and marker substitution |
+| `RetainedUseGeneration` | A trusted host adapter retains the real non-clone A3S Use `CapabilitySnapshotLease`; Run admission rejects missing, unexpected, or cursor-mismatched leases |
+| Scope supervisor | Owns a bounded `JoinSet`, child registry, reverse-order effect stack, and final generation lease; one cancellation-safe close driver makes teardown idempotent and observable |
+
+Close cancels first, settles or aborts tasks, recursively closes children in
+reverse registration order, closes local effects in reverse order, and only
+then drops the exact Use generation lease. One shared deadline bounds the
+sequence. Failures and timeouts are counted in `ScopeCloseReport`; they do not
+short-circuit older effects. Cancelling the first `close().await` waiter cannot
+cancel the supervisor-owned close driver. `Drop` propagates cancellation and
+aborts owned task futures synchronously, including descendants, but never
+spawns an unowned Tokio task. Explicit close remains required for asynchronous
+resource teardown.
+
+The public tests in
+[`capability_scope.rs`](../core/tests/capability_scope.rs) exercise all ceiling
+dimensions, scoped filtering, exact Use lease mismatch and release order,
+recursive Subtask/Turn/Run close, waiter cancellation, reverse effects, stuck
+tasks/effects, descendant abort on parent drop, idempotence, and `Send + Sync`.
+The compile-fail examples live with
+[`CapabilityLease`](../core/src/capability/lease.rs).
 
 ## Rust model
 
@@ -155,9 +186,17 @@ The public model is strongly typed and does not expose `Any`:
 
 ```rust
 pub struct CapabilityScope<K: sealed::ScopeKind> {
-    set: Arc<CapabilitySet>,
-    ceiling: CapabilityCeiling,
+    inner: Arc<ScopeInner>,
     _kind: PhantomData<K>,
+}
+
+pub struct CapabilityLease<'scope, K: sealed::ScopeKind> {
+    inner: &'scope ScopeInner,
+    _kind: PhantomData<K>,
+}
+
+pub trait RetainedUseGeneration: Send + Sync + 'static {
+    fn use_generation(&self) -> &UseCapabilityGeneration;
 }
 
 pub struct CapabilityTxn<S> {
@@ -181,10 +220,11 @@ Implementations inside a category remain open through `Send + Sync + 'static`
 traits. Only `CapabilityTxn<Validated>` can commit. Scope marker types prevent
 a Turn or Subtask lease from being passed where a Session lease is required.
 
-Rust has no asynchronous `Drop`. A lease's `Drop` may only release an atomic
-count, cancel a token, and notify its supervisor. The supervisor owns a
-`CancellationToken`, `JoinSet`, retired-generation queue, and bounded,
-idempotent `close().await`. `Drop` must not spawn an unowned Tokio task.
+Rust has no asynchronous `Drop`. A scope's `Drop` may only cancel tokens and
+abort owned task futures. The delivered supervisor owns a `CancellationToken`,
+`JoinSet`, child registry, effect stack, exact upstream generation lease, and
+bounded idempotent `close().await`. Publication adds the retired-generation
+queue in `CAP-PROJ1`; `Drop` must never spawn an unowned Tokio task.
 
 ## Publication lifecycle
 
@@ -275,16 +315,16 @@ concerns and produce typed contributions.
 | `CAP-FND1` | Delivered | Accepted ownership, lifetime, identity, failure, verification, and migration contract | The contract and Roadmap are mechanically aligned; existing lifecycle and concurrency evidence is recorded and green |
 | `USE-BRIDGE1` | Delivered | Use `6ed0b4e` publishes `a3s.use.extension-snapshot-cursor.v1`, `a3s.use.capability-snapshot-cursor.v1`, and a non-clone atomic exact-generation snapshot lease | Full Use tests and strict Clippy pass; acquisition is all-or-nothing and rejects hidden, mixed, contended, stale, unleasable, or digest-mismatched generations without changing capability snapshot JSON v2 |
 | `CAP-SET1` | Delivered | Typed Use package/cursor and Code catalog generations, sealed source classes, complete source-owned descriptor batches, and a bounded immutable `CapabilitySet` | `BTreeMap` ordering plus a domain-separated golden digest is insertion-order independent; mixed Use cursors, conflicts, missing edges, forged Built-in precedence, and every configured bound fail before an `Arc` can escape |
-| `CAP-SCOPE1` | Planned | Session/Run/Turn/Subtask scopes, ceilings, leases, effects, and structured-concurrency supervisor | Temporary capabilities cannot escape their scope or broaden a child; `HARNESS-SCOPE1` is delivered |
+| `CAP-SCOPE1` | Delivered | Session/Run/Turn/Subtask markers, catalog-bound ceilings, borrowed leases, reversible effects, exact Use Run leases, and a structured-concurrency supervisor | Compile-fail and runtime tests prevent lease escape or child expansion; close is reverse-order, cancellation-safe, idempotent, bounded, and releases the Use lease last |
 | `CAP-PROJ1` | Planned | Typestate contribution transaction and projection adapters | Failed prepare/validate/commit races never publish a partial generation |
 | `CAP-DEP1` | Planned | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
 | `HOST-CAP1` | Planned | CLI and Desktop apply each Use generation to each Session as one batch | Old Runs retain the old lease, new Runs see the new generation, and host generation never advances after partial reconciliation |
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
-`CAP-SCOPE1` now adds scoped ceilings, leases, and effect supervision over the
-delivered identity set. Tool and Skill projection migrate first,
-Agent/Command/Hook second, and MCP or
+`CAP-PROJ1` now attaches runtime values and atomic typestate transactions to
+the delivered identity and scope kernels. Tool and Skill projection migrate
+first, Agent/Command/Hook second, and MCP or
 other asynchronous resources last. Host integration follows the atomic Core
 transaction instead of adding another reconciliation abstraction.
 

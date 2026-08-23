@@ -787,6 +787,16 @@ dependencies, and resource-bound overflow fail before a reader can pin the
 set. Runtime projection remains on the migration path and is not implied by
 this identity-only API.
 
+The second slice adds sealed `CapabilityScope<Session/Run/Turn/Subtask>`
+markers and catalog-bound `CapabilityCeiling` values. Borrowed typed leases
+cannot outlive or impersonate another scope kind; child scopes can only remove
+capabilities, workspace operations, and execution budget while retaining every
+required parent governance guard. A Run over a Use-backed catalog must consume
+the exact non-clone Use snapshot lease. Its supervisor owns all child scopes,
+tasks, reversible effects, and that upstream lease, then closes them in bounded
+reverse order with the Use lease released last. This lifecycle kernel still
+does not activate runtime surfaces; atomic value projection is the next gate.
+
 Source is grouped by concern under `agent_api/`, `tools/`, `workspace/`,
 `context/`, `llm/`, `mcp/`, `orchestration/`, `store/`, and `state_graph/`.
 Node.js and Python bindings remain separate native crates over the same Core.

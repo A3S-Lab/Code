@@ -60,7 +60,7 @@ execution world.
 | `HARNESS-CAP1` | Delivered | Versioned per-run capability snapshots cover actual model-visible tools, workspace services, run-owned governance bindings, configured serializable policy identities, execution ceilings, and semantic readiness/generation identities | `run_capability_bound` is emitted before provider use and its digest changes on tool, serializable policy, service, readiness, or generation drift; authorization still executes through the same run-owned governance scope |
 | `HARNESS-IN1` | In progress | `ModelInputSnapshotV1` records bounded content-addressed evidence for the actual system/message/tool-definition/provider-facing structured directive submitted to each provider-neutral model call, plus identified semantic/hybrid Tool-result evidence | Digest/counter evidence and exact event replay are delivered; immutable authorized references to retained original content remain part of `CAR-02` rather than being copied into the event journal |
 | `HARNESS-USAGE1` | Delivered | `ModelUsageSnapshotV1` measures exact repeated Tool-result context and binds the prompt estimate and normalized `LlmClient` token/cache usage to its input snapshot | Successful completion and streaming calls emit validated `model_usage_bound` evidence before returning their terminal response; replay is exact and run/stream cancellation releases evidence backpressure |
-| `HARNESS-SCOPE1` | Planned | Scoped, reversible capability leases for one run/turn/subtask with cancellation-safe teardown | A temporary capability cannot survive its declared scope or broaden a child run beyond the parent ceiling |
+| `HARNESS-SCOPE1` | Delivered | Typed Session/Run/Turn/Subtask scopes, borrowed capability leases, monotonic ceilings, and cancellation-safe supervised teardown | Compile-fail leases cannot escape or cross marker kinds; runtime tests reject every child expansion and settle tasks, child scopes, effects, and exact Use leases in bounded order |
 | `HARNESS-PROFILE1` | Planned | Typed tool-presentation and code-mode profiles over the existing governed executor | Profiles change model-facing presentation and token cost, never authorization, workspace identity, or audit semantics |
 
 `CODE-RDY1` below was the first delivered slice of `HARNESS-CAP1`. The completed
@@ -89,7 +89,7 @@ Session- and Run-owned capability scopes.
 | `CAP-FND1` | Delivered | Accepted ownership, lifetime, identity, failure, verification, and migration contract | The contract and Roadmap are mechanically aligned; existing lifecycle and concurrency evidence is recorded and green |
 | `USE-BRIDGE1` | Delivered | Use `6ed0b4e` publishes `a3s.use.extension-snapshot-cursor.v1`, `a3s.use.capability-snapshot-cursor.v1`, and a non-clone atomic exact-generation snapshot lease | Full Use tests and strict Clippy pass; acquisition is all-or-nothing and rejects hidden, mixed, contended, stale, unleasable, or digest-mismatched generations without changing capability snapshot JSON v2 |
 | `CAP-SET1` | Delivered | Typed Use package/cursor and Code catalog generations, sealed source classes, complete source-owned descriptor batches, and a bounded immutable `CapabilitySet` | `BTreeMap` ordering plus a domain-separated golden digest is insertion-order independent; mixed Use cursors, conflicts, missing edges, forged Built-in precedence, and every configured bound fail before an `Arc` can escape |
-| `CAP-SCOPE1` | Planned | Session/Run/Turn/Subtask scopes, ceilings, leases, effects, and structured-concurrency supervisor | Temporary capabilities cannot escape their scope or broaden a child; `HARNESS-SCOPE1` is delivered |
+| `CAP-SCOPE1` | Delivered | Session/Run/Turn/Subtask markers, catalog-bound ceilings, borrowed leases, reversible effects, exact Use Run leases, and a structured-concurrency supervisor | Compile-fail and runtime tests prevent lease escape or child expansion; close is reverse-order, cancellation-safe, idempotent, bounded, and releases the Use lease last |
 | `CAP-PROJ1` | Planned | Typestate contribution transaction and projection adapters | Failed prepare/validate/commit races never publish a partial generation |
 | `CAP-DEP1` | Planned | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
 | `HOST-CAP1` | Planned | CLI and Desktop apply each Use generation to each Session as one batch | Old Runs retain the old lease, new Runs see the new generation, and host generation never advances after partial reconciliation |
@@ -98,8 +98,9 @@ Session- and Run-owned capability scopes.
 
 [`USE-BRIDGE1`](https://github.com/A3S-Lab/Use/commit/6ed0b4e) is the upstream
 admission boundary, and `CAP-SET1` now freezes its normalized identity plane.
-`CAP-SCOPE1` adds lifetimes, ceilings, leases, and supervised effects before
-projection migrates Tool and Skill, Agent/Command/Hook, and finally MCP or
+`CAP-SCOPE1` now provides lifetimes, ceilings, exact-generation leases, and
+supervised effects. `CAP-PROJ1` attaches runtime values through atomic typestate
+transactions before projection migrates Tool and Skill, Agent/Command/Hook, and finally MCP or
 other asynchronous resources. `CAP-GA1` starts only after the compatibility
 adapters have delegated to the new transaction path for one major release.
 
