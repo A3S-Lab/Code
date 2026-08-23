@@ -10,6 +10,7 @@ use crate::capability::{
     CapabilityKind, CapabilityProjection, CapabilityRuntimeError, CapabilityValue,
     SessionCapabilityRun,
 };
+use crate::commands::{CommandRegistry, CommandRegistrySnapshotError};
 use crate::context::SkillCatalogContextProvider;
 use crate::skills::{SkillRegistry, SkillRegistrySnapshotError};
 use crate::subagent::{AgentRegistry, AgentRegistrySnapshotError};
@@ -18,10 +19,21 @@ use std::sync::Arc;
 
 const MAX_RUNTIME_VALIDATION_MESSAGE_BYTES: usize = 1_024;
 
-struct PinnedRuntimeProjection {
+pub(super) struct PinnedRuntimeProjection {
     skill_registry: Arc<SkillRegistry>,
     agent_registry: Arc<AgentRegistry>,
+    command_registry: Arc<CommandRegistry>,
     tool_executor: Arc<ToolExecutor>,
+}
+
+impl PinnedRuntimeProjection {
+    pub(super) fn command_registry(&self) -> &CommandRegistry {
+        &self.command_registry
+    }
+
+    pub(super) fn tool_executor(&self) -> &ToolExecutor {
+        &self.tool_executor
+    }
 }
 
 pub(super) fn build_agent_loop(session: &AgentSession) -> AgentLoop {
@@ -37,51 +49,11 @@ pub(super) fn build_agent_loop(session: &AgentSession) -> AgentLoop {
 pub(super) async fn build_pinned_agent_loop(
     session: &AgentSession,
 ) -> crate::error::Result<(AgentLoop, SessionCapabilityRun)> {
-    // Pin the Code generation and compatibility registries under the same
-    // mutation boundary. A Run therefore linearizes either before or after a
-    // host mutation and never combines a capability projection with a newer
-    // compatibility name map.
-    let (projection, ceiling, runtime_projection) = {
-        let _admission = session
-            .close_handle
-            .immediate_extension_mutation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if session.is_closed() {
-            return Err(CapabilityRuntimeError::SessionClosed.into());
-        }
-        let projection = session.capability_catalog.pin();
-        let ceiling = session.capability_run_ceiling(projection.projection().set())?;
-        let runtime_projection = pin_runtime_projection(session, projection.projection())?;
-        (projection, ceiling, runtime_projection)
-    };
-
-    let capability_run = SessionCapabilityRun::admit(
-        projection,
-        "active",
-        "active",
-        ceiling,
-        session.session_cancel.child_token(),
-    )
-    .await?;
-    let closed_during_admission = {
-        let _admission = session
-            .close_handle
-            .immediate_extension_mutation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        session.is_closed()
-    };
-    if closed_during_admission {
-        if let Err(error) = capability_run.close().await {
-            tracing::warn!(error = %error, "Capability Run close failed after Session close won admission");
-        }
-        return Err(CapabilityRuntimeError::SessionClosed.into());
-    }
-
+    let (runtime_projection, capability_run) = pin_and_admit_runtime_projection(session).await?;
     let PinnedRuntimeProjection {
         skill_registry,
         agent_registry,
+        command_registry: _,
         tool_executor,
     } = runtime_projection;
     let mut config = live_config(session);
@@ -133,25 +105,87 @@ pub(super) async fn build_pinned_agent_loop(
     ))
 }
 
+pub(super) async fn pin_and_admit_runtime_projection(
+    session: &AgentSession,
+) -> crate::error::Result<(PinnedRuntimeProjection, SessionCapabilityRun)> {
+    // Pin the Code generation and compatibility registries under the same
+    // mutation boundary. A Run therefore linearizes either before or after a
+    // host mutation and never combines a capability projection with a newer
+    // compatibility name map.
+    let (projection, ceiling, runtime_projection) = {
+        let _admission = session
+            .close_handle
+            .immediate_extension_mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if session.is_closed() {
+            return Err(CapabilityRuntimeError::SessionClosed.into());
+        }
+        let projection = session.capability_catalog.pin();
+        let ceiling = session.capability_run_ceiling(projection.projection().set())?;
+        let runtime_projection = pin_runtime_projection(session, projection.projection())?;
+        (projection, ceiling, runtime_projection)
+    };
+
+    let capability_run = SessionCapabilityRun::admit(
+        projection,
+        "active",
+        "active",
+        ceiling,
+        session.session_cancel.child_token(),
+    )
+    .await?;
+    let closed_during_admission = {
+        let _admission = session
+            .close_handle
+            .immediate_extension_mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        session.is_closed()
+    };
+    if closed_during_admission {
+        if let Err(error) = capability_run.close().await {
+            tracing::warn!(error = %error, "Capability Run close failed after Session close won admission");
+        }
+        return Err(CapabilityRuntimeError::SessionClosed.into());
+    }
+    Ok((runtime_projection, capability_run))
+}
+
 pub(super) fn validate_capability_projection_runtime(
     session: &AgentSession,
     projection: &CapabilityProjection,
+    command_registry: &CommandRegistry,
 ) -> Result<(), CapabilityRuntimeError> {
-    pin_runtime_projection(session, projection).map(|_| ())
+    pin_runtime_projection_with_command_registry(session, projection, command_registry).map(|_| ())
 }
 
 fn pin_runtime_projection(
     session: &AgentSession,
     projection: &CapabilityProjection,
 ) -> Result<PinnedRuntimeProjection, CapabilityRuntimeError> {
+    let command_registry = session
+        .command_registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pin_runtime_projection_with_command_registry(session, projection, &command_registry)
+}
+
+fn pin_runtime_projection_with_command_registry(
+    session: &AgentSession,
+    projection: &CapabilityProjection,
+    compatibility_commands: &CommandRegistry,
+) -> Result<PinnedRuntimeProjection, CapabilityRuntimeError> {
     let mut projected_tools = Vec::new();
     let mut projected_skills = Vec::new();
     let mut projected_agents = Vec::new();
+    let mut projected_commands = Vec::new();
     for (_, value) in projection.iter() {
         match value {
             CapabilityValue::Tool(tool) => projected_tools.push(Arc::clone(tool)),
             CapabilityValue::Skill(skill) => projected_skills.push(Arc::clone(skill)),
             CapabilityValue::Agent(agent) => projected_agents.push(Arc::clone(agent)),
+            CapabilityValue::Command(command) => projected_commands.push(Arc::clone(command)),
             _ => return Err(CapabilityRuntimeError::UnsupportedSessionKind { kind: value.kind() }),
         }
     }
@@ -188,6 +222,16 @@ fn pin_runtime_projection(
                 }
             })?,
     );
+    let command_registry = Arc::new(
+        compatibility_commands
+            .snapshot_with_external_commands(projected_commands)
+            .map_err(|error: CommandRegistrySnapshotError| {
+                CapabilityRuntimeError::RuntimeNameConflict {
+                    kind: CapabilityKind::Command,
+                    public_name: error.name().to_owned(),
+                }
+            })?,
+    );
     let tool_executor = Arc::new(
         session
             .tool_executor
@@ -200,6 +244,7 @@ fn pin_runtime_projection(
     Ok(PinnedRuntimeProjection {
         skill_registry,
         agent_registry,
+        command_registry,
         tool_executor,
     })
 }

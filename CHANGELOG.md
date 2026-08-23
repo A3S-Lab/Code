@@ -58,6 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publication, live worker and agent-directory registration cannot shadow a
   published Agent, and N Runs retain N delegation plus the exact A3S Use lease
   across an N+1 cutover.
+- Added Run-frozen slash Command projection to `SessionCapabilityBatch`.
+  Blocking and streaming command dispatch now enter the same capability Run,
+  merge compatibility and projected Commands into an independent name map,
+  and share the exact `Arc<dyn SlashCommand>` values. Built-in and compatibility
+  conflicts fail before publication, legacy registration cannot shadow a
+  published Command, and an N execution retains N plus its exact A3S Use lease
+  across an N+1 cutover.
 
 ### Fixed
 

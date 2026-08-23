@@ -34,7 +34,19 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+
+#[derive(Debug, thiserror::Error)]
+#[error("projected command name '{name}' conflicts with the compatibility registry")]
+pub(crate) struct CommandRegistrySnapshotError {
+    name: String,
+}
+
+impl CommandRegistrySnapshotError {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+}
 
 /// Context passed to every slash command execution.
 #[derive(Debug, Clone)]
@@ -121,6 +133,7 @@ pub trait SlashCommand: Send + Sync {
 /// Registry of slash commands.
 pub struct CommandRegistry {
     commands: HashMap<String, Arc<dyn SlashCommand>>,
+    capability_catalog: Option<Weak<crate::capability::CapabilityCatalog>>,
 }
 
 impl CommandRegistry {
@@ -128,6 +141,7 @@ impl CommandRegistry {
     pub fn new() -> Self {
         let mut registry = Self {
             commands: HashMap::new(),
+            capability_catalog: None,
         };
         registry.register(Arc::new(HelpCommand));
         registry.register(Arc::new(CompactCommand));
@@ -140,8 +154,45 @@ impl CommandRegistry {
         registry
     }
 
+    pub(crate) fn with_capability_catalog(
+        catalog: &Arc<crate::capability::CapabilityCatalog>,
+    ) -> Self {
+        let mut registry = Self::new();
+        registry.capability_catalog = Some(Arc::downgrade(catalog));
+        registry
+    }
+
+    /// Freeze the compatibility map and merge one projected generation.
+    ///
+    /// The returned registry shares the exact Command [`Arc`] values while
+    /// owning an independent name map.
+    pub(crate) fn snapshot_with_external_commands(
+        &self,
+        external: impl IntoIterator<Item = Arc<dyn SlashCommand>>,
+    ) -> Result<Self, CommandRegistrySnapshotError> {
+        let mut commands = self.commands.clone();
+        for command in external {
+            let name = command.name().to_owned();
+            if commands.contains_key(&name) {
+                return Err(CommandRegistrySnapshotError { name });
+            }
+            commands.insert(name, command);
+        }
+        Ok(Self {
+            commands,
+            capability_catalog: self.capability_catalog.clone(),
+        })
+    }
+
     /// Register a custom command.
     pub fn register(&mut self, cmd: Arc<dyn SlashCommand>) {
+        if self.published_projection_owns(cmd.name()) {
+            tracing::warn!(
+                command = cmd.name(),
+                "Rejected command registration because a published projection owns the name"
+            );
+            return;
+        }
         self.commands.insert(cmd.name().to_string(), cmd);
     }
 
@@ -212,6 +263,24 @@ impl CommandRegistry {
     /// Whether the registry is empty.
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
+    }
+
+    fn published_projection_owns(&self, name: &str) -> bool {
+        let Some(catalog) = self
+            .capability_catalog
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        else {
+            return false;
+        };
+        let projection = catalog.pin();
+        let owns_name = projection.projection().iter().any(|(_, value)| {
+            matches!(
+                value,
+                crate::capability::CapabilityValue::Command(command) if command.name() == name
+            )
+        });
+        owns_name
     }
 }
 
@@ -432,6 +501,25 @@ impl SlashCommand for McpCommand {
 mod tests {
     use super::*;
 
+    struct NamedCommand {
+        name: &'static str,
+        output: &'static str,
+    }
+
+    impl SlashCommand for NamedCommand {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn description(&self) -> &str {
+            self.output
+        }
+
+        fn execute(&self, _args: &str, _ctx: &CommandContext) -> CommandOutput {
+            CommandOutput::text(self.output)
+        }
+    }
+
     fn test_ctx() -> CommandContext {
         CommandContext {
             session_id: "test-session-123".into(),
@@ -550,6 +638,58 @@ mod tests {
         let ctx = test_ctx();
         let out = reg.dispatch("/ping", &ctx).unwrap();
         assert_eq!(out.text, "pong");
+    }
+
+    #[test]
+    fn projected_snapshot_preserves_identity_and_isolates_later_mutation() {
+        let mut registry = CommandRegistry::new();
+        let projected: Arc<dyn SlashCommand> = Arc::new(NamedCommand {
+            name: "projected",
+            output: "generation one",
+        });
+        let snapshot = registry
+            .snapshot_with_external_commands([Arc::clone(&projected)])
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            snapshot.commands.get("projected").unwrap(),
+            &projected
+        ));
+
+        registry.register(Arc::new(NamedCommand {
+            name: "projected",
+            output: "compatibility mutation",
+        }));
+        let ctx = test_ctx();
+        assert_eq!(
+            snapshot.dispatch("/projected", &ctx).unwrap().text,
+            "generation one"
+        );
+        assert_eq!(
+            registry.dispatch("/projected", &ctx).unwrap().text,
+            "compatibility mutation"
+        );
+    }
+
+    #[test]
+    fn projected_snapshot_rejects_builtin_and_compatibility_name_conflicts() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Arc::new(NamedCommand {
+            name: "compatibility",
+            output: "compatibility",
+        }));
+
+        for name in ["help", "compatibility"] {
+            let error = match registry.snapshot_with_external_commands([Arc::new(NamedCommand {
+                name,
+                output: "projected",
+            })
+                as Arc<dyn SlashCommand>])
+            {
+                Ok(_) => panic!("projected command unexpectedly shadowed '{name}'"),
+                Err(error) => error,
+            };
+            assert_eq!(error.name(), name);
+        }
     }
 
     #[test]

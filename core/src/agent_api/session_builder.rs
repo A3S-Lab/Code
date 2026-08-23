@@ -272,8 +272,6 @@ fn finish_agent_session(
         .iter()
         .map(|source| Arc::clone(&source.manager))
         .collect();
-    let command_registry = CommandRegistry::new();
-
     let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel_token = Arc::new(tokio::sync::Mutex::new(None));
     let current_run_id = Arc::new(tokio::sync::Mutex::new(None));
@@ -289,6 +287,7 @@ fn finish_agent_session(
 
     let hook_engine = Arc::new(crate::hooks::HookEngine::new());
     let capability_catalog = empty_capability_catalog()?;
+    let command_registry = CommandRegistry::with_capability_catalog(&capability_catalog);
     let lifecycle_hook_executor: Arc<dyn crate::hooks::HookExecutor> = opts
         .hook_executor
         .clone()

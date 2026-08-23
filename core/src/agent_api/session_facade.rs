@@ -43,8 +43,14 @@ impl AgentSession {
         &self,
         cmd: Arc<dyn crate::commands::SlashCommand>,
     ) -> crate::error::Result<()> {
-        self.close_handle
-            .mutate_immediate(|| session_commands::register(self, cmd))
+        self.close_handle.mutate_immediate(|| {
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Command,
+                cmd.name(),
+            )?;
+            session_commands::register(self, cmd);
+            Ok(())
+        })?
     }
 
     /// Return whether [`close`](Self::close) has been called on this session.

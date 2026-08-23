@@ -314,9 +314,17 @@ impl AgentSession {
         if cancellation.is_cancelled() || self.session_cancel.is_cancelled() {
             return Err(crate::capability::CapabilityRuntimeError::Cancelled);
         }
+        // The legacy public registry guard does not participate in the
+        // Session mutation gate. Keep its lock through catalog publication so
+        // direct mutation linearizes wholly before validation or after CAS.
+        let command_registry = self
+            .command_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         super::agent_loop_runtime::validate_capability_projection_runtime(
             self,
             prepared.projection()?,
+            &command_registry,
         )?;
         prepared.commit()
     }

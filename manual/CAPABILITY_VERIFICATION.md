@@ -114,7 +114,9 @@ must update or strengthen the same behavioral evidence rather than deleting it.
 
 Delivered `HOST-CAP1` has a deterministic Core Tool/Skill host slice plus the
 official CLI and Desktop adoption evidence. Delivered `HOST-AGENT1` extends
-the same Core transaction and Run lease to Agent delegation.
+the same Core transaction and Run lease to Agent delegation. Delivered
+`HOST-COMMAND1` extends that admission boundary to blocking and streaming
+slash-command execution.
 
 | Core host behavior | Deterministic evidence | Bound or failure rule |
 | --- | --- | --- |
@@ -124,9 +126,11 @@ the same Core transaction and Run lease to Agent delegation.
 | Skill discovery N/N+1 isolation | [`Skill search cutover test`](../core/src/agent_api/capability_runtime_tests.rs) | `search_skills` resolves the Run-frozen Skill registry while N+1 is published, rather than consulting the Session-latest map |
 | Agent snapshot identity | [`AgentRegistry snapshot test`](../core/src/subagent/tests.rs) | Each Run owns an independent name map, shares the exact projected `Arc<AgentDefinition>`, and cannot observe later compatibility mutation |
 | Agent delegation N/N+1 isolation | [`Agent task cutover and automatic-delegation tests`](../core/src/agent_api/capability_runtime_tests/agent_projection.rs) | Parent definitions, automatic selection, and `task` execution share one Run-frozen Agent registry; an N Run starts the N child after N+1 publication and holds N's exact Use lease through foreground completion |
-| Compatibility conflict boundary | [`pre-commit and post-publication conflict tests`](../core/src/agent_api/capability_runtime_tests.rs) | Tool, Skill, and canonical Agent alias conflicts fail before generation advance; compatibility Tool, Skill, Agent, or MCP-wrapper mutation cannot shadow a published projection |
+| Command snapshot identity | [`CommandRegistry snapshot tests`](../core/src/commands.rs) | Each Run owns an independent name map while sharing the exact projected `Arc<dyn SlashCommand>`; later compatibility mutation cannot rewrite the snapshot |
+| Command dispatch N/N+1 isolation | [`Command cutover test`](../core/src/agent_api/capability_runtime_tests/command_projection.rs) | Blocking and streaming dispatch execute through the Run-frozen registry; an N Command remains on N after N+1 publication and holds N's exact Use lease through execution |
+| Compatibility conflict boundary | [`pre-commit and post-publication conflict tests`](../core/src/agent_api/capability_runtime_tests.rs) | Tool, Skill, canonical Agent alias, and Command conflicts fail before generation advance; compatibility Tool, Skill, Agent, Command, or MCP-wrapper mutation cannot shadow a published projection |
 | Close and cancellation linearization | [`prepare cancellation, close/commit race, and exact-Run admission tests`](../core/src/agent_api/capability_runtime_tests.rs) | Close and commit have one order, prepared effects cannot become orphaned, exact Run reservations settle on admission failure, and non-clean scope teardown becomes a typed Run failure |
-| Explicit migration boundary | [`SessionCapabilityBatch`](../core/src/capability/runtime.rs) | This cut accepts only Tool, Skill, and Agent values; every other capability kind fails closed until its product-owned adapter is migrated |
+| Explicit migration boundary | [`SessionCapabilityBatch`](../core/src/capability/runtime.rs) | This cut accepts only Tool, Skill, Agent, and Command values; every other capability kind fails closed until its product-owned adapter is migrated |
 
 `CAP-PROFILE1` and `HARNESS-PROFILE1` add deterministic model-presentation
 evidence without adding another capability or package lifecycle:

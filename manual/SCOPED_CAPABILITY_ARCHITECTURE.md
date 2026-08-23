@@ -84,9 +84,9 @@ The baseline also exposes the migration pressure. Tool, Skill, Agent, Command,
 Hook, and MCP state is held in separate mutable registries. Dynamic Tool and
 Skill replacement uses pointer identity and manually maintained shadow chains.
 The remaining compatibility host still reconciles asynchronous MCP, Flow,
-Knowledge, and Runtime Task surfaces independently. Tool, Skill, and Agent
-projection has moved to one atomic Core batch; later gates must preserve that
-boundary as the asynchronous categories migrate.
+Knowledge, and Runtime Task surfaces independently. Tool, Skill, Agent, and
+Command projections have moved to one atomic Core batch; later gates must
+preserve that boundary as the asynchronous categories migrate.
 
 ## Capability lifetimes
 
@@ -184,8 +184,9 @@ The compile-fail examples live with
 
 `CAP-PROJ1` is implemented as a parallel Core catalog. `HOST-CAP1` binds
 official Tool/Skill hosts to it, and `HOST-AGENT1` binds Core Agent delegation
-to the same Run generation without claiming that the remaining mutable
-compatibility registries have migrated.
+to the same Run generation. `HOST-COMMAND1` binds Core slash-command dispatch
+to that generation without claiming that the remaining mutable compatibility
+registries have migrated.
 
 | Rust boundary | Delivered invariant |
 | --- | --- |
@@ -347,14 +348,14 @@ generation-specific `UseGenerationLeaseProvider`. `AgentSession` prepares the
 whole batch without changing visibility, validates it against the frozen
 compatibility Tool and Skill maps, and publishes the projection and provider
 in one catalog CAS. This gate did not claim the other capability kinds;
-`HOST-AGENT1` now extends the same boundary to Agent definitions, while
-Command, Hook, MCP, Flow, Knowledge, Context, and UI still fail before
-preparation.
+`HOST-AGENT1` extends the same boundary to Agent definitions and
+`HOST-COMMAND1` extends it to slash Commands, while Hook, MCP, Flow, Knowledge,
+Context, and UI still fail before preparation.
 
 Run admission pins three things at one linearization point: the immutable Code
-projection, frozen compatibility Tool/Skill/Agent maps, and the governance
-ceiling. It then asks the published provider for a fresh, non-clone retained
-generation. The provider implementation must own the concrete A3S Use
+projection, frozen compatibility Tool/Skill/Agent/Command maps, and the
+governance ceiling. It then asks the published provider for a fresh, non-clone
+retained generation. The provider implementation must own the concrete A3S Use
 `CapabilitySnapshotLease`; a generation number or cached projection pointer is
 not a substitute. Code rechecks generation, capability revision, and Registry
 revision before the Run scope accepts the lease.
@@ -364,7 +365,8 @@ governed execution call. Skill catalog context, `search_skills`, and nested
 Skill execution are rebound to the same frozen Skill registry. A concurrent
 N+1 commit cannot rewrite an admitted N Run, and it cannot release N's Use
 lease before Run teardown. Compatibility registration cannot shadow a name
-already owned by the published projection. Preparation cancellation, name
+already owned by the published projection. Slash-command lookup and execution
+resolve through one frozen Command registry. Preparation cancellation, name
 conflict, Session close, or a lost CAS leaves the visible generation unchanged
 and transfers every prepared effect to bounded cleanup. A non-clean Run scope
 close is a typed Run failure rather than a warning-only condition.
@@ -521,10 +523,57 @@ nested child cannot escape into a newer Skill map through this rebind.
 An N+1 publication changes only later Run admission. An already admitted N Run
 continues to expose the N Agent catalog, resolves `task` through the N registry,
 and retains the exact N A3S Use lease until the foreground child and parent Run
-settle. Command and Hook are the next synchronous registry migrations. MCP and
-the remaining asynchronous resources migrate only after their product-owned
-connect, drain, and rollback effects can be supervised without moving package
-lifecycle authority into Code.
+settle. Hook is the next synchronous registry migration. MCP and the remaining
+asynchronous resources migrate only after their product-owned connect, drain,
+and rollback effects can be supervised without moving package lifecycle
+authority into Code.
+
+### HOST-COMMAND1 Command runtime cut
+
+`HOST-COMMAND1` admits `CapabilityValue::Command` through the existing
+`SessionCapabilityBatch`. A3S Use remains responsible for selecting,
+verifying, granting, publishing, draining, and recovering the package
+generation. Code receives the exact projected `Arc<dyn SlashCommand>` values
+and the generation-specific lease provider; it does not clone Command objects
+or create another package lifecycle.
+
+Blocking `send` and streaming `stream` first acquire the Session single-flight
+admission lease. Slash-command syntax then enters the same capability Run used
+by model-backed execution. At that boundary, Code snapshots the compatibility
+`CommandRegistry`, merges the projected generation into an independent name
+map, and builds `CommandContext` Tool names from the same pinned
+`ToolExecutor`. The capability Run and exact A3S Use generation lease remain
+alive until synchronous Command execution has produced its output.
+
+```text
+A3S Use capability generation + exact Run lease
+                         │
+                         ▼
+          Code immutable capability projection
+                         │
+                         ▼
+ compatibility Commands + projected Commands ──▶ Run-owned CommandRegistry
+                                                   │
+                                    ┌──────────────┴──────────────┐
+                                    ▼                             ▼
+                              blocking send                streaming dispatch
+                                    │                             │
+                                    └──────── execute ────────────┘
+```
+
+Built-in and compatibility Command names form one fail-closed conflict domain
+with projected names. Validation holds the legacy registry lock through the
+catalog CAS because the public `command_registry()` guard remains mutable for
+SDK compatibility. A direct legacy mutation therefore linearizes before
+validation or after publication; it cannot enter between them. After
+publication, both `register_command` and the legacy guard reject a projected
+name.
+
+An N Command already executing when N+1 is published continues to resolve and
+execute the exact N `Arc`. Its N A3S Use lease remains retained through that
+execution, while the next blocking or streaming dispatch admits N+1. Hook is
+the next synchronous registry migration; asynchronous MCP and other resources
+remain gated on product-owned supervised effects.
 
 ## Contribution and conflict rules
 
@@ -549,7 +598,7 @@ readiness, and owned effects.
 | `CAP-I01` | A3S Use is the sole authority for package plan/apply, verification, dependency resolution, Grants, lifecycle generation, capability cutover, and recovery. |
 | `CAP-I02` | One source generation is projected into a Session as one atomic contribution batch. |
 | `CAP-I03` | A failed transaction cannot change the visible catalog generation or leave a partially visible batch. |
-| `CAP-I04` | A Run's model definition and execution resolve through the same pinned capability value; delegated Agent definitions and lookup share one Run-frozen registry, and a presentation Profile can only remove Tool definitions or rephrase the existing code gateway. |
+| `CAP-I04` | A Run's model definition and execution resolve through the same pinned capability value; delegated Agent definitions and lookup share one Run-frozen registry, slash-command selection and execution share another, and a presentation Profile can only remove Tool definitions or rephrase the existing code gateway. |
 | `CAP-I05` | External hot-plug affects the next admitted Run; an admitted Run retains its exact local and upstream generation leases. |
 | `CAP-I06` | A child scope cannot broaden its parent's permission, confirmation, security, budget, workspace, Tool-presentation, or execution ceiling. |
 | `CAP-I07` | Required dependencies must be ready in the same upstream generation before a contribution becomes visible. |
@@ -598,6 +647,7 @@ concerns and produce typed contributions.
 | `HOST-CAP1` | Delivered | Core, CLI, and Desktop use one atomic Tool/Skill projection per Session or one-shot execution | Old Runs retain N and its exact Use lease, new Runs see N+1, failed preparation never advances the generation, one-shot watchers stop before Run admission, and Desktop requires exact Code/Use evidence |
 | `CAP-PROFILE1` | Delivered | Run-frozen typed Tool presentation over the same pinned executor values | Permission filtering precedes Profile projection; name/schema identity and deterministic order are preserved, code mode rephrases only the existing `program` definition, child runs cannot broaden, and exact Session resume plus Rust/Node.js/Python/Go parity pass |
 | `HOST-AGENT1` | Delivered | Core projects Agent definitions into one Run-frozen registry shared by automatic and Tool-driven delegation | Canonical alias conflicts fail before publication, compatibility registration cannot shadow a published Agent, N Runs delegate through N after an N+1 cutover, and the exact N Use lease remains held through foreground child completion |
+| `HOST-COMMAND1` | Delivered | Core dispatches blocking and streaming slash Commands through one Run-frozen registry | Built-in and compatibility conflicts fail before publication, legacy registration cannot shadow a published Command, N execution remains on N after an N+1 cutover, and the exact N Use lease remains held through Command execution |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
 `CAP-PROJ1` attaches runtime values and atomic typestate transactions to the
@@ -605,10 +655,11 @@ identity and scope kernels. `CAP-DEP1` now orders only their published surface
 edges through a bounded generation-bound readiness plan. Delivered
 `HOST-CAP1` hosts Tool and Skill projections atomically in Core, the resident
 CLI, one-shot Code Exec, and Desktop. `HOST-AGENT1` adds Core Agent projection
-and delegation to that same transaction and Run lease. Command and Hook
-migrate next, with MCP and other asynchronous resources last. Host integration
-must use the atomic Core transaction instead of adding another reconciliation
-abstraction.
+and delegation to that same transaction and Run lease. `HOST-COMMAND1` adds
+blocking and streaming slash-command dispatch to that admission boundary.
+Hook migrates next, with MCP and other asynchronous resources last. Host
+integration must use the atomic Core transaction instead of adding another
+reconciliation abstraction.
 
 `CAP-PROFILE1` operates only after that atomic admission boundary. It projects
 the Run-frozen permission-visible definition list, never the Session-latest

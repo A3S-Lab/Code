@@ -118,7 +118,7 @@ pub(super) async fn stream(
     // session state as model-backed operations.
     let lease = admit(session, "stream").await?;
 
-    if let Some((rx, handle)) = command_runtime::dispatch_streaming(session, prompt).await {
+    if let Some((rx, handle)) = command_runtime::dispatch_streaming(session, prompt).await? {
         let worker_abort = handle.abort_handle();
         return Ok((
             rx,

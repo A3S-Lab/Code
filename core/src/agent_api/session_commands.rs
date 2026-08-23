@@ -6,7 +6,7 @@
 //! one place.
 
 use super::AgentSession;
-use crate::commands::{CommandContext, CommandOutput, CommandRegistry, SlashCommand};
+use crate::commands::{CommandRegistry, SlashCommand};
 use std::sync::{Arc, MutexGuard};
 
 pub(super) fn registry(session: &AgentSession) -> MutexGuard<'_, CommandRegistry> {
@@ -18,12 +18,4 @@ pub(super) fn registry(session: &AgentSession) -> MutexGuard<'_, CommandRegistry
 
 pub(super) fn register(session: &AgentSession, cmd: Arc<dyn SlashCommand>) {
     registry(session).register(cmd);
-}
-
-pub(super) fn dispatch(
-    session: &AgentSession,
-    prompt: &str,
-    ctx: &CommandContext,
-) -> Option<CommandOutput> {
-    registry(session).dispatch(prompt, ctx)
 }

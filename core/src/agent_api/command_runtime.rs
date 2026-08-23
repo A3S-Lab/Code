@@ -1,4 +1,4 @@
-use super::{session_commands, AgentSession};
+use super::{agent_loop_runtime::pin_and_admit_runtime_projection, AgentSession};
 use crate::agent::{AgentEvent, AgentResult};
 use crate::commands::{CommandContext, CommandRegistry};
 use crate::error::{read_or_recover, Result};
@@ -15,8 +15,10 @@ pub(super) async fn dispatch_blocking(
         return Ok(None);
     }
 
-    let ctx = build_command_context(session);
-    let output = session_commands::dispatch(session, prompt, &ctx);
+    let (runtime, capability_run) = pin_and_admit_runtime_projection(session).await?;
+    let ctx = build_command_context(session, runtime.tool_executor());
+    let output = runtime.command_registry().dispatch(prompt, &ctx);
+    capability_run.close().await?;
     let Some(output) = output else {
         return Ok(None);
     };
@@ -51,13 +53,18 @@ fn command_result(
 pub(super) async fn dispatch_streaming(
     session: &AgentSession,
     prompt: &str,
-) -> Option<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
+) -> Result<Option<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)>> {
     if !CommandRegistry::is_command(prompt) {
-        return None;
+        return Ok(None);
     }
 
-    let ctx = build_command_context(session);
-    let output = session_commands::dispatch(session, prompt, &ctx)?;
+    let (runtime, capability_run) = pin_and_admit_runtime_projection(session).await?;
+    let ctx = build_command_context(session, runtime.tool_executor());
+    let output = runtime.command_registry().dispatch(prompt, &ctx);
+    capability_run.close().await?;
+    let Some(output) = output else {
+        return Ok(None);
+    };
     let (tx, rx) = mpsc::channel(256);
 
     let text = sanitize_text(session, &output.text);
@@ -65,7 +72,7 @@ pub(super) async fn dispatch_streaming(
         send_text_output(&tx, text).await;
     });
 
-    Some((rx, handle))
+    Ok(Some((rx, handle)))
 }
 
 fn sanitize_text(session: &AgentSession, text: &str) -> String {
@@ -77,10 +84,12 @@ fn sanitize_text(session: &AgentSession, text: &str) -> String {
         .unwrap_or_else(|| text.to_string())
 }
 
-fn build_command_context(session: &AgentSession) -> CommandContext {
+fn build_command_context(
+    session: &AgentSession,
+    tool_executor: &crate::tools::ToolExecutor,
+) -> CommandContext {
     let history = read_or_recover(&session.history);
-    let tool_names: Vec<String> = session
-        .tool_executor
+    let tool_names: Vec<String> = tool_executor
         .definitions()
         .into_iter()
         .map(|tool| tool.name)

@@ -820,7 +820,7 @@ shadow a published projection. The CLI now uses the batch for resident
 sessions and a short-lived Code Exec runtime that stops Use discovery before
 Run admission. Desktop probes and requires that exact host contract, then
 accepts success only with canonical Code catalog and Use snapshot evidence.
-Command, Hook, MCP, Flow, Knowledge, Context, and UI still fail closed in the
+Hook, MCP, Flow, Knowledge, Context, and UI still fail closed in the
 atomic Session batch and retain their explicit compatibility owners.
 
 Delivered `HOST-AGENT1` extends that batch to typed Agent definitions without
@@ -832,6 +832,14 @@ cannot shadow each other across the compatibility boundary, and later worker
 or agent-directory registration cannot replace a published Agent. An admitted
 N Run continues to delegate through N after N+1 publication and retains N's
 exact A3S Use lease through foreground child completion.
+
+Delivered `HOST-COMMAND1` extends the same batch and Run admission boundary to
+slash Commands. Each blocking or streaming dispatch freezes the compatibility
+Command map, merges the projected generation without cloning Command objects,
+and executes through that snapshot. Built-in and compatibility name conflicts
+fail before publication, including the legacy mutable registry path. An N
+Command already executing during N+1 publication continues through N and
+retains N's exact A3S Use lease until execution completes.
 
 Delivered `CAP-PROFILE1` adds one closed
 `ToolPresentationProfileV1` to the Session and Run. Adaptive preserves the
