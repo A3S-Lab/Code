@@ -58,9 +58,9 @@
 use crate::config::CodeConfig;
 use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use crate::error::{read_or_recover, write_or_recover};
 
@@ -578,7 +578,19 @@ impl AgentDefinition {
 /// Thread-safe registry that stores agent definitions and provides
 /// lookup functionality.
 pub struct AgentRegistry {
-    agents: RwLock<HashMap<String, AgentDefinition>>,
+    agents: RwLock<HashMap<String, Arc<AgentDefinition>>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("projected agent name '{name}' conflicts with the compatibility registry")]
+pub(crate) struct AgentRegistrySnapshotError {
+    name: String,
+}
+
+impl AgentRegistrySnapshotError {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 fn canonical_agent_name(name: &str) -> &str {
@@ -589,6 +601,10 @@ fn canonical_agent_name(name: &str) -> &str {
         "code-review" | "code_reviewer" | "reviewer" => "review",
         other => other,
     }
+}
+
+pub(crate) fn agent_names_conflict(left: &str, right: &str) -> bool {
+    canonical_agent_name(left) == canonical_agent_name(right)
 }
 
 impl Default for AgentRegistry {
@@ -630,8 +646,40 @@ impl AgentRegistry {
         registry
     }
 
+    /// Freeze the compatibility registry and merge one projected generation.
+    ///
+    /// The returned registry owns an independent name map, so later Session
+    /// registrations cannot rewrite an admitted Run, while immutable
+    /// definitions retain exact `Arc` identity. Exact names and the compatibility
+    /// aliases accepted by [`Self::get`] share one conflict domain and therefore
+    /// cannot shadow each other across the boundary.
+    pub(crate) fn snapshot_with_external_agents(
+        &self,
+        external: impl IntoIterator<Item = Arc<AgentDefinition>>,
+    ) -> Result<Self, AgentRegistrySnapshotError> {
+        let mut agents = read_or_recover(&self.agents).clone();
+        let mut occupied = agents
+            .keys()
+            .map(|name| canonical_agent_name(name).to_owned())
+            .collect::<HashSet<_>>();
+        for agent in external {
+            let name = agent.name.clone();
+            if !occupied.insert(canonical_agent_name(&name).to_owned()) {
+                return Err(AgentRegistrySnapshotError { name });
+            }
+            agents.insert(name, agent);
+        }
+        Ok(Self {
+            agents: RwLock::new(agents),
+        })
+    }
+
     /// Register an agent definition
     pub fn register(&self, agent: AgentDefinition) {
+        self.register_arc(Arc::new(agent));
+    }
+
+    fn register_arc(&self, agent: Arc<AgentDefinition>) {
         let mut agents = write_or_recover(&self.agents);
         tracing::debug!("Registering agent: {}", agent.name);
         agents.insert(agent.name.clone(), agent);
@@ -668,6 +716,11 @@ impl AgentRegistry {
 
     /// Get an agent definition by name
     pub fn get(&self, name: &str) -> Option<AgentDefinition> {
+        self.get_arc(name).map(|agent| agent.as_ref().clone())
+    }
+
+    /// Resolve one definition without copying its prompt or permission data.
+    pub(crate) fn get_arc(&self, name: &str) -> Option<Arc<AgentDefinition>> {
         let agents = read_or_recover(&self.agents);
         agents
             .get(name)
@@ -678,13 +731,20 @@ impl AgentRegistry {
     /// List all registered agents
     pub fn list(&self) -> Vec<AgentDefinition> {
         let agents = read_or_recover(&self.agents);
-        agents.values().cloned().collect()
+        agents
+            .values()
+            .map(|agent| agent.as_ref().clone())
+            .collect()
     }
 
     /// List visible agents (not hidden)
     pub fn list_visible(&self) -> Vec<AgentDefinition> {
         let agents = read_or_recover(&self.agents);
-        agents.values().filter(|a| !a.hidden).cloned().collect()
+        agents
+            .values()
+            .filter(|agent| !agent.hidden)
+            .map(|agent| agent.as_ref().clone())
+            .collect()
     }
 
     /// Check if an agent exists

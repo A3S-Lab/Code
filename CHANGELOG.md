@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   application kind. Node.js, Python, and Go expose typed Profile values and the
   generated event catalogs include the new event without introducing package,
   Grant, generation, or lifecycle ownership outside A3S Use.
+- Added Run-frozen Agent projection to `SessionCapabilityBatch`. Compatibility
+  and projected definitions share immutable `Arc<AgentDefinition>` values in
+  an independent per-Run name map; automatic delegation, `task`, and
+  `parallel_task` use that same registry. Canonical alias conflicts fail before
+  publication, live worker and agent-directory registration cannot shadow a
+  published Agent, and N Runs retain N delegation plus the exact A3S Use lease
+  across an N+1 cutover.
 
 ### Fixed
 

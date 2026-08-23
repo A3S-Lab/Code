@@ -19,6 +19,8 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+mod agent_projection;
+
 fn digest(byte: char) -> Sha256Digest {
     Sha256Digest::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()
 }
@@ -47,6 +49,17 @@ fn use_skill_set(
     std::collections::BTreeMap<String, crate::capability::CapabilityId>,
 ) {
     use_kind_set(code_generation, upstream, CapabilityKind::Skill, names)
+}
+
+fn use_agent_set(
+    code_generation: u64,
+    upstream: UseCapabilityGeneration,
+    names: &[(&str, char)],
+) -> (
+    Arc<CapabilitySet>,
+    std::collections::BTreeMap<String, crate::capability::CapabilityId>,
+) {
+    use_kind_set(code_generation, upstream, CapabilityKind::Agent, names)
 }
 
 fn use_kind_set(
@@ -104,6 +117,13 @@ fn skill(name: &str, version: &str) -> Arc<Skill> {
         tags: vec!["pinned".to_string()],
         version: Some(version.to_string()),
     })
+}
+
+fn projected_agent(name: &str, version: &str) -> Arc<crate::subagent::AgentDefinition> {
+    Arc::new(
+        crate::subagent::AgentDefinition::new(name, version)
+            .with_prompt(&format!("PROJECTED_AGENT_{version}")),
+    )
 }
 
 struct VersionedTool {
@@ -610,6 +630,36 @@ fn provider(
         dropped: Arc::clone(dropped),
         returned_generation: None,
     })
+}
+
+#[test]
+fn session_batch_accepts_agent_but_keeps_command_fail_closed() {
+    let acquired = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let agent_generation = use_generation(1, 'a');
+    let (agent_set, _) = use_agent_set(1, agent_generation.clone(), &[("projected-agent", 'b')]);
+    assert!(SessionCapabilityBatch::from_use_projection(
+        agent_set,
+        provider(agent_generation, &acquired, &dropped),
+    )
+    .is_ok());
+
+    let command_generation = use_generation(2, 'c');
+    let (command_set, _) = use_kind_set(
+        2,
+        command_generation.clone(),
+        CapabilityKind::Command,
+        &[("projected-command", 'd')],
+    );
+    assert!(matches!(
+        SessionCapabilityBatch::from_use_projection(
+            command_set,
+            provider(command_generation, &acquired, &dropped),
+        ),
+        Err(CapabilityRuntimeError::UnsupportedSessionKind {
+            kind: CapabilityKind::Command,
+        })
+    ));
 }
 
 #[tokio::test]
@@ -1130,6 +1180,34 @@ async fn compatibility_name_conflicts_fail_before_generation_publication() {
         })
     ));
     assert_eq!(skill_session.capability_catalog_stamp(), skill_before);
+
+    // Agent lookup accepts compatibility aliases. A projected alias must not
+    // bypass the canonical name already owned by the built-in registry.
+    let agent_session = test_session("capability-agent-name-conflict").await;
+    let agent_before = agent_session.capability_catalog_stamp();
+    let upstream = use_generation(1, 'e');
+    let (set, ids) = use_agent_set(1, upstream.clone(), &[("reviewer", 'f')]);
+    let acquired = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut batch =
+        SessionCapabilityBatch::from_use_projection(set, provider(upstream, &acquired, &dropped))
+            .unwrap();
+    batch
+        .stage_value(
+            ids["reviewer"].clone(),
+            CapabilityValue::Agent(projected_agent("reviewer", "use-projection")),
+        )
+        .unwrap();
+    assert!(matches!(
+        agent_session
+            .apply_capability_batch(batch, CancellationToken::new())
+            .await,
+        Err(CapabilityRuntimeError::RuntimeNameConflict {
+            kind: CapabilityKind::Agent,
+            ..
+        })
+    ));
+    assert_eq!(agent_session.capability_catalog_stamp(), agent_before);
 }
 
 #[tokio::test]
@@ -1202,6 +1280,79 @@ async fn compatibility_mutation_cannot_shadow_a_published_projection() {
         ))
     ));
     assert_eq!(skill_session.capability_catalog_stamp(), skill_stamp);
+
+    let agent_session = test_session("capability-agent-post-publication-conflict").await;
+    let upstream = use_generation(1, 'e');
+    let (set, ids) = use_agent_set(1, upstream.clone(), &[("published-agent", 'f')]);
+    let acquired = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut batch =
+        SessionCapabilityBatch::from_use_projection(set, provider(upstream, &acquired, &dropped))
+            .unwrap();
+    batch
+        .stage_value(
+            ids["published-agent"].clone(),
+            CapabilityValue::Agent(projected_agent("published-agent", "published")),
+        )
+        .unwrap();
+    agent_session
+        .apply_capability_batch(batch, CancellationToken::new())
+        .await
+        .unwrap();
+    let agent_stamp = agent_session.capability_catalog_stamp();
+    assert!(matches!(
+        agent_session.register_worker_agent(crate::subagent::WorkerAgentSpec::custom(
+            "published-agent",
+            "Compatibility worker",
+        )),
+        Err(crate::error::CodeError::Capability(
+            CapabilityRuntimeError::RuntimeNameConflict {
+                kind: CapabilityKind::Agent,
+                ..
+            }
+        ))
+    ));
+    assert!(!agent_session.agent_registry.exists("published-agent"));
+    assert!(matches!(
+        agent_session.register_worker_agents([
+            crate::subagent::WorkerAgentSpec::custom("batch-safe-agent", "Must roll back"),
+            crate::subagent::WorkerAgentSpec::custom(
+                "published-agent",
+                "Conflicting compatibility worker",
+            ),
+        ]),
+        Err(crate::error::CodeError::Capability(
+            CapabilityRuntimeError::RuntimeNameConflict {
+                kind: CapabilityKind::Agent,
+                ..
+            }
+        ))
+    ));
+    assert!(!agent_session.agent_registry.exists("batch-safe-agent"));
+
+    let agent_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        agent_dir.path().join("directory-safe-agent.yaml"),
+        "name: directory-safe-agent\ndescription: Must not partially register\n",
+    )
+    .unwrap();
+    std::fs::write(
+        agent_dir.path().join("published-agent.yaml"),
+        "name: published-agent\ndescription: Compatibility directory agent\n",
+    )
+    .unwrap();
+    assert!(matches!(
+        agent_session.register_agent_dir(agent_dir.path()),
+        Err(crate::error::CodeError::Capability(
+            CapabilityRuntimeError::RuntimeNameConflict {
+                kind: CapabilityKind::Agent,
+                ..
+            }
+        ))
+    ));
+    assert!(!agent_session.agent_registry.exists("published-agent"));
+    assert!(!agent_session.agent_registry.exists("directory-safe-agent"));
+    assert_eq!(agent_session.capability_catalog_stamp(), agent_stamp);
 }
 
 #[tokio::test]

@@ -81,6 +81,40 @@ fn test_agent_registry_list_visible() {
 }
 
 #[test]
+fn projected_agent_snapshot_is_independent_and_alias_conflicts_fail_closed() {
+    let registry = AgentRegistry::new();
+    let projected = std::sync::Arc::new(AgentDefinition::new("projected-worker", "generation one"));
+    let snapshot = registry
+        .snapshot_with_external_agents([std::sync::Arc::clone(&projected)])
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &projected,
+        &snapshot.get_arc("projected-worker").unwrap()
+    ));
+
+    registry.register(AgentDefinition::new(
+        "projected-worker",
+        "compatibility mutation",
+    ));
+    assert_eq!(
+        snapshot.get("projected-worker").unwrap().description,
+        "generation one"
+    );
+    assert_eq!(
+        registry.get("projected-worker").unwrap().description,
+        "compatibility mutation"
+    );
+
+    let error = match registry.snapshot_with_external_agents([std::sync::Arc::new(
+        AgentDefinition::new("reviewer", "aliases the built-in review Agent"),
+    )]) {
+        Ok(_) => panic!("projected alias unexpectedly shadowed the built-in Agent"),
+        Err(error) => error,
+    };
+    assert_eq!(error.name(), "reviewer");
+}
+
+#[test]
 fn test_builtin_agents() {
     let agents = builtin_agents();
 

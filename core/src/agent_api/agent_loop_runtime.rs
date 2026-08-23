@@ -12,6 +12,7 @@ use crate::capability::{
 };
 use crate::context::SkillCatalogContextProvider;
 use crate::skills::{SkillRegistry, SkillRegistrySnapshotError};
+use crate::subagent::{AgentRegistry, AgentRegistrySnapshotError};
 use crate::tools::ToolExecutor;
 use std::sync::Arc;
 
@@ -19,6 +20,7 @@ const MAX_RUNTIME_VALIDATION_MESSAGE_BYTES: usize = 1_024;
 
 struct PinnedRuntimeProjection {
     skill_registry: Arc<SkillRegistry>,
+    agent_registry: Arc<AgentRegistry>,
     tool_executor: Arc<ToolExecutor>,
 }
 
@@ -79,10 +81,12 @@ pub(super) async fn build_pinned_agent_loop(
 
     let PinnedRuntimeProjection {
         skill_registry,
+        agent_registry,
         tool_executor,
     } = runtime_projection;
     let mut config = live_config(session);
     config.skill_registry = Some(Arc::clone(&skill_registry));
+    config.agent_registry = Some(Arc::clone(&agent_registry));
     config
         .context_providers
         .retain(|provider| provider.name() != "skills_catalog");
@@ -99,10 +103,28 @@ pub(super) async fn build_pinned_agent_loop(
     crate::tools::register_skill(
         tool_executor.registry(),
         Arc::clone(&session.llm_client),
-        skill_registry,
+        Arc::clone(&skill_registry),
         Arc::clone(&tool_executor),
         config.clone(),
     );
+
+    // Delegation Tools capture an AgentRegistry when they are constructed.
+    // Rebind them to this Run-owned snapshot so a later Session registration
+    // or projected generation cannot change child-Agent selection in flight.
+    if config.auto_delegation.allow_manual_delegation {
+        let mut parent_context = session.parent_run_context();
+        parent_context.skill_registry = Some(skill_registry);
+        crate::tools::register_task_with_mcp_managers_and_scheduler(
+            tool_executor.registry(),
+            Arc::clone(&session.llm_client),
+            agent_registry,
+            session.workspace.display().to_string(),
+            session.mcp_managers.clone(),
+            Some(parent_context),
+            Some(Arc::clone(&session.subagent_tasks)),
+            Arc::clone(&session.task_scheduler),
+        );
+    }
     config.tools = tool_executor.definitions();
 
     Ok((
@@ -124,10 +146,12 @@ fn pin_runtime_projection(
 ) -> Result<PinnedRuntimeProjection, CapabilityRuntimeError> {
     let mut projected_tools = Vec::new();
     let mut projected_skills = Vec::new();
+    let mut projected_agents = Vec::new();
     for (_, value) in projection.iter() {
         match value {
             CapabilityValue::Tool(tool) => projected_tools.push(Arc::clone(tool)),
             CapabilityValue::Skill(skill) => projected_skills.push(Arc::clone(skill)),
+            CapabilityValue::Agent(agent) => projected_agents.push(Arc::clone(agent)),
             _ => return Err(CapabilityRuntimeError::UnsupportedSessionKind { kind: value.kind() }),
         }
     }
@@ -153,6 +177,17 @@ fn pin_runtime_projection(
                 }
             })?,
     );
+    let agent_registry = Arc::new(
+        session
+            .agent_registry
+            .snapshot_with_external_agents(projected_agents)
+            .map_err(|error: AgentRegistrySnapshotError| {
+                CapabilityRuntimeError::RuntimeNameConflict {
+                    kind: CapabilityKind::Agent,
+                    public_name: error.name().to_owned(),
+                }
+            })?,
+    );
     let tool_executor = Arc::new(
         session
             .tool_executor
@@ -164,6 +199,7 @@ fn pin_runtime_projection(
     );
     Ok(PinnedRuntimeProjection {
         skill_registry,
+        agent_registry,
         tool_executor,
     })
 }

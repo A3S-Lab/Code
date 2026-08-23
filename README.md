@@ -820,8 +820,18 @@ shadow a published projection. The CLI now uses the batch for resident
 sessions and a short-lived Code Exec runtime that stops Use discovery before
 Run admission. Desktop probes and requires that exact host contract, then
 accepts success only with canonical Code catalog and Use snapshot evidence.
-Other capability kinds still fail closed in the atomic batch and retain their
-explicit compatibility owners.
+Command, Hook, MCP, Flow, Knowledge, Context, and UI still fail closed in the
+atomic Session batch and retain their explicit compatibility owners.
+
+Delivered `HOST-AGENT1` extends that batch to typed Agent definitions without
+moving package authority into Code. Every Run merges compatibility and
+projected Agents into an independent `AgentRegistry` name map while sharing
+their exact immutable `Arc<AgentDefinition>` values; automatic selection,
+`task`, and `parallel_task` bind to that same registry. Canonical aliases
+cannot shadow each other across the compatibility boundary, and later worker
+or agent-directory registration cannot replace a published Agent. An admitted
+N Run continues to delegate through N after N+1 publication and retains N's
+exact A3S Use lease through foreground child completion.
 
 Delivered `CAP-PROFILE1` adds one closed
 `ToolPresentationProfileV1` to the Session and Run. Adaptive preserves the

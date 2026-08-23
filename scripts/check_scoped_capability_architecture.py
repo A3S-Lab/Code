@@ -23,9 +23,10 @@ EXPECTED_GATES = (
     "CAP-DEP1",
     "HOST-CAP1",
     "CAP-PROFILE1",
+    "HOST-AGENT1",
     "CAP-GA1",
 )
-EXPECTED_STATES = ("Delivered",) * 8 + ("Planned",)
+EXPECTED_STATES = ("Delivered",) * 9 + ("Planned",)
 EXPECTED_INVARIANTS = tuple(f"CAP-I{index:02d}" for index in range(1, 13))
 EXPECTED_OWNERS = (
     "Host Plugin Manager",

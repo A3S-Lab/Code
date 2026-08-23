@@ -415,7 +415,7 @@ impl TaskExecutor {
 
         let agent = self
             .registry
-            .get(&params.agent)
+            .get_arc(&params.agent)
             .context(format!("Unknown agent type: '{}'", params.agent))?;
         let tool_free = agent.tool_free;
         let tool_free_system = agent.prompt.clone();

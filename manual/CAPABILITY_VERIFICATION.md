@@ -113,7 +113,8 @@ must update or strengthen the same behavioral evidence rather than deleting it.
 | A3S Use authority | [`cross-package cursor test`](../core/tests/capability_readiness.rs) | Cross-package surface edges retain one exact Use cursor; Code never reads manifests or resolves, installs, activates, or retires packages |
 
 Delivered `HOST-CAP1` has a deterministic Core Tool/Skill host slice plus the
-official CLI and Desktop adoption evidence.
+official CLI and Desktop adoption evidence. Delivered `HOST-AGENT1` extends
+the same Core transaction and Run lease to Agent delegation.
 
 | Core host behavior | Deterministic evidence | Bound or failure rule |
 | --- | --- | --- |
@@ -121,9 +122,11 @@ official CLI and Desktop adoption evidence.
 | Real Use lease per Run | [`exact lease and cursor mismatch tests`](../core/src/agent_api/capability_runtime_tests.rs) | The published provider is generation-specific, every Run acquires again, and Code rejects a returned generation, capability revision, or Registry revision mismatch |
 | Tool N/N+1 isolation | [`definition/executor cutover test`](../core/src/agent_api/capability_runtime_tests.rs) | An admitted N Run keeps one Tool `Arc` for definition and execution plus N's Use lease while N+1 becomes visible only to a later Run |
 | Skill discovery N/N+1 isolation | [`Skill search cutover test`](../core/src/agent_api/capability_runtime_tests.rs) | `search_skills` resolves the Run-frozen Skill registry while N+1 is published, rather than consulting the Session-latest map |
-| Compatibility conflict boundary | [`pre-commit and post-publication conflict tests`](../core/src/agent_api/capability_runtime_tests.rs) | Tool/Skill conflicts fail before generation advance, and compatibility Tool, Skill, or MCP-wrapper mutation cannot shadow a published projection |
+| Agent snapshot identity | [`AgentRegistry snapshot test`](../core/src/subagent/tests.rs) | Each Run owns an independent name map, shares the exact projected `Arc<AgentDefinition>`, and cannot observe later compatibility mutation |
+| Agent delegation N/N+1 isolation | [`Agent task cutover and automatic-delegation tests`](../core/src/agent_api/capability_runtime_tests/agent_projection.rs) | Parent definitions, automatic selection, and `task` execution share one Run-frozen Agent registry; an N Run starts the N child after N+1 publication and holds N's exact Use lease through foreground completion |
+| Compatibility conflict boundary | [`pre-commit and post-publication conflict tests`](../core/src/agent_api/capability_runtime_tests.rs) | Tool, Skill, and canonical Agent alias conflicts fail before generation advance; compatibility Tool, Skill, Agent, or MCP-wrapper mutation cannot shadow a published projection |
 | Close and cancellation linearization | [`prepare cancellation, close/commit race, and exact-Run admission tests`](../core/src/agent_api/capability_runtime_tests.rs) | Close and commit have one order, prepared effects cannot become orphaned, exact Run reservations settle on admission failure, and non-clean scope teardown becomes a typed Run failure |
-| Explicit migration boundary | [`SessionCapabilityBatch`](../core/src/capability/runtime.rs) | This cut accepts only Tool and Skill values; every other capability kind fails closed until its product-owned adapter is migrated |
+| Explicit migration boundary | [`SessionCapabilityBatch`](../core/src/capability/runtime.rs) | This cut accepts only Tool, Skill, and Agent values; every other capability kind fails closed until its product-owned adapter is migrated |
 
 `CAP-PROFILE1` and `HARNESS-PROFILE1` add deterministic model-presentation
 evidence without adding another capability or package lifecycle:

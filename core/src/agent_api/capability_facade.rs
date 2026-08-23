@@ -73,13 +73,19 @@ impl AgentSession {
     ///
     /// Scans `dir` for `*.yaml`, `*.yml`, and `*.md` agent definition files,
     /// parses them, and adds each one to the shared `AgentRegistry` used by the
-    /// `task` tool.  New agents are immediately usable via `task(agent="…")` in
-    /// the same session — no restart required.
+    /// `task` tool. New agents are usable by the next admitted Run in the same
+    /// Session; an already admitted Run retains its frozen registry.
     ///
     /// Returns the number of agents successfully loaded from the directory.
     pub fn register_agent_dir(&self, dir: &std::path::Path) -> crate::error::Result<usize> {
         let agents = crate::subagent::load_agents_from_dir(dir);
         self.close_handle.mutate_immediate(|| {
+            for agent in &agents {
+                self.ensure_compatibility_name_available(
+                    crate::capability::CapabilityKind::Agent,
+                    &agent.name,
+                )?;
+            }
             let count = agents.len();
             for agent in agents {
                 tracing::info!(
@@ -90,24 +96,28 @@ impl AgentSession {
                 );
                 self.agent_registry.register(agent);
             }
-            count
-        })
+            Ok(count)
+        })?
     }
 
     /// Register a disposable worker agent with the live session.
     ///
-    /// The returned definition is immediately available to the `task` tool by
-    /// worker name. Its canonical name and purpose also enter the model-facing
-    /// `task` and `parallel_task` definitions on the next run, so callers can
-    /// create discoverable reproducible workers without writing temporary agent
-    /// files or restarting the session.
+    /// The returned definition enters the `task` lookup and the model-facing
+    /// `task` and `parallel_task` definitions on the next admitted Run. Callers
+    /// can create discoverable reproducible workers without writing temporary
+    /// agent files or restarting the Session, while an active Run remains
+    /// generation-stable.
     pub fn register_worker_agent(
         &self,
         spec: crate::subagent::WorkerAgentSpec,
     ) -> crate::error::Result<crate::subagent::AgentDefinition> {
         self.close_handle.mutate_immediate(|| {
-            SessionExtensionRuntime::from_session(self).register_worker_agent(spec)
-        })
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Agent,
+                &spec.name,
+            )?;
+            Ok(SessionExtensionRuntime::from_session(self).register_worker_agent(spec))
+        })?
     }
 
     /// Register multiple disposable worker agents with the live session.
@@ -118,9 +128,16 @@ impl AgentSession {
     where
         I: IntoIterator<Item = crate::subagent::WorkerAgentSpec>,
     {
+        let specs = specs.into_iter().collect::<Vec<_>>();
         self.close_handle.mutate_immediate(|| {
-            SessionExtensionRuntime::from_session(self).register_worker_agents(specs)
-        })
+            for spec in &specs {
+                self.ensure_compatibility_name_available(
+                    crate::capability::CapabilityKind::Agent,
+                    &spec.name,
+                )?;
+            }
+            Ok(SessionExtensionRuntime::from_session(self).register_worker_agents(specs))
+        })?
     }
 
     /// Add or replace a skill in this live session.
@@ -383,11 +400,17 @@ impl AgentSession {
         public_name: &str,
     ) -> crate::error::Result<()> {
         let projection = self.capability_catalog.pin();
-        if projection
-            .projection()
-            .iter()
-            .any(|(_, value)| value.kind() == kind && value.public_name() == Some(public_name))
-        {
+        if projection.projection().iter().any(|(_, value)| {
+            if value.kind() != kind {
+                return false;
+            }
+            match value {
+                crate::capability::CapabilityValue::Agent(agent) => {
+                    crate::subagent::agent_names_conflict(&agent.name, public_name)
+                }
+                _ => value.public_name() == Some(public_name),
+            }
+        }) {
             return Err(
                 crate::capability::CapabilityRuntimeError::RuntimeNameConflict {
                     kind,
