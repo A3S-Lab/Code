@@ -109,6 +109,22 @@ supervisor. This Code lease pins the local projection only; a Use-backed Run
 must still separately retain the real A3S Use `CapabilitySnapshotLease` through
 `RetainedUseGeneration`.
 
+`CAP-DEP1` makes adapter preparation dependency-aware without moving package
+authority into Code. `CapabilityReadinessPlan::from_set` reads only the
+already published `CapabilityDescriptor::dependencies()` surface edges and
+binds canonical readiness waves to the set generation and digest. A catalog
+transaction rejects cycles when `begin` is called and rejects a missing staged
+adapter before any adapter starts. Preparation then follows dependency-first
+waves; a failed prerequisite prevents dependent adapters from starting and
+completed effects enter reverse rollback.
+
+Do not derive these edges from package manifests inside Code. A3S Use must
+first resolve, verify, and publish the complete package generation. Code may
+then order the resulting surface descriptors while retaining that exact Use
+cursor. `CapabilityReadinessPlan` is neither a package graph nor a service
+locator, and surface adapters must not use it to perform SemVer resolution,
+installation, Grants, lifecycle cutover, or recovery.
+
 # Chapter 2: Advanced Configuration
 
 ## 2.1 Queue System Configuration

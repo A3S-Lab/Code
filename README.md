@@ -806,6 +806,15 @@ fail closed until Core has a typed UI runtime contract. Existing live Tool,
 Skill, and MCP registration APIs remain compatibility paths until `HOST-CAP1`
 switches each complete Use generation through this catalog as one batch.
 
+The readiness slice derives a bounded `CapabilityReadinessPlan` from only the
+surface edges already present in that immutable set. Deterministic minimal
+waves prepare prerequisites before dependents; cycles and incomplete staged
+batches fail before any adapter starts, while a prerequisite failure blocks
+dependent activation and rolls completed effects back in reverse order. The
+plan retains the set's generation, digest, and exact Use cursor boundary. Code
+does not inspect package manifests or perform Use dependency resolution,
+installation, Grants, lifecycle cutover, or recovery.
+
 Source is grouped by concern under `agent_api/`, `tools/`, `workspace/`,
 `context/`, `llm/`, `mcp/`, `orchestration/`, `store/`, and `state_graph/`.
 Node.js and Python bindings remain separate native crates over the same Core.

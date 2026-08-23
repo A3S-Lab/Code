@@ -60,6 +60,34 @@ pub enum CapabilityProjectionError {
     UnknownStagedCapability { capability: String },
     #[error("Capability transaction stages value '{capability}' more than once")]
     DuplicateStagedCapability { capability: String },
+    #[error("Capability transaction is missing staged target value '{capability}'")]
+    MissingStagedCapability { capability: String },
+    #[error(
+        "Capability surface dependency graph contains a cycle ({blocked_count} capabilities blocked; first canonical capability '{first_blocked}')"
+    )]
+    DependencyCycle {
+        first_blocked: String,
+        blocked_count: usize,
+    },
+    #[error(
+        "Capability readiness graph references missing dependency '{dependency}' from '{capability}'"
+    )]
+    ReadinessDependencyMissing {
+        capability: String,
+        dependency: String,
+    },
+    #[error("Capability readiness field '{field}' exceeds its bound of {max}")]
+    ReadinessBoundExceeded { field: &'static str, max: usize },
+    #[error("Capability readiness graph violated an internal invariant: {message}")]
+    ReadinessGraphInvariant { message: &'static str },
+    #[error(
+        "Capability readiness plan does not match its target set (expected generation {expected_generation}, found {actual_generation}; digest mismatch: {digest_mismatch})"
+    )]
+    ReadinessPlanMismatch {
+        expected_generation: u64,
+        actual_generation: u64,
+        digest_mismatch: bool,
+    },
     #[error(
         "Capability transaction target generation must be {expected}, but the target set is {actual}"
     )]

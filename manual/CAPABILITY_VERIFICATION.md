@@ -102,6 +102,16 @@ must update or strengthen the same behavioral evidence rather than deleting it.
 | Exact reader identity | [`old/new lease identity test`](../core/tests/capability_projection.rs) | A non-clone reader resolves definition and execution through one borrowed value; old effects retire only after the final old lease drops |
 | A3S Use boundary | [`CapabilityProjection` retains `CapabilitySet`](../core/src/capability/projection.rs) | Code consumes the complete Use cursor but performs no package resolution, Grants, Use cutover, or receipt retirement; Run admission still requires the real Use lease |
 
+`CAP-DEP1` adds deterministic surface-readiness evidence:
+
+| Delivered behavior | Deterministic evidence | Bound or failure rule |
+| --- | --- | --- |
+| Canonical readiness waves | [`diamond and insertion-order tests`](../core/tests/capability_readiness.rs) | Iterative Kahn traversal over ordered maps produces minimal waves and one stable activation order bound to the set generation and digest |
+| Fail-closed graph admission | [`cycle and staged-completeness tests`](../core/tests/capability_readiness.rs) | Cycles and missing adapters fail before any adapter starts or a runtime projection can escape |
+| Dependency-aware preparation | [`ordering and prerequisite-failure tests`](../core/tests/capability_readiness.rs) | Only already published surface edges order adapters; a failed prerequisite blocks dependents and completed effects roll back in reverse order |
+| Explicit graph bounds | [`maximum-width and maximum-depth tests`](../core/tests/capability_readiness.rs) | Planning accepts at most 4,096 capabilities, 32,768 edges, 128 direct dependencies, and 4,096 iterative waves without recursion |
+| A3S Use authority | [`cross-package cursor test`](../core/tests/capability_readiness.rs) | Cross-package surface edges retain one exact Use cursor; Code never reads manifests or resolves, installs, activates, or retires packages |
+
 ## Capability evidence ledger
 
 The area names and order intentionally match the README capability map. The

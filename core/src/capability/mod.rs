@@ -16,6 +16,7 @@ mod id;
 mod lease;
 mod projection;
 mod projection_error;
+mod readiness;
 mod scope;
 mod scope_error;
 mod set;
@@ -42,6 +43,9 @@ pub use projection::{
     CapabilityProjection, CapabilityProjectionLease,
 };
 pub use projection_error::{CapabilityAdapterError, CapabilityProjectionError};
+pub use readiness::{
+    CapabilityReadinessPlan, CAPABILITY_READINESS_PLAN_SCHEMA, MAX_CAPABILITY_READINESS_WAVES,
+};
 pub use scope::{
     CapabilityScope, CapabilityScopeId, CapabilityScopeKind, Run, ScopeKind, Session, Subtask, Turn,
 };

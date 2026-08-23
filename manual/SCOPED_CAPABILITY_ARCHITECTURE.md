@@ -1,6 +1,6 @@
 # Scoped Capability Architecture
 
-Status: accepted foundation; A3S Use bridge, immutable set, scoped lifecycle, and atomic runtime projection delivered
+Status: accepted foundation; A3S Use bridge, immutable set, scoped lifecycle, atomic runtime projection, and surface readiness DAG delivered
 
 ## Decision
 
@@ -190,7 +190,7 @@ the mutable compatibility registries; that host cutover belongs to
 | --- | --- |
 | `CapabilityValue` | A closed enum accepts Tool, Skill, Agent, Command, Hook, per-server MCP binding, Flow, Knowledge, and context values without `Any`; UI fails closed until Core owns a typed UI runtime contract |
 | `CapabilityProjection` | Pairs one immutable `Arc<CapabilitySet>` with exactly one canonically ordered value per descriptor and rejects missing, extra, kind-mismatched, unsupported, or public-name-mismatched values |
-| `CapabilityTxn<Staged/Prepared/Validated>` | Surface-owned adapters prepare in canonical identity order; only `Validated` exposes `commit`, and a compile-fail contract prevents early publication |
+| `CapabilityTxn<Staged/Prepared/Validated>` | Surface-owned adapters prepare in dependency-first readiness order; only `Validated` exposes `commit`, and a compile-fail contract prevents early publication |
 | `CapabilityCatalog` | Readers pin one non-clone immutable generation; writers compare both base generation and digest under one short mutex before swapping the complete projected `Arc` |
 | Retirement and rollback | Transaction ownership synchronously transfers all completed effects to a catalog cleanup queue on prepare failure, cancellation, validation failure, dropped transaction, or lost CAS; an `Arc`-owned published generation transfers its effects only after the final old reader lease drops |
 
@@ -209,6 +209,44 @@ final-lease effect retirement, dropped-transaction recovery, and `Send + Sync`
 catalog readers. Cleanup is explicit and bounded through
 `drain_cleanup_with_policy`; `Drop` only transfers effect ownership and never
 spawns an asynchronous task.
+
+## Delivered bounded surface readiness DAG
+
+`CAP-DEP1` adds `CapabilityReadinessPlan` between the immutable identity set
+and adapter preparation. The plan is derived only from
+`CapabilityDescriptor::dependencies()` in one complete `CapabilitySet` and is
+bound to that set's `CodeCatalogGeneration` and digest. It never reads a Use
+manifest, selects a package version, computes Grants, or performs service
+injection.
+
+An iterative Kahn traversal over `BTreeMap` and `BTreeSet` produces canonical
+minimal readiness waves and a deterministic flattened activation order.
+Planning is bounded by 4,096 capabilities, 32,768 surface edges, 128 direct
+dependencies per capability, and at most 4,096 waves. A maximum-depth chain
+does not recurse. Empty sets are valid; any multi-node cycle fails closed with
+the first canonical blocked identity and total blocked count before a runtime
+projection or transaction can exist.
+
+`CapabilityCatalog::begin` freezes the plan beside the target set. Before the
+first adapter starts, `prepare` verifies that every target descriptor has
+exactly one staged adapter. It then prepares dependency waves in canonical
+order. Preparation is deliberately sequential in this gate so effect transfer
+and rollback order remain deterministic. A prerequisite failure prevents all
+dependent adapters from starting, and already completed prerequisite effects
+close in reverse order through the existing rollback queue.
+
+The plan is retained in `CapabilityProjection`, so a pinned Run can inspect
+the exact readiness ordering associated with its catalog generation. A
+cross-package surface edge remains legal only after A3S Use has already
+published one complete cursor and Code has retained that cursor in the set.
+This surface DAG is not the Use package DAG and cannot install, resolve,
+activate, hide, retire, or recover a package.
+
+The public tests in
+[`capability_readiness.rs`](../core/tests/capability_readiness.rs) cover empty,
+wide, deep, diamond, cyclic, incomplete, failed, and cross-package graphs;
+insertion-order determinism; dependency-first adapter execution; reverse
+rollback; exact Use cursor retention; and `Send + Sync` readers.
 
 ## Rust model
 
@@ -234,6 +272,13 @@ pub struct CapabilityTxn<S> {
     prepared: BTreeMap<CapabilityId, CapabilityValue>,
     projection: Option<Arc<CapabilityProjection>>,
     _state: PhantomData<S>,
+}
+
+pub struct CapabilityReadinessPlan {
+    generation: CodeCatalogGeneration,
+    digest: Sha256Digest,
+    waves: Vec<Vec<CapabilityId>>,
+    activation_order: Vec<CapabilityId>,
 }
 
 pub enum CapabilityValue {
@@ -268,10 +313,11 @@ One source update follows a prepare, validate, commit, drain lifecycle:
 1. Observe one exact upstream generation and digest.
 2. Build the complete canonical `CapabilitySet`, retaining its exact Use
    cursor after product filtering.
-3. Begin against the current Code generation/digest and stage one adapter for
-   every target descriptor.
-4. Prepare fallible resources in canonical identity order without changing
-   model-visible state.
+3. Build and validate the bounded surface readiness plan, begin against the
+   current Code generation/digest, and stage one adapter for every target
+   descriptor.
+4. Verify staged completeness, then prepare fallible resources in canonical
+   dependency-first waves without changing model-visible state.
 5. Validate the complete descriptor/value pairing, kinds, public identities,
    resource bounds, and unsupported categories.
 6. Commit with one short generation-and-digest CAS and publish the new `Arc`.
@@ -334,6 +380,7 @@ capability/
 ├── descriptor.rs
 ├── value.rs
 ├── set.rs
+├── readiness.rs
 ├── transaction.rs
 ├── scope.rs
 ├── ceiling.rs
@@ -357,17 +404,18 @@ concerns and produce typed contributions.
 | `CAP-SET1` | Delivered | Typed Use package/cursor and Code catalog generations, sealed source classes, complete source-owned descriptor batches, and a bounded immutable `CapabilitySet` | `BTreeMap` ordering plus a domain-separated golden digest is insertion-order independent; mixed Use cursors, conflicts, missing edges, forged Built-in precedence, and every configured bound fail before an `Arc` can escape |
 | `CAP-SCOPE1` | Delivered | Session/Run/Turn/Subtask markers, catalog-bound ceilings, borrowed leases, reversible effects, exact Use Run leases, and a structured-concurrency supervisor | Compile-fail and runtime tests prevent lease escape or child expansion; close is reverse-order, cancellation-safe, idempotent, bounded, and releases the Use lease last |
 | `CAP-PROJ1` | Delivered | Closed typed runtime values, immutable projected catalogs, typestate contribution transactions, generation/digest CAS publication, and final-lease retirement | Failed prepare, validation, cancellation, dropped transaction, and commit-race paths leave the current generation unchanged and retain every prepared effect for reverse cleanup |
-| `CAP-DEP1` | Planned | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
+| `CAP-DEP1` | Delivered | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
 | `HOST-CAP1` | Planned | CLI and Desktop apply each Use generation to each Session as one batch | Old Runs retain the old lease, new Runs see the new generation, and host generation never advances after partial reconciliation |
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
-`CAP-PROJ1` now attaches runtime values and atomic typestate transactions to
-the delivered identity and scope kernels. `CAP-DEP1` adds bounded readiness
-ordering over published surface edges. Tool and Skill compatibility projection
-then migrates in `HOST-CAP1`, Agent/Command/Hook second, and MCP or other
-asynchronous resources last. Host integration must use the atomic Core
-transaction instead of adding another reconciliation abstraction.
+`CAP-PROJ1` attaches runtime values and atomic typestate transactions to the
+identity and scope kernels. `CAP-DEP1` now orders only their published surface
+edges through a bounded generation-bound readiness plan. Tool and Skill
+compatibility projection next migrates in `HOST-CAP1`, Agent/Command/Hook
+second, and MCP or other asynchronous resources last. Host integration must
+use the atomic Core transaction instead of adding another reconciliation
+abstraction.
 
 ## Verification matrix
 

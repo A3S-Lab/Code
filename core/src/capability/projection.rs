@@ -14,8 +14,9 @@ use crate::subagent::AgentDefinition;
 use crate::tools::Tool;
 
 use super::{
-    CapabilityEffect, CapabilityId, CapabilityKind, CapabilityProjectionError, CapabilitySet,
-    CapabilityValue, CodeCatalogGeneration, McpBinding, ScopeClosePolicy, Sha256Digest,
+    CapabilityEffect, CapabilityId, CapabilityKind, CapabilityProjectionError,
+    CapabilityReadinessPlan, CapabilitySet, CapabilityValue, CodeCatalogGeneration, McpBinding,
+    ScopeClosePolicy, Sha256Digest,
 };
 
 /// Immutable pairing of one identity set with exactly one typed runtime value
@@ -23,6 +24,7 @@ use super::{
 #[derive(Debug)]
 pub struct CapabilityProjection {
     set: Arc<CapabilitySet>,
+    readiness: Arc<CapabilityReadinessPlan>,
     values: BTreeMap<CapabilityId, CapabilityValue>,
 }
 
@@ -31,6 +33,22 @@ impl CapabilityProjection {
         set: Arc<CapabilitySet>,
         values: impl IntoIterator<Item = (CapabilityId, CapabilityValue)>,
     ) -> Result<Arc<Self>, CapabilityProjectionError> {
+        let readiness = Arc::new(CapabilityReadinessPlan::from_set(&set)?);
+        Self::with_readiness(set, readiness, values)
+    }
+
+    pub(super) fn with_readiness(
+        set: Arc<CapabilitySet>,
+        readiness: Arc<CapabilityReadinessPlan>,
+        values: impl IntoIterator<Item = (CapabilityId, CapabilityValue)>,
+    ) -> Result<Arc<Self>, CapabilityProjectionError> {
+        if !readiness.matches(&set) {
+            return Err(CapabilityProjectionError::ReadinessPlanMismatch {
+                expected_generation: set.generation().get(),
+                actual_generation: readiness.generation().get(),
+                digest_mismatch: readiness.digest() != set.digest(),
+            });
+        }
         let mut canonical = BTreeMap::new();
         for (id, value) in values {
             if canonical.insert(id.clone(), value).is_some() {
@@ -78,12 +96,17 @@ impl CapabilityProjection {
 
         Ok(Arc::new(Self {
             set,
+            readiness,
             values: canonical,
         }))
     }
 
     pub fn set(&self) -> &CapabilitySet {
         &self.set
+    }
+
+    pub fn readiness_plan(&self) -> &CapabilityReadinessPlan {
+        &self.readiness
     }
 
     pub fn len(&self) -> usize {

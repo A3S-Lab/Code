@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation, cancellation, dropped transactions, and lost commit races retain
   prepared effects for bounded reverse cleanup without changing the visible
   generation; retired effects remain pinned until the last old lease drops.
+- Added a generation- and digest-bound `CapabilityReadinessPlan` over published
+  capability surface edges. Iterative deterministic readiness waves prepare
+  prerequisites before dependents; cycles and incomplete staged batches fail
+  before adapter startup, prerequisite failure blocks dependent activation,
+  and completed effects retain reverse rollback. Maximum-width and
+  maximum-depth tests exercise the configured 4,096-capability bound without
+  recursion. Cross-package edges retain one exact A3S Use cursor while package
+  resolution, SemVer, Grants, cutover, and recovery remain exclusively in Use.
 
 ### Fixed
 

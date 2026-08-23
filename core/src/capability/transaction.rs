@@ -9,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 use super::projection::CatalogInner;
 use super::{
     CapabilityAdapterError, CapabilityCatalog, CapabilityCatalogStamp, CapabilityCommitReceipt,
-    CapabilityEffect, CapabilityId, CapabilityProjection, CapabilityProjectionError, CapabilitySet,
-    CapabilityValue,
+    CapabilityEffect, CapabilityId, CapabilityProjection, CapabilityProjectionError,
+    CapabilityReadinessPlan, CapabilitySet, CapabilityValue,
 };
 
 pub const MAX_CAPABILITY_TRANSACTION_EFFECTS: usize = 4_096;
@@ -75,7 +75,9 @@ impl PreparedCapability {
 ///
 /// Tool, Skill, MCP, and other concerns implement this trait beside their
 /// native runtime types. The adapter does not resolve packages or dependencies;
-/// it projects one descriptor from the already selected A3S Use snapshot.
+/// it projects one descriptor from the already selected A3S Use snapshot. A
+/// successful return is the surface readiness barrier: the adapter must not
+/// report success while its value still depends on unfinished initialization.
 #[async_trait]
 pub trait CapabilityProjectionAdapter: Send + 'static {
     async fn prepare(
@@ -100,6 +102,7 @@ struct TransactionBody {
     catalog: Arc<CatalogInner>,
     base: CapabilityCatalogStamp,
     target: Arc<CapabilitySet>,
+    readiness: Arc<CapabilityReadinessPlan>,
     effects: Vec<Box<dyn CapabilityEffect>>,
     rollback_armed: bool,
 }
@@ -151,11 +154,13 @@ impl CapabilityCatalog {
                 actual: target.generation().get(),
             });
         }
+        let readiness = Arc::new(CapabilityReadinessPlan::from_set(&target)?);
         Ok(CapabilityTxn {
             body: Some(TransactionBody {
                 catalog: Arc::clone(&self.inner),
                 base,
                 target,
+                readiness,
                 effects: Vec::new(),
                 rollback_armed: true,
             }),
@@ -209,8 +214,26 @@ impl CapabilityTxn<Staged> {
         if cancellation.is_cancelled() {
             return Err(CapabilityProjectionError::Cancelled);
         }
-        let staged = std::mem::take(&mut self.staged);
-        for (id, adapter) in staged {
+        let body = self
+            .body
+            .as_ref()
+            .ok_or(CapabilityProjectionError::InvalidTransactionState)?;
+        if let Some((id, _)) = body
+            .target
+            .iter()
+            .find(|(id, _)| !self.staged.contains_key(*id))
+        {
+            return Err(CapabilityProjectionError::MissingStagedCapability {
+                capability: id.to_string(),
+            });
+        }
+        let activation_order = body.readiness.activation_order().to_vec();
+        for id in activation_order {
+            let adapter = self.staged.remove(&id).ok_or_else(|| {
+                CapabilityProjectionError::MissingStagedCapability {
+                    capability: id.to_string(),
+                }
+            })?;
             let result = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => {
@@ -251,8 +274,17 @@ impl CapabilityTxn<Prepared> {
                 .ok_or(CapabilityProjectionError::InvalidTransactionState)?
                 .target,
         );
+        let readiness = Arc::clone(
+            &self
+                .body
+                .as_ref()
+                .ok_or(CapabilityProjectionError::InvalidTransactionState)?
+                .readiness,
+        );
         let values = std::mem::take(&mut self.prepared);
-        self.projection = Some(CapabilityProjection::new(target, values)?);
+        self.projection = Some(CapabilityProjection::with_readiness(
+            target, readiness, values,
+        )?);
         self.transition()
     }
 }

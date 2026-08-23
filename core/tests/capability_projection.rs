@@ -286,6 +286,12 @@ async fn failed_prepare_and_cancellation_publish_nothing_and_rollback_in_reverse
             },
         )
         .unwrap();
+    cancelled
+        .stage(
+            ids["gamma"].clone(),
+            ready(CapabilityValue::Tool(tool("gamma")), "cancel.gamma", &log),
+        )
+        .unwrap();
     let cancellation = CancellationToken::new();
     let prepare = tokio::spawn({
         let cancellation = cancellation.clone();

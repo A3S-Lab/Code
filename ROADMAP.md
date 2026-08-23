@@ -91,7 +91,7 @@ Session- and Run-owned capability scopes.
 | `CAP-SET1` | Delivered | Typed Use package/cursor and Code catalog generations, sealed source classes, complete source-owned descriptor batches, and a bounded immutable `CapabilitySet` | `BTreeMap` ordering plus a domain-separated golden digest is insertion-order independent; mixed Use cursors, conflicts, missing edges, forged Built-in precedence, and every configured bound fail before an `Arc` can escape |
 | `CAP-SCOPE1` | Delivered | Session/Run/Turn/Subtask markers, catalog-bound ceilings, borrowed leases, reversible effects, exact Use Run leases, and a structured-concurrency supervisor | Compile-fail and runtime tests prevent lease escape or child expansion; close is reverse-order, cancellation-safe, idempotent, bounded, and releases the Use lease last |
 | `CAP-PROJ1` | Delivered | Closed typed runtime values, immutable projected catalogs, typestate contribution transactions, generation/digest CAS publication, and final-lease retirement | Failed prepare, validation, cancellation, dropped transaction, and commit-race paths leave the current generation unchanged and retain every prepared effect for reverse cleanup |
-| `CAP-DEP1` | Planned | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
+| `CAP-DEP1` | Delivered | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
 | `HOST-CAP1` | Planned | CLI and Desktop apply each Use generation to each Session as one batch | Old Runs retain the old lease, new Runs see the new generation, and host generation never advances after partial reconciliation |
 | `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
@@ -101,10 +101,13 @@ admission boundary, `CAP-SET1` freezes its normalized identity plane, and
 `CAP-SCOPE1` provides lifetimes, ceilings, exact-generation leases, and
 supervised effects. `CAP-PROJ1` now pairs that set with closed runtime values
 and publishes one complete Code generation through a typestate transaction.
-`CAP-DEP1` adds surface readiness ordering without resolving packages;
-`HOST-CAP1` then migrates Tool and Skill, Agent/Command/Hook, and finally MCP or
-other asynchronous compatibility paths. `CAP-GA1` starts only after official
-hosts have delegated to that path for one major release.
+`CAP-DEP1` now derives deterministic dependency-first waves from one immutable
+surface set, rejects cycles and incomplete adapter batches before preparation,
+and retains the exact Use cursor without inspecting package manifests or
+resolving packages. `HOST-CAP1` then migrates Tool and Skill,
+Agent/Command/Hook, and finally MCP or other asynchronous compatibility paths.
+`CAP-GA1` starts only after official hosts have delegated to that path for one
+major release.
 
 ## 4. Invariants
 
