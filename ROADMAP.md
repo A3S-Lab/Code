@@ -73,6 +73,34 @@ three events reuse the existing Run journal and `EventEnvelopeV1`; no parallel
 audit store is introduced. See
 [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md).
 
+### 3.2 Scoped capability program
+
+The [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md)
+adopts Cordis-style context, fiber, and reversible-effect lifecycle semantics
+through Rust ownership, immutable snapshots, typed scopes, and structured
+concurrency. It does not turn Code Core into a package manager or general
+dependency-injection framework. A3S Use remains authoritative for package
+graphs, verification, Grants, lifecycle generations, atomic capability
+cutover, and crash recovery. Code projects each exact Use generation into
+Session- and Run-owned capability scopes.
+
+| Gate | State | Code-owned outcome | Exit criteria |
+| --- | --- | --- | --- |
+| `CAP-FND1` | Delivered | Accepted ownership, lifetime, identity, failure, verification, and migration contract | The contract and Roadmap are mechanically aligned; existing lifecycle and concurrency evidence is recorded and green |
+| `USE-BRIDGE1` | Planned | Public typed Use snapshot/cursor contract plus atomic exact-generation snapshot lease | Acquisition is all-or-nothing and rejects hidden, mixed, stale, or digest-mismatched generations |
+| `CAP-SET1` | Planned | Typed identities, immutable `CapabilitySet`, canonical digest, and source contribution model | Digests are deterministic and readers pin an `Arc` without a global writer lock |
+| `CAP-SCOPE1` | Planned | Session/Run/Turn/Subtask scopes, ceilings, leases, effects, and structured-concurrency supervisor | Temporary capabilities cannot escape their scope or broaden a child; `HARNESS-SCOPE1` is delivered |
+| `CAP-PROJ1` | Planned | Typestate contribution transaction and projection adapters | Failed prepare/validate/commit races never publish a partial generation |
+| `CAP-DEP1` | Planned | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
+| `HOST-CAP1` | Planned | CLI and Desktop apply each Use generation to each Session as one batch | Old Runs retain the old lease, new Runs see the new generation, and host generation never advances after partial reconciliation |
+| `CAP-PROFILE1` | Planned | Typed presentation profiles over the same governed executor | Presentation can change token cost and model shape but never authority; `HARNESS-PROFILE1` is delivered |
+| `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
+
+`USE-BRIDGE1` and `CAP-SET1` may proceed in parallel after `CAP-FND1`.
+Projection then migrates Tool and Skill, Agent/Command/Hook, and finally MCP or
+other asynchronous resources. `CAP-GA1` starts only after the compatibility
+adapters have delegated to the new transaction path for one major release.
+
 ## 4. Invariants
 
 1. Raw Tool content uses the configured shared content adapter. Evidence events

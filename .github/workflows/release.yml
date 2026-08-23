@@ -70,8 +70,10 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - name: Verify capability evidence ledger
-        run: python3 scripts/check_capability_verification.py
+      - name: Verify capability architecture and evidence
+        run: |
+          python3 scripts/check_scoped_capability_architecture.py
+          python3 scripts/check_capability_verification.py
 
       - name: Test repository validation scripts
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'

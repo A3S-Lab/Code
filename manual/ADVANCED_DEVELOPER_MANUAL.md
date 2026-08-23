@@ -47,6 +47,22 @@ pub struct CircuitBreaker {
 }
 ```
 
+## 1.4 Scoped Capabilities
+
+Installable cognitive-package lifecycle belongs to A3S Use. Code projects one
+exact immutable Use capability generation into a Session-local catalog, then
+pins the catalog and its governance ceiling when a Run is admitted. Temporary
+Turn and Subtask capabilities are child scopes and cannot expand the parent
+authority.
+
+The migration from the current Tool, Skill, Agent, Command, Hook, and MCP
+registries is specified in the
+[Scoped Capability Architecture](SCOPED_CAPABILITY_ARCHITECTURE.md). Read that
+contract before adding a new live registration API. New APIs must preserve the
+single Use package authority, atomic source-generation publication, exact
+definition/execution identity, child-ceiling intersection, and bounded explicit
+asynchronous close semantics.
+
 # Chapter 2: Advanced Configuration
 
 ## 2.1 Queue System Configuration

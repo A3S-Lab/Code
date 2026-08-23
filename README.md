@@ -771,6 +771,13 @@ boundaries include `LlmClient`, `ContextProvider`, `MemoryStore`,
 `SessionStore`, workspace service traits, tools, permissions, confirmations,
 hooks, security, MCP transports, and graph stores.
 
+Installable cognitive packages remain owned by A3S Use. Code consumes their
+exact immutable capability generations and is incrementally moving its local
+Tool, Skill, Agent, Command, Hook, and MCP projections onto typed Session/Run
+scopes with atomic publication and reversible effects. The ownership,
+generation, lifecycle, and compatibility contract is defined in the
+[Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md).
+
 Source is grouped by concern under `agent_api/`, `tools/`, `workspace/`,
 `context/`, `llm/`, `mcp/`, `orchestration/`, `store/`, and `state_graph/`.
 Node.js and Python bindings remain separate native crates over the same Core.
@@ -829,6 +836,7 @@ the v1 schema.
 | [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) | Extension contracts, security, lifecycle, and production integration                                                                                          |
 | [SDK API Design](manual/SDK_API_DESIGN.md)                                                                           | Cross-language API conventions and alignment                                                                                                                  |
 | [Capability Verification](manual/CAPABILITY_VERIFICATION.md)                                                         | First-principles evidence ledger for every advertised capability, SDK runtime gates, evidence-gap closure, and performance policy                             |
+| [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md)                                           | A3S Use ownership, typed scopes, immutable generations, reversible effects, migration gates, and verification invariants                                      |
 | [Performance Qualification](manual/PERFORMANCE_QUALIFICATION.md)                                                     | Release-profile workloads, inclusion rules, p50/p95/max results, resource ceilings, hermetic integrations, run links, and artifact digests                    |
 | [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md)                                                            | Capability/input/usage snapshots, repeated-context diagnostics, event ordering, redaction boundary, validation, and replay                                    |
 | [Go SDK](sdk/go/README.md)                                                                                           | Bridge installation, sessions, event streaming, direct tools, errors, and release compatibility                                                               |
@@ -847,6 +855,7 @@ the v1 schema.
 Run checks from the A3S Code repository directory:
 
 ```bash
+python3 scripts/check_scoped_capability_architecture.py
 python3 scripts/check_capability_verification.py
 cargo fmt --all -- --check
 cargo test -p a3s-code-core

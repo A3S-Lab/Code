@@ -48,6 +48,29 @@ qualification evidence and must not be counted as ordinary hermetic CI.
 | Compile-only           | Proves type compatibility, but not runtime behavior. This is never sufficient by itself.                                 |
 | Gap                    | The advertised behavior lacks one or more required evidence dimensions.                                                  |
 
+## Scoped capability foundation evidence
+
+The [Scoped Capability Architecture](SCOPED_CAPABILITY_ARCHITECTURE.md) is the
+normative ownership and migration contract for the capability lifecycle
+program. `scripts/check_scoped_capability_architecture.py` keeps its ordered
+gates, states, ownership table, invariant identifiers, local evidence links,
+and the corresponding Roadmap table aligned in CI.
+
+`CAP-FND1` relies on existing executable behavior rather than duplicating it in
+documentation-only tests:
+
+| Baseline | Deterministic evidence | Preserved guarantee |
+| --- | --- | --- |
+| Built-in and dynamic Tool ownership | [`ToolRegistry` tests](../core/src/tools/registry/tests.rs) | A dynamic source cannot replace or remove a built-in Tool |
+| Session-local Tool and Skill replacement | [`session_extensions`](../core/src/agent_api/session_extensions.rs) and [`live_skill_lifecycle`](../core/tests/live_skill_lifecycle.rs) | Removal affects only the exact registration still owned by that source |
+| Run admission lease | [`run_admission`](../core/src/agent_api/run_admission.rs) | Overlapping transcript operations fail fast and lease release is RAII-safe |
+| Run capability evidence | [`harness_evidence` tests](../core/src/harness_evidence/tests.rs) | Capability digests are stable for identical input and change on visible surface or readiness drift |
+| Bounded close | [`session close integration`](../core/tests/test_session_close_lifecycle.rs) | Close establishes an admission boundary, propagates cancellation, drains accepted work, and is idempotent |
+
+These tests characterize required safety while later gates replace mutable
+registries and pointer shadow chains. A later gate may change the mechanism but
+must update or strengthen the same behavioral evidence rather than deleting it.
+
 ## Capability evidence ledger
 
 The area names and order intentionally match the README capability map. The
