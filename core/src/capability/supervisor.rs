@@ -148,6 +148,35 @@ pub(super) struct SupervisorInner {
     closed: Notify,
 }
 
+/// Cloneable weak handle that can add work to an open capability scope.
+///
+/// The handle cannot keep the scope or its A3S Use generation lease alive by
+/// itself. Successfully registered tasks transfer ownership to the scope's
+/// structured-concurrency supervisor.
+#[derive(Clone)]
+pub(crate) struct SupervisedTaskSpawner {
+    inner: Weak<SupervisorInner>,
+    scope_id: Arc<str>,
+}
+
+impl SupervisedTaskSpawner {
+    pub(crate) fn spawn_task<F>(
+        &self,
+        name: impl Into<String>,
+        task: F,
+    ) -> Result<SupervisedTaskId, CapabilityScopeError>
+    where
+        F: Future<Output = Result<(), CapabilityEffectError>> + Send + 'static,
+    {
+        let Some(inner) = self.inner.upgrade() else {
+            return Err(CapabilityScopeError::SupervisorClosed {
+                scope_id: self.scope_id.to_string(),
+            });
+        };
+        spawn_task(&inner, name.into(), task)
+    }
+}
+
 impl SupervisorInner {
     fn lock_state(&self) -> MutexGuard<'_, SupervisorState> {
         self.state
@@ -260,37 +289,14 @@ impl EffectSupervisor {
     where
         F: Future<Output = Result<(), CapabilityEffectError>> + Send + 'static,
     {
-        let name = name.into();
-        validate_lifecycle_name(&name)?;
-        tokio::runtime::Handle::try_current()
-            .map_err(|_| CapabilityScopeError::TokioRuntimeUnavailable)?;
+        spawn_task(&self.inner, name.into(), task)
+    }
 
-        let mut state = self.inner.lock_state();
-        let SupervisorState::Open(open) = &mut *state else {
-            return Err(self.closed_error());
-        };
-        if self.inner.cancellation.is_cancelled() {
-            return Err(self.closed_error());
+    pub(super) fn task_spawner(&self) -> SupervisedTaskSpawner {
+        SupervisedTaskSpawner {
+            inner: Arc::downgrade(&self.inner),
+            scope_id: Arc::from(self.inner.scope_id.as_ref()),
         }
-        if open.tasks.len() >= MAX_SCOPE_TASKS {
-            return Err(CapabilityScopeError::BoundExceeded {
-                field: "scope_tasks",
-                max: MAX_SCOPE_TASKS,
-            });
-        }
-        let raw_id = open.next_task_id;
-        let id = NonZeroU64::new(raw_id).ok_or(CapabilityScopeError::TaskIdentityExhausted)?;
-        open.next_task_id = raw_id
-            .checked_add(1)
-            .ok_or(CapabilityScopeError::TaskIdentityExhausted)?;
-        let task_name = name.into_boxed_str();
-        let _abort_handle = open.tasks.spawn(async move {
-            SupervisedTaskOutcome {
-                name: task_name,
-                result: task.await,
-            }
-        });
-        Ok(SupervisedTaskId(id))
     }
 
     pub(super) fn register_child(
@@ -398,6 +404,50 @@ impl EffectSupervisor {
             scope_id: self.inner.scope_id.to_string(),
         }
     }
+}
+
+fn spawn_task<F>(
+    inner: &Arc<SupervisorInner>,
+    name: String,
+    task: F,
+) -> Result<SupervisedTaskId, CapabilityScopeError>
+where
+    F: Future<Output = Result<(), CapabilityEffectError>> + Send + 'static,
+{
+    validate_lifecycle_name(&name)?;
+    tokio::runtime::Handle::try_current()
+        .map_err(|_| CapabilityScopeError::TokioRuntimeUnavailable)?;
+
+    let mut state = inner.lock_state();
+    let SupervisorState::Open(open) = &mut *state else {
+        return Err(CapabilityScopeError::SupervisorClosed {
+            scope_id: inner.scope_id.to_string(),
+        });
+    };
+    if inner.cancellation.is_cancelled() {
+        return Err(CapabilityScopeError::SupervisorClosed {
+            scope_id: inner.scope_id.to_string(),
+        });
+    }
+    if open.tasks.len() >= MAX_SCOPE_TASKS {
+        return Err(CapabilityScopeError::BoundExceeded {
+            field: "scope_tasks",
+            max: MAX_SCOPE_TASKS,
+        });
+    }
+    let raw_id = open.next_task_id;
+    let id = NonZeroU64::new(raw_id).ok_or(CapabilityScopeError::TaskIdentityExhausted)?;
+    open.next_task_id = raw_id
+        .checked_add(1)
+        .ok_or(CapabilityScopeError::TaskIdentityExhausted)?;
+    let task_name = name.into_boxed_str();
+    let _abort_handle = open.tasks.spawn(async move {
+        SupervisedTaskOutcome {
+            name: task_name,
+            result: task.await,
+        }
+    });
+    Ok(SupervisedTaskId(id))
 }
 
 impl Drop for EffectSupervisor {

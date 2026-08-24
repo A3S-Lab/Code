@@ -148,10 +148,7 @@ impl AgentLoop {
                     duration_ms,
                 },
             });
-            let he = Arc::clone(he);
-            tokio::spawn(async move {
-                let _ = he.fire(&event).await;
-            });
+            Arc::clone(he).dispatch_observational(event);
         }
     }
 
@@ -268,10 +265,7 @@ impl AgentLoop {
                 },
                 duration_ms,
             });
-            let he = Arc::clone(he);
-            tokio::spawn(async move {
-                let _ = he.fire(&event).await;
-            });
+            Arc::clone(he).dispatch_observational(event);
         }
     }
 
@@ -290,10 +284,7 @@ impl AgentLoop {
                 error_message: error_message.to_string(),
                 context,
             });
-            let he = Arc::clone(he);
-            tokio::spawn(async move {
-                let _ = he.fire(&event).await;
-            });
+            Arc::clone(he).dispatch_observational(event);
         }
     }
 }

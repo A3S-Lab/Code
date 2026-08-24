@@ -36,13 +36,16 @@
 //! }
 //! ```
 
+mod binding;
+mod contract;
 mod engine;
 mod events;
 mod matcher;
 
-pub use engine::{
-    Hook, HookConfig, HookEngine, HookExecutor, HookHandler, HookOutcome, HookResult,
-};
+pub use binding::HookBinding;
+pub use contract::{Hook, HookConfig, HookExecutor, HookHandler, HookOutcome, HookResult};
+pub use engine::HookEngine;
+pub(crate) use engine::{HookEngineSnapshotError, HookTaskDispatcher, HookTaskFuture};
 pub use events::{
     ConfirmationType, ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, HookEventType,
     IntentDetectionEvent, OnConfirmationEvent, OnErrorEvent, OnRateLimitEvent, OnSuccessEvent,

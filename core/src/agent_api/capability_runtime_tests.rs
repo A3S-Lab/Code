@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 mod agent_projection;
 mod command_projection;
+mod hook_projection;
 
 fn digest(byte: char) -> Sha256Digest {
     Sha256Digest::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()
@@ -634,7 +635,7 @@ fn provider(
 }
 
 #[test]
-fn session_batch_accepts_migrated_kinds_but_keeps_hook_fail_closed() {
+fn session_batch_accepts_migrated_kinds_but_keeps_mcp_fail_closed() {
     let acquired = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
     let agent_generation = use_generation(1, 'a');
@@ -665,13 +666,26 @@ fn session_batch_accepts_migrated_kinds_but_keeps_hook_fail_closed() {
         CapabilityKind::Hook,
         &[("projected-hook", 'f')],
     );
+    assert!(SessionCapabilityBatch::from_use_projection(
+        hook_set,
+        provider(hook_generation, &acquired, &dropped),
+    )
+    .is_ok());
+
+    let mcp_generation = use_generation(4, 'a');
+    let (mcp_set, _) = use_kind_set(
+        4,
+        mcp_generation.clone(),
+        CapabilityKind::Mcp,
+        &[("projected-mcp", 'b')],
+    );
     assert!(matches!(
         SessionCapabilityBatch::from_use_projection(
-            hook_set,
-            provider(hook_generation, &acquired, &dropped),
+            mcp_set,
+            provider(mcp_generation, &acquired, &dropped),
         ),
         Err(CapabilityRuntimeError::UnsupportedSessionKind {
-            kind: CapabilityKind::Hook,
+            kind: CapabilityKind::Mcp,
         })
     ));
 }

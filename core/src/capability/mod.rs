@@ -60,6 +60,7 @@ pub use set::{
     MAX_CAPABILITY_CANONICAL_BYTES, MAX_CAPABILITY_DEPENDENCY_EDGES, MAX_CAPABILITY_SOURCES,
 };
 pub use source::{CapabilitySource, CapabilitySourceClass};
+pub(crate) use supervisor::SupervisedTaskSpawner;
 pub use supervisor::{
     ScopeClosePolicy, ScopeCloseReport, SupervisedTaskId, DEFAULT_SCOPE_CLOSE_TIMEOUT,
     MAX_SCOPE_CHILDREN, MAX_SCOPE_CLOSE_TIMEOUT, MAX_SCOPE_EFFECTS, MAX_SCOPE_TASKS,

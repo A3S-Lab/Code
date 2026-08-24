@@ -99,6 +99,7 @@ Session- and Run-owned capability scopes.
 | `CAP-PROFILE1` | Delivered | Run-frozen typed Tool presentation over the same pinned executor values | Permission filtering precedes Profile projection; name/schema identity and deterministic order are preserved, code mode rephrases only the existing `program` definition, child runs cannot broaden, and exact Session resume plus Rust/Node.js/Python/Go parity pass |
 | `HOST-AGENT1` | Delivered | Core projects Agent definitions into one Run-frozen registry shared by automatic and Tool-driven delegation | Canonical alias conflicts fail before publication, compatibility registration cannot shadow a published Agent, N Runs delegate through N after an N+1 cutover, and the exact N Use lease remains held through foreground child completion |
 | `HOST-COMMAND1` | Delivered | Core dispatches blocking and streaming slash Commands through one Run-frozen registry | Built-in and compatibility conflicts fail before publication, legacy registration cannot shadow a published Command, N execution remains on N after an N+1 cutover, and the exact N Use lease remains held through Command execution |
+| `HOST-HOOK1` | Delivered | Core composes projected Hook bindings through one Run-frozen executor | Definition/handler pairs remain generation-exact, invalid Run event scopes and compatibility conflicts fail before publication, external `Skip` cannot bypass projected policy, and supervised observations retain the exact Use lease through bounded settlement |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
 [`USE-BRIDGE1`](https://github.com/A3S-Lab/Use/commit/6ed0b4e) is the upstream
@@ -122,8 +123,12 @@ compatibility snapshot, binds both automatic selection and `task` delegation
 to it, and continues to retain the exact A3S Use generation lease. Delivered
 `HOST-COMMAND1` puts both blocking and streaming slash-command dispatch inside
 that admission boundary, using a Run-frozen Command registry and retaining the
-same exact Use lease through execution. Hook migration remains next, with
-asynchronous MCP categories later.
+same exact Use lease through execution. Delivered `HOST-HOOK1` atomically pairs
+each projected Hook definition with its exact handler, composes the frozen
+projection after any Session-static external executor, and supervises detached
+observations and timeout settlement under the capability Run. Session and
+Skill lifecycle events remain outside projected Run scope. MCP and the other
+asynchronous resource categories migrate next.
 `CAP-GA1` starts only after official hosts have delegated to the complete path
 for one major release.
 

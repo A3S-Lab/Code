@@ -51,6 +51,7 @@ mod hook_control;
 mod project_instructions;
 mod run_admission;
 mod run_facade;
+mod run_hook_executor;
 mod run_lifecycle;
 mod runtime;
 mod runtime_events;

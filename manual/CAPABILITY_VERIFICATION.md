@@ -116,7 +116,8 @@ Delivered `HOST-CAP1` has a deterministic Core Tool/Skill host slice plus the
 official CLI and Desktop adoption evidence. Delivered `HOST-AGENT1` extends
 the same Core transaction and Run lease to Agent delegation. Delivered
 `HOST-COMMAND1` extends that admission boundary to blocking and streaming
-slash-command execution.
+slash-command execution. Delivered `HOST-HOOK1` extends it to generation-exact
+Hook definition/handler bindings and supervised observational work.
 
 | Core host behavior | Deterministic evidence | Bound or failure rule |
 | --- | --- | --- |
@@ -128,9 +129,12 @@ slash-command execution.
 | Agent delegation N/N+1 isolation | [`Agent task cutover and automatic-delegation tests`](../core/src/agent_api/capability_runtime_tests/agent_projection.rs) | Parent definitions, automatic selection, and `task` execution share one Run-frozen Agent registry; an N Run starts the N child after N+1 publication and holds N's exact Use lease through foreground completion |
 | Command snapshot identity | [`CommandRegistry snapshot tests`](../core/src/commands.rs) | Each Run owns an independent name map while sharing the exact projected `Arc<dyn SlashCommand>`; later compatibility mutation cannot rewrite the snapshot |
 | Command dispatch N/N+1 isolation | [`Command cutover test`](../core/src/agent_api/capability_runtime_tests/command_projection.rs) | Blocking and streaming dispatch execute through the Run-frozen registry; an N Command remains on N after N+1 publication and holds N's exact Use lease through execution |
-| Compatibility conflict boundary | [`pre-commit and post-publication conflict tests`](../core/src/agent_api/capability_runtime_tests.rs) | Tool, Skill, canonical Agent alias, and Command conflicts fail before generation advance; compatibility Tool, Skill, Agent, Command, or MCP-wrapper mutation cannot shadow a published projection |
+| Hook snapshot identity and scope | [`HookEngine snapshot tests`](../core/src/hooks/engine/tests.rs) | Each immutable `HookBinding` preserves exact definition/handler `Arc` identity; compatibility or duplicate names and Session/Skill lifecycle events fail before publication, and equal priorities use Hook ID order |
+| Hook N/N+1 and composition | [`Hook projection tests`](../core/src/agent_api/capability_runtime_tests/hook_projection.rs) | An N Run retains N metadata, N callback, and N's exact Use lease after N+1 publication; a Session-static external executor composes without allowing its `Skip` to bypass projected policy |
+| Hook structured observation | [`Hook supervision tests`](../core/src/agent_api/capability_runtime_tests/hook_projection.rs) | PostResponse, `async_execution`, gating timeout, and observational timeout work retain the exact Use lease through bounded supervisor settlement; official SDK bridges register complete Hook pairs atomically |
+| Compatibility conflict boundary | [`pre-commit and post-publication conflict tests`](../core/src/agent_api/capability_runtime_tests.rs) | Tool, Skill, canonical Agent alias, Command, and Hook conflicts fail before generation advance; compatibility Tool, Skill, Agent, Command, Hook, or MCP-wrapper mutation cannot shadow a published projection |
 | Close and cancellation linearization | [`prepare cancellation, close/commit race, and exact-Run admission tests`](../core/src/agent_api/capability_runtime_tests.rs) | Close and commit have one order, prepared effects cannot become orphaned, exact Run reservations settle on admission failure, and non-clean scope teardown becomes a typed Run failure |
-| Explicit migration boundary | [`SessionCapabilityBatch`](../core/src/capability/runtime.rs) | This cut accepts only Tool, Skill, Agent, and Command values; every other capability kind fails closed until its product-owned adapter is migrated |
+| Explicit migration boundary | [`SessionCapabilityBatch`](../core/src/capability/runtime.rs) | This cut accepts only Tool, Skill, Agent, Command, and Hook values; MCP and every other capability kind fail closed until their product-owned adapters migrate |
 
 `CAP-PROFILE1` and `HARNESS-PROFILE1` add deterministic model-presentation
 evidence without adding another capability or package lifecycle:

@@ -5,7 +5,7 @@ use crate::cognitive_context::CognitiveContextSession;
 use crate::commands::SlashCommand;
 use crate::context::ContextProvider;
 use crate::dynamic_workflow::DynamicWorkflowRuntime;
-use crate::hooks::HookHandler;
+use crate::hooks::HookBinding;
 use crate::mcp::McpManager;
 use crate::skills::Skill;
 use crate::subagent::AgentDefinition;
@@ -61,7 +61,7 @@ pub enum CapabilityValue {
     Skill(Arc<Skill>),
     Agent(Arc<AgentDefinition>),
     Command(Arc<dyn SlashCommand>),
-    Hook(Arc<dyn HookHandler>),
+    Hook(Arc<HookBinding>),
     Mcp(Arc<McpBinding>),
     Flow(Arc<DynamicWorkflowRuntime>),
     Knowledge(Arc<CognitiveContextSession>),
@@ -89,7 +89,8 @@ impl CapabilityValue {
             Self::Skill(value) => Some(&value.name),
             Self::Agent(value) => Some(&value.name),
             Self::Command(value) => Some(value.name()),
-            Self::Hook(_) | Self::Flow(_) => None,
+            Self::Hook(value) => Some(&value.hook().id),
+            Self::Flow(_) => None,
             Self::Mcp(value) => Some(value.server_name()),
             Self::Knowledge(value) => Some(value.provider_name()),
             Self::Context(value) => Some(value.name()),

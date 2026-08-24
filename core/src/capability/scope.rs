@@ -13,7 +13,8 @@ use super::supervisor::{
 use super::{
     CapabilityCeiling, CapabilityEffect, CapabilityEffectError, CapabilityLease,
     CapabilityScopeError, CapabilitySet, RetainedUseGeneration, ScopeClosePolicy, ScopeCloseReport,
-    Sha256Digest, SupervisedTaskId, UseCapabilityGeneration, MAX_CAPABILITY_IDENTIFIER_BYTES,
+    Sha256Digest, SupervisedTaskId, SupervisedTaskSpawner, UseCapabilityGeneration,
+    MAX_CAPABILITY_IDENTIFIER_BYTES,
 };
 
 /// Closed scope hierarchy used by the capability lifecycle kernel.
@@ -427,6 +428,10 @@ impl<K: ScopeKind> CapabilityScope<K> {
         F: Future<Output = Result<(), CapabilityEffectError>> + Send + 'static,
     {
         self.inner.supervisor.spawn_task(name, task)
+    }
+
+    pub(crate) fn task_spawner(&self) -> SupervisedTaskSpawner {
+        self.inner.supervisor.task_spawner()
     }
 
     pub fn cancel(&self) {

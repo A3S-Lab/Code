@@ -8,7 +8,7 @@ use crate::cognitive_context::CognitiveContextSession;
 use crate::commands::SlashCommand;
 use crate::context::ContextProvider;
 use crate::dynamic_workflow::DynamicWorkflowRuntime;
-use crate::hooks::HookHandler;
+use crate::hooks::HookBinding;
 use crate::skills::Skill;
 use crate::subagent::AgentDefinition;
 use crate::tools::Tool;
@@ -157,7 +157,7 @@ impl CapabilityProjection {
         }
     }
 
-    pub fn hook(&self, id: &CapabilityId) -> Option<&dyn HookHandler> {
+    pub fn hook(&self, id: &CapabilityId) -> Option<&HookBinding> {
         match self.values.get(id) {
             Some(CapabilityValue::Hook(value)) => Some(value.as_ref()),
             _ => None,

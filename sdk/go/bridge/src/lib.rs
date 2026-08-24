@@ -1337,31 +1337,27 @@ impl BridgeState {
             }
             "session_register_hook" => {
                 let hook: a3s_code_core::hooks::Hook = required(&request.params, "hook")?;
-                let hook_id = hook.id.clone();
                 let handler_id = optional::<String>(&request.params, "handler_id")?;
                 let timeout_ms = hook.config.timeout_ms;
                 let session = self.request_session(&request.params).await?;
-                session.register_hook(hook)?;
-                if let Some(handler_id) = handler_id {
-                    session.register_hook_handler(
-                        &hook_id,
-                        Arc::new(BridgeHookHandler {
+                let handler: Option<Arc<dyn a3s_code_core::hooks::HookHandler>> =
+                    if let Some(handler_id) = handler_id {
+                        Some(Arc::new(BridgeHookHandler {
                             client: self.callback_client().await?,
                             handler_id,
                             timeout_ms,
                             runtime: tokio::runtime::Handle::current(),
-                        }),
-                    )?;
-                } else {
-                    session.unregister_hook_handler(&hook_id)?;
-                }
+                        }))
+                    } else {
+                        None
+                    };
+                session.register_hook_registration(hook, handler)?;
                 Ok(json!({ "registered": true }))
             }
             "session_unregister_hook" => {
                 let hook_id: String = required(&request.params, "hook_id")?;
                 let session = self.request_session(&request.params).await?;
-                session.unregister_hook_handler(&hook_id)?;
-                let removed = session.unregister_hook(&hook_id)?.is_some();
+                let removed = session.unregister_hook_registration(&hook_id)?.is_some();
                 Ok(json!({ "removed": removed }))
             }
             "session_hook_count" => {

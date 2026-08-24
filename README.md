@@ -820,7 +820,7 @@ shadow a published projection. The CLI now uses the batch for resident
 sessions and a short-lived Code Exec runtime that stops Use discovery before
 Run admission. Desktop probes and requires that exact host contract, then
 accepts success only with canonical Code catalog and Use snapshot evidence.
-Hook, MCP, Flow, Knowledge, Context, and UI still fail closed in the
+MCP, Flow, Knowledge, Context, and UI still fail closed in the
 atomic Session batch and retain their explicit compatibility owners.
 
 Delivered `HOST-AGENT1` extends that batch to typed Agent definitions without
@@ -840,6 +840,16 @@ and executes through that snapshot. Built-in and compatibility name conflicts
 fail before publication, including the legacy mutable registry path. An N
 Command already executing during N+1 publication continues through N and
 retains N's exact A3S Use lease until execution completes.
+
+Delivered `HOST-HOOK1` extends the batch to immutable `HookBinding` values that
+pair one Hook definition with its exact handler. Run admission merges projected
+bindings with a frozen compatibility Hook snapshot and composes them after an
+optional Session-static external executor; an external `Skip` cannot bypass
+projected policy. Session/Skill lifecycle event types fail before publication,
+official SDK registration updates definition and callback atomically, and
+detached observations plus timed-out blocking callbacks settle under the Run
+supervisor before its exact A3S Use lease is released within the configured
+close deadline.
 
 Delivered `CAP-PROFILE1` adds one closed
 `ToolPresentationProfileV1` to the Session and Run. Adaptive preserves the

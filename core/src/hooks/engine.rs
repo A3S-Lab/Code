@@ -2,285 +2,50 @@
 //!
 //! Core engine responsible for managing and executing hooks.
 
-use super::events::{HookEvent, HookEventType};
-use super::matcher::HookMatcher;
-use super::{HookAction, HookResponse};
+use super::{
+    Hook, HookAction, HookBinding, HookEvent, HookExecutor, HookHandler, HookOutcome, HookResponse,
+    HookResult,
+};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock, RwLock};
 use tokio::sync::mpsc;
 
 use crate::error::{read_or_recover, write_or_recover};
 
-/// Hook configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HookConfig {
-    /// Priority (lower values = higher priority)
-    #[serde(default = "default_priority")]
-    pub priority: i32,
+pub(crate) type HookTaskFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
-    /// Timeout in milliseconds
-    #[serde(default = "default_timeout")]
-    pub timeout_ms: u64,
-
-    /// Whether to execute observational hooks asynchronously (fire-and-forget).
-    /// Gating hooks always wait for a decision before protected work starts.
-    #[serde(default)]
-    pub async_execution: bool,
-
-    /// Maximum retry attempts
-    #[serde(default)]
-    pub max_retries: u32,
+pub(crate) trait HookTaskDispatcher: Send + Sync {
+    fn dispatch(&self, name: &'static str, task: HookTaskFuture) -> Result<(), String>;
 }
 
-fn default_priority() -> i32 {
-    100
+#[derive(Debug, thiserror::Error)]
+#[error("projected Hook name '{name}' conflicts with the compatibility registry")]
+pub(crate) struct HookEngineSnapshotError {
+    name: String,
 }
 
-fn default_timeout() -> u64 {
-    30000
-}
-
-impl Default for HookConfig {
-    fn default() -> Self {
-        Self {
-            priority: default_priority(),
-            timeout_ms: default_timeout(),
-            async_execution: false,
-            max_retries: 0,
-        }
+impl HookEngineSnapshotError {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
     }
-}
-
-/// Hook definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Hook {
-    /// Unique hook identifier
-    pub id: String,
-
-    /// Event type that triggers this hook
-    pub event_type: HookEventType,
-
-    /// Event matcher (optional, None matches all events)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub matcher: Option<HookMatcher>,
-
-    /// Hook configuration
-    #[serde(default)]
-    pub config: HookConfig,
-}
-
-impl Hook {
-    /// Create a new hook
-    pub fn new(id: impl Into<String>, event_type: HookEventType) -> Self {
-        Self {
-            id: id.into(),
-            event_type,
-            matcher: None,
-            config: HookConfig::default(),
-        }
-    }
-
-    /// Set the matcher
-    pub fn with_matcher(mut self, matcher: HookMatcher) -> Self {
-        self.matcher = Some(matcher);
-        self
-    }
-
-    /// Set the configuration
-    pub fn with_config(mut self, config: HookConfig) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Check if an event matches this hook
-    pub fn matches(&self, event: &HookEvent) -> bool {
-        // First check event type
-        if event.event_type() != self.event_type {
-            return false;
-        }
-
-        // If there's a matcher, check it
-        if let Some(ref matcher) = self.matcher {
-            matcher.matches(event)
-        } else {
-            true
-        }
-    }
-}
-
-/// Hook execution result
-#[derive(Debug, Clone)]
-pub enum HookResult {
-    /// Continue execution (with optional modified data)
-    Continue(Option<serde_json::Value>),
-    /// Block execution
-    Block(String),
-    /// Retry after delay (milliseconds)
-    Retry(u64),
-    /// Skip remaining hooks but continue execution
-    Skip,
-    /// Escalate to human review
-    Escalate {
-        reason: String,
-        target: Option<String>,
-    },
-}
-
-impl HookResult {
-    /// Create a continue result
-    pub fn continue_() -> Self {
-        Self::Continue(None)
-    }
-
-    /// Create a continue result with modifications
-    pub fn continue_with(modified: serde_json::Value) -> Self {
-        Self::Continue(Some(modified))
-    }
-
-    /// Create a block result
-    pub fn block(reason: impl Into<String>) -> Self {
-        Self::Block(reason.into())
-    }
-
-    /// Create a retry result
-    pub fn retry(delay_ms: u64) -> Self {
-        Self::Retry(delay_ms)
-    }
-
-    /// Create a skip result
-    pub fn skip() -> Self {
-        Self::Skip
-    }
-
-    /// Create an escalate result
-    pub fn escalate(reason: impl Into<String>, target: Option<String>) -> Self {
-        Self::Escalate {
-            reason: reason.into(),
-            target,
-        }
-    }
-
-    /// Check if this is a continue result
-    pub fn is_continue(&self) -> bool {
-        matches!(self, Self::Continue(_))
-    }
-
-    /// Check if this is a block result
-    pub fn is_block(&self) -> bool {
-        matches!(self, Self::Block(_))
-    }
-}
-
-/// Rich hook execution outcome used by governance-aware callers.
-///
-/// [`HookResult`] remains the compatibility surface for existing executors.
-/// This outcome additionally preserves the explanation attached to a retry so
-/// callers can distinguish a temporary denial from a permanent block.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum HookOutcome {
-    /// Continue execution (with optional modified data).
-    Continue(Option<serde_json::Value>),
-    /// Permanently block the current operation.
-    Block { reason: String },
-    /// Temporarily block the operation and suggest when it may be retried.
-    Retry { reason: String, retry_after_ms: u64 },
-    /// Skip remaining hooks but continue execution.
-    Skip,
-    /// Escalate to human review.
-    Escalate {
-        reason: String,
-        target: Option<String>,
-    },
-}
-
-impl From<HookResult> for HookOutcome {
-    fn from(result: HookResult) -> Self {
-        match result {
-            HookResult::Continue(modified) => Self::Continue(modified),
-            HookResult::Block(reason) => Self::Block { reason },
-            HookResult::Retry(retry_after_ms) => Self::Retry {
-                reason: "Hook requested a retry".to_string(),
-                retry_after_ms,
-            },
-            HookResult::Skip => Self::Skip,
-            HookResult::Escalate { reason, target } => Self::Escalate { reason, target },
-        }
-    }
-}
-
-impl From<HookOutcome> for HookResult {
-    fn from(outcome: HookOutcome) -> Self {
-        match outcome {
-            HookOutcome::Continue(modified) => Self::Continue(modified),
-            HookOutcome::Block { reason } => Self::Block(reason),
-            HookOutcome::Retry { retry_after_ms, .. } => Self::Retry(retry_after_ms),
-            HookOutcome::Skip => Self::Skip,
-            HookOutcome::Escalate { reason, target } => Self::Escalate { reason, target },
-        }
-    }
-}
-
-/// Hook handler trait
-pub trait HookHandler: Send + Sync {
-    /// Handle a hook event
-    fn handle(&self, event: &HookEvent) -> HookResponse;
-
-    /// Handle a hook event while preserving callback infrastructure failures.
-    ///
-    /// Native handlers can rely on the default implementation. SDK bridges
-    /// should override this method so language exceptions and callback channel
-    /// failures reach the engine instead of being converted to `Continue`.
-    fn try_handle(&self, event: &HookEvent) -> Result<HookResponse, String> {
-        Ok(self.handle(event))
-    }
-}
-
-/// Hook executor trait
-///
-/// Abstracts hook execution, allowing different implementations
-/// (e.g., full engine, no-op, test mocks) while keeping agent logic clean.
-#[async_trait::async_trait]
-pub trait HookExecutor: Send + Sync + std::fmt::Debug {
-    /// Fire a hook event and get the result
-    async fn fire(&self, event: &HookEvent) -> HookResult;
-
-    /// Fire a hook event while preserving denial context and retryability.
-    ///
-    /// Existing custom executors can rely on this compatibility projection.
-    /// Executors with richer callback responses should override it.
-    async fn fire_outcome(&self, event: &HookEvent) -> HookOutcome {
-        self.fire(event).await.into()
-    }
-
-    /// Observe a product/runtime event emitted by the agent loop.
-    ///
-    /// Executors that only supervise lifecycle hooks can ignore this.
-    async fn record_agent_event(
-        &self,
-        _event: &crate::agent::AgentEvent,
-        _run_id: &str,
-        _session_id: &str,
-    ) {
-    }
-
-    /// Observe explicit run cancellation when cancellation happens outside the
-    /// agent loop's normal event stream.
-    async fn record_run_cancelled(&self, _run_id: &str, _session_id: &str, _reason: Option<&str>) {}
 }
 
 /// Hook engine
 pub struct HookEngine {
     /// Registered hooks
-    hooks: Arc<RwLock<HashMap<String, Hook>>>,
+    hooks: Arc<RwLock<HashMap<String, Arc<Hook>>>>,
 
     /// Hook handlers (registered by SDK)
     handlers: Arc<RwLock<HashMap<String, Arc<dyn HookHandler>>>>,
 
     /// Event sender channel (for SDK listeners)
     event_tx: Option<mpsc::Sender<HookEvent>>,
+
+    /// Run-owned dispatcher for detached observational handlers.
+    task_dispatcher: OnceLock<Arc<dyn HookTaskDispatcher>>,
 }
 
 impl std::fmt::Debug for HookEngine {
@@ -289,6 +54,7 @@ impl std::fmt::Debug for HookEngine {
             .field("hooks_count", &read_or_recover(&self.hooks).len())
             .field("handlers_count", &read_or_recover(&self.handlers).len())
             .field("has_event_channel", &self.event_tx.is_some())
+            .field("has_task_dispatcher", &self.task_dispatcher.get().is_some())
             .finish()
     }
 }
@@ -306,6 +72,7 @@ impl HookEngine {
             hooks: Arc::new(RwLock::new(HashMap::new())),
             handlers: Arc::new(RwLock::new(HashMap::new())),
             event_tx: None,
+            task_dispatcher: OnceLock::new(),
         }
     }
 
@@ -318,38 +85,145 @@ impl HookEngine {
     /// Register a hook
     pub fn register(&self, hook: Hook) {
         let mut hooks = write_or_recover(&self.hooks);
-        hooks.insert(hook.id.clone(), hook);
+        hooks.insert(hook.id.clone(), Arc::new(hook));
     }
 
     /// Unregister a hook
     pub fn unregister(&self, hook_id: &str) -> Option<Hook> {
         let mut hooks = write_or_recover(&self.hooks);
-        hooks.remove(hook_id)
+        hooks.remove(hook_id).map(|hook| (*hook).clone())
     }
 
     /// Register a handler
     pub fn register_handler(&self, hook_id: &str, handler: Arc<dyn HookHandler>) {
-        let mut handlers = write_or_recover(&self.handlers);
-        handlers.insert(hook_id.to_string(), handler);
+        drop(self.replace_handler(hook_id, handler));
     }
 
     /// Unregister a handler
     pub fn unregister_handler(&self, hook_id: &str) {
+        drop(self.take_handler(hook_id));
+    }
+
+    pub(crate) fn replace_handler(
+        &self,
+        hook_id: &str,
+        handler: Arc<dyn HookHandler>,
+    ) -> Option<Arc<dyn HookHandler>> {
+        write_or_recover(&self.handlers).insert(hook_id.to_string(), handler)
+    }
+
+    pub(crate) fn take_handler(&self, hook_id: &str) -> Option<Arc<dyn HookHandler>> {
+        write_or_recover(&self.handlers).remove(hook_id)
+    }
+
+    /// Atomically replace one complete compatibility Hook registration.
+    pub(crate) fn register_registration(
+        &self,
+        hook: Hook,
+        handler: Option<Arc<dyn HookHandler>>,
+    ) -> (Option<Arc<Hook>>, Option<Arc<dyn HookHandler>>) {
+        let hook_id = hook.id.clone();
+        let mut hooks = write_or_recover(&self.hooks);
         let mut handlers = write_or_recover(&self.handlers);
-        handlers.remove(hook_id);
+        let retired_hook = hooks.insert(hook_id.clone(), Arc::new(hook));
+        let retired_handler = match handler {
+            Some(handler) => handlers.insert(hook_id, handler),
+            None => handlers.remove(&hook_id),
+        };
+        (retired_hook, retired_handler)
+    }
+
+    /// Atomically remove one complete compatibility Hook registration.
+    pub(crate) fn unregister_registration(
+        &self,
+        hook_id: &str,
+    ) -> (Option<Arc<Hook>>, Option<Arc<dyn HookHandler>>) {
+        let mut hooks = write_or_recover(&self.hooks);
+        let mut handlers = write_or_recover(&self.handlers);
+        let retired_handler = handlers.remove(hook_id);
+        let retired_hook = hooks.remove(hook_id);
+        (retired_hook, retired_handler)
+    }
+
+    /// Freeze the compatibility registry and merge one projected generation.
+    ///
+    /// Compatibility names always participate in conflict detection. They are
+    /// copied into the executable snapshot only when the in-process engine is
+    /// the Session's active compatibility executor.
+    pub(crate) fn snapshot_with_external_hooks(
+        &self,
+        external: impl IntoIterator<Item = Arc<HookBinding>>,
+        include_compatibility: bool,
+    ) -> Result<Self, HookEngineSnapshotError> {
+        // Preserve one lock order everywhere both maps are observed.
+        let compatibility_hooks = read_or_recover(&self.hooks);
+        let compatibility_handlers = read_or_recover(&self.handlers);
+        let compatibility_names = compatibility_hooks
+            .keys()
+            .chain(compatibility_handlers.keys())
+            .cloned()
+            .collect::<HashSet<_>>();
+        let mut hooks = if include_compatibility {
+            compatibility_hooks.clone()
+        } else {
+            HashMap::new()
+        };
+        let mut handlers = if include_compatibility {
+            compatibility_handlers.clone()
+        } else {
+            HashMap::new()
+        };
+        let mut projected_names = HashSet::new();
+
+        for binding in external {
+            let name = binding.hook().id.clone();
+            if compatibility_names.contains(&name) || !projected_names.insert(name.clone()) {
+                return Err(HookEngineSnapshotError { name });
+            }
+            hooks.insert(name.clone(), Arc::clone(binding.hook_arc()));
+            handlers.insert(name, Arc::clone(binding.handler_arc()));
+        }
+
+        Ok(Self {
+            hooks: Arc::new(RwLock::new(hooks)),
+            handlers: Arc::new(RwLock::new(handlers)),
+            event_tx: include_compatibility
+                .then(|| self.event_tx.clone())
+                .flatten(),
+            task_dispatcher: OnceLock::new(),
+        })
+    }
+
+    pub(crate) fn attach_task_dispatcher(
+        &self,
+        dispatcher: Arc<dyn HookTaskDispatcher>,
+    ) -> Result<(), Arc<dyn HookTaskDispatcher>> {
+        self.task_dispatcher.set(dispatcher)
     }
 
     /// Get all hooks matching an event (sorted by priority)
     pub fn matching_hooks(&self, event: &HookEvent) -> Vec<Hook> {
+        self.matching_hook_arcs(event)
+            .into_iter()
+            .map(|hook| (*hook).clone())
+            .collect()
+    }
+
+    fn matching_hook_arcs(&self, event: &HookEvent) -> Vec<Arc<Hook>> {
         let hooks = read_or_recover(&self.hooks);
-        let mut matching: Vec<Hook> = hooks
+        let mut matching: Vec<Arc<Hook>> = hooks
             .values()
             .filter(|h| h.matches(event))
             .cloned()
             .collect();
 
         // Sort by priority (lower values = higher priority)
-        matching.sort_by_key(|h| h.config.priority);
+        matching.sort_by(|left, right| {
+            left.config
+                .priority
+                .cmp(&right.config.priority)
+                .then_with(|| left.id.cmp(&right.id))
+        });
         matching
     }
 
@@ -360,13 +234,29 @@ impl HookEngine {
 
     /// Fire an event while preserving retry explanations.
     pub async fn fire_outcome(&self, event: &HookEvent) -> HookOutcome {
+        self.fire_outcome_with_policy(event, true).await
+    }
+
+    /// Fire an event from an already supervised observational task.
+    ///
+    /// Per-Hook asynchronous flags execute inline here so no nested detached
+    /// task can race the owning Run's close transition.
+    pub(crate) async fn fire_outcome_inline_observers(&self, event: &HookEvent) -> HookOutcome {
+        self.fire_outcome_with_policy(event, false).await
+    }
+
+    async fn fire_outcome_with_policy(
+        &self,
+        event: &HookEvent,
+        detach_observational_handlers: bool,
+    ) -> HookOutcome {
         // Send event to channel if available
         if let Some(ref tx) = self.event_tx {
             let _ = tx.send(event.clone()).await;
         }
 
         // Get matching hooks
-        let matching_hooks = self.matching_hooks(event);
+        let matching_hooks = self.matching_hook_arcs(event);
 
         if matching_hooks.is_empty() {
             return HookOutcome::Continue(None);
@@ -375,7 +265,9 @@ impl HookEngine {
         // Execute each hook
         let mut last_modified: Option<serde_json::Value> = None;
         for hook in matching_hooks {
-            let result = self.execute_hook(&hook, event).await;
+            let result = self
+                .execute_hook(&hook, event, detach_observational_handlers)
+                .await;
 
             match result {
                 HookOutcome::Continue(modified) => {
@@ -395,7 +287,12 @@ impl HookEngine {
     }
 
     /// Execute a single hook
-    async fn execute_hook(&self, hook: &Hook, event: &HookEvent) -> HookOutcome {
+    async fn execute_hook(
+        &self,
+        hook: &Hook,
+        event: &HookEvent,
+        detach_observational_handlers: bool,
+    ) -> HookOutcome {
         let is_gate = Self::is_gating_event(event);
 
         // Find handler
@@ -410,29 +307,50 @@ impl HookEngine {
                 // operation starts. Treat `async_execution` as best-effort only
                 // for observational hooks; otherwise a configuration flag could
                 // silently bypass a security policy.
-                if hook.config.async_execution && !is_gate {
+                if hook.config.async_execution && !is_gate && detach_observational_handlers {
                     let hook_id = hook.id.clone();
                     let event = event.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let response =
+                    let event_type = event.event_type();
+                    let task: HookTaskFuture = Box::pin(async move {
+                        let response = tokio::task::spawn_blocking(move || {
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 h.try_handle(&event)
-                            }));
+                            }))
+                        })
+                        .await;
                         match response {
-                            Ok(Ok(_)) => {}
-                            Ok(Err(error)) => tracing::warn!(
+                            Ok(Ok(Ok(_))) => {}
+                            Ok(Ok(Err(error))) => tracing::warn!(
                                 hook_id = %hook_id,
-                                event_type = %event.event_type(),
+                                event_type = %event_type,
                                 failure = %error,
                                 "Asynchronous observational hook handler failed"
                             ),
-                            Err(_) => tracing::warn!(
+                            Ok(Err(_)) => tracing::warn!(
                                 hook_id = %hook_id,
-                                event_type = %event.event_type(),
+                                event_type = %event_type,
                                 "Asynchronous observational hook handler panicked"
+                            ),
+                            Err(error) => tracing::warn!(
+                                hook_id = %hook_id,
+                                event_type = %event_type,
+                                failure = %error,
+                                "Asynchronous observational hook task failed"
                             ),
                         }
                     });
+                    if let Some(dispatcher) = self.task_dispatcher.get() {
+                        if let Err(error) = dispatcher.dispatch("hook.observer", task) {
+                            tracing::warn!(
+                                hook_id = %hook.id,
+                                event_type = %event_type,
+                                failure = %error,
+                                "Asynchronous observational hook could not be supervised"
+                            );
+                        }
+                    } else {
+                        tokio::spawn(task);
+                    }
                     return HookOutcome::Continue(None);
                 }
 
@@ -451,9 +369,49 @@ impl HookEngine {
                     ),
                     Err(_) => {
                         // `spawn_blocking` work cannot always be cancelled once
-                        // running, but aborting prevents a queued callback from
-                        // starting. The protected operation remains blocked.
+                        // running. A Run snapshot transfers the join handle to
+                        // its capability supervisor so the exact Use lease is
+                        // retained through bounded settlement.
                         task.abort();
+                        if !detach_observational_handlers {
+                            // The caller is already one supervised
+                            // observational task. Settle here instead of trying
+                            // to register nested work after Run close may have
+                            // entered its Closing state.
+                            if let Err(error) = task.await {
+                                if !error.is_cancelled() {
+                                    tracing::warn!(
+                                        hook_id = %hook.id,
+                                        event_type = %event.event_type(),
+                                        failure = %error,
+                                        "Timed-out observational Hook handler failed while settling"
+                                    );
+                                }
+                            }
+                        } else if let Some(dispatcher) = self.task_dispatcher.get() {
+                            let hook_id = hook.id.clone();
+                            let event_type = event.event_type();
+                            let settle: HookTaskFuture = Box::pin(async move {
+                                if let Err(error) = task.await {
+                                    if !error.is_cancelled() {
+                                        tracing::warn!(
+                                            hook_id = %hook_id,
+                                            event_type = %event_type,
+                                            failure = %error,
+                                            "Timed-out Hook handler failed while settling"
+                                        );
+                                    }
+                                }
+                            });
+                            if let Err(error) = dispatcher.dispatch("hook.timeout-settle", settle) {
+                                tracing::warn!(
+                                    hook_id = %hook.id,
+                                    event_type = %event.event_type(),
+                                    failure = %error,
+                                    "Timed-out Hook handler could not be supervised"
+                                );
+                            }
+                        }
                         self.handler_failure(
                             hook,
                             event,
@@ -527,12 +485,17 @@ impl HookEngine {
 
     /// Get a hook by ID
     pub fn get_hook(&self, id: &str) -> Option<Hook> {
-        read_or_recover(&self.hooks).get(id).cloned()
+        read_or_recover(&self.hooks)
+            .get(id)
+            .map(|hook| (**hook).clone())
     }
 
     /// Get all hooks
     pub fn all_hooks(&self) -> Vec<Hook> {
-        read_or_recover(&self.hooks).values().cloned().collect()
+        read_or_recover(&self.hooks)
+            .values()
+            .map(|hook| (**hook).clone())
+            .collect()
     }
 }
 

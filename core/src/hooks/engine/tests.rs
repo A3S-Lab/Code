@@ -1,5 +1,6 @@
 use super::*;
 use crate::hooks::events::PreToolUseEvent;
+use crate::hooks::{HookConfig, HookEventType, HookMatcher};
 
 fn make_pre_tool_event(session_id: &str, tool: &str) -> HookEvent {
     HookEvent::PreToolUse(PreToolUseEvent {
@@ -108,6 +109,81 @@ fn test_engine_register_unregister() {
     assert_eq!(engine.hook_count(), 0);
 }
 
+struct LockCheckingDropHandler {
+    engine: std::sync::Weak<HookEngine>,
+    registry_lock_was_available: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl HookHandler for LockCheckingDropHandler {
+    fn handle(&self, _event: &HookEvent) -> HookResponse {
+        HookResponse::continue_()
+    }
+}
+
+impl Drop for LockCheckingDropHandler {
+    fn drop(&mut self) {
+        let available = self
+            .engine
+            .upgrade()
+            .is_some_and(|engine| engine.handlers.try_write().is_ok());
+        self.registry_lock_was_available
+            .store(available, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn replaced_handler_drops_after_the_registry_lock_is_released() {
+    let engine = Arc::new(HookEngine::new());
+    let registry_lock_was_available = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    engine.register_handler(
+        "replace-me",
+        Arc::new(LockCheckingDropHandler {
+            engine: Arc::downgrade(&engine),
+            registry_lock_was_available: Arc::clone(&registry_lock_was_available),
+        }),
+    );
+
+    engine.register_handler("replace-me", Arc::new(ContinueHandler));
+
+    assert!(registry_lock_was_available.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn complete_registration_replaces_and_removes_definition_with_handler() {
+    let engine = HookEngine::new();
+    let handler: Arc<dyn HookHandler> = Arc::new(ContinueHandler);
+    let retired = engine.register_registration(
+        Hook::new("complete", HookEventType::PreToolUse),
+        Some(Arc::clone(&handler)),
+    );
+    assert!(retired.0.is_none());
+    assert!(retired.1.is_none());
+    assert!(engine.get_hook("complete").is_some());
+    assert!(Arc::ptr_eq(
+        read_or_recover(&engine.handlers).get("complete").unwrap(),
+        &handler
+    ));
+
+    let retired =
+        engine.register_registration(Hook::new("complete", HookEventType::PostToolUse), None);
+    assert_eq!(
+        retired.0.as_deref().unwrap().event_type,
+        HookEventType::PreToolUse
+    );
+    assert!(Arc::ptr_eq(retired.1.as_ref().unwrap(), &handler));
+    assert_eq!(
+        engine.get_hook("complete").unwrap().event_type,
+        HookEventType::PostToolUse
+    );
+    assert!(!read_or_recover(&engine.handlers).contains_key("complete"));
+
+    let retired = engine.unregister_registration("complete");
+    assert!(retired.0.is_some());
+    assert!(retired.1.is_none());
+    assert!(engine.get_hook("complete").is_none());
+    assert!(!read_or_recover(&engine.handlers).contains_key("complete"));
+}
+
 #[test]
 fn test_engine_matching_hooks() {
     let engine = HookEngine::new();
@@ -138,6 +214,22 @@ fn test_engine_matching_hooks() {
     // Sorted by priority, hook-2 (priority=5) should be first
     assert_eq!(matching[0].id, "hook-2");
     assert_eq!(matching[1].id, "hook-1");
+}
+
+#[test]
+fn equal_priority_hooks_use_canonical_id_order() {
+    let engine = HookEngine::new();
+    engine.register(Hook::new("z-hook", HookEventType::PreToolUse));
+    engine.register(Hook::new("a-hook", HookEventType::PreToolUse));
+
+    let matching = engine.matching_hooks(&make_pre_tool_event("s1", "Bash"));
+    assert_eq!(
+        matching
+            .iter()
+            .map(|hook| hook.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a-hook", "z-hook"]
+    );
 }
 
 #[tokio::test]
@@ -188,6 +280,84 @@ impl HookHandler for RetryHandler {
     fn handle(&self, _event: &HookEvent) -> HookResponse {
         HookResponse::retry_with_reason(&self.reason, self.delay_ms)
     }
+}
+
+#[tokio::test]
+async fn projected_snapshot_preserves_arc_identity_and_isolates_later_mutation() {
+    let engine = HookEngine::new();
+    let handler: Arc<dyn HookHandler> = Arc::new(BlockHandler {
+        reason: "projected generation".to_string(),
+    });
+    let binding = Arc::new(HookBinding::new(
+        Hook::new("projected-hook", HookEventType::PreToolUse),
+        Arc::clone(&handler),
+    ));
+    let snapshot = engine
+        .snapshot_with_external_hooks([Arc::clone(&binding)], true)
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        read_or_recover(&snapshot.hooks)
+            .get("projected-hook")
+            .unwrap(),
+        binding.hook_arc()
+    ));
+    assert!(Arc::ptr_eq(
+        read_or_recover(&snapshot.handlers)
+            .get("projected-hook")
+            .unwrap(),
+        &handler
+    ));
+
+    engine.register(Hook::new("projected-hook", HookEventType::PostToolUse));
+    engine.register_handler("projected-hook", Arc::new(ContinueHandler));
+    assert!(matches!(
+        snapshot
+            .fire(&make_pre_tool_event("s1", "Bash"))
+            .await,
+        HookResult::Block(reason) if reason == "projected generation"
+    ));
+    assert!(engine
+        .fire(&make_pre_tool_event("s1", "Bash"))
+        .await
+        .is_continue());
+}
+
+#[test]
+fn projected_snapshot_rejects_hook_handler_and_batch_name_conflicts() {
+    let hook_conflict = HookEngine::new();
+    hook_conflict.register(Hook::new("shared", HookEventType::PreToolUse));
+    let projected = || {
+        Arc::new(HookBinding::new(
+            Hook::new("shared", HookEventType::PreToolUse),
+            Arc::new(ContinueHandler),
+        ))
+    };
+    assert_eq!(
+        hook_conflict
+            .snapshot_with_external_hooks([projected()], true)
+            .unwrap_err()
+            .name(),
+        "shared"
+    );
+
+    let handler_conflict = HookEngine::new();
+    handler_conflict.register_handler("shared", Arc::new(ContinueHandler));
+    assert_eq!(
+        handler_conflict
+            .snapshot_with_external_hooks([projected()], true)
+            .unwrap_err()
+            .name(),
+        "shared"
+    );
+
+    let duplicate_projection = HookEngine::new();
+    assert_eq!(
+        duplicate_projection
+            .snapshot_with_external_hooks([projected(), projected()], true)
+            .unwrap_err()
+            .name(),
+        "shared"
+    );
 }
 
 #[tokio::test]

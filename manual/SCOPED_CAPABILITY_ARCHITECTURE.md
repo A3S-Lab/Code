@@ -1,6 +1,6 @@
 # Scoped Capability Architecture
 
-Status: accepted foundation; A3S Use bridge, immutable set, scoped lifecycle, atomic runtime projection, surface readiness DAG, official Tool/Skill host adoption, Run-frozen Tool presentation, and Run-frozen Agent delegation delivered
+Status: accepted foundation; A3S Use bridge, immutable set, scoped lifecycle, atomic runtime projection, surface readiness DAG, official Tool/Skill host adoption, Run-frozen Tool presentation, Agent delegation, Command dispatch, and Hook execution delivered
 
 ## Decision
 
@@ -84,9 +84,9 @@ The baseline also exposes the migration pressure. Tool, Skill, Agent, Command,
 Hook, and MCP state is held in separate mutable registries. Dynamic Tool and
 Skill replacement uses pointer identity and manually maintained shadow chains.
 The remaining compatibility host still reconciles asynchronous MCP, Flow,
-Knowledge, and Runtime Task surfaces independently. Tool, Skill, Agent, and
-Command projections have moved to one atomic Core batch; later gates must
-preserve that boundary as the asynchronous categories migrate.
+Knowledge, and Runtime Task surfaces independently. Tool, Skill, Agent,
+Command, and Hook projections have moved to one atomic Core batch; later gates
+must preserve that boundary as the asynchronous categories migrate.
 
 ## Capability lifetimes
 
@@ -185,8 +185,9 @@ The compile-fail examples live with
 `CAP-PROJ1` is implemented as a parallel Core catalog. `HOST-CAP1` binds
 official Tool/Skill hosts to it, and `HOST-AGENT1` binds Core Agent delegation
 to the same Run generation. `HOST-COMMAND1` binds Core slash-command dispatch
-to that generation without claiming that the remaining mutable compatibility
-registries have migrated.
+to that generation, and `HOST-HOOK1` binds Hook definitions, handlers, and
+observational work without claiming that the remaining asynchronous
+compatibility registries have migrated.
 
 | Rust boundary | Delivered invariant |
 | --- | --- |
@@ -288,7 +289,7 @@ pub enum CapabilityValue {
     Skill(Arc<Skill>),
     Agent(Arc<AgentDefinition>),
     Command(Arc<dyn SlashCommand>),
-    Hook(Arc<dyn HookHandler>),
+    Hook(Arc<HookBinding>),
     Mcp(Arc<McpBinding>),
     Flow(Arc<DynamicWorkflowRuntime>),
     Knowledge(Arc<CognitiveContextSession>),
@@ -349,11 +350,12 @@ whole batch without changing visibility, validates it against the frozen
 compatibility Tool and Skill maps, and publishes the projection and provider
 in one catalog CAS. This gate did not claim the other capability kinds;
 `HOST-AGENT1` extends the same boundary to Agent definitions and
-`HOST-COMMAND1` extends it to slash Commands, while Hook, MCP, Flow, Knowledge,
-Context, and UI still fail before preparation.
+`HOST-COMMAND1` extends it to slash Commands. `HOST-HOOK1` extends it to Hook
+bindings, while MCP, Flow, Knowledge, Context, and UI still fail before
+preparation.
 
 Run admission pins three things at one linearization point: the immutable Code
-projection, frozen compatibility Tool/Skill/Agent/Command maps, and the
+projection, frozen compatibility Tool/Skill/Agent/Command/Hook maps, and the
 governance ceiling. It then asks the published provider for a fresh, non-clone
 retained generation. The provider implementation must own the concrete A3S Use
 `CapabilitySnapshotLease`; a generation number or cached projection pointer is
@@ -523,10 +525,10 @@ nested child cannot escape into a newer Skill map through this rebind.
 An N+1 publication changes only later Run admission. An already admitted N Run
 continues to expose the N Agent catalog, resolves `task` through the N registry,
 and retains the exact N A3S Use lease until the foreground child and parent Run
-settle. Hook is the next synchronous registry migration. MCP and the remaining
-asynchronous resources migrate only after their product-owned connect, drain,
-and rollback effects can be supervised without moving package lifecycle
-authority into Code.
+settle. Hook now follows the same Run generation through `HOST-HOOK1`. MCP and
+the remaining asynchronous resources migrate only after their product-owned
+connect, drain, and rollback effects can be supervised without moving package
+lifecycle authority into Code.
 
 ### HOST-COMMAND1 Command runtime cut
 
@@ -572,8 +574,72 @@ name.
 An N Command already executing when N+1 is published continues to resolve and
 execute the exact N `Arc`. Its N A3S Use lease remains retained through that
 execution, while the next blocking or streaming dispatch admits N+1. Hook is
-the next synchronous registry migration; asynchronous MCP and other resources
+bound to the same Run by `HOST-HOOK1`; asynchronous MCP and other resources
 remain gated on product-owned supervised effects.
+
+### HOST-HOOK1 Hook runtime cut
+
+`HOST-HOOK1` admits `CapabilityValue::Hook(Arc<HookBinding>)` through the
+existing `SessionCapabilityBatch`. A `HookBinding` is one immutable ownership
+atom containing `Arc<Hook>` metadata and its exact `Arc<dyn HookHandler>`.
+Code therefore cannot combine a definition from Use generation N with a
+callback from N+1. A3S Use still selects, verifies, grants, publishes, drains,
+and recovers the package generation; Code receives only the already selected
+binding and the generation-specific lease provider.
+
+Publication and Run pinning share the Session's short extension-mutation gate.
+Validation snapshots compatibility Hook definitions and handlers in one fixed
+`hooks`-then-`handlers` lock order. A conflict with either map, an orphaned
+compatibility handler name, or a duplicate projected name fails before the
+catalog CAS. Equal-priority execution is canonical by Hook ID. The official
+Node.js, Python, and Go bridges publish and remove complete registrations
+through Core's atomic `register_hook_registration` and
+`unregister_hook_registration` methods; piecemeal Rust methods remain only for
+compatibility.
+
+```text
+A3S Use capability generation + exact Run lease
+                         │
+                         ▼
+        Code immutable HookBinding projection
+                         │
+                         ▼
+ compatibility snapshot + projected bindings ──▶ Run-owned HookEngine
+                                                    │
+ optional Session-static external executor ─────────┤
+                                                    ▼
+                           gating decisions + supervised observations
+```
+
+An optional Session-static external `HookExecutor` remains the outer layer and
+retains its prior replacement semantics for the compatibility registry. Its
+terminal block, retry, or escalation stops protected work. Its `Skip` applies
+only to its own chain and cannot bypass the projected layer. Projected Hooks
+always execute from the Run snapshot. With no external executor, compatibility
+Hooks and projected bindings share that frozen snapshot; subsequent Session
+mutation affects only later Runs.
+
+Projected `SessionStart` and `SessionEnd` events fail before publication because
+Session construction and teardown are outside a capability Run. Projected
+`SkillLoad` and `SkillUnload` also fail because their package lifecycle belongs
+to A3S Use and Code has no Run-scoped production emitter for them. Other Hook
+points execute only where the Agent loop produces the matching Run event.
+
+Observational dispatch no longer creates an untracked Tokio task. The
+Run-owned executor registers PostToolUse, PostResponse, OnError,
+`async_execution`, and timed-out blocking-handler settlement with the
+capability supervisor before returning. Accepted work therefore retains the
+exact N Use lease until it settles or the bounded close policy expires. A
+timed-out callback already running in Tokio's blocking pool cannot be forcibly
+cancelled by Rust. If it exceeds the shared scope-close deadline, the close
+report is non-clean and the lease can be released while that host callback
+finishes; host callbacks must be bounded rather than relying on asynchronous
+`Drop` or forced thread termination.
+
+An admitted N Run retains the N Hook definition, N handler, and exact N Use
+lease across N+1 publication. Later Runs receive N+1. This cut does not inspect
+package manifests, perform SemVer resolution, compute Grants, publish or retire
+a Use generation, or replace Use drain and recovery.
 
 ## Contribution and conflict rules
 
@@ -598,7 +664,7 @@ readiness, and owned effects.
 | `CAP-I01` | A3S Use is the sole authority for package plan/apply, verification, dependency resolution, Grants, lifecycle generation, capability cutover, and recovery. |
 | `CAP-I02` | One source generation is projected into a Session as one atomic contribution batch. |
 | `CAP-I03` | A failed transaction cannot change the visible catalog generation or leave a partially visible batch. |
-| `CAP-I04` | A Run's model definition and execution resolve through the same pinned capability value; delegated Agent definitions and lookup share one Run-frozen registry, slash-command selection and execution share another, and a presentation Profile can only remove Tool definitions or rephrase the existing code gateway. |
+| `CAP-I04` | A Run's model definition and execution resolve through the same pinned capability value; delegated Agent definitions and lookup share one Run-frozen registry, slash-command selection and execution share another, Hook metadata and handlers remain one exact binding with supervised observations, and a presentation Profile can only remove Tool definitions or rephrase the existing code gateway. |
 | `CAP-I05` | External hot-plug affects the next admitted Run; an admitted Run retains its exact local and upstream generation leases. |
 | `CAP-I06` | A child scope cannot broaden its parent's permission, confirmation, security, budget, workspace, Tool-presentation, or execution ceiling. |
 | `CAP-I07` | Required dependencies must be ready in the same upstream generation before a contribution becomes visible. |
@@ -648,6 +714,7 @@ concerns and produce typed contributions.
 | `CAP-PROFILE1` | Delivered | Run-frozen typed Tool presentation over the same pinned executor values | Permission filtering precedes Profile projection; name/schema identity and deterministic order are preserved, code mode rephrases only the existing `program` definition, child runs cannot broaden, and exact Session resume plus Rust/Node.js/Python/Go parity pass |
 | `HOST-AGENT1` | Delivered | Core projects Agent definitions into one Run-frozen registry shared by automatic and Tool-driven delegation | Canonical alias conflicts fail before publication, compatibility registration cannot shadow a published Agent, N Runs delegate through N after an N+1 cutover, and the exact N Use lease remains held through foreground child completion |
 | `HOST-COMMAND1` | Delivered | Core dispatches blocking and streaming slash Commands through one Run-frozen registry | Built-in and compatibility conflicts fail before publication, legacy registration cannot shadow a published Command, N execution remains on N after an N+1 cutover, and the exact N Use lease remains held through Command execution |
+| `HOST-HOOK1` | Delivered | Core composes projected Hook bindings through one Run-frozen executor | Definition/handler pairs remain generation-exact, invalid Run event scopes and compatibility conflicts fail before publication, external `Skip` cannot bypass projected policy, and supervised observations retain the exact Use lease through bounded settlement |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
 `CAP-PROJ1` attaches runtime values and atomic typestate transactions to the
@@ -657,9 +724,10 @@ edges through a bounded generation-bound readiness plan. Delivered
 CLI, one-shot Code Exec, and Desktop. `HOST-AGENT1` adds Core Agent projection
 and delegation to that same transaction and Run lease. `HOST-COMMAND1` adds
 blocking and streaming slash-command dispatch to that admission boundary.
-Hook migrates next, with MCP and other asynchronous resources last. Host
-integration must use the atomic Core transaction instead of adding another
-reconciliation abstraction.
+`HOST-HOOK1` adds generation-exact Hook bindings, composed policy, and
+supervised observations to that same Run. MCP and other asynchronous resources
+migrate next. Host integration must use the atomic Core transaction instead of
+adding another reconciliation abstraction.
 
 `CAP-PROFILE1` operates only after that atomic admission boundary. It projects
 the Run-frozen permission-visible definition list, never the Session-latest

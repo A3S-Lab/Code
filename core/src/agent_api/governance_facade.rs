@@ -91,8 +91,14 @@ impl AgentSession {
 
     /// Register a hook for lifecycle event interception.
     pub fn register_hook(&self, hook: crate::hooks::Hook) -> crate::error::Result<()> {
-        self.close_handle
-            .mutate_immediate(|| HookControl::from_session(self).register_hook(hook))
+        self.close_handle.mutate_immediate(|| {
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Hook,
+                &hook.id,
+            )?;
+            HookControl::from_session(self).register_hook(hook);
+            Ok(())
+        })?
     }
 
     /// Unregister a hook by ID.
@@ -100,8 +106,13 @@ impl AgentSession {
         &self,
         hook_id: &str,
     ) -> crate::error::Result<Option<crate::hooks::Hook>> {
-        self.close_handle
-            .mutate_immediate(|| HookControl::from_session(self).unregister_hook(hook_id))
+        self.close_handle.mutate_immediate(|| {
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Hook,
+                hook_id,
+            )?;
+            Ok(HookControl::from_session(self).unregister_hook(hook_id))
+        })?
     }
 
     /// Register a handler for a specific hook.
@@ -110,15 +121,94 @@ impl AgentSession {
         hook_id: &str,
         handler: Arc<dyn crate::hooks::HookHandler>,
     ) -> crate::error::Result<()> {
-        self.close_handle.mutate_immediate(|| {
-            HookControl::from_session(self).register_hook_handler(hook_id, handler)
-        })
+        let mut pending_handler = Some(handler);
+        let retired = self.close_handle.mutate_immediate(|| {
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Hook,
+                hook_id,
+            )?;
+            let handler = pending_handler.take().ok_or_else(|| {
+                crate::error::CodeError::Capability(
+                    crate::capability::CapabilityRuntimeError::RuntimeValueInvalid {
+                        kind: crate::capability::CapabilityKind::Hook,
+                        public_name: hook_id.to_owned(),
+                        message: "Hook handler mutation was already consumed".to_owned(),
+                    },
+                )
+            })?;
+            Ok::<_, crate::error::CodeError>(
+                HookControl::from_session(self).register_hook_handler(hook_id, handler),
+            )
+        })??;
+        drop(retired);
+        Ok(())
     }
 
     /// Unregister a hook handler by hook ID.
     pub fn unregister_hook_handler(&self, hook_id: &str) -> crate::error::Result<()> {
-        self.close_handle
-            .mutate_immediate(|| HookControl::from_session(self).unregister_hook_handler(hook_id))
+        let retired = self.close_handle.mutate_immediate(|| {
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Hook,
+                hook_id,
+            )?;
+            Ok::<_, crate::error::CodeError>(
+                HookControl::from_session(self).unregister_hook_handler(hook_id),
+            )
+        })??;
+        drop(retired);
+        Ok(())
+    }
+
+    /// Atomically add or replace a complete Hook definition and handler pair.
+    ///
+    /// Official SDK bridges use this method so a newly admitted Run cannot
+    /// observe the definition without its matching callback. Passing `None`
+    /// intentionally registers an event-only Hook with no gating handler.
+    pub fn register_hook_registration(
+        &self,
+        hook: crate::hooks::Hook,
+        handler: Option<Arc<dyn crate::hooks::HookHandler>>,
+    ) -> crate::error::Result<()> {
+        let mut pending_handler = Some(handler);
+        let retired = self.close_handle.mutate_immediate(|| {
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Hook,
+                &hook.id,
+            )?;
+            let handler = pending_handler.take().ok_or_else(|| {
+                crate::error::CodeError::Capability(
+                    crate::capability::CapabilityRuntimeError::RuntimeValueInvalid {
+                        kind: crate::capability::CapabilityKind::Hook,
+                        public_name: hook.id.clone(),
+                        message: "Hook registration was already consumed".to_owned(),
+                    },
+                )
+            })?;
+            Ok::<_, crate::error::CodeError>(
+                HookControl::from_session(self).register_hook_registration(hook, handler),
+            )
+        })??;
+        drop(retired);
+        Ok(())
+    }
+
+    /// Atomically remove a complete Hook definition and handler pair.
+    pub fn unregister_hook_registration(
+        &self,
+        hook_id: &str,
+    ) -> crate::error::Result<Option<crate::hooks::Hook>> {
+        let (retired_hook, retired_handler) = self.close_handle.mutate_immediate(|| {
+            self.ensure_compatibility_name_available(
+                crate::capability::CapabilityKind::Hook,
+                hook_id,
+            )?;
+            Ok::<_, crate::error::CodeError>(
+                HookControl::from_session(self).unregister_hook_registration(hook_id),
+            )
+        })??;
+        let removed = retired_hook.as_deref().cloned();
+        drop((retired_hook, retired_handler));
+        Ok(removed)
     }
 
     /// Get the number of registered hooks.

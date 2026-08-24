@@ -27,12 +27,38 @@ impl<'a> HookControl<'a> {
         &self,
         hook_id: &str,
         handler: Arc<dyn crate::hooks::HookHandler>,
-    ) {
-        self.session.hook_engine.register_handler(hook_id, handler);
+    ) -> Option<Arc<dyn crate::hooks::HookHandler>> {
+        self.session.hook_engine.replace_handler(hook_id, handler)
     }
 
-    pub(super) fn unregister_hook_handler(&self, hook_id: &str) {
-        self.session.hook_engine.unregister_handler(hook_id);
+    pub(super) fn unregister_hook_handler(
+        &self,
+        hook_id: &str,
+    ) -> Option<Arc<dyn crate::hooks::HookHandler>> {
+        self.session.hook_engine.take_handler(hook_id)
+    }
+
+    pub(super) fn register_hook_registration(
+        &self,
+        hook: crate::hooks::Hook,
+        handler: Option<Arc<dyn crate::hooks::HookHandler>>,
+    ) -> (
+        Option<Arc<crate::hooks::Hook>>,
+        Option<Arc<dyn crate::hooks::HookHandler>>,
+    ) {
+        self.session
+            .hook_engine
+            .register_registration(hook, handler)
+    }
+
+    pub(super) fn unregister_hook_registration(
+        &self,
+        hook_id: &str,
+    ) -> (
+        Option<Arc<crate::hooks::Hook>>,
+        Option<Arc<dyn crate::hooks::HookHandler>>,
+    ) {
+        self.session.hook_engine.unregister_registration(hook_id)
     }
 
     pub(super) fn hook_count(&self) -> usize {

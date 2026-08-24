@@ -65,6 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conflicts fail before publication, legacy registration cannot shadow a
   published Command, and an N execution retains N plus its exact A3S Use lease
   across an N+1 cutover.
+- Added Run-frozen Hook projection to `SessionCapabilityBatch`. Each
+  `HookBinding` atomically pairs one immutable definition with its exact
+  handler; unsupported Session/Skill lifecycle scopes and compatibility name
+  conflicts fail before publication. Projected policy composes after an
+  optional Session-static external executor and cannot be bypassed by its
+  `Skip`. Official SDK Hook registration is atomic, deterministic equal-priority
+  ordering uses Hook ID, and observational, asynchronous, and timed-out handler
+  settlement is supervised by the capability Run while it retains the exact
+  A3S Use lease within the configured bounded-close policy.
 
 ### Fixed
 

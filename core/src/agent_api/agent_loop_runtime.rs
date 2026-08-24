@@ -12,6 +12,7 @@ use crate::capability::{
 };
 use crate::commands::{CommandRegistry, CommandRegistrySnapshotError};
 use crate::context::SkillCatalogContextProvider;
+use crate::hooks::{HookEngine, HookEngineSnapshotError, HookExecutor};
 use crate::skills::{SkillRegistry, SkillRegistrySnapshotError};
 use crate::subagent::{AgentRegistry, AgentRegistrySnapshotError};
 use crate::tools::ToolExecutor;
@@ -23,6 +24,7 @@ pub(super) struct PinnedRuntimeProjection {
     skill_registry: Arc<SkillRegistry>,
     agent_registry: Arc<AgentRegistry>,
     command_registry: Arc<CommandRegistry>,
+    hook_engine: Arc<HookEngine>,
     tool_executor: Arc<ToolExecutor>,
 }
 
@@ -50,13 +52,33 @@ pub(super) async fn build_pinned_agent_loop(
     session: &AgentSession,
 ) -> crate::error::Result<(AgentLoop, SessionCapabilityRun)> {
     let (runtime_projection, capability_run) = pin_and_admit_runtime_projection(session).await?;
+    let run_hook_executor = match super::run_hook_executor::RunHookExecutor::new(
+        session.hook_executor.clone(),
+        Arc::clone(&runtime_projection.hook_engine),
+        capability_run.task_spawner(),
+    ) {
+        Ok(executor) => executor as Arc<dyn HookExecutor>,
+        Err(message) => {
+            if let Err(error) = capability_run.close().await {
+                tracing::warn!(error = %error, "Capability Run close failed after Hook executor assembly failed");
+            }
+            return Err(CapabilityRuntimeError::RuntimeValueInvalid {
+                kind: CapabilityKind::Hook,
+                public_name: "hook-registry".to_owned(),
+                message: message.to_owned(),
+            }
+            .into());
+        }
+    };
     let PinnedRuntimeProjection {
         skill_registry,
         agent_registry,
         command_registry: _,
+        hook_engine: _,
         tool_executor,
     } = runtime_projection;
     let mut config = live_config(session);
+    config.hook_engine = Some(run_hook_executor);
     config.skill_registry = Some(Arc::clone(&skill_registry));
     config.agent_registry = Some(Arc::clone(&agent_registry));
     config
@@ -180,12 +202,23 @@ fn pin_runtime_projection_with_command_registry(
     let mut projected_skills = Vec::new();
     let mut projected_agents = Vec::new();
     let mut projected_commands = Vec::new();
+    let mut projected_hooks = Vec::new();
     for (_, value) in projection.iter() {
         match value {
             CapabilityValue::Tool(tool) => projected_tools.push(Arc::clone(tool)),
             CapabilityValue::Skill(skill) => projected_skills.push(Arc::clone(skill)),
             CapabilityValue::Agent(agent) => projected_agents.push(Arc::clone(agent)),
             CapabilityValue::Command(command) => projected_commands.push(Arc::clone(command)),
+            CapabilityValue::Hook(hook) => {
+                hook.validate_run_scope().map_err(|message| {
+                    CapabilityRuntimeError::RuntimeValueInvalid {
+                        kind: CapabilityKind::Hook,
+                        public_name: hook.hook().id.clone(),
+                        message: message.to_owned(),
+                    }
+                })?;
+                projected_hooks.push(Arc::clone(hook));
+            }
             _ => return Err(CapabilityRuntimeError::UnsupportedSessionKind { kind: value.kind() }),
         }
     }
@@ -232,6 +265,17 @@ fn pin_runtime_projection_with_command_registry(
                 }
             })?,
     );
+    let hook_engine = Arc::new(
+        session
+            .hook_engine
+            .snapshot_with_external_hooks(projected_hooks, session.hook_executor.is_none())
+            .map_err(|error: HookEngineSnapshotError| {
+                CapabilityRuntimeError::RuntimeNameConflict {
+                    kind: CapabilityKind::Hook,
+                    public_name: error.name().to_owned(),
+                }
+            })?,
+    );
     let tool_executor = Arc::new(
         session
             .tool_executor
@@ -245,6 +289,7 @@ fn pin_runtime_projection_with_command_registry(
         skill_registry,
         agent_registry,
         command_registry,
+        hook_engine,
         tool_executor,
     })
 }

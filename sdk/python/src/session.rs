@@ -786,22 +786,13 @@ impl PySession {
             });
         }
 
-        self.inner.register_hook(hook).map_err(py_code_error)?;
-
-        if let Some(py_fn) = handler {
-            self.inner
-                .register_hook_handler(
-                    &hook_id,
-                    Arc::new(PythonCallbackHandler { callback: py_fn }),
-                )
-                .map_err(py_code_error)?;
-        } else {
-            // Re-registering an existing hook without a handler must clear any
-            // callback previously associated with the same ID.
-            self.inner
-                .unregister_hook_handler(&hook_id)
-                .map_err(py_code_error)?;
-        }
+        let handler: Option<Arc<dyn a3s_code_core::hooks::HookHandler>> = handler.map(|py_fn| {
+            Arc::new(PythonCallbackHandler { callback: py_fn })
+                as Arc<dyn a3s_code_core::hooks::HookHandler>
+        });
+        self.inner
+            .register_hook_registration(hook, handler)
+            .map_err(py_code_error)?;
 
         Ok(())
     }
@@ -811,10 +802,7 @@ impl PySession {
     /// Returns True if the hook was found and removed, False otherwise.
     fn unregister_hook(&self, hook_id: String) -> PyResult<bool> {
         self.inner
-            .unregister_hook_handler(&hook_id)
-            .map_err(py_code_error)?;
-        self.inner
-            .unregister_hook(&hook_id)
+            .unregister_hook_registration(&hook_id)
             .map(|hook| hook.is_some())
             .map_err(py_code_error)
     }

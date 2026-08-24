@@ -632,7 +632,7 @@ impl Session {
         }
 
         let timeout_ms = hook.config.timeout_ms;
-        let handler = if let Some(js_fn) = handler {
+        let handler: Option<Arc<dyn a3s_code_core::hooks::HookHandler>> = if let Some(js_fn) = handler {
             let safe_handler = wrap_sync_callback(&env, js_fn)?;
             let tsfn: ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal> = safe_handler
                 .create_threadsafe_function(
@@ -647,21 +647,11 @@ impl Session {
             None
         };
 
-        // Construct every fallible JavaScript bridge before publishing the
-        // hook. register_hook_handler itself is infallible, so callers never
-        // observe a half-registered hook after an error.
-        self.inner.register_hook(hook).map_err(node_code_error)?;
-        if let Some(handler) = handler {
-            self.inner
-                .register_hook_handler(&hook_id, handler)
-                .map_err(node_code_error)?;
-        } else {
-            // Re-registering an existing hook without a handler must not retain
-            // the previous callback under the same ID.
-            self.inner
-                .unregister_hook_handler(&hook_id)
-                .map_err(node_code_error)?;
-        }
+        // Construct every fallible JavaScript bridge before atomically
+        // publishing the definition and matching callback.
+        self.inner
+            .register_hook_registration(hook, handler)
+            .map_err(node_code_error)?;
 
         Ok(())
     }
@@ -673,10 +663,7 @@ impl Session {
     #[napi]
     pub fn unregister_hook(&self, hook_id: String) -> napi::Result<bool> {
         self.inner
-            .unregister_hook_handler(&hook_id)
-            .map_err(node_code_error)?;
-        self.inner
-            .unregister_hook(&hook_id)
+            .unregister_hook_registration(&hook_id)
             .map(|hook| hook.is_some())
             .map_err(node_code_error)
     }

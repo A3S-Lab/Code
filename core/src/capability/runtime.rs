@@ -110,7 +110,7 @@ pub enum CapabilityRuntimeError {
     },
 }
 
-/// One complete next-generation Tool/Skill/Agent/Command projection for a Session.
+/// One complete next-generation Tool/Skill/Agent/Command/Hook projection for a Session.
 ///
 /// The batch owns every adapter before preparation starts. A Use-backed batch
 /// also owns the generation-specific lease provider that will be published in
@@ -343,6 +343,10 @@ impl SessionCapabilityRun {
         &self.run_scope
     }
 
+    pub(crate) fn task_spawner(&self) -> super::SupervisedTaskSpawner {
+        self.run_scope.task_spawner()
+    }
+
     pub async fn close(&self) -> Result<ScopeCloseReport, CapabilityRuntimeError> {
         let report = self.session_scope.close().await?;
         if !report.is_clean() {
@@ -377,6 +381,7 @@ fn validate_session_kinds(target: &CapabilitySet) -> Result<(), CapabilityRuntim
                 | CapabilityKind::Skill
                 | CapabilityKind::Agent
                 | CapabilityKind::Command
+                | CapabilityKind::Hook
         ) {
             return Err(CapabilityRuntimeError::UnsupportedSessionKind {
                 kind: descriptor.id().kind(),

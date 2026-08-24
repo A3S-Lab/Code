@@ -55,7 +55,11 @@ const AGENT_ALIASES = new Map([
   ['session_for_agent_async', 'session_for_agent'],
   ['session_for_worker_async', 'session_for_worker'],
 ]);
-const SESSION_ALIASES = new Map([['read_file_with_options', 'read_file']]);
+const SESSION_ALIASES = new Map([
+  ['read_file_with_options', 'read_file'],
+  ['register_hook_registration', 'register_hook'],
+  ['unregister_hook_registration', 'unregister_hook'],
+]);
 const PYTHON_SESSION_ALIASES = new Map([
   ...SESSION_ALIASES,
   ['semantic_search', 'semantic_search_async'],
