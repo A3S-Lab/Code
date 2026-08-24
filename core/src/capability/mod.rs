@@ -26,6 +26,7 @@ mod supervisor;
 mod transaction;
 mod value;
 
+pub use crate::mcp::McpBinding;
 pub use ceiling::{
     CapabilityCeiling, CapabilityExecutionCeiling, GovernanceCapabilityCeiling,
     WorkspaceCapabilityCeiling, CAPABILITY_CEILING_SCHEMA,
@@ -69,4 +70,4 @@ pub use transaction::{
     CapabilityProjectionAdapter, CapabilityTxn, Prepared, PreparedCapability, Staged, Validated,
     MAX_CAPABILITY_TRANSACTION_EFFECTS,
 };
-pub use value::{CapabilityValue, McpBinding};
+pub use value::CapabilityValue;

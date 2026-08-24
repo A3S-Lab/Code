@@ -74,6 +74,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ordering uses Hook ID, and observational, asynchronous, and timed-out handler
   settlement is supervised by the capability Run while it retains the exact
   A3S Use lease within the configured bounded-close policy.
+- Added Run-frozen MCP projection to `SessionCapabilityBatch`. Each
+  `McpBinding` owns one exact initialized client and a sorted, bounded tool
+  catalog; model definitions, raw calls, and delegated children resolve through
+  that immutable binding instead of a mutable manager. Connection preparation
+  and retirement are reversible asynchronous effects, cancellation and
+  compatibility conflicts leave the visible generation unchanged, and an N
+  Run retains both its local binding and separate exact A3S Use lease across
+  N+1 publication. The adapter accepts only host-constructed configuration
+  after authoritative Use Runtime/Gateway selection and does not inspect
+  package files or resolve opaque Gateway identities.
 
 ### Fixed
 

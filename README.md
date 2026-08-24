@@ -820,7 +820,7 @@ shadow a published projection. The CLI now uses the batch for resident
 sessions and a short-lived Code Exec runtime that stops Use discovery before
 Run admission. Desktop probes and requires that exact host contract, then
 accepts success only with canonical Code catalog and Use snapshot evidence.
-MCP, Flow, Knowledge, Context, and UI still fail closed in the
+Flow, Knowledge, Context, and UI still fail closed in the
 atomic Session batch and retain their explicit compatibility owners.
 
 Delivered `HOST-AGENT1` extends that batch to typed Agent definitions without
@@ -850,6 +850,21 @@ official SDK registration updates definition and callback atomically, and
 detached observations plus timed-out blocking callbacks settle under the Run
 supervisor before its exact A3S Use lease is released within the configured
 close deadline.
+
+Delivered `HOST-MCP1` extends the Core batch to immutable per-server
+`McpBinding` values. Each binding freezes one exact initialized `McpClient` and
+one sorted, bounded `tools/list` result; Run wrappers call the raw tool through
+that client instead of resolving a mutable `McpManager`. N Runs and foreground
+delegated children therefore retain N definitions and N callers, while the
+parent Run retains N's separate exact A3S Use snapshot lease across N+1
+publication. Connection preparation is a reversible Code effect, cancellation
+cannot advance the catalog, and cleanup closes the old connection only after
+the final old projection reader drops.
+The adapter consumes host-constructed configuration derived from already
+selected Use Runtime/Gateway evidence. Code does not inspect packages, resolve
+opaque `gateway:*` endpoint identities, choose providers, or own Use cutover,
+route drain, and recovery. Projecting the authoritative Use MCP surface into
+this Core seam remains a separate Use and official-host adoption boundary.
 
 Delivered `CAP-PROFILE1` adds one closed
 `ToolPresentationProfileV1` to the Session and Run. Adaptive preserves the

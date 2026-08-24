@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
@@ -47,7 +47,7 @@ pub struct HttpSseTransport {
     /// Request timeout
     request_timeout: Duration,
     /// Abort handle for SSE listener task
-    sse_abort: RwLock<Option<tokio::task::AbortHandle>>,
+    sse_abort: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl HttpSseTransport {
@@ -120,7 +120,7 @@ impl HttpSseTransport {
             notification_rx: RwLock::new(Some(notification_rx)),
             connected,
             request_timeout: Duration::from_secs(request_timeout_secs),
-            sse_abort: RwLock::new(Some(sse_handle.abort_handle())),
+            sse_abort: Mutex::new(Some(sse_handle.abort_handle())),
         })
     }
 
@@ -307,7 +307,10 @@ impl McpTransport for HttpSseTransport {
         self.connected.store(false, Ordering::SeqCst);
 
         // Abort SSE listener
-        let mut abort_guard = self.sse_abort.write().await;
+        let mut abort_guard = self
+            .sse_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handle) = abort_guard.take() {
             handle.abort();
         }
@@ -317,6 +320,20 @@ impl McpTransport for HttpSseTransport {
 
     fn is_connected(&self) -> bool {
         self.connected.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for HttpSseTransport {
+    fn drop(&mut self) {
+        self.connected.store(false, Ordering::Release);
+        if let Some(handle) = self
+            .sse_abort
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            handle.abort();
+        }
     }
 }
 

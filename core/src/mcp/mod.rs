@@ -57,16 +57,25 @@
 //! | `mcp__github__create_issue` | github | create_issue |
 //! | `mcp__postgres__query` | postgres | query |
 
+mod binding;
 pub mod client;
 pub mod manager;
 pub mod oauth;
+mod projection;
 pub mod protocol;
 mod result;
 pub mod tools;
 pub mod transport;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
+pub use binding::{
+    McpBinding, McpBindingError, MAX_MCP_BINDING_DEFINITION_BYTES, MAX_MCP_BINDING_TOOLS,
+};
 pub use client::McpClient;
 pub use manager::{McpManager, McpServerStatus};
+pub use projection::McpProjectionAdapter;
 pub use protocol::{
     CallToolResult, McpNotification, McpResource, McpServerConfig, McpTool, McpToolAnnotations,
     McpTransportConfig, OAuthConfig, ServerCapabilities, ToolContent,

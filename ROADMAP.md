@@ -100,6 +100,7 @@ Session- and Run-owned capability scopes.
 | `HOST-AGENT1` | Delivered | Core projects Agent definitions into one Run-frozen registry shared by automatic and Tool-driven delegation | Canonical alias conflicts fail before publication, compatibility registration cannot shadow a published Agent, N Runs delegate through N after an N+1 cutover, and the exact N Use lease remains held through foreground child completion |
 | `HOST-COMMAND1` | Delivered | Core dispatches blocking and streaming slash Commands through one Run-frozen registry | Built-in and compatibility conflicts fail before publication, legacy registration cannot shadow a published Command, N execution remains on N after an N+1 cutover, and the exact N Use lease remains held through Command execution |
 | `HOST-HOOK1` | Delivered | Core composes projected Hook bindings through one Run-frozen executor | Definition/handler pairs remain generation-exact, invalid Run event scopes and compatibility conflicts fail before publication, external `Skip` cannot bypass projected policy, and supervised observations retain the exact Use lease through bounded settlement |
+| `HOST-MCP1` | Delivered | Core projects each MCP server as one immutable exact-client binding and freezes its wrappers per Run | Initialization and `tools/list` finish before publication; N definitions, raw calls, foreground delegated children, and the parent Run's N Use lease remain generation-exact across N+1; rollback and final-reader retirement close the Code-owned connection effect without mutable-manager fallback |
 | `CAP-GA1` | Planned | Legacy shadow ownership and piecemeal reconciliation removed after one major compatibility period | Official hosts and SDKs use the scoped architecture and the complete verification matrix passes |
 
 [`USE-BRIDGE1`](https://github.com/A3S-Lab/Use/commit/6ed0b4e) is the upstream
@@ -127,8 +128,18 @@ same exact Use lease through execution. Delivered `HOST-HOOK1` atomically pairs
 each projected Hook definition with its exact handler, composes the frozen
 projection after any Session-static external executor, and supervises detached
 observations and timeout settlement under the capability Run. Session and
-Skill lifecycle events remain outside projected Run scope. MCP and the other
-asynchronous resource categories migrate next.
+Skill lifecycle events remain outside projected Run scope. Delivered
+`HOST-MCP1` adds a Core-owned asynchronous MCP projection boundary: one
+`McpBinding` freezes an exact initialized client with its canonical tool
+definitions, projected wrappers call that client directly, and delegated
+children inherit the same binding. Code connection effects retire only after
+the final old projection reader, while every executing Run separately retains
+the exact non-clone A3S Use snapshot lease. A trusted host must construct the
+adapter input from already selected Use Runtime/Gateway evidence; Code does
+not inspect package files, resolve opaque `gateway:*` identities, choose a
+provider, or fall back through a mutable server name. End-to-end package
+adoption remains a separate A3S Use and official-host integration boundary;
+Flow, Knowledge, Context, and UI migrate next.
 `CAP-GA1` starts only after official hosts have delegated to the complete path
 for one major release.
 

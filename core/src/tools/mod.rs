@@ -31,7 +31,10 @@ pub use builtin::{
     register_generate_object, register_program, register_program_with_catalog, register_task,
     register_task_with_mcp, register_task_with_mcp_managers,
 };
-pub(crate) use builtin::{register_skill, register_task_with_mcp_managers_and_scheduler};
+pub(crate) use builtin::{
+    register_skill, register_task_with_mcp_managers_and_scheduler,
+    register_task_with_mcp_sources_and_scheduler,
+};
 pub(crate) use invocation::{
     registry_tool_invoker, HostDirectPolicy, InvocationOrigin, ToolInvocation, ToolInvoker,
 };

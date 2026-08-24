@@ -6,48 +6,12 @@ use crate::commands::SlashCommand;
 use crate::context::ContextProvider;
 use crate::dynamic_workflow::DynamicWorkflowRuntime;
 use crate::hooks::HookBinding;
-use crate::mcp::McpManager;
+use crate::mcp::McpBinding;
 use crate::skills::Skill;
 use crate::subagent::AgentDefinition;
 use crate::tools::Tool;
 
 use super::CapabilityKind;
-
-/// Exact connected MCP server value projected into one immutable catalog.
-///
-/// The manager remains owned by the MCP concern. This binding only pins the
-/// server identity used by the matching descriptor; package discovery and
-/// lifecycle generations remain owned by A3S Use.
-pub struct McpBinding {
-    server_name: Box<str>,
-    manager: Arc<McpManager>,
-}
-
-impl McpBinding {
-    pub fn new(server_name: impl Into<String>, manager: Arc<McpManager>) -> Self {
-        Self {
-            server_name: server_name.into().into_boxed_str(),
-            manager,
-        }
-    }
-
-    pub fn server_name(&self) -> &str {
-        &self.server_name
-    }
-
-    pub fn manager(&self) -> &McpManager {
-        &self.manager
-    }
-}
-
-impl fmt::Debug for McpBinding {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("McpBinding")
-            .field("server_name", &self.server_name)
-            .finish_non_exhaustive()
-    }
-}
 
 /// Closed runtime value categories accepted by the Code projection kernel.
 ///

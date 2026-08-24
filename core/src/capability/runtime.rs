@@ -110,7 +110,7 @@ pub enum CapabilityRuntimeError {
     },
 }
 
-/// One complete next-generation Tool/Skill/Agent/Command/Hook projection for a Session.
+/// One complete next-generation Tool/Skill/Agent/Command/Hook/MCP projection for a Session.
 ///
 /// The batch owns every adapter before preparation starts. A Use-backed batch
 /// also owns the generation-specific lease provider that will be published in
@@ -382,6 +382,7 @@ fn validate_session_kinds(target: &CapabilitySet) -> Result<(), CapabilityRuntim
                 | CapabilityKind::Agent
                 | CapabilityKind::Command
                 | CapabilityKind::Hook
+                | CapabilityKind::Mcp
         ) {
             return Err(CapabilityRuntimeError::UnsupportedSessionKind {
                 kind: descriptor.id().kind(),

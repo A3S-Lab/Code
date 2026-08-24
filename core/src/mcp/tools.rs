@@ -45,7 +45,7 @@ impl McpToolWrapper {
     }
 }
 
-fn annotation_requires_confirmation(tool: &McpTool) -> bool {
+pub(super) fn annotation_requires_confirmation(tool: &McpTool) -> bool {
     let Some(annotations) = tool.annotations.as_ref() else {
         // Missing behavior metadata is unknown, not read-only.
         return true;

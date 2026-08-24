@@ -117,7 +117,10 @@ official CLI and Desktop adoption evidence. Delivered `HOST-AGENT1` extends
 the same Core transaction and Run lease to Agent delegation. Delivered
 `HOST-COMMAND1` extends that admission boundary to blocking and streaming
 slash-command execution. Delivered `HOST-HOOK1` extends it to generation-exact
-Hook definition/handler bindings and supervised observational work.
+Hook definition/handler bindings and supervised observational work. Delivered
+`HOST-MCP1` extends the Core boundary to immutable exact-client MCP bindings;
+authoritative A3S Use surface projection and official-host adoption remain a
+separate integration boundary.
 
 | Core host behavior | Deterministic evidence | Bound or failure rule |
 | --- | --- | --- |
@@ -132,9 +135,12 @@ Hook definition/handler bindings and supervised observational work.
 | Hook snapshot identity and scope | [`HookEngine snapshot tests`](../core/src/hooks/engine/tests.rs) | Each immutable `HookBinding` preserves exact definition/handler `Arc` identity; compatibility or duplicate names and Session/Skill lifecycle events fail before publication, and equal priorities use Hook ID order |
 | Hook N/N+1 and composition | [`Hook projection tests`](../core/src/agent_api/capability_runtime_tests/hook_projection.rs) | An N Run retains N metadata, N callback, and N's exact Use lease after N+1 publication; a Session-static external executor composes without allowing its `Skip` to bypass projected policy |
 | Hook structured observation | [`Hook supervision tests`](../core/src/agent_api/capability_runtime_tests/hook_projection.rs) | PostResponse, `async_execution`, gating timeout, and observational timeout work retain the exact Use lease through bounded supervisor settlement; official SDK bridges register complete Hook pairs atomically |
-| Compatibility conflict boundary | [`pre-commit and post-publication conflict tests`](../core/src/agent_api/capability_runtime_tests.rs) | Tool, Skill, canonical Agent alias, Command, and Hook conflicts fail before generation advance; compatibility Tool, Skill, Agent, Command, Hook, or MCP-wrapper mutation cannot shadow a published projection |
+| MCP binding readiness and identity | [`McpBinding` tests](../core/src/mcp/binding.rs) | The exact client must be initialized, connected, and identity-matched; tool definitions are sorted and bounded, duplicate names fail, and a public wrapper calls the raw name on that client rather than a mutable manager |
+| MCP N/N+1 and dual-lease isolation | [`MCP projection tests`](../core/src/agent_api/capability_runtime_tests/mcp_projection.rs) | An N Run keeps N definitions, N raw calls, and its separately acquired N Use lease after N+1 publication; the N connection effect cannot close until the final N projection reader drops |
+| MCP rollback and delegation | [`stdio rollback test`](../core/src/agent_api/capability_runtime_tests/mcp_projection.rs) and [`delegated child test`](../core/src/tools/task/tests.rs) | Cancellation after exact connection readiness leaves the catalog stamp unchanged and reaps the process through rollback; a foreground delegated child receives the parent's exact binding rather than rediscovering a latest client |
+| Compatibility conflict boundary | [`pre-commit and post-publication conflict tests`](../core/src/agent_api/capability_runtime_tests.rs) and [`MCP conflict tests`](../core/src/agent_api/capability_runtime_tests/mcp_projection.rs) | Tool, Skill, canonical Agent alias, Command, Hook, MCP server, and fully qualified MCP wrapper conflicts fail before generation advance; later compatibility mutation cannot shadow or masquerade as removal of a published value |
 | Close and cancellation linearization | [`prepare cancellation, close/commit race, and exact-Run admission tests`](../core/src/agent_api/capability_runtime_tests.rs) | Close and commit have one order, prepared effects cannot become orphaned, exact Run reservations settle on admission failure, and non-clean scope teardown becomes a typed Run failure |
-| Explicit migration boundary | [`SessionCapabilityBatch`](../core/src/capability/runtime.rs) | This cut accepts only Tool, Skill, Agent, Command, and Hook values; MCP and every other capability kind fail closed until their product-owned adapters migrate |
+| Explicit migration boundary | [`SessionCapabilityBatch`](../core/src/capability/runtime.rs) and [`McpProjectionAdapter`](../core/src/mcp/projection.rs) | Core accepts Tool, Skill, Agent, Command, Hook, and MCP values; Flow, Knowledge, Context, and UI fail closed. MCP configuration must come from already selected Use Runtime/Gateway evidence, and this evidence does not claim that the upstream Use projection or official hosts have adopted the seam |
 
 `CAP-PROFILE1` and `HARNESS-PROFILE1` add deterministic model-presentation
 evidence without adding another capability or package lifecycle:

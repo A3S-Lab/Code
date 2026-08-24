@@ -92,6 +92,10 @@ impl SessionMcpToolOwnership {
     pub(crate) fn server_names(&self) -> Vec<String> {
         self.by_server.keys().cloned().collect()
     }
+
+    pub(crate) fn contains_server(&self, server_name: &str) -> bool {
+        self.by_server.contains_key(server_name)
+    }
 }
 
 struct OwnedSkill {
@@ -229,6 +233,10 @@ impl<'a> SessionExtensionRuntime<'a> {
     pub(super) async fn add_mcp_server(&self, config: McpServerConfig) -> Result<usize> {
         let _mutation = self.extension_mutation().await?;
         let server_name = config.name.clone();
+        self.session.ensure_compatibility_name_available(
+            crate::capability::CapabilityKind::Mcp,
+            &server_name,
+        )?;
         if self.session.mcp_manager.contains_server(&server_name).await {
             return Err(crate::error::CodeError::Tool {
                 tool: server_name,
@@ -334,6 +342,10 @@ impl<'a> SessionExtensionRuntime<'a> {
 
     pub(super) async fn remove_mcp_server(&self, server_name: &str) -> Result<()> {
         let _mutation = self.extension_mutation().await?;
+        self.session.ensure_compatibility_name_available(
+            crate::capability::CapabilityKind::Mcp,
+            server_name,
+        )?;
         let remove_result = self.session.mcp_manager.remove_server(server_name).await;
 
         let had_owned_tools = self
@@ -414,6 +426,22 @@ impl<'a> SessionExtensionRuntime<'a> {
         let mut status = HashMap::new();
         for manager in &self.session.mcp_managers {
             status.extend(manager.get_status().await);
+        }
+        let projection = self.session.capability_catalog.pin();
+        for (_, value) in projection.projection().iter() {
+            let crate::capability::CapabilityValue::Mcp(binding) = value else {
+                continue;
+            };
+            status.insert(
+                binding.server_name().to_owned(),
+                McpServerStatus {
+                    name: binding.server_name().to_owned(),
+                    connected: binding.is_ready(),
+                    enabled: true,
+                    tool_count: binding.tools().len(),
+                    error: None,
+                },
+            );
         }
         status
     }

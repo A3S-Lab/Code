@@ -2159,6 +2159,89 @@ fn test_registry_with_text_worker() -> Arc<AgentRegistry> {
     Arc::new(registry)
 }
 
+#[tokio::test]
+async fn delegated_child_uses_the_parent_runs_exact_projected_mcp_binding() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (parent_binding, parent_transport, parent_client) =
+        crate::mcp::test_support::ready_binding(
+            "catalog",
+            "generation-one",
+            vec![crate::mcp::test_support::mcp_tool(
+                "lookup",
+                "generation-one",
+            )],
+        )
+        .await;
+    let (_newer_binding, newer_transport, newer_client) = crate::mcp::test_support::ready_binding(
+        "catalog",
+        "generation-two",
+        vec![crate::mcp::test_support::mcp_tool(
+            "lookup",
+            "generation-two",
+        )],
+    )
+    .await;
+    let registry = AgentRegistry::new();
+    registry.register(
+        crate::subagent::WorkerAgentSpec::custom("mcp-worker", "Use projected MCP")
+            .with_permissions(PermissionPolicy::new().allow("mcp__catalog__lookup(*)"))
+            .with_prompt("Call the projected MCP tool exactly once.")
+            .with_max_steps(3)
+            .into_agent_definition(),
+    );
+    let llm = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response(
+            "delegated-mcp",
+            "mcp__catalog__lookup",
+            serde_json::json!({"generation": "one"}),
+        ),
+        MockLlmClient::text_response("delegated MCP complete"),
+    ]));
+    let executor = TaskExecutor::with_mcp_managers(
+        Arc::new(registry),
+        Arc::clone(&llm) as Arc<dyn LlmClient>,
+        workspace.path().to_string_lossy().to_string(),
+        Vec::new(),
+    )
+    .with_projected_mcp_bindings(vec![parent_binding]);
+
+    let result = executor
+        .execute(
+            TaskParams {
+                agent: "mcp-worker".to_string(),
+                description: "Use the pinned MCP generation".to_string(),
+                prompt: "Call lookup once.".to_string(),
+                background: false,
+                max_steps: Some(3),
+                output_schema: None,
+            },
+            None,
+            Some("parent-run"),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "delegated child failed: {}", result.output);
+    assert_eq!(result.output, "delegated MCP complete");
+    assert_eq!(parent_transport.calls().len(), 1);
+    assert_eq!(parent_transport.calls()[0].name, "lookup");
+    assert!(newer_transport.calls().is_empty());
+    let projected_description = llm
+        .request_tool_definitions
+        .lock()
+        .unwrap()
+        .iter()
+        .flatten()
+        .find(|definition| definition.name == "mcp__catalog__lookup")
+        .expect("delegated child must receive the projected MCP definition")
+        .description
+        .clone();
+    assert_eq!(projected_description, "generation-one");
+
+    parent_client.close().await.unwrap();
+    newer_client.close().await.unwrap();
+}
+
 struct RedactingSourceSecurityProvider;
 
 impl crate::security::SecurityProvider for RedactingSourceSecurityProvider {

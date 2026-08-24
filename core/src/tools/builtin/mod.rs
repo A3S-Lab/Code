@@ -195,6 +195,7 @@ pub fn register_task_with_mcp_managers(
         agent_registry,
         workspace,
         mcp_managers,
+        Vec::new(),
         parent_context,
         subagent_tracker,
         None,
@@ -213,12 +214,40 @@ pub(crate) fn register_task_with_mcp_managers_and_scheduler(
     subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
     task_scheduler: Arc<crate::task_scheduler::TaskScheduler>,
 ) {
+    register_task_with_mcp_sources_and_scheduler(
+        registry,
+        llm_client,
+        agent_registry,
+        workspace,
+        mcp_managers,
+        Vec::new(),
+        parent_context,
+        subagent_tracker,
+        task_scheduler,
+    );
+}
+
+/// Register Run-frozen task tools with compatibility managers and exact MCP
+/// capability bindings.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn register_task_with_mcp_sources_and_scheduler(
+    registry: &Arc<ToolRegistry>,
+    llm_client: Arc<dyn crate::llm::LlmClient>,
+    agent_registry: Arc<crate::subagent::AgentRegistry>,
+    workspace: String,
+    mcp_managers: Vec<Arc<crate::mcp::manager::McpManager>>,
+    mcp_bindings: Vec<Arc<crate::mcp::McpBinding>>,
+    parent_context: Option<crate::child_run::ChildRunContext>,
+    subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
+    task_scheduler: Arc<crate::task_scheduler::TaskScheduler>,
+) {
     register_task_internal(
         registry,
         llm_client,
         agent_registry,
         workspace,
         mcp_managers,
+        mcp_bindings,
         parent_context,
         subagent_tracker,
         Some(task_scheduler),
@@ -232,13 +261,15 @@ fn register_task_internal(
     agent_registry: Arc<crate::subagent::AgentRegistry>,
     workspace: String,
     mcp_managers: Vec<Arc<crate::mcp::manager::McpManager>>,
+    mcp_bindings: Vec<Arc<crate::mcp::McpBinding>>,
     parent_context: Option<crate::child_run::ChildRunContext>,
     subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
     task_scheduler: Option<Arc<crate::task_scheduler::TaskScheduler>>,
 ) {
     use crate::tools::task::{ParallelTaskTool, TaskExecutor, TaskTool};
     let mut executor =
-        TaskExecutor::with_mcp_managers(agent_registry, llm_client, workspace, mcp_managers);
+        TaskExecutor::with_mcp_managers(agent_registry, llm_client, workspace, mcp_managers)
+            .with_projected_mcp_bindings(mcp_bindings);
     if let Some(ctx) = parent_context {
         executor = executor.with_parent_context(ctx);
     }

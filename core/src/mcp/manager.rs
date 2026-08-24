@@ -93,80 +93,7 @@ impl McpManager {
                 .ok_or_else(|| anyhow!("MCP server not found: {}", name))?
         };
 
-        if !config.enabled {
-            return Err(anyhow!("MCP server is disabled: {}", name));
-        }
-
-        // Resolve OAuth token into an Authorization header (if configured)
-        let auth_header = Self::resolve_auth_header(config.oauth.as_ref()).await?;
-
-        // Create transport based on config
-        let transport: Arc<dyn McpTransport> = match &config.transport {
-            McpTransportConfig::Stdio { command, args } => Arc::new(
-                StdioTransport::spawn_with_timeout(
-                    command,
-                    args,
-                    &config.env,
-                    config.tool_timeout_secs,
-                )
-                .await?,
-            ),
-            McpTransportConfig::Http { url, headers } => {
-                let mut merged = headers.clone();
-                if let Some((k, v)) = &auth_header {
-                    merged.insert(k.clone(), v.clone());
-                }
-                Arc::new(
-                    HttpSseTransport::connect_with_timeout(url, merged, config.tool_timeout_secs)
-                        .await?,
-                )
-            }
-            McpTransportConfig::StreamableHttp { url, headers } => {
-                let mut merged = headers.clone();
-                if let Some((k, v)) = &auth_header {
-                    merged.insert(k.clone(), v.clone());
-                }
-                Arc::new(
-                    StreamableHttpTransport::connect_with_timeout(
-                        url,
-                        merged,
-                        config.tool_timeout_secs,
-                    )
-                    .await?,
-                )
-            }
-        };
-
-        // Create client
-        let client = Arc::new(McpClient::new(name.to_string(), transport));
-
-        // Initialize and fetch tools before publishing the client. A failed
-        // handshake must not leave a live transport detached from manager
-        // state.
-        if let Err(error) = client.initialize().await {
-            if let Err(close_error) = client.close().await {
-                tracing::warn!(
-                    server = %name,
-                    error = %close_error,
-                    "Failed to close MCP transport after initialize failure"
-                );
-            }
-            return Err(error);
-        }
-
-        let tools = match client.list_tools().await {
-            Ok(tools) => tools,
-            Err(error) => {
-                if let Err(close_error) = client.close().await {
-                    tracing::warn!(
-                        server = %name,
-                        error = %close_error,
-                        "Failed to close MCP transport after tool discovery failure"
-                    );
-                }
-                return Err(error);
-            }
-        };
+        let (client, tools) = connect_ready_client(&config).await?;
         tracing::info!("MCP server '{}' connected with {} tools", name, tools.len());
 
         // Store client + stamp initial last-used time so idle reapers
@@ -471,6 +398,83 @@ impl McpManager {
             None => Vec::new(),
         }
     }
+}
+
+/// Establish one exact initialized client and discover its initial tool set.
+///
+/// The returned client is not inserted into a mutable manager. Capability
+/// projection adapters use this seam to pair the client with a frozen
+/// [`crate::mcp::McpBinding`], while compatibility callers publish it through
+/// [`McpManager`] after the same readiness barrier.
+pub(crate) async fn connect_ready_client(
+    config: &McpServerConfig,
+) -> Result<(Arc<McpClient>, Vec<McpTool>)> {
+    if !config.enabled {
+        return Err(anyhow!("MCP server is disabled: {}", config.name));
+    }
+
+    let auth_header = McpManager::resolve_auth_header(config.oauth.as_ref()).await?;
+    let transport: Arc<dyn McpTransport> = match &config.transport {
+        McpTransportConfig::Stdio { command, args } => Arc::new(
+            StdioTransport::spawn_with_timeout(
+                command,
+                args,
+                &config.env,
+                config.tool_timeout_secs,
+            )
+            .await?,
+        ),
+        McpTransportConfig::Http { url, headers } => {
+            let mut merged = headers.clone();
+            if let Some((key, value)) = &auth_header {
+                merged.insert(key.clone(), value.clone());
+            }
+            Arc::new(
+                HttpSseTransport::connect_with_timeout(url, merged, config.tool_timeout_secs)
+                    .await?,
+            )
+        }
+        McpTransportConfig::StreamableHttp { url, headers } => {
+            let mut merged = headers.clone();
+            if let Some((key, value)) = &auth_header {
+                merged.insert(key.clone(), value.clone());
+            }
+            Arc::new(
+                StreamableHttpTransport::connect_with_timeout(
+                    url,
+                    merged,
+                    config.tool_timeout_secs,
+                )
+                .await?,
+            )
+        }
+    };
+
+    let client = Arc::new(McpClient::new(config.name.clone(), transport));
+    if let Err(error) = client.initialize().await {
+        if let Err(close_error) = client.close().await {
+            tracing::warn!(
+                server = %config.name,
+                error = %close_error,
+                "Failed to close MCP transport after initialize failure"
+            );
+        }
+        return Err(error);
+    }
+    let tools = match client.list_tools().await {
+        Ok(tools) => tools,
+        Err(error) => {
+            if let Err(close_error) = client.close().await {
+                tracing::warn!(
+                    server = %config.name,
+                    error = %close_error,
+                    "Failed to close MCP transport after tool discovery failure"
+                );
+            }
+            return Err(error);
+        }
+    };
+    Ok((client, tools))
 }
 
 impl Default for McpManager {

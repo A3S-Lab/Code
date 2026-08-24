@@ -247,7 +247,7 @@ impl AgentSession {
             .await
     }
 
-    /// Return the connection status of all MCP servers registered with this session.
+    /// Return current projected and compatibility MCP server status.
     pub async fn mcp_status(
         &self,
     ) -> std::collections::HashMap<String, crate::mcp::McpServerStatus> {
@@ -300,6 +300,8 @@ impl AgentSession {
                 preparation_cancellation.clone(),
             ) => result?,
         };
+        self.ensure_projected_mcp_server_names_available(prepared.projection()?)
+            .await?;
 
         // The close boundary and Run pinning use this same short mutex. The
         // prepared transaction holds no registry write lock while waiting.
@@ -408,17 +410,22 @@ impl AgentSession {
         public_name: &str,
     ) -> crate::error::Result<()> {
         let projection = self.capability_catalog.pin();
-        if projection.projection().iter().any(|(_, value)| {
-            if value.kind() != kind {
-                return false;
-            }
-            match value {
-                crate::capability::CapabilityValue::Agent(agent) => {
-                    crate::subagent::agent_names_conflict(&agent.name, public_name)
+        if projection
+            .projection()
+            .iter()
+            .any(|(_, value)| match value {
+                crate::capability::CapabilityValue::Mcp(binding)
+                    if kind == crate::capability::CapabilityKind::Tool =>
+                {
+                    binding.contains_public_tool_name(public_name)
                 }
-                _ => value.public_name() == Some(public_name),
-            }
-        }) {
+                crate::capability::CapabilityValue::Agent(agent) => {
+                    kind == crate::capability::CapabilityKind::Agent
+                        && crate::subagent::agent_names_conflict(&agent.name, public_name)
+                }
+                _ => value.kind() == kind && value.public_name() == Some(public_name),
+            })
+        {
             return Err(
                 crate::capability::CapabilityRuntimeError::RuntimeNameConflict {
                     kind,
@@ -426,6 +433,34 @@ impl AgentSession {
                 }
                 .into(),
             );
+        }
+        Ok(())
+    }
+
+    async fn ensure_projected_mcp_server_names_available(
+        &self,
+        projection: &crate::capability::CapabilityProjection,
+    ) -> std::result::Result<(), crate::capability::CapabilityRuntimeError> {
+        let server_names = projection
+            .iter()
+            .filter_map(|(_, value)| match value {
+                crate::capability::CapabilityValue::Mcp(binding) => {
+                    Some(binding.server_name().to_owned())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for server_name in server_names {
+            for manager in &self.mcp_managers {
+                if manager.contains_server(&server_name).await {
+                    return Err(
+                        crate::capability::CapabilityRuntimeError::RuntimeNameConflict {
+                            kind: crate::capability::CapabilityKind::Mcp,
+                            public_name: server_name,
+                        },
+                    );
+                }
+            }
         }
         Ok(())
     }

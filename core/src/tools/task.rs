@@ -19,7 +19,7 @@ use crate::llm::structured::{
     generate_blocking, parse_validated_output, StructuredMode, StructuredRequest,
 };
 use crate::llm::{LlmClient, ToolDefinition};
-use crate::mcp::manager::McpManager;
+use crate::mcp::{McpBinding, McpManager};
 use crate::orchestration::{AgentExecutor, AgentStepSpec, StepOutcome, ToolSourceAnchor};
 use crate::subagent::{AgentDefinition, AgentRegistry};
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
@@ -106,6 +106,8 @@ pub struct TaskExecutor {
     workspace: String,
     /// Ordered MCP managers for registering inherited tools in child sessions.
     mcp_managers: Vec<Arc<McpManager>>,
+    /// Exact projected MCP bindings inherited from the admitted parent Run.
+    mcp_bindings: Vec<Arc<McpBinding>>,
     /// Parent capabilities to inherit into child runs.
     parent_context: Option<crate::child_run::ChildRunContext>,
     /// Search configuration captured from the invoking parent context.
@@ -148,6 +150,7 @@ impl TaskExecutor {
             llm_client,
             workspace,
             mcp_managers: Vec::new(),
+            mcp_bindings: Vec::new(),
             parent_context: None,
             search_config: None,
             search_bulkhead: None,
@@ -186,6 +189,7 @@ impl TaskExecutor {
             llm_client,
             workspace,
             mcp_managers,
+            mcp_bindings: Vec::new(),
             parent_context: None,
             search_config: None,
             search_bulkhead: None,
@@ -200,6 +204,13 @@ impl TaskExecutor {
             task_scheduler: None,
             schedule_foreground: false,
         }
+    }
+
+    /// Add immutable MCP bindings already admitted by the parent capability
+    /// Run. These bindings are never rediscovered through a manager.
+    pub(crate) fn with_projected_mcp_bindings(mut self, bindings: Vec<Arc<McpBinding>>) -> Self {
+        self.mcp_bindings = bindings;
+        self
     }
 
     /// Set parent session capabilities to inherit into child runs.
@@ -483,6 +494,19 @@ impl TaskExecutor {
                 for wrapper in wrappers {
                     child_executor.register_dynamic_tool(wrapper);
                 }
+            }
+        }
+        // Projected bindings are registered after compatibility sources. Run
+        // admission already proved their names conflict-free against its
+        // frozen parent executor. Registering the exact binding last prevents
+        // a later mutable manager refresh from replacing that generation in a
+        // delegated child.
+        for binding in &self.mcp_bindings {
+            if cancel_token.is_cancelled() {
+                anyhow::bail!("Operation cancelled before child execution");
+            }
+            for wrapper in binding.projected_tools() {
+                child_executor.register_dynamic_tool(wrapper);
             }
         }
 

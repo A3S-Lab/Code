@@ -10,7 +10,7 @@ use crate::mcp::protocol::{
 };
 use crate::mcp::transport::McpTransport;
 use anyhow::{anyhow, Result};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -29,7 +29,7 @@ pub struct McpClient {
     /// Request ID counter
     request_id: AtomicU64,
     /// Initialized flag
-    initialized: RwLock<bool>,
+    initialized: AtomicBool,
 }
 
 impl McpClient {
@@ -42,7 +42,7 @@ impl McpClient {
             tools: RwLock::new(Vec::new()),
             resources: RwLock::new(Vec::new()),
             request_id: AtomicU64::new(1),
-            initialized: RwLock::new(false),
+            initialized: AtomicBool::new(false),
         }
     }
 
@@ -95,10 +95,7 @@ impl McpClient {
         self.transport.notify(notification).await?;
 
         // Mark as initialized
-        {
-            let mut init = self.initialized.write().await;
-            *init = true;
-        }
+        self.initialized.store(true, Ordering::Release);
 
         tracing::info!(
             "MCP client '{}' initialized with server '{}' v{}",
@@ -112,7 +109,17 @@ impl McpClient {
 
     /// Check if client is initialized
     pub async fn is_initialized(&self) -> bool {
-        *self.initialized.read().await
+        self.initialized.load(Ordering::Acquire)
+    }
+
+    /// Return whether this exact client completed MCP initialization and its
+    /// transport is still connected.
+    ///
+    /// This synchronous readiness check is used while freezing a capability
+    /// Run. It never performs discovery or reconnects through mutable manager
+    /// state.
+    pub fn is_ready(&self) -> bool {
+        self.initialized.load(Ordering::Acquire) && self.transport.is_connected()
     }
 
     /// Get server capabilities
@@ -243,6 +250,7 @@ impl McpClient {
 
     /// Close the client
     pub async fn close(&self) -> Result<()> {
+        self.initialized.store(false, Ordering::Release);
         self.transport.close().await
     }
 

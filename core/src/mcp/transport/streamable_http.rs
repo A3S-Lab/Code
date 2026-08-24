@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
@@ -43,7 +43,7 @@ pub struct StreamableHttpTransport {
     session_id: RwLock<Option<String>>,
     connected: Arc<AtomicBool>,
     notification_rx: RwLock<Option<mpsc::Receiver<McpNotification>>>,
-    sse_abort: RwLock<Option<tokio::task::AbortHandle>>,
+    sse_abort: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl StreamableHttpTransport {
@@ -94,7 +94,7 @@ impl StreamableHttpTransport {
             session_id: RwLock::new(None),
             connected,
             notification_rx: RwLock::new(Some(notification_rx)),
-            sse_abort: RwLock::new(Some(sse_handle.abort_handle())),
+            sse_abort: Mutex::new(Some(sse_handle.abort_handle())),
         })
     }
 
@@ -356,7 +356,10 @@ impl McpTransport for StreamableHttpTransport {
             let _ = self.client.delete(&self.url).headers(headers).send().await;
         }
 
-        let mut abort = self.sse_abort.write().await;
+        let mut abort = self
+            .sse_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handle) = abort.take() {
             handle.abort();
         }
@@ -366,6 +369,20 @@ impl McpTransport for StreamableHttpTransport {
 
     fn is_connected(&self) -> bool {
         self.connected.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for StreamableHttpTransport {
+    fn drop(&mut self) {
+        self.connected.store(false, Ordering::Release);
+        if let Some(handle) = self
+            .sse_abort
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            handle.abort();
+        }
     }
 }
 

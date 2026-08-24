@@ -71,9 +71,9 @@ batches, rejects mixed Use cursors and conflicts, and returns an immutable
 `Arc<CapabilitySet>`. `from_use_projection` retains the exact upstream cursor
 even when product filtering yields no package descriptors. It does not
 activate a Tool, start MCP, or mutate a live Session. Tool, Skill, Agent,
-Command, and Hook activation now uses the explicit `SessionCapabilityBatch`
-host boundary below, while other runtime categories remain on compatibility
-APIs until their later migration cuts.
+Command, Hook, and exact-client MCP activation now use the explicit
+`SessionCapabilityBatch` host boundary below, while other runtime categories
+remain on compatibility APIs until their later migration cuts.
 
 `CAP-SCOPE1` adds the lifecycle boundary over that set. Construct a root
 `CapabilityCeiling` against the exact `CapabilitySet`, create a typed Session
@@ -129,14 +129,24 @@ installation, Grants, lifecycle cutover, or recovery.
 The first `HOST-CAP1` Core cut exposes
 `AgentSession::apply_capability_batch`. Construct the complete next
 `CapabilitySet`, create a `SessionCapabilityBatch`, and stage every Tool,
-Skill, Agent, Command, or Hook value before calling the method. A Hook value is
-an immutable `HookBinding` that owns the exact `Hook` definition and
-`Arc<dyn HookHandler>` callback as one generation-safe pair. For a Use-backed
-set, construct the batch with `from_use_projection` and a generation-specific
+Skill, Agent, Command, Hook, or MCP value before calling the method. A Hook
+value is an immutable `HookBinding` that owns the exact `Hook` definition and
+`Arc<dyn HookHandler>` callback as one generation-safe pair. An MCP value should
+normally be staged with `McpProjectionAdapter`; it connects one exact client,
+completes initialization and `tools/list`, freezes the validated `McpBinding`,
+and returns the connection as a reversible effect. For a Use-backed set,
+construct the batch with `from_use_projection` and a generation-specific
 `UseGenerationLeaseProvider`. Its `acquire` implementation must call A3S Use
 `CapabilityRegistry::acquire_snapshot_lease` with the exact cursor and return a
 wrapper that owns the resulting non-clone `CapabilitySnapshotLease` while
 implementing `RetainedUseGeneration`.
+
+Construct `McpServerConfig` only after the trusted host has selected the exact
+Use generation and resolved its Runtime/Gateway evidence. Do not derive a
+command, URL, provider, Grant, or opaque `gateway:*` endpoint from package files
+inside Code. The adapter is a transport-readiness boundary, not a Registry,
+package resolver, or service locator. Projected wrappers call their exact
+client directly; they never reconnect or fall back through `McpManager`.
 
 Do not acquire one Use lease during Session publication and share it through
 an `Arc`. Every Run calls the provider again so A3S Use can reject a hidden or
@@ -144,17 +154,18 @@ stale generation at its own visibility boundary. Code checks the returned
 generation, capability revision, and Registry revision again, then keeps the
 lease in the Run supervisor until child scopes, tasks, and effects settle.
 
-Tool, Skill, Agent, Command, and Hook values are the Session kinds currently
+Tool, Skill, Agent, Command, Hook, and MCP values are the Session kinds currently
 accepted by this API. The batch is validated against the compatibility
 registries immediately before commit. A public-name conflict, cancellation,
 Session close, preparation failure, or CAS loss leaves the current catalog
 stamp unchanged. Once a name is owned by the published projection,
-compatibility Tool, Skill, Agent, Command, Hook, and MCP-wrapper registration
-cannot shadow it. Model definitions and governed execution use the same frozen
-Tool `Arc`; Skill discovery and invocation use one frozen Skill registry;
+compatibility Tool, Skill, Agent, Command, Hook, MCP-server, and MCP-wrapper
+registration cannot shadow it. Model definitions and governed execution use
+the same frozen Tool `Arc`; Skill discovery and invocation use one frozen Skill registry;
 automatic and Tool-driven delegation use one frozen Agent registry; blocking
 and streaming slash-command dispatch use one frozen Command registry; Hook
-matching and callback dispatch use one frozen definition/handler map. An
+matching and callback dispatch use one frozen definition/handler map; MCP
+definitions, raw calls, and delegated children use one exact client binding. An
 optional Session-static external Hook executor runs first, but its `Skip`
 cannot bypass the projected Hook layer. Projected `SessionStart`, `SessionEnd`,
 `SkillLoad`, and `SkillUnload` events fail before publication because they are
@@ -176,8 +187,10 @@ must therefore remain bounded and cancellation-cooperative where applicable.
 The official CLI and Desktop adapters complete the `HOST-CAP1` Tool/Skill host
 gate. `HOST-AGENT1` completes the Core Agent runtime cut, and
 `HOST-COMMAND1` completes the Core Command runtime cut. `HOST-HOOK1` completes
-the Core Hook runtime cut. MCP and the remaining asynchronous capability kinds
-still fail closed and remain separate migration work.
+the Core Hook runtime cut. `HOST-MCP1` completes the Core exact-client MCP
+runtime cut. It does not claim that A3S Use already projects every MCP surface
+into this adapter or that official hosts have adopted it; that wiring remains
+separate integration work. Flow, Knowledge, Context, and UI still fail closed.
 
 ### Tool presentation profiles
 

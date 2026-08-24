@@ -26,6 +26,7 @@ pub(super) struct PinnedRuntimeProjection {
     command_registry: Arc<CommandRegistry>,
     hook_engine: Arc<HookEngine>,
     tool_executor: Arc<ToolExecutor>,
+    mcp_bindings: Vec<Arc<crate::mcp::McpBinding>>,
 }
 
 impl PinnedRuntimeProjection {
@@ -76,6 +77,7 @@ pub(super) async fn build_pinned_agent_loop(
         command_registry: _,
         hook_engine: _,
         tool_executor,
+        mcp_bindings,
     } = runtime_projection;
     let mut config = live_config(session);
     config.hook_engine = Some(run_hook_executor);
@@ -108,12 +110,13 @@ pub(super) async fn build_pinned_agent_loop(
     if config.auto_delegation.allow_manual_delegation {
         let mut parent_context = session.parent_run_context();
         parent_context.skill_registry = Some(skill_registry);
-        crate::tools::register_task_with_mcp_managers_and_scheduler(
+        crate::tools::register_task_with_mcp_sources_and_scheduler(
             tool_executor.registry(),
             Arc::clone(&session.llm_client),
             agent_registry,
             session.workspace.display().to_string(),
             session.mcp_managers.clone(),
+            mcp_bindings,
             Some(parent_context),
             Some(Arc::clone(&session.subagent_tasks)),
             Arc::clone(&session.task_scheduler),
@@ -203,6 +206,7 @@ fn pin_runtime_projection_with_command_registry(
     let mut projected_agents = Vec::new();
     let mut projected_commands = Vec::new();
     let mut projected_hooks = Vec::new();
+    let mut projected_mcp = Vec::new();
     for (_, value) in projection.iter() {
         match value {
             CapabilityValue::Tool(tool) => projected_tools.push(Arc::clone(tool)),
@@ -218,6 +222,31 @@ fn pin_runtime_projection_with_command_registry(
                     }
                 })?;
                 projected_hooks.push(Arc::clone(hook));
+            }
+            CapabilityValue::Mcp(binding) => {
+                binding.validate_run_scope().map_err(|error| {
+                    CapabilityRuntimeError::RuntimeValueInvalid {
+                        kind: CapabilityKind::Mcp,
+                        public_name: binding.server_name().to_owned(),
+                        message: truncate_utf8(
+                            error.to_string(),
+                            MAX_RUNTIME_VALIDATION_MESSAGE_BYTES,
+                        ),
+                    }
+                })?;
+                let compatibility_owns_name = session
+                    .close_handle
+                    .mcp_tool_ownership
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains_server(binding.server_name());
+                if compatibility_owns_name {
+                    return Err(CapabilityRuntimeError::RuntimeNameConflict {
+                        kind: CapabilityKind::Mcp,
+                        public_name: binding.server_name().to_owned(),
+                    });
+                }
+                projected_mcp.push(Arc::clone(binding));
             }
             _ => return Err(CapabilityRuntimeError::UnsupportedSessionKind { kind: value.kind() }),
         }
@@ -276,12 +305,22 @@ fn pin_runtime_projection_with_command_registry(
                 }
             })?,
     );
+    let tool_executor = session
+        .tool_executor
+        .snapshot_with_external_tools(projected_tools)
+        .map_err(|error| CapabilityRuntimeError::RuntimeNameConflict {
+            kind: CapabilityKind::Tool,
+            public_name: error.name().to_owned(),
+        })?;
+    let projected_mcp_tools = projected_mcp
+        .iter()
+        .flat_map(|binding| binding.projected_tools())
+        .collect::<Vec<_>>();
     let tool_executor = Arc::new(
-        session
-            .tool_executor
-            .snapshot_with_external_tools(projected_tools)
+        tool_executor
+            .snapshot_with_external_tools(projected_mcp_tools)
             .map_err(|error| CapabilityRuntimeError::RuntimeNameConflict {
-                kind: CapabilityKind::Tool,
+                kind: CapabilityKind::Mcp,
                 public_name: error.name().to_owned(),
             })?,
     );
@@ -291,6 +330,7 @@ fn pin_runtime_projection_with_command_registry(
         command_registry,
         hook_engine,
         tool_executor,
+        mcp_bindings: projected_mcp,
     })
 }
 
