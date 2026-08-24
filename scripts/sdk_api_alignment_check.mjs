@@ -46,6 +46,26 @@ const INTENTIONAL_SESSION_OMISSIONS = new Map([
     'cognitive_package_binding',
     'Rust-host cognitive context is injected through a trait object; SDKs cannot create or resume these sessions until a typed callback adapter exists.',
   ],
+  [
+    'capability_catalog_stamp',
+    'Rust-host capability projection metadata; SDKs do not own capability generation publication.',
+  ],
+  [
+    'apply_capability_batch',
+    'Requires Rust capability adapters and a Tokio cancellation token; SDK-safe providers need typed callback adapters.',
+  ],
+  [
+    'drain_capability_cleanup',
+    'Rust-host lifecycle cleanup for capability generations that SDKs cannot publish.',
+  ],
+  [
+    'tool_presentation_profile',
+    'SDKs configure the typed profile through SessionOptions; no runtime getter contract is exposed.',
+  ],
+  [
+    'presented_tool_definitions',
+    'Rust diagnostic projection returns core ToolDefinition values; SDKs expose the configured profile and run evidence instead.',
+  ],
 ]);
 
 const AGENT_ALIASES = new Map([
