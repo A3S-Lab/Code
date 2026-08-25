@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "8.0.0"
+version = "8.0.1"
 dependencies = [
  "a3s-acl 0.3.0",
  "a3s-common",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-go-bridge"
-version = "8.0.0"
+version = "8.0.1"
 dependencies = [
  "a3s-code-core",
  "anyhow",
@@ -122,8 +122,8 @@ dependencies = [
 
 [[package]]
 name = "a3s-flow"
-version = "1.0.0"
-source = "git+https://github.com/A3S-Lab/Flow.git?rev=9107165933892c63fac18d447933d03b9299ea4e#9107165933892c63fac18d447933d03b9299ea4e"
+version = "1.1.0"
+source = "git+https://github.com/A3S-Lab/Flow.git?rev=2948ad51a1395177764766c3ddf7e44338f9e374#2948ad51a1395177764766c3ddf7e44338f9e374"
 dependencies = [
  "async-trait",
  "chrono",

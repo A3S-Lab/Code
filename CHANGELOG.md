@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.0.1] - 2026-08-25
+
+### Changed
+
+- Advanced the exact `a3s-flow` dependency to the published `1.1.0` release,
+  preserving the qualified batch-child-workflow and bounded-retry revision
+  while allowing downstream Cloud locks to resolve one crates.io source.
+
 ## [8.0.0] - 2026-08-25
 
 ### Added
