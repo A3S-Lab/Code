@@ -74,10 +74,10 @@ cargo test --workspace
 echo "[6/13] Running feature-gated library tests"
 cargo test --workspace --all-features --lib
 
-echo "[7/13] Running Node SDK smoke tests"
+echo "[7/13] Building and testing Node SDK"
 (
   unset A3S_CONFIG_FILE A3S_OPENAI_API_KEY A3S_OPENAI_BASE_URL MINIMAX_API_KEY MINIMAX_BASE_URL
-  cd sdk/node && npm test && npm run test:helpers
+  cd sdk/node && npm run build:debug && npm test && npm run test:helpers
 )
 
 echo "[8/13] Type-checking Node examples"
@@ -93,9 +93,13 @@ TARGET_ROOT="${CARGO_TARGET_DIR:-$WORKSPACE/target}"
 if [[ "$TARGET_ROOT" != /* ]]; then
   TARGET_ROOT="$WORKSPACE/$TARGET_ROOT"
 fi
+BRIDGE_BINARY="$TARGET_ROOT/debug/a3s-code-go-bridge"
+if [ -f "$BRIDGE_BINARY.exe" ]; then
+  BRIDGE_BINARY="$BRIDGE_BINARY.exe"
+fi
 (
   cd sdk/go
-  A3S_CODE_GO_BRIDGE_TEST_BINARY="$TARGET_ROOT/debug/a3s-code-go-bridge" \
+  A3S_CODE_GO_BRIDGE_TEST_BINARY="$BRIDGE_BINARY" \
     go test ./...
 )
 
@@ -103,22 +107,58 @@ echo "[11/13] Checking ACL env injection dry run"
 A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh --dry-run
 
 echo "[12/13] Checking real-provider ACL env smoke availability"
-CONFIG_HAS_LITERAL_OPENAI_CREDS=0
+CONFIG_HAS_DEFAULT_PROVIDER_CREDS=0
 if [ -f "$CONFIG_FILE" ]; then
-  CONFIG_HAS_LITERAL_OPENAI_CREDS="$(
+  CONFIG_HAS_DEFAULT_PROVIDER_CREDS="$(
     python3 - "$CONFIG_FILE" <<'PY'
+import os
 import re
 import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-provider = re.search(r'providers\s+"openai"\s*\{(.*?)\n\}', text, re.S)
+default_model = re.search(r'^\s*default_model\s*=\s*"([^"]+)"', text, re.M)
+if not default_model or "/" not in default_model.group(1):
+    print(0)
+    raise SystemExit
+
+provider_name = default_model.group(1).split("/", 1)[0]
+provider = re.search(
+    rf'providers\s+"{re.escape(provider_name)}"\s*\{{(.*?)\n\}}',
+    text,
+    re.S,
+)
 if not provider:
     print(0)
     raise SystemExit
+
 body = provider.group(1)
-has_key = re.search(r'\b(apiKey|api_key)\s*=\s*"[^"]+"', body) is not None
-has_url = re.search(r'\b(baseUrl|base_url)\s*=\s*"[^"]+"', body) is not None
+provider_env = re.sub(r"[^A-Za-z0-9]", "_", provider_name).upper()
+
+def configured_value(names):
+    for name in names:
+        match = re.search(
+            rf'\b{name}\s*=\s*(?:"([^"]*)"|env\("([^"]+)"\))',
+            body,
+        )
+        if match:
+            if match.group(1) is not None:
+                return match.group(1)
+            return os.environ.get(match.group(2))
+    return None
+
+has_key = bool(
+    os.environ.get(f"A3S_{provider_env}_API_KEY")
+    or os.environ.get("A3S_OPENAI_API_KEY")
+    or os.environ.get("MINIMAX_API_KEY")
+    or configured_value(("apiKey", "api_key"))
+)
+has_url = bool(
+    os.environ.get(f"A3S_{provider_env}_BASE_URL")
+    or os.environ.get("A3S_OPENAI_BASE_URL")
+    or os.environ.get("MINIMAX_BASE_URL")
+    or configured_value(("baseUrl", "base_url"))
+)
 print(1 if has_key and has_url else 0)
 PY
   )"
@@ -131,19 +171,15 @@ if [ "${SKIP_REAL_PROVIDER:-0}" = "1" ]; then
   fi
   echo "skipped real-provider smoke by explicit SKIP_REAL_PROVIDER=1" >&2
   echo "[13/13] Skipping SDK real-provider smoke"
-elif [ -n "${A3S_OPENAI_API_KEY:-${MINIMAX_API_KEY:-}}" ] && [ -n "${A3S_OPENAI_BASE_URL:-${MINIMAX_BASE_URL:-}}" ]; then
-  A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh
-  echo "[13/13] Running SDK real-provider smoke"
-  A3S_CONFIG_FILE="$CONFIG_FILE" scripts/sdk_real_config_env_integration.sh
-elif [ "$CONFIG_HAS_LITERAL_OPENAI_CREDS" = "1" ]; then
+elif [ "$CONFIG_HAS_DEFAULT_PROVIDER_CREDS" = "1" ]; then
   A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh
   echo "[13/13] Running SDK real-provider smoke"
   A3S_CONFIG_FILE="$CONFIG_FILE" scripts/sdk_real_config_env_integration.sh
 elif [ "${REQUIRE_REAL_PROVIDER:-0}" = "1" ]; then
-  echo "missing A3S_OPENAI_* / MINIMAX_* variables or literal openai credentials in config; real-provider smoke is required" >&2
+  echo "missing credentials for the configured default provider; real-provider smoke is required" >&2
   exit 2
 else
-  echo "skipped real-provider smoke; inject A3S_OPENAI_*, MINIMAX_*, or literal openai config credentials before tagging" >&2
+  echo "skipped real-provider smoke; configure credentials for the default provider before tagging" >&2
   echo "[13/13] Skipping SDK real-provider smoke"
 fi
 

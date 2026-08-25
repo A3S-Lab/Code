@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/A3S-Lab/Code/sdk/go/v7/internal/bridge"
+	"github.com/A3S-Lab/Code/sdk/go/v8/internal/bridge"
 )
 
 func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {

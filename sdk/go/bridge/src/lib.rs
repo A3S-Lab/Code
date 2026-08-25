@@ -3018,6 +3018,13 @@ mod tests {
         }
     }
 
+    async fn dispatch_boxed(
+        state: &BridgeState,
+        request: &BridgeRequest,
+    ) -> Result<Value, BridgeFailure> {
+        Box::pin(state.dispatch(request)).await
+    }
+
     fn test_acl() -> &'static str {
         r#"
             default_model = "anthropic/test-model"
@@ -3145,81 +3152,91 @@ mod tests {
     async fn direct_file_lifecycle_uses_real_core_session() {
         let workspace = tempfile::tempdir().unwrap();
         let state = BridgeState::new();
-        let created = state
-            .dispatch(&request(
-                "agent_create",
-                json!({ "config_source": test_acl() }),
-            ))
-            .await
-            .unwrap();
+        let created = dispatch_boxed(
+            &state,
+            &request("agent_create", json!({ "config_source": test_acl() })),
+        )
+        .await
+        .unwrap();
         let agent_id = created["agent_id"].as_str().unwrap();
-        let created = state
-            .dispatch(&request(
+        let created = dispatch_boxed(
+            &state,
+            &request(
                 "session_create",
                 json!({
                     "agent_id": agent_id,
                     "workspace": workspace.path(),
                     "options": { "session_id": "go-bridge-test" }
                 }),
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         let session_handle = created["session_handle"].as_str().unwrap();
 
-        let agent_stats = state
-            .dispatch(&request(
+        let agent_stats = dispatch_boxed(
+            &state,
+            &request(
                 "agent_task_scheduler_stats",
                 json!({ "agent_id": agent_id }),
-            ))
-            .await
-            .unwrap();
-        let session_stats = state
-            .dispatch(&request(
+            ),
+        )
+        .await
+        .unwrap();
+        let session_stats = dispatch_boxed(
+            &state,
+            &request(
                 "session_task_scheduler_stats",
                 json!({ "session_handle": session_handle }),
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         assert_eq!(agent_stats["maxActive"], session_stats["maxActive"]);
         assert_eq!(agent_stats["pending"], Value::from(0));
 
-        state
-            .dispatch(&request(
+        dispatch_boxed(
+            &state,
+            &request(
                 "session_write_file",
                 json!({
                     "session_handle": session_handle,
                     "path": "hello.txt",
                     "content": "hello from go bridge"
                 }),
-            ))
-            .await
-            .unwrap();
-        let read = state
-            .dispatch(&request(
+            ),
+        )
+        .await
+        .unwrap();
+        let read = dispatch_boxed(
+            &state,
+            &request(
                 "session_read_file",
                 json!({ "session_handle": session_handle, "path": "hello.txt" }),
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         assert!(read["content"]
             .as_str()
             .unwrap()
             .contains("hello from go bridge"));
 
-        state
-            .dispatch(&request(
-                "session_close",
-                json!({ "session_handle": session_handle }),
-            ))
-            .await
-            .unwrap();
-        let closed = state
-            .dispatch(&request(
+        dispatch_boxed(
+            &state,
+            &request("session_close", json!({ "session_handle": session_handle })),
+        )
+        .await
+        .unwrap();
+        let closed = dispatch_boxed(
+            &state,
+            &request(
                 "session_is_closed",
                 json!({ "session_handle": session_handle }),
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         assert_eq!(closed["closed"], Value::Bool(true));
     }
 

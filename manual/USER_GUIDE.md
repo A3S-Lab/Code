@@ -1,6 +1,6 @@
 # A3S Code User and Developer Guide
 
-This guide describes the current A3S Code 7.x contract. It is intentionally
+This guide describes the current A3S Code 8.x contract. It is intentionally
 shorter than the versioned website reference: examples here cover the stable
 entry points, while the website documents every option and wire shape.
 
@@ -11,7 +11,7 @@ entry points, while the website documents every option and wire shape.
 | Rust    | `cargo add a3s-code-core`                  | Native async Core API                                          |
 | Node.js | `npm install @a3s-lab/code`                | N-API native module                                            |
 | Python  | `pip install a3s-code`                     | PyO3 native module downloaded from the matching GitHub release |
-| Go      | `go get github.com/A3S-Lab/Code/sdk/go/v7` | Pure-Go client plus the version-matched bridge process         |
+| Go      | `go get github.com/A3S-Lab/Code/sdk/go/v8` | Pure-Go client plus the version-matched bridge process         |
 
 Node.js and Python applications should prefer their async lifecycle methods.
 Go applications must deploy a bridge asset from the same release as the Go

@@ -1,0 +1,139 @@
+---
+title: SDKs and APIs
+description: Install the A3S Code Rust, Node.js, Python, and Go SDKs and find their API documentation.
+---
+
+# SDKs and APIs
+
+A3S Code provides Rust, Node.js, Python, and Go SDKs. Install the `a3s` CLI when
+you want the terminal application. Treat each registry and
+[GitHub Releases](https://github.com/A3S-Lab/Code/releases) as the source of
+truth for package versions and release status.
+
+| Entry    | Package or command                  | Documentation                                      | Use it for                                         |
+| -------- | ----------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
+| Terminal | `a3s code`                          | [A3S CLI](https://github.com/A3S-Lab/a3s)          | Run a coding agent directly in your terminal       |
+| Rust     | `a3s-code-core`                     | [docs.rs](https://docs.rs/a3s-code-core)           | Use the complete runtime API or extension traits   |
+| Node.js  | `@a3s-lab/code`                     | [npm](https://www.npmjs.com/package/@a3s-lab/code) | Subscribe to async events in a Node.js application |
+| Python   | `a3s-code`                          | [PyPI](https://pypi.org/project/a3s-code/)         | Use synchronous or asynchronous Python APIs        |
+| Go       | `github.com/A3S-Lab/Code/sdk/go/v8` | [Setup below](#go-module-and-bridge)               | Use a pure-Go API backed by the native runtime     |
+
+## Install
+
+```bash
+# Rust
+cargo add a3s-code-core
+
+# Node.js
+npm install @a3s-lab/code
+
+# Python
+python -m pip install a3s-code
+
+# Go
+go get github.com/A3S-Lab/Code/sdk/go/v8
+```
+
+## Go module and bridge
+
+The Go 1.23+ API is pure Go and does not require CGO. One long-lived
+`a3s-code-go-bridge` process owns the native runtime and carries multiplexed
+requests and `EventEnvelopeV1` values over a versioned JSONL protocol.
+
+A Go-enabled repository release publishes a path-prefixed module tag
+`sdk/go/vX.Y.Z`, matching release `vX.Y.Z`, together with
+`a3s-code-go-bridge-SHA256SUMS` and x86-64 bridge executables:
+
+| System  | Asset target                 |
+| ------- | ---------------------------- |
+| Linux   | `x86_64-unknown-linux-gnu`   |
+| macOS   | `x86_64-apple-darwin`        |
+| Windows | `x86_64-pc-windows-msvc.exe` |
+
+Download the bridge from
+[GitHub Releases](https://github.com/A3S-Lab/Code/releases), verify it against
+the published SHA-256 file, and keep its version equal to the Go module
+version. Put it on `PATH`, set `A3S_CODE_GO_BRIDGE`, or pass
+`code.WithBridgePath`:
+
+```bash
+export A3S_CODE_GO_BRIDGE=/opt/a3s/bin/a3s-code-go-bridge
+```
+
+```powershell
+$env:A3S_CODE_GO_BRIDGE = 'C:\a3s\a3s-code-go-bridge.exe'
+```
+
+For an architecture without a release asset, build it from a source checkout:
+
+```bash
+bash .github/setup-workspace.sh
+cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge
+```
+
+`code.Create` performs a fail-closed handshake for the transport protocol,
+event protocol, and complete operation inventory. Go failures use stable
+`*code.Error` codes while context cancellation and deadlines remain available
+through `errors.Is`. The bridge covers the complete serializable Agent/Session
+surface plus Go-backed hooks, budget guards, slash commands, and pipeline
+callbacks. Arbitrary Rust trait-object implementations remain a Rust-native
+extension mechanism; the other SDKs use their equivalent value configuration,
+callback, direct-tool, or MCP boundary.
+
+## What the SDKs share
+
+All four SDKs use the same session lifecycle, event format, and snapshots. A UI
+can subscribe to the same `AgentEvent` / `EventEnvelopeV1` stream and resume
+saved work by session ID.
+
+### Priority scheduler surface
+
+v6.9 adds the same Agent-wide scheduler controls to every SDK. Select a
+session's `urgent`, `interactive`, `foreground`, `background`, or `maintenance`
+priority at creation time, then read the shared occupancy snapshot from the
+Agent or any sibling session:
+
+| SDK     | Session option                                     | Agent / Session snapshot       |
+| ------- | -------------------------------------------------- | ------------------------------ |
+| Rust    | `SessionOptions::with_task_priority(TaskPriority)` | `task_scheduler_stats().await` |
+| Node.js | `taskPriority`                                     | `taskSchedulerStats()`         |
+| Python  | `SessionOptions.task_priority`                     | `task_scheduler_stats()`       |
+| Go      | `SessionOptions.TaskPriority`                      | `TaskSchedulerStats(ctx)`      |
+
+The snapshot includes global capacity, active and pending totals, per-priority
+counts, and shutdown state. See [Task scheduler](/guide/tasks#agent-wide-priority-scheduler) for
+ordering, aging, cancellation, configuration, and complete examples.
+
+### Tool-result projection surface
+
+All four SDKs pin the same versioned deterministic projection policy to a
+session:
+
+| SDK     | Session option or builder                                        |
+| ------- | ---------------------------------------------------------------- |
+| Rust    | `with_tool_result_transform_policy(ToolResultTransformPolicyV1)` |
+| Node.js | `toolResultTransformPolicy`                                      |
+| Python  | `SessionOptions.tool_result_transform_policy`                    |
+| Go      | `SessionOptions.ToolResultTransformPolicy`                       |
+
+Rust and Python expose a `context_efficient()` preset; Node.js and Go accept
+the same explicit fields. The policy persists in snapshots and every Tool
+result carries `a3s.code.tool-result-evidence.v1` metadata. See
+[Tools](/guide/tools#deterministic-tool-result-projection) for field values,
+ordering, bounds, loss modes, and SDK examples.
+
+The shared guides place Go beside Node.js and Python for the complete common
+SDK capability surface. Start with
+[quick start](/guide/examples/quick-start), then continue to
+[streaming](/guide/examples/streaming),
+[direct tools](/guide/examples/direct-tools), [sessions](/guide/sessions),
+[verification](/guide/verification), [MCP](/guide/mcp), and
+[persistence](/guide/persistence).
+
+All four SDKs can configure persistence, memory, local/S3 workspaces, remote
+Git, permissions and confirmation, hooks, MCP, queues, deterministic replay,
+and orchestration. Rust additionally accepts arbitrary in-process trait
+implementations such as a custom `LlmClient` or `ContextProvider`; other
+languages integrate custom services through callbacks, direct tools, or MCP.
+For UI integration, start with
+[sessions and event streams](/guide/sessions).

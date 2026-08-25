@@ -1,0 +1,68 @@
+---
+title: '文件系统优先'
+description: '把角色、配置、技能、工具、调度和团队定义沉淀为可审查、可版本化的文件系统约定。'
+---
+
+# 文件系统优先
+
+A3S Code 把文件系统当作 Agent 产品的第一层接口：能长期保存的角色、工具、技能、调度和团队定义都先落成文件，再由运行时按约定加载。这样做的目标不是减少配置项，而是把“Agent 如何工作”变成可以审查、版本化、复用和迁移的工程资产。
+
+文件系统优先有两种常用形态：
+
+```text
+repo/
+├── AGENTS.md          # 项目长期指令
+├── agent.acl          # 模型、provider、队列与委派配置
+└── .a3s/
+    ├── agents/        # 可被 task / autoDelegation 调用的 worker agents
+    └── skills/        # 可复用技能
+
+release-agent/
+├── instructions.md    # 独立长期 Agent 的角色 slot
+├── agent.acl          # 该 Agent 的运行配置
+├── skills/            # 该 Agent 私有技能
+├── tools/             # 该 Agent 可声明的 MCP / script tools
+└── schedules/         # 周期性 turn
+```
+
+第一种是仓库工作区约定，适合交互式开发、团队委派和项目知识注入。第二种是 AgentDir 约定，适合长期运行、定时触发和目录级工具声明。
+
+## 路径总览
+
+| 路径                      | 作用                                         | 什么时候用                                                 |
+| ------------------------- | -------------------------------------------- | ---------------------------------------------------------- |
+| `AGENTS.md`               | 给当前 workspace 注入稳定项目指令            | 代码风格、验证命令、安全边界和发布流程需要长期生效。       |
+| `instructions.md`         | 定义一个 AgentDir 主 Agent 的角色 slot       | 需要把单个目录加载成可长期运行的 Agent。                   |
+| `agent.acl`               | 配置模型、provider、队列、技能目录和委派策略 | 运行时策略需要随仓库或 Agent 一起版本化。                  |
+| `.a3s/agents/`            | 存放 worker/subagent 定义                    | 父 agent 需要 `task` 或自动委派。                          |
+| `.a3s/skills/`、`skills/` | 存放可复用技能                               | 多个任务共享一组操作准则、检查清单或领域流程。             |
+| `tools/`                  | 声明 AgentDir 的 MCP 或 script tools         | 需要把连接器或受限脚本作为模型可见能力暴露给调度 session。 |
+| `schedules/`              | 声明周期性 turn                              | 需要日报、巡检、同步、回归检查等定时 Agent。               |
+
+这些约定不是新的 prompt 系统。`AGENTS.md`、`instructions.md` 和 skills 都会进入 A3S Code 的上下文组合流程；工具可见性、权限门、HITL、响应契约和验证仍由 harness 控制。
+
+## 加载顺序
+
+一次典型 session 会先解析 `agent.acl`，再绑定 workspace，随后加载项目指令、skills、agent definitions、direct tools、MCP 连接和运行时策略。AgentDir 的 `serve_agent_dir` 会先用 `instructions.md`、本地 `agent.acl`、`skills/`、`tools/` 和 `schedules/` 合成配置，再为每个 schedule 创建独立 session。
+
+路径越靠近具体 Agent，语义越局部：仓库根部的 `AGENTS.md` 描述整个项目，`.a3s/agents/*.md` 描述某个 worker，AgentDir 内的 `instructions.md` 描述该目录的主 Agent。不要把全局规则复制到每个文件里，除非确实需要覆盖上下文边界。
+
+## 设计原则
+
+- 约定只负责发现和组装，不负责绕过安全。高权限工具仍需要权限策略和确认门。
+- 文件应可被 code review。模型、provider、工具、调度和角色变更都应该能在 diff 中看清楚。
+- secrets 不进入仓库。用环境变量、宿主连接或密钥管理系统注入。
+- 一次性实验可以用 SDK 参数；需要复用、审计或迁移时再固化成文件。
+- `AgentDir` 是主 Agent 目录；`.a3s/agents/` 是 worker/subagent 定义目录，两者不要混用。
+
+## 阅读顺序
+
+1. [约定大于配置](/guide/convention-over-configuration)
+2. [AGENTS.md](/guide/agents-md)
+3. [instructions.md](/guide/filesystem-instructions)
+4. [agent.acl](/guide/filesystem-config)
+5. [Agent 目录](/guide/agent-dir)
+6. [agents/ 角色目录](/guide/filesystem-agents)
+7. [skills/ 技能目录](/guide/filesystem-skills)
+8. [tools/ 工具目录](/guide/filesystem-tools)
+9. [schedules/ 调度目录](/guide/filesystem-schedules)

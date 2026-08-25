@@ -1,0 +1,278 @@
+---
+title: 'Context'
+description: 'Budgeted context assembly for reliable coding agents'
+---
+
+# Context
+
+A3S Code treats context as a budgeted resource. The model should see the smallest useful context for the current decision, not every available file, skill, memory, and tool log.
+
+## Sources
+
+Context can come from:
+
+- user prompt and conversation history
+- AGENTS.md project instructions
+- skills and agent definitions
+- memory stores
+- file search and direct tool results
+- MCP tools and context providers
+- delegated task summaries
+- trace events
+
+AGENTS.md injection, skills discovery, memory APIs, direct tool results,
+delegated task helpers, and `traceEvents()` are part of the documented Node SDK
+surface. Validate MCP context behavior against your own live integrations
+before documenting it as product behavior.
+
+## Assembly
+
+```text
+sources -> ContextItem -> rank -> dedupe -> budget -> render
+```
+
+Long grep output, logs, and child transcripts should be preserved outside the prompt and summarized into prompt-safe evidence. Use `session.traceEvents()` for compact runtime evidence.
+
+## Exact Cognitive Packages (Rust Host)
+
+An embedding Rust host can bind a session to one exact A3S Use
+cognitive-package generation. A3S Code does not install packages, resolve a
+Registry entry, or select `latest`; the host injects both an immutable
+`CognitivePackageBindingV1` and a provider holding the matching Knowledge
+lease.
+
+```rust
+use a3s_code_core::{CognitiveContextSession, SessionOptions};
+
+let cognitive_context = CognitiveContextSession::new(binding, provider)?;
+let options = SessionOptions::new().with_cognitive_context(cognitive_context);
+```
+
+The durable `a3s.code.cognitive-package-session-binding.v1` identity includes
+the package id/version, lifecycle generation, generation digest, capability
+snapshot digest, exact Knowledge surface, and prompt-injection limits. Each
+typed request and cited Markdown response repeats that binding and is validated
+before content enters model context.
+
+The hard limits are four documents, 6 KiB per document, and 6 KiB total. The
+host may choose smaller limits in the binding. Provider failure, malformed
+citations, request mismatch, or generation drift fails closed instead of
+falling back to unrelated retrieval.
+
+Use `with_cognitive_context`; adding a cognitive provider through the generic
+context-provider list is rejected because its binding could not be persisted
+correctly. An exact cognitive package cannot accompany general-purpose RAG or
+graph providers, and personal-memory recall is suppressed. Code-owned
+workspace instructions and skills remain available.
+
+The binding is stored in the session snapshot and emitted as
+`cognitive_context_bound`. On resume, the host must re-inject a provider with
+the same binding; a missing or different generation is rejected. This typed
+boundary is currently a Rust-host integration surface rather than a Node.js,
+Python, or Go session option.
+
+<a id="workspace-retrieval"></a>
+
+## Session-owned workspace retrieval
+
+A3S Code 8 can build a bounded retrieval index for one workspace and one
+session. Construction runs asynchronously, results are verified against the
+current source, and every vector is released when the session closes. The
+runtime does not install or require a vector database.
+
+Workspace Retrieval is a host capability, not a switch the model can turn on.
+Omit the typed option to keep it disabled. A disabled session constructs no
+additional catalog, invokes no embedding provider, and exposes no semantic or
+hybrid search mode to the model.
+
+Enabled sessions do not register a separate `vector_db` tool. Instead, the
+single model-facing `search` schema adds `mode: "semantic"` and
+`mode: "hybrid"`. Both modes query the session-owned projection through the
+same governed tool path as grep, glob, and BM25; disabled sessions omit them
+from the schema rather than advertising calls that cannot run.
+
+### Choose the smallest useful retrieval surface
+
+| Requirement                                 | Use                         | Embedding model                                                        |
+| ------------------------------------------- | --------------------------- | ---------------------------------------------------------------------- |
+| Known identifier or exact text              | Exact, glob, or grep search | Not required                                                           |
+| Natural-language query over project text    | Incremental BM25            | Not required                                                           |
+| Definitions, references, or diagnostics     | Code Intelligence           | Not required                                                           |
+| Vocabulary mismatch or multilingual meaning | Semantic retrieval          | Host-supplied callback required                                        |
+| Mixed identifiers and natural language      | Hybrid RRF                  | Optional; lexical and symbol channels remain available without vectors |
+| Reduce near-duplicate evidence              | Deterministic reranker      | Not required; local CPU algorithm                                      |
+
+Dense semantic search necessarily needs a text-to-vector function, but that
+function can be an in-process CPU callback. A3S Code does not require a remote
+API, GPU, bundled model, or runtime model download. Model revision, license,
+artifact verification, caching, and credentials remain the host's
+responsibility.
+
+### Asynchronous vector projection lifecycle
+
+This is a session-owned, exact in-memory vector index, not a durable or shared
+vector database. Session construction returns before corpus embedding finishes.
+The background indexer reads admitted text, publishes immutable per-file
+partitions atomically, and reconciles later source revisions without
+re-embedding unchanged files. Reopening a session builds a new projection;
+closing it cancels outstanding provider work and must return vector records and
+accounted bytes to zero.
+
+```text
+session construction -> return immediately
+                     `-> build text catalog and vector partitions in the background
+
+query -> fuse independent ranks -> verify current source -> render evidence
+
+session close -> cancel provider -> join indexer -> release all vectors
+```
+
+Status moves through `building`, `ready`, `degraded`, and `closed`. Queries can
+use published coverage while construction continues. Hosts that need a
+stronger first-query boundary can wait for readiness for up to 30 seconds;
+timeout preserves the partial fallback, while cancellation or session close
+interrupts the wait.
+
+| State      | Vector projection                                       | Query behavior                                                    |
+| ---------- | ------------------------------------------------------- | ----------------------------------------------------------------- |
+| `building` | Valid file partitions publish atomically as they finish | Exact/BM25 stay available; semantic coverage may be partial       |
+| `ready`    | The observed source generation has full coverage        | Semantic and hybrid queries use the complete published generation |
+| `degraded` | Valid partitions remain; bounded failures are reported  | Lexical paths continue and semantic results expose partial status |
+| `closed`   | Indexing is cancelled and vectors are released          | Recreate a session before using semantic retrieval again          |
+
+### Ranking
+
+One immutable chunk catalog backs incremental BM25, optional exact in-memory
+vectors, stable source anchors, and exact-literal or Code Intelligence
+candidates. Hybrid mode combines independent one-based ranks with
+reciprocal-rank fusion (`k = 60`) instead of mixing incomparable raw scores.
+RRF-only is the default. The optional deterministic reranker is bounded,
+model-free CPU code that reduces duplicate evidence while protecting exact
+identifiers.
+
+### Text admission and chunking
+
+Only manifest-admitted UTF-8 text and source files enter the catalog.
+Generated files, oversized files, credentials, key material, `.a3s` control
+paths, and non-text assets are excluded before chunking and embedding. PDF,
+Office, image, audio, OCR, and other knowledge compilation belongs to a
+separate knowledge compiler; Workspace Retrieval does not guess how to parse
+those formats.
+
+Built-in typed strategies cover line/byte chunks, fixed UTF-8 windows, and
+recursive separators. Trusted Rust hosts can supply a custom splitter whose
+ranges preserve UTF-8 boundaries, cover admitted bytes, and always make
+forward progress. Node.js, Python, and Go accept typed built-in strategy
+objects; primitive strategy names are rejected.
+
+### SDK control surface
+
+| Host    | Enable                                            | Keep disabled                   | Query and status                                                   |
+| ------- | ------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------ |
+| Rust    | `SessionOptions::with_workspace_retrieval(...)`   | `without_workspace_retrieval()` | `workspace_retrieval_status`, `semantic_search`, `hybrid_search`   |
+| Node.js | Set typed `workspaceRetrieval` in session options | Omit it                         | `workspaceRetrievalStatus()`, `semanticSearch()`, `hybridSearch()` |
+| Python  | Set `SessionOptions.workspace_retrieval`          | Assign `None`                   | `workspace_retrieval_status()`, async semantic and hybrid search   |
+| Go      | Set `SessionOptions.WorkspaceRetrieval`           | Use `nil`                       | `WorkspaceRetrievalStatus`, `SemanticSearch`, `HybridSearch`       |
+
+### CLI activation
+
+The `a3s` CLI keeps semantic retrieval disabled unless a trusted user ACL or a
+file selected explicitly with `--config` enables it. An automatically
+discovered workspace `.a3s/config.acl` may only disable an inherited retrieval
+route; it cannot authorize source egress or choose an embedding backend.
+
+Remote embedding needs a separate provider route and an explicit source-egress
+grant:
+
+```acl
+workspace_retrieval {
+  enabled = true
+  allow_source_egress = true
+  model = "openai/text-embedding-3-small"
+  dimension = 1536
+  normalization = "none"
+}
+```
+
+Local CPU embedding is mutually exclusive with the remote fields and does not
+need a source-egress grant:
+
+```acl
+workspace_retrieval {
+  enabled = true
+  semantic_readiness_timeout_ms = 30000
+
+  local_cpu {
+    artifact_manifest = "models/multilingual-mini/model.acl"
+    intra_threads = 2
+  }
+}
+```
+
+The local artifact manifest is revision- and SHA-256-bound; the runtime never
+downloads model files. Run `a3s config validate` and inspect the redacted
+`workspaceRetrieval` section from `a3s config show` before creating a session.
+The embedding route is independent from `default_model`, so selecting DeepSeek
+for chat and tool calls does not implicitly turn that chat endpoint into an
+embedding service.
+
+Provider descriptors lock identity, model, dimension, and normalization.
+Runtime validation rejects partial, duplicate, unknown, dimension-mismatched,
+non-finite, non-normalized, or descriptor-drifted responses. Diagnostics do
+not copy input text, vectors, remote response bodies, credentials, or endpoint
+values.
+
+### Quality and safety evidence
+
+Status snapshots report coverage, queue depth, failures, vector memory,
+batching, request amplification, non-text provider inputs, and post-close
+release. Release evaluation measures Recall@5, MRR, latency, memory, non-text
+egress, and cleanup. The locked cross-SDK DeepSeek fixture completes 3/3 exact
+tasks with Recall@5 1.0, MRR 0.5, 1.0x document request amplification, zero
+non-text inputs, and complete vector release. This is a portability gate, not
+a claim that one model or reranker is best for every repository.
+
+The `v7.0.1` post-release rerun at Code `5aa9642` repeated every gate on
+2026-08-17:
+
+| SDK     | Exact tasks / one-Search protocols | DeepSeek turn p50 / p95 | Tokens |
+| ------- | ---------------------------------: | ----------------------: | -----: |
+| Node.js |                              3 / 3 |      16,033 / 16,538 ms | 14,540 |
+| Python  |                              3 / 3 |      15,552 / 23,751 ms | 14,784 |
+| Go      |                              3 / 3 |      16,636 / 19,009 ms | 14,171 |
+
+All three arms retained Recall@5 1.0, MRR 0.5, 1.0x document-request
+amplification, zero non-text inputs, and complete post-close release. These
+remote timings are diagnostic rather than local retrieval latency objectives.
+
+Before rendering a result, A3S Code rereads the authoritative file and verifies
+the full-file digest and exact chunk byte range. Deleted, stale, unreadable, or
+superseded candidates are not exposed. See the
+[operations runbook](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)
+and [qualification record](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_QA.md)
+for production thresholds, rollback rules, and reproducible evaluation.
+
+## Compaction
+
+Enable automatic compaction for long sessions:
+
+```ts
+const session = agent.session('/repo', {
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  maxContextTokens: 128_000,
+});
+```
+
+When `maxContextTokens` is omitted, Core uses the selected model's declared
+context window when available. Before each model request, Core accounts for the
+system prompt, conversation, tool calls and results, and exposed tool schemas.
+At the configured threshold it bounds oversized tool output, summarizes the
+older safe prefix, keeps recent messages, and continues the same task. The
+summary participates in later compactions, so long sessions can roll forward
+through repeated compression; this does not enlarge the model's physical
+single-request context window. A successful `context_compacted` event includes
+the cumulative summary so hosts that supply external history can persist the
+same compact generation across turns.
+
+Python exposes the same override as `max_context_tokens`.

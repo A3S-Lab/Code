@@ -220,13 +220,13 @@ const surfaces = [
   {
     key: 'go',
     name: 'Go',
-    packageName: 'sdk/go/v7',
-    href: 'https://pkg.go.dev/github.com/A3S-Lab/Code/sdk/go/v7',
+    packageName: 'sdk/go/v8',
+    href: 'https://pkg.go.dev/github.com/A3S-Lab/Code/sdk/go/v8',
     description: {
       zh: '纯 Go API 通过长驻桥接进程提供会话、事件流、工具、验证和 MCP，无需 CGO。',
       en: 'A pure-Go API for sessions, event streams, tools, verification, and MCP through a long-lived bridge, without CGO.',
     },
-    command: 'go get github.com/A3S-Lab/Code/sdk/go/v7',
+    command: 'go get github.com/A3S-Lab/Code/sdk/go/v8',
   },
 ];
 

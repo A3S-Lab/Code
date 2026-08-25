@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.0.0] - 2026-08-25
+
 ### Added
 
 - Added host-injected `SessionCheckpointExportSink` support for canonical live
@@ -186,6 +188,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Generalized real-provider release verification to the configured ACL default
+  provider, including provider-specific environment variables, Windows CRLF
+  normalization, local Node native builds, and `.exe` Go bridge discovery.
+- Made the Windows Node ESM confirmation test import through a file URL, boxed
+  the Go bridge lifecycle test dispatch future to keep the default test stack
+  bounded, and added explicit time bounds to the supervised Hook timeout test.
 - Made native Harness event pages read run state and retained events from one
   RunStore generation, preventing concurrent writes from combining an older
   state with newer events. Restored run-local observation time now remains

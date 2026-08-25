@@ -1,0 +1,123 @@
+---
+title: SDK 与 API
+description: 安装 A3S Code 的 Rust、Node.js、Python 和 Go SDK，并找到对应 API 文档。
+---
+
+# SDK 与 API
+
+A3S Code 提供 Rust、Node.js、Python 和 Go SDK。想直接使用终端应用，则安装
+`a3s` CLI。版本号与发布状态以对应 Registry 和
+[GitHub Releases](https://github.com/A3S-Lab/Code/releases) 为准。
+
+| 入口     | 包或命令                            | 文档                                               | 适用场景                              |
+| -------- | ----------------------------------- | -------------------------------------------------- | ------------------------------------- |
+| Terminal | `a3s code`                          | [A3S CLI](https://github.com/A3S-Lab/a3s)          | 直接在终端运行编码 Agent              |
+| Rust     | `a3s-code-core`                     | [docs.rs](https://docs.rs/a3s-code-core)           | 使用完整 Runtime API 或实现扩展 Trait |
+| Node.js  | `@a3s-lab/code`                     | [npm](https://www.npmjs.com/package/@a3s-lab/code) | 在 Node.js 应用中订阅异步事件流       |
+| Python   | `a3s-code`                          | [PyPI](https://pypi.org/project/a3s-code/)         | 在 Python 中使用同步或异步 API        |
+| Go       | `github.com/A3S-Lab/Code/sdk/go/v8` | [见下方安装说明](#go-module-与桥接程序)            | 通过纯 Go API 使用原生 Runtime        |
+
+## 安装
+
+```bash
+# Rust
+cargo add a3s-code-core
+
+# Node.js
+npm install @a3s-lab/code
+
+# Python
+python -m pip install a3s-code
+
+# Go
+go get github.com/A3S-Lab/Code/sdk/go/v8
+```
+
+## Go 模块与桥接程序
+
+Go 1.23 及以上版本使用纯 Go API，不需要 CGO。一个长驻的
+`a3s-code-go-bridge` 进程持有原生 Runtime，通过带版本号的 JSONL 协议传输
+多路复用请求和 `EventEnvelopeV1`。
+
+包含 Go SDK 的仓库 Release 会发布路径前缀 Tag `sdk/go/vX.Y.Z`，它与
+`vX.Y.Z` Release 对应，同时提供 `a3s-code-go-bridge-SHA256SUMS` 和以下
+x86-64 桥接程序：
+
+| 系统    | 资产目标                     |
+| ------- | ---------------------------- |
+| Linux   | `x86_64-unknown-linux-gnu`   |
+| macOS   | `x86_64-apple-darwin`        |
+| Windows | `x86_64-pc-windows-msvc.exe` |
+
+从 [GitHub Releases](https://github.com/A3S-Lab/Code/releases) 下载桥接程序，
+使用发布的 SHA-256 文件校验，并确保它与 Go module 版本相同。可以将程序加入
+`PATH`、设置 `A3S_CODE_GO_BRIDGE`，或传入 `code.WithBridgePath`：
+
+```bash
+export A3S_CODE_GO_BRIDGE=/opt/a3s/bin/a3s-code-go-bridge
+```
+
+```powershell
+$env:A3S_CODE_GO_BRIDGE = 'C:\a3s\a3s-code-go-bridge.exe'
+```
+
+没有对应架构的 Release 资产时，可以从源码构建：
+
+```bash
+bash .github/setup-workspace.sh
+cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge
+```
+
+`code.Create` 会对传输协议、事件协议和完整操作清单执行 fail-closed 握手。
+Go 错误使用稳定的 `*code.Error` 错误码，Context 取消和 Deadline 仍可通过
+`errors.Is` 判断。桥接程序覆盖完整的可序列化 Agent/Session 能力，以及由 Go
+实现的 Hook、预算守卫、斜杠命令和流水线回调。任意 Rust trait 对象仍属于
+Rust 原生扩展机制；其他 SDK 通过等价的值配置、回调、直接工具或 MCP 边界接入。
+
+## 四种 SDK 的共用能力
+
+四种 SDK 使用相同的 Session 生命周期、事件格式和 Snapshot。界面可以订阅同一套
+`AgentEvent` / `EventEnvelopeV1`，保存后也可以按 Session ID 恢复。
+
+### 优先级调度器接口
+
+v6.9 为四种 SDK 增加相同的 Agent 级调度器控制。创建 Session 时选择 `urgent`、
+`interactive`、`foreground`、`background` 或 `maintenance`，再从 Agent 或任意
+同级 Session 读取共享占用快照：
+
+| SDK     | Session 配置                                       | Agent / Session 快照           |
+| ------- | -------------------------------------------------- | ------------------------------ |
+| Rust    | `SessionOptions::with_task_priority(TaskPriority)` | `task_scheduler_stats().await` |
+| Node.js | `taskPriority`                                     | `taskSchedulerStats()`         |
+| Python  | `SessionOptions.task_priority`                     | `task_scheduler_stats()`       |
+| Go      | `SessionOptions.TaskPriority`                      | `TaskSchedulerStats(ctx)`      |
+
+快照包含全局容量、活动与等待总数、按优先级分组的计数和关闭状态。顺序、老化、取消、
+配置与完整示例见[任务优先级调度器](/guide/tasks#agent-wide-priority-scheduler)。
+
+### 工具结果投影接口
+
+四种 SDK 都能把同一个带版本的确定性投影策略固定到 Session：
+
+| SDK     | Session 配置或 Builder                                           |
+| ------- | ---------------------------------------------------------------- |
+| Rust    | `with_tool_result_transform_policy(ToolResultTransformPolicyV1)` |
+| Node.js | `toolResultTransformPolicy`                                      |
+| Python  | `SessionOptions.tool_result_transform_policy`                    |
+| Go      | `SessionOptions.ToolResultTransformPolicy`                       |
+
+Rust 与 Python 提供 `context_efficient()` 预设；Node.js 与 Go 接受相同的显式字段。策略
+会写入快照，每个工具结果都会携带 `a3s.code.tool-result-evidence.v1` 元数据。字段值、
+执行顺序、边界、损失模式与四种 SDK 示例见
+[工具](/guide/tools#确定性的工具结果投影)。
+
+共用指南会在完整的共用 SDK 能力面中，将 Go 与 Node.js、Python 并列展示。
+可以从[快速开始](/guide/examples/quick-start)开始，再阅读
+[流式事件](/guide/examples/streaming)、[直接工具](/guide/examples/direct-tools)、
+[会话](/guide/sessions)、[验证](/guide/verification)、[MCP](/guide/mcp)和
+[持久化](/guide/persistence)。
+
+四种 SDK 都能配置持久化、记忆、Local/S3 Workspace、Remote Git、权限与确认、
+Hook、MCP、队列、确定性重放和编排。Rust 还可以接收自定义 `LlmClient` 或
+`ContextProvider` 等任意进程内 trait 实现；其他语言通过回调、直接工具或 MCP
+接入自定义服务。界面接入可从 [Session 与事件流](/guide/sessions) 开始。

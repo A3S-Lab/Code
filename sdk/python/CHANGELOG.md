@@ -4,6 +4,15 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.0.0] - 2026-08-25
+
+### Changed
+
+- Updated the bundled Core release to 8.0.0 for scoped capability ownership,
+  exact Run/checkpoint generation binding, and portable recovery. Existing
+  Python value APIs remain source-compatible; Rust-host-only capability
+  adapters are intentionally not exposed as partial Python callbacks.
+
 ## [7.0.2] - 2026-08-20
 
 ### Changed

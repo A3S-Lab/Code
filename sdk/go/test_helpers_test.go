@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/A3S-Lab/Code/sdk/go/v7/internal/bridge"
+	"github.com/A3S-Lab/Code/sdk/go/v8/internal/bridge"
 )
 
 type recordedRequest struct {

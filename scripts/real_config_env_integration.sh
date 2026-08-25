@@ -54,22 +54,48 @@ from pathlib import Path
 source = Path(sys.argv[1])
 text = source.read_text()
 
-provider = re.search(r'(providers\s+"openai"\s*\{)(.*?)(\n\})', text, re.S)
+default_model = re.search(
+    r'^\s*default_model\s*=\s*"([^"]+)"', text, re.M
+)
+if not default_model or "/" not in default_model.group(1):
+    print("default_model must use provider/model syntax", file=sys.stderr)
+    sys.exit(1)
+
+provider_name = default_model.group(1).split("/", 1)[0]
+provider = re.search(
+    rf'(providers\s+"{re.escape(provider_name)}"\s*\{{)(.*?)(\n\}})',
+    text,
+    re.S,
+)
 if not provider:
-    print("openai provider not found in config", file=sys.stderr)
+    print(f'default provider "{provider_name}" not found in config', file=sys.stderr)
     sys.exit(1)
 
 body = provider.group(2)
+provider_env = re.sub(r"[^A-Za-z0-9]", "_", provider_name).upper()
 
-def literal_value(names):
+def configured_value(names):
     for name in names:
-        match = re.search(rf'\b{name}\s*=\s*"([^"]*)"', body)
+        match = re.search(
+            rf'\b{name}\s*=\s*(?:"([^"]*)"|env\("([^"]+)"\))',
+            body,
+        )
         if match:
-            return match.group(1)
+            if match.group(1) is not None:
+                return match.group(1)
+            return os.environ.get(match.group(2))
     return None
 
-api_key = os.environ.get("A3S_OPENAI_API_KEY") or literal_value(("apiKey", "api_key"))
-base_url = os.environ.get("A3S_OPENAI_BASE_URL") or literal_value(("baseUrl", "base_url"))
+api_key = (
+    os.environ.get(f"A3S_{provider_env}_API_KEY")
+    or configured_value(("apiKey", "api_key"))
+    or os.environ.get("A3S_OPENAI_API_KEY")
+)
+base_url = (
+    os.environ.get(f"A3S_{provider_env}_BASE_URL")
+    or configured_value(("baseUrl", "base_url"))
+    or os.environ.get("A3S_OPENAI_BASE_URL")
+)
 
 if api_key:
     os.environ["A3S_OPENAI_API_KEY"] = api_key
@@ -112,6 +138,7 @@ PY
 
   local entry
   while IFS= read -r entry; do
+    entry="${entry%$'\r'}"
     case "$entry" in
       api_key=*)
         export A3S_OPENAI_API_KEY="${entry#api_key=}"
@@ -165,7 +192,7 @@ for name in A3S_OPENAI_API_KEY A3S_OPENAI_BASE_URL; do
 done
 
 if [ "$missing" -ne 0 ]; then
-  echo "Inject A3S_OPENAI_* or MINIMAX_* variables, then rerun this script." >&2
+  echo "Configure credentials for the default provider, or inject compatible A3S_OPENAI_* / MINIMAX_* variables, then rerun this script." >&2
   exit 2
 fi
 

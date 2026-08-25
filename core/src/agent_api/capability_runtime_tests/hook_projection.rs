@@ -640,14 +640,22 @@ async fn timed_out_handler_settles_under_the_run_supervisor_before_use_lease_rel
         let session = Arc::clone(&session);
         async move { session.send("trigger timeout", None).await }
     });
-    entered.acquire().await.unwrap().forget();
+    tokio::time::timeout(Duration::from_secs(5), entered.acquire())
+        .await
+        .expect("timed-out hook handler did not start within the test bound")
+        .unwrap()
+        .forget();
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!run.is_finished());
     assert_eq!(acquired.load(Ordering::SeqCst), 1);
     assert_eq!(dropped.load(Ordering::SeqCst), 0);
 
     gate.release();
-    let error = run.await.unwrap().unwrap_err();
+    let error = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .expect("timed-out hook run did not settle after releasing the handler")
+        .unwrap()
+        .unwrap_err();
     assert!(error.to_string().contains("timed out"));
     assert_eq!(&*executions.lock().unwrap(), &["timed-out"]);
     assert_eq!(dropped.load(Ordering::SeqCst), 1);

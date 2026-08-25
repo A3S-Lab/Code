@@ -1,0 +1,73 @@
+---
+title: 'AGENTS.md'
+description: '作为一等上下文的项目指令'
+---
+
+# AGENTS.md
+
+`AGENTS.md` 是 workspace 级项目指令文件。它让项目规则随仓库一起版本化，避免每次 prompt 都重复说明构建命令、代码风格、安全边界和发布流程。
+
+在文件系统优先架构里，`AGENTS.md` 负责“这个项目如何工作”；AgentDir 的 `instructions.md` 负责“这个长期 Agent 是谁”。两者都会进入上下文组合流程，但都不能覆盖 harness 的权限门、响应契约或验证要求。
+
+```md
+# 项目说明
+
+- Core 变更运行 `cargo test -p a3s-code-core`。
+- 不要提交 `.a3s/config.acl` 里的真实密钥。
+- 搜索优先使用 `rg`。
+- 发布检查必须包含包元数据、CI 和 provider 验证。
+```
+
+## 适合内容
+
+- 构建、测试、lint、格式化和发布命令。
+- 目录职责、模块边界和代码风格。
+- 安全规则，例如 secrets、权限、外部副作用和数据处理要求。
+- 验证政策，例如哪些变更必须跑哪些检查。
+- 项目专用术语和常见工作流。
+
+## 不适合内容
+
+- 密钥、token、私有凭据或临时个人路径。
+- 某个 worker agent 的角色说明；放进 `.a3s/agents/`。
+- 某个长期 Agent 的身份和默认输出风格；放进 `instructions.md`。
+- 可复用 checklist；放进 `.a3s/skills/`。
+
+## 嵌套规则
+
+A3S Code 会在 session 启动时构建一条项目指令链：先找到最近的 Git 根目录，再从
+Git 根目录逐级走到当前 workspace，每层目录最多选择一份文件。每层的查找顺序是：
+
+1. `AGENTS.override.md`
+2. `AGENTS.md`
+3. `project_doc_fallback_filenames` 中按顺序配置的后备文件名
+
+指令按“根目录到 workspace”顺序拼接，因此越靠近当前 workspace 的局部规则越晚出现，
+优先级也越高。`AGENTS.override.md` 只替换同一目录中的普通 `AGENTS.md`，不会清除父目录
+规则。找不到 Git 根目录时，只检查当前 workspace。
+
+空文件会跳过。默认总预算为 32 KiB，可通过 `project_doc_max_bytes` 调整；设为 0 可关闭
+项目指令加载。A3S Code 只接受项目根目录内的 UTF-8 普通文件，会忽略符号链接候选和不安全
+的后备文件名。经过边界约束的最终指令链属于 session 必读上下文，不会被通用检索预算静默丢弃。
+
+只有当子目录规则确实不同，才添加嵌套 `AGENTS.md`。例如桌面端、API 端或某个 SDK
+的构建工具链不同，可以在对应目录下放局部规则。不要为了重复根部说明而复制文件；
+重复会让长期 Agent 难以判断哪份规则才是最新。
+
+```acl
+project_doc_max_bytes = 65536
+project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
+```
+
+## 与其他约定的关系
+
+```text
+repo/
+├── AGENTS.md          # 项目级长期指令
+├── agent.acl          # 运行配置
+└── .a3s/
+    ├── agents/        # worker/subagent 定义
+    └── skills/        # 可复用技能
+```
+
+`AGENTS.md` 应该告诉 Agent 项目事实和工作边界；`agent.acl` 告诉运行时如何连接模型和目录；`agents/` 与 `skills/` 提供可被发现的角色和流程。

@@ -19,7 +19,7 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
 
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
-  <a href="#whats-new-in-70">v7</a> ·
+  <a href="#whats-new-in-80">v8</a> ·
   <a href="#why-a3s-code">Why Code</a> ·
   <a href="#capability-map">Capabilities</a> ·
   <a href="#configure-the-runtime">Configure</a> ·
@@ -27,31 +27,26 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   <a href="#documentation">Documentation</a>
 </p>
 
-## What's new in 7.0
+## What's new in 8.0
 
-- **Session-owned workspace retrieval.** A bounded chunk catalog, incremental
-  BM25, optional host-injected embeddings, exact in-memory vector partitions,
-  and deterministic hybrid RRF are built asynchronously and released with the
-  session. A3S Code does not require a vector database.
-- **Useful without embedding or reranking models.** Exact search, glob, BM25,
-  Code Intelligence, RRF fusion, and the optional deterministic MMR reranker
-  run locally on CPU. Dense semantic search is opt-in and can use an in-process
-  CPU callback supplied by the host.
-- **Typed retrieval across every SDK.** Rust, Node.js, Python, and Go expose
-  explicit enable/disable controls, line/fixed/recursive chunking, readiness,
-  lifecycle metrics, source verification, and bounded cleanup. Non-text assets
-  are rejected before chunking or embedding.
-- **Evidence at the model boundary.** Versioned run records bind the effective
-  tools, policy identities, retrieval generation, repeated Tool-result
-  context, input shape, and normalized model usage without retaining new
-  prompt, source, vector, credential, or endpoint plaintext.
-- **Authorized original-content retention.** Rust hosts can inject one exact
-  immutable-content adapter binding. Every raw Tool result is retained before
-  projection, while bounded metadata and evidence carry validated
-  content-addressed references instead of creating a second audit store.
+- **Run-owned spacetime composition.** Session, Run, Turn, and Subtask scopes
+  now form one downward-only authority and cancellation tree with bounded,
+  reverse-order effect settlement.
+- **Generation-exact capability projection.** Tools, Skills, Agents, Commands,
+  Hooks, MCP, Context, Flow, Knowledge, and UI values publish atomically and
+  remain pinned for the lifetime of every admitted Run.
+- **Exact temporal recovery.** Run and logical-checkpoint evidence binds the
+  Code catalog, complete authority ceiling, and optional A3S Use cursor. An N
+  checkpoint cannot silently resume through N+1.
+- **Portable checkpoint artifacts.** Canonical semantic and logical state is
+  content-addressed as one host-storable payload, with fail-closed drift checks
+  and a fresh-Session exact historical bootstrap path.
+- **Bounded model evidence.** Tool requests, deterministic result transforms,
+  immutable original-content references, model inputs, and capability surfaces
+  are digest-bound without retaining credentials or prompt plaintext.
 
 Go consumers must update the module path to
-`github.com/A3S-Lab/Code/sdk/go/v7`. See [CHANGELOG.md](CHANGELOG.md) for the
+`github.com/A3S-Lab/Code/sdk/go/v8`. See [CHANGELOG.md](CHANGELOG.md) for the
 complete compatibility and release record.
 
 ## Start in 60 seconds
@@ -864,7 +859,7 @@ multiple agents or behaviors need one auditable shared model.
 | Rust     | [`a3s-code-core`](https://crates.io/crates/a3s-code-core)      | Complete runtime API and extension traits                                                                                            |
 | Node.js  | [`@a3s-lab/code`](https://www.npmjs.com/package/@a3s-lab/code) | Native N-API bindings for async lifecycle, streams, tools, stores, orchestration, MCP, and state graph                               |
 | Python   | [`a3s-code`](https://pypi.org/project/a3s-code/)               | Native PyO3/bootstrap package with sync and async application APIs                                                                   |
-| Go       | [`github.com/A3S-Lab/Code/sdk/go/v7`](sdk/go/README.md)        | Pure-Go client with a versioned local bridge for sessions, streams, tools, ephemeral semantic retrieval, runs, verification, and MCP |
+| Go       | [`github.com/A3S-Lab/Code/sdk/go/v8`](sdk/go/README.md)        | Pure-Go client with a versioned local bridge for sessions, streams, tools, ephemeral semantic retrieval, runs, verification, and MCP |
 
 ```bash
 # Node.js
@@ -874,7 +869,7 @@ npm install @a3s-lab/code
 python -m pip install a3s-code
 
 # Go
-go get github.com/A3S-Lab/Code/sdk/go/v7
+go get github.com/A3S-Lab/Code/sdk/go/v8
 ```
 
 The native SDK crates explicitly enable the Core `headless-search`, `s3`, and

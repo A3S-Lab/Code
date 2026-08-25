@@ -1,0 +1,121 @@
+---
+title: '钩子'
+description: '生命周期拦截与策略回调'
+---
+
+# 钩子
+
+钩子用于在会话内注册生命周期回调。管理入口是 `registerHook()`、`hookCount()` 和
+`unregisterHook()`。
+
+## 事件
+
+Node.js 与 Python 的注册辅助方法接受这些稳定名称：
+
+```text
+pre_tool_use
+post_tool_use
+generate_start
+generate_end
+session_start
+session_end
+skill_load
+skill_unload
+pre_prompt
+post_response
+on_error
+```
+
+Rust Core 还把 `permission_request`、`pre_compact` 和 `post_compact` 暴露为一等生命
+周期点；Go bridge 可以注册相同的序列化枚举名称。Node.js 与 Python 的字符串解析器
+目前尚不接受这三个名称。因此，策略需要直接拦截权限请求或上下文压缩时，应使用 Rust
+或 Go 宿主。
+
+Core 还为专用 harness 定义了感知、memory、规划、推理、限流、确认、成功和意图事件。
+只有受保护的运行时路径确实消费某个事件的决策时，才能把它当作策略边界。
+
+## 注册示例
+
+```ts
+session.registerHook(
+  'release-publish-observer',
+  'pre_tool_use',
+  { tool: 'bash', commandPattern: 'npm publish|twine upload|cargo publish' },
+  { priority: 50, timeoutMs: 1000 },
+  () => ({ action: 'continue' }),
+);
+```
+
+处理函数可返回 `{ action: 'continue' }`、`{ action: 'skip' }`、
+`{ action: 'block', reason }`、`{ action: 'retry', reason, delayMs }`，也可返回空值表示
+继续。把钩子用作生产关卡前，应验证产品实际依赖的事件路径。
+
+## 生命周期治理
+
+真正具有门控语义的事件是 `pre_tool_use`、`permission_request`、`pre_compact`、
+`pre_prompt` 和 `pre_planning`。这些事件的处理函数失败或超时时会关闭放行；其他事件
+属于观察或建议点，处理基础设施失败时继续运行。
+
+`pre_tool_use` 可以在工具进入确认或产生副作用前替换参数：
+
+```ts
+() => ({
+  action: 'continue',
+  modified: {
+    updatedInput: { file_path: 'approved/release.txt', content: 'ready\n' },
+  },
+});
+```
+
+Core 接受 `updatedInput`、`updated_input`、`args` 或 `modified` 中的直接参数对象，也
+接受 Codex 风格的 `hookSpecificOutput` 包装。改写后的对象会再次通过工具 JSON Schema
+校验；非法参数会在任何工具副作用发生前被拒绝。
+
+`pre_prompt` 可以返回 `modified.prompt`，以及可选的
+`modified.additionalContext`（或 `additional_context`）。最终 prompt 会包含有边界的
+钩子上下文块，并真正替换发送给模型的用户消息。`permission_request` 可以返回
+`decision: 'allow'` 或 `decision: 'deny'`；`pre_compact` 可以阻止压缩。
+`session_start` 与 `session_end` 为宿主清理和审计提供配对的生命周期观察。
+
+## 拒绝反馈
+
+无法在不改变请求、参数或策略上下文的情况下成功时，返回 `block`。临时条件应返回
+`retry`，并提供原因和建议延迟：
+
+```ts
+() => ({
+  action: 'retry',
+  reason: '策略后端暂时不可用。',
+  delayMs: 1000,
+});
+```
+
+Python 回调使用 `delay_ms`；Go 回调返回
+`&code.HookResponse{Action: "retry", Reason: "...", DelayMS: 1000}`。当前调用会被拒绝，
+而不是自动重新调度。模型会收到原因和明确的重试指引，直接 SDK 调用者则收到结构化
+工具错误：
+
+```json
+{
+  "type": "hook_denied",
+  "reason": "策略后端暂时不可用。",
+  "retryable": true,
+  "retry_after_ms": 1000
+}
+```
+
+`block` 使用同一错误类型，但 `retryable` 为 `false`、`retry_after_ms` 为 `null`。
+需要保留完整重试说明的 Rust 调用者可使用 `HookEngine::fire_outcome()`；现有 `fire()`
+API 保留旧的 `HookResult` 投影。
+
+## 传播
+
+委派与自动子智能体扇出都经过 `task` 工具。产品依赖钩子跨委派运行传播时，应覆盖对应
+的产品集成路径。
+
+## 管理
+
+```ts
+console.log(session.hookCount());
+session.unregisterHook('release-publish-observer');
+```

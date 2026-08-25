@@ -1,0 +1,217 @@
+---
+title: '上下文'
+description: '可靠编程智能体的预算化上下文组装'
+---
+
+# 上下文
+
+A3S Code 把上下文当作有预算的资源。
+
+上下文来源包括用户 prompt、历史、AGENTS.md、skills、memory、文件搜索、直接工具结果、MCP、委派子运行摘要和 trace event。AGENTS.md 注入、skills discovery、memory API、直接工具结果、委派 helper 和 `traceEvents()` 属于 Node SDK 文档表面；MCP context 行为应针对你的 live integration 单独验证。
+
+```text
+sources -> ContextItem -> rank -> dedupe -> budget -> render
+```
+
+长 grep 输出、日志和委派子运行 transcript 不应直接塞进 prompt；应保存在 prompt 之外，再总结成适合 prompt 的证据。紧凑运行证据可通过 `session.traceEvents()` 获取。
+
+## 精确认知包（Rust 宿主）
+
+嵌入式 Rust 宿主可以把会话绑定到某个精确的 A3S Use cognitive-package 代。A3S Code
+不会安装包、解析 Registry 条目或选择 `latest`；宿主负责注入不可变的
+`CognitivePackageBindingV1`，以及持有对应 Knowledge lease 的 Provider。
+
+```rust
+use a3s_code_core::{CognitiveContextSession, SessionOptions};
+
+let cognitive_context = CognitiveContextSession::new(binding, provider)?;
+let options = SessionOptions::new().with_cognitive_context(cognitive_context);
+```
+
+持久化的 `a3s.code.cognitive-package-session-binding.v1` 身份包含包 ID/版本、生命周期代、
+代摘要、能力快照摘要、精确 Knowledge surface 和 prompt 注入上限。每个带类型的请求与
+带引用的 Markdown 响应都会重复该绑定，并在内容进入模型上下文前完成校验。
+
+硬上限是 4 个文档、每个文档 6 KiB、总计 6 KiB；宿主可在绑定中选择更小的限制。
+Provider 失败、引用非法、请求不匹配或代身份漂移都会关闭失败，不会回退到无关检索。
+
+必须使用 `with_cognitive_context`。通过通用 context-provider 列表加入认知 Provider 会
+被拒绝，因为这种方式无法正确持久化绑定。精确认知包不能与通用 RAG 或图 Provider
+共存，并且会抑制个人 memory 召回；Code 自己管理的工作区指令与 skills 仍然可用。
+
+绑定会写入会话快照，并发出 `cognitive_context_bound` 事件。恢复时，宿主必须重新注入
+具有相同绑定的 Provider；缺失绑定或使用不同的代都会被拒绝。这个带类型的边界目前是
+Rust 宿主集成面，不是 Node.js、Python 或 Go 的会话选项。
+
+<a id="workspace-retrieval"></a>
+
+## Session 绑定的工作区检索
+
+A3S Code 8 可以为一个工作区的一个 Session 构建有界检索索引。构建过程异步运行，
+结果会与当前源文件再次校验，Session 关闭时所有向量都会释放。Runtime 不会安装或
+要求使用向量数据库。
+
+Workspace Retrieval 是宿主能力，不是模型可以自行打开的开关。省略 Typed Option
+即可保持关闭。关闭状态不会构建额外目录、不会调用 Embedding Provider，也不会向
+模型暴露 Semantic 或 Hybrid Search Mode。
+
+启用后不会另外注册一个 `vector_db` 工具。模型侧唯一的 `search` Schema 会增加
+`mode: "semantic"` 与 `mode: "hybrid"`。这两个模式和 Grep、Glob、BM25 一样经过
+统一的受治理工具路径，并查询 Session 独占的 Projection；关闭状态会直接从 Schema
+移除这两个模式，而不是暴露无法执行的调用。
+
+### 选择能完成任务的最小检索面
+
+| 需求                     | 使用方式            | 是否需要 Embedding 模型              |
+| ------------------------ | ------------------- | ------------------------------------ |
+| 已知标识符或精确文本     | Exact、Glob 或 Grep | 不需要                               |
+| 用自然语言查询项目文本   | 增量 BM25           | 不需要                               |
+| 定义、引用或诊断         | Code Intelligence   | 不需要                               |
+| 词汇不一致或跨语言语义   | Semantic Retrieval  | 需要宿主提供回调                     |
+| 同时包含标识符和自然语言 | Hybrid RRF          | 可选；没有向量时仍保留词法与符号通道 |
+| 减少近重复证据           | 确定性 Reranker     | 不需要；本地 CPU 算法                |
+
+Dense Semantic Search 必然需要 Text-to-vector 函数，但该函数可以是进程内 CPU
+回调。A3S Code 不要求远程 API、GPU、内置模型或运行时下载。模型 Revision、License、
+Artifact 校验、Cache 与凭据仍由宿主负责。
+
+### 异步向量投影生命周期（非持久化向量库）
+
+这里使用的是 Session 独占的精确内存向量索引，不是持久化或跨 Session 共享的
+Vector Database。Session 构建会在 Corpus Embedding 完成前返回；后台 Indexer 读取
+已准入文本，以 File 为单位原子发布不可变 Partition，并在源文件 Revision 变化后异步
+Reconcile，未变化的文件不会重复 Embedding。重新创建 Session 会生成新的 Projection；
+关闭 Session 会取消未完成的 Provider Work，并要求 Vector Record 与已计量 Byte 归零。
+
+```text
+构建 Session -> 立即返回
+            `-> 后台构建文本目录与向量 Partition
+
+查询 -> 融合独立 Rank -> 校验当前源 -> 输出证据
+
+关闭 Session -> 取消 Provider -> Join Indexer -> 释放全部向量
+```
+
+状态依次为 `building`、`ready`、`degraded` 和 `closed`。构建期间，查询可以使用已经
+发布的 Coverage。需要更强首查边界的宿主可等待 Ready，最长 30 秒；超时后保留
+Partial Fallback，取消查询或关闭 Session 会中断等待。
+
+| 状态       | 向量投影                              | 查询行为                                              |
+| ---------- | ------------------------------------- | ----------------------------------------------------- |
+| `building` | 完成的 File Partition 会逐个原子发布  | Exact/BM25 始终可用，Semantic Coverage 可能不完整     |
+| `ready`    | 当前源 Generation 已达到完整 Coverage | Semantic 与 Hybrid Query 使用完整的已发布 Generation  |
+| `degraded` | 保留有效 Partition，并报告有界失败    | 词法路径继续服务，Semantic Result 显示 Partial Status |
+| `closed`   | 取消 Indexing 并释放全部向量          | 再次使用 Semantic Retrieval 前必须重建 Session        |
+
+### 排序
+
+同一个不可变 Chunk Catalog 支持增量 BM25、可选的精确内存向量、稳定源 Anchor，
+以及 Exact-literal 或 Code Intelligence Candidate。Hybrid Mode 使用
+Reciprocal-rank Fusion（`k = 60`）合并各通道从 1 开始的独立 Rank，不混合不可比较的
+Raw Score。RRF-only 是默认值；可选确定性 Reranker 是有界、无模型的 CPU 代码，
+用于减少重复证据并保护精确 Identifier。
+
+### 文本准入与切块
+
+只有 Manifest 准入的 UTF-8 文本和源文件会进入目录。Generated、Oversized、
+Credential、Key Material、`.a3s` 控制路径和非文本 Asset 会在切块与 Embedding 之前
+排除。PDF、Office、图片、音频、OCR 及其他知识编译属于独立 Knowledge Compiler；
+Workspace Retrieval 不会猜测这些格式的解析方式。
+
+内置 Typed Strategy 包括 Line/byte、Fixed UTF-8 Window 与 Recursive Separator。
+可信 Rust 宿主可以提供 Custom Splitter，但 Range 必须保持 UTF-8 Boundary、覆盖准入
+Byte 并始终向前推进。Node.js、Python 与 Go 接受带类型的内置 Strategy Object；
+Primitive Strategy Name 会被拒绝。
+
+### SDK 控制面
+
+| 宿主    | 开启                                                | 保持关闭                        | 查询与状态                                                         |
+| ------- | --------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------ |
+| Rust    | `SessionOptions::with_workspace_retrieval(...)`     | `without_workspace_retrieval()` | `workspace_retrieval_status`、`semantic_search`、`hybrid_search`   |
+| Node.js | 在 Session Option 中设置 Typed `workspaceRetrieval` | 省略                            | `workspaceRetrievalStatus()`、`semanticSearch()`、`hybridSearch()` |
+| Python  | 设置 `SessionOptions.workspace_retrieval`           | 赋值 `None`                     | `workspace_retrieval_status()`、异步 Semantic 与 Hybrid Search     |
+| Go      | 设置 `SessionOptions.WorkspaceRetrieval`            | 使用 `nil`                      | `WorkspaceRetrievalStatus`、`SemanticSearch`、`HybridSearch`       |
+
+### CLI 启用方式
+
+`a3s` CLI 默认关闭语义检索。只有受信任的用户 ACL，或通过 `--config` 显式选择的文件，
+才能启用它。自动发现的工作区 `.a3s/config.acl` 只能关闭继承的检索路由，不能授权源代码
+出站，也不能选择 Embedding Backend。
+
+远程 Embedding 需要独立 Provider 路由，并显式授权源代码出站：
+
+```acl
+workspace_retrieval {
+  enabled = true
+  allow_source_egress = true
+  model = "openai/text-embedding-3-small"
+  dimension = 1536
+  normalization = "none"
+}
+```
+
+本地 CPU Embedding 与远程字段互斥，不需要出站授权：
+
+```acl
+workspace_retrieval {
+  enabled = true
+  semantic_readiness_timeout_ms = 30000
+
+  local_cpu {
+    artifact_manifest = "models/multilingual-mini/model.acl"
+    intra_threads = 2
+  }
+}
+```
+
+本地 Artifact Manifest 会锁定 Revision 与 SHA-256，Runtime 不会下载模型文件。创建
+Session 前，应运行 `a3s config validate`，并检查 `a3s config show` 中已脱敏的
+`workspaceRetrieval` 段。Embedding 路由与 `default_model` 相互独立，因此选择 DeepSeek
+执行 Chat 和 Tool Call，不会把该 Chat Endpoint 自动当作 Embedding 服务。
+
+Provider Descriptor 会锁定 Identity、Model、Dimension 与 Normalization。Runtime 会
+拒绝 Partial、Duplicate、Unknown、Dimension-mismatched、Non-finite、
+Non-normalized 或 Descriptor-drifted Response。Diagnostic 不复制输入文本、向量、
+远程响应体、凭据或 Endpoint Value。
+
+### 质量与安全证据
+
+Status Snapshot 会报告 Coverage、Queue Depth、Failure、Vector Memory、Batching、
+Request Amplification、Non-text Provider Input 与关闭后的资源释放。发布评估使用
+Recall@5、MRR、Latency、Memory、Non-text Egress 和 Cleanup。锁定的 Cross-SDK
+DeepSeek Fixture 完成 3/3 精确任务，Recall@5 为 1.0、MRR 为 0.5、Document Request
+Amplification 为 1.0x、Non-text Input 为零，并完整释放向量。它是 Portability Gate，
+不代表某个模型或 Reranker 对所有仓库都最优。
+
+Code `5aa9642` 在 2026-08-17 完成了 `v7.0.1` 发布后复验：
+
+| SDK     | 精确任务 / 单次 Search 协议 | DeepSeek Turn p50 / p95 | Tokens |
+| ------- | --------------------------: | ----------------------: | -----: |
+| Node.js |                       3 / 3 |      16,033 / 16,538 ms | 14,540 |
+| Python  |                       3 / 3 |      15,552 / 23,751 ms | 14,784 |
+| Go      |                       3 / 3 |      16,636 / 19,009 ms | 14,171 |
+
+三个 SDK 均保持 Recall@5 1.0、MRR 0.5、1.0x Document Request Amplification、
+零 Non-text Input 与完整的关闭后释放。这些远程耗时只用于诊断，不是本地检索延迟目标。
+
+渲染结果前，A3S Code 会重新读取权威文件，并校验 Full-file Digest 与精确 Chunk Byte
+Range。Deleted、Stale、Unreadable 或 Superseded Candidate 不会暴露。生产阈值、回滚
+规则和可复现评估见
+[运维手册](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)
+与[资格记录](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_QA.md)。
+
+## 上下文压缩
+
+长会话可启用自动压缩：
+
+```ts
+const session = agent.session('/repo', {
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  maxContextTokens: 128_000,
+});
+```
+
+未设置 `maxContextTokens` 时，Core 会优先使用当前模型声明的上下文窗口。每次模型请求前，Core 会统计 system prompt、会话消息、工具调用与结果以及暴露给模型的工具 schema；达到阈值后，它会限制过大的工具输出、总结较早且边界安全的消息、保留近期消息，并继续当前任务。压缩摘要还会参与后续压缩，因此长会话可以持续滚动压缩；这不会扩大模型单次请求的物理上下文窗口。压缩成功时，`context_compacted` 事件会携带累计摘要，使用外部历史的宿主可以把同一压缩代持久化到后续轮次。
+
+Python SDK 中对应的字段是 `max_context_tokens`。

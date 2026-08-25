@@ -32,9 +32,9 @@ configuration, wire behavior, or SDK surface to remain reproducible. Required
 parameter or function-signature breaks must use the appropriate minor or major
 product version rather than being hidden inside a documentation patch.
 
-The active `v7.0.1` content lives under `docs/v7.0.1`. The `v6.9.0`, `v6.8.0`,
-`v6.7.0`, `v6.6.0`, `v6.5.2`, `v6.5.1`, and `v6.5.0` directories remain
-read-only historical snapshots; this policy does not rewrite existing
+The active `v8.0.0` content lives under `docs/v8.0.0`. The `v7.0.1`, `v6.9.0`,
+`v6.8.0`, `v6.7.0`, `v6.6.0`, `v6.5.2`, `v6.5.1`, and `v6.5.0` directories
+remain read-only historical snapshots; this policy does not rewrite existing
 archives. The v6.9 website was published after the package tag, so its exact
 source is pinned by the non-release `docs/v6.9.0` tag. For a new minor or major
 line, always create a new current directory and archive the previously

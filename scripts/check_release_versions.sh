@@ -12,7 +12,7 @@ import re
 import sys
 from pathlib import Path
 
-expected = sys.argv[1].strip()
+expected = sys.argv[1].strip() if len(sys.argv) > 1 else ""
 errors = []
 
 

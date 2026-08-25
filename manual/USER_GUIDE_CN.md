@@ -1,6 +1,6 @@
 # A3S Code 用户与开发者指南
 
-本文描述 A3S Code 7.x 的当前合同。这里集中说明稳定入口与关键边界，完整选项和 Wire
+本文描述 A3S Code 8.x 的当前合同。这里集中说明稳定入口与关键边界，完整选项和 Wire
 Shape 请查阅带版本的网站文档。
 
 ## 1. 选择宿主语言
@@ -10,7 +10,7 @@ Shape 请查阅带版本的网站文档。
 | Rust    | `cargo add a3s-code-core`                  | 原生异步 Core API                               |
 | Node.js | `npm install @a3s-lab/code`                | N-API Native Module                             |
 | Python  | `pip install a3s-code`                     | 从对应 GitHub Release 获取的 PyO3 Native Module |
-| Go      | `go get github.com/A3S-Lab/Code/sdk/go/v7` | Pure-Go Client 与版本完全一致的 Bridge Process  |
+| Go      | `go get github.com/A3S-Lab/Code/sdk/go/v8` | Pure-Go Client 与版本完全一致的 Bridge Process  |
 
 Node.js 和 Python 应优先使用异步生命周期 API。Go Module 与 Bridge Asset 必须来自同一
 个 Release。Rust 的 Session 构建以异步为先，因为 Store、MCP Discovery、Workspace

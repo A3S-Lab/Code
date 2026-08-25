@@ -1,0 +1,126 @@
+---
+title: 'Quick Start'
+description: 'Create an agent, open a session, run one turn, and read the result.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Quick Start
+
+The smallest useful program: create an agent from an ACL file, open a session on a
+project directory, run one turn with `send`, print the reply text, and inspect the
+verification summary the runtime produced for that turn.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    // Agent::new accepts an .acl file path or inline ACL source.
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let result = session
+        .send("List the files in this directory.", None)
+        .await?;
+    println!("{}", result.text);
+
+    // What the runtime checked while producing that turn.
+    println!("{}", result.verification_summary_text());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+// Agent.create accepts an .acl file path or inline ACL string.
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.');
+
+const result = await session.send('List the files in this directory.');
+console.log(result.text);
+
+// What the runtime checked while producing that turn.
+console.log(result.verificationSummaryText);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent
+
+# Agent.create accepts an .acl file path or inline ACL string.
+agent = Agent.create('agent.acl')
+session = agent.session('.')
+
+result = session.send('List the files in this directory.')
+print(result.text)
+
+# What the runtime checked while producing that turn.
+print(result.verification_summary_text)
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v8"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "List the files in this directory.")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+	fmt.Println(result.VerificationSummaryText)
+}
+```
+
+</Tab>
+</Tabs>
+
+The agent factory accepts either an `.acl` file path or inline ACL source text
+in all four SDKs. Always close the session when you are done so the runtime
+can flush state and release resources. Go close operations accept a context
+because they also stop the bridge-owned native resources.
+
+## Next steps
+
+- [Streaming](/guide/examples/streaming) — read tokens as they arrive
+- [Sessions](/guide/sessions) — persist and resume conversations
