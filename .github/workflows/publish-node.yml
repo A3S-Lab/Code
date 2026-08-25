@@ -205,6 +205,10 @@ jobs:
             )
           done
 
+      - name: Bind the main package to the published platform packages
+        working-directory: sdk/node
+        run: node scripts/release-manifest.mjs
+
       - name: Publish to npm
         working-directory: sdk/node
         env:
