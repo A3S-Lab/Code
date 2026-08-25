@@ -14,6 +14,7 @@ const (
 	EventReasoningDelta         = "reasoning_delta"
 	EventToolStart              = "tool_start"
 	EventToolInputDelta         = "tool_input_delta"
+	EventToolRequestBound       = "tool_request_bound"
 	EventToolExecutionStart     = "tool_execution_start"
 	EventToolEnd                = "tool_end"
 	EventToolOutputDelta        = "tool_output_delta"
@@ -66,6 +67,7 @@ var agentEventTypesV1 = [...]string{
 	EventReasoningDelta,
 	EventToolStart,
 	EventToolInputDelta,
+	EventToolRequestBound,
 	EventToolExecutionStart,
 	EventToolEnd,
 	EventToolOutputDelta,

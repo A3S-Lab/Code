@@ -231,6 +231,15 @@ fn validate_session_options(options: &SessionOptions) -> Result<String> {
                 message: error.to_string(),
             })?;
     }
+    if let Some(adapter) = &options.immutable_content_adapter {
+        adapter
+            .binding()
+            .validate()
+            .map_err(|error| CodeError::SessionConfiguration {
+                field: "immutable_content_adapter",
+                message: error.to_string(),
+            })?;
+    }
     let session_id = options
         .session_id
         .clone()

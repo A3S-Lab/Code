@@ -2,7 +2,7 @@ use super::execution_state::ExecutionLoopState;
 use super::tool_result_runtime::{push_tool_result_message, NormalizedToolResult};
 use super::{AgentEvent, AgentLoop};
 use crate::llm::ToolCall;
-use crate::tools::ToolInvocation;
+use crate::tools::{ToolContext, ToolInvocation};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -17,6 +17,7 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         session_id: Option<&str>,
         cancel_token: &CancellationToken,
+        base_tool_context: &ToolContext,
     ) {
         tracing::info!(
             count = tool_calls.len(),
@@ -26,8 +27,7 @@ impl AgentLoop {
 
         let tool_calls = tool_calls.to_vec();
         let invoker = self.scoped_tool_invoker(session_id, event_tx);
-        let tool_context = self
-            .tool_context
+        let tool_context = base_tool_context
             .clone()
             .without_host_direct_policy()
             .with_cancellation(cancel_token.clone())

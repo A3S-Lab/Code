@@ -55,7 +55,7 @@ pins the catalog and its governance ceiling when a Run is admitted. Temporary
 Turn and Subtask capabilities are child scopes and cannot expand the parent
 authority.
 
-The migration from the current Tool, Skill, Agent, Command, Hook, and MCP
+The migration from the current Tool, Skill, Agent, Command, Hook, MCP, and Context
 registries is specified in the
 [Scoped Capability Architecture](SCOPED_CAPABILITY_ARCHITECTURE.md). Read that
 contract before adding a new live registration API. New APIs must preserve the
@@ -71,7 +71,7 @@ batches, rejects mixed Use cursors and conflicts, and returns an immutable
 `Arc<CapabilitySet>`. `from_use_projection` retains the exact upstream cursor
 even when product filtering yields no package descriptors. It does not
 activate a Tool, start MCP, or mutate a live Session. Tool, Skill, Agent,
-Command, Hook, and exact-client MCP activation now use the explicit
+Command, Hook, exact-client MCP, named Flow, and general Context activation now use the explicit
 `SessionCapabilityBatch` host boundary below, while other runtime categories
 remain on compatibility APIs until their later migration cuts.
 
@@ -91,13 +91,23 @@ futures but cannot perform asynchronous effect teardown. Child tasks settle
 first, child scopes and effects close in reverse order, and the Run's Use lease
 is dropped last.
 
+The official `AgentSession` path installs the runtime composition automatically.
+Model-side orchestration and each provider/Tool iteration own Turns. A Tool may
+register reversible effects through `ToolContext::register_capability_effect`;
+its stream bridge is supervised by the same Turn. Foreground Skill/Task Agents
+recurse through `Turn -> Subtask -> Turn`. Background Tasks and streaming memory
+extraction must be synchronously admitted by an active Turn, promoted to a
+Run-owned Subtask, and registered with the Run supervisor. Never use a captured
+Tool context to create work after its Turn closes.
+
 `CAP-PROJ1` supplies the atomic value plane beside those scopes. Start a
 transaction with the complete next-generation `Arc<CapabilitySet>`, stage one
 `CapabilityProjectionAdapter` for each descriptor, await `prepare` with a
 `CancellationToken`, call `validate`, and commit only the resulting
 `CapabilityTxn<Validated>`. The closed `CapabilityValue` enum does not accept
-`Any`; a missing runtime category such as UI fails validation until Core owns a
-typed contract for it. Value kinds and published names must match their exact
+`Any`; every supported category, including bounded host-only UI documents, has
+a typed contract. Unknown categories still fail closed. Value kinds, published
+names, and category-specific content identities must match their exact
 descriptors.
 
 Runs read through a non-clone `CapabilityProjectionLease`, so definition and
@@ -129,8 +139,8 @@ installation, Grants, lifecycle cutover, or recovery.
 The first `HOST-CAP1` Core cut exposes
 `AgentSession::apply_capability_batch`. Construct the complete next
 `CapabilitySet`, create a `SessionCapabilityBatch`, and stage every Tool,
-Skill, Agent, Command, Hook, or MCP value before calling the method. A Hook
-value is an immutable `HookBinding` that owns the exact `Hook` definition and
+Skill, Agent, Command, Hook, MCP, named Flow, or general Context value before calling the
+method. A Hook value is an immutable `HookBinding` that owns the exact `Hook` definition and
 `Arc<dyn HookHandler>` callback as one generation-safe pair. An MCP value should
 normally be staged with `McpProjectionAdapter`; it connects one exact client,
 completes initialization and `tools/list`, freezes the validated `McpBinding`,
@@ -140,6 +150,14 @@ construct the batch with `from_use_projection` and a generation-specific
 `CapabilityRegistry::acquire_snapshot_lease` with the exact cursor and return a
 wrapper that owns the resulting non-clone `CapabilitySnapshotLease` while
 implementing `RetainedUseGeneration`.
+
+A Flow value is an immutable `FlowBinding`. Construct it from one validated
+`WorkflowSpec` and the exact `FlowEngine` that owns store, runtime, observer,
+replay, and runtime-build compatibility. `WorkflowSpec::name` must match the
+capability descriptor. Use `AgentSession::projected_flow` to acquire a
+non-clone host handle for the current generation, keep it alive for the whole
+operation, and call `close` to release its exact A3S Use lease. The lookup is
+host-only and does not make the Flow model-visible.
 
 Construct `McpServerConfig` only after the trusted host has selected the exact
 Use generation and resolved its Runtime/Gateway evidence. Do not derive a
@@ -154,8 +172,8 @@ stale generation at its own visibility boundary. Code checks the returned
 generation, capability revision, and Registry revision again, then keeps the
 lease in the Run supervisor until child scopes, tasks, and effects settle.
 
-Tool, Skill, Agent, Command, Hook, and MCP values are the Session kinds currently
-accepted by this API. The batch is validated against the compatibility
+Tool, Skill, Agent, Command, Hook, MCP, named Flow, and general Context values are the
+Session kinds currently accepted by this API. The batch is validated against the compatibility
 registries immediately before commit. A public-name conflict, cancellation,
 Session close, preparation failure, or CAS loss leaves the current catalog
 stamp unchanged. Once a name is owned by the published projection,
@@ -165,7 +183,8 @@ the same frozen Tool `Arc`; Skill discovery and invocation use one frozen Skill 
 automatic and Tool-driven delegation use one frozen Agent registry; blocking
 and streaming slash-command dispatch use one frozen Command registry; Hook
 matching and callback dispatch use one frozen definition/handler map; MCP
-definitions, raw calls, and delegated children use one exact client binding. An
+definitions, raw calls, and delegated children use one exact client binding;
+general Context queries and completion notifications use one frozen provider list. An
 optional Session-static external Hook executor runs first, but its `Skip`
 cannot bypass the projected Hook layer. Projected `SessionStart`, `SessionEnd`,
 `SkillLoad`, and `SkillUnload` events fail before publication because they are
@@ -190,7 +209,17 @@ gate. `HOST-AGENT1` completes the Core Agent runtime cut, and
 the Core Hook runtime cut. `HOST-MCP1` completes the Core exact-client MCP
 runtime cut. It does not claim that A3S Use already projects every MCP surface
 into this adapter or that official hosts have adopted it; that wiring remains
-separate integration work. Flow, Knowledge, Context, and UI still fail closed.
+separate integration work. `HOST-CONTEXT1` completes the general Run-frozen
+Context cut; providers with cognitive package bindings must still use the
+persisted Knowledge/session API. `HOST-FLOW1` completes the named host Flow cut
+while A3S Flow retains store, runtime, replay, and observation ownership.
+`HOST-KNOWLEDGE1` completes the exact cognitive provider/binding cut while the
+Knowledge host retains OKF and query-lease ownership. `HOST-UI1` completes the
+Core UI value and host-handle cut: use `UiAsset`, `UiDocument`, and `UiBinding`
+for bounded, path-free reviewed bytes and `AgentSession::projected_ui` for an
+exact non-clone generation handle. Rendering, CSP/origin/navigation/state,
+credentials, backend routing, authoritative Use dependency projection, and
+official renderer-host wiring remain host integration responsibilities.
 
 ### Tool presentation profiles
 

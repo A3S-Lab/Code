@@ -261,6 +261,15 @@ impl AgentSession {
         self.capability_catalog.current_stamp()
     }
 
+    /// Verify that a new Run on this Session would receive the exact persisted
+    /// scoped capability catalog and authority ceiling.
+    pub fn ensure_recovery_capability_binding(
+        &self,
+        expected: &crate::capability::RunCapabilityBindingV1,
+    ) -> std::result::Result<(), crate::capability::RunCapabilityBindingError> {
+        super::agent_loop_runtime::validate_run_capability_binding(self, expected)
+    }
+
     /// Prepare and atomically publish one complete host capability generation.
     ///
     /// Preparation may perform asynchronous work, but no value becomes visible
@@ -323,10 +332,100 @@ impl AgentSession {
             .command_registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current_projection = self.capability_catalog.pin();
         super::agent_loop_runtime::validate_capability_projection_runtime(
             self,
             prepared.projection()?,
             &command_registry,
+        )?;
+        super::agent_loop_runtime::validate_capability_projection_transition(
+            self,
+            current_projection.projection(),
+            prepared.projection()?,
+        )?;
+        prepared.commit()
+    }
+
+    /// Reconstruct one exact historical capability generation on an untouched
+    /// recovery Session.
+    ///
+    /// Unlike ordinary [`Self::apply_capability_batch`], this one-time path may
+    /// jump directly from the empty generation-zero catalog to the generation
+    /// named by `expected`. It never resolves packages or `latest`: the host
+    /// supplies every runtime adapter and any exact A3S Use lease provider in
+    /// `batch`, and Code verifies the resulting catalog plus authority ceiling
+    /// before publication.
+    pub async fn bootstrap_recovery_capability_batch(
+        &self,
+        expected: &crate::capability::RunCapabilityBindingV1,
+        batch: crate::capability::SessionCapabilityBatch,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> std::result::Result<
+        crate::capability::CapabilityCommitReceipt,
+        crate::capability::CapabilityRuntimeError,
+    > {
+        let _mutation = self.close_handle.extension_mutation.lock().await;
+        if self.is_closed() {
+            return Err(crate::capability::CapabilityRuntimeError::SessionClosed);
+        }
+
+        let target_ceiling = self.capability_run_ceiling(batch.target())?;
+        expected
+            .ensure_matches(batch.target(), &target_ceiling)
+            .map_err(
+                |error| crate::capability::CapabilityRuntimeError::RecoveryBinding {
+                    message: error.to_string(),
+                },
+            )?;
+
+        let preparation_cancellation = tokio_util::sync::CancellationToken::new();
+        let prepared = tokio::select! {
+            biased;
+            _ = self.session_cancel.cancelled() => {
+                preparation_cancellation.cancel();
+                return Err(if self.is_closed() {
+                    crate::capability::CapabilityRuntimeError::SessionClosed
+                } else {
+                    crate::capability::CapabilityRuntimeError::Cancelled
+                });
+            }
+            _ = cancellation.cancelled() => {
+                preparation_cancellation.cancel();
+                return Err(crate::capability::CapabilityRuntimeError::Cancelled);
+            }
+            result = batch.prepare_recovery_bootstrap(
+                &self.capability_catalog,
+                preparation_cancellation.clone(),
+            ) => result?,
+        };
+        self.ensure_projected_mcp_server_names_available(prepared.projection()?)
+            .await?;
+
+        let _publication = self
+            .close_handle
+            .immediate_extension_mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_closed() {
+            return Err(crate::capability::CapabilityRuntimeError::SessionClosed);
+        }
+        if cancellation.is_cancelled() || self.session_cancel.is_cancelled() {
+            return Err(crate::capability::CapabilityRuntimeError::Cancelled);
+        }
+        let command_registry = self
+            .command_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current_projection = self.capability_catalog.pin();
+        super::agent_loop_runtime::validate_capability_projection_runtime(
+            self,
+            prepared.projection()?,
+            &command_registry,
+        )?;
+        super::agent_loop_runtime::validate_capability_projection_transition(
+            self,
+            current_projection.projection(),
+            prepared.projection()?,
         )?;
         prepared.commit()
     }

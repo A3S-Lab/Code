@@ -2,6 +2,7 @@ use super::execution_state::ExecutionLoopState;
 use super::{AgentEvent, AgentLoop};
 use crate::llm::Message;
 use crate::memory::AgentMemory;
+use crate::tools::ToolContext;
 use a3s_memory::{MemoryItem, MemoryType};
 use regex::Regex;
 use serde::Deserialize;
@@ -115,16 +116,30 @@ struct TurnMemoryExtraction<'a> {
     cancel_token: &'a CancellationToken,
 }
 
+pub(super) struct TurnMemoryExtractionSchedule<'a> {
+    pub(super) state: &'a ExecutionLoopState,
+    pub(super) prompt: &'a str,
+    pub(super) response: &'a str,
+    pub(super) session_id: &'a str,
+    pub(super) event_tx: &'a Option<mpsc::Sender<AgentEvent>>,
+    pub(super) cancel_token: &'a CancellationToken,
+    pub(super) task_context: &'a ToolContext,
+}
+
 impl AgentLoop {
     pub(super) async fn schedule_turn_memory_extraction(
         &self,
-        state: &ExecutionLoopState,
-        prompt: &str,
-        response: &str,
-        session_id: &str,
-        event_tx: &Option<mpsc::Sender<AgentEvent>>,
-        cancel_token: &CancellationToken,
+        schedule: TurnMemoryExtractionSchedule<'_>,
     ) {
+        let TurnMemoryExtractionSchedule {
+            state,
+            prompt,
+            response,
+            session_id,
+            event_tx,
+            cancel_token,
+            task_context,
+        } = schedule;
         let snapshot = MemoryExtractionSnapshot::from_state(state);
         let Some(memory) = self.config.memory.as_ref() else {
             return;
@@ -142,23 +157,50 @@ impl AgentLoop {
             let prompt = prompt.to_string();
             let response = response.to_string();
             let session_id = session_id.to_string();
-            let cancel_token = cancel_token.clone();
-            tokio::spawn(async move {
-                let no_events = None;
-                agent
-                    .extract_turn_memories_with_llm(
-                        TurnMemoryExtraction {
-                            snapshot: &snapshot,
-                            prompt: &prompt,
-                            response: &response,
-                            session_id: &session_id,
-                            event_tx: &no_events,
-                            cancel_token: &cancel_token,
-                        },
-                        ticket,
-                    )
-                    .await;
-            });
+            let operation_id = uuid::Uuid::new_v4();
+            let capability_admission = task_context
+                .capability_context()
+                .map(|context| {
+                    context
+                        .admit_subtask(format!("memory-{operation_id}"), true)
+                        .map(|subtask| (context.background_scope().clone(), subtask))
+                })
+                .transpose();
+            match capability_admission {
+                Ok(Some((run, subtask))) => {
+                    let task_name = format!("memory.{operation_id}");
+                    if let Err(error) = run.spawn_task(task_name, async move {
+                        run_scoped_memory_extraction(
+                            agent, subtask, snapshot, prompt, response, session_id, ticket,
+                        )
+                        .await
+                    }) {
+                        tracing::warn!(%error, "Run-scoped memory extraction admission failed");
+                    }
+                }
+                Ok(None) => {
+                    let cancel_token = cancel_token.clone();
+                    tokio::spawn(async move {
+                        let no_events = None;
+                        agent
+                            .extract_turn_memories_with_llm(
+                                TurnMemoryExtraction {
+                                    snapshot: &snapshot,
+                                    prompt: &prompt,
+                                    response: &response,
+                                    session_id: &session_id,
+                                    event_tx: &no_events,
+                                    cancel_token: &cancel_token,
+                                },
+                                ticket,
+                            )
+                            .await;
+                    });
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "Capability memory extraction admission failed");
+                }
+            }
             return;
         }
 
@@ -282,6 +324,75 @@ impl AgentLoop {
             .await?;
         Ok(response.text())
     }
+}
+
+async fn run_scoped_memory_extraction(
+    agent: AgentLoop,
+    subtask: crate::capability::AgentCapabilitySubtask,
+    snapshot: MemoryExtractionSnapshot,
+    prompt: String,
+    response: String,
+    session_id: String,
+    ticket: crate::memory::MemoryExtractionTicket,
+) -> Result<(), crate::capability::CapabilityEffectError> {
+    let runtime = subtask.runtime();
+    let turn = match runtime.begin_turn(0) {
+        Ok(turn) => turn,
+        Err(_error) if subtask.cancellation().is_cancelled() => {
+            let _ = subtask.close().await;
+            return Ok(());
+        }
+        Err(error) => {
+            let _ = subtask.close().await;
+            return Err(crate::capability::CapabilityEffectError::new(
+                error.to_string(),
+            ));
+        }
+    };
+    let cancellation = turn.cancellation();
+    let no_events = None;
+    agent
+        .extract_turn_memories_with_llm(
+            TurnMemoryExtraction {
+                snapshot: &snapshot,
+                prompt: &prompt,
+                response: &response,
+                session_id: &session_id,
+                event_tx: &no_events,
+                cancel_token: &cancellation,
+            },
+            ticket,
+        )
+        .await;
+
+    let turn_report = turn
+        .close()
+        .await
+        .map_err(|error| crate::capability::CapabilityEffectError::new(error.to_string()))?;
+    ensure_clean_memory_scope("Turn", &turn_report)?;
+    let subtask_report = subtask
+        .close()
+        .await
+        .map_err(|error| crate::capability::CapabilityEffectError::new(error.to_string()))?;
+    ensure_clean_memory_scope("Subtask", &subtask_report)
+}
+
+fn ensure_clean_memory_scope(
+    kind: &str,
+    report: &crate::capability::ScopeCloseReport,
+) -> Result<(), crate::capability::CapabilityEffectError> {
+    if report.is_clean() {
+        return Ok(());
+    }
+    Err(crate::capability::CapabilityEffectError::new(format!(
+        "Capability memory {kind} close was incomplete (tasks failed: {}, tasks timed out: {}, child scopes failed: {}, child scopes timed out: {}, effects failed: {}, effects timed out: {})",
+        report.tasks_failed,
+        report.tasks_timed_out,
+        report.child_scopes_failed,
+        report.child_scopes_timed_out,
+        report.effects_failed,
+        report.effects_timed_out,
+    )))
 }
 
 impl ExtractedMemory {

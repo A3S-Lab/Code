@@ -223,13 +223,21 @@ pub struct SessionData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
 
-    /// Exact A3S Use cognitive-package generation bound to this session.
+    /// Exact A3S Use cognitive-package generation visible to the next Run.
     ///
     /// The provider/lease is intentionally not serialized. A resume host must
     /// inject a provider with this byte-equivalent binding; Code never resolves
-    /// a replacement or `latest` generation.
+    /// a replacement or `latest` generation. Historical Runs retain their own
+    /// exact binding on [`crate::run::RunSnapshot`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cognitive_package_binding: Option<crate::cognitive_context::CognitivePackageBindingV1>,
+
+    /// Secret-free identity of the host immutable-content authority.
+    ///
+    /// The non-serializable adapter is re-injected by the host on resume and
+    /// must carry this exact binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub immutable_content_adapter_binding: Option<crate::tools::ImmutableContentAdapterBindingV1>,
 }
 
 /// Serializable LLM configuration

@@ -3,6 +3,7 @@ use super::{
     run_lifecycle::{
         BlockingRunLifecycle, RunControlState, StreamRunLifecycle, StreamRunWorkerState,
     },
+    runtime_checkpoints::runtime_checkpoint_channel,
     runtime_events::{run_agent_event_channel, RuntimeEventSink},
     session_persistence::SessionPersistenceContext,
     AgentSession,
@@ -59,15 +60,56 @@ impl BlockingRunContext {
         prompt: &str,
         persistence: Option<SessionPersistenceContext>,
     ) -> Result<Self> {
-        let (mut agent_loop, capability_run) = build_pinned_agent_loop(session).await?;
-        let run = RunControlState::from_session(session)
-            .start_run(prompt)
-            .await;
+        let cancel_token = session.session_cancel.child_token();
+        let (agent_loop, capability_run) =
+            build_pinned_agent_loop(session, cancel_token.clone()).await?;
+        Self::from_pinned_run(
+            session,
+            prompt,
+            persistence,
+            agent_loop,
+            capability_run,
+            cancel_token,
+        )
+        .await
+    }
+
+    pub(super) async fn from_pinned_run(
+        session: &AgentSession,
+        prompt: &str,
+        persistence: Option<SessionPersistenceContext>,
+        mut agent_loop: AgentLoop,
+        capability_run: crate::capability::SessionCapabilityRun,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<Self> {
+        let cognitive_binding = super::agent_loop_runtime::cognitive_binding_for_projection(
+            session,
+            capability_run.projection(),
+        );
+        let Some(capability_binding) = agent_loop.checkpoint_capability_binding().cloned() else {
+            close_rejected_capability_run(&capability_run).await;
+            return Err(CodeError::Session(
+                "scoped Agent Run has no capability binding".into(),
+            ));
+        };
+        let run = match RunControlState::from_session(session)
+            .start_run_with_bindings(prompt, cognitive_binding, capability_binding)
+            .await
+        {
+            Ok(run) => run,
+            Err(error) => {
+                close_rejected_capability_run(&capability_run).await;
+                return Err(error);
+            }
+        };
         let run_id = run.id().to_string();
         agent_loop.set_checkpoint_run(&run_id);
+        let (checkpoint_sink, checkpoints) = runtime_checkpoint_channel(session);
+        if let Some(checkpoint_sink) = checkpoint_sink {
+            agent_loop = agent_loop.with_checkpoint_sink(checkpoint_sink);
+        }
         let (runtime_tx, runtime_rx) = mpsc::channel(2048);
         let lifecycle = BlockingRunLifecycle::from_session(session, &run_id, persistence);
-        let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;
         let (agent_event_tx, agent_event_barrier, agent_events) = run_agent_event_channel(2048);
         let invocation = agent_loop
@@ -78,8 +120,11 @@ impl BlockingRunContext {
                 cancel_token,
             )
             .with_agent_events(agent_event_tx, agent_event_barrier);
-        let runtime_collector = RuntimeEventSink::from_session(session, &run_id)
-            .spawn_collector(runtime_rx, Some(agent_events));
+        let runtime_collector = RuntimeEventSink::from_session(session, &run_id).spawn_collector(
+            runtime_rx,
+            Some(agent_events),
+            Some(checkpoints),
+        );
 
         Ok(Self {
             agent_loop,
@@ -170,16 +215,36 @@ impl StreamRunContext {
         prompt: &str,
         persistence: Option<SessionPersistenceContext>,
     ) -> Result<Self> {
-        let (agent_loop, capability_run) = build_pinned_agent_loop(session).await?;
-        let run = RunControlState::from_session(session)
-            .start_run(prompt)
-            .await;
+        let cancel_token = session.session_cancel.child_token();
+        let (agent_loop, capability_run) =
+            build_pinned_agent_loop(session, cancel_token.clone()).await?;
+        let cognitive_binding = super::agent_loop_runtime::cognitive_binding_for_projection(
+            session,
+            capability_run.projection(),
+        );
+        let Some(capability_binding) = agent_loop.checkpoint_capability_binding().cloned() else {
+            close_rejected_capability_run(&capability_run).await;
+            return Err(CodeError::Session(
+                "scoped Agent Run has no capability binding".into(),
+            ));
+        };
+        let run = match RunControlState::from_session(session)
+            .start_run_with_bindings(prompt, cognitive_binding, capability_binding)
+            .await
+        {
+            Ok(run) => run,
+            Err(error) => {
+                close_rejected_capability_run(&capability_run).await;
+                return Err(error);
+            }
+        };
         Ok(Self::for_prepared_run(
             session,
             run.id().to_string(),
             persistence,
             agent_loop,
             capability_run,
+            cancel_token,
         )
         .await)
     }
@@ -189,8 +254,60 @@ impl StreamRunContext {
         run_id: String,
         persistence: Option<SessionPersistenceContext>,
     ) -> Result<Self> {
-        let (agent_loop, capability_run) = build_pinned_agent_loop(session).await?;
-        Ok(Self::for_prepared_run(session, run_id, persistence, agent_loop, capability_run).await)
+        let cancel_token = session.session_cancel.child_token();
+        let (agent_loop, capability_run) =
+            build_pinned_agent_loop(session, cancel_token.clone()).await?;
+        Self::from_pinned_run(
+            session,
+            run_id,
+            persistence,
+            agent_loop,
+            capability_run,
+            cancel_token,
+        )
+        .await
+    }
+
+    pub(super) async fn from_pinned_run(
+        session: &AgentSession,
+        run_id: String,
+        persistence: Option<SessionPersistenceContext>,
+        agent_loop: AgentLoop,
+        capability_run: crate::capability::SessionCapabilityRun,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<Self> {
+        let Some(capability_binding) = agent_loop.checkpoint_capability_binding().cloned() else {
+            close_rejected_capability_run(&capability_run).await;
+            return Err(CodeError::Session(
+                "scoped Agent Run has no capability binding".into(),
+            ));
+        };
+        let run_control = RunControlState::from_session(session);
+        if let Err(error) = run_control
+            .bind_capability_generation(&run_id, capability_binding)
+            .await
+        {
+            close_rejected_capability_run(&capability_run).await;
+            return Err(error);
+        }
+        if let Some(binding) = super::agent_loop_runtime::cognitive_binding_for_projection(
+            session,
+            capability_run.projection(),
+        ) {
+            if let Err(error) = run_control.bind_cognitive_package(&run_id, binding).await {
+                close_rejected_capability_run(&capability_run).await;
+                return Err(error);
+            }
+        }
+        Ok(Self::for_prepared_run(
+            session,
+            run_id,
+            persistence,
+            agent_loop,
+            capability_run,
+            cancel_token,
+        )
+        .await)
     }
 
     async fn for_prepared_run(
@@ -199,12 +316,16 @@ impl StreamRunContext {
         persistence: Option<SessionPersistenceContext>,
         mut agent_loop: AgentLoop,
         capability_run: crate::capability::SessionCapabilityRun,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
         let (tx, rx) = mpsc::channel(256);
         let (runtime_tx, runtime_rx) = mpsc::channel(256);
         agent_loop.set_checkpoint_run(&run_id);
+        let (checkpoint_sink, checkpoints) = runtime_checkpoint_channel(session);
+        if let Some(checkpoint_sink) = checkpoint_sink {
+            agent_loop = agent_loop.with_checkpoint_sink(checkpoint_sink);
+        }
         let lifecycle = StreamRunLifecycle::from_session(session, &run_id, persistence);
-        let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;
         let (agent_event_tx, agent_event_barrier, agent_events) = run_agent_event_channel(2048);
         let invocation = agent_loop
@@ -220,6 +341,7 @@ impl StreamRunContext {
             runtime_rx,
             tx,
             Some(agent_events),
+            Some(checkpoints),
         );
 
         Self {
@@ -306,6 +428,12 @@ impl StreamRunContext {
         });
         let (lifecycle, worker_aborts) = lifecycle.wrap(handle, forwarder);
         (rx, lifecycle, worker_aborts)
+    }
+}
+
+async fn close_rejected_capability_run(run: &crate::capability::SessionCapabilityRun) {
+    if let Err(error) = run.close().await {
+        tracing::warn!(error = %error, "Capability Run close failed after Run binding rejection");
     }
 }
 

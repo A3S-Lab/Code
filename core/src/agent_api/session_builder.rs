@@ -179,6 +179,11 @@ fn finish_agent_session(
     session_cancel: tokio_util::sync::CancellationToken,
 ) -> Result<AgentSession> {
     let opts = &resolved.options;
+    let host_context_provider_names = opts
+        .context_providers
+        .iter()
+        .map(|provider| provider.name().to_owned())
+        .collect();
     let llm_client = Arc::clone(&resolved.llm_client);
     let model_generation_admission =
         crate::llm::ModelGenerationAdmission::new(llm_client.model_generation_concurrency());
@@ -337,12 +342,14 @@ fn finish_agent_session(
             .clone()
             .unwrap_or_default(),
         cognitive_context: opts.cognitive_context.clone(),
+        host_context_provider_names,
         workspace: canonical,
         session_id,
         history: Arc::new(RwLock::new(Vec::new())),
         run_admission,
         command_queue,
         session_store,
+        session_checkpoint_export_sink: opts.session_checkpoint_export_sink.clone(),
         persistence_state: Arc::new(RwLock::new(
             super::session_persistence::SessionPersistenceState::default(),
         )),

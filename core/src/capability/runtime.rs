@@ -97,6 +97,8 @@ pub enum CapabilityRuntimeError {
         public_name: String,
         message: String,
     },
+    #[error("Session recovery capability binding is unavailable: {message}")]
+    RecoveryBinding { message: String },
     #[error(
         "Capability Run close was incomplete (tasks failed: {tasks_failed}, tasks timed out: {tasks_timed_out}, child scopes failed: {child_scopes_failed}, child scopes timed out: {child_scopes_timed_out}, effects failed: {effects_failed}, effects timed out: {effects_timed_out})"
     )]
@@ -110,7 +112,8 @@ pub enum CapabilityRuntimeError {
     },
 }
 
-/// One complete next-generation Tool/Skill/Agent/Command/Hook/MCP projection for a Session.
+/// One complete next-generation Tool/Skill/Agent/Command/Hook/MCP/Flow/
+/// Knowledge Surface/Knowledge/UI/Context projection for a Session.
 ///
 /// The batch owns every adapter before preparation starts. A Use-backed batch
 /// also owns the generation-specific lease provider that will be published in
@@ -235,6 +238,28 @@ impl SessionCapabilityBatch {
             use_lease_provider,
         })
     }
+
+    pub(crate) async fn prepare_recovery_bootstrap(
+        self,
+        catalog: &CapabilityCatalog,
+        cancellation: CancellationToken,
+    ) -> Result<PreparedSessionCapabilityBatch, CapabilityRuntimeError> {
+        let Self {
+            target,
+            staged,
+            use_lease_provider,
+        } = self;
+        let mut transaction: CapabilityTxn<Staged> = catalog.begin_recovery_bootstrap(target)?;
+        for (id, adapter) in staged {
+            transaction.stage_boxed(id, adapter)?;
+        }
+        let transaction: CapabilityTxn<Prepared> = transaction.prepare(cancellation).await?;
+        let transaction: CapabilityTxn<Validated> = transaction.validate()?;
+        Ok(PreparedSessionCapabilityBatch {
+            transaction,
+            use_lease_provider,
+        })
+    }
 }
 
 impl fmt::Debug for SessionCapabilityBatch {
@@ -293,10 +318,15 @@ impl SessionCapabilityRun {
             return Err(CapabilityRuntimeError::Cancelled);
         }
         let set = projection.projection().set();
-        let session_scope = CapabilityScope::new_session(
+        // The host invocation token is the cancellation-tree root, not a
+        // resource owned by capability teardown. The Session owns a child so
+        // host cancellation still cascades downward, while normal Run close
+        // cannot make a successfully completed host lifecycle look cancelled.
+        let session_scope = CapabilityScope::new_session_with_cancellation(
             session_local_id,
             Arc::clone(projection.projection().set_arc()),
             ceiling.clone(),
+            cancellation.child_token(),
         )?;
 
         let run_scope = match set.use_capability_generation() {
@@ -383,6 +413,11 @@ fn validate_session_kinds(target: &CapabilitySet) -> Result<(), CapabilityRuntim
                 | CapabilityKind::Command
                 | CapabilityKind::Hook
                 | CapabilityKind::Mcp
+                | CapabilityKind::Flow
+                | CapabilityKind::KnowledgeSurface
+                | CapabilityKind::Knowledge
+                | CapabilityKind::Ui
+                | CapabilityKind::Context
         ) {
             return Err(CapabilityRuntimeError::UnsupportedSessionKind {
                 kind: descriptor.id().kind(),

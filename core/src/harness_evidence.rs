@@ -1,9 +1,10 @@
-//! Bounded, content-addressed evidence for model-visible run capabilities and
-//! provider-neutral model input.
+//! Bounded, content-addressed evidence for governed Tool requests,
+//! model-visible run capabilities, and provider-neutral model input.
 //!
 //! The snapshots in this module deliberately retain only counters, stable
-//! capability facts, and domain-separated digests. They never retain prompt
-//! text, Tool output, source text, vectors, credentials, or provider endpoints.
+//! capability facts, and domain-separated digests. They never retain Tool
+//! arguments, prompt text, Tool output, source text, vectors, credentials, or
+//! provider endpoints.
 
 use crate::workspace::{WorkspaceCapabilities, WorkspaceRetrievalPhase};
 use serde::{Deserialize, Serialize};
@@ -14,10 +15,14 @@ mod input;
 mod source;
 #[cfg(test)]
 mod tests;
+mod tool_request;
 mod usage;
 
 use digest::{measure, require_digest, require_optional_digest};
 pub(crate) use source::{ModelCallObservation, RunCapabilityEvidenceSource};
+pub use tool_request::{
+    ToolRequestOriginV1, ToolRequestSnapshotV1, TOOL_REQUEST_SNAPSHOT_V1_SCHEMA,
+};
 pub(crate) use usage::ModelUsageBinding;
 pub use usage::{ModelUsageSnapshotV1, ToolResultContextUsageV1, MODEL_USAGE_SNAPSHOT_V1_SCHEMA};
 

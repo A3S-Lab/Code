@@ -170,6 +170,46 @@ impl CapabilityCatalog {
             _state: PhantomData,
         })
     }
+
+    /// Start a one-time recovery transaction from the untouched empty catalog
+    /// to an exact historical generation. This is intentionally separate from
+    /// ordinary N -> N+1 publication and is only usable before the Session has
+    /// published any scoped capability generation.
+    pub(crate) fn begin_recovery_bootstrap(
+        &self,
+        target: Arc<CapabilitySet>,
+    ) -> Result<CapabilityTxn<Staged>, CapabilityProjectionError> {
+        let current = self.pin();
+        let current_set = current.projection().set();
+        if current_set.generation().get() != 0 || !current_set.is_empty() {
+            return Err(CapabilityProjectionError::BootstrapUnavailable {
+                actual_generation: current_set.generation().get(),
+                actual_capabilities: current_set.len(),
+            });
+        }
+        if target.generation().get() == 0 {
+            return Err(CapabilityProjectionError::BootstrapTargetGeneration {
+                actual: target.generation().get(),
+            });
+        }
+        let base = current.stamp().clone();
+        drop(current);
+        let readiness = Arc::new(CapabilityReadinessPlan::from_set(&target)?);
+        Ok(CapabilityTxn {
+            body: Some(TransactionBody {
+                catalog: Arc::clone(&self.inner),
+                base,
+                target,
+                readiness,
+                effects: Vec::new(),
+                rollback_armed: true,
+            }),
+            staged: BTreeMap::new(),
+            prepared: BTreeMap::new(),
+            projection: None,
+            _state: PhantomData,
+        })
+    }
 }
 
 impl CapabilityTxn<Staged> {

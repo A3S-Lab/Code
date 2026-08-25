@@ -259,6 +259,9 @@ pub struct ToolContext {
     /// cancellation interrupts queued and directly executing tools as well as
     /// model calls.
     cancellation: CancellationToken,
+    /// Weak spatial parents for effects and delegated work created by the
+    /// current Agent Turn. Handles never retain a capability generation.
+    capability_context: Option<crate::capability::AgentToolCapabilityContext>,
     /// Orchestrator call stack used to reject recursive `batch` / `program` calls.
     invocation_stack: Vec<String>,
     /// True while a queue worker owns this invocation scope.
@@ -337,6 +340,13 @@ impl std::fmt::Debug for ToolContext {
             )
             .field("host_direct_policy", &self.host_direct_policy)
             .field("cancelled", &self.cancellation.is_cancelled())
+            .field(
+                "capability_scope_id",
+                &self
+                    .capability_context
+                    .as_ref()
+                    .map(crate::capability::AgentToolCapabilityContext::foreground_scope_id),
+            )
             .field("invocation_stack", &self.invocation_stack)
             .field("inside_tool_queue", &self.inside_tool_queue)
             .finish()
@@ -384,6 +394,7 @@ impl ToolContext {
             model_generation_permit: None,
             host_direct_policy: None,
             cancellation: CancellationToken::new(),
+            capability_context: None,
             invocation_stack: Vec::new(),
             inside_tool_queue: false,
         }
@@ -550,6 +561,46 @@ impl ToolContext {
     /// Cancellation token for cooperative tools and invocation gateways.
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
+    }
+
+    /// Canonical capability Turn identity for this Tool invocation.
+    pub fn capability_scope_id(&self) -> Option<&str> {
+        self.capability_context
+            .as_ref()
+            .map(crate::capability::AgentToolCapabilityContext::foreground_scope_id)
+    }
+
+    /// Transfer a reversible Tool-owned effect into the current Agent Turn.
+    ///
+    /// The effect closes after every Tool call produced by that model response
+    /// has settled. Plain host-direct Tool contexts fail closed because they do
+    /// not own an Agent Turn.
+    pub fn register_capability_effect<E>(
+        &self,
+        effect: E,
+    ) -> std::result::Result<(), crate::capability::CapabilityScopeError>
+    where
+        E: crate::capability::CapabilityEffect,
+    {
+        let context = self
+            .capability_context
+            .as_ref()
+            .ok_or(crate::capability::CapabilityScopeError::AgentTurnScopeUnavailable)?;
+        context.register_foreground_effect(effect)
+    }
+
+    pub(crate) fn with_capability_context(
+        mut self,
+        context: crate::capability::AgentToolCapabilityContext,
+    ) -> Self {
+        self.capability_context = Some(context);
+        self
+    }
+
+    pub(crate) fn capability_context(
+        &self,
+    ) -> Option<crate::capability::AgentToolCapabilityContext> {
+        self.capability_context.clone()
     }
 
     /// Whether the owning invocation has already been cancelled.

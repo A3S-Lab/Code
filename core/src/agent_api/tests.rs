@@ -3,6 +3,8 @@ use crate::config::{ModelConfig, ModelModalities, ProviderConfig};
 use crate::llm::{ContentBlock, LlmResponse, StreamEvent, TokenUsage};
 use crate::store::SessionStore;
 
+mod checkpoint_capability_recovery;
+
 #[derive(Clone)]
 struct StaticStreamingClient {
     text: String,
@@ -4300,6 +4302,7 @@ async fn test_completed_run_clears_its_loop_checkpoint() {
                 schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
                 run_id: predicted_run_id.to_string(),
                 session_id: "ckpt-clear-session".to_string(),
+                capability_binding: None,
                 turn: 1,
                 messages: vec![Message::user("seed")],
                 total_usage: crate::llm::TokenUsage::default(),
@@ -4372,6 +4375,7 @@ async fn test_resume_run_picks_up_from_persisted_checkpoint() {
         schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
         run_id: seeded_run_id.to_string(),
         session_id: "resume-run-target".to_string(),
+        capability_binding: None,
         turn: 1,
         messages: seeded_messages.clone(),
         total_usage: crate::llm::TokenUsage {
@@ -4465,6 +4469,7 @@ async fn test_resume_run_preserves_exhausted_tool_budget_for_finalization() {
         schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
         run_id: checkpoint_run_id.to_string(),
         session_id: "resume-budget-target".to_string(),
+        capability_binding: None,
         turn: 2,
         messages: vec![Message::user("continue")],
         total_usage: Default::default(),
@@ -4520,6 +4525,7 @@ async fn test_resume_run_rejects_checkpoint_owned_by_another_session() {
         schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
         run_id: run_id.to_string(),
         session_id: "foreign-session".to_string(),
+        capability_binding: None,
         turn: 1,
         messages: vec![Message::user("private foreign transcript")],
         total_usage: crate::llm::TokenUsage::default(),

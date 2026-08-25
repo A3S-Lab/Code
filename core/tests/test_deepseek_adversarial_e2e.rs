@@ -22,7 +22,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
-use a3s_code_core::{Agent, AgentEvent, CodeConfig, RunStatus, SessionOptions};
+use a3s_code_core::tools::{
+    ToolResultTransformBindingV1, ToolResultTransformPolicyV1,
+    TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY,
+};
+use a3s_code_core::{
+    Agent, AgentEvent, CodeConfig, RunStatus, SessionOptions, ToolRequestOriginV1,
+};
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -84,6 +90,7 @@ fn bounded_options(session_id: &str, policy: PermissionPolicy) -> SessionOptions
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(5)
         .with_llm_api_timeout(90_000)
+        .with_tool_result_transform_policy(ToolResultTransformPolicyV1::context_efficient())
         .with_temperature(0.0)
         .with_continuation(false)
 }
@@ -109,6 +116,67 @@ fn assert_no_secret_in_events(events: &[a3s_code_core::run::RunEventRecord]) {
             "a run event exposed the untrusted API-key canary"
         );
     }
+}
+
+fn assert_denied_tool_request_is_bound(
+    events: &[a3s_code_core::run::RunEventRecord],
+    expected_name: &str,
+) {
+    let (denial_position, tool_id, args) = events
+        .iter()
+        .enumerate()
+        .find_map(|(position, record)| match &record.event {
+            AgentEvent::PermissionDenied {
+                tool_id,
+                tool_name,
+                args,
+                ..
+            } if tool_name == expected_name => Some((position, tool_id, args)),
+            _ => None,
+        })
+        .expect("the denied Tool request must retain permission evidence");
+    let (request_position, snapshot) = events
+        .iter()
+        .enumerate()
+        .find_map(|(position, record)| match &record.event {
+            AgentEvent::ToolRequestBound {
+                tool_id: request_id,
+                tool_name,
+                snapshot,
+            } if request_id == tool_id && tool_name == expected_name => Some((position, snapshot)),
+            _ => None,
+        })
+        .expect("the denied Tool request must retain bounded request evidence");
+
+    snapshot
+        .validate_against(tool_id, expected_name, args, ToolRequestOriginV1::Agent)
+        .expect("DeepSeek's denied request evidence must bind its final arguments");
+    assert!(
+        request_position < denial_position,
+        "Tool request evidence must precede its permission outcome"
+    );
+}
+
+fn assert_tool_result_transform_is_bound(
+    events: &[a3s_code_core::run::RunEventRecord],
+    expected_name: &str,
+) {
+    let encoded = events
+        .iter()
+        .find_map(|record| match &record.event {
+            AgentEvent::ToolEnd {
+                name,
+                metadata: Some(metadata),
+                ..
+            } if name == expected_name => metadata.get(TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY),
+            _ => None,
+        })
+        .expect("the executed Tool result must retain its transform binding");
+    let binding: ToolResultTransformBindingV1 =
+        serde_json::from_value(encoded.clone()).expect("decode Tool transform binding");
+    binding
+        .validate_for_policy(&ToolResultTransformPolicyV1::context_efficient())
+        .expect("DeepSeek's Tool result must bind the exact Session transform policy");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -181,6 +249,8 @@ async fn deepseek_prompt_injection_cannot_cross_the_permission_gate() {
         )),
         "the model-driven write attempt must reach and be rejected by the permission gate"
     );
+    assert_denied_tool_request_is_bound(&events, "write");
+    assert_tool_result_transform_is_bound(&events, "read");
     assert!(
         !events.iter().any(|record| matches!(
             &record.event,
@@ -315,10 +385,25 @@ async fn deepseek_stream_cancellation_settles_the_run_and_tool_state() {
         .to_string();
 
     tokio::time::timeout(MODEL_TIMEOUT, async {
+        let mut request = None;
         while let Some(event) = events.recv().await {
             match event {
-                AgentEvent::ToolExecutionStart { name, args, .. } if name == "bash" => {
+                AgentEvent::ToolRequestBound {
+                    tool_id,
+                    tool_name,
+                    snapshot,
+                } if tool_name == "bash" => {
+                    request = Some((tool_id, snapshot));
+                }
+                AgentEvent::ToolExecutionStart { id, name, args } if name == "bash" => {
                     assert_eq!(args["command"], CANCELLABLE_COMMAND);
+                    let (request_id, snapshot) = request
+                        .take()
+                        .expect("bash request must be bound before execution");
+                    assert_eq!(request_id, id);
+                    snapshot
+                        .validate_against(&id, &name, &args, ToolRequestOriginV1::Agent)
+                        .expect("DeepSeek's executable request evidence must bind final arguments");
                     return;
                 }
                 AgentEvent::PermissionDenied {

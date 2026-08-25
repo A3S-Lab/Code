@@ -65,6 +65,13 @@ pub struct LoopCheckpoint {
     /// for store layouts that key by `(session_id, run_id)`.
     pub session_id: String,
 
+    /// Exact immutable capability catalog and authority ceiling admitted for
+    /// the source Run. Pre-binding checkpoints omit this field and retain the
+    /// legacy latest-catalog recovery behavior; newly emitted checkpoints bind
+    /// it and fail closed on generation drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_binding: Option<crate::capability::RunCapabilityBindingV1>,
+
     /// 1-based tool round counter at checkpoint time.
     /// `0` is reserved for "no rounds completed yet".
     pub turn: usize,
@@ -120,6 +127,14 @@ impl LoopCheckpoint {
                 self.schema_version,
                 LOOP_CHECKPOINT_SCHEMA_VERSION
             );
+        }
+        if let Some(binding) = &self.capability_binding {
+            binding.validate().map_err(|error| {
+                anyhow::anyhow!(
+                    "loop checkpoint for run {} has an invalid capability binding: {error}",
+                    self.run_id
+                )
+            })?;
         }
         Ok(())
     }
@@ -227,6 +242,7 @@ mod tests {
             schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
             run_id: run_id.to_string(),
             session_id: "session-1".to_string(),
+            capability_binding: None,
             turn,
             messages: vec![Message::user("hi")],
             total_usage: TokenUsage::default(),

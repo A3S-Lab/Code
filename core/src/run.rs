@@ -48,6 +48,16 @@ pub struct RunSnapshot {
     pub session_id: String,
     pub status: RunStatus,
     pub prompt: String,
+    /// Exact cognitive Knowledge binding frozen at Run admission.
+    ///
+    /// The non-serializable provider and query lease stay in the Run-owned
+    /// capability projection. This identity remains durable even when old
+    /// events are FIFO-trimmed or the Session catalog advances.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cognitive_package_binding: Option<crate::cognitive_context::CognitivePackageBindingV1>,
+    /// Complete scoped capability identity frozen at Run admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_binding: Option<crate::capability::RunCapabilityBindingV1>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,6 +130,41 @@ pub struct RunEventPage {
     pub has_more: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RunCognitiveBindingError {
+    #[error("run was not found")]
+    RunNotFound,
+    #[error("cognitive binding is invalid: {0}")]
+    InvalidBinding(String),
+    #[error("run has already crossed its cognitive binding admission boundary")]
+    AlreadyObserved,
+    #[error("run cognitive binding conflicts with immutable admission evidence")]
+    Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RunCapabilityAdmissionError {
+    #[error("run was not found")]
+    RunNotFound,
+    #[error("capability binding is invalid: {0}")]
+    InvalidBinding(String),
+    #[error("run has already crossed its capability binding admission boundary")]
+    AlreadyObserved,
+    #[error("run capability binding conflicts with immutable admission evidence")]
+    Conflict,
+}
+
+/// One atomic read generation of a run snapshot and its retained event page.
+///
+/// The protocol host uses this internal projection so a concurrent event
+/// cannot be observed in the page while its state and logical timestamp still
+/// come from an older snapshot.
+#[derive(Debug, Clone)]
+pub(crate) struct RunEventObservation {
+    pub(crate) snapshot: RunSnapshot,
+    pub(crate) page: RunEventPage,
+}
+
 #[derive(Debug, Default)]
 struct RetainedRunEvents {
     records: Vec<RunEventRecord>,
@@ -134,6 +179,8 @@ impl RunSnapshot {
             session_id,
             status: RunStatus::Created,
             prompt,
+            cognitive_package_binding: None,
+            capability_binding: None,
             created_at_ms: now,
             updated_at_ms: now,
             result_text: None,
@@ -282,9 +329,13 @@ impl InMemoryRunStore {
         // capped buffer is full it remains constant and would reuse the
         // same sequence for every subsequent event.
         let sequence = run.event_count;
+        // Wall clocks may move backwards and persisted runs may come from a
+        // host whose clock was ahead. Keep Code's run-local observation time
+        // monotonic so event-page validation and replay never regress.
+        let timestamp_ms = now_ms().max(run.updated_at_ms);
         let record = RunEventRecord {
             sequence,
-            timestamp_ms: now_ms(),
+            timestamp_ms,
             event: event.clone(),
         };
         run_events.serialized_bytes = run_events
@@ -298,7 +349,7 @@ impl InMemoryRunStore {
         );
         apply_event_to_snapshot(run, &event);
         run.event_count += 1;
-        run.updated_at_ms = now_ms();
+        run.updated_at_ms = timestamp_ms;
         Some(run.clone())
     }
 
@@ -310,7 +361,7 @@ impl InMemoryRunStore {
         }
         run.status = RunStatus::Failed;
         run.error = Some(error.into());
-        run.updated_at_ms = now_ms();
+        run.updated_at_ms = now_ms().max(run.updated_at_ms);
         Some(run.clone())
     }
 
@@ -318,12 +369,67 @@ impl InMemoryRunStore {
         let mut runs = self.runs.write().await;
         let run = runs.get_mut(run_id)?;
         run.status = RunStatus::Cancelled;
-        run.updated_at_ms = now_ms();
+        run.updated_at_ms = now_ms().max(run.updated_at_ms);
         Some(run.clone())
     }
 
     pub async fn snapshot(&self, run_id: &str) -> Option<RunSnapshot> {
         self.runs.read().await.get(run_id).cloned()
+    }
+
+    /// Bind the exact cognitive generation before the Run can emit events.
+    /// Exact replay is idempotent; late or conflicting writes fail closed.
+    pub async fn bind_cognitive_package(
+        &self,
+        run_id: &str,
+        binding: crate::cognitive_context::CognitivePackageBindingV1,
+    ) -> Result<RunSnapshot, RunCognitiveBindingError> {
+        binding
+            .validate()
+            .map_err(|error| RunCognitiveBindingError::InvalidBinding(error.to_string()))?;
+        let mut runs = self.runs.write().await;
+        let run = runs
+            .get_mut(run_id)
+            .ok_or(RunCognitiveBindingError::RunNotFound)?;
+        match &run.cognitive_package_binding {
+            Some(existing) if existing == &binding => return Ok(run.clone()),
+            Some(_) => return Err(RunCognitiveBindingError::Conflict),
+            None => {}
+        }
+        if run.event_count != 0 || run.status != RunStatus::Created {
+            return Err(RunCognitiveBindingError::AlreadyObserved);
+        }
+        run.cognitive_package_binding = Some(binding);
+        run.updated_at_ms = now_ms().max(run.updated_at_ms);
+        Ok(run.clone())
+    }
+
+    /// Bind the complete scoped capability identity before the Run can emit
+    /// events. Exact replay is idempotent; late or conflicting writes fail
+    /// closed.
+    pub async fn bind_capability_generation(
+        &self,
+        run_id: &str,
+        binding: crate::capability::RunCapabilityBindingV1,
+    ) -> Result<RunSnapshot, RunCapabilityAdmissionError> {
+        binding
+            .validate()
+            .map_err(|error| RunCapabilityAdmissionError::InvalidBinding(error.to_string()))?;
+        let mut runs = self.runs.write().await;
+        let run = runs
+            .get_mut(run_id)
+            .ok_or(RunCapabilityAdmissionError::RunNotFound)?;
+        match &run.capability_binding {
+            Some(existing) if existing == &binding => return Ok(run.clone()),
+            Some(_) => return Err(RunCapabilityAdmissionError::Conflict),
+            None => {}
+        }
+        if run.event_count != 0 || run.status != RunStatus::Created {
+            return Err(RunCapabilityAdmissionError::AlreadyObserved);
+        }
+        run.capability_binding = Some(binding);
+        run.updated_at_ms = now_ms().max(run.updated_at_ms);
+        Ok(run.clone())
     }
 
     /// Bind one immutable workspace change set to an already terminal run.
@@ -368,40 +474,26 @@ impl InMemoryRunStore {
         after_sequence: Option<usize>,
         limit: usize,
     ) -> Option<RunEventPage> {
+        self.event_observation(run_id, after_sequence, limit)
+            .await
+            .map(|observation| observation.page)
+    }
+
+    /// Read the run snapshot and retained event page under one lock generation.
+    pub(crate) async fn event_observation(
+        &self,
+        run_id: &str,
+        after_sequence: Option<usize>,
+        limit: usize,
+    ) -> Option<RunEventObservation> {
         // Match the canonical events -> runs lock order used by record_event.
         let events = self.events.read().await;
         let runs = self.runs.read().await;
         let retained = events.get(run_id)?;
         let run = runs.get(run_id)?;
-        let first_available_sequence = retained.records.first().map(|event| event.sequence);
-        let requested_start = match after_sequence {
-            Some(sequence) => sequence.saturating_add(1),
-            None => 0,
-        };
-        let retention_gap = if requested_start >= run.event_count {
-            false
-        } else {
-            first_available_sequence
-                .map(|first| requested_start < first)
-                .unwrap_or(true)
-        };
-        let mut matching = retained
-            .records
-            .iter()
-            .filter(|event| after_sequence.is_none_or(|cursor| event.sequence > cursor));
-        let page_events = matching.by_ref().take(limit).cloned().collect::<Vec<_>>();
-        let has_more = matching.next().is_some();
-        let next_after_sequence = page_events
-            .last()
-            .map(|event| event.sequence)
-            .or(after_sequence);
-        Some(RunEventPage {
-            events: page_events,
-            first_available_sequence,
-            latest_sequence_exclusive: run.event_count,
-            next_after_sequence,
-            retention_gap,
-            has_more,
+        Some(RunEventObservation {
+            snapshot: run.clone(),
+            page: retained_event_page(retained, run, after_sequence, limit),
         })
     }
 
@@ -488,6 +580,43 @@ impl InMemoryRunStore {
         *stored_runs = run_map;
         *stored_events = event_map;
         *stored_order = order;
+    }
+}
+
+fn retained_event_page(
+    retained: &RetainedRunEvents,
+    run: &RunSnapshot,
+    after_sequence: Option<usize>,
+    limit: usize,
+) -> RunEventPage {
+    let first_available_sequence = retained.records.first().map(|event| event.sequence);
+    let requested_start = after_sequence
+        .map(|sequence| sequence.saturating_add(1))
+        .unwrap_or(0);
+    let retention_gap = if requested_start >= run.event_count {
+        false
+    } else {
+        first_available_sequence
+            .map(|first| requested_start < first)
+            .unwrap_or(true)
+    };
+    let mut matching = retained
+        .records
+        .iter()
+        .filter(|event| after_sequence.is_none_or(|cursor| event.sequence > cursor));
+    let page_events = matching.by_ref().take(limit).cloned().collect::<Vec<_>>();
+    let has_more = matching.next().is_some();
+    let next_after_sequence = page_events
+        .last()
+        .map(|event| event.sequence)
+        .or(after_sequence);
+    RunEventPage {
+        events: page_events,
+        first_available_sequence,
+        latest_sequence_exclusive: run.event_count,
+        next_after_sequence,
+        retention_gap,
+        has_more,
     }
 }
 
@@ -1105,6 +1234,29 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
+    fn cognitive_binding() -> crate::cognitive_context::CognitivePackageBindingV1 {
+        let generation_digest =
+            "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20";
+        let knowledge = crate::cognitive_context::CognitiveKnowledgeBindingV1::new(
+            "domain-knowledge",
+            "0.2",
+            "sha256:1def786da6d190b7b3ce0176e71d99ff1cac3f8c8cc7c0f8b76a893c544e7a90",
+            7,
+            generation_digest,
+        )
+        .unwrap();
+        crate::cognitive_context::CognitivePackageBindingV1::new(
+            "contra-sense/handbook",
+            "0.1.0",
+            7,
+            generation_digest,
+            "sha256:1e0f0a0162f5b290887ade8886af69fbba4548c863df026178e3550c77813455",
+            knowledge,
+            crate::cognitive_context::CognitiveContextLimits::default(),
+        )
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn run_store_tracks_status_and_events() {
         let store = InMemoryRunStore::new();
@@ -1137,6 +1289,130 @@ mod tests {
         assert_eq!(snapshot.result_text.as_deref(), Some("done"));
         assert_eq!(snapshot.event_count, 2);
         assert_eq!(store.events(&run.id).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn cognitive_binding_is_exact_idempotent_and_pre_observation_only() {
+        let store = InMemoryRunStore::new();
+        let run = store.create_run("session-1", "query knowledge").await;
+        let binding = cognitive_binding();
+
+        let bound = store
+            .bind_cognitive_package(&run.id, binding.clone())
+            .await
+            .unwrap();
+        assert_eq!(bound.cognitive_package_binding.as_ref(), Some(&binding));
+        store
+            .bind_cognitive_package(&run.id, binding.clone())
+            .await
+            .expect("exact binding replay is idempotent");
+
+        let mut conflict = binding.clone();
+        conflict.limits.max_results -= 1;
+        conflict.validate().unwrap();
+        assert!(matches!(
+            store.bind_cognitive_package(&run.id, conflict).await,
+            Err(RunCognitiveBindingError::Conflict)
+        ));
+
+        let late = store.create_run("session-1", "late binding").await;
+        store
+            .record_event(
+                &late.id,
+                AgentEvent::Start {
+                    prompt: "late binding".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.bind_cognitive_package(&late.id, binding).await,
+            Err(RunCognitiveBindingError::AlreadyObserved)
+        ));
+    }
+
+    #[tokio::test]
+    async fn event_observation_keeps_snapshot_and_page_in_one_generation() {
+        let store = InMemoryRunStore::new();
+        let run = store.create_run("session-1", "observe exactly").await;
+        store
+            .record_event(
+                &run.id,
+                AgentEvent::End {
+                    text: "done".to_string(),
+                    usage: Default::default(),
+                    verification_summary: Box::new(
+                        crate::verification::VerificationSummary::from_reports(&[]),
+                    ),
+                    meta: None,
+                },
+            )
+            .await;
+
+        let observation = store
+            .event_observation(&run.id, None, 64)
+            .await
+            .expect("known run observation");
+
+        assert_eq!(observation.snapshot.status, RunStatus::Completed);
+        assert_eq!(
+            observation.snapshot.event_count,
+            observation.page.latest_sequence_exclusive
+        );
+        assert!(observation
+            .page
+            .events
+            .iter()
+            .all(|event| event.timestamp_ms <= observation.snapshot.updated_at_ms));
+        assert!(store
+            .event_observation("missing-run", None, 64)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn restored_logical_time_cannot_regress_new_event_observations() {
+        let source = InMemoryRunStore::new();
+        let run = source.create_run("session-1", "resume exactly").await;
+        let failed_run = source.create_run("session-1", "fail exactly").await;
+        let mut records = source.records().await;
+        let persisted_time = now_ms().saturating_add(60_000);
+        for record in &mut records {
+            record.snapshot.updated_at_ms = persisted_time;
+        }
+
+        let restored = InMemoryRunStore::new();
+        restored.replace_records(records).await;
+        restored
+            .record_event(
+                &run.id,
+                AgentEvent::TextDelta {
+                    text: "after recovery".to_string(),
+                },
+            )
+            .await;
+
+        let observation = restored
+            .event_observation(&run.id, None, 64)
+            .await
+            .expect("restored run observation");
+        assert!(observation.snapshot.updated_at_ms >= persisted_time);
+        assert!(observation
+            .page
+            .events
+            .iter()
+            .all(|event| event.timestamp_ms >= persisted_time));
+
+        let cancelled = restored
+            .mark_cancelled(&run.id)
+            .await
+            .expect("restored run cancellation");
+        assert!(cancelled.updated_at_ms >= persisted_time);
+        let failed = restored
+            .mark_failed(&failed_run.id, "provider failed")
+            .await
+            .expect("restored run failure");
+        assert!(failed.updated_at_ms >= persisted_time);
     }
 
     #[tokio::test]

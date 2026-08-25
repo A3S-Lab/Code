@@ -168,6 +168,11 @@ impl AgentSession {
                 self.config.enforce_active_skill_tool_restrictions,
             ),
             workspace_services: Some(Arc::clone(&self.tool_context.workspace_services)),
+            immutable_content_adapter: self
+                .tool_executor
+                .registry()
+                .immutable_content_adapter()
+                .cloned(),
             sandbox_handle: self.tool_context.sandbox.clone(),
             tool_presentation_profile: Some(self.config.tool_presentation_profile.clone()),
             budget_guard: self

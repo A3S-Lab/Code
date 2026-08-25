@@ -84,9 +84,8 @@ impl RunControlState {
         }
     }
 
+    #[cfg(test)]
     pub(super) async fn start_run(&self, prompt: &str) -> crate::run::RunHandle {
-        // Honor the session's host-provided IdGenerator so deterministic
-        // replay tooling can pin run ids alongside session_id.
         let id = format!("run-{}", self.host_env.next_id());
         let snapshot = self
             .run_store
@@ -94,6 +93,42 @@ impl RunControlState {
             .await;
         *self.current_run_id.lock().await = Some(snapshot.id.clone());
         self.run_handle(snapshot.id, self.session_id.clone())
+    }
+
+    pub(super) async fn start_run_with_bindings(
+        &self,
+        prompt: &str,
+        cognitive_binding: Option<crate::cognitive_context::CognitivePackageBindingV1>,
+        capability_binding: crate::capability::RunCapabilityBindingV1,
+    ) -> Result<crate::run::RunHandle> {
+        // Honor the session's host-provided IdGenerator so deterministic
+        // replay tooling can pin run ids alongside session_id.
+        let id = format!("run-{}", self.host_env.next_id());
+        let snapshot = self
+            .run_store
+            .create_run_with_id(id, &self.session_id, prompt)
+            .await;
+        if let Err(error) = self
+            .bind_capability_generation(&snapshot.id, capability_binding)
+            .await
+        {
+            let _ = self
+                .run_store
+                .mark_failed(&snapshot.id, error.to_string())
+                .await;
+            return Err(error);
+        }
+        if let Some(binding) = cognitive_binding {
+            if let Err(error) = self.bind_cognitive_package(&snapshot.id, binding).await {
+                let _ = self
+                    .run_store
+                    .mark_failed(&snapshot.id, error.to_string())
+                    .await;
+                return Err(error);
+            }
+        }
+        *self.current_run_id.lock().await = Some(snapshot.id.clone());
+        Ok(self.run_handle(snapshot.id, self.session_id.clone()))
     }
 
     pub(super) async fn reserve_run_with_id(
@@ -120,6 +155,40 @@ impl RunControlState {
             *self.current_run_id.lock().await = Some(run_id.to_string());
         }
         Ok(reservation)
+    }
+
+    pub(super) async fn bind_cognitive_package(
+        &self,
+        run_id: &str,
+        binding: crate::cognitive_context::CognitivePackageBindingV1,
+    ) -> Result<crate::run::RunSnapshot> {
+        self.run_store
+            .bind_cognitive_package(run_id, binding)
+            .await
+            .map_err(|error| {
+                CodeError::Session(format!(
+                    "could not bind exact cognitive generation to Run '{run_id}': {error}"
+                ))
+            })
+    }
+
+    pub(super) async fn bind_capability_generation(
+        &self,
+        run_id: &str,
+        binding: crate::capability::RunCapabilityBindingV1,
+    ) -> Result<crate::run::RunSnapshot> {
+        self.run_store
+            .bind_capability_generation(run_id, binding)
+            .await
+            .map_err(|error| {
+                CodeError::Session(format!(
+                    "could not bind exact capability generation to Run '{run_id}': {error}"
+                ))
+            })
+    }
+
+    pub(super) async fn snapshot(&self, run_id: &str) -> Option<crate::run::RunSnapshot> {
+        self.run_store.snapshot(run_id).await
     }
 
     /// Settle a newly reserved exact Run when admission fails before its

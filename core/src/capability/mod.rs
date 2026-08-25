@@ -8,15 +8,19 @@
 //! teardown. Closed runtime values and typestate transactions publish one
 //! complete projected generation through a short catalog CAS.
 
+mod agent_execution;
 mod ceiling;
 mod descriptor;
 mod effect;
 mod error;
+mod flow_binding;
 mod id;
+mod knowledge_surface_binding;
 mod lease;
 mod projection;
 mod projection_error;
 mod readiness;
+mod run_binding;
 mod runtime;
 mod scope;
 mod scope_error;
@@ -24,9 +28,14 @@ mod set;
 mod source;
 mod supervisor;
 mod transaction;
+mod ui_binding;
 mod value;
 
 pub use crate::mcp::McpBinding;
+pub(crate) use agent_execution::{
+    AgentCapabilityOperation, AgentCapabilityRuntime, AgentCapabilitySubtask, AgentCapabilityTurn,
+    AgentToolCapabilityContext,
+};
 pub use ceiling::{
     CapabilityCeiling, CapabilityExecutionCeiling, GovernanceCapabilityCeiling,
     WorkspaceCapabilityCeiling, CAPABILITY_CEILING_SCHEMA,
@@ -34,10 +43,15 @@ pub use ceiling::{
 pub use descriptor::{CapabilityContribution, CapabilityDescriptor, MAX_CAPABILITY_DEPENDENCIES};
 pub use effect::{CapabilityEffect, CapabilityEffectError};
 pub use error::CapabilitySetError;
+pub use flow_binding::FlowBinding;
 pub use id::{
     CapabilityId, CapabilityKind, CapabilitySourceId, CodeCatalogGeneration, Sha256Digest,
     UseCapabilityGeneration, UsePackageGeneration, MAX_CAPABILITY_IDENTIFIER_BYTES,
     USE_CAPABILITY_SNAPSHOT_CURSOR_SCHEMA,
+};
+pub use knowledge_surface_binding::{
+    KnowledgeSurfaceBinding, KnowledgeSurfaceBindingError, KnowledgeSurfaceBindingSpec,
+    KNOWLEDGE_SURFACE_BINDING_SCHEMA, MAX_KNOWLEDGE_SURFACE_PROJECTIONS,
 };
 pub use lease::{CapabilityLease, RetainedUseGeneration};
 pub use projection::{
@@ -48,12 +62,17 @@ pub use projection_error::{CapabilityAdapterError, CapabilityProjectionError};
 pub use readiness::{
     CapabilityReadinessPlan, CAPABILITY_READINESS_PLAN_SCHEMA, MAX_CAPABILITY_READINESS_WAVES,
 };
+pub use run_binding::{
+    RunCapabilityBindingError, RunCapabilityBindingV1, RunUseCapabilityGenerationV1,
+    CAPABILITY_CEILING_DIGEST_DOMAIN, RUN_CAPABILITY_BINDING_SCHEMA,
+};
 pub use runtime::{
     CapabilityRuntimeError, SessionCapabilityBatch, SessionCapabilityRun, UseGenerationLeaseError,
     UseGenerationLeaseProvider,
 };
 pub use scope::{
-    CapabilityScope, CapabilityScopeId, CapabilityScopeKind, Run, ScopeKind, Session, Subtask, Turn,
+    CapabilityScope, CapabilityScopeHandle, CapabilityScopeId, CapabilityScopeKind, Run, ScopeKind,
+    Session, Subtask, Turn,
 };
 pub use scope_error::CapabilityScopeError;
 pub use set::{
@@ -69,5 +88,10 @@ pub use supervisor::{
 pub use transaction::{
     CapabilityProjectionAdapter, CapabilityTxn, Prepared, PreparedCapability, Staged, Validated,
     MAX_CAPABILITY_TRANSACTION_EFFECTS,
+};
+pub use ui_binding::{
+    UiAsset, UiAssetKind, UiBinding, UiBindingError, UiBindingSpec, UiDocument,
+    MAX_UI_ASSETS_PER_KIND, MAX_UI_ASSET_BYTES, MAX_UI_DOCUMENT_BYTES, UI_BINDING_SCHEMA,
+    UI_DOCUMENT_SCHEMA,
 };
 pub use value::CapabilityValue;

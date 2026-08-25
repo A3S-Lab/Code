@@ -333,6 +333,7 @@ async fn codex_login_agent_resume_preserves_cumulative_accounting() {
                 schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
                 run_id: checkpoint_run_id.to_string(),
                 session_id: "codex-agent-resume".to_string(),
+                capability_binding: None,
                 turn: 2,
                 messages: vec![
                     Message::user("Finish with the exact token A3S_CODEX_RESUME_OK."),

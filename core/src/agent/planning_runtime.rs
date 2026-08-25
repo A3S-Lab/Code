@@ -46,8 +46,13 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &CancellationToken,
     ) -> Result<ExecutionPlan> {
-        let llm_client = self.scoped_llm_client_for_parts(session_id, event_tx, cancel_token);
-        match LlmPlanner::create_plan(&llm_client, prompt).await {
+        let operation =
+            self.begin_capability_operation(0, cancel_token, "plan creation orchestration")?;
+        let llm_client =
+            self.scoped_llm_client_for_parts(session_id, event_tx, operation.cancellation());
+        let result = LlmPlanner::create_plan(&llm_client, prompt).await;
+        operation.close().await?;
+        match result {
             Ok(plan) => Ok(plan),
             Err(e) if Self::planning_control_error(&e, cancel_token) => Err(e),
             Err(e) => {
@@ -245,8 +250,13 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &CancellationToken,
     ) -> Result<AgentGoal> {
-        let llm_client = self.scoped_llm_client_for_parts(session_id, event_tx, cancel_token);
-        match LlmPlanner::extract_goal(&llm_client, prompt).await {
+        let operation =
+            self.begin_capability_operation(0, cancel_token, "goal extraction orchestration")?;
+        let llm_client =
+            self.scoped_llm_client_for_parts(session_id, event_tx, operation.cancellation());
+        let result = LlmPlanner::extract_goal(&llm_client, prompt).await;
+        operation.close().await?;
+        match result {
             Ok(goal) => Ok(goal),
             Err(e) if Self::planning_control_error(&e, cancel_token) => Err(e),
             Err(e) => {
@@ -279,8 +289,13 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &CancellationToken,
     ) -> Result<bool> {
-        let llm_client = self.scoped_llm_client_for_parts(session_id, event_tx, cancel_token);
-        match LlmPlanner::check_achievement(&llm_client, goal, current_state).await {
+        let operation =
+            self.begin_capability_operation(0, cancel_token, "goal achievement orchestration")?;
+        let llm_client =
+            self.scoped_llm_client_for_parts(session_id, event_tx, operation.cancellation());
+        let result = LlmPlanner::check_achievement(&llm_client, goal, current_state).await;
+        operation.close().await?;
+        match result {
             Ok(result) => Ok(result.achieved),
             Err(e) if Self::planning_control_error(&e, cancel_token) => Err(e),
             Err(e) => {

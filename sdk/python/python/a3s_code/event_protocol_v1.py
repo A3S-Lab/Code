@@ -16,6 +16,7 @@ KnownAgentEventTypeV1 = Literal[
     "reasoning_delta",
     "tool_start",
     "tool_input_delta",
+    "tool_request_bound",
     "tool_execution_start",
     "tool_end",
     "tool_output_delta",
@@ -72,6 +73,7 @@ AGENT_EVENT_TYPES_V1: Final[Tuple[KnownAgentEventTypeV1, ...]] = (
     "reasoning_delta",
     "tool_start",
     "tool_input_delta",
+    "tool_request_bound",
     "tool_execution_start",
     "tool_end",
     "tool_output_delta",
@@ -127,6 +129,7 @@ class EventType:
     REASONING_DELTA: Final[str] = "reasoning_delta"
     TOOL_START: Final[str] = "tool_start"
     TOOL_INPUT_DELTA: Final[str] = "tool_input_delta"
+    TOOL_REQUEST_BOUND: Final[str] = "tool_request_bound"
     TOOL_EXECUTION_START: Final[str] = "tool_execution_start"
     TOOL_END: Final[str] = "tool_end"
     TOOL_OUTPUT_DELTA: Final[str] = "tool_output_delta"

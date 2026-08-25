@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added host-injected `SessionCheckpointExportSink` support for canonical live
+  checkpoint export. Code now closes the capability Turn, drains causally prior
+  Run events, captures `SessionSnapshotV1` with the matching between-tool-round
+  `LoopCheckpoint`, retains the source Run's frozen cognitive and scoped
+  capability authorities across concurrent catalog cutover, and acknowledges
+  the boundary before the agent loop advances; sink failures remain isolated
+  from the live Run and mixed Session/source-Run authorities fail payload
+  validation.
+
 - Added the first scoped-capability Core kernel slice: typed A3S Use package
   and cursor generations, typed local catalog generations, sealed source-owned
   descriptor batches, and bounded immutable `Arc<CapabilitySet>` snapshots.
@@ -23,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   structured-concurrency supervisor owns tasks, child scopes, reverse-order
   effects, and final lease release; close is cancellation-safe and idempotent,
   while `Drop` only propagates cancellation and aborts owned futures.
+- Wired the scoped capability kernel into real Agent execution. Pre-analysis,
+  planning, goal checks, structured Task generation, and provider/Tool
+  iterations now own Turn scopes. Foreground Skill and Task delegation
+  recursively own Subtask/Turn scopes; Tool effects and stream bridges settle
+  with their active Turn. Background Tasks and streaming memory extraction are
+  synchronously promoted only by an active Turn and remain Run-supervised until
+  bounded settlement before the exact Use lease is released.
 - Added closed typed capability runtime values, immutable
   `CapabilityProjection` catalogs, non-clone exact-generation reader leases,
   and `CapabilityTxn<Staged/Prepared/Validated>`. Only validated transactions
@@ -51,6 +67,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   application kind. Node.js, Python, and Go expose typed Profile values and the
   generated event catalogs include the new event without introducing package,
   Grant, generation, or lifecycle ownership outside A3S Use.
+- Added versioned `tool_request_bound` evidence for model, nested, and trusted
+  or governed host-direct Tool requests. The bounded snapshot binds the
+  correlation identifiers, invocation origin, serialized argument bytes, and
+  exact post-hook arguments through domain-separated digests without copying
+  argument plaintext. It is emitted before permission, confirmation, budget,
+  or execution outcomes, including denied requests, and is preserved exactly
+  by Harness event replay and all generated SDK event catalogs.
+- Added the Rust-host `ImmutableContentAdapterSession` boundary. A secret-free,
+  digest-bound authority identity and byte ceiling now retain every successful
+  raw Tool result plus compacted change sides before projection, validate exact
+  content-addressed references, fail closed without a local fallback, persist
+  the binding for exact resume re-injection, and propagate it to delegated
+  children. Provider authorization, credentials, tenant projection, retention,
+  and object lifecycle remain outside Code.
+- Added `ToolResultTransformBindingV1` beside existing Tool-result evidence.
+  Every real executor result now binds the exact deterministic algorithm and
+  complete Session policy through stable domain-separated SHA-256 identities;
+  binding drift fails before result release, and snapshot replay rejects a
+  retained binding that differs from its exact persisted Session policy.
+- Added provider-neutral `SessionCheckpointExportV1` artifacts. Recursively
+  canonical JSON now binds a complete `SessionSnapshotV1`, optional exact
+  between-tool-round `LoopCheckpoint`, both component identities, and the
+  aggregate payload. Import rejects schema, ownership, Run-state, round,
+  encoding, content, and descriptor drift without adding a Cloud checkpoint
+  ID, storage provider, retention rule, approval, or fork lineage to Core.
+- Added additive evidence-bound checkpoint recovery for Rust hosts.
+  `AgentProtocolRunRecoverExactV1` binds the complete
+  `SessionCheckpointDescriptorV1` into the receipt and target Run identity;
+  `AgentProtocolHost` validates and pins the exact local boundary under the
+  Session execution lease before baseline capture or Run admission.
+  `AgentProtocolHarness::execute_checkpoint_recovery()` validates and decodes
+  semantic and logical state from the same portable bytes, restores an
+  unpublished Session, and publishes it only after exact Run admission without
+  split SessionStore prewrites. Persisted semantic drift and unrelated live
+  Sessions fail closed; external store revision fencing remains a Cloud/common
+  Harness responsibility. The existing v1 command enum and recovery wire shape
+  remain unchanged.
+- Added `RunCapabilityBindingV1` to every newly admitted Run and live logical
+  checkpoint. The canonical identity binds the exact Code catalog generation
+  and digest, full authority-ceiling digest, and optional A3S Use cursor.
+  Recovery pins and compares that complete generation before target-Run
+  reservation, so N checkpoints cannot silently execute through N+1 after a
+  concurrent cutover. A missing Session may perform one host-supplied,
+  all-or-nothing jump from untouched generation zero to the exact historical
+  generation; mismatched or missing batches publish neither Session nor Run.
 - Added Run-frozen Agent projection to `SessionCapabilityBatch`. Compatibility
   and projected definitions share immutable `Arc<AgentDefinition>` values in
   an independent per-Run name map; automatic delegation, `task`, and
@@ -84,9 +145,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   N+1 publication. The adapter accepts only host-constructed configuration
   after authoritative Use Runtime/Gateway selection and does not inspect
   package files or resolve opaque Gateway identities.
+- Added Run-frozen general Context projection to `SessionCapabilityBatch`.
+  Exact provider `Arc` values are copied into the admitted Agent configuration,
+  so an N Run and its separate A3S Use lease remain generation-exact across an
+  N+1 publication. Descriptor/provider drift, Session-static name conflicts,
+  and cognitive-package bindings on the general Context path fail before the
+  catalog advances. Delegated children retain their existing isolated prompt
+  context rather than resolving Session-latest providers.
+- Added named A3S Flow projection to `SessionCapabilityBatch`. `FlowBinding`
+  pairs one validated durable `WorkflowSpec` with the exact `FlowEngine` that
+  owns its store, runtime, observer, replay, and runtime-build admission. The
+  non-clone `ProjectedFlowHandle` retains one Code generation and exact A3S Use
+  lease across N+1 publication; incompatible builds and descriptor/spec name
+  drift fail before publication, missing lookup acquires no lease, and Session
+  cancellation settles active replay before explicit handle close releases the
+  lease. Projected Flow remains a host API rather than an implicit model Tool.
+- Added exact Knowledge projection to `SessionCapabilityBatch`. One projected
+  `CognitiveContextSession` becomes the Run-frozen cognitive authority and
+  retains its Code and Use generations across N+1 publication. Run snapshots
+  record their own immutable binding while the Session records the next-Run
+  binding; resume requires an exact recovery bootstrap, and competing ambient
+  Context authorities fail before publication without moving OKF, indexing,
+  retrieval, retention, or query-lease ownership into Code.
+- Added multi-instance `KnowledgeSurfaceBinding` projection beside singular
+  cognitive Knowledge. Each path-free value canonically binds OKF format,
+  immutable content, and exact host projection digests without exposing query
+  or package-selection authority. Same-generation capabilities can depend on
+  that readiness identity, while Agent Runs ignore it as cognitive context and
+  retain the exact Code/Use generation until close.
+- Added renderer-neutral UI projection to `SessionCapabilityBatch`.
+  `UiBinding` freezes bounded, path-free HTML, CSS, and JavaScript bytes with
+  canonical content and surface digests, and accepts only explicit Tool, Skill,
+  MCP, and Flow dependency edges. The non-clone `ProjectedUiHandle` retains one
+  exact Code generation and A3S Use lease across N+1 publication; missing
+  lookup acquires no lease and Session close signals cancellation. A3S Use now
+  emits versioned complete UI dependency evidence and CLI stages eligible
+  Skill/UI values atomically. Rendering, origin/CSP/navigation/state, backend
+  routing, Tool/MCP/Flow host adapters, and official renderer-host adoption
+  remain outside this Core gate.
 
 ### Fixed
 
+- Made native Harness event pages read run state and retained events from one
+  RunStore generation, preventing concurrent writes from combining an older
+  state with newer events. Restored run-local observation time now remains
+  monotonic across events, cancellation, and failure when host clocks differ;
+  cursors at or beyond the exclusive Code tail now fail closed instead of
+  silently skipping future events.
 - Prevented Node.js BudgetGuard callback bridges from retaining the event loop
   after Session and Agent shutdown. The thread-safe callbacks no longer own
   process liveness, and the runtime smoke test now closes its native resources
@@ -343,6 +448,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   require the same host-injected binding on resume, suppress personal-memory
   recall, and reject general RAG/graph providers instead of using them as a
   fallback.
+- The Go SDK now selects Core's built-in security provider through the typed
+  `DefaultSecurityProvider` session option. The legacy `DefaultSecurity`
+  boolean remains deprecated wire compatibility, and ambiguous or unknown
+  provider specifications fail closed in the bridge.
+- Node.js and Python session construction now reject unknown security, memory,
+  and session-store objects instead of silently disabling the requested
+  security or persistence boundary.
+
+### Fixed
+
+- Made generated event-protocol checks insensitive to host line endings while
+  continuing to reject any semantic drift across the Rust, Node.js, Python,
+  and Go declarations.
+- Made the Windows local shell fail closed when PowerShell cannot start instead
+  of reinterpreting PowerShell syntax through `cmd.exe`.
+- Made cancellation during language-server initialization or settling kill and
+  reap the child process before returning, with deterministic lifecycle tests
+  that reuse one compiled fake server and bound watcher/process concurrency.
 
 ## [6.8.1] - 2026-08-09
 

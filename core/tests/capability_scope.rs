@@ -4,9 +4,10 @@ use std::time::{Duration, Instant};
 use a3s_code_core::capability::{
     CapabilityCeiling, CapabilityContribution, CapabilityDescriptor, CapabilityEffect,
     CapabilityEffectError, CapabilityExecutionCeiling, CapabilityId, CapabilityKind,
-    CapabilityScope, CapabilityScopeError, CapabilitySet, CapabilitySource, CodeCatalogGeneration,
-    GovernanceCapabilityCeiling, RetainedUseGeneration, Run, ScopeClosePolicy, ScopeKind, Session,
-    Sha256Digest, UseCapabilityGeneration, UsePackageGeneration, WorkspaceCapabilityCeiling,
+    CapabilityScope, CapabilityScopeError, CapabilityScopeHandle, CapabilitySet, CapabilitySource,
+    CodeCatalogGeneration, GovernanceCapabilityCeiling, RetainedUseGeneration, Run,
+    ScopeClosePolicy, ScopeKind, Session, Sha256Digest, Subtask, Turn, UseCapabilityGeneration,
+    UsePackageGeneration, WorkspaceCapabilityCeiling,
 };
 use async_trait::async_trait;
 
@@ -681,11 +682,124 @@ async fn dropping_a_parent_aborts_descendant_tasks_without_spawning_cleanup() {
     assert_eq!(run.close().await.unwrap().tasks_cancelled, 1);
 }
 
+#[tokio::test]
+async fn supplied_session_cancellation_cascades_through_the_complete_scope_tree() {
+    let catalog = host_catalog();
+    let root = CapabilityCeiling::all(
+        &catalog.set,
+        WorkspaceCapabilityCeiling::all(),
+        GovernanceCapabilityCeiling::none_required(),
+        execution(20, 4),
+    )
+    .unwrap();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let session = CapabilityScope::<Session>::new_session_with_cancellation(
+        "session-1",
+        catalog.set,
+        root.clone(),
+        cancellation.clone(),
+    )
+    .unwrap();
+    let run = session.admit_run("run-1", root.clone()).unwrap();
+    let turn = run.turn("turn-1", root.clone()).unwrap();
+    let subtask = turn.subtask("subtask-1", root).unwrap();
+
+    cancellation.cancel();
+
+    assert!(session.cancellation().is_cancelled());
+    assert!(run.cancellation().is_cancelled());
+    assert!(turn.cancellation().is_cancelled());
+    assert!(subtask.cancellation().is_cancelled());
+    assert!(matches!(
+        subtask.lease(),
+        Err(CapabilityScopeError::ScopeInactive { .. })
+    ));
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn delegated_subtasks_can_recursively_own_turns_and_nested_subtasks() {
+    let catalog = host_catalog();
+    let root = CapabilityCeiling::all(
+        &catalog.set,
+        WorkspaceCapabilityCeiling::all(),
+        GovernanceCapabilityCeiling::none_required(),
+        execution(20, 4),
+    )
+    .unwrap();
+    let session =
+        CapabilityScope::<Session>::new_session("session-1", catalog.set, root.clone()).unwrap();
+    let run = session.admit_run("run-1", root.clone()).unwrap();
+    let delegated = run.subtask("delegated-1", root.clone()).unwrap();
+    let child_turn = delegated.turn("turn-1", root.clone()).unwrap();
+    let nested = child_turn.subtask("nested-1", root).unwrap();
+
+    assert_eq!(
+        nested.id().as_str(),
+        "session/session-1/run/run-1/subtask/delegated-1/turn/turn-1/subtask/nested-1"
+    );
+    assert_eq!(child_turn.parent_id(), Some(delegated.id()));
+    assert_eq!(nested.parent_id(), Some(child_turn.id()));
+
+    let report = delegated.close().await.unwrap();
+    assert!(report.is_clean());
+    assert_eq!(report.child_scopes_closed, 1);
+    assert!(!child_turn.is_active());
+    assert!(!nested.is_active());
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn weak_scope_handles_transfer_effect_ownership_without_retaining_the_scope() {
+    let catalog = host_catalog();
+    let root = CapabilityCeiling::all(
+        &catalog.set,
+        WorkspaceCapabilityCeiling::all(),
+        GovernanceCapabilityCeiling::none_required(),
+        execution(20, 4),
+    )
+    .unwrap();
+    let session =
+        CapabilityScope::<Session>::new_session("session-1", catalog.set, root.clone()).unwrap();
+    let run = session.admit_run("run-1", root.clone()).unwrap();
+    let turn = run.turn("turn-1", root).unwrap();
+    let handle = turn.handle();
+    let log = Arc::new(Mutex::new(Vec::new()));
+
+    handle
+        .register_effect(RecordingEffect {
+            name: "turn.handle.effect",
+            log: Arc::clone(&log),
+            pending: false,
+        })
+        .unwrap();
+    let report = turn.close().await.unwrap();
+    assert_eq!(report.effects_closed, 1);
+    assert_eq!(&*log.lock().unwrap(), &["turn.handle.effect"]);
+    assert!(matches!(
+        handle.register_effect(RecordingEffect {
+            name: "turn.late.effect",
+            log: Arc::clone(&log),
+            pending: false,
+        }),
+        Err(CapabilityScopeError::ScopeInactive { .. })
+            | Err(CapabilityScopeError::SupervisorClosed { .. })
+    ));
+
+    session.close().await.unwrap();
+    drop(turn);
+    drop(run);
+    drop(session);
+    assert!(!handle.is_active());
+}
+
 #[test]
 fn public_scope_types_are_send_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
 
     assert_send_sync::<CapabilityScope<Session>>();
     assert_send_sync::<CapabilityScope<Run>>();
+    assert_send_sync::<CapabilityScopeHandle<Turn>>();
+    assert_send_sync::<CapabilityScopeHandle<Subtask>>();
     assert_send_sync::<CapabilityCeiling>();
 }

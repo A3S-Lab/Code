@@ -1,7 +1,9 @@
 use super::execution_state::ExecutionLoopState;
+use super::memory_extraction_runtime::TurnMemoryExtractionSchedule;
 use super::{AgentEvent, AgentLoop};
 use crate::llm::{LlmResponse, Message};
 use crate::prompts::CONTINUATION;
+use crate::tools::ToolContext;
 use crate::verification::VerificationSummary;
 use futures::future::join_all;
 use tokio::sync::mpsc;
@@ -48,6 +50,7 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         emit_end: bool,
         cancel_token: &CancellationToken,
+        memory_task_context: &ToolContext,
         force_terminal: bool,
     ) -> CompletionFlow {
         let candidate_text = response.text();
@@ -84,14 +87,15 @@ impl AgentLoop {
             // host may close the session as soon as it receives that event;
             // registering first lets graceful close drain this extraction
             // instead of racing past it.
-            self.schedule_turn_memory_extraction(
+            self.schedule_turn_memory_extraction(TurnMemoryExtractionSchedule {
                 state,
-                effective_prompt,
-                &final_text,
-                sid,
+                prompt: effective_prompt,
+                response: &final_text,
+                session_id: sid,
                 event_tx,
                 cancel_token,
-            )
+                task_context: memory_task_context,
+            })
             .await;
             self.notify_turn_complete(sid, effective_prompt, &final_text)
                 .await;

@@ -347,25 +347,37 @@ The skill's allowed-tools are granted during execution and revoked after complet
             skill.name, skill.description, skill.content
         ));
 
-        // Create agent loop with skill permissions
-        let agent_loop = AgentLoop::new(
+        let capability_subtask = ctx
+            .capability_context()
+            .map(|context| context.admit_subtask(format!("skill-{}", uuid::Uuid::new_v4()), false))
+            .transpose()?;
+        let cancellation = capability_subtask.as_ref().map_or_else(
+            || ctx.cancellation_token(),
+            crate::capability::AgentCapabilitySubtask::cancellation,
+        );
+
+        // Create the child Agent loop inside the Skill's spatial Subtask. Its
+        // provider/tool iterations will recursively create temporal Turns.
+        let mut agent_loop = AgentLoop::new(
             self.llm_client.clone(),
             self.tool_executor.clone(),
             ctx.clone(),
             skill_config,
         );
+        if let Some(subtask) = capability_subtask.as_ref() {
+            agent_loop = agent_loop.with_capability_runtime(subtask.runtime());
+        }
 
         // Execute the skill with the prompt
         let prompt = args
             .prompt
             .unwrap_or_else(|| format!("Execute the '{}' skill", skill.name));
 
-        // The skill is a child run, but it remains inside the owning run's
-        // cancellation and budget scope. The child AgentLoop wraps the raw
-        // provider with its own scoped LLM invoker, while the inherited token
-        // ensures parent cancellation reaches every provider/tool call.
-        let cancellation = ctx.cancellation_token();
-        let result = agent_loop
+        // The skill remains inside the owning Run's cancellation and budget
+        // scope. Its Subtask token is derived from the invoking Turn, so parent
+        // cancellation reaches every provider/tool call without allowing the
+        // child to cancel its parent.
+        let execution = agent_loop
             .execute_with_session(
                 &[],
                 &prompt,
@@ -373,8 +385,22 @@ The skill's allowed-tools are granted during execution and revoked after complet
                 None,
                 Some(&cancellation),
             )
-            .await?;
-        if cancellation.is_cancelled() {
+            .await;
+        let cancelled = cancellation.is_cancelled();
+        let close = close_skill_capability_subtask(capability_subtask.as_ref()).await;
+        let result = match (execution, close) {
+            (Ok(result), Ok(())) => result,
+            (Ok(_), Err(close_error)) => return Err(close_error),
+            (Err(error), Ok(())) => return Err(error),
+            (Err(error), Err(close_error)) => {
+                tracing::warn!(
+                    error = %close_error,
+                    "Capability Skill Subtask close also failed after execution failure"
+                );
+                return Err(error);
+            }
+        };
+        if cancelled {
             anyhow::bail!("Skill '{}' cancelled by caller", skill.name);
         }
 
@@ -391,6 +417,27 @@ The skill's allowed-tools are granted during execution and revoked after complet
             error_kind: None,
         })
     }
+}
+
+async fn close_skill_capability_subtask(
+    subtask: Option<&crate::capability::AgentCapabilitySubtask>,
+) -> Result<()> {
+    let Some(subtask) = subtask else {
+        return Ok(());
+    };
+    let report = subtask.close().await?;
+    if !report.is_clean() {
+        anyhow::bail!(
+            "Capability Skill Subtask close was incomplete (tasks failed: {}, tasks timed out: {}, child scopes failed: {}, child scopes timed out: {}, effects failed: {}, effects timed out: {})",
+            report.tasks_failed,
+            report.tasks_timed_out,
+            report.child_scopes_failed,
+            report.child_scopes_timed_out,
+            report.effects_failed,
+            report.effects_timed_out,
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -526,6 +573,71 @@ mod tests {
 
     struct SkillSideEffectTool {
         calls: Arc<AtomicUsize>,
+    }
+
+    struct SkillScopeProbeTool {
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct SkillScopeProbeEffect {
+        scope_id: String,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl crate::capability::CapabilityEffect for SkillScopeProbeEffect {
+        fn name(&self) -> &str {
+            "test.skill.scope.effect"
+        }
+
+        async fn close(
+            self: Box<Self>,
+        ) -> std::result::Result<(), crate::capability::CapabilityEffectError> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("closed:{}", self.scope_id));
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Tool for SkillScopeProbeTool {
+        fn name(&self) -> &str {
+            "skill_scope_probe"
+        }
+
+        fn description(&self) -> &str {
+            "Records the capability Turn owned by a nested Skill Agent"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "additionalProperties": false})
+        }
+
+        fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+            crate::tools::ToolCapabilities::parallel_safe_read(1)
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            let scope_id = ctx
+                .capability_scope_id()
+                .ok_or_else(|| anyhow!("nested Skill Tool has no capability Turn"))?
+                .to_owned();
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("registered:{scope_id}"));
+            ctx.register_capability_effect(SkillScopeProbeEffect {
+                scope_id,
+                log: Arc::clone(&self.log),
+            })?;
+            Ok(ToolOutput::success("registered"))
+        }
     }
 
     #[async_trait]
@@ -888,6 +1000,99 @@ mod tests {
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["skill_name"], "test-skill");
         assert_eq!(metadata["tool_calls"], 0);
+    }
+
+    #[tokio::test]
+    async fn skill_child_agent_owns_recursive_subtask_and_turn_scopes() {
+        use crate::prompts::PlanningMode;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let registry = Arc::new(SkillRegistry::new());
+        registry.register_unchecked(Arc::new(Skill {
+            name: "scoped-skill".to_string(),
+            description: "Exercise nested scope ownership".to_string(),
+            allowed_tools: Some("skill_scope_probe".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Call skill_scope_probe once, then finish.".to_string(),
+            tags: Vec::new(),
+            version: None,
+        }));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let executor = Arc::new(ToolExecutor::new(
+            workspace.path().to_string_lossy().into_owned(),
+        ));
+        executor.register_dynamic_tool(Arc::new(SkillScopeProbeTool {
+            log: Arc::clone(&log),
+        }));
+        let tool = SkillTool::new(
+            registry,
+            Arc::new(MockLlmClient::new(vec![
+                MockLlmClient::tool_call_response(
+                    "skill-probe",
+                    "skill_scope_probe",
+                    serde_json::json!({}),
+                ),
+                MockLlmClient::text_response("skill complete"),
+            ])),
+            executor,
+            AgentConfig {
+                planning_mode: PlanningMode::Disabled,
+                continuation_enabled: false,
+                ..Default::default()
+            },
+        );
+        let set = crate::capability::CapabilitySet::empty().unwrap();
+        let ceiling = crate::capability::CapabilityCeiling::all(
+            &set,
+            crate::capability::WorkspaceCapabilityCeiling::all(),
+            crate::capability::GovernanceCapabilityCeiling::none_required(),
+            crate::capability::CapabilityExecutionCeiling::new(
+                4,
+                2,
+                Some(1_000),
+                Some(1_000),
+                Some(5_000),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let session =
+            crate::capability::CapabilityScope::<crate::capability::Session>::new_session(
+                "session-1",
+                set,
+                ceiling.clone(),
+            )
+            .unwrap();
+        let run = session.admit_run("run-1", ceiling).unwrap();
+        let runtime = crate::capability::AgentCapabilityRuntime::from_run(&run);
+        let parent_turn = runtime.begin_turn(1).unwrap();
+        let capability_context = parent_turn.tool_context();
+        let parent_scope_id = capability_context.foreground_scope_id().to_owned();
+        let context = ToolContext::new(workspace.path().to_path_buf())
+            .with_cancellation(parent_turn.cancellation())
+            .with_capability_context(capability_context);
+
+        let result = tool
+            .execute(&serde_json::json!({"skill_name": "scoped-skill"}), &context)
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        let entries = log.lock().unwrap().clone();
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        let registered = entries[0].strip_prefix("registered:").unwrap();
+        let closed = entries[1].strip_prefix("closed:").unwrap();
+        assert_eq!(registered, closed);
+        assert!(
+            registered.starts_with(&format!("{parent_scope_id}/subtask/skill-")),
+            "{registered}"
+        );
+        assert!(registered.contains("/turn/turn-1-1"), "{registered}");
+
+        parent_turn.close().await.unwrap();
+        run.close().await.unwrap();
+        session.close().await.unwrap();
     }
 
     #[tokio::test]

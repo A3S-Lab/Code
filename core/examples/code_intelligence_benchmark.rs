@@ -120,8 +120,7 @@ async fn main() -> anyhow::Result<()> {
         && protocol.contains("\"method\":\"shutdown\"")
         && protocol.contains("\"method\":\"exit\"");
 
-    let manifest_passed =
-        indexed_files >= WORKSPACE_FILES + 1 && manifest_elapsed <= MANIFEST_DEADLINE;
+    let manifest_passed = indexed_files > WORKSPACE_FILES && manifest_elapsed <= MANIFEST_DEADLINE;
     let cold_passed = duration_ms(cold_elapsed) <= COLD_QUERY_BUDGET_MS;
     let document_passed = document_latency.p95_ms <= WARM_QUERY_P95_BUDGET_MS;
     let workspace_passed = workspace_latency.p95_ms <= WARM_QUERY_P95_BUDGET_MS;

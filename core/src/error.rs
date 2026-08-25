@@ -139,6 +139,10 @@ pub enum CodeError {
     #[error("Capability runtime error: {0}")]
     Capability(#[from] crate::capability::CapabilityRuntimeError),
 
+    /// A3S Flow definition, replay, store, or runtime failure.
+    #[error("Flow error: {0}")]
+    Flow(#[from] a3s_flow::FlowError),
+
     /// I/O error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -178,6 +182,7 @@ impl CodeError {
             Self::Mcp(_) => "MCP_ERROR",
             Self::Queue(_) => "QUEUE_ERROR",
             Self::Capability(_) => "CAPABILITY_RUNTIME_ERROR",
+            Self::Flow(_) => "FLOW_ERROR",
             Self::Io(_) => "IO_ERROR",
             Self::Serialization(_) => "SERIALIZATION_ERROR",
             Self::Internal(_) => "INTERNAL_ERROR",

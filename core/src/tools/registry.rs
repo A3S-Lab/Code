@@ -8,7 +8,9 @@ use super::types::{Tool, ToolCapabilities, ToolContext, ToolOutput};
 use super::ToolResult;
 use super::{
     merge_tool_output_artifact_metadata, tool_output_artifact, transform_tool_output_with_artifact,
-    ToolOutputArtifact, ToolResultTransformPolicyV1,
+    ImmutableContentAdapterSession, ImmutableContentError, ImmutableContentKindV1,
+    ToolOutputArtifact, ToolResultTransformBindingV1, ToolResultTransformPolicyV1,
+    TOOL_RESULT_CONTENT_MEDIA_TYPE,
 };
 use crate::llm::ToolDefinition;
 use crate::trace::{InMemoryTraceSink, TraceEvent, TraceSink};
@@ -58,6 +60,7 @@ pub struct ToolRegistry {
     builtins: RwLock<std::collections::HashSet<String>>,
     context: RwLock<ToolContext>,
     artifact_store: ArtifactStore,
+    immutable_content_adapter: Option<ImmutableContentAdapterSession>,
     trace_sink: RwLock<Arc<dyn TraceSink>>,
     argument_validators: RwLock<HashMap<String, ArgumentValidatorCacheEntry>>,
     transform_policy: RwLock<ToolResultTransformPolicyV1>,
@@ -84,12 +87,27 @@ impl ToolRegistry {
         artifact_limits: ArtifactStoreLimits,
         workspace_services: Arc<crate::workspace::WorkspaceServices>,
     ) -> Self {
+        Self::with_workspace_services_artifact_limits_and_immutable_content_adapter(
+            workspace,
+            artifact_limits,
+            workspace_services,
+            None,
+        )
+    }
+
+    pub(crate) fn with_workspace_services_artifact_limits_and_immutable_content_adapter(
+        workspace: PathBuf,
+        artifact_limits: ArtifactStoreLimits,
+        workspace_services: Arc<crate::workspace::WorkspaceServices>,
+        immutable_content_adapter: Option<ImmutableContentAdapterSession>,
+    ) -> Self {
         let context = ToolContext::new(workspace).with_workspace_services(workspace_services);
         Self {
             tools: RwLock::new(HashMap::new()),
             builtins: RwLock::new(std::collections::HashSet::new()),
             context: RwLock::new(context),
             artifact_store: ArtifactStore::with_limits(artifact_limits),
+            immutable_content_adapter,
             trace_sink: RwLock::new(Arc::new(InMemoryTraceSink::default())),
             argument_validators: RwLock::new(HashMap::new()),
             transform_policy: RwLock::new(ToolResultTransformPolicyV1::default()),
@@ -120,6 +138,7 @@ impl ToolRegistry {
             builtins: RwLock::new(builtins),
             context: RwLock::new(self.context.read().unwrap().clone()),
             artifact_store: self.artifact_store.clone(),
+            immutable_content_adapter: self.immutable_content_adapter.clone(),
             trace_sink: RwLock::new(Arc::clone(&self.trace_sink.read().unwrap())),
             argument_validators: RwLock::new(self.argument_validators.read().unwrap().clone()),
             transform_policy: RwLock::new(self.transform_policy.read().unwrap().clone()),
@@ -405,6 +424,11 @@ impl ToolRegistry {
         self.artifact_store.clone()
     }
 
+    /// Return the session-scoped immutable-content adapter, when configured.
+    pub fn immutable_content_adapter(&self) -> Option<&ImmutableContentAdapterSession> {
+        self.immutable_content_adapter.as_ref()
+    }
+
     /// Get a stored tool artifact by URI.
     pub fn get_artifact(&self, artifact_uri: &str) -> Option<ToolArtifact> {
         self.artifact_store.get(artifact_uri)
@@ -461,31 +485,55 @@ impl ToolRegistry {
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
         let start = std::time::Instant::now();
+        let policy = self.transform_policy.read().unwrap().clone();
+        let transform_binding = ToolResultTransformBindingV1::from_policy(&policy)?;
 
         let tool = self.get(name);
 
         let mut result = match tool {
             Some(tool) => {
                 let mut output = tool.execute(args, ctx).await?;
-                self.compact_change_metadata(name, &mut output.metadata);
+                self.compact_change_metadata(name, &mut output.metadata, ctx)
+                    .await?;
                 let original_content = output.content.clone();
-                let policy = self.transform_policy.read().unwrap().clone();
                 let truncated = transform_tool_output_with_artifact(name, &output.content, &policy);
                 output.content = truncated.content;
                 let loss_mode = truncated.loss_mode;
-                if let Some(artifact) = truncated.artifact {
-                    self.store_tool_artifact(name, &original_content, &artifact);
+                let projected_artifact_reference = truncated.artifact.is_some();
+                let artifact = truncated.artifact.or_else(|| {
+                    self.immutable_content_adapter.as_ref().map(|_| {
+                        super::tool_output_artifact(name, &original_content, output.content.len())
+                    })
+                });
+                if let Some(mut artifact) = artifact {
+                    let compatibility_uri = artifact.artifact_uri.clone();
+                    self.store_tool_artifact(
+                        name,
+                        &original_content,
+                        &mut artifact,
+                        ImmutableContentKindV1::ToolResultOriginal,
+                        ctx,
+                    )
+                    .await?;
+                    if projected_artifact_reference {
+                        rewrite_projected_artifact_uri(
+                            &mut output.content,
+                            &compatibility_uri,
+                            &artifact.artifact_uri,
+                        )?;
+                    }
                     output.metadata = Some(merge_tool_output_artifact_metadata(
                         output.metadata,
                         &artifact,
                     ));
                 }
-                output.metadata = Some(super::attach_tool_result_evidence(
+                output.metadata = Some(super::attach_tool_result_evidence_with_transform_binding(
                     output.metadata,
                     &original_content,
                     &output.content,
                     loss_mode,
-                ));
+                    &transform_binding,
+                )?);
                 Ok(ToolResult {
                     name: name.to_string(),
                     output: output.content,
@@ -499,10 +547,11 @@ impl ToolRegistry {
         };
 
         if let Ok(result) = &mut result {
-            result.metadata = Some(super::ensure_tool_result_evidence(
+            result.metadata = Some(super::ensure_tool_result_evidence_with_transform_binding(
                 result.metadata.take(),
                 &result.output,
-            ));
+                &transform_binding,
+            )?);
         }
 
         if let Ok(ref r) = result {
@@ -530,37 +579,88 @@ impl ToolRegistry {
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<Option<ToolOutput>> {
+        let policy = self.transform_policy.read().unwrap().clone();
+        let transform_binding = ToolResultTransformBindingV1::from_policy(&policy)?;
         let tool = self.get(name);
 
         match tool {
             Some(tool) => {
                 let mut output = tool.execute(args, ctx).await?;
-                self.compact_change_metadata(name, &mut output.metadata);
+                self.compact_change_metadata(name, &mut output.metadata, ctx)
+                    .await?;
                 let original_content = output.content.clone();
-                let policy = self.transform_policy.read().unwrap().clone();
                 let truncated = transform_tool_output_with_artifact(name, &output.content, &policy);
                 output.content = truncated.content;
                 let loss_mode = truncated.loss_mode;
-                if let Some(artifact) = truncated.artifact {
-                    self.store_tool_artifact(name, &original_content, &artifact);
+                let projected_artifact_reference = truncated.artifact.is_some();
+                let artifact = truncated.artifact.or_else(|| {
+                    self.immutable_content_adapter.as_ref().map(|_| {
+                        super::tool_output_artifact(name, &original_content, output.content.len())
+                    })
+                });
+                if let Some(mut artifact) = artifact {
+                    let compatibility_uri = artifact.artifact_uri.clone();
+                    self.store_tool_artifact(
+                        name,
+                        &original_content,
+                        &mut artifact,
+                        ImmutableContentKindV1::ToolResultOriginal,
+                        ctx,
+                    )
+                    .await?;
+                    if projected_artifact_reference {
+                        rewrite_projected_artifact_uri(
+                            &mut output.content,
+                            &compatibility_uri,
+                            &artifact.artifact_uri,
+                        )?;
+                    }
                     output.metadata = Some(merge_tool_output_artifact_metadata(
                         output.metadata,
                         &artifact,
                     ));
                 }
-                output.metadata = Some(super::attach_tool_result_evidence(
+                output.metadata = Some(super::attach_tool_result_evidence_with_transform_binding(
                     output.metadata,
                     &original_content,
                     &output.content,
                     loss_mode,
-                ));
+                    &transform_binding,
+                )?);
                 Ok(Some(output))
             }
             None => Ok(None),
         }
     }
 
-    fn store_tool_artifact(&self, tool_name: &str, content: &str, artifact: &ToolOutputArtifact) {
+    async fn store_tool_artifact(
+        &self,
+        tool_name: &str,
+        content: &str,
+        artifact: &mut ToolOutputArtifact,
+        kind: ImmutableContentKindV1,
+        ctx: &ToolContext,
+    ) -> Result<()> {
+        if let Some(adapter) = &self.immutable_content_adapter {
+            let cancellation = ctx.cancellation_token();
+            let retained = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    return Err(ImmutableContentError::Cancelled.into());
+                }
+                result = adapter.put(kind, TOOL_RESULT_CONTENT_MEDIA_TYPE, content.as_bytes()) => {
+                    result.map_err(|error| anyhow::anyhow!(
+                        "immutable content adapter '{}' rejected Tool content: {}",
+                        adapter.adapter_name(),
+                        error.redacted_message(),
+                    ))?
+                }
+            };
+            artifact.artifact_uri.clone_from(&retained.uri);
+            artifact.content_reference = Some(retained);
+            return Ok(());
+        }
+
         self.artifact_store.put(ToolArtifact {
             artifact_id: artifact.artifact_id.clone(),
             artifact_uri: artifact.artifact_uri.clone(),
@@ -569,11 +669,17 @@ impl ToolRegistry {
             original_bytes: artifact.original_bytes,
             shown_bytes: artifact.shown_bytes,
         });
+        Ok(())
     }
 
-    fn compact_change_metadata(&self, tool_name: &str, metadata: &mut Option<serde_json::Value>) {
+    async fn compact_change_metadata(
+        &self,
+        tool_name: &str,
+        metadata: &mut Option<serde_json::Value>,
+        ctx: &ToolContext,
+    ) -> Result<()> {
         let Some(serde_json::Value::Object(object)) = metadata.as_mut() else {
-            return;
+            return Ok(());
         };
         let before = object
             .get("before")
@@ -584,19 +690,41 @@ impl ToolRegistry {
             .and_then(serde_json::Value::as_str)
             .map(ToString::to_string);
         if before.is_none() && after.is_none() {
-            return;
+            return Ok(());
         }
 
         let before_bytes = before.as_ref().map_or(0, String::len);
         let after_bytes = after.as_ref().map_or(0, String::len);
         let total_bytes = before_bytes.saturating_add(after_bytes);
         let compacted = total_bytes > MAX_INLINE_CHANGE_BYTES;
-        let before_artifact = before.as_deref().and_then(|content| {
-            self.store_change_artifact(tool_name, "before", content, compacted)
-        });
-        let after_artifact = after
-            .as_deref()
-            .and_then(|content| self.store_change_artifact(tool_name, "after", content, compacted));
+        let before_artifact = match before.as_deref() {
+            Some(content) => {
+                self.store_change_artifact(
+                    tool_name,
+                    "before",
+                    content,
+                    compacted,
+                    ImmutableContentKindV1::ToolChangeBefore,
+                    ctx,
+                )
+                .await?
+            }
+            None => None,
+        };
+        let after_artifact = match after.as_deref() {
+            Some(content) => {
+                self.store_change_artifact(
+                    tool_name,
+                    "after",
+                    content,
+                    compacted,
+                    ImmutableContentKindV1::ToolChangeAfter,
+                    ctx,
+                )
+                .await?
+            }
+            None => None,
+        };
 
         let unified_diff = if compacted && total_bytes <= MAX_DIFF_COMPUTE_BYTES {
             let diff = similar::TextDiff::from_lines(
@@ -651,24 +779,35 @@ impl ToolRegistry {
                 "diff_omitted": compacted && total_bytes > MAX_DIFF_COMPUTE_BYTES,
             }),
         );
+        Ok(())
     }
 
-    fn store_change_artifact(
+    async fn store_change_artifact(
         &self,
         tool_name: &str,
         side: &str,
         content: &str,
         store: bool,
-    ) -> Option<serde_json::Value> {
-        if !store || content.len() > self.artifact_store.limits().max_bytes {
-            return None;
+        kind: ImmutableContentKindV1,
+        ctx: &ToolContext,
+    ) -> Result<Option<serde_json::Value>> {
+        if !store
+            || self.immutable_content_adapter.is_none()
+                && content.len() > self.artifact_store.limits().max_bytes
+        {
+            return Ok(None);
         }
-        let artifact = tool_output_artifact(&format!("{tool_name}-{side}"), content, 0);
-        self.store_tool_artifact(tool_name, content, &artifact);
-        Some(serde_json::json!({
+        let mut artifact = tool_output_artifact(&format!("{tool_name}-{side}"), content, 0);
+        self.store_tool_artifact(tool_name, content, &mut artifact, kind, ctx)
+            .await?;
+        let mut metadata = serde_json::json!({
             "artifact_id": artifact.artifact_id,
             "artifact_uri": artifact.artifact_uri,
-        }))
+        });
+        if let Some(reference) = artifact.content_reference {
+            metadata["content_reference"] = serde_json::json!(reference);
+        }
+        Ok(Some(metadata))
     }
 
     fn record_trace_event(&self, name: &str, result: &ToolResult, duration: std::time::Duration) {
@@ -693,6 +832,24 @@ impl ToolRegistry {
             ));
         }
     }
+}
+
+fn rewrite_projected_artifact_uri(
+    projected: &mut String,
+    compatibility_uri: &str,
+    retained_uri: &str,
+) -> Result<()> {
+    if compatibility_uri == retained_uri {
+        return Ok(());
+    }
+    let start = projected.rfind(compatibility_uri).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Tool result projection lost its compatibility artifact reference before retention"
+        )
+    })?;
+    let end = start + compatibility_uri.len();
+    projected.replace_range(start..end, retained_uri);
+    Ok(())
 }
 
 fn bounded_head_tail(content: &str, max_bytes: usize) -> String {

@@ -517,12 +517,19 @@ async fn unknown_tool_result_still_carries_context_evidence() {
     let metadata = result.metadata.unwrap();
     let evidence: super::super::ToolResultEvidenceV1 =
         serde_json::from_value(metadata["a3s_tool_result_evidence"].clone()).unwrap();
+    let transform_binding: super::super::ToolResultTransformBindingV1 = serde_json::from_value(
+        metadata[super::super::TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY].clone(),
+    )
+    .unwrap();
     assert_eq!(evidence.loss_mode, super::super::ToolResultLossModeV1::None);
     assert_eq!(evidence.original_bytes, result.output.len());
     assert_eq!(
         evidence.content_ref,
         format!("inline:{}", evidence.content_digest)
     );
+    transform_binding
+        .validate_for_policy(&super::super::ToolResultTransformPolicyV1::conservative())
+        .unwrap();
 }
 
 #[tokio::test]

@@ -168,6 +168,7 @@ fn parent_context(
         confirmation_manager,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        immutable_content_adapter: None,
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: None,
@@ -189,6 +190,23 @@ fn delegated_config(
     };
     parent_context(parent_decision, parent_confirmation).apply_to(&mut config);
     config
+}
+
+#[test]
+fn delegated_run_keeps_its_prompt_context_isolated() {
+    let ambient_child_provider: Arc<dyn crate::context::ContextProvider> = Arc::new(
+        crate::context::StaticContextProvider::new("ambient-child-context"),
+    );
+    let parent = parent_context(PermissionDecision::Allow, None);
+    let mut config = AgentConfig {
+        context_providers: vec![ambient_child_provider],
+        ..AgentConfig::default()
+    };
+
+    parent.apply_to(&mut config);
+
+    assert_eq!(config.context_providers.len(), 1);
+    assert_eq!(config.context_providers[0].name(), "ambient-child-context");
 }
 
 #[test]

@@ -45,6 +45,10 @@ impl std::fmt::Debug for SessionOptions {
             .field("memory_observers", &self.memory_observers.len())
             .field("file_memory_dir", &self.file_memory_dir)
             .field("session_store", &self.session_store.is_some())
+            .field(
+                "session_checkpoint_export_sink",
+                &self.session_checkpoint_export_sink.is_some(),
+            )
             .field("file_session_store_dir", &self.file_session_store_dir)
             .field("session_id", &self.session_id)
             .field("rl_trajectory", &self.rl_trajectory)
@@ -52,6 +56,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("llm_top_logprobs", &self.llm_top_logprobs)
             .field("auto_save", &self.auto_save)
             .field("artifact_store_limits", &self.artifact_store_limits)
+            .field("immutable_content_adapter", &self.immutable_content_adapter)
             .field(
                 "tool_result_transform_policy",
                 &self.tool_result_transform_policy,
@@ -330,6 +335,19 @@ impl SessionOptions {
         self
     }
 
+    /// Export exact portable checkpoints at completed tool-round boundaries.
+    ///
+    /// The sink receives an owned, canonical export only after all events from
+    /// that tool round have entered the matching Session snapshot. Sink errors
+    /// are warn-logged and never turn a healthy live Run into a failure.
+    pub fn with_session_checkpoint_export_sink(
+        mut self,
+        sink: Arc<dyn crate::session_checkpoint::SessionCheckpointExportSink>,
+    ) -> Self {
+        self.session_checkpoint_export_sink = Some(sink);
+        self
+    }
+
     /// Use a file-based session store at the given directory.
     ///
     /// The path is a typed construction specification. No I/O occurs until
@@ -442,6 +460,18 @@ impl SessionOptions {
     /// Set artifact retention limits for this session.
     pub fn with_artifact_store_limits(mut self, limits: crate::tools::ArtifactStoreLimits) -> Self {
         self.artifact_store_limits = Some(limits);
+        self
+    }
+
+    /// Install a session-scoped host adapter for authorized immutable Tool
+    /// content. Every raw output returned by a Tool writes through this port
+    /// before release; lossy projections expose its validated reference
+    /// instead of retaining a second local copy.
+    pub fn with_immutable_content_adapter(
+        mut self,
+        adapter: crate::tools::ImmutableContentAdapterSession,
+    ) -> Self {
+        self.immutable_content_adapter = Some(adapter);
         self
     }
 

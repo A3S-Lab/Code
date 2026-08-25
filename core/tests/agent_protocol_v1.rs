@@ -186,6 +186,24 @@ fn event_pages_carry_code_event_envelopes_without_a_second_event_model() {
         "timestamp_ms": 1_723_000_000_000_u64,
     }));
     assert!(mismatched_metadata.validate().is_err());
+
+    let future_cursor = AgentProtocolEventPageV1 {
+        schema: AgentProtocolEventPageV1::SCHEMA.into(),
+        identity,
+        after_event_sequence: Some(2),
+        first_available_sequence: Some(0),
+        latest_sequence_exclusive: 2,
+        next_after_event_sequence: Some(2),
+        state: AgentProtocolRunStateV1::Executing,
+        observed_at_ms: 1_723_000_000_003,
+        retention_gap: false,
+        has_more: false,
+        events: Vec::new(),
+    };
+    assert!(
+        future_cursor.validate().is_err(),
+        "a cursor at or beyond the exclusive tail would silently skip future events"
+    );
 }
 
 #[test]

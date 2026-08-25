@@ -88,6 +88,14 @@ pub struct TaskResult {
     pub source_anchors: Vec<ToolSourceAnchor>,
 }
 
+struct ScopedTaskExecution<'a> {
+    event_tx: Option<broadcast::Sender<AgentEvent>>,
+    parent_session_id: Option<&'a str>,
+    emit_start: bool,
+    parent_cancellation: Option<&'a CancellationToken>,
+    admitted_capability_subtask: Option<crate::capability::AgentCapabilitySubtask>,
+}
+
 mod result_projection;
 use result_projection::*;
 
@@ -118,6 +126,8 @@ pub struct TaskExecutor {
     search_retry_budget: Option<a3s_search::RetryBudget>,
     /// Parent-session request flights shared with delegated child runs.
     search_request_coalescer: Option<a3s_search::SearchCoalescer>,
+    /// Weak capability parents captured from the invoking Tool Turn.
+    capability_context: Option<crate::capability::AgentToolCapabilityContext>,
     /// Optional lifetime boundary inherited from the session that created this
     /// executor. Keeping it on the executor prevents cached workflow/executor
     /// handles from starting new child runs after their session is closed.
@@ -156,6 +166,7 @@ impl TaskExecutor {
             search_bulkhead: None,
             search_retry_budget: None,
             search_request_coalescer: None,
+            capability_context: None,
             parent_cancellation: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
             parallel_permits: Arc::new(tokio::sync::Semaphore::new(
@@ -195,6 +206,7 @@ impl TaskExecutor {
             search_bulkhead: None,
             search_retry_budget: None,
             search_request_coalescer: None,
+            capability_context: None,
             parent_cancellation: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
             parallel_permits: Arc::new(tokio::sync::Semaphore::new(
@@ -230,6 +242,7 @@ impl TaskExecutor {
         scoped.search_bulkhead = Some(ctx.search_bulkhead());
         scoped.search_retry_budget = Some(ctx.search_retry_budget());
         scoped.search_request_coalescer = Some(ctx.search_request_coalescer());
+        scoped.capability_context = ctx.capability_context();
         if ctx.has_run_governance() {
             scoped.parent_context = scoped.parent_context.take().map(|parent| {
                 parent.with_run_governance(
@@ -337,10 +350,13 @@ impl TaskExecutor {
         self.execute_with_task_id_scoped(
             task_id,
             params,
-            event_tx,
-            parent_session_id,
-            true,
-            parent_cancellation,
+            ScopedTaskExecution {
+                event_tx,
+                parent_session_id,
+                emit_start: true,
+                parent_cancellation,
+                admitted_capability_subtask: None,
+            },
         )
         .await
     }
@@ -360,10 +376,13 @@ impl TaskExecutor {
         self.execute_with_task_id_scoped(
             task_id,
             params,
-            event_tx,
-            parent_session_id,
-            emit_start,
-            self.parent_cancellation.as_ref(),
+            ScopedTaskExecution {
+                event_tx,
+                parent_session_id,
+                emit_start,
+                parent_cancellation: self.parent_cancellation.as_ref(),
+                admitted_capability_subtask: None,
+            },
         )
         .await
     }
@@ -372,18 +391,76 @@ impl TaskExecutor {
         &self,
         task_id: String,
         params: TaskParams,
-        event_tx: Option<broadcast::Sender<AgentEvent>>,
-        parent_session_id: Option<&str>,
-        emit_start: bool,
-        parent_cancellation: Option<&CancellationToken>,
+        execution: ScopedTaskExecution<'_>,
     ) -> Result<TaskResult> {
-        if parent_cancellation.is_some_and(CancellationToken::is_cancelled) {
+        let ScopedTaskExecution {
+            event_tx,
+            parent_session_id,
+            emit_start,
+            parent_cancellation,
+            admitted_capability_subtask,
+        } = execution;
+        let was_promoted = admitted_capability_subtask.is_some();
+        if !was_promoted && parent_cancellation.is_some_and(CancellationToken::is_cancelled) {
             anyhow::bail!("Operation cancelled by parent session");
         }
 
-        let cancel_token = parent_cancellation
-            .map(CancellationToken::child_token)
-            .unwrap_or_default();
+        let capability_subtask = match admitted_capability_subtask {
+            Some(subtask) => Some(subtask),
+            None => self
+                .capability_context
+                .as_ref()
+                .map(|context| context.admit_subtask(task_id.clone(), params.background))
+                .transpose()?,
+        };
+        let cancel_token = capability_subtask.as_ref().map_or_else(
+            || {
+                parent_cancellation
+                    .map(CancellationToken::child_token)
+                    .unwrap_or_default()
+            },
+            crate::capability::AgentCapabilitySubtask::cancellation,
+        );
+        let capability_runtime = capability_subtask
+            .as_ref()
+            .map(crate::capability::AgentCapabilitySubtask::runtime);
+        let execution = self
+            .execute_with_task_id_in_scope(
+                task_id,
+                params,
+                event_tx,
+                parent_session_id,
+                emit_start,
+                cancel_token,
+                capability_runtime,
+            )
+            .await;
+        let close = close_capability_subtask(capability_subtask.as_ref()).await;
+        match (execution, close) {
+            (Ok(result), Ok(())) => Ok(result),
+            (Ok(_), Err(close_error)) => Err(close_error),
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(close_error)) => {
+                tracing::warn!(
+                    error = %close_error,
+                    "Capability Subtask close also failed after delegated execution failure"
+                );
+                Err(error)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_with_task_id_in_scope(
+        &self,
+        task_id: String,
+        params: TaskParams,
+        event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<&str>,
+        emit_start: bool,
+        cancel_token: CancellationToken,
+        capability_runtime: Option<crate::capability::AgentCapabilityRuntime>,
+    ) -> Result<TaskResult> {
         // Background callers receive the task id before this future starts.
         // Register immediately so targeted cancellation also interrupts time
         // spent waiting in the global scheduler.
@@ -460,10 +537,16 @@ impl TaskExecutor {
         // here to prevent unlimited delegation nesting.
         let child_executor = if let Some(ref parent_ctx) = self.parent_context {
             if let Some(ref services) = parent_ctx.workspace_services {
-                crate::tools::ToolExecutor::new_with_workspace_services_and_artifact_limits(
+                crate::tools::ToolExecutor::new_with_workspace_services_artifact_limits_and_immutable_content_adapter(
+                        self.workspace.clone(),
+                        Arc::clone(services),
+                        crate::tools::ArtifactStoreLimits::default(),
+                        parent_ctx.immutable_content_adapter.clone(),
+                    )
+            } else if let Some(adapter) = parent_ctx.immutable_content_adapter.clone() {
+                crate::tools::ToolExecutor::new_with_immutable_content_adapter(
                     self.workspace.clone(),
-                    Arc::clone(services),
-                    crate::tools::ArtifactStoreLimits::default(),
+                    adapter,
                 )
             } else {
                 crate::tools::ToolExecutor::new(self.workspace.clone())
@@ -543,12 +626,15 @@ impl TaskExecutor {
         }
 
         let source_context = tool_context.clone();
-        let agent_loop = AgentLoop::new(
+        let mut agent_loop = AgentLoop::new(
             Arc::clone(&self.llm_client),
             child_executor,
             tool_context,
             child_config,
         );
+        if let Some(runtime) = capability_runtime {
+            agent_loop = agent_loop.with_capability_runtime(runtime);
+        }
 
         // Always observe the child event stream so successful source tool calls
         // survive in TaskResult metadata even when nobody subscribed to live
@@ -607,20 +693,30 @@ impl TaskExecutor {
 
         let mut structured = None;
         let (mut output, mut success) = if tool_free && output_schema.is_some() {
+            let operation = agent_loop.begin_capability_operation(
+                0,
+                &cancel_token,
+                "structured task generation",
+            )?;
             let llm_client = agent_loop.scoped_llm_client_for_parts(
                 Some(&session_id),
                 &child_llm_event_tx,
-                &cancel_token,
+                operation.cancellation(),
             );
-            match Self::generate_structured_task(
+            let generation = Self::generate_structured_task(
                 &*llm_client,
                 &params.prompt,
                 tool_free_system.as_deref(),
                 output_schema.clone().expect("schema checked above"),
-                &cancel_token,
+                operation.cancellation(),
             )
-            .await
-            {
+            .await;
+            let generation = settle_task_capability_operation(
+                generation,
+                operation.close().await,
+                "structured task generation",
+            );
+            match generation {
                 Ok(object) => {
                     let output = serde_json::to_string_pretty(&object)
                         .unwrap_or_else(|_| object.to_string());
@@ -666,13 +762,29 @@ impl TaskExecutor {
                 if let Some(object) = parse_validated_output(&output, &schema) {
                     structured = Some(object);
                 } else {
+                    let operation = agent_loop.begin_capability_operation(
+                        0,
+                        &cancel_token,
+                        "structured task coercion",
+                    )?;
                     let llm_client = agent_loop.scoped_llm_client_for_parts(
                         Some(&session_id),
                         &child_llm_event_tx,
-                        &cancel_token,
+                        operation.cancellation(),
                     );
-                    match Self::coerce_to_schema(&*llm_client, &output, schema, &cancel_token).await
-                    {
+                    let coercion = Self::coerce_to_schema(
+                        &*llm_client,
+                        &output,
+                        schema,
+                        operation.cancellation(),
+                    )
+                    .await;
+                    let coercion = settle_task_capability_operation(
+                        coercion,
+                        operation.close().await,
+                        "structured task coercion",
+                    );
+                    match coercion {
                         Ok(object) => structured = Some(object),
                         Err(error) => {
                             success = false;
@@ -791,9 +903,48 @@ impl TaskExecutor {
             let _ = tx.send(start_event.clone());
         }
 
+        let capability_admission = self
+            .capability_context
+            .as_ref()
+            .map(|context| {
+                context
+                    .admit_subtask(task_id.clone(), true)
+                    .map(|subtask| (context.background_scope().clone(), subtask))
+            })
+            .transpose();
+        let (capability_run, admitted_capability_subtask) = match capability_admission {
+            Ok(Some((run, subtask))) => (Some(run), Some(subtask)),
+            Ok(None) => (None, None),
+            Err(error) => {
+                let message = format!("Background task capability admission failed: {error}");
+                let end_event = AgentEvent::SubagentEnd {
+                    task_id: task_id.clone(),
+                    session_id: failure_session_id,
+                    agent: failure_agent,
+                    output: message.clone(),
+                    success: false,
+                    finished_ms: epoch_ms(),
+                };
+                let end_event = security_provider
+                    .as_deref()
+                    .map(|provider| crate::security::sanitize_agent_event(provider, &end_event))
+                    .unwrap_or(end_event);
+                if let Some(tx) = event_tx {
+                    let _ = tx.send(end_event);
+                }
+                tracing::error!(task_id = %task_id, "{message}");
+                return task_id;
+            }
+        };
+
         let task_id_for_spawn = task_id.clone();
         let task_id_for_log = task_id.clone();
-        tokio::spawn(async move {
+        let admission_failure_task_id = task_id.clone();
+        let admission_failure_session_id = failure_session_id.clone();
+        let admission_failure_agent = failure_agent.clone();
+        let admission_failure_events = event_tx.clone();
+        let admission_failure_security = security_provider.clone();
+        let background = async move {
             if let Some(ref tracker) = self.subagent_tracker {
                 tracker.record_event(&start_event).await;
             }
@@ -802,10 +953,13 @@ impl TaskExecutor {
                 .execute_with_task_id_scoped(
                     task_id_for_spawn,
                     params,
-                    event_tx,
-                    parent_session_id.as_deref(),
-                    false,
-                    parent_cancellation.as_ref(),
+                    ScopedTaskExecution {
+                        event_tx,
+                        parent_session_id: parent_session_id.as_deref(),
+                        emit_start: false,
+                        parent_cancellation: parent_cancellation.as_ref(),
+                        admitted_capability_subtask,
+                    },
                 )
                 .await
             {
@@ -830,9 +984,80 @@ impl TaskExecutor {
                 }
                 tracing::error!("Background task {} failed: {}", task_id_for_log, error);
             }
-        });
+        };
+        if let Some(run) = capability_run {
+            let task_name = format!("subagent.{task_id}");
+            if let Err(error) = run.spawn_task(task_name, async move {
+                background.await;
+                Ok(())
+            }) {
+                // Admission races with Run close fail closed: no detached
+                // child work may escape after the exact generation lease is
+                // released.
+                let message = format!("Background task capability admission failed: {error}");
+                let end_event = AgentEvent::SubagentEnd {
+                    task_id: admission_failure_task_id.clone(),
+                    session_id: admission_failure_session_id,
+                    agent: admission_failure_agent,
+                    output: message.clone(),
+                    success: false,
+                    finished_ms: epoch_ms(),
+                };
+                let end_event = admission_failure_security
+                    .as_deref()
+                    .map(|provider| crate::security::sanitize_agent_event(provider, &end_event))
+                    .unwrap_or(end_event);
+                if let Some(tx) = admission_failure_events {
+                    let _ = tx.send(end_event);
+                }
+                tracing::error!(task_id = %admission_failure_task_id, "{message}");
+            }
+        } else {
+            tokio::spawn(background);
+        }
 
         task_id
+    }
+}
+
+async fn close_capability_subtask(
+    subtask: Option<&crate::capability::AgentCapabilitySubtask>,
+) -> Result<()> {
+    let Some(subtask) = subtask else {
+        return Ok(());
+    };
+    let report = subtask.close().await?;
+    if !report.is_clean() {
+        anyhow::bail!(
+            "Capability Subtask close was incomplete (tasks failed: {}, tasks timed out: {}, child scopes failed: {}, child scopes timed out: {}, effects failed: {}, effects timed out: {})",
+            report.tasks_failed,
+            report.tasks_timed_out,
+            report.child_scopes_failed,
+            report.child_scopes_timed_out,
+            report.effects_failed,
+            report.effects_timed_out,
+        );
+    }
+    Ok(())
+}
+
+fn settle_task_capability_operation<T>(
+    execution: Result<T>,
+    close: Result<()>,
+    label: &str,
+) -> Result<T> {
+    match (execution, close) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Ok(_), Err(close_error)) => Err(close_error),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(close_error)) => {
+            tracing::warn!(
+                error = %close_error,
+                operation = label,
+                "Capability orchestration Turn close also failed after model failure"
+            );
+            Err(error)
+        }
     }
 }
 

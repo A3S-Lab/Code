@@ -2,19 +2,22 @@
 //!
 //! The executable supplies HTTP and health transport. This kernel owns only
 //! admission into existing `Agent`/`AgentSession` state and deliberately has
-//! no parallel run store, scheduler, event journal, or recovery semantics.
+//! no parallel run store, scheduler, event journal, or checkpoint authority.
 
 use crate::agent_api::{Agent, SessionOptions};
 use crate::agent_protocol::{
     AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandReceiptV1,
     AgentProtocolCommandV1, AgentProtocolError, AgentProtocolEventPageRequestV1,
-    AgentProtocolEventPageV1, AgentProtocolRunIdentityV1,
+    AgentProtocolEventPageV1, AgentProtocolRunIdentityV1, AgentProtocolRunRecoverExactV1,
 };
-use crate::agent_protocol_host::{AgentProtocolHost, AgentProtocolHostError};
+use crate::agent_protocol_host::{
+    AgentProtocolExactRecoveryError, AgentProtocolHost, AgentProtocolHostError,
+};
 use crate::error::CodeError;
 use crate::release::{
     agent_harness_compatibility_v1, AgentReleaseError, AgentReleaseManifest, AGENT_PROTOCOL_V1,
 };
+use crate::session_checkpoint::{SessionCheckpointError, SessionCheckpointExportV1};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,6 +60,33 @@ impl AgentProtocolHarnessError {
             Self::SessionCapacity => "a3s.code.agent_protocol.session_capacity",
             Self::Closed => "a3s.code.agent_protocol.harness_closed",
             Self::Workspace(_) => "a3s.code.agent_protocol.workspace_isolation",
+        }
+    }
+}
+
+/// Failures specific to one Harness-visible portable-checkpoint admission and
+/// its exact logical recovery.
+#[derive(Debug, Error)]
+pub enum AgentProtocolCheckpointRecoveryError {
+    #[error(transparent)]
+    Harness(#[from] AgentProtocolHarnessError),
+    #[error(transparent)]
+    Exact(#[from] AgentProtocolExactRecoveryError),
+    #[error(transparent)]
+    Checkpoint(#[from] SessionCheckpointError),
+    #[error("A3S Code Harness session is already active without the exact target Run")]
+    SessionAlreadyActive,
+}
+
+impl AgentProtocolCheckpointRecoveryError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Harness(error) => error.code(),
+            Self::Exact(error) => error.code(),
+            Self::Checkpoint(error) => error.code(),
+            Self::SessionAlreadyActive => {
+                "a3s.code.agent_protocol.checkpoint_session_already_active"
+            }
         }
     }
 }
@@ -224,6 +254,214 @@ impl AgentProtocolHarness {
         );
         let host = self.host_for(command.identity(), create_if_missing).await?;
         host.execute(command).await.map_err(Into::into)
+    }
+
+    /// Validate, restore, execute, and publish one portable checkpoint as one
+    /// Harness-visible admission.
+    ///
+    /// The complete descriptor is matched before payload decode. For a missing
+    /// Session, Code builds an unpublished Session directly from the semantic
+    /// snapshot and starts the target Run from the logical value decoded from
+    /// those same canonical bytes. Only successful admission enters the
+    /// Harness session map; no split SessionStore writes are required first.
+    /// External store revision fencing remains the embedding host's boundary.
+    pub async fn execute_checkpoint_recovery(
+        &self,
+        request: &AgentProtocolRunRecoverExactV1,
+        checkpoint: SessionCheckpointExportV1,
+    ) -> Result<AgentProtocolCommandReceiptV1, AgentProtocolCheckpointRecoveryError> {
+        self.execute_checkpoint_recovery_inner(request, checkpoint, None)
+            .await
+    }
+
+    /// Restore a portable checkpoint whose source Run used a non-empty scoped
+    /// capability generation.
+    ///
+    /// The batch is consumed only for a missing Session and must reconstruct
+    /// the checkpoint's exact historical generation. Existing Sessions are
+    /// never rolled backward by this API.
+    pub async fn execute_checkpoint_recovery_with_capability_batch(
+        &self,
+        request: &AgentProtocolRunRecoverExactV1,
+        checkpoint: SessionCheckpointExportV1,
+        capability_batch: crate::capability::SessionCapabilityBatch,
+    ) -> Result<AgentProtocolCommandReceiptV1, AgentProtocolCheckpointRecoveryError> {
+        self.execute_checkpoint_recovery_inner(request, checkpoint, Some(capability_batch))
+            .await
+    }
+
+    async fn execute_checkpoint_recovery_inner(
+        &self,
+        request: &AgentProtocolRunRecoverExactV1,
+        checkpoint: SessionCheckpointExportV1,
+        mut capability_batch: Option<crate::capability::SessionCapabilityBatch>,
+    ) -> Result<AgentProtocolCommandReceiptV1, AgentProtocolCheckpointRecoveryError> {
+        request
+            .validate()
+            .map_err(AgentProtocolHarnessError::from)?;
+        if request.identity.agent_release_identity != self.manifest.artifact().digest() {
+            return Err(
+                AgentProtocolHarnessError::from(AgentProtocolHostError::ReleaseMismatch).into(),
+            );
+        }
+        if request.checkpoint != *checkpoint.descriptor() {
+            return Err(SessionCheckpointError::ContentDrift(
+                "recovery request descriptor does not match the supplied portable checkpoint"
+                    .into(),
+            )
+            .into());
+        }
+        let payload = checkpoint.into_open()?;
+        let (mut snapshot, logical_resume) = payload.into_parts();
+        let logical_resume = logical_resume.ok_or_else(|| {
+            SessionCheckpointError::InvalidPayload(
+                "exact recovery requires a logical-resume component".into(),
+            )
+        })?;
+
+        let _admission = self.admission.lock().await;
+        if self.is_closed() {
+            return Err(AgentProtocolHarnessError::Closed.into());
+        }
+        if let Some(host) = self
+            .sessions
+            .read()
+            .await
+            .get(&request.identity.session_id)
+            .map(|entry| Arc::clone(&entry.host))
+        {
+            if capability_batch.is_some() {
+                return Err(AgentProtocolCheckpointRecoveryError::SessionAlreadyActive);
+            }
+            if host
+                .session()
+                .run_snapshot(&request.identity.run_id)
+                .await
+                .is_none()
+            {
+                return Err(AgentProtocolCheckpointRecoveryError::SessionAlreadyActive);
+            }
+            return host
+                .execute_exact_recovery_from_checkpoint(request, logical_resume)
+                .await
+                .map_err(Into::into);
+        }
+        if self.sessions.read().await.len() >= self.max_sessions {
+            return Err(AgentProtocolHarnessError::SessionCapacity.into());
+        }
+
+        let options = self
+            .session_options
+            .clone()
+            .with_session_id(&request.identity.session_id)
+            .with_auto_save(true);
+        if let Some(persisted) = self
+            .agent
+            .load_protocol_session_snapshot_async(&request.identity.session_id, &options)
+            .await
+            .map_err(AgentProtocolHarnessError::from)?
+        {
+            let target_already_persisted = persisted
+                .run_records
+                .iter()
+                .any(|record| record.snapshot.id == request.identity.run_id);
+            if target_already_persisted {
+                snapshot = persisted;
+            } else {
+                request.checkpoint.snapshot.validate_for(&persisted)?;
+            }
+        }
+
+        let workspace = HarnessSessionWorkspace::prepare(PathBuf::from(&self.workspace)).await?;
+        let session = self
+            .agent
+            .restore_protocol_checkpoint_session_async(
+                snapshot,
+                workspace.path().to_string_lossy().into_owned(),
+                options,
+            )
+            .await
+            .map_err(AgentProtocolHarnessError::from)?;
+        match (&logical_resume.capability_binding, capability_batch.take()) {
+            (Some(expected), batch) => match session.ensure_recovery_capability_binding(expected) {
+                Ok(()) if batch.is_none() => {}
+                Ok(()) => {
+                    session.close().await;
+                    return Err(SessionCheckpointError::InvalidPayload(
+                        "a recovery capability batch was supplied even though the restored Session already matches the checkpoint"
+                            .into(),
+                    )
+                    .into());
+                }
+                Err(crate::capability::RunCapabilityBindingError::ContentDrift { .. }) => {
+                    let Some(batch) = batch else {
+                        session.close().await;
+                        return Err(SessionCheckpointError::ContentDrift(
+                            "the portable checkpoint requires a scoped capability generation that was not reconstructed by the host"
+                                .into(),
+                        )
+                        .into());
+                    };
+                    if let Err(error) = session
+                        .bootstrap_recovery_capability_batch(
+                            expected,
+                            batch,
+                            tokio_util::sync::CancellationToken::new(),
+                        )
+                        .await
+                    {
+                        session.close().await;
+                        return Err(AgentProtocolHarnessError::Code(error.into()).into());
+                    }
+                }
+                Err(error) => {
+                    session.close().await;
+                    return Err(SessionCheckpointError::InvalidPayload(format!(
+                        "the portable checkpoint capability binding is invalid: {error}"
+                    ))
+                    .into());
+                }
+            },
+            (None, Some(_)) => {
+                session.close().await;
+                return Err(SessionCheckpointError::InvalidPayload(
+                    "a recovery capability batch cannot accompany a legacy unbound checkpoint"
+                        .into(),
+                )
+                .into());
+            }
+            (None, None) => {}
+        }
+        let session = Arc::new(session);
+        let host = match AgentProtocolHost::from_manifest(&self.manifest, Arc::clone(&session)) {
+            Ok(host) => Arc::new(host),
+            Err(error) => {
+                session.close().await;
+                return Err(AgentProtocolHarnessError::from(error).into());
+            }
+        };
+        let receipt = match host
+            .execute_exact_recovery_from_checkpoint(request, logical_resume)
+            .await
+        {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                host.session().close().await;
+                return Err(error.into());
+            }
+        };
+        if self.is_closed() {
+            host.session().close().await;
+            return Err(AgentProtocolHarnessError::Closed.into());
+        }
+        self.sessions.write().await.insert(
+            request.identity.session_id.clone(),
+            Arc::new(HarnessSessionEntry {
+                host,
+                _workspace: workspace,
+            }),
+        );
+        Ok(receipt)
     }
 
     /// Route a bounded event query into the same authoritative Code session.

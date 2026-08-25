@@ -6,10 +6,12 @@ use a3s_code_core::{
     CognitiveKnowledgeBindingV1, CognitivePackageBindingV1, EventEnvelopeV1, ModelInputKindV1,
     ModelInputSnapshotV1, ModelPresentationApplicationV1, ModelPresentationSnapshotV1,
     ModelUsageSnapshotV1, RunCapabilitySnapshotV1, RunPolicyCeilingSnapshotV1, TokenUsage,
-    ToolPresentationProfileV1, ToolResultContextUsageV1, WorkspaceCapabilitySnapshotV1,
+    ToolPresentationProfileV1, ToolRequestOriginV1, ToolRequestSnapshotV1,
+    ToolResultContextUsageV1, WorkspaceCapabilitySnapshotV1,
     WorkspaceRetrievalCapabilitySnapshotV1, WorkspaceRetrievalPhase, AGENT_EVENT_TYPES_V1,
     MODEL_INPUT_SNAPSHOT_V1_SCHEMA, MODEL_PRESENTATION_SNAPSHOT_V1_SCHEMA,
     MODEL_USAGE_SNAPSHOT_V1_SCHEMA, RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA,
+    TOOL_REQUEST_SNAPSHOT_V1_SCHEMA,
 };
 use serde_json::json;
 
@@ -171,6 +173,18 @@ fn model_usage_snapshot() -> ModelUsageSnapshotV1 {
     }
 }
 
+fn tool_request_snapshot() -> ToolRequestSnapshotV1 {
+    ToolRequestSnapshotV1 {
+        schema: TOOL_REQUEST_SNAPSHOT_V1_SCHEMA.to_string(),
+        origin: ToolRequestOriginV1::Agent,
+        tool_id_digest: digest('6'),
+        tool_name_digest: digest('7'),
+        arguments_bytes: 24,
+        arguments_digest: digest('8'),
+        snapshot_digest: digest('9'),
+    }
+}
+
 fn representative_events() -> Vec<EventCase> {
     let goal = AgentGoal::new("ship");
     let goal_payload = serde_json::to_value(&goal).expect("representative goal must serialize");
@@ -232,6 +246,16 @@ fn representative_events() -> Vec<EventCase> {
             },
             "delta",
             json!(r#"{"path":""#),
+        ),
+        case(
+            "tool_request_bound",
+            AgentEvent::ToolRequestBound {
+                tool_id: "tool-1".into(),
+                tool_name: "read".into(),
+                snapshot: tool_request_snapshot(),
+            },
+            "snapshot",
+            json!(tool_request_snapshot()),
         ),
         case(
             "tool_execution_start",
@@ -738,6 +762,17 @@ fn sdk_projection_derives_reasoning_and_terminal_fields_from_the_envelope() {
 #[test]
 fn sdk_projection_preserves_authoritative_tool_arguments() {
     let args = json!({ "path": "README.md" });
+    let request = AgentEventProjectionV1::try_from(&AgentEvent::ToolRequestBound {
+        tool_id: "tool-1".into(),
+        tool_name: "read".into(),
+        snapshot: tool_request_snapshot(),
+    })
+    .expect("tool request evidence should project");
+    assert_eq!(request.tool_id.as_deref(), Some("tool-1"));
+    assert_eq!(request.tool_name.as_deref(), Some("read"));
+    assert!(request.payload.get("args").is_none());
+    assert_eq!(request.data_json, Some(request.payload_json.clone()));
+
     let execution = AgentEventProjectionV1::try_from(&AgentEvent::ToolExecutionStart {
         id: "tool-1".into(),
         name: "read".into(),

@@ -37,6 +37,8 @@ pub enum CapabilityScopeError {
     },
     #[error("Capability scope '{scope_id}' is no longer active")]
     ScopeInactive { scope_id: String },
+    #[error("Tool invocation has no active Agent Turn capability scope")]
+    AgentTurnScopeUnavailable,
     #[error("Capability scope '{scope_id}' no longer accepts lifecycle registrations")]
     SupervisorClosed { scope_id: String },
     #[error("Capability scope requires an active Tokio runtime")]

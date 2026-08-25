@@ -8,6 +8,7 @@
 use crate::event_protocol::{run_event_envelope_v1, EventEnvelopeV1, EVENT_ENVELOPE_V1_VERSION};
 pub use crate::release::AGENT_PROTOCOL_V1;
 use crate::run::{RunEventPage, RunEventRecord, RunStatus};
+use crate::session_checkpoint::{SessionCheckpointDescriptorV1, SessionLogicalResumeEvidenceV1};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -164,6 +165,55 @@ impl AgentProtocolRunRecoverV1 {
     }
 }
 
+/// Resume one exact, content-addressed A3S Code tool-round boundary.
+///
+/// This is an additive recovery request beside [`AgentProtocolRunRecoverV1`].
+/// The original request keeps its "latest checkpoint for this run" semantics
+/// and wire shape, while this request binds admission and its receipt to the
+/// complete secret-free descriptor of one portable Session checkpoint. The
+/// descriptor covers the semantic snapshot, logical-resume boundary, and
+/// aggregate canonical payload identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProtocolRunRecoverExactV1 {
+    pub schema: String,
+    pub request_id: String,
+    pub identity: AgentProtocolRunIdentityV1,
+    pub checkpoint: SessionCheckpointDescriptorV1,
+}
+
+impl AgentProtocolRunRecoverExactV1 {
+    pub const SCHEMA: &'static str = "a3s.code.agent-run-recover-exact.v1";
+
+    pub fn validate(&self) -> Result<(), AgentProtocolError> {
+        validate_schema(&self.schema, Self::SCHEMA)?;
+        validate_id("request_id", &self.request_id)?;
+        self.identity.validate()?;
+        self.checkpoint
+            .validate()
+            .map_err(|_| AgentProtocolError::InvalidField("checkpoint"))?;
+        let logical_resume = self.logical_resume()?;
+        if self.checkpoint.snapshot.session_id != self.identity.session_id
+            || logical_resume.session_id != self.identity.session_id
+            || logical_resume.source_run_id == self.identity.run_id
+        {
+            return Err(AgentProtocolError::InvalidField("checkpoint"));
+        }
+        Ok(())
+    }
+
+    pub fn logical_resume(&self) -> Result<&SessionLogicalResumeEvidenceV1, AgentProtocolError> {
+        self.checkpoint
+            .logical_resume
+            .as_ref()
+            .ok_or(AgentProtocolError::InvalidField("checkpoint"))
+    }
+
+    pub fn digest(&self) -> Result<String, AgentProtocolError> {
+        digest_validated(self, || self.validate())
+    }
+}
+
 /// Closed actions accepted by the version-one Code Agent protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -306,6 +356,23 @@ impl AgentProtocolCommandReceiptV1 {
         }
         if self.action == AgentProtocolCommandActionV1::Cancel && !self.state.is_terminal() {
             return Err(AgentProtocolError::InvalidField("state"));
+        }
+        Ok(())
+    }
+
+    /// Verify that this receipt settles one exact checkpoint recovery request.
+    pub fn validate_for_exact_recovery(
+        &self,
+        request: &AgentProtocolRunRecoverExactV1,
+    ) -> Result<(), AgentProtocolError> {
+        request.validate()?;
+        self.validate()?;
+        if self.action != AgentProtocolCommandActionV1::Recover
+            || self.request_id != request.request_id
+            || self.identity != request.identity
+            || self.command_digest != request.digest()?
+        {
+            return Err(AgentProtocolError::IdentityMismatch);
         }
         Ok(())
     }
@@ -478,6 +545,12 @@ impl AgentProtocolEventPageV1 {
         self.identity.validate()?;
         if self.events.len() > AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE {
             return Err(AgentProtocolError::InvalidField("events"));
+        }
+        if self
+            .after_event_sequence
+            .is_some_and(|sequence| sequence >= self.latest_sequence_exclusive)
+        {
+            return Err(AgentProtocolError::InvalidField("after_event_sequence"));
         }
         if self
             .first_available_sequence

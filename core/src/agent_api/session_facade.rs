@@ -8,10 +8,7 @@ impl std::fmt::Debug for AgentSession {
             .field("task_priority", &self.task_priority)
             .field(
                 "cognitive_package_binding",
-                &self
-                    .cognitive_context
-                    .as_ref()
-                    .map(crate::cognitive_context::CognitiveContextSession::binding),
+                &self.current_cognitive_package_binding(),
             )
             .field("auto_save", &self.auto_save)
             .finish()
@@ -156,13 +153,29 @@ impl AgentSession {
         self.correlation_id.as_deref()
     }
 
-    /// Return the exact cognitive-package generation bound to this session.
+    /// Return the Session-static cognitive-package binding, if configured.
+    ///
+    /// This compatibility accessor does not observe a later atomic Knowledge
+    /// projection. New host code should use
+    /// [`current_cognitive_package_binding`](Self::current_cognitive_package_binding).
     pub fn cognitive_package_binding(
         &self,
     ) -> Option<&crate::cognitive_context::CognitivePackageBindingV1> {
         self.cognitive_context
             .as_ref()
             .map(crate::cognitive_context::CognitiveContextSession::binding)
+    }
+
+    /// Return the exact cognitive-package binding visible to the next Run.
+    ///
+    /// The returned value is owned because the current atomic catalog
+    /// generation is pinned only for this read. An admitted Run records its
+    /// own binding and remains on that generation across later cutover.
+    pub fn current_cognitive_package_binding(
+        &self,
+    ) -> Option<crate::cognitive_context::CognitivePackageBindingV1> {
+        let projection = self.capability_catalog.pin();
+        super::agent_loop_runtime::cognitive_binding_for_projection(self, projection.projection())
     }
 
     /// Proactively close the session and release its in-flight work.
@@ -239,6 +252,45 @@ impl AgentSession {
         run_id: &str,
     ) -> Result<AgentRunSpawn> {
         conversation_runtime::spawn_recovery_with_run_id(self, checkpoint_run_id, run_id).await
+    }
+
+    pub(crate) async fn prepare_recovery_with_evidence(
+        &self,
+        evidence: &crate::session_checkpoint::SessionLogicalResumeEvidenceV1,
+        checkpoint_identity: &str,
+        run_id: &str,
+    ) -> std::result::Result<super::ExactRecoveryPreparation, super::ExactRecoveryError> {
+        conversation_runtime::prepare_recovery_with_evidence(
+            self,
+            evidence,
+            checkpoint_identity,
+            run_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_recovery_from_checkpoint(
+        &self,
+        evidence: &crate::session_checkpoint::SessionLogicalResumeEvidenceV1,
+        checkpoint_identity: &str,
+        run_id: &str,
+        checkpoint: crate::loop_checkpoint::LoopCheckpoint,
+    ) -> std::result::Result<super::ExactRecoveryPreparation, super::ExactRecoveryError> {
+        conversation_runtime::prepare_recovery_from_checkpoint(
+            self,
+            evidence,
+            checkpoint_identity,
+            run_id,
+            checkpoint,
+        )
+        .await
+    }
+
+    pub(crate) async fn spawn_prepared_recovery(
+        &self,
+        prepared: super::PreparedExactRecovery,
+    ) -> std::result::Result<AgentRunSpawn, super::ExactRecoveryError> {
+        conversation_runtime::spawn_prepared_recovery(self, prepared).await
     }
 
     pub(crate) async fn record_workspace_change_set(

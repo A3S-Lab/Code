@@ -55,10 +55,11 @@ pub(super) fn build_session_capabilities(
     let workspace = resolve_workspace_services(&input, session_lifetime)?;
     let workspace_services = workspace.services;
     let tool_executor = Arc::new(
-        ToolExecutor::new_with_workspace_services_and_artifact_limits(
+        ToolExecutor::new_with_workspace_services_artifact_limits_and_immutable_content_adapter(
             input.workspace.display().to_string(),
             workspace_services,
             artifact_limits,
+            input.opts.immutable_content_adapter.clone(),
         ),
     );
     tool_executor
@@ -318,6 +319,7 @@ fn register_task_capability(
         confirmation_manager: input.opts.confirmation_manager.clone(),
         enforce_active_skill_tool_restrictions: input.opts.enforce_active_skill_tool_restrictions,
         workspace_services: Some(tool_executor.registry().context().workspace_services),
+        immutable_content_adapter: input.opts.immutable_content_adapter.clone(),
         sandbox_handle: input.opts.sandbox_handle.clone(),
         tool_presentation_profile: Some(
             input

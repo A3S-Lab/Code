@@ -21,8 +21,13 @@ use tokio_util::sync::CancellationToken;
 
 mod agent_projection;
 mod command_projection;
+mod context_projection;
+mod flow_projection;
 mod hook_projection;
+mod knowledge_projection;
+mod knowledge_surface_projection;
 mod mcp_projection;
+mod ui_projection;
 
 fn digest(byte: char) -> Sha256Digest {
     Sha256Digest::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()
@@ -636,7 +641,7 @@ fn provider(
 }
 
 #[test]
-fn session_batch_accepts_migrated_kinds_and_keeps_unmigrated_kinds_fail_closed() {
+fn session_batch_accepts_migrated_kinds() {
     let acquired = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
     let agent_generation = use_generation(1, 'a');
@@ -686,22 +691,44 @@ fn session_batch_accepts_migrated_kinds_and_keeps_unmigrated_kinds_fail_closed()
     )
     .is_ok());
 
-    let flow_generation = use_generation(5, 'c');
-    let (flow_set, _) = use_kind_set(
+    let context_generation = use_generation(5, 'c');
+    let (context_set, _) = use_kind_set(
         5,
+        context_generation.clone(),
+        CapabilityKind::Context,
+        &[("projected-context", 'd')],
+    );
+    assert!(SessionCapabilityBatch::from_use_projection(
+        context_set,
+        provider(context_generation, &acquired, &dropped),
+    )
+    .is_ok());
+
+    let flow_generation = use_generation(6, 'e');
+    let (flow_set, _) = use_kind_set(
+        6,
         flow_generation.clone(),
         CapabilityKind::Flow,
-        &[("projected-flow", 'd')],
+        &[("projected-flow", 'f')],
     );
-    assert!(matches!(
-        SessionCapabilityBatch::from_use_projection(
-            flow_set,
-            provider(flow_generation, &acquired, &dropped),
-        ),
-        Err(CapabilityRuntimeError::UnsupportedSessionKind {
-            kind: CapabilityKind::Flow,
-        })
-    ));
+    assert!(SessionCapabilityBatch::from_use_projection(
+        flow_set,
+        provider(flow_generation, &acquired, &dropped),
+    )
+    .is_ok());
+
+    let knowledge_generation = use_generation(7, 'a');
+    let (knowledge_set, _) = use_kind_set(
+        7,
+        knowledge_generation.clone(),
+        CapabilityKind::Knowledge,
+        &[("projected-knowledge", 'b')],
+    );
+    assert!(SessionCapabilityBatch::from_use_projection(
+        knowledge_set,
+        provider(knowledge_generation, &acquired, &dropped),
+    )
+    .is_ok());
 }
 
 #[tokio::test]

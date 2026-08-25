@@ -4,17 +4,19 @@
 //! Exact command replay is resolved by the session's authoritative run store,
 //! and event pages are projected directly from that same store.
 
-use crate::agent_api::{AgentRunSpawn, AgentSession};
+use crate::agent_api::{AgentRunSpawn, AgentSession, ExactRecoveryError, ExactRecoveryPreparation};
 use crate::agent_protocol::{
     validate_lower_sha256, AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1,
     AgentProtocolCommandReceiptV1, AgentProtocolCommandV1, AgentProtocolError,
     AgentProtocolEventPageRequestV1, AgentProtocolEventPageV1, AgentProtocolRunIdentityV1,
-    AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1, AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1,
-    AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES, AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE,
+    AgentProtocolRunRecoverExactV1, AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1,
+    AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1, AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES,
+    AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE,
 };
 use crate::error::CodeError;
 use crate::release::{AgentReleaseManifest, AGENT_PROTOCOL_V1};
 use crate::run::{RunSnapshot, RunWorkspaceChangeSet};
+use crate::session_checkpoint::SessionCheckpointError;
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -60,6 +62,42 @@ impl AgentProtocolHostError {
             Self::ChangeSetPending => "a3s.code.agent_protocol.change_set_pending",
             Self::ChangeSetUnavailable => "a3s.code.agent_protocol.change_set_unavailable",
             Self::Code(error) => error.code(),
+        }
+    }
+}
+
+/// Failures specific to the additive evidence-bound recovery entry point.
+///
+/// Keeping checkpoint drift in this adjacent error preserves the variant set
+/// of [`AgentProtocolHostError`] for existing v1 command callers.
+#[derive(Debug, Error)]
+pub enum AgentProtocolExactRecoveryError {
+    #[error(transparent)]
+    Host(#[from] AgentProtocolHostError),
+    #[error(transparent)]
+    Checkpoint(#[from] SessionCheckpointError),
+}
+
+impl AgentProtocolExactRecoveryError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Host(error) => error.code(),
+            Self::Checkpoint(error) => error.code(),
+        }
+    }
+}
+
+impl From<AgentProtocolError> for AgentProtocolExactRecoveryError {
+    fn from(error: AgentProtocolError) -> Self {
+        Self::Host(AgentProtocolHostError::Protocol(error))
+    }
+}
+
+impl From<ExactRecoveryError> for AgentProtocolExactRecoveryError {
+    fn from(error: ExactRecoveryError) -> Self {
+        match error {
+            ExactRecoveryError::Checkpoint(error) => Self::Checkpoint(error),
+            ExactRecoveryError::Code(error) => Self::Host(AgentProtocolHostError::Code(error)),
         }
     }
 }
@@ -202,6 +240,96 @@ impl AgentProtocolHost {
         Ok(receipt)
     }
 
+    /// Recover only when the locally loadable loop boundary matches the
+    /// logical component of the complete portable-checkpoint descriptor.
+    ///
+    /// This additive entry point leaves [`AgentProtocolCommandV1`] and its v1
+    /// transport shape unchanged. Validation pins the immutable checkpoint in
+    /// memory before workspace baseline capture and before the target Run is
+    /// admitted, so a concurrently overwritten store entry cannot change what
+    /// the worker resumes.
+    pub async fn execute_exact_recovery(
+        &self,
+        request: &AgentProtocolRunRecoverExactV1,
+    ) -> Result<AgentProtocolCommandReceiptV1, AgentProtocolExactRecoveryError> {
+        request.validate()?;
+        self.validate_identity(&request.identity)?;
+        let logical_resume = request.logical_resume()?;
+
+        let _change_set_admission = self.change_set_admission.lock().await;
+        let prepared = self
+            .session
+            .prepare_recovery_with_evidence(
+                logical_resume,
+                &request.checkpoint.descriptor_digest,
+                &request.identity.run_id,
+            )
+            .await?;
+        self.finish_exact_recovery(request, prepared).await
+    }
+
+    /// Recover from the logical value decoded from the same validated portable
+    /// checkpoint as `request`, without first publishing split store writes.
+    pub async fn execute_exact_recovery_from_checkpoint(
+        &self,
+        request: &AgentProtocolRunRecoverExactV1,
+        checkpoint: crate::loop_checkpoint::LoopCheckpoint,
+    ) -> Result<AgentProtocolCommandReceiptV1, AgentProtocolExactRecoveryError> {
+        request.validate()?;
+        self.validate_identity(&request.identity)?;
+        let logical_resume = request.logical_resume()?;
+
+        let _change_set_admission = self.change_set_admission.lock().await;
+        let prepared = self
+            .session
+            .prepare_recovery_from_checkpoint(
+                logical_resume,
+                &request.checkpoint.descriptor_digest,
+                &request.identity.run_id,
+                checkpoint,
+            )
+            .await?;
+        self.finish_exact_recovery(request, prepared).await
+    }
+
+    async fn finish_exact_recovery(
+        &self,
+        request: &AgentProtocolRunRecoverExactV1,
+        prepared: ExactRecoveryPreparation,
+    ) -> Result<AgentProtocolCommandReceiptV1, AgentProtocolExactRecoveryError> {
+        let replayed = match prepared {
+            ExactRecoveryPreparation::Replayed(spawned) => spawned.replayed(),
+            ExactRecoveryPreparation::Ready(prepared) => {
+                let baseline = self.prepare_change_set(&request.identity).await;
+                let spawned = match self.session.spawn_prepared_recovery(prepared).await {
+                    Ok(spawned) => spawned,
+                    Err(error) => {
+                        self.mark_change_set_unavailable(&request.identity).await;
+                        return Err(error.into());
+                    }
+                };
+                self.detach_with_change_set_capture(&request.identity, spawned, baseline)
+                    .await
+            }
+        };
+
+        let snapshot = self.snapshot(&request.identity).await?;
+        let receipt = AgentProtocolCommandReceiptV1 {
+            schema: AgentProtocolCommandReceiptV1::SCHEMA.into(),
+            action: crate::agent_protocol::AgentProtocolCommandActionV1::Recover,
+            request_id: request.request_id.clone(),
+            identity: request.identity.clone(),
+            command_digest: request.digest()?,
+            state: snapshot.status.into(),
+            latest_event_sequence_exclusive: u64::try_from(snapshot.event_count)
+                .map_err(|_| AgentProtocolHostError::SequenceOverflow)?,
+            observed_at_ms: now_ms().max(snapshot.updated_at_ms),
+            replayed,
+        };
+        receipt.validate_for_exact_recovery(request)?;
+        Ok(receipt)
+    }
+
     /// Project a bounded cursor page directly from Code's authoritative run
     /// store without introducing a second provider event model.
     pub async fn event_page(
@@ -220,18 +348,20 @@ impl AgentProtocolHost {
                 usize::try_from(sequence).map_err(|_| AgentProtocolHostError::SequenceOverflow)
             })
             .transpose()?;
-        let snapshot = self.snapshot(identity).await?;
-        let page = self
+        let observation = self
             .session
-            .run_event_page(&identity.run_id, after_sequence, limit)
+            .run_event_observation(&identity.run_id, after_sequence, limit)
             .await
             .ok_or(AgentProtocolHostError::RunNotFound)?;
+        if observation.snapshot.session_id != identity.session_id {
+            return Err(AgentProtocolHostError::SessionMismatch);
+        }
         AgentProtocolEventPageV1::from_run_page(
             identity.clone(),
-            snapshot.status,
-            now_ms().max(snapshot.updated_at_ms),
+            observation.snapshot.status,
+            now_ms().max(observation.snapshot.updated_at_ms),
             after_sequence,
-            &page,
+            &observation.page,
         )
         .map_err(Into::into)
     }

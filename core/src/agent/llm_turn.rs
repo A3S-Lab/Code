@@ -30,6 +30,7 @@ pub(super) struct LlmTurnOutput {
 }
 
 pub(super) struct LlmTurnRequest<'a> {
+    pub(super) turn: usize,
     pub(super) augmented_system: &'a Option<String>,
     pub(super) effective_prompt: &'a str,
     pub(super) session_id: Option<&'a str>,
@@ -61,6 +62,7 @@ impl AgentLoop {
         request: LlmTurnRequest<'_>,
     ) -> anyhow::Result<LlmTurnOutput> {
         let LlmTurnRequest {
+            turn,
             augmented_system,
             effective_prompt,
             session_id,
@@ -68,7 +70,6 @@ impl AgentLoop {
             cancel_token,
             force_no_tools,
         } = request;
-        let turn = state.next_turn();
         self.ensure_turn_can_start(turn, state, event_tx, force_no_tools)
             .await?;
         self.emit_turn_start(turn, event_tx).await;

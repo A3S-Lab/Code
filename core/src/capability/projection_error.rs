@@ -56,6 +56,22 @@ pub enum CapabilityProjectionError {
         expected: String,
         actual: String,
     },
+    #[error(
+        "Capability '{capability}' descriptor surface digest {expected} does not match its runtime value digest {actual}"
+    )]
+    SurfaceDigestMismatch {
+        capability: String,
+        expected: String,
+        actual: String,
+    },
+    #[error(
+        "UI capability '{capability}' cannot bind {dependency_kind} dependency '{dependency}'"
+    )]
+    UnsupportedUiDependencyKind {
+        capability: String,
+        dependency: String,
+        dependency_kind: CapabilityKind,
+    },
     #[error("Capability transaction stages unknown target value '{capability}'")]
     UnknownStagedCapability { capability: String },
     #[error("Capability transaction stages value '{capability}' more than once")]
@@ -92,6 +108,15 @@ pub enum CapabilityProjectionError {
         "Capability transaction target generation must be {expected}, but the target set is {actual}"
     )]
     TargetGenerationMismatch { expected: u64, actual: u64 },
+    #[error(
+        "Capability recovery bootstrap requires the untouched empty generation zero catalog (found generation {actual_generation} with {actual_capabilities} capabilities)"
+    )]
+    BootstrapUnavailable {
+        actual_generation: u64,
+        actual_capabilities: usize,
+    },
+    #[error("Capability recovery bootstrap target generation must be greater than zero (found {actual})")]
+    BootstrapTargetGeneration { actual: u64 },
     #[error("Capability catalog generation is exhausted")]
     GenerationExhausted,
     #[error("Capability adapter for '{capability}' failed to prepare: {message}")]

@@ -149,12 +149,14 @@ fn benchmark_snapshot() -> SessionSnapshotV1 {
         }
     }
 
-    let mut config = SessionConfig::default();
-    config.name = "Persistence benchmark".to_owned();
-    config.workspace = "/controlled/persistence-benchmark".to_owned();
-    config.system_prompt = Some("Persist one complete deterministic generation.".to_owned());
-    config.max_context_length = 200_000;
-    config.storage_type = StorageBackend::File;
+    let config = SessionConfig {
+        name: "Persistence benchmark".to_owned(),
+        workspace: "/controlled/persistence-benchmark".to_owned(),
+        system_prompt: Some("Persist one complete deterministic generation.".to_owned()),
+        max_context_length: 200_000,
+        storage_type: StorageBackend::File,
+        ..SessionConfig::default()
+    };
 
     SessionSnapshotV1::session_only(SessionData {
         id: "persistence-performance-v1".to_owned(),
@@ -190,6 +192,7 @@ fn benchmark_snapshot() -> SessionSnapshotV1 {
         agent_template_id: Some("persistence-v1".to_owned()),
         correlation_id: Some("persistence-performance-v1".to_owned()),
         cognitive_package_binding: None,
+        immutable_content_adapter_binding: None,
     })
 }
 

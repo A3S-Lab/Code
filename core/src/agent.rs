@@ -334,6 +334,16 @@ pub enum AgentEvent {
         delta: String,
     },
 
+    /// Digest-only evidence for a validated Tool request after pre-tool hooks
+    /// have applied their final argument projection and before governance can
+    /// deny, confirm, or execute it.
+    #[serde(rename = "tool_request_bound")]
+    ToolRequestBound {
+        tool_id: String,
+        tool_name: String,
+        snapshot: crate::harness_evidence::ToolRequestSnapshotV1,
+    },
+
     /// A fully prepared tool call passed safety/confirmation and began execution.
     #[serde(rename = "tool_execution_start")]
     ToolExecutionStart {
@@ -890,9 +900,15 @@ pub(crate) struct AgentLoop {
     /// Run id under which checkpoints are stored. Reset per execution
     /// via [`AgentLoop::set_checkpoint_run`].
     pub(crate) checkpoint_run_id: Option<String>,
+    /// Complete immutable capability identity captured from the admitted Run.
+    /// Compatibility loops without a scoped Run leave this empty.
+    pub(crate) checkpoint_capability_binding: Option<crate::capability::RunCapabilityBindingV1>,
     /// The invocation shared by every model helper in the currently scoped
     /// run. Base session loops keep this empty and bind it on execution.
     bound_invocation: Option<InvocationContext>,
+    /// Weak capability parent used to create and close one real Turn scope per
+    /// provider/tool iteration. It never extends the admitted Run lease.
+    capability_runtime: Option<crate::capability::AgentCapabilityRuntime>,
 }
 
 #[cfg(test)]

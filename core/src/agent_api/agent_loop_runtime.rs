@@ -27,6 +27,8 @@ pub(super) struct PinnedRuntimeProjection {
     hook_engine: Arc<HookEngine>,
     tool_executor: Arc<ToolExecutor>,
     mcp_bindings: Vec<Arc<crate::mcp::McpBinding>>,
+    knowledge: Option<Arc<crate::cognitive_context::CognitiveContextSession>>,
+    context_providers: Vec<Arc<dyn crate::context::ContextProvider>>,
 }
 
 impl PinnedRuntimeProjection {
@@ -51,8 +53,10 @@ pub(super) fn build_agent_loop(session: &AgentSession) -> AgentLoop {
 
 pub(super) async fn build_pinned_agent_loop(
     session: &AgentSession,
+    cancellation: tokio_util::sync::CancellationToken,
 ) -> crate::error::Result<(AgentLoop, SessionCapabilityRun)> {
-    let (runtime_projection, capability_run) = pin_and_admit_runtime_projection(session).await?;
+    let (runtime_projection, capability_run, checkpoint_capability_binding) =
+        pin_and_admit_runtime_projection_with_cancellation(session, cancellation).await?;
     let run_hook_executor = match super::run_hook_executor::RunHookExecutor::new(
         session.hook_executor.clone(),
         Arc::clone(&runtime_projection.hook_engine),
@@ -78,6 +82,8 @@ pub(super) async fn build_pinned_agent_loop(
         hook_engine: _,
         tool_executor,
         mcp_bindings,
+        knowledge,
+        context_providers,
     } = runtime_projection;
     let mut config = live_config(session);
     config.hook_engine = Some(run_hook_executor);
@@ -91,6 +97,16 @@ pub(super) async fn build_pinned_agent_loop(
         .push(Arc::new(SkillCatalogContextProvider::new(Arc::clone(
             &skill_registry,
         ))));
+    if let Some(knowledge) = knowledge {
+        // A projected Knowledge value is the exact cognitive authority for
+        // this Run. The Session-static provider is a durable compatibility or
+        // resume seed and must not remain visible beside the projected value.
+        config
+            .context_providers
+            .retain(|provider| provider.cognitive_package_binding().is_none());
+        config.context_providers.push(knowledge);
+    }
+    config.context_providers.extend(context_providers);
     config.tools = tool_executor.definitions();
 
     // The Skill and search_skills built-ins capture a registry and executor.
@@ -124,8 +140,12 @@ pub(super) async fn build_pinned_agent_loop(
     }
     config.tools = tool_executor.definitions();
 
+    let capability_runtime =
+        crate::capability::AgentCapabilityRuntime::from_run(capability_run.run_scope());
     Ok((
-        finish_agent_loop(session, tool_executor, config),
+        finish_agent_loop(session, tool_executor, config)
+            .with_checkpoint_capability_binding(checkpoint_capability_binding)
+            .with_capability_runtime(capability_runtime),
         capability_run,
     ))
 }
@@ -133,11 +153,27 @@ pub(super) async fn build_pinned_agent_loop(
 pub(super) async fn pin_and_admit_runtime_projection(
     session: &AgentSession,
 ) -> crate::error::Result<(PinnedRuntimeProjection, SessionCapabilityRun)> {
+    let (runtime, run, _) = pin_and_admit_runtime_projection_with_cancellation(
+        session,
+        session.session_cancel.child_token(),
+    )
+    .await?;
+    Ok((runtime, run))
+}
+
+async fn pin_and_admit_runtime_projection_with_cancellation(
+    session: &AgentSession,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> crate::error::Result<(
+    PinnedRuntimeProjection,
+    SessionCapabilityRun,
+    crate::capability::RunCapabilityBindingV1,
+)> {
     // Pin the Code generation and compatibility registries under the same
     // mutation boundary. A Run therefore linearizes either before or after a
     // host mutation and never combines a capability projection with a newer
     // compatibility name map.
-    let (projection, ceiling, runtime_projection) = {
+    let (projection, ceiling, runtime_projection, checkpoint_capability_binding) = {
         let _admission = session
             .close_handle
             .immediate_extension_mutation
@@ -148,18 +184,23 @@ pub(super) async fn pin_and_admit_runtime_projection(
         }
         let projection = session.capability_catalog.pin();
         let ceiling = session.capability_run_ceiling(projection.projection().set())?;
+        let checkpoint_capability_binding =
+            crate::capability::RunCapabilityBindingV1::from_set_and_ceiling(
+                projection.projection().set(),
+                &ceiling,
+            )
+            .map_err(|error| crate::error::CodeError::Internal(anyhow::anyhow!(error)))?;
         let runtime_projection = pin_runtime_projection(session, projection.projection())?;
-        (projection, ceiling, runtime_projection)
+        (
+            projection,
+            ceiling,
+            runtime_projection,
+            checkpoint_capability_binding,
+        )
     };
 
-    let capability_run = SessionCapabilityRun::admit(
-        projection,
-        "active",
-        "active",
-        ceiling,
-        session.session_cancel.child_token(),
-    )
-    .await?;
+    let capability_run =
+        SessionCapabilityRun::admit(projection, "active", "active", ceiling, cancellation).await?;
     let closed_during_admission = {
         let _admission = session
             .close_handle
@@ -174,7 +215,11 @@ pub(super) async fn pin_and_admit_runtime_projection(
         }
         return Err(CapabilityRuntimeError::SessionClosed.into());
     }
-    Ok((runtime_projection, capability_run))
+    Ok((
+        runtime_projection,
+        capability_run,
+        checkpoint_capability_binding,
+    ))
 }
 
 pub(super) fn validate_capability_projection_runtime(
@@ -183,6 +228,74 @@ pub(super) fn validate_capability_projection_runtime(
     command_registry: &CommandRegistry,
 ) -> Result<(), CapabilityRuntimeError> {
     pin_runtime_projection_with_command_registry(session, projection, command_registry).map(|_| ())
+}
+
+/// Compare a persisted Run binding with the complete catalog and authority
+/// ceiling currently visible to a new Run. The short admission mutex makes the
+/// comparison one atomic read of scoped and compatibility-owned state.
+pub(super) fn validate_run_capability_binding(
+    session: &AgentSession,
+    expected: &crate::capability::RunCapabilityBindingV1,
+) -> Result<(), crate::capability::RunCapabilityBindingError> {
+    let _admission = session
+        .close_handle
+        .immediate_extension_mutation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let projection = session.capability_catalog.pin();
+    let ceiling = session
+        .capability_run_ceiling(projection.projection().set())
+        .map_err(|error| {
+            crate::capability::RunCapabilityBindingError::Encoding(error.to_string())
+        })?;
+    expected.ensure_matches(projection.projection().set(), &ceiling)
+}
+
+/// Validate stateful Knowledge cutover rules that depend on both the current
+/// and target catalog generations.
+pub(super) fn validate_capability_projection_transition(
+    session: &AgentSession,
+    current: &CapabilityProjection,
+    target: &CapabilityProjection,
+) -> Result<(), CapabilityRuntimeError> {
+    let Some(static_knowledge) = session.cognitive_context.as_ref() else {
+        return Ok(());
+    };
+    let current_knowledge = projected_knowledge(current);
+    let target_knowledge = projected_knowledge(target);
+
+    match (current_knowledge, target_knowledge) {
+        (None, Some(target)) if target.binding() != static_knowledge.binding() => {
+            Err(CapabilityRuntimeError::RuntimeValueInvalid {
+                kind: CapabilityKind::Knowledge,
+                public_name: target.provider_name().to_owned(),
+                message: "a Session-static or resumed cognitive binding must bootstrap the atomic Knowledge catalog with the same exact binding before a later generation can cut over"
+                    .to_owned(),
+            })
+        }
+        (Some(current), None) => Err(CapabilityRuntimeError::RuntimeValueInvalid {
+            kind: CapabilityKind::Knowledge,
+            public_name: current.provider_name().to_owned(),
+            message: "removing projected Knowledge would reveal a stale Session-static cognitive provider"
+                .to_owned(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Return the exact cognitive binding visible to a Run over `projection`.
+pub(super) fn cognitive_binding_for_projection(
+    session: &AgentSession,
+    projection: &CapabilityProjection,
+) -> Option<crate::cognitive_context::CognitivePackageBindingV1> {
+    projected_knowledge(projection)
+        .map(|knowledge| knowledge.binding().clone())
+        .or_else(|| {
+            session
+                .cognitive_context
+                .as_ref()
+                .map(|knowledge| knowledge.binding().clone())
+        })
 }
 
 fn pin_runtime_projection(
@@ -207,6 +320,8 @@ fn pin_runtime_projection_with_command_registry(
     let mut projected_commands = Vec::new();
     let mut projected_hooks = Vec::new();
     let mut projected_mcp = Vec::new();
+    let mut projected_knowledge = None;
+    let mut projected_context = Vec::new();
     for (_, value) in projection.iter() {
         match value {
             CapabilityValue::Tool(tool) => projected_tools.push(Arc::clone(tool)),
@@ -248,8 +363,89 @@ fn pin_runtime_projection_with_command_registry(
                 }
                 projected_mcp.push(Arc::clone(binding));
             }
-            _ => return Err(CapabilityRuntimeError::UnsupportedSessionKind { kind: value.kind() }),
+            CapabilityValue::Context(provider) => {
+                if provider.cognitive_package_binding().is_some() {
+                    return Err(CapabilityRuntimeError::RuntimeValueInvalid {
+                        kind: CapabilityKind::Context,
+                        public_name: provider.name().to_owned(),
+                        message: "a projected Context cannot carry a cognitive package binding; install exact cognitive authority through the persisted Knowledge/session boundary"
+                            .to_owned(),
+                    });
+                }
+                if session
+                    .config
+                    .context_providers
+                    .iter()
+                    .any(|current| current.name() == provider.name())
+                {
+                    return Err(CapabilityRuntimeError::RuntimeNameConflict {
+                        kind: CapabilityKind::Context,
+                        public_name: provider.name().to_owned(),
+                    });
+                }
+                projected_context.push(Arc::clone(provider));
+            }
+            CapabilityValue::Knowledge(knowledge) => {
+                knowledge.binding().validate().map_err(|error| {
+                    CapabilityRuntimeError::RuntimeValueInvalid {
+                        kind: CapabilityKind::Knowledge,
+                        public_name: knowledge.provider_name().to_owned(),
+                        message: truncate_utf8(
+                            error.to_string(),
+                            MAX_RUNTIME_VALIDATION_MESSAGE_BYTES,
+                        ),
+                    }
+                })?;
+                if projected_knowledge.is_some() {
+                    return Err(CapabilityRuntimeError::RuntimeValueInvalid {
+                        kind: CapabilityKind::Knowledge,
+                        public_name: knowledge.provider_name().to_owned(),
+                        message: "a Run must have exactly one cognitive Knowledge authority"
+                            .to_owned(),
+                    });
+                }
+                projected_knowledge = Some(Arc::clone(knowledge));
+            }
+            // KnowledgeSurface is multi-instance readiness evidence. It is
+            // intentionally not installed as Run cognitive context.
+            CapabilityValue::KnowledgeSurface(_) => {}
+            // Flow is consumed through AgentSession::projected_flow. The
+            // admitted Agent Run still pins the same catalog generation, but
+            // Flow definitions are intentionally not model-visible tools.
+            CapabilityValue::Flow(_) => {}
+            // UI is consumed through AgentSession::projected_ui. Core retains
+            // its exact document and dependencies without choosing a renderer
+            // or making it model-visible.
+            CapabilityValue::Ui(_) => {}
         }
+    }
+
+    if let Some(knowledge) = &projected_knowledge {
+        if !projected_context.is_empty() {
+            return Err(CapabilityRuntimeError::RuntimeValueInvalid {
+                kind: CapabilityKind::Knowledge,
+                public_name: knowledge.provider_name().to_owned(),
+                message:
+                    "exact Knowledge cannot accompany projected general-purpose Context providers"
+                        .to_owned(),
+            });
+        }
+        if !session.host_context_provider_names.is_empty() {
+            return Err(CapabilityRuntimeError::RuntimeValueInvalid {
+                kind: CapabilityKind::Knowledge,
+                public_name: knowledge.provider_name().to_owned(),
+                message: "exact Knowledge cannot accompany Session-static general-purpose Context providers"
+                    .to_owned(),
+            });
+        }
+    }
+    if session.cognitive_context.is_some() && !projected_context.is_empty() {
+        return Err(CapabilityRuntimeError::RuntimeValueInvalid {
+            kind: CapabilityKind::Context,
+            public_name: projected_context[0].name().to_owned(),
+            message: "general-purpose Context cannot accompany an exact Session cognitive binding"
+                .to_owned(),
+        });
     }
 
     let skill_registry = Arc::new(
@@ -331,6 +527,17 @@ fn pin_runtime_projection_with_command_registry(
         hook_engine,
         tool_executor,
         mcp_bindings: projected_mcp,
+        knowledge: projected_knowledge,
+        context_providers: projected_context,
+    })
+}
+
+fn projected_knowledge(
+    projection: &CapabilityProjection,
+) -> Option<&Arc<crate::cognitive_context::CognitiveContextSession>> {
+    projection.iter().find_map(|(_, value)| match value {
+        CapabilityValue::Knowledge(knowledge) => Some(knowledge),
+        _ => None,
     })
 }
 
@@ -377,15 +584,6 @@ fn finish_agent_loop(
     .with_model_generation_admission(session.model_generation_admission.clone());
     if let Some(queue) = &session.command_queue {
         agent_loop = agent_loop.with_queue(Arc::clone(queue));
-    }
-    // Wire per-tool-round checkpointing when the session has a store.
-    // The run id is bound later by the caller via
-    // `AgentLoop::set_checkpoint_run` once `start_run` returns.
-    if let Some(store) = &session.session_store {
-        let sink = std::sync::Arc::new(crate::loop_checkpoint::SessionStoreCheckpointSink::new(
-            std::sync::Arc::clone(store),
-        ));
-        agent_loop = agent_loop.with_checkpoint_sink(sink);
     }
     agent_loop
 }

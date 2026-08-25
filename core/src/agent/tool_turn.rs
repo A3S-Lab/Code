@@ -2,6 +2,7 @@ use super::execution_state::ExecutionLoopState;
 use super::tool_completion_runtime::ToolCompletionInput;
 use super::{AgentEvent, AgentLoop};
 use crate::llm::ToolCall;
+use crate::tools::ToolContext;
 use crate::tools::ToolInvocation;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -14,6 +15,7 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         session_id: Option<&str>,
         cancel_token: &CancellationToken,
+        tool_context: &ToolContext,
     ) -> anyhow::Result<()> {
         if self.can_run_parallel_write_batch(&tool_calls) {
             self.execute_parallel_write_batch(
@@ -22,14 +24,22 @@ impl AgentLoop {
                 event_tx,
                 session_id,
                 cancel_token,
+                tool_context,
             )
             .await;
             return Ok(());
         }
 
         for tool_call in tool_calls {
-            self.execute_sequential_tool_call(tool_call, state, event_tx, session_id, cancel_token)
-                .await?;
+            self.execute_sequential_tool_call(
+                tool_call,
+                state,
+                event_tx,
+                session_id,
+                cancel_token,
+                tool_context,
+            )
+            .await?;
         }
 
         Ok(())
@@ -42,6 +52,7 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         session_id: Option<&str>,
         cancel_token: &CancellationToken,
+        tool_context: &ToolContext,
     ) -> anyhow::Result<()> {
         state.record_tool_call();
         let tool_start = std::time::Instant::now();
@@ -76,6 +87,7 @@ impl AgentLoop {
                 session_id,
                 event_tx,
                 cancel_token,
+                tool_context,
             )
             .await;
 

@@ -122,6 +122,7 @@ pub mod search_runtime;
 pub mod security;
 #[cfg(feature = "serve")]
 pub mod serve;
+pub mod session_checkpoint;
 pub(crate) mod session_lane_queue;
 pub mod skills;
 pub(crate) mod sse;
@@ -145,28 +146,31 @@ pub mod workspace;
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentEvent, AgentResult};
 pub use agent_api::{
-    Agent, AgentRunSpawn, AgentSession, ReadFileOptions, SessionBuilder, SessionOptions,
-    ToolCallResult,
+    Agent, AgentRunSpawn, AgentSession, ProjectedFlowHandle, ProjectedUiHandle, ReadFileOptions,
+    SessionBuilder, SessionOptions, ToolCallResult,
 };
 pub use agent_protocol::{
     AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandActionV1,
     AgentProtocolCommandReceiptV1, AgentProtocolCommandV1, AgentProtocolError,
     AgentProtocolEventPageRequestV1, AgentProtocolEventPageV1, AgentProtocolEventRecordV1,
-    AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1, AgentProtocolRunRecoverV1,
-    AgentProtocolRunStartV1, AgentProtocolRunStateV1, AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1,
-    AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1, AGENT_PROTOCOL_CHANGE_SET_HTTP_PATH_V1,
-    AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1, AGENT_PROTOCOL_EVENT_PAGE_HTTP_PATH_V1,
-    AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES, AGENT_PROTOCOL_MAX_CHANGE_SET_RESPONSE_BYTES,
-    AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE, AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES,
-    AGENT_PROTOCOL_MAX_EVENT_PAGE_BYTES, AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES,
-    AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES, AGENT_PROTOCOL_MAX_EVENT_TYPE_BYTES,
-    AGENT_PROTOCOL_MAX_ID_BYTES, AGENT_PROTOCOL_MAX_PROMPT_BYTES, AGENT_PROTOCOL_MAX_REASON_BYTES,
-    AGENT_PROTOCOL_V1,
+    AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1, AgentProtocolRunRecoverExactV1,
+    AgentProtocolRunRecoverV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1,
+    AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1, AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1,
+    AGENT_PROTOCOL_CHANGE_SET_HTTP_PATH_V1, AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1,
+    AGENT_PROTOCOL_EVENT_PAGE_HTTP_PATH_V1, AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES,
+    AGENT_PROTOCOL_MAX_CHANGE_SET_RESPONSE_BYTES, AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE,
+    AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES, AGENT_PROTOCOL_MAX_EVENT_PAGE_BYTES,
+    AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES, AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES,
+    AGENT_PROTOCOL_MAX_EVENT_TYPE_BYTES, AGENT_PROTOCOL_MAX_ID_BYTES,
+    AGENT_PROTOCOL_MAX_PROMPT_BYTES, AGENT_PROTOCOL_MAX_REASON_BYTES, AGENT_PROTOCOL_V1,
 };
 pub use agent_protocol_harness::{
-    AgentProtocolHarness, AgentProtocolHarnessError, AGENT_PROTOCOL_HARNESS_MAX_SESSIONS,
+    AgentProtocolCheckpointRecoveryError, AgentProtocolHarness, AgentProtocolHarnessError,
+    AGENT_PROTOCOL_HARNESS_MAX_SESSIONS,
 };
-pub use agent_protocol_host::{AgentProtocolHost, AgentProtocolHostError};
+pub use agent_protocol_host::{
+    AgentProtocolExactRecoveryError, AgentProtocolHost, AgentProtocolHostError,
+};
 pub use code_intelligence::{
     CodeDiagnostic, CodeDiagnosticSeverity, CodeIntelligenceCapabilities, CodeIntelligenceError,
     CodeIntelligenceLanguageStatus, CodeIntelligenceResult, CodeIntelligenceState,
@@ -215,10 +219,11 @@ pub use flow_graph::{
 pub use harness_evidence::{
     HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, ModelPresentationApplicationV1,
     ModelPresentationSnapshotV1, ModelUsageSnapshotV1, RunCapabilitySnapshotV1,
-    RunPolicyCeilingSnapshotV1, ToolResultContextUsageV1, WorkspaceCapabilitySnapshotV1,
+    RunPolicyCeilingSnapshotV1, ToolRequestOriginV1, ToolRequestSnapshotV1,
+    ToolResultContextUsageV1, WorkspaceCapabilitySnapshotV1,
     WorkspaceRetrievalCapabilitySnapshotV1, MODEL_INPUT_SNAPSHOT_V1_SCHEMA,
     MODEL_PRESENTATION_SNAPSHOT_V1_SCHEMA, MODEL_USAGE_SNAPSHOT_V1_SCHEMA,
-    RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA,
+    RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA, TOOL_REQUEST_SNAPSHOT_V1_SCHEMA,
 };
 pub use llm::{
     clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,
@@ -238,6 +243,15 @@ pub use run::{
     ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunReservation,
     RunSnapshot, RunStatus, RunWorkspaceChangeSet, RunWorkspaceChangeSetError,
 };
+pub use session_checkpoint::{
+    SessionCheckpointDescriptorV1, SessionCheckpointError, SessionCheckpointExportSink,
+    SessionCheckpointExportV1, SessionCheckpointPayloadV1, SessionLogicalResumeEvidenceV1,
+    SessionSnapshotEvidenceV1, SESSION_CHECKPOINT_DESCRIPTOR_SCHEMA_V1,
+    SESSION_CHECKPOINT_ENCODING_V1, SESSION_CHECKPOINT_FORMAT_V1,
+    SESSION_CHECKPOINT_LOGICAL_RESUME_SEMANTICS_V1, SESSION_CHECKPOINT_MAX_CONTENT_BYTES,
+    SESSION_CHECKPOINT_MEDIA_TYPE_V1, SESSION_CHECKPOINT_PAYLOAD_SCHEMA_V1,
+    SESSION_LOGICAL_RESUME_EVIDENCE_SCHEMA_V1, SESSION_SNAPSHOT_EVIDENCE_SCHEMA_V1,
+};
 pub use state_graph::{
     graph_event_head, Behavior, BehaviorContext, BehaviorError, EventFilter, ExternalEvent,
     ExternalProjectionOutcome, FileGraphEventStore, FnBehavior, GraphDiff, GraphEvent,
@@ -256,11 +270,16 @@ pub use task_scheduler::{
     TaskPriority, TaskPriorityCounts, TaskScheduler, TaskSchedulerConfig, TaskSchedulerError,
     TaskSchedulerStats,
 };
-pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind};
 pub use tools::{
+    ImmutableContentAdapter, ImmutableContentAdapterBindingV1, ImmutableContentAdapterSession,
+    ImmutableContentDescriptorV1, ImmutableContentError, ImmutableContentKindV1,
+    ImmutableContentReferenceV1, ImmutableContentResult, ImmutableContentWriteRequestV1,
     ToolPresentationError, ToolPresentationModeV1, ToolPresentationProfileV1,
-    TOOL_PRESENTATION_PROFILE_V1_SCHEMA,
+    IMMUTABLE_CONTENT_ADAPTER_BINDING_SCHEMA_V1, IMMUTABLE_CONTENT_DESCRIPTOR_SCHEMA_V1,
+    IMMUTABLE_CONTENT_REFERENCE_SCHEMA_V1, TOOL_PRESENTATION_PROFILE_V1_SCHEMA,
+    TOOL_RESULT_CONTENT_MEDIA_TYPE,
 };
+pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind};
 pub use workspace::{
     ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, CommandOutput, CommandOutputObserver,
     CommandOutputSummary, CommandRequest, CustomWorkspaceChunkingStrategy,

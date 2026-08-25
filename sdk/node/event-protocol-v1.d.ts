@@ -14,6 +14,7 @@ export type KnownAgentEventTypeV1 =
   | 'reasoning_delta'
   | 'tool_start'
   | 'tool_input_delta'
+  | 'tool_request_bound'
   | 'tool_execution_start'
   | 'tool_end'
   | 'tool_output_delta'

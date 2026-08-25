@@ -44,16 +44,23 @@ mod capabilities;
 mod capability_facade;
 mod command_runtime;
 mod conversation_runtime;
+pub(crate) use conversation_runtime::{
+    ExactRecoveryError, ExactRecoveryPreparation, PreparedExactRecovery,
+};
 mod direct_tool_facade;
 mod direct_tools;
 mod governance_facade;
 mod hook_control;
 mod project_instructions;
+mod projected_flow;
+mod projected_host_capability;
+mod projected_ui;
 mod run_admission;
 mod run_facade;
 mod run_hook_executor;
 mod run_lifecycle;
 mod runtime;
+mod runtime_checkpoints;
 mod runtime_events;
 mod session_builder;
 mod session_clock;
@@ -75,6 +82,8 @@ mod workflow_facade;
 pub use agent_facade::{Agent, SessionBuilder};
 use direct_tools::DirectToolRuntime;
 use hook_control::HookControl;
+pub use projected_flow::ProjectedFlowHandle;
+pub use projected_ui::ProjectedUiHandle;
 use runtime_events::ActiveToolState;
 use session_close::SessionCloseHandle;
 use session_extensions::SessionExtensionRuntime;
@@ -238,6 +247,14 @@ pub struct SessionOptions {
     pub(crate) file_memory_dir: Option<PathBuf>,
     /// Optional session store for persistence
     pub session_store: Option<Arc<dyn crate::store::SessionStore>>,
+    /// Host-owned destination for exact live tool-boundary checkpoints.
+    ///
+    /// This extension does not replace the Session store. Code captures one
+    /// canonical `SessionSnapshotV1` and its matching logical resume boundary,
+    /// then hands the immutable export to this sink. Host storage policy and
+    /// cross-process fencing remain outside Code.
+    pub session_checkpoint_export_sink:
+        Option<Arc<dyn crate::session_checkpoint::SessionCheckpointExportSink>>,
     /// Deferred file session-store directory, initialized by the async builder.
     pub(crate) file_session_store_dir: Option<PathBuf>,
     /// Explicit session ID (auto-generated if not set)
@@ -293,6 +310,11 @@ pub struct SessionOptions {
     pub auto_save: bool,
     /// Optional artifact retention limits for large tool/program outputs.
     pub artifact_store_limits: Option<crate::tools::ArtifactStoreLimits>,
+    /// Host-authorized immutable content adapter for original Tool content.
+    ///
+    /// The adapter is session-scoped and Rust-only. Its secret-free binding is
+    /// persisted; a resumed session must re-inject the exact same binding.
+    pub immutable_content_adapter: Option<crate::tools::ImmutableContentAdapterSession>,
     /// Host-pinned deterministic policy for projecting large tool results.
     ///
     /// `None` selects the conservative compatibility profile. The resolved
@@ -441,6 +463,11 @@ pub struct AgentSession {
     tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1,
     /// Host provider plus the durable exact-generation package binding.
     cognitive_context: Option<crate::cognitive_context::CognitiveContextSession>,
+    /// General-purpose providers supplied by the embedding host before Code
+    /// adds its own workspace-instruction and Skill-catalog providers.
+    /// Projected Knowledge must not silently compose with this ambient RAG
+    /// surface.
+    host_context_provider_names: std::collections::BTreeSet<String>,
     workspace: PathBuf,
     /// Unique session identifier.
     session_id: String,
@@ -457,6 +484,9 @@ pub struct AgentSession {
     memory: Option<Arc<crate::memory::AgentMemory>>,
     /// Optional session store for persistence.
     session_store: Option<Arc<dyn crate::store::SessionStore>>,
+    /// Host-owned destination for same-boundary portable checkpoints.
+    session_checkpoint_export_sink:
+        Option<Arc<dyn crate::session_checkpoint::SessionCheckpointExportSink>>,
     /// Runtime-owned fields used to build lossless persistence generations.
     persistence_state: Arc<RwLock<session_persistence::SessionPersistenceState>>,
     /// Auto-save after each completed `send()` or default-history `stream()`.

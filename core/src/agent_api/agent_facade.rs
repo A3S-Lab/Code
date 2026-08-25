@@ -138,6 +138,32 @@ impl Agent {
             .await
     }
 
+    /// Build one unpublished protocol Session directly from a validated
+    /// portable checkpoint snapshot. The Harness owns publication and the
+    /// matching logical-resume admission.
+    pub(crate) async fn restore_protocol_checkpoint_session_async(
+        &self,
+        snapshot: crate::store::SessionSnapshotV1,
+        workspace: impl Into<String>,
+        options: SessionOptions,
+    ) -> Result<AgentSession> {
+        agent_sessions::restore_protocol_checkpoint_session_async(
+            self,
+            snapshot,
+            workspace.into(),
+            options,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_protocol_session_snapshot_async(
+        &self,
+        session_id: &str,
+        options: &SessionOptions,
+    ) -> Result<Option<crate::store::SessionSnapshotV1>> {
+        agent_sessions::load_protocol_session_snapshot_async(self, session_id, options).await
+    }
+
     /// Bind to a workspace directory, returning an [`AgentSession`].
     ///
     /// This compatibility entry point never starts or blocks an async runtime.

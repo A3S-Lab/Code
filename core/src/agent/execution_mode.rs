@@ -187,8 +187,12 @@ impl AgentLoop {
             return Ok(None);
         }
 
-        let llm_client = self.scoped_llm_client_for_parts(session_id, event_tx, cancel_token);
+        let operation =
+            self.begin_capability_operation(0, cancel_token, "pre-analysis orchestration")?;
+        let llm_client =
+            self.scoped_llm_client_for_parts(session_id, event_tx, operation.cancellation());
         let result = LlmPlanner::pre_analyze(&llm_client, prompt).await;
+        operation.close().await?;
 
         match result {
             Ok(analysis) => {

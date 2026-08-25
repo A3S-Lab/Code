@@ -134,15 +134,34 @@ impl AgentLoop {
             if force_finalization {
                 state.messages.push(Message::user(TOOL_BUDGET_FINALIZATION));
             }
+            let turn = state.next_turn();
+            let capability_turn = self
+                .capability_runtime
+                .as_ref()
+                .map(|runtime| runtime.begin_turn(turn))
+                .transpose()?;
+            let scoped_cancellation = capability_turn
+                .as_ref()
+                .map(crate::capability::AgentCapabilityTurn::cancellation)
+                .unwrap_or_else(|| cancel_token.clone());
+            let scoped_tool_context = capability_turn.as_ref().map_or_else(
+                || self.tool_context.clone(),
+                |scope| {
+                    self.tool_context
+                        .clone()
+                        .with_capability_context(scope.tool_context())
+                },
+            );
             let llm_turn = match self
                 .execute_llm_turn(
                     &mut state,
                     LlmTurnRequest {
+                        turn,
                         augmented_system: &augmented_system,
                         effective_prompt,
                         session_id,
                         event_tx: &event_tx,
-                        cancel_token,
+                        cancel_token: &scoped_cancellation,
                         force_no_tools: force_finalization,
                     },
                 )
@@ -154,12 +173,22 @@ impl AgentLoop {
                 // as the result so it is committed to history. Without this the
                 // whole turn is dropped and the agent "forgets" what was just asked
                 // when the user continues.
-                Err(_) if cancel_token.is_cancelled() => {
+                Err(_) if scoped_cancellation.is_cancelled() => {
+                    close_capability_turn(capability_turn.as_ref()).await?;
                     return Ok(state.finish_interrupted());
                 }
-                Err(e) => return Err(e),
+                Err(error) => {
+                    if let Err(close_error) = close_capability_turn(capability_turn.as_ref()).await
+                    {
+                        tracing::warn!(
+                            error = %close_error,
+                            "Capability Turn close also failed after provider failure"
+                        );
+                    }
+                    return Err(error);
+                }
             };
-            let turn = llm_turn.turn;
+            debug_assert_eq!(llm_turn.turn, turn);
             let response = llm_turn.response;
             let tool_calls = llm_turn.tool_calls;
 
@@ -169,6 +198,7 @@ impl AgentLoop {
                     self.config.max_tool_rounds
                 );
                 self.emit_error(&event_tx, error.clone()).await;
+                close_capability_turn(capability_turn.as_ref()).await?;
                 anyhow::bail!(error);
             }
 
@@ -182,31 +212,53 @@ impl AgentLoop {
                         session_id,
                         &event_tx,
                         emit_end,
-                        cancel_token,
+                        &scoped_cancellation,
+                        &scoped_tool_context,
                         force_finalization,
                     )
                     .await
                 {
-                    CompletionFlow::Continue => continue,
-                    CompletionFlow::Finished(final_text) => return Ok(state.finish(final_text)),
+                    CompletionFlow::Continue => {
+                        close_capability_turn(capability_turn.as_ref()).await?;
+                        continue;
+                    }
+                    CompletionFlow::Finished(final_text) => {
+                        close_capability_turn(capability_turn.as_ref()).await?;
+                        return Ok(state.finish(final_text));
+                    }
                 }
             }
 
             if let Err(e) = self
-                .execute_tool_turn(tool_calls, &mut state, &event_tx, session_id, cancel_token)
+                .execute_tool_turn(
+                    tool_calls,
+                    &mut state,
+                    &event_tx,
+                    session_id,
+                    &scoped_cancellation,
+                    &scoped_tool_context,
+                )
                 .await
             {
                 // Same as above: a cancelled tool round commits its partial
                 // history rather than being dropped.
-                if cancel_token.is_cancelled() {
+                if scoped_cancellation.is_cancelled() {
+                    close_capability_turn(capability_turn.as_ref()).await?;
                     return Ok(state.finish_interrupted());
+                }
+                if let Err(close_error) = close_capability_turn(capability_turn.as_ref()).await {
+                    tracing::warn!(
+                        error = %close_error,
+                        "Capability Turn close also failed after Tool failure"
+                    );
                 }
                 return Err(e);
             }
 
-            // Quiescent boundary: the tool round has fully resolved and
-            // `state.messages` is consistent. Persist a checkpoint so a
-            // future process can resume from here (P3).
+            close_capability_turn(capability_turn.as_ref()).await?;
+            // Quiescent boundary: all tools and capability-owned effects have
+            // settled, and `state.messages` is consistent. The runtime sink
+            // drains every preceding event before acknowledging persistence.
             self.persist_loop_checkpoint(turn, &state, session_id).await;
         }
     }
@@ -230,6 +282,7 @@ impl AgentLoop {
             schema_version: crate::loop_checkpoint::LOOP_CHECKPOINT_SCHEMA_VERSION,
             run_id: run_id.clone(),
             session_id: session_id.unwrap_or("").to_string(),
+            capability_binding: self.checkpoint_capability_binding.clone(),
             turn,
             messages: state.messages.clone(),
             total_usage: state.total_usage.clone(),
@@ -240,6 +293,27 @@ impl AgentLoop {
         };
         sink.save_checkpoint(&checkpoint).await;
     }
+}
+
+async fn close_capability_turn(
+    turn: Option<&crate::capability::AgentCapabilityTurn>,
+) -> anyhow::Result<()> {
+    let Some(turn) = turn else {
+        return Ok(());
+    };
+    let report = turn.close().await?;
+    if !report.is_clean() {
+        anyhow::bail!(
+            "Capability Turn close was incomplete (tasks failed: {}, tasks timed out: {}, child scopes failed: {}, child scopes timed out: {}, effects failed: {}, effects timed out: {})",
+            report.tasks_failed,
+            report.tasks_timed_out,
+            report.child_scopes_failed,
+            report.child_scopes_timed_out,
+            report.effects_failed,
+            report.effects_timed_out,
+        );
+    }
+    Ok(())
 }
 
 fn rewrite_latest_user_prompt(messages: &mut [Message], original: &str, replacement: &str) {

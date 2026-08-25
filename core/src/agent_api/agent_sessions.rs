@@ -592,6 +592,60 @@ async fn resume_protocol_session_async(
     resume_session_async_inner(agent, session_id, options, Some(workspace)).await
 }
 
+pub(super) async fn restore_protocol_checkpoint_session_async(
+    agent: &Agent,
+    snapshot: crate::store::SessionSnapshotV1,
+    workspace: String,
+    mut options: SessionOptions,
+) -> Result<AgentSession> {
+    bail_if_agent_closed(agent)?;
+    let session_id = snapshot.session.id.clone();
+    snapshot
+        .validate_for_session(&session_id)
+        .map_err(|error| {
+            CodeError::Session(format!(
+                "Refusing invalid portable checkpoint snapshot for session {session_id}: {error:#}"
+            ))
+        })?;
+    let reservation = reserve_session(agent, &session_id)?;
+    options.session_id = Some(session_id);
+    if let Some(store) = session_config::resolve_session_store(&agent.code_config, &options).await?
+    {
+        options = options.with_session_store(store);
+    }
+    let session = build_session_from_snapshot(agent, snapshot, options, Some(workspace)).await?;
+    if let Err(error) = reservation.finalize(&session.close_handle) {
+        session.close().await;
+        return Err(error);
+    }
+    Ok(session)
+}
+
+pub(super) async fn load_protocol_session_snapshot_async(
+    agent: &Agent,
+    session_id: &str,
+    options: &SessionOptions,
+) -> Result<Option<crate::store::SessionSnapshotV1>> {
+    bail_if_agent_closed(agent)?;
+    let Some(store) = session_config::resolve_session_store(&agent.code_config, options).await?
+    else {
+        return Ok(None);
+    };
+    let snapshot = store.load_snapshot(session_id).await.map_err(|error| {
+        CodeError::Session(format!(
+            "Failed to inspect persisted session {session_id} before checkpoint admission: {error:#}"
+        ))
+    })?;
+    if let Some(snapshot) = &snapshot {
+        snapshot.validate_for_session(session_id).map_err(|error| {
+            CodeError::Session(format!(
+                "Refusing invalid persisted session {session_id} during checkpoint admission: {error:#}"
+            ))
+        })?;
+    }
+    Ok(snapshot)
+}
+
 async fn resume_session_async_inner(
     agent: &Agent,
     session_id: &str,
@@ -654,13 +708,22 @@ async fn build_resumed_session(
             message: "resume_session requires a configured session store".to_string(),
         })?;
 
-    let mut snapshot = session_persistence::load_session_snapshot(&store, session_id).await?;
+    let snapshot = session_persistence::load_session_snapshot(&store, session_id).await?;
+    options = options.with_session_store(Arc::clone(&store));
+    build_session_from_snapshot(agent, snapshot, options, workspace_override).await
+}
+
+async fn build_session_from_snapshot(
+    agent: &Agent,
+    mut snapshot: crate::store::SessionSnapshotV1,
+    options: SessionOptions,
+    workspace_override: Option<String>,
+) -> Result<AgentSession> {
     if let Some(workspace) = workspace_override {
         restore_protocol_workspace(&snapshot, &workspace).await?;
         snapshot.session.config.workspace = workspace;
     }
     let data = &snapshot.session;
-    options = options.with_session_store(Arc::clone(&store));
     let mut opts = session_persistence::apply_persisted_runtime_options(options, data)?;
     session_persistence::ensure_artifact_restore_capacity(&mut opts, &snapshot);
     let opts = session_builder::prepare_session_options(agent, opts);

@@ -12,6 +12,7 @@
 mod agent_dir_script_tool;
 mod artifacts;
 pub(crate) mod builtin;
+mod immutable_content;
 mod invocation;
 mod pagination;
 mod presentation;
@@ -35,6 +36,13 @@ pub(crate) use builtin::{
     register_skill, register_task_with_mcp_managers_and_scheduler,
     register_task_with_mcp_sources_and_scheduler,
 };
+pub use immutable_content::{
+    ImmutableContentAdapter, ImmutableContentAdapterBindingV1, ImmutableContentAdapterSession,
+    ImmutableContentDescriptorV1, ImmutableContentError, ImmutableContentKindV1,
+    ImmutableContentReferenceV1, ImmutableContentResult, ImmutableContentWriteRequestV1,
+    IMMUTABLE_CONTENT_ADAPTER_BINDING_SCHEMA_V1, IMMUTABLE_CONTENT_DESCRIPTOR_SCHEMA_V1,
+    IMMUTABLE_CONTENT_REFERENCE_SCHEMA_V1, TOOL_RESULT_CONTENT_MEDIA_TYPE,
+};
 pub(crate) use invocation::{
     registry_tool_invoker, HostDirectPolicy, InvocationOrigin, ToolInvocation, ToolInvoker,
 };
@@ -50,8 +58,9 @@ pub use program_tool::{ProgramTool, MAX_PROGRAM_SCRIPT_SOURCE_BYTES};
 pub use registry::ToolRegistry;
 pub(crate) use registry::ToolRegistrySnapshotError;
 pub use result_transform::{
-    ToolResultTransformPolicyV1, TOOL_RESULT_TRANSFORM_ALGORITHM_V1,
-    TOOL_RESULT_TRANSFORM_SCHEMA_V1,
+    ToolResultTransformBindingV1, ToolResultTransformPolicyV1, TOOL_RESULT_TRANSFORM_ALGORITHM_V1,
+    TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY, TOOL_RESULT_TRANSFORM_BINDING_SCHEMA_V1,
+    TOOL_RESULT_TRANSFORM_POLICY_DIGEST_DOMAIN_V1, TOOL_RESULT_TRANSFORM_SCHEMA_V1,
 };
 pub(crate) use selector::is_standalone_conversation;
 pub use selector::{select_tools_for_messages, select_tools_for_prompt};
@@ -88,6 +97,7 @@ pub(crate) struct ToolOutputArtifact {
     pub artifact_uri: String,
     pub original_bytes: usize,
     pub shown_bytes: usize,
+    pub content_reference: Option<ImmutableContentReferenceV1>,
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +170,7 @@ pub(crate) fn tool_output_artifact(
         artifact_uri,
         original_bytes: output.len(),
         shown_bytes,
+        content_reference: None,
     }
 }
 
@@ -167,12 +178,15 @@ pub(crate) fn merge_tool_output_artifact_metadata(
     metadata: Option<serde_json::Value>,
     artifact: &ToolOutputArtifact,
 ) -> serde_json::Value {
-    let artifact_json = serde_json::json!({
+    let mut artifact_json = serde_json::json!({
         "artifact_id": artifact.artifact_id,
         "artifact_uri": artifact.artifact_uri,
         "original_bytes": artifact.original_bytes,
         "shown_bytes": artifact.shown_bytes,
     });
+    if let Some(reference) = &artifact.content_reference {
+        artifact_json["content_reference"] = serde_json::json!(reference);
+    }
 
     match metadata {
         Some(serde_json::Value::Object(mut object)) => {
@@ -289,6 +303,26 @@ pub(crate) fn attach_tool_result_evidence(
     }
 }
 
+pub(crate) fn attach_tool_result_evidence_with_transform_binding(
+    metadata: Option<serde_json::Value>,
+    original: &str,
+    projected: &str,
+    loss_mode: ToolResultLossModeV1,
+    transform_binding: &ToolResultTransformBindingV1,
+) -> Result<serde_json::Value> {
+    transform_binding.validate()?;
+    let mut metadata = attach_tool_result_evidence(metadata, original, projected, loss_mode);
+    let encoded_binding = serde_json::to_value(transform_binding)?;
+    let serde_json::Value::Object(object) = &mut metadata else {
+        anyhow::bail!("Tool result evidence metadata must be an object");
+    };
+    object.insert(
+        TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY.to_string(),
+        encoded_binding,
+    );
+    Ok(metadata)
+}
+
 pub(crate) fn ensure_tool_result_evidence(
     metadata: Option<serde_json::Value>,
     output: &str,
@@ -301,12 +335,48 @@ pub(crate) fn ensure_tool_result_evidence(
     }
 }
 
+pub(crate) fn ensure_tool_result_evidence_with_transform_binding(
+    metadata: Option<serde_json::Value>,
+    output: &str,
+    transform_binding: &ToolResultTransformBindingV1,
+) -> Result<serde_json::Value> {
+    if let Some(value) = metadata {
+        if value.get("a3s_tool_result_evidence").is_some() {
+            if let Some(encoded_binding) = value.get(TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY) {
+                let retained: ToolResultTransformBindingV1 =
+                    serde_json::from_value(encoded_binding.clone())?;
+                retained.validate()?;
+                anyhow::ensure!(
+                    &retained == transform_binding,
+                    "Tool result transform binding drifted before result release"
+                );
+                return Ok(value);
+            }
+        }
+        return attach_tool_result_evidence_with_transform_binding(
+            Some(value),
+            output,
+            output,
+            ToolResultLossModeV1::None,
+            transform_binding,
+        );
+    }
+
+    attach_tool_result_evidence_with_transform_binding(
+        None,
+        output,
+        output,
+        ToolResultLossModeV1::None,
+        transform_binding,
+    )
+}
+
 pub(crate) fn has_tool_metadata_beyond_evidence(metadata: Option<&serde_json::Value>) -> bool {
     match metadata {
         None => false,
-        Some(serde_json::Value::Object(object)) => {
-            object.keys().any(|key| key != "a3s_tool_result_evidence")
-        }
+        Some(serde_json::Value::Object(object)) => object.keys().any(|key| {
+            key != "a3s_tool_result_evidence" && key != TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY
+        }),
         Some(_) => true,
     }
 }
@@ -436,6 +506,7 @@ impl ToolExecutor {
             None,
             ArtifactStoreLimits::default(),
             workspace_services,
+            None,
         )
     }
 
@@ -445,7 +516,7 @@ impl ToolExecutor {
     ) -> Self {
         let workspace_services =
             crate::workspace::WorkspaceServices::local(PathBuf::from(&workspace));
-        Self::build(workspace, None, artifact_limits, workspace_services)
+        Self::build(workspace, None, artifact_limits, workspace_services, None)
     }
 
     pub fn new_with_workspace_services(
@@ -457,6 +528,7 @@ impl ToolExecutor {
             None,
             ArtifactStoreLimits::default(),
             workspace_services,
+            None,
         )
     }
 
@@ -465,7 +537,39 @@ impl ToolExecutor {
         workspace_services: Arc<crate::workspace::WorkspaceServices>,
         artifact_limits: ArtifactStoreLimits,
     ) -> Self {
-        Self::build(workspace, None, artifact_limits, workspace_services)
+        Self::build(workspace, None, artifact_limits, workspace_services, None)
+    }
+
+    /// Create a local low-level executor that retains every raw Tool result
+    /// through a host-authorized immutable-content adapter.
+    pub fn new_with_immutable_content_adapter(
+        workspace: String,
+        adapter: ImmutableContentAdapterSession,
+    ) -> Self {
+        let workspace_services =
+            crate::workspace::WorkspaceServices::local(PathBuf::from(&workspace));
+        Self::build(
+            workspace,
+            None,
+            ArtifactStoreLimits::default(),
+            workspace_services,
+            Some(adapter),
+        )
+    }
+
+    pub(crate) fn new_with_workspace_services_artifact_limits_and_immutable_content_adapter(
+        workspace: String,
+        workspace_services: Arc<crate::workspace::WorkspaceServices>,
+        artifact_limits: ArtifactStoreLimits,
+        adapter: Option<ImmutableContentAdapterSession>,
+    ) -> Self {
+        Self::build(
+            workspace,
+            None,
+            artifact_limits,
+            workspace_services,
+            adapter,
+        )
     }
 
     fn build(
@@ -473,14 +577,18 @@ impl ToolExecutor {
         command_env: Option<HashMap<String, String>>,
         artifact_limits: ArtifactStoreLimits,
         workspace_services: Arc<crate::workspace::WorkspaceServices>,
+        immutable_content_adapter: Option<ImmutableContentAdapterSession>,
     ) -> Self {
         let workspace_path = PathBuf::from(&workspace);
         let command_env = command_env.map(Arc::new);
-        let registry = Arc::new(ToolRegistry::with_artifact_limits_and_workspace_services(
-            workspace_path.clone(),
-            artifact_limits,
-            Arc::clone(&workspace_services),
-        ));
+        let registry = Arc::new(
+            ToolRegistry::with_workspace_services_artifact_limits_and_immutable_content_adapter(
+                workspace_path.clone(),
+                artifact_limits,
+                Arc::clone(&workspace_services),
+                immutable_content_adapter,
+            ),
+        );
         if let Some(env) = command_env.clone() {
             registry.set_command_env(env);
         }

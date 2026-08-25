@@ -253,6 +253,7 @@ async fn real_resume_run_carries_checkpoint_metrics_forward() {
                 schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
                 run_id: seeded_run.to_string(),
                 session_id: "real-resume".to_string(),
+                capability_binding: None,
                 turn: 1,
                 messages: vec![
                     Message::user("Reply with the single word: ok"),

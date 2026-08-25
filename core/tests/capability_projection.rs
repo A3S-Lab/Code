@@ -7,8 +7,10 @@ use a3s_code_core::capability::{
     CapabilityAdapterError, CapabilityCatalog, CapabilityContribution, CapabilityDescriptor,
     CapabilityEffect, CapabilityEffectError, CapabilityKind, CapabilityProjection,
     CapabilityProjectionAdapter, CapabilityProjectionError, CapabilitySet, CapabilitySource,
-    CapabilityValue, CodeCatalogGeneration, PreparedCapability, ScopeClosePolicy, Sha256Digest,
-    UseCapabilityGeneration, UsePackageGeneration, MAX_CAPABILITY_TRANSACTION_EFFECTS,
+    CapabilityValue, CodeCatalogGeneration, KnowledgeSurfaceBinding, KnowledgeSurfaceBindingSpec,
+    PreparedCapability, ScopeClosePolicy, Sha256Digest, UiAsset, UiAssetKind, UiBinding,
+    UiBindingSpec, UiDocument, UseCapabilityGeneration, UsePackageGeneration,
+    MAX_CAPABILITY_TRANSACTION_EFFECTS,
 };
 use a3s_code_core::subagent::AgentDefinition;
 use a3s_code_core::tools::{Tool, ToolContext, ToolOutput};
@@ -182,7 +184,7 @@ fn ready(
 }
 
 #[test]
-fn immutable_projection_rejects_incomplete_mismatched_or_unsupported_values() {
+fn immutable_projection_rejects_incomplete_or_mismatched_values() {
     let (set, ids) = tool_set(1, &[("read", 'b')]);
     let read_id = ids.get("read").unwrap().clone();
     let read = tool("read");
@@ -217,27 +219,226 @@ fn immutable_projection_rejects_incomplete_mismatched_or_unsupported_values() {
         ),
         Err(CapabilityProjectionError::PublicNameMismatch { .. })
     ));
+}
 
+#[test]
+fn ui_projection_binds_path_free_content_digest_and_backend_edge_kinds() {
+    let binding = Arc::new(
+        UiBinding::new(UiBindingSpec {
+            public_name: "panel".to_owned(),
+            title: "Evidence panel".to_owned(),
+            description: "Review exact generation evidence.".to_owned(),
+            icon: "panel-top".to_owned(),
+            order: 20,
+            document: UiDocument::new(
+                UiAsset::new(UiAssetKind::Html, "<!doctype html><main>exact</main>").unwrap(),
+                [UiAsset::new(UiAssetKind::Style, "main { display: grid; }").unwrap()],
+                [UiAsset::new(UiAssetKind::Script, "globalThis.ready = true;").unwrap()],
+            )
+            .unwrap(),
+        })
+        .unwrap(),
+    );
     let ui_source = CapabilitySource::host("ui-tests", digest('c')).unwrap();
+    let backend = CapabilityDescriptor::new(
+        &ui_source,
+        CapabilityKind::Tool,
+        "panel-backend",
+        "panel-backend",
+        digest('d'),
+        [],
+    )
+    .unwrap();
+    let backend_id = backend.id().clone();
     let ui = CapabilityDescriptor::new(
         &ui_source,
         CapabilityKind::Ui,
         "panel",
         "panel",
-        digest('d'),
+        binding.surface_digest().clone(),
+        [backend_id.clone()],
+    )
+    .unwrap();
+    let ui_id = ui.id().clone();
+    let ui_set = CapabilitySet::from_contributions(
+        CodeCatalogGeneration::new(1),
+        [CapabilityContribution::new(ui_source, [backend, ui]).unwrap()],
+    )
+    .unwrap();
+    let projection = CapabilityProjection::new(
+        ui_set,
+        [
+            (backend_id, CapabilityValue::Tool(tool("panel-backend"))),
+            (ui_id.clone(), CapabilityValue::Ui(Arc::clone(&binding))),
+        ],
+    )
+    .unwrap();
+    assert!(std::ptr::eq(
+        projection.ui(&ui_id).unwrap(),
+        binding.as_ref()
+    ));
+
+    let wrong_source = CapabilitySource::host("ui-digest-tests", digest('e')).unwrap();
+    let wrong_ui = CapabilityDescriptor::new(
+        &wrong_source,
+        CapabilityKind::Ui,
+        "panel",
+        "panel",
+        digest('f'),
         [],
     )
     .unwrap();
-    let ui_set = CapabilitySet::from_contributions(
+    let wrong_ui_id = wrong_ui.id().clone();
+    let wrong_set = CapabilitySet::from_contributions(
         CodeCatalogGeneration::new(1),
-        [CapabilityContribution::new(ui_source, [ui]).unwrap()],
+        [CapabilityContribution::new(wrong_source, [wrong_ui]).unwrap()],
     )
     .unwrap();
     assert!(matches!(
-        CapabilityProjection::new(ui_set, BTreeMap::new()),
-        Err(CapabilityProjectionError::UnsupportedKind {
-            kind: CapabilityKind::Ui
+        CapabilityProjection::new(
+            wrong_set,
+            [(wrong_ui_id, CapabilityValue::Ui(Arc::clone(&binding)))]
+        ),
+        Err(CapabilityProjectionError::SurfaceDigestMismatch { .. })
+    ));
+
+    let unsupported_source = CapabilitySource::host("ui-edge-tests", digest('1')).unwrap();
+    let agent = CapabilityDescriptor::new(
+        &unsupported_source,
+        CapabilityKind::Agent,
+        "reviewer",
+        "reviewer",
+        digest('2'),
+        [],
+    )
+    .unwrap();
+    let agent_id = agent.id().clone();
+    let ui = CapabilityDescriptor::new(
+        &unsupported_source,
+        CapabilityKind::Ui,
+        "panel",
+        "panel",
+        binding.surface_digest().clone(),
+        [agent_id.clone()],
+    )
+    .unwrap();
+    let ui_id = ui.id().clone();
+    let unsupported_set = CapabilitySet::from_contributions(
+        CodeCatalogGeneration::new(1),
+        [CapabilityContribution::new(unsupported_source, [agent, ui]).unwrap()],
+    )
+    .unwrap();
+    assert!(matches!(
+        CapabilityProjection::new(
+            unsupported_set,
+            [
+                (
+                    agent_id,
+                    CapabilityValue::Agent(Arc::new(AgentDefinition::new("reviewer", "test")))
+                ),
+                (ui_id, CapabilityValue::Ui(binding)),
+            ]
+        ),
+        Err(CapabilityProjectionError::UnsupportedUiDependencyKind {
+            dependency_kind: CapabilityKind::Agent,
+            ..
         })
+    ));
+}
+
+#[test]
+fn knowledge_surface_projection_is_multi_value_and_digest_bound() {
+    let first = Arc::new(
+        KnowledgeSurfaceBinding::new(KnowledgeSurfaceBindingSpec {
+            public_name: "research:domain".to_owned(),
+            format_version: "0.2".to_owned(),
+            content_digest: digest('b'),
+            projection_digests: vec![digest('d'), digest('c')],
+        })
+        .unwrap(),
+    );
+    assert_eq!(first.projection_digests(), &[digest('c'), digest('d')]);
+    let second = Arc::new(
+        KnowledgeSurfaceBinding::new(KnowledgeSurfaceBindingSpec {
+            public_name: "operations:runbook".to_owned(),
+            format_version: "0.2".to_owned(),
+            content_digest: digest('e'),
+            projection_digests: vec![digest('f')],
+        })
+        .unwrap(),
+    );
+
+    let source = CapabilitySource::host("knowledge-surface-tests", digest('1')).unwrap();
+    let first_descriptor = CapabilityDescriptor::new(
+        &source,
+        CapabilityKind::KnowledgeSurface,
+        "domain",
+        first.public_name(),
+        first.surface_digest().clone(),
+        [],
+    )
+    .unwrap();
+    let first_id = first_descriptor.id().clone();
+    let second_descriptor = CapabilityDescriptor::new(
+        &source,
+        CapabilityKind::KnowledgeSurface,
+        "runbook",
+        second.public_name(),
+        second.surface_digest().clone(),
+        [],
+    )
+    .unwrap();
+    let second_id = second_descriptor.id().clone();
+    let set = CapabilitySet::from_contributions(
+        CodeCatalogGeneration::new(1),
+        [CapabilityContribution::new(source, [first_descriptor, second_descriptor]).unwrap()],
+    )
+    .unwrap();
+    let projection = CapabilityProjection::new(
+        Arc::clone(&set),
+        [
+            (
+                first_id.clone(),
+                CapabilityValue::KnowledgeSurface(Arc::clone(&first)),
+            ),
+            (
+                second_id.clone(),
+                CapabilityValue::KnowledgeSurface(Arc::clone(&second)),
+            ),
+        ],
+    )
+    .unwrap();
+    assert!(std::ptr::eq(
+        projection.knowledge_surface(&first_id).unwrap(),
+        first.as_ref()
+    ));
+    assert!(std::ptr::eq(
+        projection.knowledge_surface(&second_id).unwrap(),
+        second.as_ref()
+    ));
+
+    let wrong_source = CapabilitySource::host("knowledge-digest-tests", digest('2')).unwrap();
+    let wrong = CapabilityDescriptor::new(
+        &wrong_source,
+        CapabilityKind::KnowledgeSurface,
+        "domain",
+        first.public_name(),
+        digest('3'),
+        [],
+    )
+    .unwrap();
+    let wrong_id = wrong.id().clone();
+    let wrong_set = CapabilitySet::from_contributions(
+        CodeCatalogGeneration::new(1),
+        [CapabilityContribution::new(wrong_source, [wrong]).unwrap()],
+    )
+    .unwrap();
+    assert!(matches!(
+        CapabilityProjection::new(
+            wrong_set,
+            [(wrong_id, CapabilityValue::KnowledgeSurface(first))]
+        ),
+        Err(CapabilityProjectionError::SurfaceDigestMismatch { .. })
     ));
 }
 

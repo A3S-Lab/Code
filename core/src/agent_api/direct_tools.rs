@@ -677,6 +677,7 @@ mod tests {
 
         let mut call_id = None;
         let mut saw_preparation = false;
+        let mut request_snapshot = None;
         let mut execution_args = None;
         let mut completed_args = None;
         let mut deltas = Vec::new();
@@ -689,9 +690,19 @@ mod tests {
                     assert_eq!(name, "streaming_probe");
                     call_id = Some(id);
                 }
+                AgentEvent::ToolRequestBound {
+                    tool_id,
+                    tool_name,
+                    snapshot,
+                } => {
+                    assert_eq!(tool_name, "streaming_probe");
+                    assert!(call_id.replace(tool_id).is_none());
+                    request_snapshot = Some(snapshot);
+                }
                 AgentEvent::ToolExecutionStart { id, name, args } => {
                     assert_eq!(name, "streaming_probe");
-                    assert!(call_id.replace(id).is_none());
+                    assert_eq!(Some(id.as_str()), call_id.as_deref());
+                    assert!(request_snapshot.is_some());
                     execution_args = Some(args);
                 }
                 AgentEvent::ToolOutputDelta { id, name, delta } => {
@@ -715,6 +726,15 @@ mod tests {
         assert_eq!(execution_args, Some(serde_json::json!({})));
         assert_eq!(completed_args, Some(serde_json::json!({})));
         assert_eq!(deltas.join(""), "submitted 2 tasks\n2/2 done\n");
+        request_snapshot
+            .unwrap()
+            .validate_against(
+                call_id.as_deref().unwrap(),
+                "streaming_probe",
+                &serde_json::json!({}),
+                crate::harness_evidence::ToolRequestOriginV1::HostDirectTrusted,
+            )
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1030,16 +1050,45 @@ mod tests {
             },
         );
 
-        let result = runtime
-            .call("argument_capture", serde_json::json!({"value": "original"}))
-            .await
-            .unwrap();
+        let original = serde_json::json!({"value": "original"});
+        let rewritten = serde_json::json!({"value": "rewritten"});
+        let (mut events, join) =
+            runtime.spawn_call_with_agent_events("argument_capture".to_string(), original.clone());
+        let result = join.await.unwrap().unwrap();
 
         assert_eq!(result.exit_code, 0, "{}", result.output);
-        assert_eq!(
-            captured.lock().unwrap().as_ref(),
-            Some(&serde_json::json!({"value": "rewritten"}))
-        );
+        assert_eq!(captured.lock().unwrap().as_ref(), Some(&rewritten));
+        let mut request = None;
+        while let Some(event) = events.recv().await {
+            if let AgentEvent::ToolRequestBound {
+                tool_id,
+                tool_name,
+                snapshot,
+            } = event
+            {
+                request = Some((tool_id, tool_name, snapshot));
+            }
+        }
+        let (tool_id, tool_name, snapshot) = request.expect("rewritten request must be bound");
+        snapshot
+            .validate_against(
+                &tool_id,
+                &tool_name,
+                &rewritten,
+                crate::harness_evidence::ToolRequestOriginV1::HostDirectTrusted,
+            )
+            .unwrap();
+        assert!(matches!(
+            snapshot.validate_against(
+                &tool_id,
+                &tool_name,
+                &original,
+                crate::harness_evidence::ToolRequestOriginV1::HostDirectTrusted,
+            ),
+            Err(crate::HarnessEvidenceError::DigestMismatch(
+                "arguments_digest"
+            ))
+        ));
     }
 
     #[tokio::test]

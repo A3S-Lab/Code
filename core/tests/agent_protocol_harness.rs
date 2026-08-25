@@ -6,7 +6,7 @@ use a3s_code_core::{
     AgentProtocolEventPageRequestV1, AgentProtocolHarness, AgentProtocolHarnessError,
     AgentProtocolRunIdentityV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1,
     ModelInputSnapshotV1, ModelUsageSnapshotV1, PlanningMode, RunCapabilitySnapshotV1,
-    SessionOptions, AGENT_PROTOCOL_V1,
+    SessionOptions, ToolRequestOriginV1, ToolRequestSnapshotV1, AGENT_PROTOCOL_V1,
 };
 use base64::Engine as _;
 use std::collections::HashMap;
@@ -420,6 +420,87 @@ async fn harness_replay_binds_redacted_capability_and_model_input_evidence() {
     assert_eq!(replay_capability, capability);
     assert_eq!(replay_input, input);
     assert_eq!(replay_usage, usage);
+
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn harness_replay_binds_tool_requests_without_argument_plaintext() {
+    let workspace = tempfile::tempdir().unwrap();
+    initialize_git_workspace(workspace.path());
+    let manifest = manifest();
+    let release_identity = manifest.artifact().digest().to_string();
+    let arguments = serde_json::json!({
+        "file_path": "remote.txt",
+        "content": "private Tool request content\n"
+    });
+    let client =
+        ScriptedStreamingClient::new(vec![tool_response("write", arguments.clone()), response()]);
+    let harness = AgentProtocolHarness::new(
+        manifest,
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .unwrap()
+    .with_session_options(
+        SessionOptions::new()
+            .with_planning_mode(PlanningMode::Disabled)
+            .with_confirmation_manager(Arc::new(a3s_code_core::hitl::AutoApproveConfirmation))
+            .with_llm_client(Arc::new(client)),
+    );
+    let command = start(
+        &release_identity,
+        "tool-evidence-conversation",
+        "tool-evidence-execution",
+    );
+
+    harness.execute(&command).await.unwrap();
+    let page = wait_for_terminal(&harness, &command).await;
+    assert_eq!(page.state, AgentProtocolRunStateV1::Completed);
+    let request_record = page
+        .events
+        .iter()
+        .find(|record| record.event.event_type == "tool_request_bound")
+        .expect("Harness run must retain Tool-request evidence");
+    let tool_id = request_record.event.payload["tool_id"].as_str().unwrap();
+    let tool_name = request_record.event.payload["tool_name"].as_str().unwrap();
+    let snapshot: ToolRequestSnapshotV1 =
+        serde_json::from_value(request_record.event.payload["snapshot"].clone()).unwrap();
+    snapshot
+        .validate_against(tool_id, tool_name, &arguments, ToolRequestOriginV1::Agent)
+        .unwrap();
+    assert_eq!(tool_id, "tool-write-1");
+    assert_eq!(tool_name, "write");
+    assert!(!serde_json::to_string(&snapshot)
+        .unwrap()
+        .contains("private Tool request content"));
+    let request_position = page
+        .events
+        .iter()
+        .position(|record| record.event.event_type == "tool_request_bound")
+        .unwrap();
+    let execution_position = page
+        .events
+        .iter()
+        .position(|record| record.event.event_type == "tool_execution_start")
+        .unwrap();
+    assert!(request_position < execution_position);
+
+    let replay = harness.execute(&command).await.unwrap();
+    assert!(replay.replayed);
+    let replay_page = wait_for_terminal(&harness, &command).await;
+    let replay_snapshot: ToolRequestSnapshotV1 = serde_json::from_value(
+        replay_page
+            .events
+            .iter()
+            .find(|record| record.event.event_type == "tool_request_bound")
+            .unwrap()
+            .event
+            .payload["snapshot"]
+            .clone(),
+    )
+    .unwrap();
+    assert_eq!(replay_snapshot, snapshot);
 
     harness.close().await;
 }

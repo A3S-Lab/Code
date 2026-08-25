@@ -9,6 +9,7 @@ fn agent_run_spawn_dict_preserves_snapshot_and_replay_state() {
             session_id: "session-1".to_string(),
             status: a3s_code_core::run::RunStatus::Created,
             prompt: "inspect the workspace".to_string(),
+            cognitive_package_binding: None,
             created_at_ms: 10,
             updated_at_ms: 20,
             result_text: None,

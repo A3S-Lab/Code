@@ -47,8 +47,28 @@ const INTENTIONAL_SESSION_OMISSIONS = new Map([
     'Rust-host cognitive context is injected through a trait object; SDKs cannot create or resume these sessions until a typed callback adapter exists.',
   ],
   [
+    'current_cognitive_package_binding',
+    'Rust-host getter for the exact Knowledge binding visible to the next Run; SDKs cannot publish Knowledge generations until a typed provider adapter exists.',
+  ],
+  [
+    'projected_flow',
+    'Returns a non-clone Rust Flow handle that owns exact Code and Use leases; SDKs do not publish the underlying capability generation.',
+  ],
+  [
+    'projected_ui',
+    'Returns a non-clone renderer-host handle that owns exact Code and Use leases; SDKs do not publish UI generations or own renderer policy.',
+  ],
+  [
     'capability_catalog_stamp',
     'Rust-host capability projection metadata; SDKs do not own capability generation publication.',
+  ],
+  [
+    'ensure_recovery_capability_binding',
+    'Rust-host validation for an exact persisted capability generation and authority ceiling; SDKs cannot reconstruct scoped generations.',
+  ],
+  [
+    'bootstrap_recovery_capability_batch',
+    'Requires Rust capability adapters, an exact historical generation, and a Tokio cancellation token; SDK-safe recovery providers need typed callback adapters.',
   ],
   [
     'apply_capability_batch',
@@ -113,6 +133,14 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
   [
     'cognitive_context',
     'Rust CognitiveContextProvider trait object; cross-language hosts need a typed callback adapter before this can be value-typed.',
+  ],
+  [
+    'immutable_content_adapter',
+    'Rust ImmutableContentAdapter trait object; cross-language hosts need a typed callback adapter before this can be value-typed.',
+  ],
+  [
+    'session_checkpoint_export_sink',
+    'Rust SessionCheckpointExportSink trait object; cross-language hosts need a typed immutable-object callback adapter before this can be value-typed.',
   ],
 ]);
 

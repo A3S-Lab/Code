@@ -236,16 +236,52 @@ const (
 	RunCancelled RunStatus = "cancelled"
 )
 
+// CognitiveContextLimits freezes the bounded prompt-injection surface of one
+// exact cognitive package binding.
+type CognitiveContextLimits struct {
+	MaxResults       uint `json:"maxResults"`
+	MaxDocumentBytes uint `json:"maxDocumentBytes"`
+	MaxTotalBytes    uint `json:"maxTotalBytes"`
+}
+
+// CognitiveKnowledgeBindingV1 identifies one exact Knowledge surface owned by
+// the embedding Knowledge host.
+type CognitiveKnowledgeBindingV1 struct {
+	Schema              string `json:"schema"`
+	SurfaceID           string `json:"surfaceId"`
+	FormatVersion       string `json:"formatVersion"`
+	ContentDigest       string `json:"contentDigest"`
+	SearchSchema        string `json:"searchSchema"`
+	ReadSchema          string `json:"readSchema"`
+	CitationSchema      string `json:"citationSchema"`
+	LifecycleGeneration uint64 `json:"lifecycleGeneration"`
+	GenerationDigest    string `json:"generationDigest"`
+}
+
+// CognitivePackageBindingV1 is the secret-free exact cognitive authority
+// recorded on an admitted Run.
+type CognitivePackageBindingV1 struct {
+	Schema                   string                      `json:"schema"`
+	PackageID                string                      `json:"packageId"`
+	PackageVersion           string                      `json:"packageVersion"`
+	LifecycleGeneration      uint64                      `json:"lifecycleGeneration"`
+	GenerationDigest         string                      `json:"generationDigest"`
+	CapabilitySnapshotDigest string                      `json:"capabilitySnapshotDigest"`
+	Knowledge                CognitiveKnowledgeBindingV1 `json:"knowledge"`
+	Limits                   CognitiveContextLimits      `json:"limits"`
+}
+
 type RunSnapshot struct {
-	ID          string    `json:"id"`
-	SessionID   string    `json:"session_id"`
-	Status      RunStatus `json:"status"`
-	Prompt      string    `json:"prompt"`
-	CreatedAtMS uint64    `json:"created_at_ms"`
-	UpdatedAtMS uint64    `json:"updated_at_ms"`
-	ResultText  *string   `json:"result_text,omitempty"`
-	Error       *string   `json:"error,omitempty"`
-	EventCount  uint      `json:"event_count"`
+	ID                      string                     `json:"id"`
+	SessionID               string                     `json:"session_id"`
+	Status                  RunStatus                  `json:"status"`
+	Prompt                  string                     `json:"prompt"`
+	CognitivePackageBinding *CognitivePackageBindingV1 `json:"cognitive_package_binding,omitempty"`
+	CreatedAtMS             uint64                     `json:"created_at_ms"`
+	UpdatedAtMS             uint64                     `json:"updated_at_ms"`
+	ResultText              *string                    `json:"result_text,omitempty"`
+	Error                   *string                    `json:"error,omitempty"`
+	EventCount              uint                       `json:"event_count"`
 }
 
 // RunSpawn is the result of admitting an exact host-selected run ID.

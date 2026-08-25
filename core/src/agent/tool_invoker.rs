@@ -5,6 +5,7 @@ use super::hook_runtime::PermissionHookDecision;
 use super::tool_result_runtime::NormalizedToolResult;
 use super::{AgentEvent, AgentLoop};
 use crate::budget::BudgetDecision;
+use crate::harness_evidence::{ToolRequestOriginV1, ToolRequestSnapshotV1};
 use crate::safety_gate::{ToolGateApproval, ToolGateDecision, ToolGateInput, ToolSafetyGate};
 use crate::tool_confirmation::{
     ToolConfirmationRequest, ToolConfirmationResolution, ToolConfirmationRuntime,
@@ -58,6 +59,7 @@ impl ScopedToolInvoker {
                 .validate_arguments(&invocation.name, &invocation.args)?;
         }
         let pre_tool_denial = hook_decision.denial;
+        self.emit_tool_request_bound(invocation).await?;
 
         let host_direct_policy = match invocation.origin {
             InvocationOrigin::HostDirect(policy) | InvocationOrigin::HostDirectNested(policy) => {
@@ -89,6 +91,43 @@ impl ScopedToolInvoker {
                     .requires_confirmation(&invocation.name, &invocation.args),
             })
             .await)
+    }
+
+    async fn emit_tool_request_bound(&self, invocation: &ToolInvocation) -> Result<(), String> {
+        let Some(tx) = &self.event_tx else {
+            return Ok(());
+        };
+        let origin = match invocation.origin {
+            InvocationOrigin::Agent => ToolRequestOriginV1::Agent,
+            InvocationOrigin::Nested => ToolRequestOriginV1::Nested,
+            InvocationOrigin::HostDirect(HostDirectPolicy::TrustedControlPlane) => {
+                ToolRequestOriginV1::HostDirectTrusted
+            }
+            InvocationOrigin::HostDirect(HostDirectPolicy::GovernedControlPlane) => {
+                ToolRequestOriginV1::HostDirectGoverned
+            }
+            InvocationOrigin::HostDirectNested(HostDirectPolicy::TrustedControlPlane) => {
+                ToolRequestOriginV1::HostDirectNestedTrusted
+            }
+            InvocationOrigin::HostDirectNested(HostDirectPolicy::GovernedControlPlane) => {
+                ToolRequestOriginV1::HostDirectNestedGoverned
+            }
+        };
+        let snapshot = ToolRequestSnapshotV1::capture(
+            &invocation.id,
+            &invocation.name,
+            &invocation.args,
+            origin,
+        )
+        .map_err(|error| format!("Failed to bind Tool request evidence: {error}"))?;
+        tx.send(AgentEvent::ToolRequestBound {
+            tool_id: invocation.id.clone(),
+            tool_name: invocation.name.clone(),
+            snapshot,
+        })
+        .await
+        .ok();
+        Ok(())
     }
 
     async fn resolve_gate(
@@ -468,6 +507,7 @@ impl AgentLoop {
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
+        base_context: &ToolContext,
     ) -> NormalizedToolResult {
         debug_assert_eq!(invocation.origin, InvocationOrigin::Agent);
         let invoker = self.scoped_tool_invoker(session_id, event_tx);
@@ -478,7 +518,7 @@ impl AgentLoop {
         let run_context =
             self.invocation_context(run_id, session_id, event_tx.clone(), cancel_token.clone());
         let ctx = run_context
-            .bind_tool_context(self.tool_context.clone().without_host_direct_policy())
+            .bind_tool_context(base_context.clone().without_host_direct_policy())
             .with_tool_invoker(Arc::clone(&invoker));
         NormalizedToolResult::from_tool_result(invoker.invoke(invocation, &ctx).await)
     }

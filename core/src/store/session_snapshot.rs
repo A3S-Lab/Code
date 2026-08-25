@@ -121,6 +121,16 @@ impl SessionSnapshotV1 {
     /// retained length. It must, however, remain a valid next-sequence cursor
     /// for every retained event.
     pub fn validate_invariants(&self) -> Result<()> {
+        self.session
+            .config
+            .tool_result_transform_policy
+            .validate()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "session snapshot {:?} has an invalid Tool result transform policy: {error}",
+                    self.session.id
+                )
+            })?;
         if let Some(binding) = &self.session.cognitive_package_binding {
             binding.validate().map_err(|error| {
                 anyhow::anyhow!(
@@ -129,10 +139,36 @@ impl SessionSnapshotV1 {
                 )
             })?;
         }
+        if let Some(binding) = &self.session.immutable_content_adapter_binding {
+            binding.validate().map_err(|error| {
+                anyhow::anyhow!(
+                    "session snapshot {:?} has an invalid immutable-content adapter binding: {error}",
+                    self.session.id
+                )
+            })?;
+        }
         let mut run_ids = HashSet::with_capacity(self.run_records.len());
 
         for (run_index, record) in self.run_records.iter().enumerate() {
             let run_id = &record.snapshot.id;
+            if let Some(binding) = &record.snapshot.cognitive_package_binding {
+                binding.validate().map_err(|error| {
+                    anyhow::anyhow!(
+                        "run {:?} at record {} has an invalid cognitive package binding: {error}",
+                        run_id,
+                        run_index
+                    )
+                })?;
+            }
+            if let Some(binding) = &record.snapshot.capability_binding {
+                binding.validate().map_err(|error| {
+                    anyhow::anyhow!(
+                        "run {:?} at record {} has an invalid capability binding: {error}",
+                        run_id,
+                        run_index
+                    )
+                })?;
+            }
             if !run_ids.insert(run_id.as_str()) {
                 bail!(
                     "session snapshot {:?} contains duplicate run id {:?} at run record {}",
@@ -153,6 +189,12 @@ impl SessionSnapshotV1 {
             }
 
             let mut previous_sequence = None;
+            // Snapshots written before Run-level binding evidence was added
+            // may still carry repeated cognitive events. Keep those loadable
+            // when the events agree with each other; new snapshots bind the
+            // value directly on RunSnapshot and no longer compare old Runs to
+            // the Session's latest catalog generation.
+            let mut legacy_event_binding = None;
             for (event_index, event) in record.events.iter().enumerate() {
                 if let Some(previous) = previous_sequence {
                     if event.sequence <= previous {
@@ -167,21 +209,39 @@ impl SessionSnapshotV1 {
                 }
                 previous_sequence = Some(event.sequence);
                 if let crate::agent::AgentEvent::CognitiveContextBound { binding } = &event.event {
-                    match &self.session.cognitive_package_binding {
+                    binding.validate().map_err(|error| {
+                        anyhow::anyhow!(
+                            "run {:?} event {} has an invalid cognitive package binding: {error}",
+                            run_id,
+                            event_index
+                        )
+                    })?;
+                    match &record.snapshot.cognitive_package_binding {
                         Some(expected) if expected == binding => {}
                         Some(_) => bail!(
-                            "run {:?} event {} carries a cognitive generation different from session {:?}",
+                            "run {:?} event {} carries a cognitive generation different from its admitted Run binding",
                             run_id,
-                            event_index,
-                            self.session.id
+                            event_index
                         ),
-                        None => bail!(
-                            "run {:?} event {} carries cognitive context but session {:?} is unbound",
-                            run_id,
-                            event_index,
-                            self.session.id
-                        ),
+                        None => match &legacy_event_binding {
+                            Some(expected) if expected == binding => {}
+                            Some(_) => bail!(
+                                "legacy run {:?} event {} changes cognitive generation within one Run",
+                                run_id,
+                                event_index
+                            ),
+                            None => legacy_event_binding = Some(binding.clone()),
+                        },
                     }
+                }
+                if let crate::agent::AgentEvent::ToolEnd { metadata, .. } = &event.event {
+                    validate_tool_result_transform_metadata(
+                        &self.session.id,
+                        run_id,
+                        event_index,
+                        metadata.as_ref(),
+                        &self.session.config.tool_result_transform_policy,
+                    )?;
                 }
             }
 
@@ -235,6 +295,68 @@ impl SessionSnapshotV1 {
         }
         self.validate_invariants()
     }
+}
+
+fn validate_tool_result_transform_metadata(
+    session_id: &str,
+    run_id: &str,
+    event_index: usize,
+    metadata: Option<&serde_json::Value>,
+    policy: &crate::tools::ToolResultTransformPolicyV1,
+) -> Result<()> {
+    let Some(encoded_binding) = metadata
+        .and_then(|value| value.get(crate::tools::TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY))
+    else {
+        return Ok(());
+    };
+    let binding: crate::tools::ToolResultTransformBindingV1 =
+        serde_json::from_value(encoded_binding.clone()).map_err(|error| {
+            anyhow::anyhow!(
+                "run {:?} event {} in session {:?} has malformed Tool result transform binding: {error}",
+                run_id,
+                event_index,
+                session_id
+            )
+        })?;
+    binding.validate_for_policy(policy).map_err(|error| {
+        anyhow::anyhow!(
+            "run {:?} event {} in session {:?} has invalid Tool result transform binding: {error}",
+            run_id,
+            event_index,
+            session_id
+        )
+    })?;
+
+    let encoded_evidence = metadata
+        .and_then(|value| value.get("a3s_tool_result_evidence"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "run {:?} event {} in session {:?} has a Tool result transform binding without Tool result evidence",
+                run_id,
+                event_index,
+                session_id
+            )
+        })?;
+    let evidence: crate::tools::ToolResultEvidenceV1 =
+        serde_json::from_value(encoded_evidence.clone()).map_err(|error| {
+            anyhow::anyhow!(
+                "run {:?} event {} in session {:?} has malformed Tool result evidence: {error}",
+                run_id,
+                event_index,
+                session_id
+            )
+        })?;
+    if evidence.schema != crate::tools::TOOL_RESULT_EVIDENCE_SCHEMA_V1
+        || evidence.transform_algorithm.as_deref() != Some(binding.transform_algorithm.as_str())
+    {
+        anyhow::bail!(
+            "run {:?} event {} in session {:?} has Tool result evidence that does not match its transform binding",
+            run_id,
+            event_index,
+            session_id
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn artifact_store_from(artifacts: &[ToolArtifact]) -> ArtifactStore {

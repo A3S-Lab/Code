@@ -21,6 +21,7 @@
 //! | confirmation_manager    | Depends   | Governed by ConfirmationInheritance            |
 //! | active skill restrictions | Yes     | Skill allow-lists must remain effective        |
 //! | workspace_services      | Yes       | Child tools must operate on the same workspace |
+//! | immutable content adapter | Yes     | Child originals retain the parent's authorized authority |
 //! | sandbox_handle          | Yes       | Child shell commands must keep the parent boundary |
 //! | budget_guard            | Yes       | One shared cost ledger spans the whole fan-out |
 //! | Tool presentation profile | Yes     | A child cannot broaden the parent's model surface |
@@ -63,6 +64,7 @@ pub struct ChildRunContext {
     pub confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
     pub enforce_active_skill_tool_restrictions: Option<bool>,
     pub workspace_services: Option<Arc<crate::workspace::WorkspaceServices>>,
+    pub immutable_content_adapter: Option<crate::tools::ImmutableContentAdapterSession>,
     pub sandbox_handle: Option<Arc<dyn crate::sandbox::BashSandbox>>,
     /// Parent presentation ceiling. Current delegated roles inherit it
     /// exactly; future child-local modes must pass `ensure_within` first.

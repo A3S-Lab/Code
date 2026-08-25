@@ -3,9 +3,15 @@ use crate::text::truncate_utf8;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 pub const TOOL_RESULT_TRANSFORM_SCHEMA_V1: &str = "a3s.code.tool-result-transform-policy.v1";
 pub const TOOL_RESULT_TRANSFORM_ALGORITHM_V1: &str = "a3s.code.tool-result-transform.v1";
+pub const TOOL_RESULT_TRANSFORM_BINDING_SCHEMA_V1: &str =
+    "a3s.code.tool-result-transform-binding.v1";
+pub const TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY: &str = "a3s_tool_result_transform_binding";
+pub const TOOL_RESULT_TRANSFORM_POLICY_DIGEST_DOMAIN_V1: &str =
+    "a3s.code.tool-result-transform-policy-digest.v1";
 const MARKER_RESERVE_BYTES: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +89,111 @@ impl ToolResultTransformPolicyV1 {
         );
         Ok(())
     }
+
+    /// Return the stable, domain-separated identity of this exact policy.
+    pub fn policy_digest(&self) -> Result<String> {
+        self.validate()?;
+        canonical_digest(TOOL_RESULT_TRANSFORM_POLICY_DIGEST_DOMAIN_V1, self)
+    }
+}
+
+/// Bounded evidence that binds one Tool result to its exact deterministic
+/// transform algorithm and policy without copying Cloud or provider identity
+/// into Core.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolResultTransformBindingV1 {
+    pub schema: String,
+    pub transform_algorithm: String,
+    pub policy_digest: String,
+    pub binding_digest: String,
+}
+
+impl ToolResultTransformBindingV1 {
+    pub fn from_policy(policy: &ToolResultTransformPolicyV1) -> Result<Self> {
+        let mut binding = Self {
+            schema: TOOL_RESULT_TRANSFORM_BINDING_SCHEMA_V1.to_string(),
+            transform_algorithm: TOOL_RESULT_TRANSFORM_ALGORITHM_V1.to_string(),
+            policy_digest: policy.policy_digest()?,
+            binding_digest: String::new(),
+        };
+        binding.binding_digest = binding.expected_digest()?;
+        binding.validate()?;
+        Ok(binding)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.schema == TOOL_RESULT_TRANSFORM_BINDING_SCHEMA_V1,
+            "unsupported Tool result transform binding schema {:?}",
+            self.schema
+        );
+        anyhow::ensure!(
+            self.transform_algorithm == TOOL_RESULT_TRANSFORM_ALGORITHM_V1,
+            "unsupported Tool result transform algorithm {:?}",
+            self.transform_algorithm
+        );
+        anyhow::ensure!(
+            valid_sha256(&self.policy_digest),
+            "Tool result transform policy_digest must be canonical lowercase SHA-256"
+        );
+        anyhow::ensure!(
+            valid_sha256(&self.binding_digest),
+            "Tool result transform binding_digest must be canonical lowercase SHA-256"
+        );
+        anyhow::ensure!(
+            self.binding_digest == self.expected_digest()?,
+            "Tool result transform binding_digest does not bind the exact algorithm and policy"
+        );
+        Ok(())
+    }
+
+    pub fn validate_for_policy(&self, policy: &ToolResultTransformPolicyV1) -> Result<()> {
+        self.validate()?;
+        anyhow::ensure!(
+            self.policy_digest == policy.policy_digest()?,
+            "Tool result transform binding does not match the exact policy"
+        );
+        Ok(())
+    }
+
+    fn expected_digest(&self) -> Result<String> {
+        #[derive(Serialize)]
+        struct DigestInput<'a> {
+            schema: &'a str,
+            transform_algorithm: &'a str,
+            policy_digest: &'a str,
+        }
+
+        canonical_digest(
+            TOOL_RESULT_TRANSFORM_BINDING_SCHEMA_V1,
+            &DigestInput {
+                schema: &self.schema,
+                transform_algorithm: &self.transform_algorithm,
+                policy_digest: &self.policy_digest,
+            },
+        )
+    }
+}
+
+fn canonical_digest(domain: &str, value: &impl Serialize) -> Result<String> {
+    let encoded = serde_json::to_vec(value).map_err(|error| {
+        anyhow::anyhow!("could not encode Tool result transform identity: {error}")
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update([0]);
+    hasher.update(encoded);
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
 }
 
 pub(crate) struct ToolResultTransform {
@@ -238,6 +349,34 @@ mod tests {
         let mut invalid = ToolResultTransformPolicyV1::context_efficient();
         invalid.schema = "future".into();
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn binding_is_stable_and_rejects_policy_or_evidence_drift() {
+        let policy = ToolResultTransformPolicyV1::context_efficient();
+        let binding = ToolResultTransformBindingV1::from_policy(&policy).unwrap();
+
+        assert_eq!(
+            binding,
+            ToolResultTransformBindingV1::from_policy(&policy).unwrap()
+        );
+        assert_eq!(
+            binding.policy_digest,
+            "sha256:645f65e5d39e3f7aa77fade21ae2daa1e8ccbbc7a0775c94a7f2c38ec5f5b32d"
+        );
+        assert_eq!(
+            binding.binding_digest,
+            "sha256:906e9931692fa7860b7acb5fc0bb5c329f19aeb04976c913750893ad99cd5a27"
+        );
+        binding.validate_for_policy(&policy).unwrap();
+
+        let mut drifted_policy = policy.clone();
+        drifted_policy.structured_sample_items += 1;
+        assert!(binding.validate_for_policy(&drifted_policy).is_err());
+
+        let mut drifted_binding = binding;
+        drifted_binding.policy_digest = format!("sha256:{}", "0".repeat(64));
+        assert!(drifted_binding.validate().is_err());
     }
 
     #[test]

@@ -5,14 +5,38 @@
 //! Lower-level runtime modules own run lifecycle and event forwarding.
 
 use super::{
-    command_runtime, run_admission, run_lifecycle::RunControlState, runtime::BlockingRunContext,
-    runtime::ConversationInput, runtime::StreamRunContext, AgentRunSpawn, AgentSession,
+    agent_loop_runtime::build_pinned_agent_loop, command_runtime, run_admission,
+    run_lifecycle::RunControlState, runtime::BlockingRunContext, runtime::ConversationInput,
+    runtime::StreamRunContext, AgentRunSpawn, AgentSession,
 };
-use crate::agent::{AgentEvent, AgentResult};
+use crate::agent::{AgentEvent, AgentLoop, AgentResult};
 use crate::error::{CodeError, Result};
 use crate::llm::{Attachment, Message};
+use crate::loop_checkpoint::LoopCheckpoint;
+use crate::session_checkpoint::{SessionCheckpointError, SessionLogicalResumeEvidenceV1};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ExactRecoveryError {
+    #[error(transparent)]
+    Checkpoint(#[from] SessionCheckpointError),
+    #[error(transparent)]
+    Code(#[from] CodeError),
+}
+
+pub(crate) enum ExactRecoveryPreparation {
+    Replayed(AgentRunSpawn),
+    Ready(PreparedExactRecovery),
+}
+
+pub(crate) struct PreparedExactRecovery {
+    checkpoint: LoopCheckpoint,
+    evidence: SessionLogicalResumeEvidenceV1,
+    run_id: String,
+    prompt: String,
+    lease: run_admission::RunAdmissionLease,
+}
 
 fn bail_if_closed(session: &AgentSession) -> Result<()> {
     if session.is_closed() {
@@ -149,7 +173,7 @@ pub(super) async fn spawn_run_with_id(
     let input = ConversationInput::from_history(session, None);
     let run_control = RunControlState::from_session(session);
     let reservation = run_control.reserve_run_with_id(run_id, prompt).await?;
-    let snapshot = reservation.snapshot().clone();
+    let mut snapshot = reservation.snapshot().clone();
     if reservation.replayed() {
         return Ok(AgentRunSpawn::Replayed { snapshot });
     }
@@ -162,6 +186,11 @@ pub(super) async fn spawn_run_with_id(
                 return Err(error);
             }
         };
+    snapshot = run_control.snapshot(run_id).await.ok_or_else(|| {
+        CodeError::Session(format!(
+            "newly admitted Run '{run_id}' disappeared before execution"
+        ))
+    })?;
     let (events, worker, worker_aborts) =
         stream_run.spawn_with_prompt(input.messages, prompt.to_string());
     let worker = run_admission::guard_stream_handle(worker, worker_aborts, lease);
@@ -184,16 +213,36 @@ pub(super) async fn spawn_recovery_with_run_id(
 
     let lease = admit(session, "spawn-recovery").await?;
     let checkpoint = load_resume_checkpoint(session, checkpoint_run_id).await?;
+    let cancel_token = session.session_cancel.child_token();
+    let (agent_loop, capability_run) =
+        pin_checkpoint_capability_run(session, &checkpoint, cancel_token.clone())
+            .await
+            .map_err(exact_recovery_into_code)?;
     let run_control = RunControlState::from_session(session);
-    let reservation = run_control.reserve_run_with_id(run_id, &prompt).await?;
-    let snapshot = reservation.snapshot().clone();
+    let reservation = match run_control.reserve_run_with_id(run_id, &prompt).await {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            close_unstarted_capability_run(&capability_run).await;
+            return Err(error);
+        }
+    };
+    let mut snapshot = reservation.snapshot().clone();
     if reservation.replayed() {
+        close_unstarted_capability_run(&capability_run).await;
         return Ok(AgentRunSpawn::Replayed { snapshot });
     }
 
     let persistence =
         Some(super::session_persistence::SessionPersistenceContext::from_session(session));
-    let stream_run = match StreamRunContext::for_run(session, run_id.to_string(), persistence).await
+    let stream_run = match StreamRunContext::from_pinned_run(
+        session,
+        run_id.to_string(),
+        persistence,
+        agent_loop,
+        capability_run,
+        cancel_token,
+    )
+    .await
     {
         Ok(run) => run,
         Err(error) => {
@@ -208,6 +257,172 @@ pub(super) async fn spawn_recovery_with_run_id(
         verification_reports: checkpoint.verification_reports.clone(),
         convergence: checkpoint.convergence.clone(),
     };
+    snapshot = run_control.snapshot(run_id).await.ok_or_else(|| {
+        CodeError::Session(format!(
+            "newly admitted recovery Run '{run_id}' disappeared before execution"
+        ))
+    })?;
+    let (events, worker, worker_aborts) =
+        stream_run.spawn_from_messages_seeded(checkpoint.messages, Some(seed));
+    let worker = run_admission::guard_stream_handle(worker, worker_aborts, lease);
+    Ok(AgentRunSpawn::Started {
+        snapshot,
+        worker: drain_detached_events(events, worker),
+    })
+}
+
+/// Validate and pin one content-addressed recovery boundary before a host
+/// captures workspace baseline evidence or admits the target Run.
+pub(super) async fn prepare_recovery_with_evidence(
+    session: &AgentSession,
+    evidence: &SessionLogicalResumeEvidenceV1,
+    checkpoint_identity: &str,
+    run_id: &str,
+) -> std::result::Result<ExactRecoveryPreparation, ExactRecoveryError> {
+    prepare_exact_recovery(session, evidence, checkpoint_identity, run_id, None).await
+}
+
+/// Validate and pin a logical boundary supplied by the same already-validated
+/// portable checkpoint payload, without first splitting it into SessionStore
+/// fragment writes.
+pub(super) async fn prepare_recovery_from_checkpoint(
+    session: &AgentSession,
+    evidence: &SessionLogicalResumeEvidenceV1,
+    checkpoint_identity: &str,
+    run_id: &str,
+    checkpoint: LoopCheckpoint,
+) -> std::result::Result<ExactRecoveryPreparation, ExactRecoveryError> {
+    prepare_exact_recovery(
+        session,
+        evidence,
+        checkpoint_identity,
+        run_id,
+        Some(checkpoint),
+    )
+    .await
+}
+
+async fn prepare_exact_recovery(
+    session: &AgentSession,
+    evidence: &SessionLogicalResumeEvidenceV1,
+    checkpoint_identity: &str,
+    run_id: &str,
+    supplied_checkpoint: Option<LoopCheckpoint>,
+) -> std::result::Result<ExactRecoveryPreparation, ExactRecoveryError> {
+    evidence.validate()?;
+    if evidence.session_id != session.session_id {
+        return Err(SessionCheckpointError::InvalidDescriptor(
+            "logical-resume evidence belongs to another Session".into(),
+        )
+        .into());
+    }
+
+    let prompt = exact_recovery_prompt(checkpoint_identity);
+    if let Some(replay) = exact_run_replay(session, run_id, &prompt).await? {
+        return Ok(ExactRecoveryPreparation::Replayed(replay));
+    }
+
+    let lease = admit(session, "prepare-exact-recovery").await?;
+    let checkpoint = match supplied_checkpoint {
+        Some(checkpoint) => checkpoint,
+        None => load_resume_checkpoint(session, &evidence.source_run_id).await?,
+    };
+    checkpoint
+        .ensure_owned_by(&evidence.source_run_id, &session.session_id)
+        .map_err(|error| {
+            SessionCheckpointError::InvalidPayload(format!(
+                "refusing supplied logical-resume checkpoint: {error:#}"
+            ))
+        })?;
+    evidence.validate_for(&checkpoint)?;
+    if let Some(binding) = &checkpoint.capability_binding {
+        super::agent_loop_runtime::validate_run_capability_binding(session, binding).map_err(
+            |error| match error {
+                crate::capability::RunCapabilityBindingError::ContentDrift { .. } => {
+                    SessionCheckpointError::ContentDrift(format!(
+                        "the source Run capability generation is unavailable on this Session: {error}"
+                    ))
+                }
+                _ => SessionCheckpointError::InvalidPayload(format!(
+                    "the source Run capability binding is invalid: {error}"
+                )),
+            },
+        )?;
+    }
+    Ok(ExactRecoveryPreparation::Ready(PreparedExactRecovery {
+        checkpoint,
+        evidence: evidence.clone(),
+        run_id: run_id.to_string(),
+        prompt,
+        lease,
+    }))
+}
+
+/// Admit a previously validated immutable recovery plan and start its worker.
+pub(super) async fn spawn_prepared_recovery(
+    session: &AgentSession,
+    prepared: PreparedExactRecovery,
+) -> std::result::Result<AgentRunSpawn, ExactRecoveryError> {
+    let PreparedExactRecovery {
+        checkpoint,
+        evidence,
+        run_id,
+        prompt,
+        lease,
+    } = prepared;
+    evidence.validate_for(&checkpoint)?;
+
+    // Pin and verify the source generation before reserving the externally
+    // visible target Run. A later Session cutover cannot change this retained
+    // projection, and a mismatch leaves no Created/Failed target record.
+    let cancel_token = session.session_cancel.child_token();
+    let (agent_loop, capability_run) =
+        pin_checkpoint_capability_run(session, &checkpoint, cancel_token.clone()).await?;
+
+    let run_control = RunControlState::from_session(session);
+    let reservation = match run_control.reserve_run_with_id(&run_id, &prompt).await {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            close_unstarted_capability_run(&capability_run).await;
+            return Err(error.into());
+        }
+    };
+    let mut snapshot = reservation.snapshot().clone();
+    if reservation.replayed() {
+        close_unstarted_capability_run(&capability_run).await;
+        return Ok(AgentRunSpawn::Replayed { snapshot });
+    }
+
+    let persistence =
+        Some(super::session_persistence::SessionPersistenceContext::from_session(session));
+    let stream_run = match StreamRunContext::from_pinned_run(
+        session,
+        run_id.clone(),
+        persistence,
+        agent_loop,
+        capability_run,
+        cancel_token,
+    )
+    .await
+    {
+        Ok(run) => run,
+        Err(error) => {
+            run_control.fail_reserved_run_start(&run_id, &error).await;
+            return Err(error.into());
+        }
+    };
+    let seed = crate::agent::ExecutionSeed {
+        turn: checkpoint.turn,
+        total_usage: checkpoint.total_usage.clone(),
+        tool_calls_count: checkpoint.tool_calls_count,
+        verification_reports: checkpoint.verification_reports.clone(),
+        convergence: checkpoint.convergence.clone(),
+    };
+    snapshot = run_control.snapshot(&run_id).await.ok_or_else(|| {
+        CodeError::Session(format!(
+            "newly admitted exact recovery Run '{run_id}' disappeared before execution"
+        ))
+    })?;
     let (events, worker, worker_aborts) =
         stream_run.spawn_from_messages_seeded(checkpoint.messages, Some(seed));
     let worker = run_admission::guard_stream_handle(worker, worker_aborts, lease);
@@ -236,10 +451,18 @@ pub(super) async fn resume_run(
 
     let persistence =
         Some(super::session_persistence::SessionPersistenceContext::from_session(session));
-    let blocking_run = BlockingRunContext::start(
+    let cancel_token = session.session_cancel.child_token();
+    let (agent_loop, capability_run) =
+        pin_checkpoint_capability_run(session, &checkpoint, cancel_token.clone())
+            .await
+            .map_err(exact_recovery_into_code)?;
+    let blocking_run = BlockingRunContext::from_pinned_run(
         session,
         &format!("<resume run={checkpoint_run_id} turn={}>", checkpoint.turn),
         persistence,
+        agent_loop,
+        capability_run,
+        cancel_token,
     )
     .await?;
     // Seed the resumed run's loop state with the cumulative metrics from
@@ -286,6 +509,53 @@ async fn load_resume_checkpoint(
             ))
         })?;
     Ok(checkpoint)
+}
+
+fn exact_recovery_prompt(checkpoint_identity: &str) -> String {
+    format!("<resume exact checkpoint={checkpoint_identity}>")
+}
+
+async fn pin_checkpoint_capability_run(
+    session: &AgentSession,
+    checkpoint: &LoopCheckpoint,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> std::result::Result<(AgentLoop, crate::capability::SessionCapabilityRun), ExactRecoveryError> {
+    let (agent_loop, capability_run) = build_pinned_agent_loop(session, cancellation).await?;
+    let Some(expected) = checkpoint.capability_binding.as_ref() else {
+        return Ok((agent_loop, capability_run));
+    };
+    let Some(actual) = agent_loop.checkpoint_capability_binding() else {
+        close_unstarted_capability_run(&capability_run).await;
+        return Err(SessionCheckpointError::InvalidPayload(
+            "the recovery runtime did not retain a scoped capability identity".into(),
+        )
+        .into());
+    };
+    if actual != expected {
+        let message = format!(
+            "the source Run capability generation is unavailable on this Session (expected generation {} digest {}, found generation {} digest {})",
+            expected.code_catalog_generation(),
+            expected.catalog_digest(),
+            actual.code_catalog_generation(),
+            actual.catalog_digest(),
+        );
+        close_unstarted_capability_run(&capability_run).await;
+        return Err(SessionCheckpointError::ContentDrift(message).into());
+    }
+    Ok((agent_loop, capability_run))
+}
+
+async fn close_unstarted_capability_run(run: &crate::capability::SessionCapabilityRun) {
+    if let Err(error) = run.close().await {
+        tracing::warn!(error = %error, "Capability Run close failed before recovery admission");
+    }
+}
+
+fn exact_recovery_into_code(error: ExactRecoveryError) -> CodeError {
+    match error {
+        ExactRecoveryError::Checkpoint(error) => CodeError::Session(error.to_string()),
+        ExactRecoveryError::Code(error) => error,
+    }
 }
 
 fn drain_detached_events(

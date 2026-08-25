@@ -94,6 +94,34 @@ impl AgentLoop {
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> (String, i32, bool, Option<Value>) {
         let call_id = format!("plan-{}-{}", tool_name, uuid::Uuid::new_v4());
+        let capability_turn = match self
+            .capability_runtime
+            .as_ref()
+            .map(|runtime| runtime.begin_turn(0))
+            .transpose()
+        {
+            Ok(turn) => turn,
+            Err(error) => {
+                return (
+                    format!("Capability orchestration Turn admission failed: {error}"),
+                    1,
+                    true,
+                    None,
+                );
+            }
+        };
+        let scoped_cancellation = capability_turn
+            .as_ref()
+            .map(crate::capability::AgentCapabilityTurn::cancellation)
+            .unwrap_or_else(|| cancel_token.clone());
+        let scoped_tool_context = capability_turn.as_ref().map_or_else(
+            || self.tool_context.clone(),
+            |turn| {
+                self.tool_context
+                    .clone()
+                    .with_capability_context(turn.tool_context())
+            },
+        );
         let synthetic_call = ToolCall {
             id: call_id.clone(),
             name: tool_name.to_string(),
@@ -105,7 +133,7 @@ impl AgentLoop {
             &synthetic_call,
         );
         let started = std::time::Instant::now();
-        let normalized = self
+        let mut normalized = self
             .invoke_model_tool(
                 ToolInvocation::agent(
                     call_id.clone(),
@@ -115,9 +143,33 @@ impl AgentLoop {
                 ),
                 session_id,
                 event_tx,
-                cancel_token,
+                &scoped_cancellation,
+                &scoped_tool_context,
             )
             .await;
+        if let Some(turn) = capability_turn.as_ref() {
+            match turn.close().await {
+                Ok(report) if report.is_clean() => {}
+                Ok(report) => {
+                    normalized = super::tool_result_runtime::NormalizedToolResult::from_execution(
+                        Err(anyhow::anyhow!(
+                            "Capability orchestration Turn close was incomplete (tasks failed: {}, tasks timed out: {}, child scopes failed: {}, child scopes timed out: {}, effects failed: {}, effects timed out: {})",
+                            report.tasks_failed,
+                            report.tasks_timed_out,
+                            report.child_scopes_failed,
+                            report.child_scopes_timed_out,
+                            report.effects_failed,
+                            report.effects_timed_out,
+                        )),
+                    );
+                }
+                Err(error) => {
+                    normalized = super::tool_result_runtime::NormalizedToolResult::from_execution(
+                        Err(anyhow::Error::new(error)),
+                    );
+                }
+            }
+        }
         self.config.rl_trajectory_recorder.record_tool_result(
             session_id.unwrap_or(""),
             0,
@@ -321,9 +373,11 @@ impl AgentLoop {
     }
     /// Create a tool context with streaming support.
     ///
-    /// When `event_tx` is Some, spawns a forwarder task that converts
+    /// When `event_tx` is Some, starts a forwarder task that converts
     /// `ToolStreamEvent::OutputDelta` into `AgentEvent::ToolOutputDelta`
-    /// and sends them to the agent event channel.
+    /// and sends them to the agent event channel. Scoped Agent calls register
+    /// the bridge with their Turn supervisor; compatibility calls retain the
+    /// channel-bounded legacy task.
     ///
     /// Returns the augmented `ToolContext`. The forwarder task runs until
     /// the tool-side sender is dropped (i.e., tool execution finishes).
@@ -342,7 +396,7 @@ impl AgentLoop {
             let agent_tx = agent_tx.clone();
             let tool_id = tool_id.to_string();
             let tool_name = tool_name.to_string();
-            tokio::spawn(async move {
+            let forwarder = async move {
                 while let Some(event) = tool_rx.recv().await {
                     match event {
                         ToolStreamEvent::OutputDelta(delta) => {
@@ -357,7 +411,19 @@ impl AgentLoop {
                         }
                     }
                 }
-            });
+                Ok::<(), crate::capability::CapabilityEffectError>(())
+            };
+            if let Some(capability) = base_ctx.capability_context() {
+                if let Err(error) =
+                    capability.spawn_foreground_task("tool.stream.forwarder", forwarder)
+                {
+                    tracing::warn!(%error, "Capability Tool stream bridge admission failed");
+                }
+            } else {
+                tokio::spawn(async move {
+                    let _ = forwarder.await;
+                });
+            }
         }
         ctx
     }

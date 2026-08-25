@@ -7,7 +7,6 @@ use tokio::time::Instant;
 use crate::cognitive_context::CognitiveContextSession;
 use crate::commands::SlashCommand;
 use crate::context::ContextProvider;
-use crate::dynamic_workflow::DynamicWorkflowRuntime;
 use crate::hooks::HookBinding;
 use crate::skills::Skill;
 use crate::subagent::AgentDefinition;
@@ -15,8 +14,9 @@ use crate::tools::Tool;
 
 use super::{
     CapabilityEffect, CapabilityId, CapabilityKind, CapabilityProjectionError,
-    CapabilityReadinessPlan, CapabilitySet, CapabilityValue, CodeCatalogGeneration, McpBinding,
-    ScopeClosePolicy, Sha256Digest, UseGenerationLeaseProvider,
+    CapabilityReadinessPlan, CapabilitySet, CapabilityValue, CodeCatalogGeneration, FlowBinding,
+    KnowledgeSurfaceBinding, McpBinding, ScopeClosePolicy, Sha256Digest, UiBinding,
+    UseGenerationLeaseProvider,
 };
 
 /// Immutable pairing of one identity set with exactly one typed runtime value
@@ -59,11 +59,6 @@ impl CapabilityProjection {
         }
 
         for (id, descriptor) in set.iter() {
-            if descriptor.id().kind() == CapabilityKind::Ui {
-                return Err(CapabilityProjectionError::UnsupportedKind {
-                    kind: CapabilityKind::Ui,
-                });
-            }
             let Some(value) = canonical.get(id) else {
                 return Err(CapabilityProjectionError::MissingValue {
                     capability: id.to_string(),
@@ -82,6 +77,39 @@ impl CapabilityProjection {
                         capability: id.to_string(),
                         expected: descriptor.public_name().to_owned(),
                         actual: actual.to_owned(),
+                    });
+                }
+            }
+            if let CapabilityValue::Ui(binding) = value {
+                if descriptor.surface_digest() != binding.surface_digest() {
+                    return Err(CapabilityProjectionError::SurfaceDigestMismatch {
+                        capability: id.to_string(),
+                        expected: descriptor.surface_digest().to_string(),
+                        actual: binding.surface_digest().to_string(),
+                    });
+                }
+                for dependency in descriptor.dependencies() {
+                    if !matches!(
+                        dependency.kind(),
+                        CapabilityKind::Tool
+                            | CapabilityKind::Skill
+                            | CapabilityKind::Mcp
+                            | CapabilityKind::Flow
+                    ) {
+                        return Err(CapabilityProjectionError::UnsupportedUiDependencyKind {
+                            capability: id.to_string(),
+                            dependency: dependency.to_string(),
+                            dependency_kind: dependency.kind(),
+                        });
+                    }
+                }
+            }
+            if let CapabilityValue::KnowledgeSurface(binding) = value {
+                if descriptor.surface_digest() != binding.surface_digest() {
+                    return Err(CapabilityProjectionError::SurfaceDigestMismatch {
+                        capability: id.to_string(),
+                        expected: descriptor.surface_digest().to_string(),
+                        actual: binding.surface_digest().to_string(),
                     });
                 }
             }
@@ -171,7 +199,7 @@ impl CapabilityProjection {
         }
     }
 
-    pub fn flow(&self, id: &CapabilityId) -> Option<&DynamicWorkflowRuntime> {
+    pub fn flow(&self, id: &CapabilityId) -> Option<&FlowBinding> {
         match self.values.get(id) {
             Some(CapabilityValue::Flow(value)) => Some(value.as_ref()),
             _ => None,
@@ -181,6 +209,20 @@ impl CapabilityProjection {
     pub fn knowledge(&self, id: &CapabilityId) -> Option<&CognitiveContextSession> {
         match self.values.get(id) {
             Some(CapabilityValue::Knowledge(value)) => Some(value.as_ref()),
+            _ => None,
+        }
+    }
+
+    pub fn knowledge_surface(&self, id: &CapabilityId) -> Option<&KnowledgeSurfaceBinding> {
+        match self.values.get(id) {
+            Some(CapabilityValue::KnowledgeSurface(value)) => Some(value.as_ref()),
+            _ => None,
+        }
+    }
+
+    pub fn ui(&self, id: &CapabilityId) -> Option<&UiBinding> {
+        match self.values.get(id) {
+            Some(CapabilityValue::Ui(value)) => Some(value.as_ref()),
             _ => None,
         }
     }

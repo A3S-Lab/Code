@@ -28,6 +28,40 @@ replayed commands never create a second run. The executable service boundary
 belongs to `a3s code`; Cloud and node software transport its values and do not
 implement another Harness.
 
+The closed `AgentProtocolCommandV1` recovery request intentionally retains its
+v1 meaning: load the latest `LoopCheckpoint` stored under a source Run ID. Rust
+hosts that already possess portable checkpoint evidence can instead call the
+additive `AgentProtocolRunRecoverExactV1` / `execute_exact_recovery()` path.
+That request carries the complete `SessionCheckpointDescriptorV1`; Code
+validates and pins its exact matching logical boundary under the Session
+execution lease before workspace baseline capture or target-Run admission. The
+request digest settles the receipt and the descriptor digest is part of the
+target Run's immutable replay identity. This adds fail-closed exact-boundary
+recovery without adding an enum variant or changing the existing command
+endpoint's wire schema.
+
+Live checkpoint capture is a Code-local handoff before that recovery path. A
+Rust host may inject `SessionCheckpointExportSink` through `SessionOptions`.
+At each completed Tool-round boundary, an internal acknowledgement channel
+joins the loop-owned logical state to the event-materialized Session view after
+capability effects and prior events settle. The exported Session binding is
+the source Run's frozen cognitive authority even if the Session catalog has
+already advanced. Code awaits the host sink before the loop continues, but a
+sink failure is logged and does not fail the Run. No public event variant,
+Cloud checkpoint identity, object authorization, retention rule, approval, or
+fork lineage is created; external durability and fencing remain common-Harness
+responsibilities.
+
+Every event-page response reads its `RunSnapshot` and retained event window
+from one RunStore lock generation. Its state, exclusive sequence bound, and
+observation timestamp therefore cannot straddle a concurrent event write.
+Run-local logical time is also monotonic after snapshot restore, including new
+events, cancellation, and failure, even when the restoring host's wall clock
+is behind the persisted value. A response whose requested cursor is at or
+beyond Code's exclusive event tail is invalid: the only caught-up non-empty
+cursor is `latest_sequence_exclusive - 1`. This makes corrupted or cross-run
+consumer cursors fail closed before they can skip later events.
+
 `AgentProtocolHarness` is the matching Code-owned multi-session kernel for that
 single executable. One long-lived release process may serve several Cloud
 conversations, so it binds each protocol `session_id` to an ordinary
@@ -36,6 +70,17 @@ replay, and retains a finite session set. It does not store runs or events of
 its own. Start and recovery may create a missing session; cancellation and
 event observation never allocate an unknown conversation. Closing the kernel
 closes the same `Agent` and sessions through their existing lifecycle.
+
+For a complete portable artifact,
+`AgentProtocolHarness::execute_checkpoint_recovery()` matches the request to
+the exact bytes, decodes semantic and logical state together, restores an
+unpublished Session, and exposes it in the Harness only after exact target-Run
+admission. It performs no snapshot-plus-loop prewrites and never replaces an
+unrelated live Session. A persisted semantic generation must match unless the
+exact target Run is already present for replay/conflict checking. This is a
+process-local Harness visibility guarantee; Cloud/common Harness integration
+must provide immutable-object authorization and external store revision/CAS
+fencing.
 
 The protocol field `agent_release_identity` is the immutable OCI digest from
 `AgentReleaseManifest::artifact().digest()`. It identifies the executable

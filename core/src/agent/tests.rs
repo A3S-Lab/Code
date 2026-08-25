@@ -13,6 +13,282 @@ fn test_tool_context() -> ToolContext {
     ToolContext::new(PathBuf::from("/tmp"))
 }
 
+struct TurnEffectProbeTool {
+    log: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+struct AllowTurnEffectProbe;
+
+impl crate::permissions::PermissionChecker for AllowTurnEffectProbe {
+    fn check(
+        &self,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+    ) -> crate::permissions::PermissionDecision {
+        crate::permissions::PermissionDecision::Allow
+    }
+}
+
+struct TurnEffectProbe {
+    scope_id: String,
+    log: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::capability::CapabilityEffect for TurnEffectProbe {
+    fn name(&self) -> &str {
+        "test.turn.effect"
+    }
+
+    async fn close(
+        self: Box<Self>,
+    ) -> std::result::Result<(), crate::capability::CapabilityEffectError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("closed:{}", self.scope_id));
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::tools::Tool for TurnEffectProbeTool {
+    fn name(&self) -> &str {
+        "turn_effect_probe"
+    }
+
+    fn description(&self) -> &str {
+        "Register one reversible effect in the active capability Turn"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "additionalProperties": false})
+    }
+
+    fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+        crate::tools::ToolCapabilities::parallel_safe_read(1)
+    }
+
+    async fn execute(
+        &self,
+        _args: &serde_json::Value,
+        context: &ToolContext,
+    ) -> anyhow::Result<crate::tools::ToolOutput> {
+        let scope_id = context
+            .capability_scope_id()
+            .ok_or_else(|| anyhow::anyhow!("missing capability Turn"))?
+            .to_owned();
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("registered:{scope_id}"));
+        context.register_capability_effect(TurnEffectProbe {
+            scope_id,
+            log: Arc::clone(&self.log),
+        })?;
+        Ok(crate::tools::ToolOutput::success("registered"))
+    }
+}
+
+#[tokio::test]
+async fn agent_tool_effect_is_owned_and_closed_by_its_real_turn_scope() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    executor.register_dynamic_tool(Arc::new(TurnEffectProbeTool {
+        log: Arc::clone(&log),
+    }));
+    let client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response("probe-1", "turn_effect_probe", serde_json::json!({})),
+        MockLlmClient::text_response("Finished with scoped cleanup."),
+    ]));
+    let set = crate::capability::CapabilitySet::empty().unwrap();
+    let ceiling = crate::capability::CapabilityCeiling::all(
+        &set,
+        crate::capability::WorkspaceCapabilityCeiling::all(),
+        crate::capability::GovernanceCapabilityCeiling::none_required(),
+        crate::capability::CapabilityExecutionCeiling::new(
+            4,
+            2,
+            Some(1_000),
+            Some(1_000),
+            Some(5_000),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let session_scope = crate::capability::CapabilityScope::<crate::capability::Session>::
+        new_session_with_cancellation(
+            "session-1",
+            Arc::clone(&set),
+            ceiling.clone(),
+            cancellation.clone(),
+        )
+        .unwrap();
+    let run_scope = session_scope.admit_run("run-1", ceiling).unwrap();
+    let runtime = crate::capability::AgentCapabilityRuntime::from_run(&run_scope);
+    let config = AgentConfig {
+        tools: executor.definitions(),
+        planning_mode: crate::prompts::PlanningMode::Disabled,
+        continuation_enabled: false,
+        permission_checker: Some(Arc::new(AllowTurnEffectProbe)),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(client, executor, test_tool_context(), config)
+        .with_capability_runtime(runtime);
+
+    let result = agent.execute(&[], "probe cleanup", None).await.unwrap();
+
+    assert_eq!(result.text, "Finished with scoped cleanup.");
+    let entries = log.lock().unwrap().clone();
+    assert_eq!(result.tool_calls_count, 1, "{:?}", result.messages);
+    assert_eq!(
+        entries.len(),
+        2,
+        "entries={entries:?}, messages={:?}",
+        result.messages
+    );
+    let registered = entries[0].strip_prefix("registered:").unwrap();
+    let closed = entries[1].strip_prefix("closed:").unwrap();
+    assert_eq!(registered, closed);
+    assert!(registered.contains("/run/run-1/turn/turn-1-1"));
+    assert!(!cancellation.is_cancelled());
+
+    run_scope.close().await.unwrap();
+    session_scope.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn pre_analysis_owns_an_orchestration_turn_before_the_agent_turn() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    executor.register_dynamic_tool(Arc::new(TurnEffectProbeTool {
+        log: Arc::clone(&log),
+    }));
+    let client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response("probe-1", "turn_effect_probe", serde_json::json!({})),
+        MockLlmClient::text_response("Finished after orchestration."),
+    ]));
+    let set = crate::capability::CapabilitySet::empty().unwrap();
+    let ceiling = crate::capability::CapabilityCeiling::all(
+        &set,
+        crate::capability::WorkspaceCapabilityCeiling::all(),
+        crate::capability::GovernanceCapabilityCeiling::none_required(),
+        crate::capability::CapabilityExecutionCeiling::new(
+            4,
+            2,
+            Some(1_000),
+            Some(1_000),
+            Some(5_000),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let session_scope =
+        crate::capability::CapabilityScope::<crate::capability::Session>::new_session(
+            "session-1",
+            set,
+            ceiling.clone(),
+        )
+        .unwrap();
+    let run_scope = session_scope.admit_run("run-1", ceiling).unwrap();
+    let runtime = crate::capability::AgentCapabilityRuntime::from_run(&run_scope);
+    let config = AgentConfig {
+        tools: executor.definitions(),
+        planning_mode: crate::prompts::PlanningMode::Auto,
+        continuation_enabled: false,
+        permission_checker: Some(Arc::new(AllowTurnEffectProbe)),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(client, executor, test_tool_context(), config)
+        .with_capability_runtime(runtime);
+
+    let result = agent
+        .execute(&[], "Probe temporal composition", None)
+        .await
+        .unwrap();
+
+    assert_eq!(result.text, "Finished after orchestration.");
+    let entries = log.lock().unwrap().clone();
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    let registered = entries[0].strip_prefix("registered:").unwrap();
+    assert!(
+        registered.contains("/run/run-1/turn/turn-1-2"),
+        "the pre-analysis call should consume orchestration Turn sequence 1: {registered}"
+    );
+
+    run_scope.close().await.unwrap();
+    session_scope.close().await.unwrap();
+}
+
+#[test]
+fn plain_tool_context_cannot_register_an_unowned_turn_effect() {
+    let context = test_tool_context();
+    let error = context
+        .register_capability_effect(TurnEffectProbe {
+            scope_id: "unowned".to_string(),
+            log: Arc::new(std::sync::Mutex::new(Vec::new())),
+        })
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::capability::CapabilityScopeError::AgentTurnScopeUnavailable
+    );
+}
+
+#[tokio::test]
+async fn scoped_tool_stream_forwarder_is_supervised_by_its_turn() {
+    let set = crate::capability::CapabilitySet::empty().unwrap();
+    let ceiling = crate::capability::CapabilityCeiling::all(
+        &set,
+        crate::capability::WorkspaceCapabilityCeiling::all(),
+        crate::capability::GovernanceCapabilityCeiling::none_required(),
+        crate::capability::CapabilityExecutionCeiling::new(
+            4,
+            2,
+            Some(1_000),
+            Some(1_000),
+            Some(5_000),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let session_scope =
+        crate::capability::CapabilityScope::<crate::capability::Session>::new_session(
+            "session-1",
+            set,
+            ceiling.clone(),
+        )
+        .unwrap();
+    let run_scope = session_scope.admit_run("run-1", ceiling).unwrap();
+    let runtime = crate::capability::AgentCapabilityRuntime::from_run(&run_scope);
+    let turn = runtime.begin_turn(1).unwrap();
+    let scoped_context = test_tool_context().with_capability_context(turn.tool_context());
+    let agent = AgentLoop::new(
+        Arc::new(MockLlmClient::new(Vec::new())),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        scoped_context.clone(),
+        AgentConfig::default(),
+    );
+    let (event_tx, _event_rx) = mpsc::channel(4);
+
+    let stream_context = agent.streaming_tool_context(
+        &scoped_context,
+        &Some(event_tx),
+        "tool-call-1",
+        "stream-probe",
+    );
+    drop(stream_context);
+
+    let report = turn.close().await.unwrap();
+    assert_eq!(report.tasks_completed, 1, "{report:?}");
+    assert_eq!(report.tasks_failed, 0, "{report:?}");
+    assert_eq!(report.tasks_timed_out, 0, "{report:?}");
+
+    run_scope.close().await.unwrap();
+    session_scope.close().await.unwrap();
+}
+
 #[test]
 fn test_plan_step_delegation_detection() {
     use crate::planning::Task;
@@ -2342,6 +2618,83 @@ async fn test_streaming_llm_memory_extraction_does_not_block_final_result() {
 }
 
 #[tokio::test]
+async fn scoped_streaming_memory_extraction_is_promoted_and_run_supervised() {
+    let mock_client = Arc::new(BlockingExtractionLlmClient::new());
+    let memory = crate::memory::AgentMemory::new(Arc::new(a3s_memory::InMemoryStore::new()));
+    let temp_dir = tempfile::tempdir().unwrap();
+    let set = crate::capability::CapabilitySet::empty().unwrap();
+    let ceiling = crate::capability::CapabilityCeiling::all(
+        &set,
+        crate::capability::WorkspaceCapabilityCeiling::all(),
+        crate::capability::GovernanceCapabilityCeiling::none_required(),
+        crate::capability::CapabilityExecutionCeiling::new(
+            4,
+            2,
+            Some(1_000),
+            Some(1_000),
+            Some(5_000),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let session_scope =
+        crate::capability::CapabilityScope::<crate::capability::Session>::new_session(
+            "session-1",
+            set,
+            ceiling.clone(),
+        )
+        .unwrap();
+    let run_scope = session_scope.admit_run("run-1", ceiling).unwrap();
+    let runtime = crate::capability::AgentCapabilityRuntime::from_run(&run_scope);
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new(temp_dir.path().display().to_string())),
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        AgentConfig {
+            memory: Some(Arc::new(memory)),
+            planning_mode: crate::prompts::PlanningMode::Disabled,
+            continuation_enabled: false,
+            ..Default::default()
+        },
+    )
+    .with_capability_runtime(runtime);
+    let (event_tx, _event_rx) = mpsc::channel(32);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        agent.execute_with_session(
+            &[],
+            "remember that scoped streaming extraction belongs to the Run",
+            Some("sess-scoped-streaming-memory"),
+            Some(event_tx),
+            None,
+        ),
+    )
+    .await
+    .expect("final output must not wait for background memory extraction")
+    .unwrap();
+    assert_eq!(result.text, "Stored durable memory workflow.");
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        mock_client.extraction_started.notified(),
+    )
+    .await
+    .expect("Turn close must not cancel a Run-promoted memory extraction");
+
+    let report = tokio::time::timeout(std::time::Duration::from_secs(1), run_scope.close())
+        .await
+        .expect("Run close must settle the promoted memory extraction")
+        .unwrap();
+    mock_client.extraction_release.notify_one();
+    assert_eq!(report.tasks_completed, 1, "{report:?}");
+    assert_eq!(report.tasks_failed, 0, "{report:?}");
+    assert_eq!(report.tasks_timed_out, 0, "{report:?}");
+
+    session_scope.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn test_auto_compact_timeout_does_not_block_end_event() {
     let mock_client = Arc::new(HangingCompactionLlmClient::new());
     let budget = Arc::new(CountingBudgetGuard::new(0));
@@ -4072,6 +4425,7 @@ mod nested_tool_governance_tests {
                 None,
                 &None,
                 &tokio_util::sync::CancellationToken::new(),
+                &agent.tool_context,
             )
             .await;
 

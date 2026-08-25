@@ -431,10 +431,13 @@ impl TaskExecutor {
             .execute_with_task_id_scoped(
                 task_id.clone(),
                 params,
-                event_tx,
-                spec.parent_session_id.as_deref(),
-                true,
-                parent_cancellation,
+                ScopedTaskExecution {
+                    event_tx,
+                    parent_session_id: spec.parent_session_id.as_deref(),
+                    emit_start: true,
+                    parent_cancellation,
+                    admitted_capability_subtask: None,
+                },
             )
             .await
         {

@@ -461,6 +461,8 @@ fn gen_run_record(rng: &mut Rng) -> RunRecord {
             session_id: rng.string(),
             status: gen_run_status(rng),
             prompt: rng.string(),
+            cognitive_package_binding: None,
+            capability_binding: None,
             created_at_ms: rng.u64_small(),
             updated_at_ms: rng.u64_small(),
             result_text: rng.opt_string(),
@@ -487,6 +489,7 @@ fn gen_loop_checkpoint(rng: &mut Rng) -> LoopCheckpoint {
         schema_version: rng.below(u64::from(LOOP_CHECKPOINT_SCHEMA_VERSION) + 1) as u32,
         run_id: rng.string(),
         session_id: rng.string(),
+        capability_binding: None,
         turn: rng.usize_below(1000),
         messages: (0..msg_n).map(|_| gen_message(rng)).collect(),
         total_usage: gen_token_usage(rng),
@@ -575,6 +578,7 @@ fn gen_session_data(rng: &mut Rng) -> SessionData {
         agent_template_id: rng.opt_string(),
         correlation_id: rng.opt_string(),
         cognitive_package_binding: None,
+        immutable_content_adapter_binding: None,
     }
 }
 
@@ -903,6 +907,7 @@ fn sample_checkpoint(run_id: &str, version: u32) -> LoopCheckpoint {
         schema_version: version,
         run_id: run_id.to_string(),
         session_id: "s".to_string(),
+        capability_binding: None,
         turn: 1,
         messages: vec![Message::user("hi")],
         total_usage: TokenUsage::default(),

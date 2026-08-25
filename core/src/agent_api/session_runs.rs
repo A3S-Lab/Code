@@ -53,4 +53,16 @@ impl<'a> RunControl<'a> {
             .event_page(run_id, after_sequence, limit)
             .await
     }
+
+    pub(super) async fn run_event_observation(
+        &self,
+        run_id: &str,
+        after_sequence: Option<usize>,
+        limit: usize,
+    ) -> Option<crate::run::RunEventObservation> {
+        self.session
+            .run_store
+            .event_observation(run_id, after_sequence, limit)
+            .await
+    }
 }

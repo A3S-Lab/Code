@@ -5,7 +5,176 @@ use crate::workspace::{
     WorkspaceServices, WorkspaceWriteOutcome,
 };
 use async_trait::async_trait;
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
+
+fn immutable_content_binding(marker: char) -> ImmutableContentAdapterBindingV1 {
+    ImmutableContentAdapterBindingV1::new(
+        format!("sha256:{}", marker.to_string().repeat(64)),
+        (MAX_OUTPUT_SIZE as u64) * 4,
+    )
+    .expect("test immutable-content binding")
+}
+
+#[derive(Default)]
+struct RecordingImmutableContentAdapter {
+    writes: Mutex<Vec<(ImmutableContentDescriptorV1, Vec<u8>)>>,
+    request_debug: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl ImmutableContentAdapter for RecordingImmutableContentAdapter {
+    fn name(&self) -> &str {
+        "recording-immutable-content"
+    }
+
+    async fn put(
+        &self,
+        request: &ImmutableContentWriteRequestV1<'_>,
+    ) -> ImmutableContentResult<ImmutableContentReferenceV1> {
+        self.request_debug
+            .lock()
+            .unwrap()
+            .push(format!("{request:?}"));
+        self.writes
+            .lock()
+            .unwrap()
+            .push((request.descriptor().clone(), request.content().to_vec()));
+        let digest = request
+            .descriptor()
+            .content_digest
+            .strip_prefix("sha256:")
+            .expect("canonical test digest");
+        ImmutableContentReferenceV1::new(
+            request.binding(),
+            request.descriptor(),
+            format!("a3s+test://authorized-content/{digest}"),
+        )
+    }
+}
+
+struct DriftedImmutableContentAdapter;
+
+#[async_trait]
+impl ImmutableContentAdapter for DriftedImmutableContentAdapter {
+    fn name(&self) -> &str {
+        "drifted-immutable-content"
+    }
+
+    async fn put(
+        &self,
+        request: &ImmutableContentWriteRequestV1<'_>,
+    ) -> ImmutableContentResult<ImmutableContentReferenceV1> {
+        let digest = request
+            .descriptor()
+            .content_digest
+            .strip_prefix("sha256:")
+            .unwrap();
+        let mut reference = ImmutableContentReferenceV1::new(
+            request.binding(),
+            request.descriptor(),
+            format!("a3s+test://authorized-content/{digest}"),
+        )?;
+        reference.size_bytes = reference.size_bytes.saturating_add(1);
+        Ok(reference)
+    }
+}
+
+struct LeakyFailedImmutableContentAdapter;
+
+#[async_trait]
+impl ImmutableContentAdapter for LeakyFailedImmutableContentAdapter {
+    fn name(&self) -> &str {
+        "failed-immutable-content"
+    }
+
+    async fn put(
+        &self,
+        _request: &ImmutableContentWriteRequestV1<'_>,
+    ) -> ImmutableContentResult<ImmutableContentReferenceV1> {
+        Err(ImmutableContentError::Provider(
+            "private-provider-error-sentinel".to_string(),
+        ))
+    }
+}
+
+struct BlockingImmutableContentAdapter {
+    started: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl ImmutableContentAdapter for BlockingImmutableContentAdapter {
+    fn name(&self) -> &str {
+        "blocking-immutable-content"
+    }
+
+    async fn put(
+        &self,
+        _request: &ImmutableContentWriteRequestV1<'_>,
+    ) -> ImmutableContentResult<ImmutableContentReferenceV1> {
+        self.started.notify_one();
+        std::future::pending::<ImmutableContentResult<ImmutableContentReferenceV1>>().await
+    }
+}
+
+fn immutable_content_session(
+    marker: char,
+    adapter: Arc<dyn ImmutableContentAdapter>,
+) -> ImmutableContentAdapterSession {
+    ImmutableContentAdapterSession::new(immutable_content_binding(marker), adapter)
+        .expect("test immutable-content session")
+}
+
+#[test]
+fn immutable_content_public_contract_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<ImmutableContentAdapterBindingV1>();
+    assert_send_sync::<ImmutableContentDescriptorV1>();
+    assert_send_sync::<ImmutableContentReferenceV1>();
+    assert_send_sync::<ImmutableContentWriteRequestV1<'static>>();
+    assert_send_sync::<ImmutableContentAdapterSession>();
+}
+
+#[test]
+fn immutable_content_binding_and_reference_reject_tampering() {
+    let binding = immutable_content_binding('a');
+    binding.validate().unwrap();
+    let descriptor = ImmutableContentDescriptorV1::new(
+        ImmutableContentKindV1::ToolResultOriginal,
+        TOOL_RESULT_CONTENT_MEDIA_TYPE,
+        b"full tool result",
+    )
+    .unwrap();
+    let reference = ImmutableContentReferenceV1::new(
+        &binding,
+        &descriptor,
+        format!(
+            "a3s+test://authorized-content/{}",
+            descriptor.content_digest.strip_prefix("sha256:").unwrap()
+        ),
+    )
+    .unwrap();
+    reference.validate_for(&binding, &descriptor).unwrap();
+
+    let mut drifted_binding = binding.clone();
+    drifted_binding.maximum_bytes += 1;
+    assert!(drifted_binding.validate().is_err());
+
+    let mut drifted_reference = reference;
+    drifted_reference.uri.push_str("-replacement");
+    assert!(drifted_reference
+        .validate_for(&binding, &descriptor)
+        .is_err());
+
+    let digest = descriptor.content_digest.strip_prefix("sha256:").unwrap();
+    for unsafe_uri in [
+        format!("a3s+test://user:password@authorized-content/{digest}"),
+        format!("a3s+test://authorized-content/{digest}?token=secret"),
+        format!("a3s+test://authorized-content/{digest}#secret"),
+    ] {
+        assert!(ImmutableContentReferenceV1::new(&binding, &descriptor, unsafe_uri).is_err());
+    }
+}
 
 #[test]
 fn test_redacted_tool_log_summary_omits_values() {
@@ -80,6 +249,32 @@ impl Tool for LargeArtifactTool {
             "z".repeat(MAX_OUTPUT_SIZE + 1),
             suffix
         )))
+    }
+}
+
+struct LargeChangeArtifactTool;
+
+#[async_trait]
+impl Tool for LargeChangeArtifactTool {
+    fn name(&self) -> &str {
+        "large_change_artifact"
+    }
+
+    fn description(&self) -> &str {
+        "Produces bounded change metadata for immutable-content tests"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn execute(&self, _args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        Ok(
+            ToolOutput::success("changed").with_metadata(serde_json::json!({
+                "before": format!("before\n{}", "a".repeat(40 * 1024)),
+                "after": format!("after\n{}", "b".repeat(40 * 1024)),
+            })),
+        )
     }
 }
 
@@ -473,9 +668,10 @@ async fn test_tool_executor_get_artifact() {
 #[tokio::test]
 async fn context_efficient_policy_is_applied_with_replayable_evidence() {
     let executor = ToolExecutor::new("/tmp".to_string());
+    let policy = ToolResultTransformPolicyV1::context_efficient();
     executor
         .registry()
-        .set_tool_result_transform_policy(ToolResultTransformPolicyV1::context_efficient())
+        .set_tool_result_transform_policy(policy.clone())
         .unwrap();
     executor.register_dynamic_tool(Arc::new(LargeArtifactTool));
 
@@ -486,6 +682,9 @@ async fn context_efficient_policy_is_applied_with_replayable_evidence() {
     let metadata = result.metadata.as_ref().unwrap();
     let evidence: ToolResultEvidenceV1 =
         serde_json::from_value(metadata["a3s_tool_result_evidence"].clone()).unwrap();
+    let transform_binding: ToolResultTransformBindingV1 =
+        serde_json::from_value(metadata[TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY].clone())
+            .unwrap();
 
     assert_eq!(evidence.loss_mode, ToolResultLossModeV1::HeadTail);
     assert_eq!(
@@ -498,7 +697,262 @@ async fn context_efficient_policy_is_applied_with_replayable_evidence() {
     );
     assert!(evidence.byte_delta.unwrap() < 0);
     assert!(evidence.content_ref.starts_with("a3s://tool-output/"));
+    transform_binding.validate_for_policy(&policy).unwrap();
     assert!(result.output.contains("omitted"));
+}
+
+#[test]
+fn retained_transform_binding_drift_fails_closed() {
+    let retained_policy = ToolResultTransformPolicyV1::context_efficient();
+    let retained_binding = ToolResultTransformBindingV1::from_policy(&retained_policy).unwrap();
+    let metadata = attach_tool_result_evidence_with_transform_binding(
+        None,
+        "original",
+        "projected",
+        ToolResultLossModeV1::HeadTail,
+        &retained_binding,
+    )
+    .unwrap();
+    let drifted_binding =
+        ToolResultTransformBindingV1::from_policy(&ToolResultTransformPolicyV1::conservative())
+            .unwrap();
+
+    let error = ensure_tool_result_evidence_with_transform_binding(
+        Some(metadata),
+        "projected",
+        &drifted_binding,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("binding drifted"));
+}
+
+#[tokio::test]
+async fn configured_immutable_content_adapter_retains_original_without_local_copy() {
+    let adapter = Arc::new(RecordingImmutableContentAdapter::default());
+    let binding = immutable_content_binding('b');
+    let adapter_port: Arc<dyn ImmutableContentAdapter> = adapter.clone();
+    let session = ImmutableContentAdapterSession::new(binding.clone(), adapter_port).unwrap();
+    let executor = ToolExecutor::new_with_immutable_content_adapter("/tmp".to_string(), session);
+    executor
+        .registry()
+        .set_tool_result_transform_policy(ToolResultTransformPolicyV1::context_efficient())
+        .unwrap();
+    executor.register_dynamic_tool(Arc::new(LargeArtifactTool));
+    let sentinel = "private-immutable-content-sentinel";
+
+    let result = executor
+        .execute("large_artifact", &serde_json::json!({"suffix": sentinel}))
+        .await
+        .unwrap();
+    let metadata = result.metadata.as_ref().unwrap();
+    let evidence: ToolResultEvidenceV1 =
+        serde_json::from_value(metadata["a3s_tool_result_evidence"].clone()).unwrap();
+    let reference: ImmutableContentReferenceV1 =
+        serde_json::from_value(metadata["artifact"]["content_reference"].clone()).unwrap();
+    let writes = adapter.writes.lock().unwrap();
+
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].0.kind, ImmutableContentKindV1::ToolResultOriginal);
+    assert_eq!(writes[0].0.media_type, TOOL_RESULT_CONTENT_MEDIA_TYPE);
+    assert_eq!(writes[0].0.size_bytes as usize, writes[0].1.len());
+    assert!(writes[0].1.ends_with(sentinel.as_bytes()));
+    reference.validate_for(&binding, &writes[0].0).unwrap();
+    assert_eq!(evidence.content_ref, reference.uri);
+    assert_eq!(metadata["artifact"]["artifact_uri"], reference.uri);
+    assert!(executor.artifact_store().is_empty());
+    assert!(executor.get_artifact(&reference.uri).is_none());
+    assert!(adapter
+        .request_debug
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|debug| !debug.contains(sentinel)));
+}
+
+#[tokio::test]
+async fn configured_immutable_content_adapter_retains_lossless_original() {
+    let adapter = Arc::new(RecordingImmutableContentAdapter::default());
+    let binding = immutable_content_binding('9');
+    let adapter_port: Arc<dyn ImmutableContentAdapter> = adapter.clone();
+    let session = ImmutableContentAdapterSession::new(binding.clone(), adapter_port).unwrap();
+    let executor = ToolExecutor::new_with_immutable_content_adapter("/tmp".to_string(), session);
+    executor.register_dynamic_tool(Arc::new(EchoTool));
+    let content = "bounded-original-content";
+
+    let result = executor
+        .execute("echo", &serde_json::json!({"message": content}))
+        .await
+        .unwrap();
+    let metadata = result.metadata.as_ref().unwrap();
+    let evidence: ToolResultEvidenceV1 =
+        serde_json::from_value(metadata["a3s_tool_result_evidence"].clone()).unwrap();
+    let reference: ImmutableContentReferenceV1 =
+        serde_json::from_value(metadata["artifact"]["content_reference"].clone()).unwrap();
+    let writes = adapter.writes.lock().unwrap();
+
+    assert_eq!(result.output, content);
+    assert_eq!(evidence.loss_mode, ToolResultLossModeV1::None);
+    assert_eq!(evidence.content_ref, reference.uri);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].0.kind, ImmutableContentKindV1::ToolResultOriginal);
+    assert_eq!(writes[0].1, content.as_bytes());
+    reference.validate_for(&binding, &writes[0].0).unwrap();
+    assert!(executor.artifact_store().is_empty());
+}
+
+#[tokio::test]
+async fn immutable_content_byte_ceiling_fails_before_provider_without_local_fallback() {
+    let adapter = Arc::new(RecordingImmutableContentAdapter::default());
+    let binding =
+        ImmutableContentAdapterBindingV1::new(format!("sha256:{}", "8".repeat(64)), 4).unwrap();
+    let adapter_port: Arc<dyn ImmutableContentAdapter> = adapter.clone();
+    let session = ImmutableContentAdapterSession::new(binding, adapter_port).unwrap();
+    let executor = ToolExecutor::new_with_immutable_content_adapter("/tmp".to_string(), session);
+    executor.register_dynamic_tool(Arc::new(EchoTool));
+
+    let error = executor
+        .execute("echo", &serde_json::json!({"message": "too-large"}))
+        .await
+        .expect_err("the host-pinned content ceiling must fail closed");
+
+    assert!(error
+        .to_string()
+        .contains("invalid immutable content descriptor"));
+    assert!(adapter.writes.lock().unwrap().is_empty());
+    assert!(executor.artifact_store().is_empty());
+}
+
+#[tokio::test]
+async fn configured_immutable_content_adapter_covers_raw_registry_execution() {
+    let adapter = Arc::new(RecordingImmutableContentAdapter::default());
+    let adapter_port: Arc<dyn ImmutableContentAdapter> = adapter.clone();
+    let session =
+        ImmutableContentAdapterSession::new(immutable_content_binding('7'), adapter_port).unwrap();
+    let executor = ToolExecutor::new_with_immutable_content_adapter("/tmp".to_string(), session);
+    executor.register_dynamic_tool(Arc::new(EchoTool));
+
+    let output = executor
+        .registry()
+        .execute_raw("echo", &serde_json::json!({"message": "raw-result"}))
+        .await
+        .unwrap()
+        .unwrap();
+    let reference: ImmutableContentReferenceV1 =
+        serde_json::from_value(output.metadata.unwrap()["artifact"]["content_reference"].clone())
+            .unwrap();
+
+    assert_eq!(output.content, "raw-result");
+    assert_eq!(adapter.writes.lock().unwrap().len(), 1);
+    assert!(reference
+        .uri
+        .contains(reference.content_digest.strip_prefix("sha256:").unwrap()));
+    assert!(executor.artifact_store().is_empty());
+}
+
+#[tokio::test]
+async fn configured_immutable_content_adapter_retains_compacted_change_sides() {
+    let adapter = Arc::new(RecordingImmutableContentAdapter::default());
+    let adapter_port: Arc<dyn ImmutableContentAdapter> = adapter.clone();
+    let session =
+        ImmutableContentAdapterSession::new(immutable_content_binding('f'), adapter_port).unwrap();
+    let executor = ToolExecutor::new_with_immutable_content_adapter("/tmp".to_string(), session);
+    executor.register_dynamic_tool(Arc::new(LargeChangeArtifactTool));
+
+    let result = executor
+        .execute("large_change_artifact", &serde_json::json!({}))
+        .await
+        .unwrap();
+    let metadata = result.metadata.unwrap();
+    let writes = adapter.writes.lock().unwrap();
+
+    assert_eq!(writes.len(), 3);
+    assert_eq!(writes[0].0.kind, ImmutableContentKindV1::ToolChangeBefore);
+    assert_eq!(writes[1].0.kind, ImmutableContentKindV1::ToolChangeAfter);
+    assert_eq!(writes[2].0.kind, ImmutableContentKindV1::ToolResultOriginal);
+    assert_eq!(writes[2].1, b"changed");
+    for side in ["before", "after"] {
+        let reference: ImmutableContentReferenceV1 = serde_json::from_value(
+            metadata["change"][side]["artifact"]["content_reference"].clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            metadata["change"][side]["artifact"]["artifact_uri"],
+            reference.uri
+        );
+    }
+    assert!(executor.artifact_store().is_empty());
+}
+
+#[tokio::test]
+async fn immutable_content_reference_drift_fails_closed_without_local_fallback() {
+    let session = immutable_content_session('c', Arc::new(DriftedImmutableContentAdapter));
+    let executor = ToolExecutor::new_with_immutable_content_adapter("/tmp".to_string(), session);
+    executor.register_dynamic_tool(Arc::new(LargeArtifactTool));
+
+    let error = executor
+        .execute("large_artifact", &serde_json::json!({}))
+        .await
+        .expect_err("a drifted reference must not release transformed content");
+
+    assert!(error.to_string().contains("immutable content reference"));
+    assert!(executor.artifact_store().is_empty());
+}
+
+#[tokio::test]
+async fn immutable_content_provider_error_detail_is_not_released() {
+    let session = immutable_content_session('e', Arc::new(LeakyFailedImmutableContentAdapter));
+    let executor = ToolExecutor::new_with_immutable_content_adapter("/tmp".to_string(), session);
+    executor.register_dynamic_tool(Arc::new(LargeArtifactTool));
+
+    let error = executor
+        .execute("large_artifact", &serde_json::json!({}))
+        .await
+        .expect_err("provider failure must fail closed");
+    let message = error.to_string();
+
+    assert!(message.contains("immutable content provider failure"));
+    assert!(!message.contains("private-provider-error-sentinel"));
+    assert!(executor.artifact_store().is_empty());
+}
+
+#[tokio::test]
+async fn cancellation_interrupts_immutable_content_retention() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let session = immutable_content_session(
+        'd',
+        Arc::new(BlockingImmutableContentAdapter {
+            started: Arc::clone(&started),
+        }),
+    );
+    let executor = Arc::new(ToolExecutor::new_with_immutable_content_adapter(
+        "/tmp".to_string(),
+        session,
+    ));
+    executor.register_dynamic_tool(Arc::new(LargeArtifactTool));
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let context = executor
+        .registry()
+        .context()
+        .with_cancellation(cancellation.clone());
+    let task_executor = Arc::clone(&executor);
+    let task = tokio::spawn(async move {
+        task_executor
+            .execute_with_context("large_artifact", &serde_json::json!({}), &context)
+            .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), started.notified())
+        .await
+        .expect("adapter must begin retention");
+    cancellation.cancel();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+        .await
+        .expect("cancellation must interrupt adapter backpressure")
+        .unwrap()
+        .expect_err("cancelled retention must fail closed");
+
+    assert!(error.to_string().contains("cancelled"));
+    assert!(executor.artifact_store().is_empty());
 }
 
 #[tokio::test]

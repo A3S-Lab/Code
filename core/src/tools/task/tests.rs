@@ -86,6 +86,73 @@ fn test_task_params_all_fields() {
 }
 
 #[tokio::test]
+async fn delegated_task_admission_fails_closed_after_its_invoking_turn_closes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let set = crate::capability::CapabilitySet::empty().unwrap();
+    let ceiling = crate::capability::CapabilityCeiling::all(
+        &set,
+        crate::capability::WorkspaceCapabilityCeiling::all(),
+        crate::capability::GovernanceCapabilityCeiling::none_required(),
+        crate::capability::CapabilityExecutionCeiling::new(
+            4,
+            2,
+            Some(1_000),
+            Some(1_000),
+            Some(5_000),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let session = crate::capability::CapabilityScope::<crate::capability::Session>::new_session(
+        "session-1",
+        set,
+        ceiling.clone(),
+    )
+    .unwrap();
+    let run = session.admit_run("run-1", ceiling).unwrap();
+    let runtime = crate::capability::AgentCapabilityRuntime::from_run(&run);
+    let turn = runtime.begin_turn(1).unwrap();
+    let capability_context = turn.tool_context();
+    let context = ToolContext::new(workspace.path().to_path_buf())
+        .with_capability_context(capability_context.clone());
+    let executor = Arc::new(TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("should not execute")),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let scoped = executor.scoped_for_invocation(&context);
+
+    turn.close().await.unwrap();
+    let error = scoped
+        .execute(
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "closed parent".to_string(),
+                prompt: "must fail before child execution".to_string(),
+                background: false,
+                max_steps: None,
+                output_schema: None,
+            },
+            None,
+            Some("parent-session"),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("no longer active"), "{error:#}");
+    let background_error = capability_context
+        .admit_subtask("late-background", true)
+        .err()
+        .expect("a closed Turn must not authorize later background promotion");
+    assert!(
+        background_error.to_string().contains("no longer active"),
+        "{background_error:#}"
+    );
+    run.close().await.unwrap();
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn delegated_context_inherits_search_limits_and_flights_but_gets_a_fresh_circuit() {
     let workspace = tempfile::tempdir().expect("temporary workspace");
     let executor = Arc::new(TaskExecutor::new(
@@ -1443,6 +1510,7 @@ fn child_context_with_budget(
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        immutable_content_adapter: None,
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: Some(budget_guard),
@@ -2266,6 +2334,7 @@ fn redacting_parent_context() -> crate::child_run::ChildRunContext {
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        immutable_content_adapter: None,
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: None,
@@ -2433,6 +2502,103 @@ async fn task_tool_parent_cancellation_reaches_child_llm_call() {
     assert!(!output.success);
     assert!(output.content.contains("cancelled"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn background_task_is_promoted_out_of_the_turn_but_settled_before_run_close() {
+    use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let set = crate::capability::CapabilitySet::empty().unwrap();
+    let ceiling = crate::capability::CapabilityCeiling::all(
+        &set,
+        crate::capability::WorkspaceCapabilityCeiling::all(),
+        crate::capability::GovernanceCapabilityCeiling::none_required(),
+        crate::capability::CapabilityExecutionCeiling::new(
+            4,
+            2,
+            Some(1_000),
+            Some(1_000),
+            Some(5_000),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let session = crate::capability::CapabilityScope::<crate::capability::Session>::
+        new_session_with_cancellation(
+            "session-1",
+            set,
+            ceiling.clone(),
+            cancellation.clone(),
+        )
+        .unwrap();
+    let run = session.admit_run("run-1", ceiling).unwrap();
+    let runtime = crate::capability::AgentCapabilityRuntime::from_run(&run);
+    let turn = runtime.begin_turn(1).unwrap();
+    let started = Arc::new(Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(BlockingTaskClient {
+                started: Arc::clone(&started),
+                calls: Arc::clone(&calls),
+            }),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_subagent_tracker(Arc::clone(&tracker)),
+    );
+    let tool = TaskTool::new(executor);
+    let context = ToolContext::new(workspace.path().to_path_buf())
+        .with_session_id("parent-session")
+        .with_cancellation(turn.cancellation())
+        .with_capability_context(turn.tool_context());
+    let started_wait = started.notified();
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "agent": "worker",
+                "description": "run-owned background",
+                "prompt": "wait until the Run closes",
+                "background": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    let task_id = output
+        .content
+        .split("Task ID: ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .to_string();
+    tokio::time::timeout(Duration::from_secs(1), started_wait)
+        .await
+        .expect("background child provider call should start");
+
+    turn.close().await.unwrap();
+    assert_eq!(
+        tracker.get(&task_id).await.unwrap().status,
+        SubagentStatus::Running,
+        "closing the invoking Turn must not cancel an explicitly background child"
+    );
+
+    let report = tokio::time::timeout(Duration::from_secs(1), run.close())
+        .await
+        .expect("Run close must settle its supervised background child")
+        .unwrap();
+    assert_eq!(report.tasks_completed, 1);
+    assert!(matches!(
+        tracker.get(&task_id).await.unwrap().status,
+        SubagentStatus::Failed | SubagentStatus::Cancelled
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(!cancellation.is_cancelled());
+    session.close().await.unwrap();
+    assert!(cancellation.is_cancelled());
 }
 
 #[tokio::test]
@@ -2723,6 +2889,7 @@ async fn background_task_keeps_the_admitted_run_permission_snapshot_across_turn_
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        immutable_content_adapter: None,
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: None,
@@ -3085,6 +3252,7 @@ async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        immutable_content_adapter: None,
         sandbox_handle: Some(Arc::new(RecordingSandbox {
             called: Arc::clone(&sandbox_called),
         })),
@@ -3128,6 +3296,117 @@ async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
     assert!(
         sandbox_called.load(Ordering::SeqCst),
         "delegated bash must retain the parent sandbox instead of using the host runner"
+    );
+}
+
+#[tokio::test]
+async fn delegated_child_retains_large_tool_original_through_parent_content_adapter() {
+    struct RecordingContentAdapter {
+        writes: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tools::ImmutableContentAdapter for RecordingContentAdapter {
+        fn name(&self) -> &str {
+            "delegated-content-adapter"
+        }
+
+        async fn put(
+            &self,
+            request: &crate::tools::ImmutableContentWriteRequestV1<'_>,
+        ) -> crate::tools::ImmutableContentResult<crate::tools::ImmutableContentReferenceV1>
+        {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            let digest = request
+                .descriptor()
+                .content_digest
+                .strip_prefix("sha256:")
+                .unwrap();
+            crate::tools::ImmutableContentReferenceV1::new(
+                request.binding(),
+                request.descriptor(),
+                format!("a3s+test://delegated-content/{digest}"),
+            )
+        }
+    }
+
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("large.txt"),
+        (0..900)
+            .map(|_| format!("{}\n", "x".repeat(160)))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let writes = Arc::new(AtomicUsize::new(0));
+    let adapter: Arc<dyn crate::tools::ImmutableContentAdapter> =
+        Arc::new(RecordingContentAdapter {
+            writes: Arc::clone(&writes),
+        });
+    let binding = crate::tools::ImmutableContentAdapterBindingV1::new(
+        format!("sha256:{}", "d".repeat(64)),
+        1024 * 1024,
+    )
+    .unwrap();
+    let content_session =
+        crate::tools::ImmutableContentAdapterSession::new(binding, adapter).unwrap();
+    let mock = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response(
+            "read-large",
+            "read",
+            serde_json::json!({"file_path": "large.txt"}),
+        ),
+        MockLlmClient::text_response("Evidence retained."),
+    ]));
+    let parent_policy = PermissionPolicy::new().allow("read(*)");
+    let parent_context = crate::child_run::ChildRunContext {
+        security_provider: None,
+        hook_engine: None,
+        skill_registry: None,
+        permission_checker: Some(Arc::new(parent_policy.clone())),
+        permission_policy: Some(parent_policy),
+        tool_timeout_ms: None,
+        llm_api_timeout_ms: None,
+        max_parallel_tasks: None,
+        max_execution_time_ms: None,
+        circuit_breaker_threshold: None,
+        duplicate_tool_call_threshold: None,
+        confirmation_manager: None,
+        enforce_active_skill_tool_restrictions: None,
+        workspace_services: None,
+        immutable_content_adapter: Some(content_session),
+        sandbox_handle: None,
+        tool_presentation_profile: None,
+        budget_guard: None,
+    };
+    let executor = TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        mock,
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_parent_context(parent_context);
+
+    let result = executor
+        .execute(
+            TaskParams {
+                agent: "deep-research".to_string(),
+                description: "Read large evidence".to_string(),
+                prompt: "Read the large workspace file.".to_string(),
+                background: false,
+                max_steps: Some(3),
+                output_schema: None,
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "delegated child failed: {}", result.output);
+    assert_eq!(
+        writes.load(Ordering::SeqCst),
+        1,
+        "the child Tool executor must inherit the parent's content authority"
     );
 }
 
@@ -4517,6 +4796,7 @@ async fn child_source_anchor_is_sanitized_before_task_metadata_persistence() {
         confirmation_manager: None,
         enforce_active_skill_tool_restrictions: None,
         workspace_services: None,
+        immutable_content_adapter: None,
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: None,

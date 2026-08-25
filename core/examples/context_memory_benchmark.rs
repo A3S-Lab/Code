@@ -118,7 +118,6 @@ async fn main() -> anyhow::Result<()> {
     drop(memory);
     drop(store);
     drop(context_results);
-    drop(assembler);
     tokio::time::sleep(Duration::from_millis(100)).await;
     let rss_after_drop = resident_set_bytes();
     let retained_rss_delta = rss_delta(rss_before, rss_after_drop);

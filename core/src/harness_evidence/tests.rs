@@ -49,6 +49,80 @@ fn public_evidence_types_are_send_and_sync() {
     assert_send_sync::<ModelInputSnapshotV1>();
     assert_send_sync::<ToolResultContextUsageV1>();
     assert_send_sync::<ModelUsageSnapshotV1>();
+    assert_send_sync::<ToolRequestOriginV1>();
+    assert_send_sync::<ToolRequestSnapshotV1>();
+}
+
+#[test]
+fn tool_request_evidence_binds_arguments_without_retaining_plaintext() {
+    let arguments = serde_json::json!({
+        "path": "private/credentials.txt",
+        "token": "top-secret-tool-argument"
+    });
+    let snapshot = ToolRequestSnapshotV1::capture(
+        "tool-call-1",
+        "read",
+        &arguments,
+        ToolRequestOriginV1::Agent,
+    )
+    .unwrap();
+    let repeated = ToolRequestSnapshotV1::capture(
+        "tool-call-1",
+        "read",
+        &arguments,
+        ToolRequestOriginV1::Agent,
+    )
+    .unwrap();
+
+    snapshot
+        .validate_against(
+            "tool-call-1",
+            "read",
+            &arguments,
+            ToolRequestOriginV1::Agent,
+        )
+        .unwrap();
+    assert_eq!(snapshot, repeated);
+    let encoded = serde_json::to_string(&snapshot).unwrap();
+    assert!(!encoded.contains("private/credentials.txt"));
+    assert!(!encoded.contains("top-secret-tool-argument"));
+    assert!(!encoded.contains("tool-call-1"));
+    assert!(!encoded.contains("read"));
+
+    let changed = ToolRequestSnapshotV1::capture(
+        "tool-call-1",
+        "read",
+        &serde_json::json!({"path": "README.md"}),
+        ToolRequestOriginV1::Agent,
+    )
+    .unwrap();
+    assert_ne!(snapshot.arguments_digest, changed.arguments_digest);
+    assert_ne!(snapshot.snapshot_digest, changed.snapshot_digest);
+    assert!(matches!(
+        snapshot.validate_against(
+            "tool-call-1",
+            "read",
+            &serde_json::json!({"path": "README.md"}),
+            ToolRequestOriginV1::Agent,
+        ),
+        Err(HarnessEvidenceError::DigestMismatch("arguments_digest"))
+    ));
+
+    let different_origin = ToolRequestSnapshotV1::capture(
+        "tool-call-1",
+        "read",
+        &arguments,
+        ToolRequestOriginV1::HostDirectTrusted,
+    )
+    .unwrap();
+    assert_ne!(snapshot.snapshot_digest, different_origin.snapshot_digest);
+
+    let mut tampered = snapshot;
+    tampered.arguments_bytes = tampered.arguments_bytes.saturating_add(1);
+    assert!(matches!(
+        tampered.validate(),
+        Err(HarnessEvidenceError::DigestMismatch("snapshot_digest"))
+    ));
 }
 
 #[test]

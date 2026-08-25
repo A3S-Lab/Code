@@ -45,6 +45,10 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   tools, policy identities, retrieval generation, repeated Tool-result
   context, input shape, and normalized model usage without retaining new
   prompt, source, vector, credential, or endpoint plaintext.
+- **Authorized original-content retention.** Rust hosts can inject one exact
+  immutable-content adapter binding. Every raw Tool result is retained before
+  projection, while bounded metadata and evidence carry validated
+  content-addressed references instead of creating a second audit store.
 
 Go consumers must update the module path to
 `github.com/A3S-Lab/Code/sdk/go/v7`. See [CHANGELOG.md](CHANGELOG.md) for the
@@ -105,6 +109,13 @@ binds them to one workspace and conversation. The event stream is the product
 boundary: a host can render the same lifecycle that the runtime persists and
 replays.
 
+Agent execution also has one explicit lifetime tree. A host invocation admits
+`Session -> Run`; model orchestration and each provider/Tool iteration own a
+Turn, while Skill and Task children recurse as `Turn -> Subtask -> Turn`.
+Tool effects and stream bridges settle with their Turn. Explicit background
+Tasks and post-turn memory extraction are promoted only after the invoking
+Turn is validated, then remain supervised by the Run until bounded close.
+
 ## Why A3S Code
 
 | Requirement                             | Runtime mechanism                                                                                                                                                                 |
@@ -161,7 +172,7 @@ telemetry remain opt-in.
 | Persistence             | Atomic snapshots, run events, traces, artifacts, verification, checkpoints, and optional RL trajectories                                                                                                                                | Configured store and host policy                                                                                                                                          |
 | State graph             | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow 0.11 lifecycle projection including cancellation, terminal outcomes, progress, and child operations                          | Explicit application use                                                                                                                                                  |
 | Agent release contract  | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks                                                                                                                                    | Baseline admission API                                                                                                                                                    |
-| Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, bounded `EventEnvelopeV1` pages, per-conversation detached Git worktrees, and immutable `/v1/agent/changes` patches                                       | `AgentProtocolHarness` multiplexes ordinary Code sessions and `AgentProtocolHost` executes through each `AgentSession`; the `a3s code` process supplies service transport |
+| Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, atomically observed bounded `EventEnvelopeV1` pages, per-conversation detached Git worktrees, and immutable `/v1/agent/changes` patches                   | `AgentProtocolHarness` multiplexes ordinary Code sessions and `AgentProtocolHost` executes through each `AgentSession`; the `a3s code` process supplies service transport |
 | Headless web search     | Lazy Chrome/Chromium-backed Google/Baidu engines and managed browser lifecycle APIs; Lightpanda remains configurable                                                                                                                    | Default Cargo feature `headless-search`; disable with `default-features = false`                                                                                          |
 | S3 workspace            | S3-compatible object backend                                                                                                                                                                                                            | Cargo feature `s3`                                                                                                                                                        |
 | Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown                                                                                                                          | Cargo feature `serve`                                                                                                                                                     |
@@ -326,6 +337,22 @@ general RAG/graph fallback aborts the turn; personal memory is not recalled for
 a cognitive-package-bound turn. Registry lookup, installation, lifecycle,
 package files, and the human-review ontology graph remain outside Code.
 
+Hosts that already project a complete A3S Use generation can stage the same
+value as `CapabilityValue::Knowledge`. Exactly one value is copied into each
+Run-frozen configuration. `current_cognitive_package_binding()` reports the
+owned binding visible to the next Run; the older
+`cognitive_package_binding()` accessor reports only the Session-static recovery
+seed. On resume, publish that exact seed once before advancing to a later
+Knowledge generation.
+
+Package hosts may separately stage multiple
+`CapabilityValue::KnowledgeSurface` values. Each immutable binding contains
+only a public surface name, OKF format, content digest, and canonical exact
+projection digests. It is non-queryable and never enters Agent context; its
+purpose is to close same-source readiness edges such as `Flow -> OKF` without
+implicitly selecting a cognitive package. The singular `Knowledge` value above
+remains the only Run-visible cognitive authority.
+
 ## Tools that respect the workspace
 
 A tool is registered only when its workspace exposes the capability it needs.
@@ -352,9 +379,10 @@ Every governed and direct Tool result also carries trusted
 `a3s.code.tool-result-evidence.v1`. The bounded record distinguishes original
 and model-visible byte/token estimates, binds exact repeated content with a
 SHA-256 `repeat_key`, names the estimator, declares the loss mode, and points
-to either the persisted full-output artifact or the inline digest. It is
-observational evidence: Core does not claim provider billing usage and does not
-rewrite Tool content from these measurements.
+to an authorized immutable full-output reference, a local compatibility
+artifact, or the inline digest. It is observational evidence: Core does not
+claim provider billing usage and does not rewrite Tool content from these
+measurements.
 
 Content projection is controlled separately by the session-pinned
 `a3s.code.tool-result-transform-policy.v1` policy. The conservative default
@@ -364,6 +392,63 @@ and samples oversized top-level JSON arrays. Rust, Node.js, Python, and Go
 expose the same policy fields. The policy persists in `SessionSnapshotV1`, and
 resume rejects an explicitly different policy so replay cannot silently change
 the model-visible Tool result.
+
+Every result that crosses the real Tool executor also carries
+`metadata.a3s_tool_result_transform_binding` with schema
+`a3s.code.tool-result-transform-binding.v1`. The binding records the exact
+algorithm, a domain-separated digest of the complete policy, and its own
+binding digest. Code resolves and validates it before invoking the Tool, so an
+unbound result cannot be released after a side effect. Snapshot loading
+validates each retained binding against the Session policy and matching Tool
+result evidence. The binding identifies Code's deterministic transform; it
+does not claim Cloud policy authority, tenant identity, or provider selection.
+
+### Retain original Tool content
+
+A managed Rust host can bind a session to an already-authorized shared content
+authority without passing provider credentials, tenant lookup, or a primitive
+backend selector into Core:
+
+```rust,no_run
+use a3s_code_core::{
+    ImmutableContentAdapter, ImmutableContentAdapterBindingV1,
+    ImmutableContentAdapterSession, ImmutableContentResult, SessionOptions,
+};
+use std::sync::Arc;
+
+fn session_options(
+    authority_digest: String,
+    adapter: Arc<dyn ImmutableContentAdapter>,
+) -> ImmutableContentResult<SessionOptions> {
+    let binding = ImmutableContentAdapterBindingV1::new(
+        authority_digest,
+        16 * 1024 * 1024,
+    )?;
+    let retained_content = ImmutableContentAdapterSession::new(binding, adapter)?;
+
+    Ok(SessionOptions::new().with_immutable_content_adapter(retained_content))
+}
+```
+
+The authority digest is opaque and secret-free. The host adapter receives an
+exact descriptor plus borrowed bytes and must create or resolve an immutable,
+content-addressed object. Code validates the returned binding, URI, SHA-256,
+media type, size, and reference digest before releasing the Tool result. Every
+raw output returned by a Tool is retained, including lossless bounded results;
+large change sides removed from inline metadata are retained separately.
+Provider failure, cancellation, byte-ceiling overflow, or reference drift
+fails closed without a local copy. Full references live in
+`metadata.artifact.content_reference`, and
+`metadata.a3s_tool_result_evidence.content_ref` points to the same URI.
+
+`SessionSnapshotV1` persists only the immutable-content binding and requires
+the exact adapter to be re-injected on resume. Delegated children inherit it.
+If no adapter is configured, the existing bounded session-local
+`ArtifactStore` remains a standalone compatibility path for lossy originals;
+it is not a shared content or authorization authority. Cloud remains
+responsible for authorization, provider and namespace selection, tenant
+projections, retention, and object lifecycle. See
+[Harness Boundary Evidence](manual/HARNESS_EVIDENCE.md).
 
 ### Context-efficient repository tools
 
@@ -664,16 +749,20 @@ replay project these values through `EventEnvelopeV1`, which preserves its
 version, event type, complete payload, and optional metadata. Older SDK clients
 can retain future event names and payloads they do not yet understand.
 
-Governed model calls add four audit events at the same unified provider-neutral
-boundary. `run_capability_bound` records a versioned digest-bound snapshot of
-the actual model-visible tools, workspace service surface, run-owned governance
-bindings, configured serializable policy identities, execution ceilings, and
-current semantic readiness/generation; it is repeated only when that
-surface changes. Before every completion, streaming, structured, or streaming-
-structured input, `model_presentation_bound` binds the frozen typed Profile,
-its permission-filtered source count/digest/token estimate, and the exact
-presented definition count/digest/token estimate. The subsequent
-`model_input_bound` carries the same unique positive call sequence,
+Governed runs add five digest-bound audit events across the Tool and unified
+provider-neutral model boundaries. `tool_request_bound` records the request
+origin, serialized argument bytes, and domain-separated digests of the Tool
+identifier, name, and exact post-hook arguments before permission,
+confirmation, budget, or execution outcomes. Denied requests therefore remain
+auditable without copying their argument plaintext into the new snapshot.
+`run_capability_bound` records the actual model-visible tools, workspace service
+surface, run-owned governance bindings, configured serializable policy
+identities, execution ceilings, and current semantic readiness/generation; it
+is repeated only when that surface changes. Before every completion, streaming,
+structured, or streaming-structured input, `model_presentation_bound` binds the
+frozen typed Profile, its permission-filtered source count/digest/token
+estimate, and the exact presented definition count/digest/token estimate. The
+subsequent `model_input_bound` carries the same unique positive call sequence,
 bounded counters/serialized-byte measurements, and domain-separated SHA-256
 digests of the actual messages, system input, tool definitions, provider-facing
 structured directive, and identified semantic/hybrid Tool results. After each
@@ -682,18 +771,71 @@ normalized `LlmClient` token/cache usage with that exact input snapshot and
 measures exact repeated Tool-result content under different call IDs through
 bounded byte/token counters and digests; it does not claim Gateway billing
 authority. Host-only validation schemas are excluded because they are not sent
-to the model. The new evidence stores no prompt, Tool result, source text,
-vector, credential, or endpoint plaintext and exact Run replay preserves it
-without a parallel audit store. Digests provide integrity and correlation, not
+to the model. The new snapshots store no Tool arguments, prompt, Tool result,
+source text, vector, credential, or endpoint plaintext and exact Run replay
+preserves them without a parallel audit store. Existing lifecycle events retain
+their documented payloads. Digests provide integrity and correlation, not
 encryption; do not export them to a less-trusted boundary merely because
-plaintext is absent. See
-[Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md).
+plaintext is absent. See [Harness Boundary Evidence](manual/HARNESS_EVIDENCE.md).
 
 A configured `SessionStore` can persist complete `SessionSnapshotV1`
 generations. Runs expose status, active tools, ordered event replay, exclusive
 pagination cursors, and retention-gap detection. File persistence uses atomic
 replacement; artifacts are bounded by item count and bytes; verification keeps
 claims separate from evidence.
+
+Rust hosts can map one complete snapshot and an optional exact between-tool-
+round `LoopCheckpoint` into `SessionCheckpointExportV1`, or inject a typed
+`SessionCheckpointExportSink` to receive the same canonical artifact directly
+from every completed live tool-round boundary. Code closes the capability Turn,
+drains all causally preceding Run events, captures the semantic snapshot, and
+acknowledges persistence before the loop advances. If the Session catalog cuts
+over concurrently, this checkpoint view retains the source Run's frozen
+cognitive binding and complete scoped capability identity rather than the next
+Run's generation. The export contains a bounded canonical JSON payload plus a
+secret-free
+`SessionCheckpointDescriptorV1` that separately binds the snapshot component,
+logical-resume component, and complete payload by size and SHA-256. Import
+recomputes every binding and rejects non-canonical bytes, schema drift, changed
+rounds, foreign sessions, missing or terminal source Runs, and descriptor
+drift, including a Session/source-Run cognitive or capability mismatch. Runtime API keys
+remain excluded by the existing persisted-session
+contract, and the export's `Debug` representation redacts payload bytes. Code
+does not assign an object URI, checkpoint ID, retention rule, approval, or fork
+lineage; an authorized host stores the bytes and Cloud owns those business
+records. See [Harness Boundary Evidence](manual/HARNESS_EVIDENCE.md#portable-session-checkpoints).
+
+For recovery admission, `AgentProtocolRunRecoverExactV1` carries the complete
+`SessionCheckpointDescriptorV1`. `AgentProtocolHost` validates and pins the
+matching local `LoopCheckpoint` under the Session execution lease before it
+captures a workspace baseline or creates the target Run. The complete request
+digest settles the receipt, while the descriptor digest is part of the target
+Run's immutable input identity: an overwritten boundary is rejected without a
+new Run, an identical request remains replayable after source retention, and
+another checkpoint cannot reuse that target Run ID.
+
+`AgentProtocolHarness::execute_checkpoint_recovery()` additionally matches the
+descriptor to the exact supplied bytes, decodes the semantic snapshot and
+logical boundary from that one payload, builds an unpublished Session, and
+publishes it only after exact Run admission succeeds. It performs no
+snapshot-plus-loop prewrites. A persisted Session without the target Run must
+match the checkpoint's semantic generation; an already persisted target uses
+the normal exact replay/conflict rules, and an unrelated live Session is never
+replaced. This is one Harness-visible admission, not an external datastore
+transaction: Cloud still owns checkpoint authorization and revision/CAS
+fencing against other writers. The existing `AgentProtocolRunRecoverV1`
+command and HTTP wire contract remain unchanged for hosts that intentionally
+request the latest stored boundary.
+
+Every new logical checkpoint also carries `RunCapabilityBindingV1`: the exact
+Code catalog generation and digest, the canonical complete authority-ceiling
+digest, and any exact A3S Use cursor. Recovery pins and compares that identity
+before reserving the target Run, so an N checkpoint cannot resume through N+1,
+even when cutover races preparation. A host restoring a missing Session can use
+`execute_checkpoint_recovery_with_capability_batch()` to reconstruct one exact
+historical generation from untouched generation zero. Code accepts no
+`latest` lookup or partial batch; mismatch leaves both Session and target Run
+unpublished.
 
 The optional state graph is a complementary coordination runtime, not hidden
 session state:
@@ -776,9 +918,9 @@ boundaries include `LlmClient`, `ContextProvider`, `MemoryStore`,
 hooks, security, MCP transports, and graph stores.
 
 Installable cognitive packages remain owned by A3S Use. Code consumes their
-exact immutable capability generations and is incrementally moving its local
-Tool, Skill, Agent, Command, Hook, and MCP projections onto typed Session/Run
-scopes with atomic publication and reversible effects. The ownership,
+exact immutable capability generations and projects local Tool, Skill, Agent,
+Command, Hook, MCP, Context, Flow, Knowledge, and UI values onto typed
+Session/Run scopes with atomic publication and reversible effects. The ownership,
 generation, lifecycle, and compatibility contract is defined in the
 [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md).
 
@@ -799,29 +941,43 @@ the exact non-clone Use snapshot lease. Its supervisor owns all child scopes,
 tasks, reversible effects, and that upstream lease, then closes them in bounded
 reverse order with the Use lease released last.
 
+The execution-composition slice makes those scopes operational rather than
+descriptive. One cancellation tree now roots the host invocation and admitted
+capability hierarchy. Every provider response and its Tool calls share one
+Turn; foreground delegation composes `Turn -> Subtask -> Turn`, while explicit
+background delegation is promoted beyond the invoking Turn but remains
+Run-supervised. Run close settles that work before releasing the exact Use
+lease, so no task or reversible effect silently escapes its temporal owner.
+
 The projection slice adds a closed `CapabilityValue` plane, immutable
 `CapabilityProjection` generations, non-clone reader leases, and
 `CapabilityTxn<Staged/Prepared/Validated>`. Only a validated transaction can
 commit through the catalog's generation-and-digest CAS. Failed preparation,
 validation, cancellation, or a lost commit race leaves the current generation
 unchanged and moves prepared effects to bounded reverse cleanup. Retired effects
-remain pinned until the last old projection lease is released. UI descriptors
-fail closed until Core has a typed UI runtime contract.
+remain pinned until the last old projection lease is released. The closed value
+plane includes bounded `UiBinding` documents; UI name, content-digest, surface-
+digest, role, dependency-kind, and size drift fail before publication.
 
-Delivered `HOST-CAP1` lets a Session apply a complete Tool/Skill
+Delivered `HOST-CAP1` lets a Session apply a complete capability
 generation through `SessionCapabilityBatch`. Publication atomically binds the
 projection and its generation-specific A3S Use lease provider. Every Run pins
 one projection, freezes the compatibility Tool/Skill maps, acquires a fresh
 real Use snapshot lease for the exact cursor, and uses the same Tool `Arc` for
 model definition and governed execution. Old Runs keep N while later Runs see
 N+1; cancellation, close, preparation failure, and name conflict do not expose
-a partial generation. Compatibility Tool, Skill, and MCP-wrapper APIs cannot
+a partial generation. Each admitted Run and live checkpoint retain a canonical
+catalog-plus-ceiling binding; recovery verifies it before target admission or
+performs one exact host-supplied bootstrap on a fresh Session. Compatibility
+Tool, Skill, and MCP-wrapper APIs cannot
 shadow a published projection. The CLI now uses the batch for resident
 sessions and a short-lived Code Exec runtime that stops Use discovery before
 Run admission. Desktop probes and requires that exact host contract, then
 accepts success only with canonical Code catalog and Use snapshot evidence.
-Flow, Knowledge, Context, and UI still fail closed in the
-atomic Session batch and retain their explicit compatibility owners.
+Knowledge is Run-frozen through the separately persisted exact cognitive
+boundary described below. Flow and UI are host-consumed through the exact
+`projected_flow` and `projected_ui` handles described below; neither is silently
+converted into a model-visible Tool.
 
 Delivered `HOST-AGENT1` extends that batch to typed Agent definitions without
 moving package authority into Code. Every Run merges compatibility and
@@ -863,8 +1019,85 @@ the final old projection reader drops.
 The adapter consumes host-constructed configuration derived from already
 selected Use Runtime/Gateway evidence. Code does not inspect packages, resolve
 opaque `gateway:*` endpoint identities, choose providers, or own Use cutover,
-route drain, and recovery. Projecting the authoritative Use MCP surface into
-this Core seam remains a separate Use and official-host adoption boundary.
+route drain, and recovery. A3S Use and the official CLI now project each exact
+extension MCP surface through this seam. The one-shot CLI/Desktop host composes
+its trusted Runtime/private Gateway lazily only when an admitted Streamable HTTP
+surface asks it to resolve opaque provider/reference/path evidence; stdio-only
+generations start neither. It retains that process-owned host until the Session
+closes the projected clients and then shuts the Gateway down. Adoption by the
+remaining official hosts stays a separate integration boundary.
+
+Delivered `HOST-CONTEXT1` admits general `ContextProvider` values through the
+same batch and copies their exact `Arc` values into each Run-frozen Agent
+configuration. A Run admitted on N keeps N providers and the exact N Use lease
+after N+1 publication. Descriptor/provider name drift, collisions with
+Session-static providers, and attempts to smuggle a persisted cognitive package
+binding through the general Context category fail before catalog publication.
+Delegated children intentionally keep isolated prompt context, so dropping the
+parent Context surface is a monotonic child-scope narrowing rather than a lookup
+of Session-latest providers. Knowledge remains a distinct exact-authority cut;
+UI follows the distinct host-only cut below.
+
+Delivered `HOST-FLOW1` replaces the anonymous Flow runtime value with a named
+`FlowBinding`. `WorkflowSpec::name` is the public capability name and the
+binding pairs that exact durable spec with the `FlowEngine` that owns its event
+store, runtime, observer, replay, and runtime-build compatibility. A host calls
+`AgentSession::projected_flow` to receive a non-clone handle retaining the exact
+Code projection and A3S Use lease. An N handle continues through N after N+1
+publication; incompatible runtime builds and descriptor/spec name drift fail
+before publication, missing lookup acquires no lease, and Session close cancels
+active replay. Flow remains host-only unless an explicit governed Tool adapter
+is installed. The resident CLI now adapts dependency-free, Tool-dependent,
+MCP-dependent, and OKF-dependent A3S Use Flows through this boundary: it re-verifies and
+digest-stages source, completes workspace-local Native TypeScript preflight,
+and publishes the exact binding with same-package Tool, MCP, and digest-bound
+Knowledge Surface dependencies.
+Failed preflight or cancelled workspace lock contention leaves the visible
+generation unchanged. Dynamic multi-scope OKF search remains a separate
+compatibility-owned query adapter rather than becoming Flow authority.
+
+Delivered `HOST-KNOWLEDGE1` admits exactly one `CognitiveContextSession` through
+the atomic Session batch and installs its exact provider only in the admitted
+Run configuration. An N Run retains N's cognitive provider, package binding,
+and A3S Use lease across N+1 publication. Every `RunSnapshot` records its own
+exact cognitive binding, while `SessionSnapshotV1` records the binding visible
+to the next Run, so old Run evidence remains valid after cutover. A resumed or
+Session-static provider is a recovery seed: the first projected Knowledge value
+must reproduce that exact binding before later generations can advance, and
+removal cannot reveal the stale seed. Multiple Knowledge authorities and any
+mix with general-purpose host Context fail before publication. The Knowledge
+host retains OKF validation, indexing, retrieval, retention, and exact query
+lease ownership.
+
+The same gate also admits multiple immutable `KnowledgeSurfaceBinding` values
+as readiness-only evidence. Their canonical digest binds format, content, and
+exact projection digests; they expose no retrieval method and do not count as
+cognitive authorities. An admitted Run pins them with the same Code and Use
+generations, allowing dependent host capabilities to reject missing or mixed
+OKF evidence before publication.
+
+Delivered `HOST-UI1` admits immutable `UiBinding` values through the same
+atomic Session batch. Each binding contains bounded, path-free entry HTML plus
+ordered CSS and JavaScript bytes, verified content identities, presentation
+metadata, and a canonical surface digest. Descriptor names and surface digests
+must match the binding exactly, and UI readiness edges may target only Tool,
+Skill, MCP, or Flow values in the same generation. A host calls
+`AgentSession::projected_ui` to receive a non-clone handle retaining that exact
+document, Code generation, and fresh A3S Use lease across N+1 publication;
+missing lookup acquires no lease and Session close signals cancellation. Core
+does not parse or render HTML, own origin/CSP/navigation/state, expose ambient
+filesystem/network/process/secret authority, or route UI backend messages.
+A3S Use now publishes versioned, complete canonical UI dependency and managed
+MCP evidence, and the resident CLI revalidates it before staging eligible
+managed MCP, Skill, provider-qualified Runtime Tool Task, dependency-closed
+Flow, Knowledge Surface, and UI values in one batch. Tool-, MCP-, and
+OKF-dependent Flow edges resolve against the same exact package generation;
+provider absence or missing
+evidence fails before publication, and neither Runtime Tool nor extension MCP
+uses a compatibility registration. Official renderer-host adoption remains
+separate integration work. The scoped CLI/Desktop host intentionally retains
+its narrower managed-MCP/Skill/UI cut, with lazy trusted HTTP Runtime/Gateway
+composition and an explicit Session-close-before-Gateway-shutdown lifetime.
 
 Delivered `CAP-PROFILE1` adds one closed
 `ToolPresentationProfileV1` to the Session and Run. Adaptive preserves the

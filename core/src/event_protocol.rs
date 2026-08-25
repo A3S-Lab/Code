@@ -55,6 +55,7 @@ define_agent_event_types_v1! {
     ReasoningDelta => REASONING_DELTA = "reasoning_delta",
     ToolStart => TOOL_START = "tool_start",
     ToolInputDelta => TOOL_INPUT_DELTA = "tool_input_delta",
+    ToolRequestBound => TOOL_REQUEST_BOUND = "tool_request_bound",
     ToolExecutionStart => TOOL_EXECUTION_START = "tool_execution_start",
     ToolEnd => TOOL_END = "tool_end",
     ToolOutputDelta => TOOL_OUTPUT_DELTA = "tool_output_delta",
@@ -331,6 +332,10 @@ impl From<EventEnvelopeV1> for AgentEventProjectionV1 {
             AgentEventTypeV1::TOOL_INPUT_DELTA => {
                 projection.tool_id = Self::string(&projection.payload, "id");
                 projection.text = Self::string(&projection.payload, "delta");
+            }
+            AgentEventTypeV1::TOOL_REQUEST_BOUND => {
+                projection.tool_id = Self::string(&projection.payload, "tool_id");
+                projection.tool_name = Self::string(&projection.payload, "tool_name");
             }
             AgentEventTypeV1::TOOL_EXECUTION_START => {
                 projection.tool_id = Self::string(&projection.payload, "id");

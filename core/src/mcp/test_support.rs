@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -199,6 +200,7 @@ pub(crate) async fn ready_binding(
     (binding, transport, client)
 }
 
+#[cfg(unix)]
 pub(crate) fn compile_fake_server(output: &Path) {
     static BINARY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
 
@@ -236,6 +238,7 @@ pub(crate) fn compile_fake_server(output: &Path) {
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn fixture_started_pids(log: &str) -> Vec<u32> {
     log.lines()
         .filter(|line| line.contains("\"event\":\"process_started\""))

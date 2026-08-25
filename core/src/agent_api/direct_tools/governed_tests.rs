@@ -3,7 +3,8 @@ use crate::agent::AgentConfig;
 use crate::hitl::{ConfirmationManager, ConfirmationPolicy, ConfirmationProvider};
 use crate::llm::{LlmClient, LlmResponse, Message, StreamEvent, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision};
-use crate::tools::{Tool, ToolOutput};
+use crate::tools::{Tool, ToolInvocation, ToolOutput};
+use crate::{ToolRequestOriginV1, ToolRequestSnapshotV1};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -172,6 +173,70 @@ async fn governed_host_call_obeys_permission_before_side_effects() {
     assert_ne!(result.exit_code, 0);
     assert!(result.output.contains("Permission denied"));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn governed_denial_binds_the_request_before_permission_evidence() {
+    let (runtime, calls, _directory) = runtime(PermissionDecision::Deny, false, None);
+    let arguments = serde_json::json!({"secret": "governed-private-value"});
+    let tool_id = "governed-denied-1";
+    let (event_tx, mut event_rx) = mpsc::channel(8);
+    let event_tx = Some(event_tx);
+    let cancellation = CancellationToken::new();
+
+    let result = runtime
+        .agent_loop
+        .invoke_host_tool(
+            ToolInvocation::host_governed(tool_id, "governed_counting", arguments.clone()),
+            &runtime.session_id,
+            &event_tx,
+            &cancellation,
+            &runtime.tool_context,
+        )
+        .await;
+    drop(event_tx);
+
+    assert_ne!(result.exit_code, 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let mut events = Vec::new();
+    while let Some(event) = event_rx.recv().await {
+        events.push(event);
+    }
+    let request_position = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::ToolRequestBound { .. }))
+        .expect("denied requests must retain bounded request evidence");
+    let denial_position = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::PermissionDenied { .. }))
+        .expect("governed denial must retain permission evidence");
+    assert!(request_position < denial_position);
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, AgentEvent::ToolExecutionStart { .. })));
+
+    let AgentEvent::ToolRequestBound {
+        tool_id: observed_id,
+        tool_name,
+        snapshot,
+    } = &events[request_position]
+    else {
+        unreachable!()
+    };
+    let snapshot: &ToolRequestSnapshotV1 = snapshot;
+    snapshot
+        .validate_against(
+            tool_id,
+            "governed_counting",
+            &arguments,
+            ToolRequestOriginV1::HostDirectGoverned,
+        )
+        .unwrap();
+    assert_eq!(observed_id, tool_id);
+    assert_eq!(tool_name, "governed_counting");
+    assert!(!serde_json::to_string(snapshot)
+        .unwrap()
+        .contains("governed-private-value"));
 }
 
 #[tokio::test]

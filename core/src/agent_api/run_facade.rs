@@ -40,6 +40,18 @@ impl AgentSession {
             .await
     }
 
+    /// Return one internally consistent snapshot and event page generation.
+    pub(crate) async fn run_event_observation(
+        &self,
+        run_id: &str,
+        after_sequence: Option<usize>,
+        limit: usize,
+    ) -> Option<crate::run::RunEventObservation> {
+        RunControl::from_session(self)
+            .run_event_observation(run_id, after_sequence, limit)
+            .await
+    }
+
     /// Return a handle for the currently running operation, if any.
     pub async fn current_run(&self) -> Option<crate::run::RunHandle> {
         RunControl::from_session(self).current_run().await

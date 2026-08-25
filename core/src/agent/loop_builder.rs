@@ -23,7 +23,9 @@ impl AgentLoop {
             command_queue: None,
             checkpoint_sink: None,
             checkpoint_run_id: None,
+            checkpoint_capability_binding: None,
             bound_invocation: None,
+            capability_runtime: None,
         }
     }
 
@@ -39,6 +41,29 @@ impl AgentLoop {
     ) -> Self {
         self.model_generation_admission = admission;
         self
+    }
+
+    pub(crate) fn with_capability_runtime(
+        mut self,
+        runtime: crate::capability::AgentCapabilityRuntime,
+    ) -> Self {
+        self.capability_runtime = Some(runtime);
+        self
+    }
+
+    pub(crate) fn begin_capability_operation(
+        &self,
+        logical_turn: usize,
+        fallback_cancellation: &tokio_util::sync::CancellationToken,
+        label: &'static str,
+    ) -> anyhow::Result<crate::capability::AgentCapabilityOperation> {
+        crate::capability::AgentCapabilityOperation::begin(
+            self.capability_runtime.as_ref(),
+            logical_turn,
+            fallback_cancellation,
+            label,
+        )
+        .map_err(Into::into)
     }
 
     /// Set the lane queue for priority-based tool execution.
@@ -66,5 +91,19 @@ impl AgentLoop {
     /// host successive runs.
     pub fn set_checkpoint_run(&mut self, run_id: impl Into<String>) {
         self.checkpoint_run_id = Some(run_id.into());
+    }
+
+    pub(crate) fn with_checkpoint_capability_binding(
+        mut self,
+        binding: crate::capability::RunCapabilityBindingV1,
+    ) -> Self {
+        self.checkpoint_capability_binding = Some(binding);
+        self
+    }
+
+    pub(crate) fn checkpoint_capability_binding(
+        &self,
+    ) -> Option<&crate::capability::RunCapabilityBindingV1> {
+        self.checkpoint_capability_binding.as_ref()
     }
 }

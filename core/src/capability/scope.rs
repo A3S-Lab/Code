@@ -254,6 +254,40 @@ pub struct CapabilityScope<K: ScopeKind> {
     _kind: PhantomData<K>,
 }
 
+/// Cloneable weak registration handle for one typed capability scope.
+///
+/// A handle can transfer tasks and reversible effects into an active scope,
+/// and the permitted marker-specific methods can derive child scopes. It does
+/// not retain the scope, its immutable catalog generation, or an upstream A3S
+/// Use lease. Once the owner closes or drops the scope, every operation fails
+/// closed.
+pub struct CapabilityScopeHandle<K: ScopeKind> {
+    inner: Weak<ScopeInner>,
+    id: CapabilityScopeId,
+    _kind: PhantomData<K>,
+}
+
+impl<K: ScopeKind> Clone for CapabilityScopeHandle<K> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            id: self.id.clone(),
+            _kind: PhantomData,
+        }
+    }
+}
+
+impl<K: ScopeKind> fmt::Debug for CapabilityScopeHandle<K> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CapabilityScopeHandle")
+            .field("marker", &K::KIND)
+            .field("id", &self.id)
+            .field("active", &self.is_active())
+            .finish()
+    }
+}
+
 impl<K: ScopeKind> fmt::Debug for CapabilityScope<K> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -279,11 +313,51 @@ impl CapabilityScope<Session> {
         ceiling: CapabilityCeiling,
         close_policy: ScopeClosePolicy,
     ) -> Result<Self, CapabilityScopeError> {
+        Self::new_session_with_close_policy_and_cancellation(
+            local_id,
+            set,
+            ceiling,
+            close_policy,
+            CancellationToken::new(),
+        )
+    }
+
+    /// Create a Session scope rooted in a host-owned cancellation tree.
+    ///
+    /// Every admitted descendant derives its token from this exact root, so a
+    /// Run cannot remain active after its host invocation or Session lifetime
+    /// has been cancelled.
+    pub fn new_session_with_cancellation(
+        local_id: impl Into<String>,
+        set: Arc<CapabilitySet>,
+        ceiling: CapabilityCeiling,
+        cancellation: CancellationToken,
+    ) -> Result<Self, CapabilityScopeError> {
+        Self::new_session_with_close_policy_and_cancellation(
+            local_id,
+            set,
+            ceiling,
+            ScopeClosePolicy::default(),
+            cancellation,
+        )
+    }
+
+    pub fn new_session_with_close_policy_and_cancellation(
+        local_id: impl Into<String>,
+        set: Arc<CapabilitySet>,
+        ceiling: CapabilityCeiling,
+        close_policy: ScopeClosePolicy,
+        cancellation: CancellationToken,
+    ) -> Result<Self, CapabilityScopeError> {
         if ceiling.catalog_digest() != set.digest() {
             return Err(CapabilityScopeError::CeilingCatalogMismatch);
         }
         let id = CapabilityScopeId::root(CapabilityScopeKind::Session, local_id)?;
-        let cancellation = CancellationToken::new();
+        if cancellation.is_cancelled() {
+            return Err(CapabilityScopeError::ScopeInactive {
+                scope_id: id.to_string(),
+            });
+        }
         let supervisor = EffectSupervisor::new(id.to_string(), cancellation, close_policy);
         let use_generation = set.use_capability_generation().cloned();
         Ok(Self {
@@ -374,6 +448,197 @@ impl CapabilityScope<Turn> {
     }
 }
 
+impl CapabilityScope<Subtask> {
+    /// Start one model/tool Turn inside a delegated execution scope.
+    ///
+    /// This transition makes the hierarchy recursively composable: a child
+    /// Agent can own Turns, whose tool calls can in turn create Subtasks.
+    pub fn turn(
+        &self,
+        local_id: impl Into<String>,
+        ceiling: CapabilityCeiling,
+    ) -> Result<CapabilityScope<Turn>, CapabilityScopeError> {
+        self.create_child(local_id, ceiling, None, self.inner.use_generation.clone())
+    }
+
+    pub fn subtask(
+        &self,
+        local_id: impl Into<String>,
+        ceiling: CapabilityCeiling,
+    ) -> Result<CapabilityScope<Subtask>, CapabilityScopeError> {
+        self.create_child(local_id, ceiling, None, self.inner.use_generation.clone())
+    }
+}
+
+impl CapabilityScopeHandle<Run> {
+    pub fn turn(
+        &self,
+        local_id: impl Into<String>,
+        ceiling: CapabilityCeiling,
+    ) -> Result<CapabilityScope<Turn>, CapabilityScopeError> {
+        self.create_child(local_id, ceiling)
+    }
+
+    pub fn turn_inheriting(
+        &self,
+        local_id: impl Into<String>,
+    ) -> Result<CapabilityScope<Turn>, CapabilityScopeError> {
+        self.create_child_inheriting(local_id)
+    }
+
+    pub fn subtask(
+        &self,
+        local_id: impl Into<String>,
+        ceiling: CapabilityCeiling,
+    ) -> Result<CapabilityScope<Subtask>, CapabilityScopeError> {
+        self.create_child(local_id, ceiling)
+    }
+
+    pub fn subtask_inheriting(
+        &self,
+        local_id: impl Into<String>,
+    ) -> Result<CapabilityScope<Subtask>, CapabilityScopeError> {
+        self.create_child_inheriting(local_id)
+    }
+}
+
+impl CapabilityScopeHandle<Turn> {
+    pub fn subtask(
+        &self,
+        local_id: impl Into<String>,
+        ceiling: CapabilityCeiling,
+    ) -> Result<CapabilityScope<Subtask>, CapabilityScopeError> {
+        self.create_child(local_id, ceiling)
+    }
+
+    pub fn subtask_inheriting(
+        &self,
+        local_id: impl Into<String>,
+    ) -> Result<CapabilityScope<Subtask>, CapabilityScopeError> {
+        self.create_child_inheriting(local_id)
+    }
+}
+
+impl CapabilityScopeHandle<Subtask> {
+    pub fn turn(
+        &self,
+        local_id: impl Into<String>,
+        ceiling: CapabilityCeiling,
+    ) -> Result<CapabilityScope<Turn>, CapabilityScopeError> {
+        self.create_child(local_id, ceiling)
+    }
+
+    pub fn turn_inheriting(
+        &self,
+        local_id: impl Into<String>,
+    ) -> Result<CapabilityScope<Turn>, CapabilityScopeError> {
+        self.create_child_inheriting(local_id)
+    }
+
+    pub fn subtask(
+        &self,
+        local_id: impl Into<String>,
+        ceiling: CapabilityCeiling,
+    ) -> Result<CapabilityScope<Subtask>, CapabilityScopeError> {
+        self.create_child(local_id, ceiling)
+    }
+
+    pub fn subtask_inheriting(
+        &self,
+        local_id: impl Into<String>,
+    ) -> Result<CapabilityScope<Subtask>, CapabilityScopeError> {
+        self.create_child_inheriting(local_id)
+    }
+}
+
+impl<K: ScopeKind> CapabilityScopeHandle<K> {
+    pub fn id(&self) -> &CapabilityScopeId {
+        &self.id
+    }
+
+    pub const fn kind(&self) -> CapabilityScopeKind {
+        K::KIND
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.inner
+            .upgrade()
+            .is_some_and(|inner| inner.supervisor.is_open())
+    }
+
+    pub fn cancellation(&self) -> Result<CancellationToken, CapabilityScopeError> {
+        let inner = self.upgrade()?;
+        inner.ensure_active()?;
+        Ok(inner.supervisor.cancellation())
+    }
+
+    pub fn register_effect<E>(&self, effect: E) -> Result<(), CapabilityScopeError>
+    where
+        E: CapabilityEffect,
+    {
+        let inner = self.upgrade()?;
+        inner.ensure_active()?;
+        inner.supervisor.register_effect(Box::new(effect))
+    }
+
+    pub fn spawn_task<F>(
+        &self,
+        name: impl Into<String>,
+        task: F,
+    ) -> Result<SupervisedTaskId, CapabilityScopeError>
+    where
+        F: Future<Output = Result<(), CapabilityEffectError>> + Send + 'static,
+    {
+        let inner = self.upgrade()?;
+        inner.ensure_active()?;
+        inner.supervisor.spawn_task(name, task)
+    }
+
+    pub fn cancel(&self) -> Result<(), CapabilityScopeError> {
+        let inner = self.upgrade()?;
+        inner.ensure_active()?;
+        inner.supervisor.cancel();
+        Ok(())
+    }
+
+    fn create_child<C: ScopeKind>(
+        &self,
+        local_id: impl Into<String>,
+        ceiling: CapabilityCeiling,
+    ) -> Result<CapabilityScope<C>, CapabilityScopeError> {
+        let parent = self.upgrade()?;
+        create_child_scope(
+            &parent,
+            local_id,
+            ceiling,
+            None,
+            parent.use_generation.clone(),
+        )
+    }
+
+    fn create_child_inheriting<C: ScopeKind>(
+        &self,
+        local_id: impl Into<String>,
+    ) -> Result<CapabilityScope<C>, CapabilityScopeError> {
+        let parent = self.upgrade()?;
+        create_child_scope(
+            &parent,
+            local_id,
+            parent.ceiling.clone(),
+            None,
+            parent.use_generation.clone(),
+        )
+    }
+
+    fn upgrade(&self) -> Result<Arc<ScopeInner>, CapabilityScopeError> {
+        self.inner
+            .upgrade()
+            .ok_or_else(|| CapabilityScopeError::ScopeInactive {
+                scope_id: self.id.to_string(),
+            })
+    }
+}
+
 impl<K: ScopeKind> CapabilityScope<K> {
     pub fn id(&self) -> &CapabilityScopeId {
         &self.inner.id
@@ -405,6 +670,14 @@ impl<K: ScopeKind> CapabilityScope<K> {
 
     pub fn cancellation(&self) -> CancellationToken {
         self.inner.supervisor.cancellation()
+    }
+
+    pub fn handle(&self) -> CapabilityScopeHandle<K> {
+        CapabilityScopeHandle {
+            inner: Arc::downgrade(&self.inner),
+            id: self.inner.id.clone(),
+            _kind: PhantomData,
+        }
     }
 
     pub fn lease(&self) -> Result<CapabilityLease<'_, K>, CapabilityScopeError> {
@@ -449,36 +722,13 @@ impl<K: ScopeKind> CapabilityScope<K> {
         generation_lease: Option<Box<dyn RetainedUseGeneration>>,
         use_generation: Option<UseCapabilityGeneration>,
     ) -> Result<CapabilityScope<C>, CapabilityScopeError> {
-        self.inner.ensure_active()?;
-        ceiling.ensure_within(&self.inner.ceiling)?;
-        let id = CapabilityScopeId::child(&self.inner.id, C::KIND, local_id)?;
-        let cancellation = self.inner.supervisor.cancellation().child_token();
-        let supervisor =
-            EffectSupervisor::new(id.to_string(), cancellation, self.inner.supervisor.policy());
-        if let Some(lease) = generation_lease {
-            supervisor.register_generation_lease(lease)?;
-        }
-        let child = Arc::new(ScopeInner {
-            id,
-            kind: C::KIND,
-            parent_id: Some(self.inner.id.clone()),
-            set: Arc::clone(&self.inner.set),
+        create_child_scope(
+            &self.inner,
+            local_id,
             ceiling,
+            generation_lease,
             use_generation,
-            supervisor,
-            parent_registration: Mutex::new(None),
-        });
-        let registration_id = self
-            .inner
-            .supervisor
-            .register_child(Box::new(ChildScopeOwner {
-                inner: Arc::clone(&child),
-            }))?;
-        child.set_parent_registration(self.inner.supervisor.downgrade(), registration_id);
-        Ok(CapabilityScope {
-            inner: child,
-            _kind: PhantomData,
-        })
+        )
     }
 }
 
@@ -486,6 +736,42 @@ impl<K: ScopeKind> Drop for CapabilityScope<K> {
     fn drop(&mut self) {
         self.inner.supervisor.cancel();
     }
+}
+
+fn create_child_scope<C: ScopeKind>(
+    parent: &Arc<ScopeInner>,
+    local_id: impl Into<String>,
+    ceiling: CapabilityCeiling,
+    generation_lease: Option<Box<dyn RetainedUseGeneration>>,
+    use_generation: Option<UseCapabilityGeneration>,
+) -> Result<CapabilityScope<C>, CapabilityScopeError> {
+    parent.ensure_active()?;
+    ceiling.ensure_within(&parent.ceiling)?;
+    let id = CapabilityScopeId::child(&parent.id, C::KIND, local_id)?;
+    let cancellation = parent.supervisor.cancellation().child_token();
+    let supervisor =
+        EffectSupervisor::new(id.to_string(), cancellation, parent.supervisor.policy());
+    if let Some(lease) = generation_lease {
+        supervisor.register_generation_lease(lease)?;
+    }
+    let child = Arc::new(ScopeInner {
+        id,
+        kind: C::KIND,
+        parent_id: Some(parent.id.clone()),
+        set: Arc::clone(&parent.set),
+        ceiling,
+        use_generation,
+        supervisor,
+        parent_registration: Mutex::new(None),
+    });
+    let registration_id = parent.supervisor.register_child(Box::new(ChildScopeOwner {
+        inner: Arc::clone(&child),
+    }))?;
+    child.set_parent_registration(parent.supervisor.downgrade(), registration_id);
+    Ok(CapabilityScope {
+        inner: child,
+        _kind: PhantomData,
+    })
 }
 
 fn validate_scope_local_id(value: &str) -> Result<(), CapabilityScopeError> {
