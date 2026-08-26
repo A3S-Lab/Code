@@ -30,6 +30,10 @@ const INTENTIONAL_SESSION_OMISSIONS = new Map([
     'workflow_with_token_budget',
     'Rust fluent workflow object; SDK parallel exposes the shared budget overload.',
   ],
+  [
+    'workflow_with_token_budget_and_tools',
+    'Rust fluent workflow accepts Tool trait objects; SDKs cannot transport arbitrary host-native tools without a typed callback provider.',
+  ],
   ['session_store', 'Rust trait-object getter; SDKs expose resumable operations.'],
   ['register_hook_handler', 'SDK register_hook accepts the handler in one call.'],
   ['unregister_hook_handler', 'SDK unregister_hook removes the hook and handler together.'],

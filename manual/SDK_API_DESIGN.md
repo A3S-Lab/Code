@@ -237,7 +237,10 @@ Rules:
 - Dynamic workflow registration exposes the Rust core's A3S Flow-backed
   `dynamic_workflow` tool without requiring SDK callers to construct Rust trait
   objects. Arbitrary host-native dynamic tools remain Rust-only unless a typed
-  SDK-safe provider shape is added.
+  SDK-safe provider shape is added. For the same reason, the Rust-only
+  `workflow_with_token_budget_and_tools` facade is an intentional SDK omission:
+  it accepts exact in-process `Arc<dyn Tool>` values that cannot cross an FFI
+  boundary without such a provider shape.
 - Runtime budget guards can be installed after session creation because JS/Python
   callbacks cannot always live inside value-typed `SessionOptions`.
 - Hooks supervise the existing agent loop; they do not create a second in-core
