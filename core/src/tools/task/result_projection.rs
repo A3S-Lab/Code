@@ -124,6 +124,77 @@ pub(super) fn sanitize_task_json(
     }
 }
 
+/// Sanitize structured task output while retaining only protocol literals the
+/// host explicitly authorized with a schema `const` or `enum`. Pattern or type
+/// acceptance is intentionally insufficient to bypass output redaction.
+pub(super) fn sanitize_task_json_with_schema(
+    provider: &dyn crate::security::SecurityProvider,
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(value) => {
+            let sanitized = provider.sanitize_output(value);
+            if sanitized != *value && schema_authorizes_literal(schema, value) {
+                serde_json::Value::String(value.clone())
+            } else {
+                serde_json::Value::String(sanitized)
+            }
+        }
+        serde_json::Value::Array(values) => {
+            let item_schema = schema.get("items").unwrap_or(&serde_json::Value::Null);
+            serde_json::Value::Array(
+                values
+                    .iter()
+                    .map(|value| sanitize_task_json_with_schema(provider, value, item_schema))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Object(values) => {
+            let properties = schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object);
+            serde_json::Value::Object(
+                values
+                    .iter()
+                    .map(|(key, value)| {
+                        let property_schema = properties
+                            .and_then(|properties| properties.get(key))
+                            .unwrap_or(&serde_json::Value::Null);
+                        (
+                            key.clone(),
+                            sanitize_task_json_with_schema(provider, value, property_schema),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+        value => value.clone(),
+    }
+}
+
+fn schema_authorizes_literal(schema: &serde_json::Value, value: &str) -> bool {
+    schema.get("const").and_then(serde_json::Value::as_str) == Some(value)
+        || schema
+            .get("enum")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|candidate| candidate.as_str() == Some(value))
+            })
+        || ["allOf", "anyOf", "oneOf"].iter().any(|keyword| {
+            schema
+                .get(keyword)
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|branches| {
+                    branches
+                        .iter()
+                        .any(|branch| schema_authorizes_literal(branch, value))
+                })
+        })
+}
+
 pub(super) fn collect_tool_source_anchors(
     event: &AgentEvent,
     ctx: &ToolContext,

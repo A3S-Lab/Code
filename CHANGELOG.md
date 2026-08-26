@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   argv and deadline contracts, and fails closed on response drift while A3S
   Use retains generation-lease, dispatch, and cleanup authority.
 
+### Changed
+
+- Structured child results now validate the raw final assistant object before
+  display sanitization. Only protocol literals explicitly authorized by schema
+  `const` or `enum` survive a conflicting redaction; other post-redaction schema
+  failures fail the step instead of bypassing security.
+
 ## [8.0.1] - 2026-08-25
 
 ### Changed

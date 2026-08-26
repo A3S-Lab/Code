@@ -692,7 +692,7 @@ impl TaskExecutor {
         let execution_prompt = structured_prompt.as_deref().unwrap_or(&params.prompt);
 
         let mut structured = None;
-        let (mut output, mut success) = if tool_free && output_schema.is_some() {
+        let (mut output, mut success, raw_output) = if tool_free && output_schema.is_some() {
             let operation = agent_loop.begin_capability_operation(
                 0,
                 &cancel_token,
@@ -721,12 +721,12 @@ impl TaskExecutor {
                     let output = serde_json::to_string_pretty(&object)
                         .unwrap_or_else(|_| object.to_string());
                     structured = Some(object);
-                    (output, true)
+                    (output, true, None)
                 }
                 Err(error) if cancel_token.is_cancelled() => {
-                    (format!("Task cancelled by caller: {error}"), false)
+                    (format!("Task cancelled by caller: {error}"), false, None)
                 }
-                Err(error) => (format!("Task failed: {error}"), false),
+                Err(error) => (format!("Task failed: {error}"), false, None),
             }
         } else {
             match agent_loop
@@ -740,26 +740,39 @@ impl TaskExecutor {
                 .await
             {
                 Ok(_) if cancel_token.is_cancelled() => {
-                    ("Task cancelled by caller".to_string(), false)
+                    ("Task cancelled by caller".to_string(), false, None)
                 }
                 Ok(result) if result.text.trim().is_empty() => (
                     "Task failed: child agent returned no final output".to_string(),
                     false,
+                    None,
                 ),
                 Ok(result) if AgentLoop::is_synthetic_failure_output(&result.text) => {
-                    (format!("Task failed: {}", result.text), false)
+                    (format!("Task failed: {}", result.text), false, None)
                 }
-                Ok(result) => (result.text, true),
+                Ok(result) => {
+                    let raw_output = result
+                        .messages
+                        .last()
+                        .filter(|message| message.role == "assistant")
+                        .map(crate::llm::Message::text)
+                        .filter(|text| !text.trim().is_empty());
+                    (result.text, true, raw_output)
+                }
                 Err(e) if cancel_token.is_cancelled() => {
-                    (format!("Task cancelled by caller: {}", e), false)
+                    (format!("Task cancelled by caller: {}", e), false, None)
                 }
-                Err(e) => (format!("Task failed: {}", e), false),
+                Err(e) => (format!("Task failed: {}", e), false, None),
             }
         };
 
         if success && !tool_free {
-            if let Some(schema) = output_schema {
-                if let Some(object) = parse_validated_output(&output, &schema) {
+            if let Some(schema) = output_schema.as_ref() {
+                if let Some(object) = raw_output
+                    .as_deref()
+                    .and_then(|raw| parse_validated_output(raw, schema))
+                    .or_else(|| parse_validated_output(&output, schema))
+                {
                     structured = Some(object);
                 } else {
                     let operation = agent_loop.begin_capability_operation(
@@ -775,7 +788,7 @@ impl TaskExecutor {
                     let coercion = Self::coerce_to_schema(
                         &*llm_client,
                         &output,
-                        schema,
+                        schema.clone(),
                         operation.cancellation(),
                     )
                     .await;
@@ -796,8 +809,19 @@ impl TaskExecutor {
         }
         if let Some(provider) = child_security_provider.as_deref() {
             output = provider.sanitize_output(&output);
-            if let Some(value) = &mut structured {
-                *value = sanitize_task_json(provider, value);
+            if let Some(value) = structured.take() {
+                let sanitized = output_schema.as_ref().map_or_else(
+                    || sanitize_task_json(provider, &value),
+                    |schema| sanitize_task_json_with_schema(provider, &value, schema),
+                );
+                if output_schema
+                    .as_ref()
+                    .is_none_or(|schema| value_matches_schema(&sanitized, schema))
+                {
+                    structured = Some(sanitized);
+                } else {
+                    success = false;
+                }
             }
         }
 
@@ -1072,6 +1096,13 @@ fn structured_task_prompt(prompt: &str, schema: &serde_json::Value) -> String {
          tools as needed before finalizing.\n\n\
          {schema}"
     )
+}
+
+fn value_matches_schema(value: &serde_json::Value, schema: &serde_json::Value) -> bool {
+    serde_json::to_string(value)
+        .ok()
+        .and_then(|encoded| parse_validated_output(&encoded, schema))
+        .is_some()
 }
 
 #[derive(Debug, Clone)]
