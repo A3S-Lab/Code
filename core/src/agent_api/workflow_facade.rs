@@ -13,7 +13,7 @@ impl AgentSession {
     /// run against; a host can instead supply its own executor to place steps
     /// across a cluster.
     pub fn agent_executor(&self) -> Arc<dyn crate::orchestration::AgentExecutor> {
-        Arc::new(self.build_task_executor(self.parent_run_context()))
+        Arc::new(self.build_task_executor(self.parent_run_context(), Vec::new()))
     }
 
     /// Re-register `task`/`parallel_task` with the finalized session runtime.
@@ -69,6 +69,7 @@ impl AgentSession {
     fn build_task_executor(
         &self,
         parent: crate::child_run::ChildRunContext,
+        scoped_tools: Vec<Arc<dyn crate::tools::Tool>>,
     ) -> crate::tools::TaskExecutor {
         crate::tools::TaskExecutor::with_mcp_managers(
             Arc::clone(&self.agent_registry),
@@ -76,6 +77,7 @@ impl AgentSession {
             self.workspace.display().to_string(),
             self.mcp_managers.clone(),
         )
+        .with_scoped_tools(scoped_tools)
         .with_parent_context(parent)
         .with_parent_cancellation(self.session_cancel.child_token())
         .with_subagent_tracker(Arc::clone(&self.subagent_tasks))
@@ -106,6 +108,20 @@ impl AgentSession {
         &self,
         limit_tokens: Option<u64>,
     ) -> crate::orchestration::Workflow {
+        self.workflow_with_token_budget_and_tools(limit_tokens, Vec::new())
+    }
+
+    /// Build a workflow whose delegated children receive only the supplied
+    /// additional host tools. The exact tool values are owned by this workflow
+    /// executor; they are not registered in the parent Session catalog and are
+    /// never inherited by unrelated workflows. Parent and worker permissions,
+    /// HITL, hooks, security, cancellation, and budgets remain authoritative
+    /// for every invocation.
+    pub fn workflow_with_token_budget_and_tools(
+        &self,
+        limit_tokens: Option<u64>,
+        scoped_tools: Vec<Arc<dyn crate::tools::Tool>>,
+    ) -> crate::orchestration::Workflow {
         use crate::budget::BudgetGuard;
 
         // One shared ledger for the whole workflow, wrapping the session's own
@@ -124,7 +140,7 @@ impl AgentSession {
         let mut parent = self.parent_run_context();
         parent.budget_guard = Some(Arc::clone(&budget) as Arc<dyn BudgetGuard>);
         let executor: Arc<dyn crate::orchestration::AgentExecutor> =
-            Arc::new(self.build_task_executor(parent));
+            Arc::new(self.build_task_executor(parent, scoped_tools));
 
         let mut builder = crate::orchestration::Workflow::builder(executor)
             .with_root_id(format!("wf-{}", self.session_id))

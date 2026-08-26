@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `AgentSession::workflow_with_token_budget_and_tools` for exact
+  workflow-child host tools that remain absent from the parent and unrelated
+  workflows while retaining composed permissions, HITL, security, cancellation,
+  and budget authority.
 - Added `UseRuntimeTaskProjectionAdapter` as the Rust-host boundary for
   consuming one exact A3S Use capability-snapshot v2 Runtime Tool Task through
   the atomic `SessionCapabilityBatch`. The adapter retains reviewed scope,

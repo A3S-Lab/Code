@@ -116,6 +116,10 @@ pub struct TaskExecutor {
     mcp_managers: Vec<Arc<McpManager>>,
     /// Exact projected MCP bindings inherited from the admitted parent Run.
     mcp_bindings: Vec<Arc<McpBinding>>,
+    /// Exact host tools owned by this executor. They are installed only in
+    /// child executors and remain bounded by the composed parent/child
+    /// governance context.
+    scoped_tools: Vec<Arc<dyn Tool>>,
     /// Parent capabilities to inherit into child runs.
     parent_context: Option<crate::child_run::ChildRunContext>,
     /// Search configuration captured from the invoking parent context.
@@ -161,6 +165,7 @@ impl TaskExecutor {
             workspace,
             mcp_managers: Vec::new(),
             mcp_bindings: Vec::new(),
+            scoped_tools: Vec::new(),
             parent_context: None,
             search_config: None,
             search_bulkhead: None,
@@ -201,6 +206,7 @@ impl TaskExecutor {
             workspace,
             mcp_managers,
             mcp_bindings: Vec::new(),
+            scoped_tools: Vec::new(),
             parent_context: None,
             search_config: None,
             search_bulkhead: None,
@@ -222,6 +228,15 @@ impl TaskExecutor {
     /// Run. These bindings are never rediscovered through a manager.
     pub(crate) fn with_projected_mcp_bindings(mut self, bindings: Vec<Arc<McpBinding>>) -> Self {
         self.mcp_bindings = bindings;
+        self
+    }
+
+    /// Install exact host-provided tools only in child runs created by this
+    /// executor. Registration does not grant invocation authority: every call
+    /// still crosses composed parent and child governance. A name collision
+    /// with another child capability fails before model execution.
+    pub fn with_scoped_tools(mut self, tools: Vec<Arc<dyn Tool>>) -> Self {
+        self.scoped_tools = tools;
         self
     }
 
@@ -590,6 +605,18 @@ impl TaskExecutor {
             }
             for wrapper in binding.projected_tools() {
                 child_executor.register_dynamic_tool(wrapper);
+            }
+        }
+
+        // These exact Arc values belong only to this TaskExecutor. Install them
+        // after all inherited sources so no scoped tool can shadow a built-in,
+        // compatibility MCP tool, or Run-frozen projected binding.
+        for tool in &self.scoped_tools {
+            if !child_executor.register_dynamic_tool_if_absent(Arc::clone(tool)) {
+                anyhow::bail!(
+                    "Workflow-scoped tool '{}' conflicts with another child capability",
+                    tool.name()
+                );
             }
         }
 
