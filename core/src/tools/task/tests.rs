@@ -1503,6 +1503,74 @@ async fn schema_valid_child_json_skips_llm_coercion() {
 }
 
 #[tokio::test]
+async fn schema_valid_protocol_value_survives_display_redaction() {
+    let workspace = tempfile::tempdir().unwrap();
+    let coercion_calls = Arc::new(AtomicUsize::new(0));
+    let protocol_id = "private-id-5081254398347561";
+    let executor = TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        Arc::new(SchemaFastPathClient {
+            output: r#"{"id":"private-id-5081254398347561"}"#,
+            coercion_calls: Arc::clone(&coercion_calls),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_parent_context(redacting_parent_context());
+    let schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "id": { "type": "string", "const": protocol_id }
+        },
+        "required": ["id"]
+    });
+    let spec = AgentStepSpec::new("protocol-json", "general", "assess", "Return the ID.")
+        .with_output_schema(schema);
+
+    let outcome = executor.execute_step(spec, None).await;
+
+    assert!(outcome.success, "step should succeed: {}", outcome.output);
+    assert!(outcome.output.contains("[redacted]-id"));
+    assert_eq!(
+        outcome.structured,
+        Some(serde_json::json!({ "id": protocol_id }))
+    );
+    assert_eq!(coercion_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn schema_pattern_cannot_bypass_structured_output_redaction() {
+    let workspace = tempfile::tempdir().unwrap();
+    let coercion_calls = Arc::new(AtomicUsize::new(0));
+    let executor = TaskExecutor::new(
+        Arc::new(AgentRegistry::new()),
+        Arc::new(SchemaFastPathClient {
+            output: r#"{"id":"private-id"}"#,
+            coercion_calls: Arc::clone(&coercion_calls),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_parent_context(redacting_parent_context());
+    let schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "id": { "type": "string", "pattern": "^private-id$" }
+        },
+        "required": ["id"]
+    });
+    let spec = AgentStepSpec::new("untrusted-json", "general", "assess", "Return the value.")
+        .with_output_schema(schema);
+
+    let outcome = executor.execute_step(spec, None).await;
+
+    assert!(!outcome.success);
+    assert!(outcome.output.contains("[redacted]-id"));
+    assert!(outcome.structured.is_none());
+    assert_eq!(coercion_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn schema_valid_json_embedded_in_dirty_output_skips_llm_coercion() {
     let workspace = tempfile::tempdir().unwrap();
     let coercion_calls = Arc::new(AtomicUsize::new(0));

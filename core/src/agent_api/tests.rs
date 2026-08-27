@@ -14,6 +14,9 @@ struct ScriptedStreamingClient {
 }
 
 struct NamedSessionTool(String);
+struct CountingScopedWorkflowTool {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
 struct NoopSessionCommand;
 
 struct FailingCloseSessionTransport;
@@ -52,6 +55,34 @@ impl crate::tools::Tool for NamedSessionTool {
         _ctx: &crate::tools::ToolContext,
     ) -> anyhow::Result<crate::tools::ToolOutput> {
         Ok(crate::tools::ToolOutput::success("ok"))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::tools::Tool for CountingScopedWorkflowTool {
+    fn name(&self) -> &str {
+        "scoped_workflow_evidence"
+    }
+
+    fn description(&self) -> &str {
+        "Return host-scoped evidence to one workflow child."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {},
+        })
+    }
+
+    async fn execute(
+        &self,
+        _args: &serde_json::Value,
+        _ctx: &crate::tools::ToolContext,
+    ) -> anyhow::Result<crate::tools::ToolOutput> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(crate::tools::ToolOutput::success("scoped evidence"))
     }
 }
 
@@ -6315,6 +6346,145 @@ async fn test_session_workflow_runs_a_real_child_agent_step() {
     assert!(
         wf.budget_snapshot().unwrap().consumed_tokens > 0,
         "child LLM usage fed the shared workflow budget"
+    );
+}
+
+#[tokio::test]
+async fn test_session_workflow_scopes_explicit_host_tools_to_its_children() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let tool: Arc<dyn crate::tools::Tool> = Arc::new(CountingScopedWorkflowTool {
+        calls: Arc::clone(&calls),
+    });
+    let client = Arc::new(ScriptedStreamingClient::new(vec![
+        scripted_tool_call_response(
+            "scoped-evidence-1",
+            "scoped_workflow_evidence",
+            serde_json::json!({}),
+        ),
+        scripted_text_response("scoped workflow evidence reviewed"),
+    ]));
+    let mut parent_permissions =
+        crate::permissions::PermissionPolicy::new().allow("scoped_workflow_evidence(*)");
+    parent_permissions.default_decision = crate::permissions::PermissionDecision::Deny;
+    let mut worker_permissions =
+        crate::permissions::PermissionPolicy::new().allow("scoped_workflow_evidence(*)");
+    worker_permissions.default_decision = crate::permissions::PermissionDecision::Deny;
+    let opts = SessionOptions::new()
+        .with_llm_client(client)
+        .with_permission_policy(parent_permissions)
+        .with_worker_agent(
+            crate::subagent::WorkerAgentSpec::custom(
+                "scoped-evidence-reviewer",
+                "Review only explicitly scoped host evidence.",
+            )
+            .with_permissions(worker_permissions)
+            .with_max_steps(2),
+        );
+    let session = agent
+        .session_async("/tmp/test-workflow-scoped-host-tools", Some(opts))
+        .await
+        .unwrap();
+
+    let parent_before = session
+        .tool("scoped_workflow_evidence", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_ne!(
+        parent_before.exit_code, 0,
+        "a workflow-scoped tool must not be registered on its parent session"
+    );
+
+    let workflow = session.workflow_with_token_budget_and_tools(Some(1_024), vec![tool]);
+    let outcome = workflow
+        .agent(
+            crate::orchestration::AgentStepSpec::new(
+                "scoped-evidence-step",
+                "scoped-evidence-reviewer",
+                "Review scoped evidence",
+                "Call the admitted evidence tool exactly once, then report completion.",
+            )
+            .with_max_steps(2),
+        )
+        .await;
+
+    assert!(outcome.success, "child step failed: {}", outcome.output);
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the explicit workflow child must execute the scoped tool once"
+    );
+    let parent_after = session
+        .tool("scoped_workflow_evidence", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_ne!(
+        parent_after.exit_code, 0,
+        "a workflow-scoped tool must not escape after child execution"
+    );
+}
+
+#[tokio::test]
+async fn test_session_workflow_parent_permission_can_deny_scoped_host_tool() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let tool: Arc<dyn crate::tools::Tool> = Arc::new(CountingScopedWorkflowTool {
+        calls: Arc::clone(&calls),
+    });
+    let client = Arc::new(ScriptedStreamingClient::new(vec![
+        scripted_tool_call_response(
+            "scoped-evidence-denied-1",
+            "scoped_workflow_evidence",
+            serde_json::json!({}),
+        ),
+        scripted_text_response("permission boundary observed"),
+    ]));
+    let mut parent_permissions = crate::permissions::PermissionPolicy::new();
+    parent_permissions.default_decision = crate::permissions::PermissionDecision::Deny;
+    let mut worker_permissions =
+        crate::permissions::PermissionPolicy::new().allow("scoped_workflow_evidence(*)");
+    worker_permissions.default_decision = crate::permissions::PermissionDecision::Deny;
+    let opts = SessionOptions::new()
+        .with_llm_client(client)
+        .with_permission_policy(parent_permissions)
+        .with_worker_agent(
+            crate::subagent::WorkerAgentSpec::custom(
+                "scoped-evidence-reviewer-denied",
+                "Review only explicitly scoped host evidence.",
+            )
+            .with_permissions(worker_permissions)
+            .with_max_steps(2),
+        );
+    let session = agent
+        .session_async(
+            "/tmp/test-workflow-scoped-host-tool-parent-deny",
+            Some(opts),
+        )
+        .await
+        .unwrap();
+
+    let workflow = session.workflow_with_token_budget_and_tools(Some(1_024), vec![tool]);
+    let outcome = workflow
+        .agent(
+            crate::orchestration::AgentStepSpec::new(
+                "scoped-evidence-denied-step",
+                "scoped-evidence-reviewer-denied",
+                "Review scoped evidence",
+                "Attempt the admitted evidence tool exactly once, then report completion.",
+            )
+            .with_max_steps(2),
+        )
+        .await;
+
+    assert!(
+        outcome.success,
+        "the child should observe the governed denial and finish: {}",
+        outcome.output
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a child allow rule must not override its parent deny boundary"
     );
 }
 

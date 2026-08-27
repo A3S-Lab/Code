@@ -106,6 +106,10 @@ pub struct TaskExecutor {
     workspace: String,
     /// Ordered MCP managers for registering inherited tools in child sessions.
     mcp_managers: Vec<Arc<McpManager>>,
+    /// Host tools explicitly scoped to this executor. They are installed only
+    /// in child executors and remain bounded by the composed parent/child
+    /// governance context.
+    scoped_tools: Vec<Arc<dyn Tool>>,
     /// Parent capabilities to inherit into child runs.
     parent_context: Option<crate::child_run::ChildRunContext>,
     /// Search configuration captured from the invoking parent context.
@@ -142,6 +146,7 @@ impl TaskExecutor {
             llm_client,
             workspace,
             mcp_managers: Vec::new(),
+            scoped_tools: Vec::new(),
             parent_context: None,
             search_config: None,
             search_bulkhead: None,
@@ -178,6 +183,7 @@ impl TaskExecutor {
             llm_client,
             workspace,
             mcp_managers,
+            scoped_tools: Vec::new(),
             parent_context: None,
             search_config: None,
             search_bulkhead: None,
@@ -200,6 +206,15 @@ impl TaskExecutor {
             self.parallel_permits = Arc::new(tokio::sync::Semaphore::new(max_parallel_tasks));
         }
         self.parent_context = Some(ctx);
+        self
+    }
+
+    /// Install exact host-provided tools only in child runs created by this
+    /// executor. Registration does not grant invocation authority: every call
+    /// still crosses composed parent and child governance. A name collision
+    /// with another child capability fails before model execution.
+    pub fn with_scoped_tools(mut self, tools: Vec<Arc<dyn Tool>>) -> Self {
+        self.scoped_tools = tools;
         self
     }
 
@@ -431,6 +446,15 @@ impl TaskExecutor {
             }
         }
 
+        for tool in &self.scoped_tools {
+            if !child_executor.register_dynamic_tool_if_absent(Arc::clone(tool)) {
+                anyhow::bail!(
+                    "Workflow-scoped tool '{}' conflicts with another child capability",
+                    tool.name()
+                );
+            }
+        }
+
         let child_executor = Arc::new(child_executor);
 
         let mut child_config = AgentConfig {
@@ -528,7 +552,7 @@ impl TaskExecutor {
         let execution_prompt = structured_prompt.as_deref().unwrap_or(&params.prompt);
 
         let mut structured = None;
-        let (mut output, mut success) = if tool_free && output_schema.is_some() {
+        let (mut output, mut success, raw_output) = if tool_free && output_schema.is_some() {
             let llm_client = agent_loop.scoped_llm_client_for_parts(
                 Some(&session_id),
                 &child_llm_event_tx,
@@ -547,12 +571,12 @@ impl TaskExecutor {
                     let output = serde_json::to_string_pretty(&object)
                         .unwrap_or_else(|_| object.to_string());
                     structured = Some(object);
-                    (output, true)
+                    (output, true, None)
                 }
                 Err(error) if cancel_token.is_cancelled() => {
-                    (format!("Task cancelled by caller: {error}"), false)
+                    (format!("Task cancelled by caller: {error}"), false, None)
                 }
-                Err(error) => (format!("Task failed: {error}"), false),
+                Err(error) => (format!("Task failed: {error}"), false, None),
             }
         } else {
             match agent_loop
@@ -566,26 +590,39 @@ impl TaskExecutor {
                 .await
             {
                 Ok(_) if cancel_token.is_cancelled() => {
-                    ("Task cancelled by caller".to_string(), false)
+                    ("Task cancelled by caller".to_string(), false, None)
                 }
                 Ok(result) if result.text.trim().is_empty() => (
                     "Task failed: child agent returned no final output".to_string(),
                     false,
+                    None,
                 ),
                 Ok(result) if AgentLoop::is_synthetic_failure_output(&result.text) => {
-                    (format!("Task failed: {}", result.text), false)
+                    (format!("Task failed: {}", result.text), false, None)
                 }
-                Ok(result) => (result.text, true),
+                Ok(result) => {
+                    let raw_output = result
+                        .messages
+                        .last()
+                        .filter(|message| message.role == "assistant")
+                        .map(crate::llm::Message::text)
+                        .filter(|text| !text.trim().is_empty());
+                    (result.text, true, raw_output)
+                }
                 Err(e) if cancel_token.is_cancelled() => {
-                    (format!("Task cancelled by caller: {}", e), false)
+                    (format!("Task cancelled by caller: {}", e), false, None)
                 }
-                Err(e) => (format!("Task failed: {}", e), false),
+                Err(e) => (format!("Task failed: {}", e), false, None),
             }
         };
 
         if success && !tool_free {
-            if let Some(schema) = output_schema {
-                if let Some(object) = parse_validated_output(&output, &schema) {
+            if let Some(schema) = output_schema.as_ref() {
+                if let Some(object) = raw_output
+                    .as_deref()
+                    .and_then(|raw| parse_validated_output(raw, schema))
+                    .or_else(|| parse_validated_output(&output, schema))
+                {
                     structured = Some(object);
                 } else {
                     let llm_client = agent_loop.scoped_llm_client_for_parts(
@@ -593,7 +630,13 @@ impl TaskExecutor {
                         &child_llm_event_tx,
                         &cancel_token,
                     );
-                    match Self::coerce_to_schema(&*llm_client, &output, schema, &cancel_token).await
+                    match Self::coerce_to_schema(
+                        &*llm_client,
+                        &output,
+                        schema.clone(),
+                        &cancel_token,
+                    )
+                    .await
                     {
                         Ok(object) => structured = Some(object),
                         Err(error) => {
@@ -606,8 +649,19 @@ impl TaskExecutor {
         }
         if let Some(provider) = child_security_provider.as_deref() {
             output = provider.sanitize_output(&output);
-            if let Some(value) = &mut structured {
-                *value = sanitize_task_json(provider, value);
+            if let Some(value) = structured.take() {
+                let sanitized = output_schema.as_ref().map_or_else(
+                    || sanitize_task_json(provider, &value),
+                    |schema| sanitize_task_json_with_schema(provider, &value, schema),
+                );
+                if output_schema
+                    .as_ref()
+                    .is_none_or(|schema| value_matches_schema(&sanitized, schema))
+                {
+                    structured = Some(sanitized);
+                } else {
+                    success = false;
+                }
             }
         }
 
@@ -769,6 +823,13 @@ fn structured_task_prompt(prompt: &str, schema: &serde_json::Value) -> String {
          tools as needed before finalizing.\n\n\
          {schema}"
     )
+}
+
+fn value_matches_schema(value: &serde_json::Value, schema: &serde_json::Value) -> bool {
+    serde_json::to_string(value)
+        .ok()
+        .and_then(|encoded| parse_validated_output(&encoded, schema))
+        .is_some()
 }
 
 #[derive(Debug, Clone)]

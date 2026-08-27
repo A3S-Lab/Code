@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `AgentSession::workflow_with_token_budget_and_tools` for exact
+  workflow-child host tools that remain absent from the parent and unrelated
+  workflows while retaining composed permissions, HITL, security, cancellation,
+  and budget authority.
 - Added the Rust-host `CognitiveContextSession` boundary for one exact A3S Use
   cognitive-package generation. Typed requests and cited Markdown responses
   retain package/version, lifecycle generation, capability snapshot, Knowledge
@@ -19,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Structured child results now validate the raw final assistant object before
+  display sanitization. Only protocol literals explicitly authorized by schema
+  `const` or `enum` survive a conflicting redaction; other post-redaction schema
+  failures fail the step instead of bypassing security.
 - Cognitive-package-bound turns now fail closed on provider or identity drift,
   require the same host-injected binding on resume, suppress personal-memory
   recall, and reject general RAG/graph providers instead of using them as a

@@ -2766,7 +2766,25 @@ mod extra_llm_tests3 {
     fn test_create_client_deepseek_provider() {
         let config = LlmConfig::new("deepseek", "deepseek-chat", "key")
             .with_base_url("https://api.deepseek.com");
-        let _client = create_client_with_config(config);
+        let client = create_client_with_config(config);
+        assert_eq!(
+            client.native_structured_support(),
+            crate::llm::structured::NativeStructuredSupport::None
+        );
+    }
+
+    #[test]
+    fn test_custom_compatible_provider_can_opt_into_native_structured_support() {
+        let config = LlmConfig::new("compatible", "model", "key")
+            .with_base_url("https://api.example.com")
+            .with_native_structured_support(
+                crate::llm::structured::NativeStructuredSupport::JsonSchema,
+            );
+        let client = create_client_with_config(config);
+        assert_eq!(
+            client.native_structured_support(),
+            crate::llm::structured::NativeStructuredSupport::JsonSchema
+        );
     }
 
     #[test]

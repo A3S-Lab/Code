@@ -272,9 +272,13 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
                 "Using OpenAI-compatible client for provider '{}'",
                 config.provider
             );
+            let native_structured_support = config.native_structured_support.unwrap_or_else(|| {
+                default_openai_native_structured_support(config.base_url.as_deref())
+            });
             let mut client = OpenAiClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
-                .with_retry_config(retry);
+                .with_retry_config(retry)
+                .with_native_structured_support(native_structured_support);
             if let Some(http) = http.clone() {
                 client = client.with_http_client(http);
             }
