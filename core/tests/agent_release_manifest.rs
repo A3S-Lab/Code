@@ -6,9 +6,11 @@ use a3s_code_core::release::{
     AgentReleaseStorage, AgentReleaseWorkspaceMode, AGENT_PROTOCOL_V1, AGENT_RELEASE_CONTRACT_V1,
     AGENT_RELEASE_ENTRYPOINT_ARGS_V1, AGENT_RELEASE_ENTRYPOINT_COMMAND_V1, AGENT_RELEASE_LIMITS,
 };
-use std::path::Path;
+use std::{path::Path, sync::LazyLock};
 
-const FIXTURE: &str = include_str!("../../fixtures/agent-release-contract/.a3s/asset.acl");
+static FIXTURE: LazyLock<String> = LazyLock::new(|| {
+    include_str!("../../fixtures/agent-release-contract/.a3s/asset.acl").replace("\r\n", "\n")
+});
 
 fn compatibility() -> AgentReleaseCompatibility {
     AgentReleaseCompatibility::new(
@@ -38,7 +40,7 @@ fn native_harness_compatibility_is_code_owned_and_exact() {
             ("workspace.local", 1),
         ]
     );
-    AgentReleaseManifest::parse(FIXTURE)
+    AgentReleaseManifest::parse(&FIXTURE)
         .unwrap()
         .verify_compatibility(&compatibility)
         .unwrap();
@@ -46,7 +48,7 @@ fn native_harness_compatibility_is_code_owned_and_exact() {
 
 #[test]
 fn fixture_is_typed_canonical_and_digest_bound() {
-    let manifest = AgentReleaseManifest::parse(FIXTURE).expect("fixture should be admitted");
+    let manifest = AgentReleaseManifest::parse(&FIXTURE).expect("fixture should be admitted");
 
     assert_eq!(manifest.contract(), AGENT_RELEASE_CONTRACT_V1);
     assert_eq!(manifest.protocol(), AGENT_PROTOCOL_V1);
@@ -149,7 +151,7 @@ fn fixture_is_typed_canonical_and_digest_bound() {
 
 #[test]
 fn identity_ignores_formatting_and_set_like_block_order_only() {
-    let first = AgentReleaseManifest::parse(FIXTURE).unwrap();
+    let first = AgentReleaseManifest::parse(&FIXTURE).unwrap();
     let equivalent = FIXTURE
         .replace(
             "  capability \"runtime.service\" {\n    level = 1\n  }\n\n  capability \"secrets.external\" {\n    level = 1\n  }\n\n  capability \"workspace.local\" {\n    level = 1\n  }",
@@ -287,7 +289,7 @@ fn admission_is_bounded_closed_and_value_redacting() {
 
 #[test]
 fn compatibility_fails_before_activation_with_typed_reasons() {
-    let manifest = AgentReleaseManifest::parse(FIXTURE).unwrap();
+    let manifest = AgentReleaseManifest::parse(&FIXTURE).unwrap();
 
     let wrong_protocol = AgentReleaseCompatibility::new(
         "a3s.code.agent.v2",

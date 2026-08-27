@@ -16,7 +16,7 @@ path = "src/lib.rs"
 a3s-common = "0.1.1"
 a3s-memory = "0.1.2"
 a3s-lane = "0.5"
-a3s-search = { version = "3.0.9", git = "https://github.com/A3S-Lab/Search.git", rev = "2b7ec07d9a1b99758a3e8c950c6d4b6ca5b51fa9", default-features = false }
+a3s-search = { version = "3.0.9", git = "https://github.com/A3S-Lab/Search.git", rev = "76031b688af8bf1f5021c56f3d508e3a74985213", default-features = false }
 a3s-flow = "0.4.3"
 
 # Async runtime
