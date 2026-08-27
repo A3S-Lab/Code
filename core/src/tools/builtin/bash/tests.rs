@@ -363,6 +363,11 @@ async fn test_bash_tiny_timeout_is_clamped() {
 #[tokio::test]
 #[cfg(not(windows))]
 async fn test_dropping_bash_execution_kills_shell_before_later_side_effects() {
+    // Starting a shell and its background process is resource-sensitive on
+    // macOS (especially on Intel runners). Serialize it with the other
+    // process-backed tests so cancellation is exercised rather than masked by
+    // scheduler starvation.
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
     let tool = BashTool;
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());

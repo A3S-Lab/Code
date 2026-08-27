@@ -890,6 +890,25 @@ python -m pip install a3s-code
 go get github.com/A3S-Lab/Code/sdk/go/v8
 ```
 
+The Python release workflow in v8.0.3 uses the stable `cp310-abi3` interface,
+with Apple Silicon targeting macOS 11+ and Intel targeting macOS 12+. One
+wheel therefore covers CPython 3.10–3.14. Older v8.0.2 assets remain exact
+CPython 3.10–3.13 wheels; upgrade to v8.0.3 for Python 3.14.
+
+If `python3.14 -m pip` reports `No module named pip`, repair that interpreter
+before installing the SDK, then install into the same interpreter:
+
+```bash
+python3.14 -m ensurepip --upgrade
+python3.14 -m pip install --upgrade pip
+python3.14 -m pip install a3s-code
+```
+
+On Intel Macs, the native wheel is built for macOS 12 (`x86_64`). The optional
+`local_cpu` ONNX embedding adapter is not included in the Intel CLI build;
+keep retrieval model-free or configure an explicitly authorized remote
+embedding provider instead.
+
 The native SDK crates explicitly enable the Core `headless-search`, `s3`, and
 `serve` features to preserve their complete product surface. Direct Rust
 embedders receive the lazy Chrome/Chromium search tier by default and can omit

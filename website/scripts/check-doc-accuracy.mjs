@@ -142,10 +142,15 @@ if (uniqueSourceVersions.size !== 1) {
 }
 
 const sourceVersion = [...uniqueSourceVersions][0];
-const expectedCurrent = `v${sourceVersion}`;
-if (manifest.current !== expectedCurrent) {
+const sourceApiLine = sourceVersion?.split('.').slice(0, 2).join('.') ?? '';
+const currentApiLine = manifest.current
+  .replace(/^v/, '')
+  .split('.')
+  .slice(0, 2)
+  .join('.');
+if (currentApiLine !== sourceApiLine) {
   fail(
-    `Current docs are ${manifest.current}, but the SDK source version is ${expectedCurrent}.`,
+    `Current docs are ${manifest.current}, but the SDK source API line is v${sourceApiLine}.`,
   );
 }
 
@@ -172,10 +177,10 @@ if (JSON.stringify(versions) !== JSON.stringify(configuredVersions)) {
 }
 if (
   ![homeLayout, tuiRuntimeDemo, tuiWelcomeBanner].some((source) =>
-    source.includes(`a3s-code ${manifest.current}`),
+    source.includes(`a3s-code v${sourceVersion}`),
   )
 ) {
-  fail(`The home page does not display a3s-code ${manifest.current}.`);
+  fail(`The home page does not display a3s-code v${sourceVersion}.`);
 }
 
 for (const version of configuredVersions) {

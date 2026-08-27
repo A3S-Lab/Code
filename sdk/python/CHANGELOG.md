@@ -4,6 +4,19 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.0.3] - 2026-08-28
+
+### Changed
+
+- Build the native extension with the CPython 3.10 stable ABI so one release
+  wheel covers Python 3.10 through 3.14, including Intel macOS 12+.
+
+### Fixed
+
+- Keep native wheels in a platform-scoped cache and prefer the stable-ABI
+  asset on Python 3.14 while retaining exact-wheel compatibility for older
+  releases.
+
 ## [8.0.2] - 2026-08-27
 
 ### Added

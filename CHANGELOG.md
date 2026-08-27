@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.0.3] - 2026-08-28
+
+### Changed
+
+- Python SDK release builds now use a CPython 3.10 stable-ABI extension. The
+  bootstrap keeps exact-wheel fallback for older releases while allowing
+  Python 3.14 on both Apple Silicon and Intel macOS 12+.
+
+### Fixed
+
+- DeepSeek structured-output requests now use the provider-safe JSON-object
+  response format instead of forcing an incompatible tool choice.
+- The Python bootstrap isolates its native cache by platform and selects the
+  stable-ABI wheel on CPython 3.14.
+
 ## [8.0.2] - 2026-08-27
 
 ### Added

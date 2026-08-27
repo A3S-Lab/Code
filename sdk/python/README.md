@@ -12,8 +12,10 @@ From v3.2.1 onwards the PyPI `a3s-code` package is a small pure-Python
 bootstrap. On first `import a3s_code` it downloads the matching native
 wheel from [GitHub Releases](https://github.com/A3S-Lab/Code/releases),
 verifies the wheel's sha256 against the release manifest, and caches
-the compiled extension under `~/.cache/a3s-code/<version>/`. Subsequent
-imports use the cache.
+the compiled extension under
+`~/.cache/a3s-code/<version>/<platform-tag>/`. Subsequent imports use the
+platform-scoped cache, so arm64 and Intel processes cannot reuse one
+another's native binary.
 
 Override the cache location with `A3S_CODE_CACHE_DIR`, the source URL
 with `A3S_CODE_RELEASES_BASE_URL`, or skip the sha256 verification with
@@ -34,9 +36,24 @@ from the first release produced with the Intel build matrix.
 For an Intel Mac on macOS 12 or later, replace the platform suffix with
 `macosx_12_0_x86_64`.
 
-Release builds publish Apple Silicon (macOS 11+) and Intel (`x86_64`, macOS
-12+) wheels for CPython 3.10–3.13. Python 3.14 wheels are not published yet;
-use Python 3.13 or earlier.
+The v8.0.3 release publishes one CPython 3.10 stable-ABI (`cp310-abi3`) wheel
+per platform. It supports CPython 3.10–3.14, including Apple Silicon
+(macOS 11+) and Intel (`x86_64`, macOS 12+). The older `v8.0.2` assets remain
+exact CPython 3.10–3.13 wheels; use v8.0.3 for Python 3.14. The bootstrap
+keeps exact per-minor wheels as a compatibility fallback for older releases.
+
+If the selected interpreter has no pip, initialize it first and keep the
+interpreter consistent for all commands:
+
+```bash
+python3.14 -m ensurepip --upgrade
+python3.14 -m pip install --upgrade pip
+python3.14 -m pip install a3s-code
+```
+
+The Intel macOS 12 wheel does not include the optional local ONNX embedding
+adapter. Use model-free retrieval or an explicitly authorized remote
+embedding provider on that platform.
 
 ## Quick Start
 

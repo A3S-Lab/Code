@@ -2090,6 +2090,35 @@ async fn test_routing_json_uses_json_object_when_supported() {
 }
 
 #[tokio::test]
+async fn test_routing_json_object_only_never_forces_tool_choice() {
+    // Reasoning providers such as DeepSeek accept response_format=json_object
+    // but reject a forced tool_choice while thinking is enabled.  The engine
+    // must select the narrower JSON route for every native structured request.
+    for requested in [
+        StructuredMode::Auto,
+        StructuredMode::Tool,
+        StructuredMode::Strict,
+        StructuredMode::Json,
+    ] {
+        let client = RecordingClient::new(
+            NativeStructuredSupport::JsonObject,
+            vec![MockStructuredClient::text_response(r#"{"name":"Bob"}"#)],
+        );
+        let result = generate_blocking(&client, &person_request(requested))
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{requested:?} should use JSON-object fallback: {error}")
+            });
+
+        assert_eq!(result.mode_used, StructuredMode::Json);
+        let directive = client.last_directive.lock().unwrap().clone().unwrap();
+        assert!(directive.force_tool.is_none());
+        assert_eq!(directive.response_format, Some(ResponseFormat::JsonObject));
+        assert!(client.last_tool_names.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
 async fn test_streaming_routing_tool_mode_forces_tool_choice() {
     // The streaming path must also force the directive (via
     // complete_streaming_structured), not silently drop it.

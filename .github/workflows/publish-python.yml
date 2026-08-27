@@ -55,6 +55,7 @@ jobs:
             3.11
             3.12
             3.13
+            3.14
 
       - name: Install Rust
         # Pinned: brotli 8.0.3 (transitive via optional SDK features) fails
@@ -87,7 +88,10 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.settings.target }}
-          args: --release --out dist --manifest-path sdk/python/Cargo.toml -i python3.10 -i python3.11 -i python3.12 -i python3.13
+          # The SDK enables pyo3/abi3-py310, so one wheel covers CPython
+          # 3.10–3.14 (and future compatible CPython 3.x releases). Build
+          # against the oldest supported interpreter to keep the ABI honest.
+          args: --release --out dist --manifest-path sdk/python/Cargo.toml -i python3.10
           manylinux: ${{ matrix.settings.manylinux || 'auto' }}
           # Pin the toolchain maturin installs (incl. inside the manylinux
           # container) so brotli 8.0.3 compiles. See "Install Rust" note above.
@@ -98,8 +102,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          compgen -G 'dist/*-macosx_12_0_x86_64.whl' >/dev/null || {
-            echo "Expected a macOS 12 Intel wheel in dist/" >&2
+          compgen -G 'dist/*-cp310-abi3-macosx_12_0_x86_64.whl' >/dev/null || {
+            echo "Expected a CPython ABI3 macOS 12 Intel wheel in dist/" >&2
+            ls -la dist/
+            exit 1
+          }
+
+      - name: Verify CPython stable-ABI wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          compgen -G 'dist/*-cp310-abi3-*.whl' >/dev/null || {
+            echo "Expected a CPython 3.10 ABI3 wheel in dist/" >&2
             ls -la dist/
             exit 1
           }

@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use a3s_code_core::config::{AgentDir, CodeConfig, ScheduleSpec};
@@ -47,13 +48,17 @@ async fn real_agent() -> Agent {
 struct RecordingSink {
     session: Arc<AgentSession>,
     fires: Arc<Mutex<Vec<String>>>,
+    completed: Arc<Notify>,
 }
 
 #[async_trait::async_trait]
 impl ScheduleSink for RecordingSink {
     async fn fire(&self, spec: &ScheduleSpec) {
         match self.session.send(&spec.prompt, None).await {
-            Ok(result) => self.fires.lock().unwrap().push(result.text),
+            Ok(result) => {
+                self.fires.lock().unwrap().push(result.text);
+                self.completed.notify_one();
+            }
             Err(e) => panic!("scheduled real turn failed: {e}"),
         }
     }
@@ -71,13 +76,17 @@ async fn schedule_fires_a_real_harness_turn() {
             .expect("session"),
     );
     let fires = Arc::new(Mutex::new(Vec::new()));
+    let completed = Arc::new(Notify::new());
     let sink = Arc::new(RecordingSink {
         session,
         fires: Arc::clone(&fires),
+        completed: Arc::clone(&completed),
     });
 
-    // Every-second cron → at least one fire within the window. Each fire is a FULL
-    // harness turn (real LLM), exactly as serve_agent_dir does internally.
+    // Every-second cron → wait for an actual completed fire rather than using a
+    // fixed short sleep. Remote reasoning providers can legitimately take tens
+    // of seconds for one full harness turn; completion is the observable anchor
+    // that proves the sink ran the same path as serve_agent_dir.
     let scheduler = Scheduler::new([ScheduleSpec {
         name: "tick".to_string(),
         cron: "* * * * * *".to_string(),
@@ -88,7 +97,9 @@ async fn schedule_fires_a_real_harness_turn() {
 
     let cancel = CancellationToken::new();
     let handle = tokio::spawn(scheduler.run_observed(sink, cancel.clone()));
-    tokio::time::sleep(Duration::from_secs(12)).await;
+    tokio::time::timeout(Duration::from_secs(180), completed.notified())
+        .await
+        .expect("the schedule should complete at least one real harness turn");
     cancel.cancel();
     handle.await.unwrap().unwrap();
 

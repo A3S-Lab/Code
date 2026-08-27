@@ -7,7 +7,7 @@ name = "a3s-code"
 # Keep in sync with crates/code core release. The bootstrap loader fetches
 # the matching native wheel from `https://github.com/A3S-Lab/Code/releases/tag/v<version>`
 # at import time.
-version = "8.0.2"
+version = "8.0.3"
 description = "A3S Code Python SDK — pure-Python bootstrap that fetches the native wheel from GitHub Releases"
 readme = "README.md"
 license = {text = "MIT"}
@@ -18,6 +18,11 @@ authors = [
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Software Development",

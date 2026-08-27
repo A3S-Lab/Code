@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-py"
-version = "8.0.2"
+version = "8.0.3"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -12,7 +12,7 @@ name = "a3s_code"
 crate-type = ["cdylib"]
 
 [dependencies]
-a3s-code-core = { version = "8.0.2", path = "../../core", features = ["headless-search", "s3", "serve"] }
+a3s-code-core = { version = "8.0.3", path = "../../core", features = ["headless-search", "s3", "serve"] }
 pyo3 = { version = "0.23", features = ["multiple-pymethods"] }
 tokio = { version = "1.35", features = ["full"] }
 tokio-util = "0.7"
@@ -23,4 +23,7 @@ async-trait = "0.1"
 num_cpus = "1.16"
 
 [features]
-extension-module = ["pyo3/extension-module"]
+# Build one stable-ABI extension for CPython 3.10 and newer.  The limited API
+# is forward-compatible with Python 3.14 while keeping the existing PyO3
+# surface and avoiding a separate native binary for every minor release.
+extension-module = ["pyo3/extension-module", "pyo3/abi3-py310"]

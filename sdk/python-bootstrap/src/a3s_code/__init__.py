@@ -10,9 +10,8 @@ from . import _bootstrap as _bootstrap
 
 _bootstrap.ensure_native_loaded()
 
-# Re-import after the cache dir is on sys.path. The bootstrap extracted
-# `_native.<abi>.so` into a per-version cache; Python's import machinery
-# picks it up from there.
+# The bootstrap extracted `_native.<abi>.so` into a per-version cache and
+# registered it explicitly as `a3s_code._native` before returning.
 from ._native import *  # noqa: E402,F401,F403
 
 __version__ = _bootstrap.__version__

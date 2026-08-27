@@ -216,6 +216,11 @@ The embedding route is independent from `default_model`, so selecting DeepSeek
 for chat and tool calls does not implicitly turn that chat endpoint into an
 embedding service.
 
+The CLI's `local_cpu` adapter is shipped for Linux x64/ARM64, Windows x64, and
+Apple Silicon. Intel macOS 12 (`x86_64`) builds intentionally omit the optional
+ONNX adapter. On Intel, leave retrieval model-free or use a separately
+authorized remote embedding route.
+
 Provider descriptors lock identity, model, dimension, and normalization.
 Runtime validation rejects partial, duplicate, unknown, dimension-mismatched,
 non-finite, non-normalized, or descriptor-drifted responses. Diagnostics do

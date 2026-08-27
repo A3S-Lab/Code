@@ -75,6 +75,12 @@ pub enum NativeStructuredSupport {
     /// Supports OpenAI-style `response_format` (`json_object` and
     /// `json_schema` + `strict`) in addition to forced tool calls.
     JsonSchema,
+    /// Supports OpenAI-style `response_format: { type: "json_object" }`,
+    /// but cannot combine it with a forced `tool_choice` (for example,
+    /// DeepSeek reasoning models).  This is deliberately separate from
+    /// [`JsonSchema`](Self::JsonSchema): callers can still get provider-side
+    /// syntactic JSON guarantees without sending a request the model rejects.
+    JsonObject,
 }
 
 /// A native `response_format` request for OpenAI-compatible providers.
@@ -882,6 +888,13 @@ fn resolve_mode(requested: StructuredMode, support: NativeStructuredSupport) -> 
             | StructuredMode::Json,
             NativeStructuredSupport::ForcedTool,
         ) => StructuredMode::Tool,
+        (
+            StructuredMode::Auto
+            | StructuredMode::Tool
+            | StructuredMode::Strict
+            | StructuredMode::Json,
+            NativeStructuredSupport::JsonObject,
+        ) => StructuredMode::Json,
         (
             StructuredMode::Auto
             | StructuredMode::Tool

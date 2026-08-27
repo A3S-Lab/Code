@@ -11,6 +11,7 @@ use crate::retry::RetryConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use url::Url;
 
 /// LLM client configuration
 #[derive(Clone, Default)]
@@ -164,12 +165,34 @@ impl LlmConfig {
     }
 }
 
-fn default_openai_native_structured_support(base_url: Option<&str>) -> NativeStructuredSupport {
+fn default_openai_native_structured_support(
+    provider: &str,
+    base_url: Option<&str>,
+) -> NativeStructuredSupport {
+    // DeepSeek's reasoning endpoints accept `response_format: json_object`,
+    // but reject a forced function `tool_choice` while thinking is enabled.
+    // Advertise the narrower capability so structured generation selects the
+    // safe JSON-object route instead of sending a request that always returns
+    // HTTP 400.  Match the hostname as well for callers that label the
+    // provider "openai" while pointing at the official DeepSeek endpoint.
+    let provider_is_deepseek = provider.eq_ignore_ascii_case("deepseek");
+    let url_is_deepseek = base_url.is_some_and(is_official_deepseek_url);
+    if provider_is_deepseek || url_is_deepseek {
+        return NativeStructuredSupport::JsonObject;
+    }
+
     match base_url {
         None => NativeStructuredSupport::JsonSchema,
         Some(url) if url.contains("api.openai.com") => NativeStructuredSupport::JsonSchema,
         Some(_) => NativeStructuredSupport::None,
     }
+}
+
+fn is_official_deepseek_url(base_url: &str) -> bool {
+    Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.deepseek.com"))
 }
 
 /// Create LLM client with full configuration (supports custom base_url)
@@ -211,7 +234,10 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
         }
         "openai" | "gpt" => {
             let native_structured_support = config.native_structured_support.unwrap_or_else(|| {
-                default_openai_native_structured_support(config.base_url.as_deref())
+                default_openai_native_structured_support(
+                    &config.provider,
+                    config.base_url.as_deref(),
+                )
             });
             let mut client = OpenAiClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
@@ -272,9 +298,16 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
                 "Using OpenAI-compatible client for provider '{}'",
                 config.provider
             );
+            let native_structured_support = config.native_structured_support.unwrap_or_else(|| {
+                default_openai_native_structured_support(
+                    &config.provider,
+                    config.base_url.as_deref(),
+                )
+            });
             let mut client = OpenAiClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
-                .with_retry_config(retry);
+                .with_retry_config(retry)
+                .with_native_structured_support(native_structured_support);
             if let Some(http) = http.clone() {
                 client = client.with_http_client(http);
             }

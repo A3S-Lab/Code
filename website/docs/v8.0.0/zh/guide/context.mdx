@@ -169,6 +169,10 @@ Session 前，应运行 `a3s config validate`，并检查 `a3s config show` 中�
 `workspaceRetrieval` 段。Embedding 路由与 `default_model` 相互独立，因此选择 DeepSeek
 执行 Chat 和 Tool Call，不会把该 Chat Endpoint 自动当作 Embedding 服务。
 
+CLI 的 `local_cpu` 适配器支持 Linux x64/ARM64、Windows x64 和 Apple Silicon。Intel
+macOS 12（`x86_64`）构建会刻意省略可选的 ONNX 适配器。在 Intel 平台请保持
+Model-free Retrieval，或使用单独明确授权的远程 Embedding 路由。
+
 Provider Descriptor 会锁定 Identity、Model、Dimension 与 Normalization。Runtime 会
 拒绝 Partial、Duplicate、Unknown、Dimension-mismatched、Non-finite、
 Non-normalized 或 Descriptor-drifted Response。Diagnostic 不复制输入文本、向量、

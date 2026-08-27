@@ -23,7 +23,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use a3s_code_core::{
-    Agent, AgentEvent, CodeConfig, PlanningMode, SessionOptions, SystemPromptSlots,
+    hitl::AutoApproveConfirmation, Agent, AgentEvent, CodeConfig, PlanningMode, SessionOptions,
+    SystemPromptSlots,
 };
 
 /// Conditional guideline injected in ultracode (kept in sync with the cli's
@@ -60,6 +61,11 @@ async fn real_agent() -> Agent {
 /// The ultracode SessionOptions the cli now builds (planning is message-gated).
 fn ultracode_opts() -> SessionOptions {
     SessionOptions::new()
+        // The production TUI supplies a confirmation provider for delegated
+        // task calls.  Use the explicit test-only equivalent here so the
+        // fan-out assertions exercise child execution rather than the
+        // fail-closed MissingConfirmationManager path.
+        .with_confirmation_manager(std::sync::Arc::new(AutoApproveConfirmation))
         .with_max_parallel_tasks(8)
         .with_auto_delegation_enabled(true)
         .with_auto_parallel_delegation(true)
@@ -202,11 +208,15 @@ async fn ultracode_parallel_task_still_fans_out() {
     );
 }
 
-// Live end-to-end proof that unified task fan-out / parallel subagents work:
-// the model fans out, children run, results merge, and the turn completes.
+// Live end-to-end proof that the unified task delegation path works:
+// the model delegates one or more children, the child result is returned to
+// the parent, and the turn completes.  The preceding test is the stricter
+// multi-item fan-out check.  Keeping this assertion independent of the exact
+// number of items makes it robust to a provider choosing one bounded task for
+// a prompt that still asks for an explicitly parallel workflow.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires real provider credentials and network access"]
-async fn ultracode_parallel_fans_out_runs_and_completes() {
+async fn ultracode_delegated_task_runs_and_completes() {
     let agent = real_agent().await;
     let ws = tempfile::tempdir().unwrap();
     for (n, b) in [
@@ -225,12 +235,12 @@ async fn ultracode_parallel_fans_out_runs_and_completes() {
         not one by one. Do not modify any files.";
     let (mut rx, handle) = session.stream(prompt, None).await.unwrap();
 
-    // The reliable signals: the model invokes task with multiple items, its
-    // ToolEnd carries the merged child results, and the
-    // turn completes. (How many children the *model* puts in each call is
-    // model-dependent; the executor's actual concurrency is proven deterministically
-    // by `parallel_task_executor_runs_children_concurrently_and_preserves_input_order`.)
-    let mut task_fanout_calls = 0usize;
+    // The reliable signals: the model invokes the unified task tool, its
+    // successful ToolEnd carries the child result, and the turn completes.
+    // The executor's actual multi-child concurrency is proven deterministically
+    // by `parallel_task_executor_runs_children_concurrently_and_preserves_input_order`.
+    let mut task_calls = 0usize;
+    let mut successful_task_ends = 0usize;
     let mut merged = String::new();
     let mut reached_end = false;
 
@@ -238,15 +248,23 @@ async fn ultracode_parallel_fans_out_runs_and_completes() {
         while let Some(ev) = rx.recv().await {
             match ev {
                 AgentEvent::ToolExecutionStart { name, args, .. } if name == "task" => {
-                    if args
-                        .get("tasks")
-                        .and_then(serde_json::Value::as_array)
-                        .is_some_and(|tasks| tasks.len() > 1)
-                    {
-                        task_fanout_calls += 1;
-                    }
+                    assert!(
+                        args.get("tasks")
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|tasks| !tasks.is_empty()),
+                        "unified task call must contain at least one task: {args}"
+                    );
+                    task_calls += 1;
                 }
-                AgentEvent::ToolEnd { name, output, .. } if name == "task" => {
+                AgentEvent::ToolEnd {
+                    name,
+                    output,
+                    exit_code,
+                    ..
+                } if name == "task" => {
+                    if exit_code == 0 {
+                        successful_task_ends += 1;
+                    }
                     merged.push_str(&output);
                     merged.push('\n');
                 }
@@ -266,12 +284,16 @@ async fn ultracode_parallel_fans_out_runs_and_completes() {
     let _ = handle.await;
 
     let first_line = merged.lines().next().unwrap_or("");
-    eprintln!("TASK_FANOUT_TRACE calls={task_fanout_calls} reached_end={reached_end} merged_first_line={first_line:?}");
+    eprintln!("TASK_DELEGATION_TRACE calls={task_calls} successful_ends={successful_task_ends} reached_end={reached_end} merged_first_line={first_line:?}");
 
-    assert!(task_fanout_calls >= 1, "model never called task fan-out");
+    assert!(task_calls >= 1, "model never called the unified task tool");
     assert!(
-        merged.contains("Executed") && merged.contains("concurrent"),
-        "task fan-out did not return a merged result: {merged:?}"
+        successful_task_ends >= 1,
+        "delegated task did not complete successfully: {merged:?}"
     );
-    assert!(reached_end, "turn never completed after fan-out");
+    assert!(
+        !merged.trim().is_empty(),
+        "delegated task returned no result"
+    );
+    assert!(reached_end, "turn never completed after delegation");
 }

@@ -144,6 +144,11 @@ cargo add a3s-code-core
 go get github.com/A3S-Lab/Code/sdk/go/v8
 ```
 
+The v8.0.3 Python package supports CPython 3.10–3.14 through one
+`cp310-abi3` wheel per platform. Intel Macs use the `macosx_12_0_x86_64` wheel
+and require macOS 12 or newer. See [Python wheel platforms](/api/#python-wheel-platforms-v803)
+for the bootstrap flow and the `No module named pip` repair command.
+
 ## Configure
 
 A3S Code uses ACL. Keep real API keys, private model endpoints, local config

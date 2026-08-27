@@ -1677,6 +1677,62 @@ mod extra_llm_tests2 {
         );
     }
 
+    #[test]
+    fn test_deepseek_defaults_to_json_object_structured_support() {
+        let config = LlmConfig::new("deepseek", "deepseek-v4-pro", "key")
+            .with_base_url("https://api.deepseek.com");
+        let client = create_client_with_config(config);
+        assert_eq!(
+            client.native_structured_support(),
+            crate::llm::structured::NativeStructuredSupport::JsonObject
+        );
+    }
+
+    #[test]
+    fn test_deepseek_endpoint_is_detected_even_with_openai_provider_label() {
+        let config = LlmConfig::new("openai", "deepseek-v4-pro", "key")
+            .with_base_url("https://api.deepseek.com");
+        let client = create_client_with_config(config);
+        assert_eq!(
+            client.native_structured_support(),
+            crate::llm::structured::NativeStructuredSupport::JsonObject
+        );
+    }
+
+    #[test]
+    fn test_deepseek_endpoint_matching_is_case_insensitive_and_allows_paths() {
+        let config = LlmConfig::new("openai", "deepseek-v4-pro", "key")
+            .with_base_url("https://API.DEEPSEEK.COM/v1/");
+        let client = create_client_with_config(config);
+        assert_eq!(
+            client.native_structured_support(),
+            crate::llm::structured::NativeStructuredSupport::JsonObject
+        );
+    }
+
+    #[test]
+    fn test_deepseek_endpoint_matching_rejects_similar_hostnames() {
+        let config = LlmConfig::new("openai", "model", "key")
+            .with_base_url("https://api.deepseek.com.evil.example/v1");
+        let client = create_client_with_config(config);
+        assert_eq!(
+            client.native_structured_support(),
+            crate::llm::structured::NativeStructuredSupport::None
+        );
+    }
+
+    #[test]
+    fn test_unknown_provider_honors_explicit_structured_support() {
+        let config = LlmConfig::new("custom", "model", "key").with_native_structured_support(
+            crate::llm::structured::NativeStructuredSupport::JsonObject,
+        );
+        let client = create_client_with_config(config);
+        assert_eq!(
+            client.native_structured_support(),
+            crate::llm::structured::NativeStructuredSupport::JsonObject
+        );
+    }
+
     // ========================================================================
     // normalize_base_url
     // ========================================================================
