@@ -21,6 +21,62 @@ pub struct SensitivePattern {
     pub redaction_label: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum MatchBoundary {
+    Unrestricted,
+    IdentifierSeparated,
+}
+
+impl MatchBoundary {
+    fn accepts(self, text: &str, start: usize, end: usize) -> bool {
+        match self {
+            Self::Unrestricted => true,
+            Self::IdentifierSeparated => {
+                let starts_inside_identifier = text[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(is_ascii_identifier_character);
+                let ends_inside_identifier = text[end..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_ascii_identifier_character);
+
+                !starts_inside_identifier && !ends_inside_identifier
+            }
+        }
+    }
+}
+
+fn is_ascii_identifier_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
+}
+
+#[derive(Debug, Clone)]
+struct ConfiguredSensitivePattern {
+    pattern: SensitivePattern,
+    boundary: MatchBoundary,
+}
+
+impl ConfiguredSensitivePattern {
+    fn unrestricted(pattern: SensitivePattern) -> Self {
+        Self {
+            pattern,
+            boundary: MatchBoundary::Unrestricted,
+        }
+    }
+
+    fn identifier_separated(pattern: SensitivePattern) -> Self {
+        Self {
+            pattern,
+            boundary: MatchBoundary::IdentifierSeparated,
+        }
+    }
+
+    fn accepts(&self, text: &str, start: usize, end: usize) -> bool {
+        self.boundary.accepts(text, start, end)
+    }
+}
+
 impl SensitivePattern {
     pub fn new(name: impl Into<String>, pattern: &str, label: impl Into<String>) -> Self {
         Self {
@@ -74,7 +130,7 @@ pub struct DefaultSecurityProvider {
     /// Tracked sensitive data (hashed for privacy)
     tainted_data: Arc<RwLock<HashSet<String>>>,
     /// Built-in sensitive patterns
-    patterns: Vec<SensitivePattern>,
+    patterns: Vec<ConfiguredSensitivePattern>,
     /// Injection detection patterns
     injection_patterns: Vec<Regex>,
 }
@@ -99,49 +155,60 @@ impl DefaultSecurityProvider {
     }
 
     /// Build built-in sensitive data patterns
-    fn build_patterns(config: &DefaultSecurityConfig) -> Vec<SensitivePattern> {
+    fn build_patterns(config: &DefaultSecurityConfig) -> Vec<ConfiguredSensitivePattern> {
         let mut patterns = vec![
             // SSN: 123-45-6789 (must have exactly 3-2-4 digits with dashes)
-            SensitivePattern::new("ssn", r"\b\d{3}-\d{2}-\d{4}\b", "REDACTED:SSN"),
+            ConfiguredSensitivePattern::unrestricted(SensitivePattern::new(
+                "ssn",
+                r"\b\d{3}-\d{2}-\d{4}\b",
+                "REDACTED:SSN",
+            )),
             // Email: user@example.com
-            SensitivePattern::new(
+            ConfiguredSensitivePattern::unrestricted(SensitivePattern::new(
                 "email",
                 r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b",
                 "REDACTED:EMAIL",
-            ),
+            )),
             // Phone: +1-234-567-8900, (234) 567-8900, 234.567.8900
-            // Must have at least 10 digits and not match SSN pattern
-            SensitivePattern::new(
+            // Require identifier boundaries because Rust regexes do not support
+            // look-around and a leading plus or parenthesis prevents a plain
+            // word-boundary assertion. This keeps phone-shaped digit runs in
+            // hashes and opaque identifiers intact.
+            ConfiguredSensitivePattern::identifier_separated(SensitivePattern::new(
                 "phone",
                 r"(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b",
                 "REDACTED:PHONE",
-            ),
+            )),
             // API Keys: sk-..., pk-... (at least 20 chars after prefix)
-            SensitivePattern::new(
+            ConfiguredSensitivePattern::unrestricted(SensitivePattern::new(
                 "api_key",
                 r"\b(sk|pk)[-_][a-zA-Z0-9]{20,}\b",
                 "REDACTED:API_KEY",
-            ),
+            )),
             // Credit Card: 1234-5678-9012-3456, 1234 5678 9012 3456 (16 digits)
-            SensitivePattern::new(
+            ConfiguredSensitivePattern::unrestricted(SensitivePattern::new(
                 "credit_card",
                 r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b",
                 "REDACTED:CC",
-            ),
+            )),
             // AWS Access Key: AKIA...
-            SensitivePattern::new("aws_key", r"\bAKIA[0-9A-Z]{16}\b", "REDACTED:AWS_KEY"),
+            ConfiguredSensitivePattern::unrestricted(SensitivePattern::new(
+                "aws_key",
+                r"\bAKIA[0-9A-Z]{16}\b",
+                "REDACTED:AWS_KEY",
+            )),
             // GitHub Token: ghp_..., gho_..., ghu_...
-            SensitivePattern::new(
+            ConfiguredSensitivePattern::unrestricted(SensitivePattern::new(
                 "github_token",
                 r"\bgh[pousr]_[a-zA-Z0-9]{36,}\b",
                 "REDACTED:GITHUB_TOKEN",
-            ),
+            )),
             // JWT Token (simplified)
-            SensitivePattern::new(
+            ConfiguredSensitivePattern::unrestricted(SensitivePattern::new(
                 "jwt",
                 r"\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b",
                 "REDACTED:JWT",
-            ),
+            )),
         ];
 
         // Add custom patterns (user-provided — log and skip invalid regexes)
@@ -151,7 +218,7 @@ impl DefaultSecurityProvider {
                 p.regex.as_str(),
                 p.redaction_label.clone(),
             ) {
-                Ok(pattern) => patterns.push(pattern),
+                Ok(pattern) => patterns.push(ConfiguredSensitivePattern::unrestricted(pattern)),
                 Err(e) => tracing::warn!(
                     "Skipping invalid custom security pattern '{}': {}",
                     p.name,
@@ -191,8 +258,10 @@ impl DefaultSecurityProvider {
         let mut matches = Vec::new();
 
         for pattern in &self.patterns {
-            for capture in pattern.regex.find_iter(text) {
-                matches.push((pattern.name.clone(), capture.as_str().to_string()));
+            for capture in pattern.pattern.regex.find_iter(text) {
+                if pattern.accepts(text, capture.start(), capture.end()) {
+                    matches.push((pattern.pattern.name.clone(), capture.as_str().to_string()));
+                }
             }
         }
 
@@ -217,10 +286,27 @@ impl DefaultSecurityProvider {
         let mut result = text.to_string();
 
         for pattern in &self.patterns {
-            result = pattern
-                .regex
-                .replace_all(&result, format!("[{}]", pattern.redaction_label))
-                .to_string();
+            let mut sanitized = String::with_capacity(result.len());
+            let mut last_end = 0;
+            let mut replaced = false;
+
+            for capture in pattern.pattern.regex.find_iter(&result) {
+                if !pattern.accepts(&result, capture.start(), capture.end()) {
+                    continue;
+                }
+
+                sanitized.push_str(&result[last_end..capture.start()]);
+                sanitized.push('[');
+                sanitized.push_str(&pattern.pattern.redaction_label);
+                sanitized.push(']');
+                last_end = capture.end();
+                replaced = true;
+            }
+
+            if replaced {
+                sanitized.push_str(&result[last_end..]);
+                result = sanitized;
+            }
         }
 
         result
@@ -327,6 +413,43 @@ mod tests {
         assert!(sanitized.contains("[REDACTED:SSN]"));
         assert!(!sanitized.contains("user@example.com"));
         assert!(!sanitized.contains("123-45-6789"));
+    }
+
+    #[test]
+    fn test_phone_redaction_requires_identifier_boundaries() {
+        let provider = DefaultSecurityProvider::new();
+        let text = "Call +1-234-567-8900, (234) 567-8900, or 234.567.8900.";
+        let sanitized = provider.sanitize_output(text);
+
+        assert_eq!(sanitized.matches("[REDACTED:PHONE]").count(), 3);
+        assert_eq!(
+            provider
+                .detect_sensitive(text)
+                .iter()
+                .filter(|(name, _)| name == "phone")
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn test_phone_shaped_digits_inside_identifiers_are_preserved() {
+        let provider = DefaultSecurityProvider::new();
+        let digest = format!("{}1234567890{}", "a".repeat(27), "b".repeat(27));
+        let identifiers = [
+            digest.as_str(),
+            "trace1234567890suffix",
+            "trace_1234567890_suffix",
+        ];
+
+        assert_eq!(digest.len(), 64);
+        for identifier in identifiers {
+            assert_eq!(provider.sanitize_output(identifier), identifier);
+            assert!(provider
+                .detect_sensitive(identifier)
+                .iter()
+                .all(|(name, _)| name != "phone"));
+        }
     }
 
     #[test]
