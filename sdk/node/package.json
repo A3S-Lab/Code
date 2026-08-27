@@ -1,6 +1,6 @@
 {
   "name": "@a3s-lab/code",
-  "version": "8.0.1",
+  "version": "8.0.2",
   "description": "A3S Code - Native Node.js bindings for the coding-agent runtime",
   "main": "index.js",
   "types": "index.d.ts",
@@ -8,6 +8,7 @@
     "binaryName": "a3s-code",
     "targets": [
       "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
       "x86_64-unknown-linux-gnu",
       "x86_64-unknown-linux-musl",
       "aarch64-unknown-linux-gnu",

@@ -7,27 +7,32 @@ import {
   withReleaseOptionalDependencies,
 } from './release-manifest.mjs'
 
+const RELEASE_VERSION = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version
+
 test('release manifest binds every platform package to the exact SDK version', () => {
   const source = {
     name: '@a3s-lab/code',
-    version: '8.0.1',
+    version: RELEASE_VERSION,
     scripts: { test: 'node test.mjs' },
   }
 
   const prepared = withReleaseOptionalDependencies(source)
 
   assert.deepEqual(prepared.optionalDependencies, {
-    '@a3s-lab/code-darwin-arm64': '8.0.1',
-    '@a3s-lab/code-linux-arm64-gnu': '8.0.1',
-    '@a3s-lab/code-linux-arm64-musl': '8.0.1',
-    '@a3s-lab/code-linux-x64-gnu': '8.0.1',
-    '@a3s-lab/code-linux-x64-musl': '8.0.1',
-    '@a3s-lab/code-win32-x64-msvc': '8.0.1',
+    '@a3s-lab/code-darwin-arm64': RELEASE_VERSION,
+    '@a3s-lab/code-darwin-x64': RELEASE_VERSION,
+    '@a3s-lab/code-linux-arm64-gnu': RELEASE_VERSION,
+    '@a3s-lab/code-linux-arm64-musl': RELEASE_VERSION,
+    '@a3s-lab/code-linux-x64-gnu': RELEASE_VERSION,
+    '@a3s-lab/code-linux-x64-musl': RELEASE_VERSION,
+    '@a3s-lab/code-win32-x64-msvc': RELEASE_VERSION,
   })
   assert.deepEqual(Object.keys(prepared.optionalDependencies), PLATFORM_PACKAGE_NAMES)
   assert.deepEqual(source, {
     name: '@a3s-lab/code',
-    version: '8.0.1',
+    version: RELEASE_VERSION,
     scripts: { test: 'node test.mjs' },
   })
 })

@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "a3s-acl 0.3.0",
  "a3s-common",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-go-bridge"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "a3s-code-core",
  "anyhow",

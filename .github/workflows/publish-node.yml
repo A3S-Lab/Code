@@ -12,6 +12,8 @@ jobs:
         settings:
           - host: macos-latest
             target: aarch64-apple-darwin
+          - host: macos-15-intel
+            target: x86_64-apple-darwin
           - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - host: ubuntu-22.04
@@ -60,6 +62,13 @@ jobs:
             brew install protobuf
           fi
 
+      - name: Set macOS Intel deployment target
+        # Build on the maintained Intel runner while keeping the addon
+        # loadable on the requested macOS 12 baseline.
+        if: matrix.settings.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: echo "MACOSX_DEPLOYMENT_TARGET=12.0" >> "$GITHUB_ENV"
+
       - name: Install Zig
         if: matrix.settings.zig
         uses: goto-bus-stop/setup-zig@v2
@@ -80,6 +89,12 @@ jobs:
             npx napi build --platform --release --target ${{ matrix.settings.target }} --js index.js --dts generated.d.ts
           fi
           node scripts/patch-loader.mjs
+
+      - name: Verify Intel macOS addon
+        working-directory: sdk/node
+        if: matrix.settings.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: test -f index.darwin-x64.node
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -163,6 +178,7 @@ jobs:
           }
 
           create_pkg "darwin-arm64" "code-darwin-arm64" "darwin" "arm64" "index.darwin-arm64.node"
+          create_pkg "darwin-x64" "code-darwin-x64" "darwin" "x64" "index.darwin-x64.node"
           create_pkg "linux-x64-gnu" "code-linux-x64-gnu" "linux" "x64" "index.linux-x64-gnu.node" "glibc"
           create_pkg "linux-x64-musl" "code-linux-x64-musl" "linux" "x64" "index.linux-x64-musl.node" "musl"
           create_pkg "linux-arm64-gnu" "code-linux-arm64-gnu" "linux" "arm64" "index.linux-arm64-gnu.node" "glibc"

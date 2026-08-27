@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.0.2] - 2026-08-27
+
 ### Added
+
+- Added Intel macOS native artifacts for the Node.js and Python SDKs. The
+  `x86_64-apple-darwin` builds use a macOS 12 deployment target.
 
 - Added the Rust-host `AgentSession::workflow_with_token_budget_and_tools` for exact
   workflow-child host tools that remain absent from the parent and unrelated

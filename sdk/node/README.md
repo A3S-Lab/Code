@@ -8,6 +8,10 @@ Native Node.js bindings for the A3S Code AI coding agent.
 npm install @a3s-lab/code
 ```
 
+Release builds publish prebuilt native bindings for Apple Silicon and Intel
+macOS. The Intel binding is built with a macOS 12 deployment target and runs
+on macOS 12 or later.
+
 ## Quick Start
 
 ```js

@@ -4,6 +4,12 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.0.2] - 2026-08-27
+
+### Added
+
+- Added Intel macOS native wheels built with a macOS 12 deployment target.
+
 ## [8.0.1] - 2026-08-25
 
 ### Changed

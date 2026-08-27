@@ -28,7 +28,15 @@ pip install \
   'https://github.com/A3S-Lab/Code/releases/download/v<VERSION>/a3s_code-<VERSION>-cp312-cp312-manylinux_2_28_x86_64.whl'
 ```
 
-Replace `<VERSION>` with the release to install, for example `6.4.0`.
+Replace `<VERSION>` with the release to install. The Intel asset is available
+from the first release produced with the Intel build matrix.
+
+For an Intel Mac on macOS 12 or later, replace the platform suffix with
+`macosx_12_0_x86_64`.
+
+Release builds publish Apple Silicon (macOS 11+) and Intel (`x86_64`, macOS
+12+) wheels for CPython 3.10–3.13. Python 3.14 wheels are not published yet;
+use Python 3.13 or earlier.
 
 ## Quick Start
 

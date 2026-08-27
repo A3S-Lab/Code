@@ -29,6 +29,8 @@ jobs:
         settings:
           - host: macos-latest
             target: aarch64-apple-darwin
+          - host: macos-15-intel
+            target: x86_64-apple-darwin
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: 2_28
@@ -73,6 +75,13 @@ jobs:
             brew install protobuf
           fi
 
+      - name: Set macOS Intel deployment target
+        # Build on the maintained Intel runner while keeping the wheel
+        # loadable on the requested macOS 12 baseline.
+        if: matrix.settings.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: echo "MACOSX_DEPLOYMENT_TARGET=12.0" >> "$GITHUB_ENV"
+
       # Build native wheels - these go to GitHub Releases ONLY
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -83,6 +92,17 @@ jobs:
           # Pin the toolchain maturin installs (incl. inside the manylinux
           # container) so brotli 8.0.3 compiles. See "Install Rust" note above.
           rust-toolchain: 1.94.1
+
+      - name: Verify Intel macOS wheel tag
+        if: matrix.settings.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          compgen -G 'dist/*-macosx_12_0_x86_64.whl' >/dev/null || {
+            echo "Expected a macOS 12 Intel wheel in dist/" >&2
+            ls -la dist/
+            exit 1
+          }
 
       - name: Upload wheels to GitHub Releases
         uses: actions/upload-artifact@v4

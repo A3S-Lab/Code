@@ -75,6 +75,12 @@ class WheelFilenameTests(unittest.TestCase):
             "a3s_code-3.2.1-cp311-cp311-macosx_11_0_arm64.whl",
         )
 
+    def test_macos_intel_cp312(self):
+        self.assertEqual(
+            self._filename_for("darwin", "x86_64", 12),
+            "a3s_code-3.2.1-cp312-cp312-macosx_12_0_x86_64.whl",
+        )
+
     def test_windows_amd64_cp313(self):
         self.assertEqual(
             self._filename_for("win32", "AMD64", 13),

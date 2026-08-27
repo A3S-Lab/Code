@@ -20,11 +20,15 @@ through PyPI.
 
 ## Supported platforms
 
-- macOS arm64 (Apple Silicon)
+- macOS arm64 (Apple Silicon, macOS 11+)
+- macOS x86_64 (Intel, macOS 12+)
 - Linux x86_64 (glibc 2.28+)
 - Windows x86_64
 
 CPython 3.10, 3.11, 3.12, 3.13.
+
+Python 3.14 wheels are not published yet. Use CPython 3.13 or earlier until
+the native binding is rebuilt for Python 3.14.
 
 ## Environment overrides
 
@@ -44,4 +48,12 @@ pip install \
   'https://github.com/A3S-Lab/Code/releases/download/v<VERSION>/a3s_code-<VERSION>-cp312-cp312-manylinux_2_28_x86_64.whl'
 ```
 
-Replace `<VERSION>` with the release to install, for example `6.4.0`.
+For an Intel Mac on macOS 12 or later, use the `macosx_12_0_x86_64` asset:
+
+```bash
+pip install \
+  'https://github.com/A3S-Lab/Code/releases/download/v<VERSION>/a3s_code-<VERSION>-cp312-cp312-macosx_12_0_x86_64.whl'
+```
+
+Replace `<VERSION>` with the release to install. The Intel asset is available
+from the first release produced with the Intel build matrix.

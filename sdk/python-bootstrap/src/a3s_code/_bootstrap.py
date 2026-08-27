@@ -31,7 +31,7 @@ from typing import Optional
 
 # Version is the bootstrap's own version, which equals the matching native
 # wheel version on GH Releases. Bumped by the release workflow.
-__version__ = "8.0.1"
+__version__ = "8.0.2"
 
 _DEFAULT_BASE_URL = "https://github.com/A3S-Lab/Code/releases/download"
 _REQUEST_TIMEOUT_S = 120
@@ -68,6 +68,10 @@ def _platform_tag() -> str:
     if sys_plat == "darwin":
         if machine in ("arm64", "aarch64"):
             return "macosx_11_0_arm64"
+        if machine in ("x86_64", "amd64"):
+            # Intel wheels are built with MACOSX_DEPLOYMENT_TARGET=12.0 so
+            # they can run on supported Intel Macs back to macOS 12.
+            return "macosx_12_0_x86_64"
     elif sys_plat == "linux":
         if machine in ("x86_64", "amd64"):
             return "manylinux_2_28_x86_64"
@@ -76,7 +80,8 @@ def _platform_tag() -> str:
             return "win_amd64"
     raise BootstrapError(
         f"a3s-code: no native wheel published for {sys_plat}/{machine}. "
-        "Supported platforms: macOS arm64, Linux x86_64 (glibc 2.28+), Windows x86_64."
+        "Supported platforms: macOS arm64 (11+), macOS Intel (12+), "
+        "Linux x86_64 (glibc 2.28+), Windows x86_64."
     )
 
 

@@ -10,6 +10,7 @@ const defaultManifestPath = resolve(dirname(scriptPath), '..', 'package.json')
 
 export const PLATFORM_PACKAGE_NAMES = Object.freeze([
   '@a3s-lab/code-darwin-arm64',
+  '@a3s-lab/code-darwin-x64',
   '@a3s-lab/code-linux-arm64-gnu',
   '@a3s-lab/code-linux-arm64-musl',
   '@a3s-lab/code-linux-x64-gnu',
