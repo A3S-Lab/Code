@@ -15,13 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added the versioned word/CJK-bigram lexical profile and a deterministic real
   `AgentSession` gate for English, Simplified Chinese, Japanese, and Korean
   phrase variation, candidate isolation, and tenant isolation.
+- Added typed host-injected durable-memory semantic recall with bounded
+  embedding execution, caller-owned A3S Memory vectors, current Active-revision
+  verification, deterministic lexical/semantic RRF, lexical fallback, and a
+  versioned real-session cross-language isolation gate.
 
 ### Changed
 
-- Pinned A3S Memory to the CJK lexical-query release. Existing snapshots that
-  predate retrieval-profile persistence remain readable, but cannot silently
-  resume under the changed query semantics. Current bindings use schema `2` so
-  older binaries also fail closed instead of ignoring the new profile field.
+- Pinned A3S Memory to the CJK lexical-query and vector-index releases. Existing
+  schema 1-3 snapshots remain readable but cannot silently resume under current
+  retrieval or admission identities. New lexical bindings use schema `4`;
+  semantic bindings use schema `5` and freeze the authority, embedding,
+  execution, index, policy, and fusion generation so older binaries fail closed.
 
 ### Fixed
 

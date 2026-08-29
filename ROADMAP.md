@@ -310,11 +310,12 @@ The durable-memory program adds reusable, evidence-backed agent state without
 turning an extraction model or a storage backend into a truth authority. A3S
 Memory is the policy-free integrity kernel: it owns exact namespaces, atomic
 revision-checked changes, immutable history, typed evidence references, pure
-query, and admission/use events. Code owns bounded turn extraction, redaction,
-candidate proposal, serving policy, final-context admission, and session-owned
-maintenance scheduling. The embedding host owns namespace selection, evidence
-retention, verification decisions, repository reinjection, and semantic
-consolidation policy.
+query, admission/use events, and caller-owned vector-index primitives. Code owns
+bounded turn extraction, redaction, candidate proposal, embedding execution,
+hybrid serving policy, exact candidate re-verification, final-context admission,
+and session-owned maintenance scheduling. The embedding host owns namespace
+selection, evidence retention, verification decisions, repository and semantic
+index reinjection, index refresh timing, and consolidation policy.
 
 | Gate | State | Code-owned outcome | Exit criteria |
 | --- | --- | --- | --- |
@@ -326,15 +327,17 @@ consolidation policy.
 | `DM-MULTI1` | Delivered | A versioned word/CJK-bigram retrieval profile is persisted in the exact binding and exercised through real English, Simplified Chinese, Japanese, and Korean `AgentSession` turns | Recall@3 and MRR are `1.00`; context is at most one node per task; Candidate, foreign-namespace, and no-overlap translated queries produce no leakage; legacy query semantics cannot silently resume as current |
 | `DM-SHARE1` | Delivered | A host can explicitly bind one exact persistent repository namespace to independent agents without implicit child inheritance | The persisted context-identity profile rejects silent resume drift; two real agents with colliding process-local run IDs record three distinct session/run admissions; Candidate and foreign-principal content stay hidden; one agent survives peer teardown; file-journal replay preserves every admission |
 | `DM-ENDURE1` | Delivered | Binding schema 4 adds a Code-owned invocation incarnation and ordinary runs use non-replacing atomic reservation | Three complete process epochs resume four agents with reset process-local generators and one retained run; all 24 contexts remain distinct, a verified revision and history survive four file opens, and retained collisions fail before model use without overwriting history |
-| `DM-PROD1` | In progress | Host qualification on representative long-horizon, cross-language semantic, larger multi-agent, repeated-restart, and production-drift distributions | The bounded restart/retention/revision slice is delivered; new versioned corpora and retained reports must still qualify semantic cross-language, longer consolidation/decay horizons, remote fencing, real providers, latency, cost, and drift without weakening namespace, evidence, history, admission, or lifecycle invariants |
+| `DM-SEM1` | Delivered | Rust hosts can compose Code's bounded embedding executor with an A3S Memory `VectorIndex`, exact Active-revision verification, deterministic lexical/semantic RRF, cancellation, and lexical fallback | Binding schema 5 freezes authority, embedding revision and execution policy, vector descriptor, semantic policy, and fusion profile; a real-session fixture reaches cross-language semantic Recall@1 `1.00` with zero lexical positives and zero Candidate, foreign-namespace, or stale-vector hits |
+| `DM-PROD1` | In progress | Host qualification on representative long-horizon, real-provider semantic, larger multi-agent, repeated-restart, and production-drift distributions | The bounded deterministic semantic and restart slices are delivered; retained reports must still qualify larger independently labeled corpora, longer consolidation/decay horizons, remote fencing, real providers, latency, cost, index refresh, and drift without weakening namespace, evidence, history, admission, or lifecycle invariants |
 
-The deterministic gate deliberately leaves the known no-token-overlap
-paraphrase as a miss. Semantic vectors remain deferred until new independent
-labels fall below the declared `0.90` threshold. See
+The deterministic semantic gate proves serving mechanics and isolation, not
+real embedding-model quality or remote backend continuity. Production claims
+remain gated on independently labeled corpora and retained host reports. See
 [Durable Memory Integration](manual/DURABLE_MEMORY.md),
 [Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
 [Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md),
-[Durable Memory Multilingual Evaluation](manual/DURABLE_MEMORY_MULTILINGUAL_EVAL.md), and
+[Durable Memory Multilingual Evaluation](manual/DURABLE_MEMORY_MULTILINGUAL_EVAL.md),
+[Durable Memory Semantic Evaluation](manual/DURABLE_MEMORY_SEMANTIC_EVAL.md),
 [Durable Memory Multi-Agent Evaluation](manual/DURABLE_MEMORY_MULTI_AGENT_EVAL.md), and
 [Durable Memory Restart Endurance Evaluation](manual/DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md).
 

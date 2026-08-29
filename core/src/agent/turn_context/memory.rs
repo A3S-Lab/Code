@@ -22,7 +22,15 @@ impl AgentLoop {
         let mut durable_batch = None;
         let mut durable_identities = Vec::new();
         if let Some(binding) = memory.durable_memory() {
-            match binding.query_active_context(effective_prompt).await {
+            let cancellation = self
+                .bound_invocation
+                .as_ref()
+                .map(|invocation| invocation.cancellation().clone())
+                .unwrap_or_default();
+            match binding
+                .query_active_context_with_cancellation(effective_prompt, cancellation)
+                .await
+            {
                 Ok(batch) if !batch.result.is_empty() => {
                     let active_content = batch
                         .result

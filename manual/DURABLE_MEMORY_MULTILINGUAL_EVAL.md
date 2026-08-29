@@ -36,6 +36,10 @@ legacy session, while an old binary rejects schema `4` rather than ignoring the
 new fields. The migration rule is to start a new session when query or admission
 identity semantics change.
 
+Optional semantic sessions use schema `5`, which retains the same lexical and
+context profiles plus an exact semantic generation. That separate contract does
+not change this lexical fixture's expected misses.
+
 ## Locked gate
 
 The corpus contains one relevant Active procedure for each of English,
@@ -75,14 +79,15 @@ The negative set locks three boundaries:
   production-query distributions.
 - The deterministic model checks context availability and isolation, not real
   model reasoning quality.
-- Long-horizon retention, semantic paraphrases, still-larger multi-agent
-  distributions, drift, latency, and real provider cost remain `DM-PROD1` host
+- The separate [semantic gate](DURABLE_MEMORY_SEMANTIC_EVAL.md) covers the typed
+  cross-language serving path with deterministic fixture vectors. Real
+  embedding quality, long-horizon retention, still-larger multi-agent
+  distributions, drift, latency, and provider cost remain `DM-PROD1` host
   qualification. `DM-SHARE1` covers narrow explicit sharing, while
   `DM-ENDURE1` covers three bounded restart epochs and retained run-ID reuse.
 
-These limits are intentional. A semantic-vector dependency remains deferred
-until an independently labeled versioned corpus shows the lexical/relation
-gate falling below its predeclared threshold.
+These limits are intentional. Semantic recall is an independent host opt-in;
+it does not silently change the lexical profile or this fixture's baseline.
 
 ## Reproduce
 

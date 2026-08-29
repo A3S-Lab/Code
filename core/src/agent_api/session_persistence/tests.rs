@@ -4,6 +4,8 @@ use crate::run::{RunEventRecord, RunRecord, RunSnapshot, RunStatus};
 use crate::store::{ContextUsage, SessionConfig, SessionState};
 use crate::subagent_task_tracker::{SubagentStatus, SubagentTaskSnapshot};
 
+mod semantic_memory;
+
 struct ResumeImmutableContentAdapter;
 
 #[async_trait::async_trait]

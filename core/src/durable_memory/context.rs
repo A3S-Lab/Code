@@ -1,6 +1,6 @@
 use super::{
-    DurableMemoryMode, DurableMemoryRecallChannel, DurableMemoryRecallHit,
-    DurableMemoryRecallPreview, DurableMemorySession,
+    fusion::fuse_lexical_semantic, DurableMemoryMode, DurableMemoryRecallChannel,
+    DurableMemoryRecallHit, DurableMemoryRecallPreview, DurableMemorySession,
 };
 use crate::context::{ContextAssembly, ContextItem, ContextResult, ContextType};
 use a3s_memory::repository::{
@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use tokio_util::sync::CancellationToken;
 
 /// Legacy schema-3 profile. It separates sessions and process-local run IDs but
 /// cannot distinguish a run ID reused after session retention and restart.
@@ -27,11 +28,11 @@ const PROVIDER: &str = "durable_memory_v2";
 const RELATED_SCORE_FACTOR: f32 = 0.75;
 
 #[derive(Clone)]
-struct RecallCandidate {
-    node: MemoryNode,
-    score: f32,
-    channel: DurableMemoryRecallChannel,
-    related_from: Option<String>,
+pub(super) struct RecallCandidate {
+    pub(super) node: MemoryNode,
+    pub(super) score: f32,
+    pub(super) channel: DurableMemoryRecallChannel,
+    pub(super) related_from: Option<String>,
 }
 
 impl RecallCandidate {
@@ -80,7 +81,7 @@ impl DurableMemorySession {
     ) -> Result<DurableMemoryRecallPreview, MemoryRepositoryError> {
         Ok(DurableMemoryRecallPreview {
             hits: self
-                .query_recall_candidates(text)
+                .query_recall_candidates(text, CancellationToken::new())
                 .await?
                 .into_iter()
                 .map(RecallCandidate::into_preview_hit)
@@ -88,11 +89,21 @@ impl DurableMemorySession {
         })
     }
 
+    #[cfg(test)]
     pub(crate) async fn query_active_context(
         &self,
         text: &str,
     ) -> Result<DurableMemoryContextBatch, MemoryRepositoryError> {
-        let hits = self.query_recall_candidates(text).await?;
+        self.query_active_context_with_cancellation(text, CancellationToken::new())
+            .await
+    }
+
+    pub(crate) async fn query_active_context_with_cancellation(
+        &self,
+        text: &str,
+        cancellation: CancellationToken,
+    ) -> Result<DurableMemoryContextBatch, MemoryRepositoryError> {
+        let hits = self.query_recall_candidates(text, cancellation).await?;
         let mut result = ContextResult::new(PROVIDER);
         let mut identities = Vec::new();
         for hit in hits {
@@ -137,6 +148,7 @@ impl DurableMemorySession {
     async fn query_recall_candidates(
         &self,
         text: &str,
+        cancellation: CancellationToken,
     ) -> Result<Vec<RecallCandidate>, MemoryRepositoryError> {
         let Some(policy) = self.recall_policy() else {
             return Ok(Vec::new());
@@ -164,8 +176,30 @@ impl DurableMemorySession {
                 related_from: None,
             })
             .collect::<Vec<_>>();
-        let mut candidates = lexical;
+        let semantic = match self.semantic_recall() {
+            Some(semantic) => match semantic
+                .query_verified(
+                    self.repository().as_ref(),
+                    self.namespace(),
+                    text,
+                    cancellation.clone(),
+                )
+                .await
+            {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    tracing::warn!(
+                        reason = error.redacted_message(),
+                        "Semantic durable-memory recall degraded to lexical recall"
+                    );
+                    Vec::new()
+                }
+            },
+            None => Vec::new(),
+        };
+        let mut candidates = fuse_lexical_semantic(lexical, semantic);
         if policy.max_related_lookups() == 0 {
+            candidates.truncate(policy.max_results());
             return Ok(candidates);
         }
         let mut known_ids = candidates
@@ -174,9 +208,12 @@ impl DurableMemorySession {
             .collect::<HashSet<_>>();
         let mut looked_up = HashSet::new();
         let mut lookup_count = 0;
-        let lexical_seeds = candidates.clone();
-        'seeds: for seed in &lexical_seeds {
+        let recall_seeds = candidates.clone();
+        'seeds: for seed in &recall_seeds {
             for relation in &seed.node.relations {
+                if cancellation.is_cancelled() {
+                    break 'seeds;
+                }
                 if relation.kind != MemoryRelationKind::RelatedTo
                     || known_ids.contains(&relation.target_id)
                     || !looked_up.insert(relation.target_id.clone())
@@ -313,14 +350,18 @@ fn kind_label(kind: DurableMemoryKind) -> &'static str {
 fn channel_label(channel: DurableMemoryRecallChannel) -> &'static str {
     match channel {
         DurableMemoryRecallChannel::Lexical => "lexical",
+        DurableMemoryRecallChannel::Semantic => "semantic",
+        DurableMemoryRecallChannel::Hybrid => "hybrid",
         DurableMemoryRecallChannel::Related => "related",
     }
 }
 
-fn channel_rank(channel: DurableMemoryRecallChannel) -> u8 {
+pub(super) fn channel_rank(channel: DurableMemoryRecallChannel) -> u8 {
     match channel {
-        DurableMemoryRecallChannel::Lexical => 0,
-        DurableMemoryRecallChannel::Related => 1,
+        DurableMemoryRecallChannel::Hybrid => 0,
+        DurableMemoryRecallChannel::Lexical => 1,
+        DurableMemoryRecallChannel::Semantic => 2,
+        DurableMemoryRecallChannel::Related => 3,
     }
 }
 

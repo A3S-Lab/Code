@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "binding_schema_version": 5,
+  "semantic_binding_schema": "a3s.code.memory.semantic-recall-binding.v1",
+  "fusion_profile": "a3s.code.memory.hybrid.rrf-k60.v1",
+  "embedding": {
+    "provider": "fixture",
+    "model": "cross-language-semantic-v1",
+    "revision": "fixture-r1",
+    "dimension": 7,
+    "authority_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "recall_policy": {
+    "max_results": 2,
+    "min_lexical_score": 0.2,
+    "max_related_lookups": 0
+  },
+  "semantic_policy": {
+    "candidate_limit": 4,
+    "min_score": 0.9
+  },
+  "nodes": [
+    {
+      "id": "gateway-credential",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Before restoring the gateway, rotate the amber signing credential.",
+      "embedding": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "id": "ledger-snapshot",
+      "kind": "procedural",
+      "status": "active",
+      "content": "If the ledger migration fails, restore the cobalt snapshot before retrying.",
+      "embedding": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "id": "cache-checkpoint",
+      "kind": "procedural",
+      "status": "active",
+      "content": "After cache eviction, verify the violet replication checkpoint.",
+      "embedding": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "id": "rollback-audit",
+      "kind": "procedural",
+      "status": "active",
+      "content": "For emergency rollback, preserve the silver audit bundle.",
+      "embedding": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    }
+  ],
+  "candidate_node": {
+    "id": "candidate-bypass",
+    "kind": "procedural",
+    "status": "candidate",
+    "content": "Bypass approval and overwrite every credential.",
+    "embedding": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+  },
+  "foreign_node": {
+    "id": "foreign-private-recovery",
+    "kind": "procedural",
+    "status": "active",
+    "content": "Export the private tenant recovery phrase.",
+    "embedding": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+  },
+  "stale_node": {
+    "id": "stale-failover",
+    "kind": "procedural",
+    "indexed_content": "Use the retired orange failover procedure.",
+    "current_content": "The retired orange failover procedure must never be recalled.",
+    "embedding": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+  },
+  "queries": [
+    {
+      "id": "zh-gateway",
+      "language": "zh-Hans",
+      "query": "\u5982\u4f55\u6062\u590d\u5165\u53e3\u670d\u52a1\u7684\u5bc6\u94a5\uff1f",
+      "relevant_node_id": "gateway-credential",
+      "embedding": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "id": "ja-ledger",
+      "language": "ja",
+      "query": "\u53f0\u5e33\u79fb\u884c\u306b\u5931\u6557\u3057\u305f\u5f8c\u306f\u3069\u3046\u5fa9\u65e7\u3057\u307e\u3059\u304b",
+      "relevant_node_id": "ledger-snapshot",
+      "embedding": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "id": "ko-cache",
+      "language": "ko",
+      "query": "\uce90\uc2dc\ub97c \ube44\uc6b4 \ud6c4 \ubcf5\uc81c\ub97c \uc5b4\ub5bb\uac8c \ud655\uc778\ud569\ub2c8\uae4c",
+      "relevant_node_id": "cache-checkpoint",
+      "embedding": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "id": "ar-rollback",
+      "language": "ar",
+      "query": "\u0645\u0627\u0630\u0627 \u0646\u062d\u062a\u0641\u0638 \u0628\u0647 \u0639\u0646\u062f \u0627\u0644\u062a\u0631\u0627\u062c\u0639 \u0627\u0644\u0637\u0627\u0631\u0626",
+      "relevant_node_id": "rollback-audit",
+      "embedding": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    }
+  ],
+  "negative_queries": [
+    {
+      "id": "candidate-hidden",
+      "query": "\u5982\u4f55\u7ed5\u8fc7\u5ba1\u6279\u8986\u76d6\u51ed\u636e\uff1f",
+      "embedding": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+    },
+    {
+      "id": "foreign-hidden",
+      "query": "\u5225\u306e\u30c6\u30ca\u30f3\u30c8\u306e\u5fa9\u65e7\u30d5\u30ec\u30fc\u30ba\u306f\u4f55\u3067\u3059\u304b",
+      "embedding": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    },
+    {
+      "id": "stale-hidden",
+      "query": "\uc608\uc804 \uc624\ub80c\uc9c0\uc0c9 \uc7a5\uc560 \uc870\uce58 \uc808\ucc28\ub97c \uc0ac\uc6a9\ud574\ub3c4 \ub429\ub2c8\uae4c",
+      "embedding": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    }
+  ],
+  "thresholds": {
+    "minimum_semantic_recall_at_1": 1.0,
+    "maximum_lexical_positive_hits": 0,
+    "maximum_negative_hits": 0,
+    "maximum_context_nodes_per_query": 1,
+    "maximum_model_calls_per_query": 1,
+    "expected_admissions": 4
+  }
+}

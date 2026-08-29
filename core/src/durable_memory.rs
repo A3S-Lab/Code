@@ -6,129 +6,37 @@
 
 mod binding;
 mod context;
+mod fusion;
+mod policy;
+mod semantic;
+mod semantic_binding;
 pub use binding::{
     DurableMemoryBindingV1, DURABLE_MEMORY_BINDING_SCHEMA_VERSION,
-    DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
+    DURABLE_MEMORY_HYBRID_BINDING_SCHEMA_VERSION, DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
 };
 pub(crate) use context::{durable_memory_context_id, DurableMemoryRecallIdentity};
 pub use context::{DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1, DURABLE_MEMORY_CONTEXT_ID_PROFILE_V2};
+pub use policy::{
+    DurableMemoryMode, DurableMemoryRecallChannel, DurableMemoryRecallHit,
+    DurableMemoryRecallPolicy, DurableMemoryRecallPreview,
+};
+pub use semantic::DurableMemorySemanticRecall;
+pub use semantic_binding::{
+    DurableMemorySemanticBindingV1, DurableMemorySemanticError, DurableMemorySemanticRecallPolicy,
+    DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1, DURABLE_MEMORY_SEMANTIC_FUSION_PROFILE_V1,
+};
 
 use a3s_memory::repository::{
     DurableMemoryKind, EvidenceKind, EvidenceRef, MemoryAccessEvent, MemoryChangeSet,
     MemoryNamespace, MemoryNode, MemoryNodeDraft, MemoryOperation, MemoryRepository,
-    MemoryRepositoryError, MemoryStatus, MAX_IDENTIFIER_BYTES, MAX_QUERY_LIMIT,
+    MemoryRepositoryError, MemoryStatus, MAX_IDENTIFIER_BYTES,
 };
 use a3s_memory::{MemoryItem, MemoryType};
 use chrono::{DateTime, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-
-/// Runtime behavior enabled for one durable-memory binding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum DurableMemoryMode {
-    /// Mirror successful V1 extractions as evidence-backed V2 candidates.
-    ShadowCandidates,
-    /// Mirror candidates and recall only explicitly activated V2 nodes.
-    ActiveRecall,
-}
-
-/// Bounded policy for opt-in active V2 recall.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DurableMemoryRecallPolicy {
-    max_results: usize,
-    min_lexical_score: f32,
-    max_related_lookups: usize,
-}
-
-impl DurableMemoryRecallPolicy {
-    pub fn try_new(
-        max_results: usize,
-        min_lexical_score: f32,
-    ) -> Result<Self, MemoryRepositoryError> {
-        if !(1..=MAX_QUERY_LIMIT).contains(&max_results) {
-            return Err(invalid(
-                "recallPolicy.maxResults",
-                format!("must be between 1 and {MAX_QUERY_LIMIT}"),
-            ));
-        }
-        if !min_lexical_score.is_finite() || !(0.0..=1.0).contains(&min_lexical_score) {
-            return Err(invalid(
-                "recallPolicy.minLexicalScore",
-                "must be finite and between 0 and 1",
-            ));
-        }
-        Ok(Self {
-            max_results,
-            min_lexical_score,
-            max_related_lookups: 0,
-        })
-    }
-
-    /// Enable a bounded number of exact `RelatedTo` target reads after lexical
-    /// seeding. Final results remain capped by `max_results`.
-    pub fn try_with_related_lookups(
-        mut self,
-        max_related_lookups: usize,
-    ) -> Result<Self, MemoryRepositoryError> {
-        if max_related_lookups > MAX_QUERY_LIMIT {
-            return Err(invalid(
-                "recallPolicy.maxRelatedLookups",
-                format!("must not exceed {MAX_QUERY_LIMIT}"),
-            ));
-        }
-        self.max_related_lookups = max_related_lookups;
-        Ok(self)
-    }
-
-    pub fn max_results(self) -> usize {
-        self.max_results
-    }
-
-    pub fn min_lexical_score(self) -> f32 {
-        self.min_lexical_score
-    }
-
-    pub fn max_related_lookups(self) -> usize {
-        self.max_related_lookups
-    }
-}
-
-/// Retrieval branch that produced one pure recall preview hit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum DurableMemoryRecallChannel {
-    Lexical,
-    Related,
-}
-
-/// One active V2 hit returned by a pure diagnostic recall preview.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct DurableMemoryRecallHit {
-    pub node_id: String,
-    pub node_revision: u64,
-    pub kind: DurableMemoryKind,
-    pub content: String,
-    pub score: f32,
-    pub channel: DurableMemoryRecallChannel,
-    pub related_from: Option<String>,
-}
-
-/// Pure, bounded active-memory recall result. Previewing does not record an
-/// admission or use event and therefore cannot authorize prompt injection.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct DurableMemoryRecallPreview {
-    pub hits: Vec<DurableMemoryRecallHit>,
-}
 
 /// Explicit, evidence-backed request to activate one candidate revision.
 #[derive(Debug, Clone)]
@@ -229,6 +137,7 @@ pub struct DurableMemorySession {
     namespace: MemoryNamespace,
     mode: DurableMemoryMode,
     recall_policy: Option<DurableMemoryRecallPolicy>,
+    semantic_recall: Option<DurableMemorySemanticRecall>,
 }
 
 impl DurableMemorySession {
@@ -239,6 +148,7 @@ impl DurableMemorySession {
             namespace,
             mode: DurableMemoryMode::ShadowCandidates,
             recall_policy: None,
+            semantic_recall: None,
         }
     }
 
@@ -253,7 +163,23 @@ impl DurableMemorySession {
             namespace,
             mode: DurableMemoryMode::ActiveRecall,
             recall_policy: Some(recall_policy),
+            semantic_recall: None,
         }
+    }
+
+    /// Add a typed host-owned semantic generation to an Active recall binding.
+    pub fn with_semantic_recall(
+        mut self,
+        semantic_recall: DurableMemorySemanticRecall,
+    ) -> Result<Self, DurableMemorySemanticError> {
+        if self.mode != DurableMemoryMode::ActiveRecall || self.recall_policy.is_none() {
+            return Err(DurableMemorySemanticError::InvalidConfiguration {
+                field: "mode",
+                reason: "semantic recall requires an Active recall binding".to_string(),
+            });
+        }
+        self.semantic_recall = Some(semantic_recall);
+        Ok(self)
     }
 
     pub fn repository(&self) -> &Arc<dyn MemoryRepository> {
@@ -272,10 +198,21 @@ impl DurableMemorySession {
         self.recall_policy
     }
 
+    pub fn semantic_recall(&self) -> Option<&DurableMemorySemanticRecall> {
+        self.semantic_recall.as_ref()
+    }
+
     /// Return the secret-free identity that must remain exact when a
     /// persisted session is resumed.
     pub fn binding(&self) -> DurableMemoryBindingV1 {
-        DurableMemoryBindingV1::new(self.namespace.clone(), self.mode, self.recall_policy)
+        DurableMemoryBindingV1::new(
+            self.namespace.clone(),
+            self.mode,
+            self.recall_policy,
+            self.semantic_recall
+                .as_ref()
+                .map(|semantic| semantic.binding().clone()),
+        )
     }
 
     /// Activate one exact candidate revision with independent decision evidence.
@@ -421,6 +358,13 @@ impl std::fmt::Debug for DurableMemorySession {
             .field("namespace", &self.namespace)
             .field("mode", &self.mode)
             .field("recall_policy", &self.recall_policy)
+            .field(
+                "semantic_recall",
+                &self
+                    .semantic_recall
+                    .as_ref()
+                    .map(DurableMemorySemanticRecall::binding),
+            )
             .finish_non_exhaustive()
     }
 }

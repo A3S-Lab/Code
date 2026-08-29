@@ -328,7 +328,7 @@ fn portable_checkpoint_rejects_invalid_durable_memory_binding() {
     .binding();
     let mut encoded = serde_json::to_value(binding).unwrap();
     encoded["schemaVersion"] =
-        serde_json::json!(a3s_code_core::DURABLE_MEMORY_BINDING_SCHEMA_VERSION + 1);
+        serde_json::json!(a3s_code_core::DURABLE_MEMORY_HYBRID_BINDING_SCHEMA_VERSION + 1);
     let invalid: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
     let mut invalid_snapshot = snapshot(false);
     invalid_snapshot.session.durable_memory_binding = Some(invalid);

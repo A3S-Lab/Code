@@ -125,7 +125,9 @@ scheduler nor A3S Memory's repository invents that policy.
 - Longer-horizon personalization, semantic cross-language retrieval, larger
   multi-agent distributions, decay quality, remote fencing, real providers,
   and production-distribution drift still require host-owned versioned
-  evaluations.
+  evaluations. The separate
+  [semantic gate](DURABLE_MEMORY_SEMANTIC_EVAL.md) proves the deterministic
+  typed serving boundary but not production embedding quality.
 
 These limits prevent the deterministic gate from being misrepresented as
 production qualification.
@@ -137,6 +139,7 @@ Run from the Code crate workspace:
 ```text
 cargo test -p a3s-code-core --test durable_memory_product_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_multilingual_eval -- --nocapture
+cargo test -p a3s-code-core --test durable_memory_semantic_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_restart -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_restart_endurance_eval -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle owned_host_job_applies_verified_atomic_v2_supersession -- --nocapture
