@@ -1,12 +1,16 @@
 //! Host-bound durable-memory integration.
 //!
 //! Code owns extraction and admission policy. `a3s-memory` owns the exact
-//! namespace and repository integrity boundary. The initial integration is a
-//! candidate-only shadow mode and never contributes V2 nodes to model context.
+//! namespace and repository integrity boundary. V2 recall is explicit and
+//! admits only the current active node revision selected by final assembly.
+
+mod context;
+pub(crate) use context::DurableMemoryRecallIdentity;
 
 use a3s_memory::repository::{
-    DurableMemoryKind, EvidenceKind, EvidenceRef, MemoryChangeSet, MemoryNamespace, MemoryNode,
-    MemoryNodeDraft, MemoryOperation, MemoryRepository, MemoryRepositoryError, MemoryStatus,
+    DurableMemoryKind, EvidenceKind, EvidenceRef, MemoryAccessEvent, MemoryChangeSet,
+    MemoryNamespace, MemoryNode, MemoryNodeDraft, MemoryOperation, MemoryRepository,
+    MemoryRepositoryError, MemoryStatus, MAX_IDENTIFIER_BYTES, MAX_QUERY_LIMIT,
 };
 use a3s_memory::{MemoryItem, MemoryType};
 use chrono::{DateTime, Utc};
@@ -21,6 +25,139 @@ use std::sync::Arc;
 pub enum DurableMemoryMode {
     /// Mirror successful V1 extractions as evidence-backed V2 candidates.
     ShadowCandidates,
+    /// Mirror candidates and recall only explicitly activated V2 nodes.
+    ActiveRecall,
+}
+
+/// Bounded policy for opt-in active V2 recall.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DurableMemoryRecallPolicy {
+    max_results: usize,
+    min_lexical_score: f32,
+}
+
+impl DurableMemoryRecallPolicy {
+    pub fn try_new(
+        max_results: usize,
+        min_lexical_score: f32,
+    ) -> Result<Self, MemoryRepositoryError> {
+        if !(1..=MAX_QUERY_LIMIT).contains(&max_results) {
+            return Err(invalid(
+                "recallPolicy.maxResults",
+                format!("must be between 1 and {MAX_QUERY_LIMIT}"),
+            ));
+        }
+        if !min_lexical_score.is_finite() || !(0.0..=1.0).contains(&min_lexical_score) {
+            return Err(invalid(
+                "recallPolicy.minLexicalScore",
+                "must be finite and between 0 and 1",
+            ));
+        }
+        Ok(Self {
+            max_results,
+            min_lexical_score,
+        })
+    }
+
+    pub fn max_results(self) -> usize {
+        self.max_results
+    }
+
+    pub fn min_lexical_score(self) -> f32 {
+        self.min_lexical_score
+    }
+}
+
+/// Explicit, evidence-backed request to activate one candidate revision.
+#[derive(Debug, Clone)]
+pub struct DurableMemoryActivation {
+    idempotency_key: String,
+    node_id: String,
+    expected_revision: u64,
+    decision_evidence: EvidenceRef,
+    occurred_at: DateTime<Utc>,
+}
+
+impl DurableMemoryActivation {
+    pub fn try_new(
+        idempotency_key: impl Into<String>,
+        node_id: impl Into<String>,
+        expected_revision: u64,
+        decision_evidence: EvidenceRef,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<Self, MemoryRepositoryError> {
+        let idempotency_key = idempotency_key.into();
+        let node_id = node_id.into();
+        validate_identifier("activation.idempotencyKey", &idempotency_key)?;
+        validate_identifier("activation.nodeId", &node_id)?;
+        if expected_revision == 0 {
+            return Err(invalid(
+                "activation.expectedRevision",
+                "must be greater than zero",
+            ));
+        }
+        if !matches!(
+            decision_evidence.kind,
+            EvidenceKind::Manual | EvidenceKind::Verification
+        ) {
+            return Err(invalid(
+                "activation.decisionEvidence.kind",
+                "must be manual or verification evidence",
+            ));
+        }
+        if decision_evidence.occurred_at > occurred_at {
+            return Err(invalid(
+                "activation.decisionEvidence.occurredAt",
+                "must not follow activation occurredAt",
+            ));
+        }
+        Ok(Self {
+            idempotency_key,
+            node_id,
+            expected_revision,
+            decision_evidence,
+            occurred_at,
+        })
+    }
+}
+
+/// Explicit observation that a caller used one exact active node revision.
+#[derive(Debug, Clone)]
+pub struct DurableMemoryUse {
+    event_id: String,
+    node_id: String,
+    node_revision: u64,
+    occurred_at: DateTime<Utc>,
+    context_id: Option<String>,
+}
+
+impl DurableMemoryUse {
+    pub fn try_new(
+        event_id: impl Into<String>,
+        node_id: impl Into<String>,
+        node_revision: u64,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<Self, MemoryRepositoryError> {
+        let event_id = event_id.into();
+        let node_id = node_id.into();
+        validate_identifier("use.eventId", &event_id)?;
+        validate_identifier("use.nodeId", &node_id)?;
+        if node_revision == 0 {
+            return Err(invalid("use.nodeRevision", "must be greater than zero"));
+        }
+        Ok(Self {
+            event_id,
+            node_id,
+            node_revision,
+            occurred_at,
+            context_id: None,
+        })
+    }
+
+    pub fn with_context_id(mut self, context_id: impl Into<String>) -> Self {
+        self.context_id = Some(context_id.into());
+        self
+    }
 }
 
 /// Exact repository and namespace supplied by the embedding host.
@@ -29,6 +166,7 @@ pub struct DurableMemorySession {
     repository: Arc<dyn MemoryRepository>,
     namespace: MemoryNamespace,
     mode: DurableMemoryMode,
+    recall_policy: Option<DurableMemoryRecallPolicy>,
 }
 
 impl DurableMemorySession {
@@ -38,6 +176,21 @@ impl DurableMemorySession {
             repository,
             namespace,
             mode: DurableMemoryMode::ShadowCandidates,
+            recall_policy: None,
+        }
+    }
+
+    /// Create an opt-in binding that recalls only explicitly activated nodes.
+    pub fn active_recall(
+        repository: Arc<dyn MemoryRepository>,
+        namespace: MemoryNamespace,
+        recall_policy: DurableMemoryRecallPolicy,
+    ) -> Self {
+        Self {
+            repository,
+            namespace,
+            mode: DurableMemoryMode::ActiveRecall,
+            recall_policy: Some(recall_policy),
         }
     }
 
@@ -51,6 +204,52 @@ impl DurableMemorySession {
 
     pub fn mode(&self) -> DurableMemoryMode {
         self.mode
+    }
+
+    pub fn recall_policy(&self) -> Option<DurableMemoryRecallPolicy> {
+        self.recall_policy
+    }
+
+    /// Activate one exact candidate revision with independent decision evidence.
+    pub async fn activate_candidate(
+        &self,
+        activation: DurableMemoryActivation,
+    ) -> Result<MemoryNode, MemoryRepositoryError> {
+        let result = self
+            .repository
+            .apply(MemoryChangeSet::new(
+                activation.idempotency_key,
+                self.namespace.clone(),
+                activation.occurred_at,
+                vec![MemoryOperation::Activate {
+                    node_id: activation.node_id.clone(),
+                    expected_revision: activation.expected_revision,
+                    evidence: vec![activation.decision_evidence],
+                }],
+            ))
+            .await?;
+        result
+            .nodes
+            .into_iter()
+            .find(|node| node.id == activation.node_id && node.status == MemoryStatus::Active)
+            .ok_or_else(|| MemoryRepositoryError::InvariantViolation {
+                message: "activation change returned no active target node".into(),
+            })
+    }
+
+    /// Record an explicit use without widening this binding's namespace.
+    pub async fn record_use(&self, usage: DurableMemoryUse) -> Result<(), MemoryRepositoryError> {
+        let mut event = MemoryAccessEvent::new(
+            usage.event_id,
+            self.namespace.clone(),
+            usage.node_id,
+            usage.node_revision,
+            usage.occurred_at,
+        );
+        if let Some(context_id) = usage.context_id {
+            event = event.with_context_id(context_id);
+        }
+        self.repository.record_use(event).await
     }
 
     pub(crate) async fn store_shadow_candidate(
@@ -127,12 +326,33 @@ impl DurableMemorySession {
     }
 }
 
+fn invalid(field: &str, message: impl Into<String>) -> MemoryRepositoryError {
+    MemoryRepositoryError::InvalidInput {
+        field: field.into(),
+        message: message.into(),
+    }
+}
+
+fn validate_identifier(field: &str, value: &str) -> Result<(), MemoryRepositoryError> {
+    if value.trim().is_empty() {
+        return Err(invalid(field, "must not be empty or whitespace"));
+    }
+    if value.len() > MAX_IDENTIFIER_BYTES {
+        return Err(invalid(
+            field,
+            format!("must not exceed {MAX_IDENTIFIER_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
 impl std::fmt::Debug for DurableMemorySession {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("DurableMemorySession")
             .field("namespace", &self.namespace)
             .field("mode", &self.mode)
+            .field("recall_policy", &self.recall_policy)
             .finish_non_exhaustive()
     }
 }
@@ -205,80 +425,5 @@ fn candidate_id(draft: &MemoryNodeDraft) -> Result<String, MemoryRepositoryError
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use a3s_memory::repository::{InMemoryRepository, MemoryQuery};
-
-    #[tokio::test]
-    async fn shadow_write_is_evidence_backed_candidate_and_never_active() {
-        let repository = Arc::new(InMemoryRepository::new());
-        let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
-        let binding = DurableMemorySession::shadow(repository.clone(), namespace.clone());
-        let occurred_at = DateTime::from_timestamp_millis(1_777_000_000_000).unwrap();
-        let evidence = DurableTurnEvidence::try_new(
-            "session/one",
-            "turn one",
-            "remember this",
-            "done",
-            "user: remember this",
-            occurred_at,
-        )
-        .unwrap();
-        let item = MemoryItem::new("The repository requires focused crate tests")
-            .with_type(MemoryType::Procedural)
-            .with_importance(0.9)
-            .with_metadata("confidence", "0.88")
-            .with_metadata("source", "workflow")
-            .with_metadata("scope", "workspace")
-            .with_metadata("reason", "This prevents invalid root workspace builds")
-            .with_metadata("schema", "a3s.memory.durable.v1");
-
-        let node = binding
-            .store_shadow_candidate(&item, &evidence)
-            .await
-            .unwrap();
-        assert_eq!(node.status, MemoryStatus::Candidate);
-        assert_eq!(node.evidence.len(), 1);
-        assert!(node.evidence[0].uri.contains("session%2Fone"));
-        assert!(!node.evidence[0].uri.contains("remember this"));
-        assert_eq!(node.confidence, 0.88);
-        assert!(repository
-            .query(MemoryQuery::new(namespace.clone()))
-            .await
-            .unwrap()
-            .hits
-            .is_empty());
-        assert_eq!(
-            repository
-                .query(
-                    MemoryQuery::new(namespace.clone())
-                        .with_statuses([MemoryStatus::Candidate])
-                        .with_text("focused crate"),
-                )
-                .await
-                .unwrap()
-                .hits
-                .len(),
-            1
-        );
-
-        let replay = binding
-            .store_shadow_candidate(&item, &evidence)
-            .await
-            .unwrap();
-        assert_eq!(replay, node);
-        assert_eq!(
-            repository
-                .query(
-                    MemoryQuery::new(namespace)
-                        .with_statuses([MemoryStatus::Candidate])
-                        .with_text("focused crate"),
-                )
-                .await
-                .unwrap()
-                .hits
-                .len(),
-            1
-        );
-    }
-}
+#[path = "durable_memory/tests.rs"]
+mod tests;

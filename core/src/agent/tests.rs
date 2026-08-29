@@ -467,6 +467,8 @@ pub(crate) struct MockLlmClient {
     responses: std::sync::Mutex<Vec<LlmResponse>>,
     /// User prompt texts sent to the client, in call order.
     pub(crate) request_texts: std::sync::Mutex<Vec<String>>,
+    /// System prompts sent to ordinary model calls, in call order.
+    pub(crate) request_systems: std::sync::Mutex<Vec<String>>,
     /// Tool definition names sent to the client, in call order.
     pub(crate) request_tools: std::sync::Mutex<Vec<Vec<String>>>,
     /// Full Tool definitions sent to the client, in call order.
@@ -631,6 +633,7 @@ impl MockLlmClient {
         Self {
             responses: std::sync::Mutex::new(responses),
             request_texts: std::sync::Mutex::new(Vec::new()),
+            request_systems: std::sync::Mutex::new(Vec::new()),
             request_tools: std::sync::Mutex::new(Vec::new()),
             request_tool_definitions: std::sync::Mutex::new(Vec::new()),
             call_count: AtomicUsize::new(0),
@@ -755,6 +758,10 @@ impl LlmClient for MockLlmClient {
             });
             return Ok(MockLlmClient::text_response(&response.to_string()));
         }
+        self.request_systems
+            .lock()
+            .unwrap()
+            .push(system.unwrap_or_default().to_string());
         self.request_texts.lock().unwrap().push(prompt_text);
         self.request_tools.lock().unwrap().push(
             tools
@@ -2459,6 +2466,157 @@ async fn test_agent_memory_recall_routes_through_context_assembly() {
 
     assert!(recalled);
     assert_eq!(resolved_items, Some(1));
+}
+
+#[tokio::test]
+async fn active_v2_memory_is_admitted_after_assembly_and_candidates_stay_hidden() {
+    let active_content = "Run focused durable memory tests after changing admission";
+    let time = |offset: i64| chrono::DateTime::from_timestamp(1_777_000_000 + offset, 0).unwrap();
+    let evidence = |name: &str, kind, offset| {
+        a3s_memory::repository::EvidenceRef::try_new(
+            format!("a3s://evidence/{name}"),
+            format!("sha256:{name:0>64}"),
+            kind,
+            time(offset),
+        )
+        .unwrap()
+    };
+    let repository = Arc::new(a3s_memory::repository::InMemoryRepository::new());
+    let namespace =
+        a3s_memory::repository::MemoryNamespace::try_new("tenant", "principal", "repo").unwrap();
+    repository
+        .apply(a3s_memory::repository::MemoryChangeSet::new(
+            "seed-v2-context",
+            namespace.clone(),
+            time(1),
+            vec![
+                a3s_memory::repository::MemoryOperation::Create {
+                    node: a3s_memory::repository::MemoryNodeDraft::new(
+                        "active-memory",
+                        namespace.clone(),
+                        a3s_memory::repository::DurableMemoryKind::Procedural,
+                        a3s_memory::repository::MemoryStatus::Candidate,
+                        active_content,
+                        vec![evidence(
+                            "active-proposal",
+                            a3s_memory::repository::EvidenceKind::SessionTurn,
+                            1,
+                        )],
+                        time(1),
+                    ),
+                },
+                a3s_memory::repository::MemoryOperation::Create {
+                    node: a3s_memory::repository::MemoryNodeDraft::new(
+                        "hidden-candidate",
+                        namespace.clone(),
+                        a3s_memory::repository::DurableMemoryKind::Procedural,
+                        a3s_memory::repository::MemoryStatus::Candidate,
+                        "Run focused durable memory tests from an unapproved candidate",
+                        vec![evidence(
+                            "hidden-proposal",
+                            a3s_memory::repository::EvidenceKind::SessionTurn,
+                            1,
+                        )],
+                        time(1),
+                    ),
+                },
+            ],
+        ))
+        .await
+        .unwrap();
+    let binding = crate::durable_memory::DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace.clone(),
+        crate::durable_memory::DurableMemoryRecallPolicy::try_new(3, 0.2).unwrap(),
+    );
+    binding
+        .activate_candidate(
+            crate::durable_memory::DurableMemoryActivation::try_new(
+                "activate-v2-context",
+                "active-memory",
+                1,
+                evidence(
+                    "active-approval",
+                    a3s_memory::repository::EvidenceKind::Verification,
+                    2,
+                ),
+                time(2),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let memory = crate::memory::AgentMemory::with_config_observers_and_durable(
+        Arc::new(a3s_memory::InMemoryStore::new()),
+        crate::memory::MemoryConfig {
+            llm_extraction: false,
+            ..Default::default()
+        },
+        Vec::new(),
+        Some(binding),
+    );
+    memory
+        .remember(a3s_memory::MemoryItem::new(active_content).with_importance(0.9))
+        .await
+        .unwrap();
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+        "Memory-aware response",
+    )]));
+    let host_env = Arc::new(crate::host_env::HostEnv::new(
+        Arc::new(crate::host_env::SequentialIdGenerator::new("context")),
+        Arc::new(crate::host_env::FixedClock::new(1_777_000_005_000)),
+    ));
+    let temp_dir = tempfile::tempdir().unwrap();
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new(temp_dir.path().display().to_string())),
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        AgentConfig {
+            memory: Some(Arc::new(memory)),
+            host_env,
+            ..Default::default()
+        },
+    );
+
+    agent
+        .execute_with_session(
+            &[],
+            "focused durable memory tests",
+            Some("session-v2-context"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    {
+        let systems = mock_client.request_systems.lock().unwrap();
+        assert!(systems.iter().any(|system| system.contains(active_content)));
+        assert!(systems
+            .iter()
+            .filter(|system| system.contains(active_content))
+            .all(|system| system.matches(active_content).count() == 1));
+        assert!(systems
+            .iter()
+            .all(|system| !system.contains("unapproved candidate")));
+    }
+    assert_eq!(
+        repository
+            .usage_summary(&namespace, "active-memory")
+            .await
+            .unwrap()
+            .admissions,
+        1
+    );
+    assert_eq!(
+        repository
+            .usage_summary(&namespace, "hidden-candidate")
+            .await
+            .unwrap()
+            .admissions,
+        0
+    );
 }
 
 #[tokio::test]

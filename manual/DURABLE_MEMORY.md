@@ -1,14 +1,14 @@
 # Durable Memory Integration
 
 A3S Code integrates with A3S Memory V2 through an exact, host-injected
-`DurableMemorySession`. The first production mode is deliberately limited to
-candidate shadowing: it measures the new integrity model without allowing an
-unreviewed memory to affect model context.
+`DurableMemorySession`. Candidate shadowing measures the new integrity model
+without changing model context. Active recall is a separate opt-in mode with
+evidence-backed activation and fail-safe admission.
 
 ## Ownership boundaries
 
 - A3S Code owns turn extraction, redaction, candidate proposal, future
-  activation policy, and context admission.
+  activation gates and context admission.
 - A3S Memory owns exact namespace isolation, atomic and idempotent change sets,
   revision history, non-destructive lifecycle state, pure query, access events,
   and durable repository recovery.
@@ -21,7 +21,7 @@ This division keeps the repository policy-free. A storage backend cannot decide
 whether an LLM statement is true, and an extraction prompt cannot weaken the
 repository's isolation or durability invariants.
 
-## Current behavior
+## Candidate shadowing
 
 `DurableMemoryMode::ShadowCandidates` has the following contract:
 
@@ -37,6 +37,27 @@ repository's isolation or durability invariants.
    turn result. Shadow mode is observational, not a second serving authority.
 7. V2 candidates are never queried for prompt context in this mode.
 
+## Explicit activation and active recall
+
+`DurableMemoryMode::ActiveRecall` retains candidate shadow writes and adds a
+bounded active-only lexical query. It does not auto-activate extraction output.
+The host submits `DurableMemoryActivation` for one exact candidate revision;
+Code accepts only new Manual or Verification decision evidence, and A3S Memory
+stores that evidence in the atomic activation revision. LLM confidence and
+importance remain annotations and cannot authorize activation.
+
+`DurableMemoryRecallPolicy` requires an explicit result bound and minimum
+lexical score. Query remains pure. Code waits for final context assembly, then
+records admission for each selected exact node revision. A stale, inactive, or
+unpersistable admission is removed before the model call. Candidate,
+superseded, conflicted, and tombstoned nodes are not queried. When V1 and V2
+return the same normalized content, the audited V2 item is used once rather
+than injecting duplicate text.
+
+Admission means the revision entered model input. Use is deliberately separate:
+the host calls `DurableMemorySession::record_use` only when a node was cited,
+selected, or otherwise used. Both event types are idempotent.
+
 When V1 extraction declares that a new memory supersedes an older item, Code
 marks the older item as superseded and protects it from pruning. Recall filters
 the archived item, but the original content and replacement link remain
@@ -45,7 +66,9 @@ available for audit.
 ## Host wiring
 
 ```rust,no_run
-use a3s_code_core::{DurableMemorySession, SessionOptions};
+use a3s_code_core::{
+    DurableMemoryRecallPolicy, DurableMemorySession, SessionOptions,
+};
 use a3s_memory::repository::{FileMemoryRepository, MemoryNamespace};
 use std::sync::Arc;
 
@@ -60,6 +83,26 @@ let durable_memory = DurableMemorySession::shadow(repository, namespace);
 
 let options = SessionOptions::new().with_durable_memory(durable_memory);
 # Ok(options)
+# }
+```
+
+After shadow evaluation and explicit activation are in place, a host can opt in
+to active recall instead:
+
+```rust,no_run
+# use a3s_code_core::{DurableMemoryRecallPolicy, DurableMemorySession};
+# use a3s_memory::repository::{InMemoryRepository, MemoryNamespace};
+# use std::sync::Arc;
+# fn binding() -> anyhow::Result<DurableMemorySession> {
+# let repository = Arc::new(InMemoryRepository::new());
+# let namespace = MemoryNamespace::try_new("tenant", "principal", "scope")?;
+let recall = DurableMemoryRecallPolicy::try_new(5, 0.25)?;
+let durable_memory = DurableMemorySession::active_recall(
+    repository,
+    namespace,
+    recall,
+);
+# Ok(durable_memory)
 # }
 ```
 
@@ -79,18 +122,19 @@ The V2 node stores a reference and SHA-256 digest, not the turn body. The digest
 binds the candidate to the normalized extraction input, while the host remains
 responsible for retaining any source material required by its audit policy.
 Because shadow candidates are not admitted to context, an unavailable source
-cannot silently become a serving memory. Future activation must validate the
-evidence and record a separate admission event.
+cannot silently become a serving memory. Activation requires separate decision
+evidence, and every selected active revision must persist admission before it
+enters model input.
 
 ## Migration sequence
 
 1. Run shadow mode beside the existing V1 serving path.
 2. Evaluate candidate precision, duplicate rate, namespace isolation, evidence
    availability, and restart replay.
-3. Introduce an explicit activation policy with optimistic revisions; do not
-   infer activation from LLM confidence alone.
-4. Enable bounded active-only recall and record admission/use events for the
-   exact node revision included in context.
+3. Submit explicit Manual or Verification activation evidence with optimistic
+   revisions; do not infer activation from LLM confidence alone.
+4. Enable bounded `ActiveRecall`, observe admission failures, and record use
+   only for exact revisions actually used downstream.
 5. Move consolidation and retention to a lifecycle owner with cancellation,
    close, and health reporting.
 6. Add semantic vectors only after lexical and relation-aware evaluation shows
@@ -103,5 +147,6 @@ Run checks from the Code crate workspace, not the monorepo root:
 ```text
 cargo test -p a3s-code-core --lib durable_memory
 cargo test -p a3s-code-core --test durable_memory_shadow
+cargo test -p a3s-code-core --test durable_memory_active
 cargo test -p a3s-code-core --lib
 ```

@@ -243,8 +243,8 @@ pub struct SessionOptions {
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     /// Optional exact V2 durable-memory binding.
     ///
-    /// The initial integration mirrors successful extraction as candidates and
-    /// does not admit V2 nodes into model context.
+    /// Shadow mode never recalls V2 nodes. Active recall additionally requires
+    /// explicit evidence-backed activation and records final context admission.
     pub durable_memory: Option<crate::durable_memory::DurableMemorySession>,
     /// Host observers notified after successful durable memory writes.
     pub memory_observers: Vec<Arc<dyn crate::memory::MemoryObserver>>,

@@ -194,7 +194,10 @@ pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,
 };
-pub use durable_memory::{DurableMemoryMode, DurableMemorySession};
+pub use durable_memory::{
+    DurableMemoryActivation, DurableMemoryMode, DurableMemoryRecallPolicy, DurableMemorySession,
+    DurableMemoryUse,
+};
 pub use dynamic_workflow::{
     dynamic_workflow_store_path, DynamicWorkflowRuntime, DynamicWorkflowScriptLimits,
     DynamicWorkflowTool, DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,

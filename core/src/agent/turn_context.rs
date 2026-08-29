@@ -10,6 +10,9 @@ use crate::hooks::{
 use futures::future::join_all;
 use tokio::sync::mpsc;
 
+#[path = "turn_context/memory.rs"]
+mod memory;
+
 pub(super) struct TurnContext {
     pub(super) effective_prompt: String,
     pub(super) augmented_system: Option<String>,
@@ -64,12 +67,35 @@ impl AgentLoop {
         let mut context_results = self
             .resolve_prompt_context(&effective_prompt, session_id, event_tx)
             .await?;
-        if self.cognitive_package_binding().is_none() {
+        let durable_recall = if self.cognitive_package_binding().is_none() {
             self.recall_memory_context(&effective_prompt, &mut context_results, event_tx)
-                .await;
-        }
+                .await
+        } else {
+            Vec::new()
+        };
 
-        let context_assembly = self.assemble_context_results(&context_results);
+        let mut context_assembly = self.assemble_context_results(&context_results);
+        if !durable_recall.is_empty() {
+            if let Some(binding) = self
+                .config
+                .memory
+                .as_ref()
+                .and_then(|memory| memory.durable_memory())
+            {
+                let occurred_at = i64::try_from(self.config.host_env.now_ms())
+                    .ok()
+                    .and_then(chrono::DateTime::from_timestamp_millis);
+                let context_id = self.config.host_env.next_id();
+                binding
+                    .admit_selected_context(
+                        &mut context_assembly,
+                        &durable_recall,
+                        &context_id,
+                        occurred_at,
+                    )
+                    .await;
+            }
+        }
         self.emit_context_resolved(&context_assembly, event_tx)
             .await;
 
@@ -152,47 +178,6 @@ impl AgentLoop {
                 Ok(Vec::new())
             }
             _ => self.resolve_context(effective_prompt, session_id).await,
-        }
-    }
-
-    async fn recall_memory_context(
-        &self,
-        effective_prompt: &str,
-        context_results: &mut Vec<ContextResult>,
-        event_tx: &Option<mpsc::Sender<AgentEvent>>,
-    ) {
-        let Some(ref memory) = self.config.memory else {
-            return;
-        };
-
-        match memory.recall_similar(effective_prompt, 5).await {
-            Ok(items) if !items.is_empty() => {
-                if let Some(tx) = event_tx {
-                    for item in &items {
-                        tx.send(AgentEvent::MemoryRecalled {
-                            memory_id: item.id.clone(),
-                            content: item.content.clone(),
-                            relevance: item.relevance_score(),
-                        })
-                        .await
-                        .ok();
-                    }
-                    tx.send(AgentEvent::MemoriesSearched {
-                        query: Some(effective_prompt.to_string()),
-                        tags: Vec::new(),
-                        result_count: items.len(),
-                    })
-                    .await
-                    .ok();
-                }
-                context_results.push(crate::memory::memory_items_to_context_result(
-                    "memory", items,
-                ));
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to recall memory context");
-            }
         }
     }
 
@@ -488,30 +473,5 @@ fn render_env_block(workspace: &std::path::Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::render_env_block;
-
-    #[test]
-    fn env_block_contains_grounding_facts() {
-        let block = render_env_block(std::path::Path::new("/tmp/demo-ws"));
-        assert!(block.starts_with("<env>"), "block: {block}");
-        assert!(block.trim_end().ends_with("</env>"));
-        assert!(block.contains("Working directory: /tmp/demo-ws"));
-        assert!(block.contains("Platform:"));
-        assert!(block.contains(std::env::consts::OS));
-        assert!(block.contains("Today's date:"));
-    }
-
-    #[test]
-    fn env_block_date_is_iso_yyyy_mm_dd() {
-        let block = render_env_block(std::path::Path::new("/tmp"));
-        let line = block
-            .lines()
-            .find(|l| l.starts_with("Today's date:"))
-            .expect("date line present");
-        let date = line.trim_start_matches("Today's date:").trim();
-        assert_eq!(date.len(), 10, "date not YYYY-MM-DD: {date}");
-        assert_eq!(date.matches('-').count(), 2, "date not YYYY-MM-DD: {date}");
-        assert!(date.chars().all(|c| c.is_ascii_digit() || c == '-'));
-    }
-}
+#[path = "turn_context/tests.rs"]
+mod tests;
