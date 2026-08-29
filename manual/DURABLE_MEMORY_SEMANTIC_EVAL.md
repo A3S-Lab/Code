@@ -87,10 +87,14 @@ tests reject drift in provider/model
 identity, authority digest, vector budgets, semantic policy, and embedding
 execution policy.
 
+The separate [semantic refresh gate](DURABLE_MEMORY_SEMANTIC_REFRESH.md) covers
+complete dual-budget repository snapshots, explicit atomic rebuild, source
+drift cleanup, serialized live-generation mutation, and refresh receipts.
+
 ## What this gate does not claim
 
 This gate does not establish production embedding quality, real-provider
-latency or cost, automatic index refresh, durable remote-vector storage,
+latency or cost, scheduled refresh, durable remote-vector storage,
 cross-process index fencing, long-horizon consolidation/decay quality, or
 representative tenant scale. Those remain `DM-PROD1` host qualifications.
 

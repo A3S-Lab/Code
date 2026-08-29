@@ -10,6 +10,7 @@ mod fusion;
 mod policy;
 mod semantic;
 mod semantic_binding;
+mod semantic_refresh;
 pub use binding::{
     DurableMemoryBindingV1, DURABLE_MEMORY_BINDING_SCHEMA_VERSION,
     DURABLE_MEMORY_HYBRID_BINDING_SCHEMA_VERSION, DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
@@ -25,6 +26,9 @@ pub use semantic_binding::{
     DurableMemorySemanticBindingV1, DurableMemorySemanticError, DurableMemorySemanticRecallPolicy,
     DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1, DURABLE_MEMORY_SEMANTIC_FUSION_PROFILE_V1,
 };
+pub use semantic_refresh::{
+    DurableMemorySemanticRefreshReceipt, DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
+};
 
 use a3s_memory::repository::{
     DurableMemoryKind, EvidenceKind, EvidenceRef, MemoryAccessEvent, MemoryChangeSet,
@@ -37,6 +41,7 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 /// Explicit, evidence-backed request to activate one candidate revision.
 #[derive(Debug, Clone)]
@@ -200,6 +205,23 @@ impl DurableMemorySession {
 
     pub fn semantic_recall(&self) -> Option<&DurableMemorySemanticRecall> {
         self.semantic_recall.as_ref()
+    }
+
+    /// Rebuild and verify this binding's semantic partition from one complete
+    /// current Active repository snapshot.
+    pub async fn refresh_semantic_recall(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<DurableMemorySemanticRefreshReceipt, DurableMemorySemanticError> {
+        let semantic = self.semantic_recall.as_ref().ok_or_else(|| {
+            DurableMemorySemanticError::InvalidConfiguration {
+                field: "semanticRecall",
+                reason: "refresh requires an attached semantic recall generation".to_string(),
+            }
+        })?;
+        semantic
+            .refresh_repository_namespace(self.repository.as_ref(), &self.namespace, cancellation)
+            .await
     }
 
     /// Return the secret-free identity that must remain exact when a

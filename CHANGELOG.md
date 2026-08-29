@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embedding execution, caller-owned A3S Memory vectors, current Active-revision
   verification, deterministic lexical/semantic RRF, lexical fallback, and a
   versioned real-session cross-language isolation gate.
+- Added explicit verified semantic-index refresh from complete A3S Memory
+  namespace snapshots. Node/byte budgets, backend-response recomputation,
+  serialized publication, post-publication drift cleanup, and secret-free
+  refresh receipts prevent partial or falsely current index generations.
 
 ### Changed
 
@@ -27,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retrieval or admission identities. New lexical bindings use schema `4`;
   semantic bindings use schema `5` and freeze the authority, embedding,
   execution, index, policy, and fusion generation so older binaries fail closed.
+- Advanced A3S Memory to the exact dual-budget namespace-snapshot revision used
+  by semantic refresh; built-in in-memory and file repositories share the same
+  complete-view, digest-verification, overflow, and restart contract.
 
 ### Fixed
 

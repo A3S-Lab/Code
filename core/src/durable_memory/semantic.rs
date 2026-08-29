@@ -10,6 +10,7 @@ use a3s_memory::vector::{VectorIndex, VectorIndexStatus, VectorRecord, VectorSea
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 const PARTITION_ID_DOMAIN: &str = "a3s.code.memory.semantic-partition.v1";
@@ -32,6 +33,7 @@ pub struct DurableMemorySemanticRecall {
     serving_generation_digest: String,
     executor: EmbeddingExecutor,
     index: Arc<dyn VectorIndex>,
+    refresh_lock: Arc<Mutex<()>>,
 }
 
 impl std::fmt::Debug for DurableMemorySemanticRecall {
@@ -65,6 +67,7 @@ impl DurableMemorySemanticRecall {
             serving_generation_digest,
             executor,
             index,
+            refresh_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -76,8 +79,70 @@ impl DurableMemorySemanticRecall {
         self.index.status()
     }
 
+    pub(super) fn serving_generation_digest(&self) -> &str {
+        &self.serving_generation_digest
+    }
+
+    pub(super) fn refresh_lock(&self) -> Arc<Mutex<()>> {
+        self.refresh_lock.clone()
+    }
+
+    pub(super) fn refresh_node_limit(&self) -> Result<usize, DurableMemorySemanticError> {
+        let execution = self.executor.config();
+        let descriptor = self.index.descriptor();
+        let vector_bytes = descriptor
+            .dimension
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| invalid("refresh.vectorBytes", "vector byte size overflowed"))?;
+        let by_execution_vector_bytes = execution.max_request_vector_bytes / vector_bytes;
+        let limit = execution
+            .max_request_inputs
+            .min(descriptor.max_records)
+            .min(by_execution_vector_bytes);
+        if limit == 0 {
+            return Err(invalid(
+                "refresh.maxNodes",
+                "configured budgets cannot admit one semantic record",
+            ));
+        }
+        Ok(limit)
+    }
+
+    pub(super) fn refresh_snapshot_byte_limit(&self) -> usize {
+        self.executor.config().max_request_text_bytes
+    }
+
+    pub(super) async fn invalidate_namespace(
+        &self,
+        namespace: &MemoryNamespace,
+    ) -> Result<VectorIndexStatus, DurableMemorySemanticError> {
+        let partition = semantic_partition_id(namespace, &self.serving_generation_digest);
+        self.index
+            .remove_partition(&partition)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Atomically replace one exact namespace partition with current Active nodes.
     pub async fn replace_namespace(
+        &self,
+        namespace: &MemoryNamespace,
+        nodes: Vec<MemoryNode>,
+        cancellation: CancellationToken,
+    ) -> Result<VectorIndexStatus, DurableMemorySemanticError> {
+        check_cancellation(&cancellation)?;
+        let refresh_lock = self.refresh_lock();
+        let _refresh_guard = tokio::select! {
+            guard = refresh_lock.lock() => guard,
+            _ = cancellation.cancelled() => {
+                return Err(EmbeddingError::Cancelled.into());
+            }
+        };
+        self.replace_namespace_locked(namespace, nodes, cancellation)
+            .await
+    }
+
+    pub(super) async fn replace_namespace_locked(
         &self,
         namespace: &MemoryNamespace,
         nodes: Vec<MemoryNode>,

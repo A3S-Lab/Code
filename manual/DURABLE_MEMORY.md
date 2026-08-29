@@ -13,15 +13,17 @@ retrieval policy into the A3S Memory storage kernel.
   gates, context admission, and exact resume-binding validation.
 - A3S Memory owns exact namespace isolation, atomic and idempotent change sets,
   revision history, non-destructive lifecycle state, pure query, access events,
-  durable repository recovery, and caller-owned vector-index primitives.
+  complete dual-budget namespace snapshots, durable repository recovery, and
+  caller-owned vector-index primitives.
 - A3S Code owns bounded embedding execution, hybrid fusion, candidate
-  re-verification, lexical fallback, and cancellation for an attached semantic
-  generation.
+  re-verification, lexical fallback, cancellation, verified snapshot refresh,
+  drift cleanup, and receipts for an attached semantic generation.
 - The embedding host owns repository, embedding provider, and vector-index
   construction; tenant/principal/scope selection; evidence retention; explicit
-  index refresh; restart reinjection; and semantic lifecycle jobs. Code can own
-  their session schedule; A3S Flow may orchestrate broader jobs, but neither
-  truth nor consolidation policy belongs to the storage kernel.
+  refresh timing and receipt retention; restart reinjection; remote fencing;
+  and semantic lifecycle jobs. Code can own their session schedule; A3S Flow
+  may orchestrate broader jobs, but neither truth nor consolidation policy
+  belongs to the storage kernel.
 
 This division keeps the repository policy-free. A storage backend cannot decide
 whether an LLM statement is true, and an extraction prompt cannot weaken the
@@ -86,11 +88,14 @@ semantic search system.
 
 `DurableMemorySemanticRecall` composes Code's existing bounded
 `EmbeddingExecutor` with a caller-owned A3S Memory `VectorIndex`. It adds no
-implicit task and does not traverse the repository. The host explicitly calls
-`replace_namespace` with the Active nodes it has admitted for indexing; the
-replacement is atomic at the opaque partition derived from the namespace and
-the exact semantic serving binding. Distinct serving generations therefore do
-not overwrite each other when a host deliberately shares one vector index.
+implicit task. The preferred `DurableMemorySession::refresh_semantic_recall`
+path reads a complete Active-only repository snapshot under node/byte budgets,
+verifies its identity, and atomically replaces the opaque partition derived
+from the namespace and exact semantic serving binding. A low-level host that
+already owns a qualified complete snapshot may call `replace_namespace`
+directly, but that method cannot prove repository completeness or return a
+source receipt. Distinct serving generations do not overwrite each other when
+a host deliberately shares one vector index.
 
 At query time, Code treats vector results as untrusted candidates:
 
@@ -156,19 +161,19 @@ let durable_memory = DurableMemorySession::active_recall(
 ```
 
 A Rust host can attach an exact semantic generation after it has selected the
-provider, index, authority identity, and current Active snapshot:
+provider, index, and authority identity, then explicitly refresh it from the
+bound repository:
 
 ```rust,no_run
 # use a3s_code_core::embedding::{EmbeddingExecutorConfig, EmbeddingProvider};
 # use a3s_code_core::{DurableMemoryRecallPolicy, DurableMemorySemanticRecall, DurableMemorySemanticRecallPolicy, DurableMemorySession};
-# use a3s_memory::repository::{InMemoryRepository, MemoryNamespace, MemoryNode};
+# use a3s_memory::repository::{InMemoryRepository, MemoryNamespace};
 # use a3s_memory::vector::VectorIndex;
 # use std::sync::Arc;
 # use tokio_util::sync::CancellationToken;
 # async fn binding(
 #     provider: Arc<dyn EmbeddingProvider>,
 #     index: Arc<dyn VectorIndex>,
-#     active_nodes: Vec<MemoryNode>,
 # ) -> anyhow::Result<DurableMemorySession> {
 # let repository = Arc::new(InMemoryRepository::new());
 # let namespace = MemoryNamespace::try_new("tenant", "principal", "scope")?;
@@ -179,16 +184,16 @@ let semantic = DurableMemorySemanticRecall::new(
     index,
     DurableMemorySemanticRecallPolicy::try_new(20, 0.75)?,
 )?;
-semantic
-    .replace_namespace(&namespace, active_nodes, CancellationToken::new())
-    .await?;
-
 let durable_memory = DurableMemorySession::active_recall(
     repository,
     namespace,
     DurableMemoryRecallPolicy::try_new(5, 0.40)?,
 )
 .with_semantic_recall(semantic)?;
+let receipt = durable_memory
+    .refresh_semantic_recall(CancellationToken::new())
+    .await?;
+assert_eq!(receipt.active_node_count(), 0);
 # Ok(durable_memory)
 # }
 ```
@@ -196,9 +201,15 @@ let durable_memory = DurableMemorySession::active_recall(
 The authority digest is a secret-free host assertion that identifies the
 semantic repository/index authority. It is not a credential and Code cannot
 derive it from a database path or remote service. The host must change it when
-that authority changes and must refresh or clear vector partitions when Active
-repository content changes. Stale vectors are filtered at serving time, but an
-unrefreshed index can still reduce recall.
+that authority changes and must choose when vector partitions refresh after
+Active repository content changes. `refresh_semantic_recall` obtains a complete
+Active-only repository snapshot under node and canonical-byte budgets,
+recomputes its identity, embeds it off-index, atomically publishes it, and then
+verifies the repository snapshot again. Source drift requires partition
+invalidation and returns an error; an invalidation failure is propagated and no
+success receipt is returned. A successful call returns a secret-free refresh
+receipt. Stale vectors are still filtered at serving time, but an unrequested
+refresh can reduce recall.
 
 During session preparation, Code fills an omitted `tenant_id` and `principal`
 from the exact namespace. If the caller supplies either field explicitly, it
@@ -241,10 +252,12 @@ or admission identity behavior.
 
 The descriptor does not claim to authenticate a database path or remote
 service instance. Repository/index construction, credentials, remote fencing,
-refresh continuity, and backend continuity remain host responsibilities; Code
-verifies only the namespace, current node revision/content, vector revision,
-and serving identity it can observe. It never resolves `latest`, opens an
-implicit repository or vector database, or substitutes a global principal.
+refresh scheduling, retained receipt continuity, and backend continuity remain
+host responsibilities. Code verifies complete snapshot identity before and
+after one live-generation refresh, plus the namespace, current node
+revision/content, vector revision, and serving identity it can observe. It
+never resolves `latest`, opens an implicit repository or vector database, or
+substitutes a global principal.
 
 ## Explicit multi-agent sharing
 
@@ -424,11 +437,16 @@ authority digest that contains no credential.
     misses, semantic Recall@1, real-session admission, and zero Candidate,
     foreign-namespace, and stale-vector hits. Treat its fixture provider as a
     serving-mechanics gate, not production model-quality evidence.
-11. Run the multi-agent gate. Share only an exact host-injected binding; require
+11. Run the semantic refresh gate. Require complete node/byte-bounded Active
+    snapshots, backend-response recomputation, pre/post publication identity,
+    serialized cloned-session mutation, failure preservation or drift cleanup,
+    and retained secret-free receipts. Treat cross-process fencing and refresh
+    scheduling as separate host qualifications.
+12. Run the multi-agent gate. Share only an exact host-injected binding; require
      distinct session/run admissions under colliding local generators, explicit
      Candidate and foreign-principal isolation, peer-independent teardown, and
      file-journal replay.
-12. Run the restart-endurance gate. Fully close and resume four independent
+13. Run the restart-endurance gate. Fully close and resume four independent
      agents across three epochs with one retained run, reset each process-local
      generator, revise the Active node, and require all 24 contexts plus exact
     current-revision and namespace isolation after final journal replay.
@@ -441,6 +459,8 @@ end-to-end serving, capture, cost, and consolidation evidence. See
 for the query-profile contract, CJK gate, and its limits. See
 [Durable Memory Semantic Evaluation](DURABLE_MEMORY_SEMANTIC_EVAL.md) for the
 typed hybrid serving, current-revision verification, and cross-language gate.
+See [Durable Memory Semantic Refresh](DURABLE_MEMORY_SEMANTIC_REFRESH.md) for
+complete snapshot rebuild, drift cleanup, and refresh-receipt semantics.
 See
 [Durable Memory Multi-Agent Evaluation](DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
 explicit sharing and context-identity semantics. See
@@ -461,6 +481,8 @@ cargo test -p a3s-code-core --test durable_memory_product_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_multilingual_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_semantic
 cargo test -p a3s-code-core --test durable_memory_semantic_eval -- --nocapture
+cargo test -p a3s-code-core --test durable_memory_semantic_refresh
+cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
 cargo test -p a3s-code-core --test durable_memory_multi_agent_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_restart_endurance_eval -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle

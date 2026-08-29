@@ -221,6 +221,8 @@ pub enum DurableMemorySemanticError {
     Repository(#[from] MemoryRepositoryError),
     #[error("durable-memory semantic index revision changed during verification")]
     IndexRevisionChanged,
+    #[error("durable-memory repository changed during semantic index refresh")]
+    RepositoryChangedDuringRefresh,
 }
 
 impl DurableMemorySemanticError {
@@ -231,6 +233,9 @@ impl DurableMemorySemanticError {
             Self::Vector(_) => "semantic vector search failed",
             Self::Repository(_) => "semantic repository verification failed",
             Self::IndexRevisionChanged => "semantic index revision changed",
+            Self::RepositoryChangedDuringRefresh => {
+                "semantic repository changed during index refresh"
+            }
         }
     }
 }
