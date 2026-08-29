@@ -13,9 +13,9 @@ evidence-backed activation and fail-safe admission.
   revision history, non-destructive lifecycle state, pure query, access events,
   and durable repository recovery.
 - The embedding host owns repository construction, tenant/principal/scope
-  selection, evidence retention, restart reinjection, and any lifecycle
-  scheduler. A3S Flow may orchestrate those lifecycle jobs, but it is not part
-  of the storage kernel.
+  selection, evidence retention, restart reinjection, and semantic lifecycle
+  jobs. Code can own their session schedule; A3S Flow may orchestrate broader
+  jobs, but neither policy belongs to the storage kernel.
 
 This division keeps the repository policy-free. A storage backend cannot decide
 whether an LLM statement is true, and an extraction prompt cannot weaken the
@@ -116,6 +116,58 @@ not serialized in a session snapshot. On restore, the host must reconstruct the
 repository and inject the same exact namespace. Code never resolves `latest`,
 opens an implicit repository, or substitutes a global principal.
 
+## Owned maintenance and consolidation
+
+`AgentMemory` construction is side-effect free. A configured V1 `PrunePolicy`
+does not spawn an immortal task from its constructor. Asynchronous session
+construction starts one `MemoryMaintenanceRuntime` only when pruning or typed
+host jobs are configured. The session is its owner:
+
+- each schedule waits one full interval before its first run;
+- one job never overlaps itself, and missed ticks are skipped instead of
+  replayed in a burst;
+- `memory_maintenance_health()` reports run counts, affected items, current
+  work, and bounded last-error text;
+- a failed run degrades health; a later success clears that transient error;
+- `session.close().await` cancels and joins maintenance before draining final
+  extraction writes, with bounded abort as a last resort;
+- dropping the final runtime owner cancels and aborts remaining workers.
+
+Semantic consolidation stays host policy. A host injects a typed
+`ScheduledMemoryMaintenance` whose `MemoryMaintenanceJob` can inspect the exact
+`MemoryMaintenanceContext`. Any V2 mutation must still carry deterministic
+identities, evidence, and expected revisions. The runtime supplies scheduling
+and ownership, not permission to auto-activate candidates.
+
+```rust,no_run
+use a3s_code_core::memory::{
+    MemoryMaintenanceJob, MemoryMaintenanceOptions, ScheduledMemoryMaintenance,
+};
+use a3s_code_core::SessionOptions;
+use std::{sync::Arc, time::Duration};
+
+# fn options(
+#     consolidator: Arc<dyn MemoryMaintenanceJob>,
+# ) -> anyhow::Result<SessionOptions> {
+let consolidation = ScheduledMemoryMaintenance::try_new(
+    "verified_consolidation",
+    Duration::from_secs(900),
+    consolidator,
+)?;
+let maintenance = MemoryMaintenanceOptions::new()
+    .with_job(consolidation)
+    .try_with_shutdown_timeout(Duration::from_secs(5))?;
+let options = SessionOptions::new().with_memory_maintenance(maintenance);
+# Ok(options)
+# }
+```
+
+Because maintenance owns Tokio tasks, use
+`agent.session_builder(workspace).options(options).build().await`; the
+synchronous compatibility factory rejects configured maintenance instead of
+silently skipping it. Like the durable repository binding, host jobs are
+runtime-only and must be injected again after restart.
+
 ## Evidence and privacy
 
 The V2 node stores a reference and SHA-256 digest, not the turn body. The digest
@@ -135,8 +187,8 @@ enters model input.
    revisions; do not infer activation from LLM confidence alone.
 4. Enable bounded `ActiveRecall`, observe admission failures, and record use
    only for exact revisions actually used downstream.
-5. Move consolidation and retention to a lifecycle owner with cancellation,
-   close, and health reporting.
+5. Run consolidation and retention through the owned maintenance lifecycle;
+   inspect health and close sessions explicitly.
 6. Add semantic vectors only after lexical and relation-aware evaluation shows
    a measured retrieval gap.
 
@@ -148,5 +200,6 @@ Run checks from the Code crate workspace, not the monorepo root:
 cargo test -p a3s-code-core --lib durable_memory
 cargo test -p a3s-code-core --test durable_memory_shadow
 cargo test -p a3s-code-core --test durable_memory_active
+cargo test -p a3s-code-core --test memory_maintenance_lifecycle
 cargo test -p a3s-code-core --lib
 ```

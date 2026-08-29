@@ -17,6 +17,7 @@ use thiserror::Error;
 pub enum SessionBuildResource {
     Capability,
     MemoryStore,
+    MemoryMaintenance,
     SessionStore,
     Queue,
     Mcp,
@@ -29,6 +30,7 @@ impl std::fmt::Display for SessionBuildResource {
         f.write_str(match self {
             Self::Capability => "capability runtime",
             Self::MemoryStore => "memory store",
+            Self::MemoryMaintenance => "memory maintenance",
             Self::SessionStore => "session store",
             Self::Queue => "session queue",
             Self::Mcp => "MCP",

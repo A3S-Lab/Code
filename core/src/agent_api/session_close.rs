@@ -58,6 +58,8 @@ pub(crate) struct SessionCloseHandle {
     /// They are drained before session cancellation so durable memories are not
     /// lost merely because the host closes immediately after receiving output.
     pub(crate) memory: Option<Arc<crate::memory::AgentMemory>>,
+    /// Every periodic pruning or host consolidation task owned by this session.
+    pub(crate) memory_maintenance: Option<Arc<crate::memory::MemoryMaintenanceRuntime>>,
     /// Session-owned MCP source. Inherited/global managers are deliberately
     /// absent so closing one session cannot tear down shared connections.
     pub(crate) mcp_manager: Arc<crate::mcp::manager::McpManager>,
@@ -102,19 +104,20 @@ impl SessionCloseHandle {
     /// for the public-facing contract):
     /// 1. Flip the `closed` flag so further `send`/`stream` fast-fail;
     /// 2. Stop the lane queue from accepting new commands;
-    /// 3. Drain completed-turn memory extractions already accepted for storage;
-    /// 4. Fire the session-level cancellation token so every derived run
+    /// 3. Cancel and join owned memory maintenance;
+    /// 4. Drain completed-turn memory extractions already accepted for storage;
+    /// 5. Fire the session-level cancellation token so every derived run
     ///    and subagent task token fires;
-    /// 5. Mark the active run as `Cancelled` in the run store and notify the
+    /// 6. Mark the active run as `Cancelled` in the run store and notify the
     ///    configured hook executor;
-    /// 6. Mark every still-running delegated subagent task as `Cancelled`
+    /// 7. Mark every still-running delegated subagent task as `Cancelled`
     ///    in the tracker;
-    /// 7. Cancel pending HITL tool confirmations so blocked tool callers
+    /// 8. Cancel pending HITL tool confirmations so blocked tool callers
     ///    receive a rejection instead of hanging.
-    /// 8. Drain commands admitted before queue shutdown;
-    /// 9. Settle the active stream, force-aborting its execution and forwarder
-    ///    after a bounded cooperative grace period;
-    /// 10. Disconnect MCP servers owned by this session only.
+    /// 9. Drain commands admitted before queue shutdown;
+    /// 10. Settle the active stream, force-aborting its execution and forwarder
+    ///     after a bounded cooperative grace period;
+    /// 11. Disconnect MCP servers owned by this session only.
     pub(crate) async fn close(&self) {
         {
             let _mutation = self
@@ -132,7 +135,21 @@ impl SessionCloseHandle {
             queue.shutdown().await;
         }
 
-        // 2. Preserve already-completed turns before cancellation invalidates
+        // 2. Stop periodic store mutation before draining the final accepted
+        // extraction writes. The runtime applies its own bounded join policy.
+        if let Some(maintenance) = &self.memory_maintenance {
+            let report = maintenance.close().await;
+            if !report.is_clean() {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    jobs_aborted = report.jobs_aborted,
+                    join_failures = report.join_failures,
+                    "Memory maintenance did not close cleanly"
+                );
+            }
+        }
+
+        // 3. Preserve already-completed turns before cancellation invalidates
         // their model request tokens. The wait is bounded so an unavailable
         // provider cannot make session close hang indefinitely.
         if let Some(memory) = &self.memory {
@@ -147,7 +164,7 @@ impl SessionCloseHandle {
             }
         }
 
-        // 3. Fire the session-level token so children cascade.
+        // 4. Fire the session-level token so children cascade.
         self.session_cancel.cancel();
 
         // The runtime derives its token from `session_cancel`, then performs a
@@ -159,7 +176,7 @@ impl SessionCloseHandle {
             backend.shutdown();
         }
 
-        // 4. Mark the active run cancelled and notify the hook executor. The
+        // 5. Mark the active run cancelled and notify the hook executor. The
         //    per-run token has already fired via step 1.
         let had_active_token = self.cancel_token.lock().await.is_some();
         if had_active_token {
@@ -172,7 +189,7 @@ impl SessionCloseHandle {
             }
         }
 
-        // 5. Mark every still-running subagent task cancelled.
+        // 6. Mark every still-running subagent task cancelled.
         let pending: Vec<String> = self
             .subagent_tasks
             .list_for_parent(&self.session_id)
@@ -185,12 +202,12 @@ impl SessionCloseHandle {
             let _ = self.subagent_tasks.cancel(&task_id).await;
         }
 
-        // 6. Cancel pending HITL confirmations.
+        // 7. Cancel pending HITL confirmations.
         if let Some(manager) = &self.confirmation_manager {
             let _ = manager.cancel_all().await;
         }
 
-        // 7. Let work admitted before shutdown finish after cancellation has
+        // 8. Let work admitted before shutdown finish after cancellation has
         // propagated. A misbehaving command cannot block close indefinitely.
         if let Some(queue) = &self.command_queue {
             if let Err(error) = queue.drain(QUEUE_DRAIN_TIMEOUT).await {
@@ -202,7 +219,7 @@ impl SessionCloseHandle {
             }
         }
 
-        // 8. Give the active operation a bounded cooperative grace period.
+        // 9. Give the active operation a bounded cooperative grace period.
         // If a streaming execution or a blocked event forwarder ignores
         // cancellation, abort those concrete tasks while leaving the lifecycle
         // supervisor alive to clear run state and release admission.
@@ -222,7 +239,7 @@ impl SessionCloseHandle {
             }
         }
 
-        // 9. Wait for any extension mutation admitted before `closed` was
+        // 10. Wait for any extension mutation admitted before `closed` was
         // flipped, then release only session-owned MCP resources. Removing all
         // configurations (not only connected clients) also cleans up a failed
         // add transaction. Agent-global and host-owned inherited managers have

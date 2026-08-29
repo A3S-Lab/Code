@@ -44,6 +44,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("memory_store", &self.memory_store.is_some())
             .field("durable_memory", &self.durable_memory)
             .field("memory_observers", &self.memory_observers.len())
+            .field("memory_maintenance", &self.memory_maintenance)
             .field("file_memory_dir", &self.file_memory_dir)
             .field("session_store", &self.session_store.is_some())
             .field(
@@ -339,6 +340,17 @@ impl SessionOptions {
         observer: Arc<dyn crate::memory::MemoryObserver>,
     ) -> Self {
         self.memory_observers.push(observer);
+        self
+    }
+
+    /// Install typed, host-owned scheduled memory jobs and their bounded close
+    /// policy. Built-in V1 pruning is included automatically when configured
+    /// in [`MemoryConfig`](crate::memory::MemoryConfig).
+    pub fn with_memory_maintenance(
+        mut self,
+        maintenance: crate::memory::MemoryMaintenanceOptions,
+    ) -> Self {
+        self.memory_maintenance = maintenance;
         self
     }
 

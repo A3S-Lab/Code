@@ -300,6 +300,29 @@ fn finish_agent_session(
 
     let hook_engine = Arc::new(crate::hooks::HookEngine::new());
     let capability_catalog = empty_capability_catalog()?;
+    let memory_maintenance = if crate::memory::MemoryMaintenanceRuntime::validate_configuration(
+        &session_id,
+        &resolved.memory,
+        &opts.memory_maintenance,
+    )
+    .map_err(|error| crate::error::CodeError::SessionInitialization {
+        resource: crate::error::SessionBuildResource::MemoryMaintenance,
+        message: error.to_string(),
+    })? {
+        Some(
+            crate::memory::MemoryMaintenanceRuntime::start(
+                &session_id,
+                Arc::clone(&resolved.memory),
+                opts.memory_maintenance.clone(),
+            )
+            .map_err(|error| crate::error::CodeError::SessionInitialization {
+                resource: crate::error::SessionBuildResource::MemoryMaintenance,
+                message: error.to_string(),
+            })?,
+        )
+    } else {
+        None
+    };
     let command_registry = CommandRegistry::with_capability_catalog(&capability_catalog);
     let lifecycle_hook_executor: Arc<dyn crate::hooks::HookExecutor> = opts
         .hook_executor
@@ -319,6 +342,7 @@ fn finish_agent_session(
         command_queue: command_queue.clone(),
         run_admission: Arc::clone(&run_admission),
         memory: memory.clone(),
+        memory_maintenance,
         mcp_manager: Arc::clone(&resolved.mcp_manager),
         tool_executor: Arc::clone(&tool_executor),
         capability_catalog: Arc::clone(&capability_catalog),

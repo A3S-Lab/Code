@@ -184,9 +184,10 @@ impl AgentSession {
     /// 1. flips the session into the **closed** state so further `send`/`stream`
     ///    calls fast-fail with [`crate::error::CodeError::SessionClosed`];
     /// 2. stops the optional lane queue from accepting new commands;
-    /// 3. waits for completed-turn memory extractions accepted before close,
+    /// 3. cancels and joins session-owned memory maintenance within its bound;
+    /// 4. waits for completed-turn memory extractions accepted before close,
     ///    up to the bounded shutdown deadline;
-    /// 4. fires the session-level cancellation token so every derived
+    /// 5. fires the session-level cancellation token so every derived
     ///    run/subagent token cascades to cancelled;
     /// 5. marks the active run `Cancelled` in the run store and notifies the
     ///    configured hook executor;
@@ -393,6 +394,17 @@ impl AgentSession {
     /// lower-level/manual construction compatibility.
     pub fn memory(&self) -> Option<&Arc<crate::memory::AgentMemory>> {
         SessionView::from_session(self).memory()
+    }
+
+    /// Observe periodic pruning and host-owned consolidation for this session.
+    /// Sessions without configured maintenance return a stable `disabled`
+    /// snapshot; a closed runtime remains observable as `closed`.
+    pub fn memory_maintenance_health(&self) -> crate::memory::MemoryMaintenanceHealth {
+        self.close_handle
+            .memory_maintenance
+            .as_ref()
+            .map(|runtime| runtime.health())
+            .unwrap_or_else(crate::memory::MemoryMaintenanceHealth::disabled)
     }
 
     /// Return the session ID.

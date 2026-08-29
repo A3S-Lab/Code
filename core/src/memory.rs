@@ -10,9 +10,18 @@ use a3s_memory::{MemoryItem, MemoryStore, MemoryType, PrunePolicy, RelevanceConf
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{oneshot, Notify, RwLock};
+
+#[path = "memory/maintenance.rs"]
+mod maintenance;
+pub use maintenance::{
+    MemoryMaintenanceCloseReport, MemoryMaintenanceContext, MemoryMaintenanceError,
+    MemoryMaintenanceHealth, MemoryMaintenanceJob, MemoryMaintenanceJobHealth,
+    MemoryMaintenanceOptions, MemoryMaintenanceOutcome, MemoryMaintenancePhase,
+    MemoryMaintenanceRuntime, ScheduledMemoryMaintenance,
+};
 
 const MEMORY_STATUS_METADATA: &str = "a3s.memory.status";
 const MEMORY_STATUS_SUPERSEDED: &str = "superseded";
@@ -56,10 +65,11 @@ pub struct MemoryConfig {
     /// Maximum working memory items (default: 10)
     #[serde(default = "MemoryConfig::default_max_working")]
     pub max_working: usize,
-    /// Automatic pruning policy for long-term storage. `None` disables background pruning.
+    /// Pruning policy run by an explicitly owned maintenance runtime.
+    /// `None` disables scheduled pruning.
     #[serde(default)]
     pub prune_policy: Option<PrunePolicy>,
-    /// How often the background pruning task runs, in seconds (default: 3600).
+    /// How often owned maintenance prunes, in seconds (default: 3600).
     #[serde(default = "MemoryConfig::default_prune_interval_secs")]
     pub prune_interval_secs: u64,
     /// Use an LLM after every completed, non-empty turn to judge whether the
@@ -151,6 +161,9 @@ pub struct AgentMemory {
     extraction_queue: Arc<MemoryExtractionQueue>,
     observers: Arc<Vec<Arc<dyn MemoryObserver>>>,
     durable_memory: Option<crate::durable_memory::DurableMemorySession>,
+    prune_policy: Option<PrunePolicy>,
+    prune_interval: std::time::Duration,
+    maintenance_claimed: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -202,6 +215,7 @@ impl std::fmt::Debug for AgentMemory {
             .field("max_short_term", &self.max_short_term)
             .field("max_working", &self.max_working)
             .field("observers", &self.observers.len())
+            .field("maintenance_configured", &self.maintenance_configured())
             .finish()
     }
 }
@@ -214,8 +228,8 @@ impl AgentMemory {
 
     /// Create a new agent memory system with custom configuration.
     ///
-    /// If `config.prune_policy` is `Some`, a background Tokio task is spawned
-    /// that periodically calls `store.prune()` at the configured interval.
+    /// Construction is side-effect free. A session or embedding host must own
+    /// a [`MemoryMaintenanceRuntime`] to execute a configured prune policy.
     pub fn with_config(store: Arc<dyn MemoryStore>, config: MemoryConfig) -> Self {
         Self::with_config_and_observers(store, config, Vec::new())
     }
@@ -239,31 +253,6 @@ impl AgentMemory {
         observers: Vec<Arc<dyn MemoryObserver>>,
         durable_memory: Option<crate::durable_memory::DurableMemorySession>,
     ) -> Self {
-        if let Some(policy) = config.prune_policy.clone() {
-            let store_for_task = Arc::clone(&store);
-            let interval_secs = config.prune_interval_secs;
-            match tokio::runtime::Handle::try_current() {
-                Ok(handle) => {
-                    handle.spawn(async move {
-                        let mut ticker =
-                            tokio::time::interval(std::time::Duration::from_secs(interval_secs));
-                        ticker.tick().await; // skip the immediate first tick
-                        loop {
-                            ticker.tick().await;
-                            if let Err(e) = store_for_task.prune(&policy).await {
-                                tracing::warn!("memory prune failed: {e}");
-                            }
-                        }
-                    });
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "memory prune policy configured but no async runtime is available"
-                    );
-                }
-            }
-        }
-
         Self {
             store,
             short_term: Arc::new(RwLock::new(VecDeque::new())),
@@ -277,6 +266,9 @@ impl AgentMemory {
             extraction_queue: Arc::new(MemoryExtractionQueue::default()),
             observers: Arc::new(observers),
             durable_memory,
+            prune_policy: config.prune_policy,
+            prune_interval: std::time::Duration::from_secs(config.prune_interval_secs),
+            maintenance_claimed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -545,6 +537,17 @@ impl AgentMemory {
 
     pub(crate) fn durable_memory(&self) -> Option<&crate::durable_memory::DurableMemorySession> {
         self.durable_memory.as_ref()
+    }
+
+    /// Return whether this memory has built-in periodic maintenance configured.
+    pub fn maintenance_configured(&self) -> bool {
+        self.prune_policy.is_some()
+    }
+
+    fn maintenance_prune_schedule(&self) -> Option<(PrunePolicy, std::time::Duration)> {
+        self.prune_policy
+            .clone()
+            .map(|policy| (policy, self.prune_interval))
     }
 
     pub(crate) fn llm_extraction_max_items(&self) -> usize {

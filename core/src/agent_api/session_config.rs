@@ -62,6 +62,15 @@ impl ResolvedSessionConfig {
             .or_else(|| agent.code_config.queue.clone());
         let rl_trajectory_config = resolve_rl_trajectory_config(&options)?;
         let memory = resolve_session_memory(&agent.code_config, &options, workspace).await?;
+        crate::memory::MemoryMaintenanceRuntime::validate_configuration(
+            &session_id,
+            &memory,
+            &options.memory_maintenance,
+        )
+        .map_err(|error| CodeError::SessionInitialization {
+            resource: SessionBuildResource::MemoryMaintenance,
+            message: error.to_string(),
+        })?;
         let session_store = resolve_session_store(&agent.code_config, &options).await?;
         let rl_trajectory_recorder = resolve_rl_trajectory_recorder(rl_trajectory_config).await?;
         let (mcp_manager, inherited_mcp_managers, mcp_sources) =
@@ -102,6 +111,12 @@ impl ResolvedSessionConfig {
                 resource: SessionBuildResource::WorkspaceRetrieval,
             });
         }
+        let memory_config = agent.code_config.memory.clone().unwrap_or_default();
+        if memory_config.prune_policy.is_some() || !options.memory_maintenance.is_empty() {
+            return Err(CodeError::AsyncSessionBuildRequired {
+                resource: SessionBuildResource::MemoryMaintenance,
+            });
+        }
         let memory_store =
             options
                 .memory_store
@@ -138,7 +153,7 @@ impl ResolvedSessionConfig {
         let memory = Arc::new(
             crate::memory::AgentMemory::with_config_observers_and_durable(
                 memory_store,
-                agent.code_config.memory.clone().unwrap_or_default(),
+                memory_config,
                 options.memory_observers.clone(),
                 options.durable_memory.clone(),
             ),

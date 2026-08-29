@@ -182,6 +182,9 @@ async fn test_agent_memory_working_overflow_trims() {
         extraction_queue: Arc::new(MemoryExtractionQueue::default()),
         observers: Arc::new(Vec::new()),
         durable_memory: None,
+        prune_policy: None,
+        prune_interval: std::time::Duration::from_secs(3600),
+        maintenance_claimed: Arc::new(AtomicBool::new(false)),
     };
     for i in 0..5 {
         memory
@@ -232,6 +235,9 @@ async fn test_agent_memory_short_term_trim() {
         extraction_queue: Arc::new(MemoryExtractionQueue::default()),
         observers: Arc::new(Vec::new()),
         durable_memory: None,
+        prune_policy: None,
+        prune_interval: std::time::Duration::from_secs(3600),
+        maintenance_claimed: Arc::new(AtomicBool::new(false)),
     };
     for i in 0..5 {
         memory
