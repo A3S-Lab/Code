@@ -4,11 +4,19 @@ use a3s_code_core::memory::{
     MemoryMaintenancePhase, MemoryMaintenanceRuntime, ScheduledMemoryMaintenance,
 };
 use a3s_code_core::{
-    Agent, CodeConfig, CodeError, ModelConfig, ModelModalities, ProviderConfig,
-    SessionBuildResource, SessionOptions,
+    Agent, CodeConfig, CodeError, DurableMemoryActivation, DurableMemorySession, ModelConfig,
+    ModelModalities, ProviderConfig, SessionBuildResource, SessionOptions,
+};
+use a3s_memory::repository::{
+    DurableMemoryKind, EvidenceKind, EvidenceRef, InMemoryRepository, MemoryChangeSet,
+    MemoryNamespace, MemoryNodeDraft, MemoryOperation, MemoryRelation, MemoryRelationKind,
+    MemoryRepository, MemoryStatus,
 };
 use a3s_memory::{InMemoryStore, MemoryItem, MemoryStore, PrunePolicy};
+use anyhow::Context as _;
 use async_trait::async_trait;
+use chrono::{TimeZone, Utc};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +30,27 @@ struct CountingConsolidator {
 #[derive(Default)]
 struct RecoveringConsolidator {
     runs: AtomicUsize,
+}
+
+#[derive(Default)]
+struct VerifiedSupersessionConsolidator {
+    runs: AtomicUsize,
+}
+
+fn fixed_time(second: u32) -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 8, 29, 17, 0, second)
+        .single()
+        .expect("valid fixture time")
+}
+
+fn evidence(name: &str, kind: EvidenceKind, second: u32) -> EvidenceRef {
+    EvidenceRef::try_new(
+        format!("a3s://memory-maintenance/{name}"),
+        format!("sha256:{:x}", Sha256::digest(name.as_bytes())),
+        kind,
+        fixed_time(second),
+    )
+    .expect("valid fixture evidence")
 }
 
 #[async_trait]
@@ -50,6 +79,78 @@ impl MemoryMaintenanceJob for CountingConsolidator {
         assert!(!cancellation.is_cancelled());
         self.runs.fetch_add(1, Ordering::SeqCst);
         Ok(MemoryMaintenanceOutcome::new(1))
+    }
+}
+
+#[async_trait]
+impl MemoryMaintenanceJob for VerifiedSupersessionConsolidator {
+    async fn run(
+        &self,
+        context: &MemoryMaintenanceContext,
+        cancellation: CancellationToken,
+    ) -> anyhow::Result<MemoryMaintenanceOutcome> {
+        anyhow::ensure!(!cancellation.is_cancelled(), "maintenance was cancelled");
+        let binding = context
+            .durable_memory()
+            .context("verified consolidation requires an exact V2 binding")?;
+        let namespace = binding.namespace().clone();
+        let replacement = MemoryNodeDraft::new(
+            "workspace-memory-v2",
+            namespace.clone(),
+            DurableMemoryKind::Semantic,
+            MemoryStatus::Candidate,
+            "Workspace sessions persist memory under the repository-local .a3s directory",
+            vec![evidence(
+                "replacement-proposal",
+                EvidenceKind::SessionTurn,
+                3,
+            )],
+            fixed_time(3),
+        );
+        let result = binding
+            .repository()
+            .apply(MemoryChangeSet::new(
+                "verified-supersession-v1",
+                namespace,
+                fixed_time(5),
+                vec![
+                    MemoryOperation::Create { node: replacement },
+                    MemoryOperation::Activate {
+                        node_id: "workspace-memory-v2".into(),
+                        expected_revision: 1,
+                        evidence: vec![evidence(
+                            "replacement-verification",
+                            EvidenceKind::Verification,
+                            4,
+                        )],
+                    },
+                    MemoryOperation::AddRelation {
+                        node_id: "workspace-memory-v1".into(),
+                        expected_revision: 2,
+                        relation: MemoryRelation::new(
+                            MemoryRelationKind::SupersededBy,
+                            "workspace-memory-v2",
+                        ),
+                    },
+                    MemoryOperation::AddRelation {
+                        node_id: "workspace-memory-v2".into(),
+                        expected_revision: 2,
+                        relation: MemoryRelation::new(
+                            MemoryRelationKind::Supersedes,
+                            "workspace-memory-v1",
+                        ),
+                    },
+                    MemoryOperation::SetStatus {
+                        node_id: "workspace-memory-v1".into(),
+                        expected_revision: 3,
+                        status: MemoryStatus::Superseded,
+                    },
+                ],
+            ))
+            .await
+            .context("apply verified V2 supersession")?;
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        Ok(MemoryMaintenanceOutcome::new(result.nodes.len()))
     }
 }
 
@@ -159,6 +260,112 @@ async fn session_owns_pruning_and_host_consolidation_until_bounded_close() {
     assert!(closed.jobs.iter().all(|job| !job.worker_alive));
 
     tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(consolidator.runs.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn owned_host_job_applies_verified_atomic_v2_supersession() {
+    let repository = Arc::new(InMemoryRepository::new());
+    let namespace = MemoryNamespace::try_new("tenant-a", "principal-a", "workspace-a").unwrap();
+    repository
+        .apply(MemoryChangeSet::new(
+            "create-workspace-memory-v1",
+            namespace.clone(),
+            fixed_time(1),
+            vec![MemoryOperation::Create {
+                node: MemoryNodeDraft::new(
+                    "workspace-memory-v1",
+                    namespace.clone(),
+                    DurableMemoryKind::Semantic,
+                    MemoryStatus::Candidate,
+                    "Workspace sessions persist memory under one global user directory",
+                    vec![evidence("original-proposal", EvidenceKind::SessionTurn, 1)],
+                    fixed_time(1),
+                ),
+            }],
+        ))
+        .await
+        .unwrap();
+    let binding = DurableMemorySession::shadow(repository.clone(), namespace.clone());
+    binding
+        .activate_candidate(
+            DurableMemoryActivation::try_new(
+                "activate-workspace-memory-v1",
+                "workspace-memory-v1",
+                1,
+                evidence("original-verification", EvidenceKind::Verification, 2),
+                fixed_time(2),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let consolidator = Arc::new(VerifiedSupersessionConsolidator::default());
+    let consolidation = ScheduledMemoryMaintenance::try_new(
+        "verified_v2_supersession",
+        Duration::from_secs(5),
+        consolidator.clone(),
+    )
+    .unwrap();
+    let options = SessionOptions::new()
+        .with_session_id("verified-v2-maintenance-session")
+        .with_memory(Arc::new(InMemoryStore::new()))
+        .with_durable_memory(binding)
+        .with_memory_maintenance(MemoryMaintenanceOptions::new().with_job(consolidation));
+    let mut config = offline_config();
+    config.memory.as_mut().unwrap().prune_policy = None;
+    let agent = Agent::from_config(config).await.unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let session = agent
+        .session_async(workspace.path().display().to_string(), Some(options))
+        .await
+        .unwrap();
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(5)).await;
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(consolidator.runs.load(Ordering::SeqCst), 1);
+    let old = repository
+        .get(&namespace, "workspace-memory-v1")
+        .await
+        .unwrap()
+        .unwrap();
+    let replacement = repository
+        .get(&namespace, "workspace-memory-v2")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.status, MemoryStatus::Superseded);
+    assert_eq!(replacement.status, MemoryStatus::Active);
+    assert_eq!(replacement.evidence.len(), 2);
+    assert!(replacement
+        .evidence
+        .iter()
+        .any(|item| item.kind == EvidenceKind::Verification));
+    assert!(old.relations.contains(&MemoryRelation::new(
+        MemoryRelationKind::SupersededBy,
+        "workspace-memory-v2",
+    )));
+    assert!(replacement.relations.contains(&MemoryRelation::new(
+        MemoryRelationKind::Supersedes,
+        "workspace-memory-v1",
+    )));
+    assert!(old.history.iter().any(|revision| {
+        revision.content == "Workspace sessions persist memory under one global user directory"
+    }));
+    let health = session.memory_maintenance_health();
+    assert_eq!(health.phase, MemoryMaintenancePhase::Running);
+    assert_eq!(health.jobs.len(), 1);
+    assert_eq!(health.jobs[0].successful_runs, 1);
+    assert_eq!(health.jobs[0].total_affected_items, 2);
+
+    session.close().await;
+    tokio::time::advance(Duration::from_secs(10)).await;
     tokio::task::yield_now().await;
     assert_eq!(consolidator.runs.load(Ordering::SeqCst), 1);
 }

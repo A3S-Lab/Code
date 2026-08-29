@@ -304,6 +304,33 @@ does not acquire, publish, mutate, or retire an A3S Use generation. Delegated
 runs inherit the exact parent Profile, and resume rejects a different explicit
 Profile.
 
+### 3.3 Durable memory program
+
+The durable-memory program adds reusable, evidence-backed agent state without
+turning an extraction model or a storage backend into a truth authority. A3S
+Memory is the policy-free integrity kernel: it owns exact namespaces, atomic
+revision-checked changes, immutable history, typed evidence references, pure
+query, and admission/use events. Code owns bounded turn extraction, redaction,
+candidate proposal, serving policy, final-context admission, and session-owned
+maintenance scheduling. The embedding host owns namespace selection, evidence
+retention, verification decisions, repository reinjection, and semantic
+consolidation policy.
+
+| Gate | State | Code-owned outcome | Exit criteria |
+| --- | --- | --- | --- |
+| `DM-SHADOW1` | Delivered | Successful V1 extraction can mirror one content-addressed V2 Candidate with bounded redacted `SessionTurn` evidence | Shadow failure cannot change V1 serving; replay is idempotent; candidates never enter prompt context |
+| `DM-ACTIVE1` | Delivered | Explicit Manual/Verification activation enables bounded Active-only lexical and one-hop `RelatedTo` recall for one exact namespace | Final selected revisions persist admission before model input; stale or unpersistable items fail closed; conflict edges and non-Active nodes never expand |
+| `DM-MAINT1` | Delivered | Session-owned typed maintenance jobs can apply host-decided V2 lifecycle changes without placing policy in the repository | Verified atomic supersession retains old history and inverse relations; health is bounded; close cancels and joins workers |
+| `DM-EVAL1` | Delivered | Versioned retrieval and product fixtures compare no memory, V1, and V2 through deterministic public APIs and real `AgentSession` turns | Relation Recall@5 and V2 task success reach `0.90`; write precision and evidence fidelity reach `1.00`; context, calls, nominal cost, conflict preservation, and admissions pass locked gates |
+| `DM-PROD1` | Planned | Host qualification on representative long-horizon, multilingual, multi-agent, restart, and drift distributions | A new versioned corpus and retained report justify any semantic-vector, consolidation-policy, or rollout change without weakening namespace, evidence, history, admission, or lifecycle invariants |
+
+The deterministic gate deliberately leaves the known no-token-overlap
+paraphrase as a miss. Semantic vectors remain deferred until new independent
+labels fall below the declared `0.90` threshold. See
+[Durable Memory Integration](manual/DURABLE_MEMORY.md),
+[Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
+and [Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md).
+
 ## 4. Invariants
 
 1. Raw Tool content uses the configured shared content adapter. Evidence events

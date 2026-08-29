@@ -738,7 +738,11 @@ admission for the exact current revision after final context assembly; an
 unrecordable or stale item is removed before the model call. Exact V1/V2
 content duplicates prefer the audited V2 item. The locked synthetic retrieval
 fixture improves Recall@5 from `0.60` to `0.90` with relation expansion, meeting
-the predeclared gate without adding a vector serving dependency.
+the predeclared gate without adding a vector serving dependency. A separate
+product fixture drives the same no-memory, V1, and V2 arms through real
+`AgentSession` turns: task success is `0.00`, `0.60`, and `0.90`; accepted-write
+precision and evidence fidelity are both `1.00`; conflicts remain
+non-destructive; and selected V2 revisions record admission before model use.
 Memory construction itself starts no tasks. Configured V1 pruning and optional
 host-supplied semantic consolidation jobs run only inside a session-owned
 `MemoryMaintenanceRuntime`; jobs are serialized per schedule, missed ticks are
@@ -748,8 +752,10 @@ construction. Consolidation jobs remain responsible for evidence, optimistic
 revisions, and idempotency; A3S Memory never invents that policy.
 The host must inject the binding again after restart. See
 [Durable Memory Integration](manual/DURABLE_MEMORY.md) and
-[Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md)
-for ownership, durability, migration rules, and the vector decision.
+[Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
+and [Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md)
+for ownership, durability, migration rules, the vector decision, end-to-end
+metrics, and declared evaluation limits.
 
 Model adapters normalize text, reasoning, images, tool calls, token usage,
 streaming, cancellation, and retries. Structured generation uses native

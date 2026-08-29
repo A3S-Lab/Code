@@ -65,6 +65,12 @@ claim about every production distribution. Hosts should retain shadow
 measurement and add a new versioned, independently labeled corpus when real
 misses show that the decision should change.
 
+The separate [Durable Memory Product Evaluation](DURABLE_MEMORY_PRODUCT_EVAL.md)
+reuses these labels through real `AgentSession` turns and adds write precision,
+evidence fidelity, conflict preservation, context, call, nominal cost, and
+admission gates. Neither deterministic test substitutes for host qualification
+on a representative production distribution.
+
 Run the report from the Code crate workspace:
 
 ```text

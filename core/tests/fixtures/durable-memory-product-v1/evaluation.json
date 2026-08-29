@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "retrieval_fixture": "../durable-memory-retrieval-v1/corpus.json",
+  "capture": {
+    "session_id": "durable-memory-product-capture-v1",
+    "prompt": "The SDK memory default is now workspace-local; retain the correction. api_key=fixture-secret-value-1234",
+    "main_response": "SDK sessions now use workspace-local memory by default.",
+    "old_memory": {
+      "content": "SDK sessions default to one global user memory directory.",
+      "importance": 0.9,
+      "tags": ["memory", "defaults"]
+    },
+    "items": [
+      {
+        "expected_accepted": true,
+        "memory_type": "semantic",
+        "content": "SDK sessions default to workspace-local .a3s/memory stores instead of the global user directory.",
+        "importance": 0.9,
+        "confidence": 0.96,
+        "tags": ["memory", "defaults"],
+        "source": "project_fact",
+        "scope": "workspace",
+        "reason": "This durable correction determines where later sessions load persisted memory.",
+        "conflicts_with": ["$OLD_MEMORY_ID"]
+      },
+      {
+        "expected_accepted": false,
+        "memory_type": "semantic",
+        "content": "SDK sessions may sometimes use an unspecified memory directory.",
+        "importance": 0.9,
+        "confidence": 0.4,
+        "tags": ["memory"],
+        "source": "project_fact",
+        "scope": "workspace",
+        "reason": "This uncertain statement must not become durable serving memory.",
+        "conflicts_with": []
+      },
+      {
+        "expected_accepted": false,
+        "memory_type": "procedural",
+        "content": "Reuse sk-fixture-secret-1234567890 when testing the memory service.",
+        "importance": 0.95,
+        "confidence": 0.99,
+        "tags": ["memory", "secret"],
+        "source": "workflow",
+        "scope": "workspace",
+        "reason": "Credentials must never be retained as a reusable workflow.",
+        "conflicts_with": []
+      }
+    ]
+  },
+  "thresholds": {
+    "expected_task_success": {
+      "no_memory": 0.0,
+      "v1": 0.6,
+      "v2": 0.9
+    },
+    "minimum_write_precision": 1.0,
+    "minimum_evidence_fidelity": 1.0,
+    "require_conflict_preservation": true,
+    "maximum_memory_context_tokens_per_task": 512,
+    "maximum_model_calls_per_task": 1,
+    "maximum_capture_model_calls": 2,
+    "maximum_p95_latency_ms": 10000,
+    "input_usd_per_million_tokens": 1.0,
+    "output_usd_per_million_tokens": 1.0,
+    "maximum_estimated_model_cost_usd_per_task": 0.05
+  }
+}

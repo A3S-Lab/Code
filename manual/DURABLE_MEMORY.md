@@ -144,6 +144,12 @@ Semantic consolidation stays host policy. A host injects a typed
 identities, evidence, and expected revisions. The runtime supplies scheduling
 and ownership, not permission to auto-activate candidates.
 
+The integration suite exercises that boundary with a verified supersession
+job: one atomic change set creates a replacement Candidate, activates its exact
+revision with separate Verification evidence, adds both supersession
+relations, and marks the old node Superseded while retaining its history. This
+is executable evidence for the mechanism, not a default consolidation policy.
+
 ```rust,no_run
 use a3s_code_core::memory::{
     MemoryMaintenanceJob, MemoryMaintenanceOptions, ScheduledMemoryMaintenance,
@@ -217,9 +223,15 @@ enters model input.
 6. Run the locked lexical and relation-aware evaluation. Fixture v1 reaches
    relation Recall@5 `0.90`, so vectors remain deferred. Add semantic vectors
    only when versioned, independently labeled failures fall below that gate.
+7. Run the product evaluation through real `AgentSession` turns. Require the
+   no-memory/V1/V2 task-success comparison, write precision, evidence fidelity,
+   conflict preservation, context bound, provider-call bound, nominal cost
+   bound, and real admission counters to pass before rollout.
 
 See [Durable Memory Retrieval Evaluation](DURABLE_MEMORY_RETRIEVAL_EVAL.md) for
-the metric definitions, safety assertions, and current decision.
+the retrieval metric definitions and vector decision. See
+[Durable Memory Product Evaluation](DURABLE_MEMORY_PRODUCT_EVAL.md) for the
+end-to-end serving, capture, cost, and consolidation evidence and its limits.
 
 ## Verification
 
@@ -230,6 +242,7 @@ cargo test -p a3s-code-core --lib durable_memory
 cargo test -p a3s-code-core --test durable_memory_shadow
 cargo test -p a3s-code-core --test durable_memory_active
 cargo test -p a3s-code-core --test durable_memory_retrieval_eval -- --nocapture
+cargo test -p a3s-code-core --test durable_memory_product_eval -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle
 cargo test -p a3s-code-core --lib
 ```
