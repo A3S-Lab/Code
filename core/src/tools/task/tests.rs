@@ -4537,6 +4537,147 @@ async fn parallel_task_tool_can_return_after_min_success_count() {
     assert_eq!(metadata["results"][1]["success"], true);
 }
 
+struct FastAndBlockingParallelLlmClient {
+    blocked_started: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for FastAndBlockingParallelLlmClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        if is_pre_analysis_system(system) {
+            return Ok(pre_analysis_response(messages));
+        }
+        if last_text(messages).contains("blocked branch") {
+            self.blocked_started.notify_one();
+            return std::future::pending::<Result<LlmResponse>>().await;
+        }
+        Ok(text_response("fast branch complete"))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming is not used by parallel lifecycle tests")
+    }
+}
+
+#[tokio::test]
+async fn parallel_task_tool_emits_terminal_event_for_aborted_child() {
+    use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let blocked_started = Arc::new(Notify::new());
+    let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(FastAndBlockingParallelLlmClient {
+                blocked_started: Arc::clone(&blocked_started),
+            }),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_subagent_tracker(Arc::clone(&tracker)),
+    );
+    let tool = ParallelTaskTool::new(executor);
+    let (event_tx, mut event_rx) = broadcast::channel(128);
+    let context = ToolContext::new(workspace.path().to_path_buf())
+        .with_session_id("parallel-parent")
+        .with_agent_event_tx(event_tx);
+
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "allow_partial_failure": true,
+                "min_success_count": 1,
+                "tasks": [
+                    {
+                        "agent": "worker",
+                        "description": "fast branch",
+                        "prompt": "complete the fast branch",
+                        "max_steps": 0
+                    },
+                    {
+                        "agent": "worker",
+                        "description": "blocked branch",
+                        "prompt": "wait forever in the blocked branch",
+                        "max_steps": 1
+                    }
+                ]
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        output.success,
+        "early return should be tolerated: {output:#?}"
+    );
+    let metadata = output.metadata.expect("parallel metadata");
+    assert_eq!(metadata["returned_early"], true);
+    assert_eq!(metadata["success_count"], 1);
+    assert_eq!(metadata["failed_count"], 1);
+
+    // The blocked branch must have entered its provider call; otherwise a
+    // missing terminal event could be explained by a pre-start admission
+    // race rather than by cancellation cleanup.
+    tokio::time::timeout(Duration::from_secs(1), blocked_started.notified())
+        .await
+        .expect("blocked child provider call should start");
+
+    let mut starts = HashMap::new();
+    let mut ends = HashMap::new();
+    while let Ok(event) = event_rx.try_recv() {
+        match event {
+            AgentEvent::SubagentStart {
+                task_id,
+                description,
+                ..
+            } => {
+                starts.insert(task_id, description);
+            }
+            AgentEvent::SubagentEnd {
+                task_id,
+                output,
+                success,
+                ..
+            } => {
+                ends.insert(task_id, (output, success));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(starts.len(), 2, "every child should emit start: {starts:?}");
+    assert_eq!(
+        ends.len(),
+        2,
+        "every started child should emit end: {ends:?}"
+    );
+    for task_id in starts.keys() {
+        assert!(ends.contains_key(task_id), "missing end for {task_id}");
+    }
+    let blocked_id = starts
+        .iter()
+        .find_map(|(task_id, description)| (description == "blocked branch").then_some(task_id))
+        .expect("blocked child start event");
+    let (blocked_output, blocked_success) = ends.get(blocked_id).unwrap();
+    assert!(!blocked_success);
+    assert!(blocked_output.contains("cancelled"));
+    assert!(matches!(
+        tracker.get(blocked_id).await.unwrap().status,
+        SubagentStatus::Failed | SubagentStatus::Cancelled
+    ));
+}
+
 #[tokio::test]
 async fn parallel_task_tool_returns_structured_child_output_when_schema_requested() {
     let workspace = tempfile::tempdir().unwrap();

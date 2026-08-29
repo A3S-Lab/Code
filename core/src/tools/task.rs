@@ -28,9 +28,10 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
+use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -94,6 +95,63 @@ struct ScopedTaskExecution<'a> {
     emit_start: bool,
     parent_cancellation: Option<&'a CancellationToken>,
     admitted_capability_subtask: Option<crate::capability::AgentCapabilitySubtask>,
+    parallel_lifecycle: Option<Arc<ParallelTaskLifecycle>>,
+}
+
+/// Coordinates terminal lifecycle events for one bounded parallel fan-out.
+///
+/// A child normally emits its own `SubagentEnd`, but an outer `JoinSet` may
+/// have to abort a child that is stuck in a non-cooperative provider or
+/// subprocess. The fan-out then emits a synthetic terminal event. Keeping
+/// this state separate from the public task tracker lets the natural and
+/// synthetic paths race safely while still guaranteeing exactly one end event
+/// for every emitted start event.
+#[derive(Default)]
+pub(super) struct ParallelTaskLifecycle {
+    state: Mutex<ParallelTaskLifecycleState>,
+}
+
+#[derive(Default)]
+struct ParallelTaskLifecycleState {
+    started: HashSet<String>,
+    ended: HashSet<String>,
+}
+
+impl ParallelTaskLifecycle {
+    fn lock_state(&self) -> MutexGuard<'_, ParallelTaskLifecycleState> {
+        match self.state.lock() {
+            Ok(guard) => guard,
+            // A poisoned lifecycle state still contains the authoritative
+            // event history. Recover it instead of turning cancellation
+            // cleanup into a process panic.
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Record that the start event has been written to the tracker/stream.
+    /// This method deliberately has no await point: once a start is observable
+    /// the enclosing task cannot be aborted between the write and this mark.
+    fn mark_started(&self, task_id: &str) {
+        self.lock_state().started.insert(task_id.to_string());
+    }
+
+    fn is_started(&self, task_id: &str) -> bool {
+        self.lock_state().started.contains(task_id)
+    }
+
+    /// Mark a started task as terminal after its terminal event has been
+    /// written. The parallel fan-out drains every child join before synthetic
+    /// cleanup, so natural and synthetic terminal emitters cannot overlap.
+    fn mark_ended(&self, task_id: &str) {
+        let mut state = self.lock_state();
+        if state.started.contains(task_id) {
+            state.ended.insert(task_id.to_string());
+        }
+    }
+
+    fn is_ended(&self, task_id: &str) -> bool {
+        self.lock_state().ended.contains(task_id)
+    }
 }
 
 mod result_projection;
@@ -371,6 +429,7 @@ impl TaskExecutor {
                 emit_start: true,
                 parent_cancellation,
                 admitted_capability_subtask: None,
+                parallel_lifecycle: None,
             },
         )
         .await
@@ -397,6 +456,7 @@ impl TaskExecutor {
                 emit_start,
                 parent_cancellation: self.parent_cancellation.as_ref(),
                 admitted_capability_subtask: None,
+                parallel_lifecycle: None,
             },
         )
         .await
@@ -414,6 +474,7 @@ impl TaskExecutor {
             emit_start,
             parent_cancellation,
             admitted_capability_subtask,
+            parallel_lifecycle,
         } = execution;
         let was_promoted = admitted_capability_subtask.is_some();
         if !was_promoted && parent_cancellation.is_some_and(CancellationToken::is_cancelled) {
@@ -448,6 +509,7 @@ impl TaskExecutor {
                 emit_start,
                 cancel_token,
                 capability_runtime,
+                parallel_lifecycle,
             )
             .await;
         let close = close_capability_subtask(capability_subtask.as_ref()).await;
@@ -475,6 +537,7 @@ impl TaskExecutor {
         emit_start: bool,
         cancel_token: CancellationToken,
         capability_runtime: Option<crate::capability::AgentCapabilityRuntime>,
+        parallel_lifecycle: Option<Arc<ParallelTaskLifecycle>>,
     ) -> Result<TaskResult> {
         // Background callers receive the task id before this future starts.
         // Register immediately so targeted cancellation also interrupts time
@@ -545,6 +608,12 @@ impl TaskExecutor {
             }
             if let Some(ref tx) = event_tx {
                 let _ = tx.send(event);
+            }
+            if let Some(lifecycle) = &parallel_lifecycle {
+                // Keep this after the last await and after the broadcast so an
+                // abort can never suppress a start that the lifecycle thinks
+                // was emitted.
+                lifecycle.mark_started(&task_id);
             }
         }
 
@@ -888,6 +957,12 @@ impl TaskExecutor {
         if let Some(ref tx) = event_tx {
             let _ = tx.send(end_event);
         }
+        if let Some(lifecycle) = &parallel_lifecycle {
+            // Keep this as the final synchronous operation. If the child was
+            // aborted at an earlier await, synthetic cleanup can still fill in
+            // the missing terminal event.
+            lifecycle.mark_ended(&task_id);
+        }
 
         Ok(TaskResult {
             output,
@@ -1010,6 +1085,7 @@ impl TaskExecutor {
                         emit_start: false,
                         parent_cancellation: parent_cancellation.as_ref(),
                         admitted_capability_subtask,
+                        parallel_lifecycle: None,
                     },
                 )
                 .await
