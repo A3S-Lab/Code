@@ -49,7 +49,9 @@ use a3s_code_core::trace::{TraceEvent, TraceEventKind, TRACE_EVENT_SCHEMA};
 use a3s_code_core::verification::{
     VerificationCheck, VerificationReport, VerificationStatus, VERIFICATION_REPORT_SCHEMA,
 };
-use a3s_code_core::AgentEvent;
+use a3s_code_core::{AgentEvent, DurableMemoryRecallPolicy, DurableMemorySession};
+use a3s_memory::repository::{InMemoryRepository, MemoryNamespace};
+use std::sync::Arc;
 
 // ─────────────────────────────────────────────────────────────────────
 // Deterministic generator (xorshift64*) — reproducible, dependency-free.
@@ -534,6 +536,31 @@ fn gen_permission_policy(rng: &mut Rng) -> PermissionPolicy {
 /// `PermissionPolicy` (itself holding the persisted untagged `PermissionRule`),
 /// the `#[serde(alias = "todos")]` `tasks` field, and the `#[serde(skip)]`
 /// `hook_engine` (safe: skipped in both directions).
+fn gen_durable_memory_binding(rng: &mut Rng) -> Option<a3s_code_core::DurableMemoryBindingV1> {
+    if !rng.boolean() {
+        return None;
+    }
+    let namespace = MemoryNamespace::try_new(
+        format!("tenant-{}", rng.u64_small()),
+        format!("principal-{}", rng.u64_small()),
+        format!("scope-{}", rng.u64_small()),
+    )
+    .unwrap();
+    let repository = Arc::new(InMemoryRepository::new());
+    if rng.boolean() {
+        return Some(DurableMemorySession::shadow(repository, namespace).binding());
+    }
+    let lexical_scores = [0.0, 0.2, 0.5, 1.0];
+    let policy = DurableMemoryRecallPolicy::try_new(
+        1 + rng.below(8) as usize,
+        lexical_scores[rng.below(lexical_scores.len() as u64) as usize],
+    )
+    .unwrap()
+    .try_with_related_lookups(rng.below(8) as usize)
+    .unwrap();
+    Some(DurableMemorySession::active_recall(repository, namespace, policy).binding())
+}
+
 fn gen_session_data(rng: &mut Rng) -> SessionData {
     let state = match rng.below(5) {
         0 => SessionState::Unknown,
@@ -577,6 +604,7 @@ fn gen_session_data(rng: &mut Rng) -> SessionData {
         principal: rng.opt_string(),
         agent_template_id: rng.opt_string(),
         correlation_id: rng.opt_string(),
+        durable_memory_binding: gen_durable_memory_binding(rng),
         cognitive_package_binding: None,
         immutable_content_adapter_binding: None,
     }
@@ -810,15 +838,22 @@ fn backward_compat_minimal_subagent_task_loads() {
 }
 
 #[test]
-fn backward_compat_session_data_without_identity_fields_loads() {
-    // A pre-3.3.0 session payload predates the identity fields entirely.
-    // It must load, with each identity field falling back to None.
+fn backward_compat_session_data_without_identity_or_memory_binding_loads() {
+    // Older session payloads predate these identity and authority fields.
+    // They must load with each field falling back to None.
     let mut rng = Rng::new(123);
     let mut sd = gen_session_data(&mut rng);
     sd.tenant_id = Some("acme".to_string());
     sd.principal = Some("svc-bot".to_string());
     sd.agent_template_id = Some("planner-v3".to_string());
     sd.correlation_id = Some("corr-1".to_string());
+    sd.durable_memory_binding = Some(
+        DurableMemorySession::shadow(
+            Arc::new(InMemoryRepository::new()),
+            MemoryNamespace::try_new("tenant", "principal", "scope").unwrap(),
+        )
+        .binding(),
+    );
 
     let mut v = serde_json::to_value(&sd).unwrap();
     let obj = v.as_object_mut().expect("SessionData is a JSON object");
@@ -827,6 +862,7 @@ fn backward_compat_session_data_without_identity_fields_loads() {
         "principal",
         "agent_template_id",
         "correlation_id",
+        "durable_memory_binding",
     ] {
         obj.remove(key);
     }
@@ -837,6 +873,7 @@ fn backward_compat_session_data_without_identity_fields_loads() {
     assert_eq!(loaded.principal, None);
     assert_eq!(loaded.agent_template_id, None);
     assert_eq!(loaded.correlation_id, None);
+    assert_eq!(loaded.durable_memory_binding, None);
 }
 
 #[test]

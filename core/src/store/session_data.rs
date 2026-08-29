@@ -223,6 +223,14 @@ pub struct SessionData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
 
+    /// Exact Code-visible durable-memory namespace and serving policy.
+    ///
+    /// The repository handle is intentionally not serialized. A resume host
+    /// must re-inject a live repository whose binding matches this descriptor;
+    /// Code rejects missing or drifted namespace, mode, and recall policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durable_memory_binding: Option<crate::durable_memory::DurableMemoryBindingV1>,
+
     /// Exact A3S Use cognitive-package generation visible to the next Run.
     ///
     /// The provider/lease is intentionally not serialized. A resume host must

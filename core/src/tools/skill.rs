@@ -22,7 +22,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// Arguments for the Skill tool
 #[derive(Debug, Serialize, Deserialize)]
@@ -203,11 +203,28 @@ Use this before invoking Skill when specialized instructions may help."
 pub struct SkillTool {
     skill_registry: Arc<SkillRegistry>,
     llm_client: Arc<dyn LlmClient>,
-    tool_executor: Arc<ToolExecutor>,
+    tool_executor: SkillToolExecutor,
     base_config: AgentConfig,
 }
 
+enum SkillToolExecutor {
+    #[cfg(test)]
+    Standalone(Arc<ToolExecutor>),
+    RegistryBound(Weak<ToolExecutor>),
+}
+
+impl SkillToolExecutor {
+    fn resolve(&self) -> Option<Arc<ToolExecutor>> {
+        match self {
+            #[cfg(test)]
+            Self::Standalone(executor) => Some(executor.clone()),
+            Self::RegistryBound(executor) => executor.upgrade(),
+        }
+    }
+}
+
 impl SkillTool {
+    #[cfg(test)]
     pub(crate) fn new(
         skill_registry: Arc<SkillRegistry>,
         llm_client: Arc<dyn LlmClient>,
@@ -217,7 +234,24 @@ impl SkillTool {
         Self {
             skill_registry,
             llm_client,
-            tool_executor,
+            tool_executor: SkillToolExecutor::Standalone(tool_executor),
+            base_config,
+        }
+    }
+
+    /// Construct the Skill tool installed inside the supplied executor's own
+    /// registry. The back-reference must be weak or registration would create
+    /// an executor-registry-tool ownership cycle.
+    pub(crate) fn new_registry_bound(
+        skill_registry: Arc<SkillRegistry>,
+        llm_client: Arc<dyn LlmClient>,
+        tool_executor: Arc<ToolExecutor>,
+        base_config: AgentConfig,
+    ) -> Self {
+        Self {
+            skill_registry,
+            llm_client,
+            tool_executor: SkillToolExecutor::RegistryBound(Arc::downgrade(&tool_executor)),
             base_config,
         }
     }
@@ -358,9 +392,13 @@ The skill's allowed-tools are granted during execution and revoked after complet
 
         // Create the child Agent loop inside the Skill's spatial Subtask. Its
         // provider/tool iterations will recursively create temporal Turns.
+        let tool_executor = self
+            .tool_executor
+            .resolve()
+            .ok_or_else(|| anyhow!("Skill tool executor is closed"))?;
         let mut agent_loop = AgentLoop::new(
             self.llm_client.clone(),
-            self.tool_executor.clone(),
+            tool_executor,
             ctx.clone(),
             skill_config,
         );
@@ -540,6 +578,22 @@ mod tests {
         ) -> Result<mpsc::Receiver<StreamEvent>> {
             anyhow::bail!("streaming not used in SkillTool tests")
         }
+    }
+
+    #[test]
+    fn skill_tool_does_not_retain_its_executor() {
+        let executor = Arc::new(ToolExecutor::new("skill-cycle-test".to_string()));
+        let lifetime = Arc::downgrade(&executor);
+        let _tool = SkillTool::new_registry_bound(
+            Arc::new(SkillRegistry::new()),
+            Arc::new(MockLlmClient::new(Vec::new())),
+            executor.clone(),
+            AgentConfig::default(),
+        );
+
+        drop(executor);
+
+        assert!(lifetime.upgrade().is_none());
     }
 
     #[derive(Default)]

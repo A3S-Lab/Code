@@ -311,8 +311,9 @@ impl SessionOptions {
     /// Install an exact, typed durable-memory repository binding.
     ///
     /// The binding selects either candidate-only shadowing or bounded
-    /// active-only recall. It is runtime-only; hosts restoring a persisted
-    /// session must inject it again.
+    /// active-only recall. Its live repository is runtime-only, while its
+    /// secret-free typed identity is persisted; hosts restoring a session must
+    /// inject the exact same visible binding again.
     pub fn with_durable_memory(
         mut self,
         binding: crate::durable_memory::DurableMemorySession,

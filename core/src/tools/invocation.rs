@@ -4,7 +4,7 @@
 use super::{ToolCapabilities, ToolContext, ToolRegistry, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// Policy for explicit host control-plane tool calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,19 +140,35 @@ pub(crate) trait ToolInvoker: Send + Sync {
 /// invoker in [`ToolContext`], which takes precedence over this adapter inside
 /// orchestrator tools.
 struct RegistryToolInvoker {
-    registry: Arc<ToolRegistry>,
+    registry: RegistryOwnership,
+}
+
+enum RegistryOwnership {
+    Standalone(Arc<ToolRegistry>),
+    RegistryBound(Weak<ToolRegistry>),
+}
+
+impl RegistryOwnership {
+    fn resolve(&self) -> Option<Arc<ToolRegistry>> {
+        match self {
+            Self::Standalone(registry) => Some(Arc::clone(registry)),
+            Self::RegistryBound(registry) => registry.upgrade(),
+        }
+    }
 }
 
 #[async_trait]
 impl ToolInvoker for RegistryToolInvoker {
     async fn invoke(&self, invocation: ToolInvocation, ctx: &ToolContext) -> ToolResult {
+        let Some(registry) = self.registry.resolve() else {
+            return ToolResult::error(&invocation.name, "Tool registry is closed".to_string());
+        };
         let invocation_ctx = match ctx.enter_tool_invocation(&invocation.name) {
             Ok(ctx) => ctx,
             Err(message) => return ToolResult::error(&invocation.name, message),
         };
 
-        match self
-            .registry
+        match registry
             .execute_with_context(&invocation.name, &invocation.args, &invocation_ctx)
             .await
         {
@@ -164,14 +180,63 @@ impl ToolInvoker for RegistryToolInvoker {
     }
 
     fn available_tools(&self) -> Vec<String> {
-        self.registry.list()
+        self.registry
+            .resolve()
+            .map_or_else(Vec::new, |registry| registry.list())
     }
 
     fn capabilities(&self, name: &str, args: &Value) -> Option<ToolCapabilities> {
-        self.registry.capabilities(name, args)
+        self.registry
+            .resolve()
+            .and_then(|registry| registry.capabilities(name, args))
     }
 }
 
 pub(crate) fn registry_tool_invoker(registry: Arc<ToolRegistry>) -> Arc<dyn ToolInvoker> {
-    Arc::new(RegistryToolInvoker { registry })
+    Arc::new(RegistryToolInvoker {
+        registry: RegistryOwnership::Standalone(registry),
+    })
+}
+
+/// Construct an invoker installed into `registry` itself.
+///
+/// Its back-reference is weak so `registry -> tool -> invoker -> registry`
+/// cannot retain a closed executor and its session-owned resources.
+pub(crate) fn registry_bound_tool_invoker(registry: Arc<ToolRegistry>) -> Arc<dyn ToolInvoker> {
+    Arc::new(RegistryToolInvoker {
+        registry: RegistryOwnership::RegistryBound(Arc::downgrade(&registry)),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn standalone_invoker_retains_its_registry() {
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("standalone-registry-test")));
+        let lifetime = Arc::downgrade(&registry);
+        let invoker = registry_tool_invoker(registry.clone());
+
+        drop(registry);
+
+        assert!(lifetime.upgrade().is_some());
+        assert!(invoker.available_tools().is_empty());
+    }
+
+    #[test]
+    fn registry_bound_invoker_does_not_retain_a_closed_registry() {
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("registry-cycle-test")));
+        let lifetime = Arc::downgrade(&registry);
+        let invoker = registry_bound_tool_invoker(registry.clone());
+
+        drop(registry);
+
+        assert!(lifetime.upgrade().is_none());
+        assert!(invoker.available_tools().is_empty());
+        assert!(invoker
+            .capabilities("read", &serde_json::json!({}))
+            .is_none());
+    }
 }

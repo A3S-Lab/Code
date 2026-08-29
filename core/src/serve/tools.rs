@@ -38,7 +38,10 @@ pub async fn install_agent_dir_tools(session: &AgentSession, specs: &[ToolSpec])
             ToolSpec::Script(script) => {
                 let executor = session.tool_executor();
                 let registry = Arc::clone(executor.registry());
-                let tool = Arc::new(AgentDirScriptTool::new(script.clone(), registry));
+                let tool = Arc::new(AgentDirScriptTool::new_registry_bound(
+                    script.clone(),
+                    registry,
+                ));
                 if !executor.register_dynamic_tool_if_absent(tool) {
                     return Err(CodeError::Context(format!(
                         "agent-dir script tool `{}` conflicts with an existing tool",

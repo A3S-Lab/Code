@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Persisted `DurableMemoryBindingV1` identity and fail-closed resume checks for
+  exact durable-memory namespace, mode, and recall policy, plus a real
+  file-repository restart integration gate.
+
+### Fixed
+
+- Broke Tool registry, orchestrator, and Skill executor reference cycles so
+  Session teardown releases durable-memory repository handles and file locks.
+
 ## [8.0.3] - 2026-08-28
 
 ### Changed

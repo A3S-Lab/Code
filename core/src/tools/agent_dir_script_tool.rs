@@ -38,6 +38,17 @@ impl AgentDirScriptTool {
             program: ProgramTool::new(registry),
         }
     }
+
+    #[cfg(any(test, feature = "serve"))]
+    pub(crate) fn new_registry_bound(spec: ScriptToolSpec, registry: Arc<ToolRegistry>) -> Self {
+        Self {
+            spec,
+            program: ProgramTool::with_catalog_registry_bound(
+                registry,
+                crate::program::ProgramCatalog::with_builtin_programs(),
+            ),
+        }
+    }
 }
 
 #[async_trait]
@@ -125,6 +136,20 @@ mod tests {
             allowed_tools: allowed,
             limits: ScriptToolLimits::default(),
         }
+    }
+
+    #[test]
+    fn registered_script_tool_does_not_retain_its_registry() {
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("script-tool-cycle-test")));
+        let lifetime = Arc::downgrade(&registry);
+        registry.register(Arc::new(AgentDirScriptTool::new_registry_bound(
+            spec("script.js", Some(Vec::new())),
+            Arc::clone(&registry),
+        )));
+
+        drop(registry);
+
+        assert!(lifetime.upgrade().is_none());
     }
 
     /// The spec's pinned `limits` actually reach the sandbox: a script that calls

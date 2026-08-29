@@ -103,6 +103,7 @@ pub(super) struct SessionPersistenceContext {
     principal: Option<String>,
     agent_template_id: Option<String>,
     correlation_id: Option<String>,
+    durable_memory_binding: Option<crate::durable_memory::DurableMemoryBindingV1>,
     capability_catalog: Option<Arc<crate::capability::CapabilityCatalog>>,
     /// Session-static or resume-seed fallback. The current projected
     /// Knowledge value, when present, is sampled from `capability_catalog` at
@@ -132,6 +133,11 @@ impl SessionPersistenceContext {
             principal: session.principal.clone(),
             agent_template_id: session.agent_template_id.clone(),
             correlation_id: session.correlation_id.clone(),
+            durable_memory_binding: session
+                .memory
+                .as_ref()
+                .and_then(|memory| memory.durable_memory())
+                .map(crate::durable_memory::DurableMemorySession::binding),
             capability_catalog: Some(Arc::clone(&session.capability_catalog)),
             cognitive_package_binding: session
                 .cognitive_context
@@ -239,6 +245,7 @@ impl SessionPersistenceContext {
             principal: self.principal.as_deref(),
             agent_template_id: self.agent_template_id.as_deref(),
             correlation_id: self.correlation_id.as_deref(),
+            durable_memory_binding: self.durable_memory_binding.as_ref(),
             cognitive_package_binding: cognitive_package_binding.as_ref(),
             immutable_content_adapter_binding: self.immutable_content_adapter_binding.as_ref(),
             tool_result_transform_policy: &self.tool_result_transform_policy,
@@ -412,6 +419,32 @@ pub(super) fn apply_persisted_runtime_options(
     }
 
     match (
+        data.durable_memory_binding.as_ref(),
+        opts.durable_memory.as_ref(),
+    ) {
+        (Some(persisted), Some(injected)) if injected.binding() == persisted.clone() => {}
+        (Some(_), Some(_)) => {
+            return Err(CodeError::SessionConfiguration {
+                field: "durable_memory",
+                message: "resume binding differs from the exact durable-memory namespace and serving policy retained by the session snapshot".to_string(),
+            });
+        }
+        (Some(_), None) => {
+            return Err(CodeError::SessionConfiguration {
+                field: "durable_memory",
+                message: "resuming a durable-memory-bound session requires the host to re-inject a repository with the persisted exact binding".to_string(),
+            });
+        }
+        (None, Some(_)) => {
+            return Err(CodeError::SessionConfiguration {
+                field: "durable_memory",
+                message: "an existing unbound session cannot acquire a durable-memory authority during resume; create a new bound session".to_string(),
+            });
+        }
+        (None, None) => {}
+    }
+
+    match (
         data.immutable_content_adapter_binding.as_ref(),
         opts.immutable_content_adapter.as_ref(),
     ) {
@@ -526,6 +559,7 @@ struct SessionDataSnapshotInput<'a> {
     principal: Option<&'a str>,
     agent_template_id: Option<&'a str>,
     correlation_id: Option<&'a str>,
+    durable_memory_binding: Option<&'a crate::durable_memory::DurableMemoryBindingV1>,
     cognitive_package_binding: Option<&'a crate::cognitive_context::CognitivePackageBindingV1>,
     immutable_content_adapter_binding: Option<&'a crate::tools::ImmutableContentAdapterBindingV1>,
     tool_result_transform_policy: &'a crate::tools::ToolResultTransformPolicyV1,
@@ -561,6 +595,7 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
         principal: None,
         agent_template_id: None,
         correlation_id: None,
+        durable_memory_binding: None,
         cognitive_package_binding: None,
         immutable_content_adapter_binding: None,
     });
@@ -593,6 +628,7 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
     data.principal = input.principal.map(str::to_string);
     data.agent_template_id = input.agent_template_id.map(str::to_string);
     data.correlation_id = input.correlation_id.map(str::to_string);
+    data.durable_memory_binding = input.durable_memory_binding.cloned();
     data.cognitive_package_binding = input.cognitive_package_binding.cloned();
     data.immutable_content_adapter_binding = input.immutable_content_adapter_binding.cloned();
     data

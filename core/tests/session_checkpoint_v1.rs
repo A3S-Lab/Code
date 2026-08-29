@@ -17,8 +17,13 @@ use a3s_code_core::store::{
     ContextUsage, LlmConfigData, SessionConfig, SessionData, SessionSnapshotV1, SessionState,
 };
 use a3s_code_core::tools::ArtifactStore;
-use a3s_code_core::{llm::Message, llm::TokenUsage};
+use a3s_code_core::{
+    llm::Message, llm::TokenUsage, DurableMemoryBindingV1, DurableMemoryRecallPolicy,
+    DurableMemorySession,
+};
+use a3s_memory::repository::{InMemoryRepository, MemoryNamespace};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 const CANONICAL_DIGEST_PREFIX: &[u8] = b"agentic-ontology-canonical-v1\0";
 const CAPABILITY_SNAPSHOT_DIGEST_DOMAIN: &str = "a3s.use.capability-snapshot.v1";
@@ -51,6 +56,7 @@ fn session_data() -> SessionData {
         principal: None,
         agent_template_id: None,
         correlation_id: None,
+        durable_memory_binding: None,
         cognitive_package_binding: None,
         immutable_content_adapter_binding: None,
     }
@@ -309,6 +315,65 @@ fn portable_checkpoint_rejects_future_or_non_boundary_resume_state() {
     let mut no_boundary = logical_resume();
     no_boundary.turn = 0;
     assert!(SessionCheckpointExportV1::new(snapshot(true), Some(no_boundary)).is_err());
+}
+
+#[test]
+fn portable_checkpoint_rejects_invalid_durable_memory_binding() {
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "workspace").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        Arc::new(InMemoryRepository::new()),
+        namespace,
+        DurableMemoryRecallPolicy::try_new(5, 0.25).unwrap(),
+    )
+    .binding();
+    let mut encoded = serde_json::to_value(binding).unwrap();
+    encoded["schemaVersion"] = serde_json::json!(2);
+    let invalid: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
+    let mut invalid_snapshot = snapshot(false);
+    invalid_snapshot.session.durable_memory_binding = Some(invalid);
+
+    let error = SessionCheckpointExportV1::new(invalid_snapshot, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("durable-memory binding"), "{error}");
+
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "workspace").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        Arc::new(InMemoryRepository::new()),
+        namespace,
+        DurableMemoryRecallPolicy::try_new(5, 0.25).unwrap(),
+    )
+    .binding();
+    let mut encoded = serde_json::to_value(binding).unwrap();
+    encoded["mode"] = serde_json::json!("shadow_candidates");
+    let invalid: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
+    let mut invalid_snapshot = snapshot(false);
+    invalid_snapshot.session.durable_memory_binding = Some(invalid);
+
+    let error = SessionCheckpointExportV1::new(invalid_snapshot, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("recall policy"), "{error}");
+}
+
+#[test]
+fn portable_checkpoint_rejects_durable_memory_identity_drift() {
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "workspace").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        Arc::new(InMemoryRepository::new()),
+        namespace,
+        DurableMemoryRecallPolicy::try_new(5, 0.25).unwrap(),
+    )
+    .binding();
+    let mut drifted = snapshot(false);
+    drifted.session.tenant_id = Some("other-tenant".to_string());
+    drifted.session.principal = Some("principal".to_string());
+    drifted.session.durable_memory_binding = Some(binding);
+
+    let error = SessionCheckpointExportV1::new(drifted, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("tenant identity"), "{error}");
 }
 
 #[test]

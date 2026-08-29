@@ -4,7 +4,9 @@
 //! namespace and repository integrity boundary. V2 recall is explicit and
 //! admits only the current active node revision selected by final assembly.
 
+mod binding;
 mod context;
+pub use binding::{DurableMemoryBindingV1, DURABLE_MEMORY_BINDING_SCHEMA_VERSION};
 pub(crate) use context::DurableMemoryRecallIdentity;
 
 use a3s_memory::repository::{
@@ -15,12 +17,13 @@ use a3s_memory::repository::{
 use a3s_memory::{MemoryItem, MemoryType};
 use chrono::{DateTime, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 /// Runtime behavior enabled for one durable-memory binding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DurableMemoryMode {
     /// Mirror successful V1 extractions as evidence-backed V2 candidates.
@@ -30,7 +33,8 @@ pub enum DurableMemoryMode {
 }
 
 /// Bounded policy for opt-in active V2 recall.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DurableMemoryRecallPolicy {
     max_results: usize,
     min_lexical_score: f32,
@@ -262,6 +266,12 @@ impl DurableMemorySession {
 
     pub fn recall_policy(&self) -> Option<DurableMemoryRecallPolicy> {
         self.recall_policy
+    }
+
+    /// Return the secret-free identity that must remain exact when a
+    /// persisted session is resumed.
+    pub fn binding(&self) -> DurableMemoryBindingV1 {
+        DurableMemoryBindingV1::new(self.namespace.clone(), self.mode, self.recall_policy)
     }
 
     /// Activate one exact candidate revision with independent decision evidence.

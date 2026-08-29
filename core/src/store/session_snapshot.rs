@@ -131,6 +131,26 @@ impl SessionSnapshotV1 {
                     self.session.id
                 )
             })?;
+        if let Some(binding) = &self.session.durable_memory_binding {
+            binding.validate().map_err(|error| {
+                anyhow::anyhow!(
+                    "session snapshot {:?} has an invalid durable-memory binding: {error}",
+                    self.session.id
+                )
+            })?;
+            if self.session.tenant_id.as_deref() != Some(binding.namespace().tenant_id()) {
+                bail!(
+                    "session snapshot {:?} tenant identity does not match its durable-memory binding",
+                    self.session.id
+                );
+            }
+            if self.session.principal.as_deref() != Some(binding.namespace().principal_id()) {
+                bail!(
+                    "session snapshot {:?} principal identity does not match its durable-memory binding",
+                    self.session.id
+                );
+            }
+        }
         if let Some(binding) = &self.session.cognitive_package_binding {
             binding.validate().map_err(|error| {
                 anyhow::anyhow!(

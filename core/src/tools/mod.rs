@@ -44,7 +44,8 @@ pub use immutable_content::{
     IMMUTABLE_CONTENT_REFERENCE_SCHEMA_V1, TOOL_RESULT_CONTENT_MEDIA_TYPE,
 };
 pub(crate) use invocation::{
-    registry_tool_invoker, HostDirectPolicy, InvocationOrigin, ToolInvocation, ToolInvoker,
+    registry_bound_tool_invoker, registry_tool_invoker, HostDirectPolicy, InvocationOrigin,
+    ToolInvocation, ToolInvoker,
 };
 pub(crate) use presentation::{
     canonical_source as canonical_presentation_source, estimated_definition_tokens,

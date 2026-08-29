@@ -105,7 +105,9 @@ pub(crate) fn repository_tool_parameter_schemas() -> Vec<(String, serde_json::Va
 
 /// Register the batch tool. Must be called after the registry is wrapped in Arc.
 pub fn register_batch(registry: &Arc<ToolRegistry>) {
-    registry.register_builtin(Arc::new(batch::BatchTool::new(Arc::clone(registry))));
+    registry.register_builtin(Arc::new(batch::BatchTool::new_registry_bound(Arc::clone(
+        registry,
+    ))));
 }
 
 /// Register the programmatic tool calling wrapper.
@@ -121,10 +123,9 @@ pub fn register_program_with_catalog(
     registry: &Arc<ToolRegistry>,
     catalog: crate::program::ProgramCatalog,
 ) {
-    registry.register_builtin(Arc::new(crate::tools::ProgramTool::with_catalog(
-        Arc::clone(registry),
-        catalog,
-    )));
+    registry.register_builtin(Arc::new(
+        crate::tools::ProgramTool::with_catalog_registry_bound(Arc::clone(registry), catalog),
+    ));
 }
 
 /// Register the canonical `task` tool and hidden `parallel_task` compatibility alias.
@@ -296,7 +297,7 @@ pub(crate) fn register_skill(
 ) {
     use crate::tools::skill::{SearchSkillsTool, SkillTool};
     registry.register_builtin(Arc::new(SearchSkillsTool::new(Arc::clone(&skill_registry))));
-    registry.register_builtin(Arc::new(SkillTool::new(
+    registry.register_builtin(Arc::new(SkillTool::new_registry_bound(
         skill_registry,
         llm_client,
         tool_executor,

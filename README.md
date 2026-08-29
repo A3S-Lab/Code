@@ -156,7 +156,7 @@ telemetry remain opt-in.
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
-| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/one-hop relation recall, and owned maintenance health       | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; periodic pruning/consolidation is async, cancellable, and session-owned  |
+| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/one-hop relation recall, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; periodic pruning/consolidation is async, cancellable, and session-owned |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
 | Model adapters          | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations                                                                                                                                                        | Configuration or host injection                                                                                                                                           |
@@ -750,7 +750,12 @@ skipped, health is observable, and `session.close().await` cancels and joins
 them before final extraction drain. Maintenance requires asynchronous session
 construction. Consolidation jobs remain responsible for evidence, optimistic
 revisions, and idempotency; A3S Memory never invents that policy.
-The host must inject the binding again after restart. See
+The secret-free V2 namespace, mode, and recall policy are persisted in the
+session snapshot. The live repository remains host-owned and must be injected
+again after restart; resume rejects a missing or drifted binding. A real
+file-repository test also proves candidate isolation before activation,
+post-activation serving, access-history replay, and release of the repository
+lock at session teardown. See
 [Durable Memory Integration](manual/DURABLE_MEMORY.md) and
 [Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
 and [Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md)

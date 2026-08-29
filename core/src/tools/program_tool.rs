@@ -3,7 +3,7 @@
 use crate::program::ProgramCatalog;
 use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use crate::tools::{registry_tool_invoker, ToolInvoker, ToolRegistry};
+use crate::tools::{registry_bound_tool_invoker, registry_tool_invoker, ToolInvoker, ToolRegistry};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use rquickjs::function::{Async, Func};
@@ -40,6 +40,15 @@ impl ProgramTool {
 
     pub fn with_catalog(registry: Arc<ToolRegistry>, _catalog: ProgramCatalog) -> Self {
         Self::new(registry)
+    }
+
+    pub(crate) fn with_catalog_registry_bound(
+        registry: Arc<ToolRegistry>,
+        _catalog: ProgramCatalog,
+    ) -> Self {
+        Self {
+            fallback_invoker: registry_bound_tool_invoker(registry),
+        }
     }
 }
 

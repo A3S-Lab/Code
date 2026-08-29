@@ -1,6 +1,7 @@
 use a3s_code_core::{
-    DurableMemoryActivation, DurableMemoryMode, DurableMemoryRecallChannel, DurableMemoryRecallHit,
-    DurableMemoryRecallPolicy, DurableMemoryRecallPreview, DurableMemorySession, DurableMemoryUse,
+    DurableMemoryActivation, DurableMemoryBindingV1, DurableMemoryMode, DurableMemoryRecallChannel,
+    DurableMemoryRecallHit, DurableMemoryRecallPolicy, DurableMemoryRecallPreview,
+    DurableMemorySession, DurableMemoryUse, DURABLE_MEMORY_BINDING_SCHEMA_VERSION,
 };
 use a3s_memory::repository::{
     DurableMemoryKind, EvidenceKind, EvidenceRef, InMemoryRepository, MemoryChangeSet,
@@ -23,6 +24,7 @@ fn evidence(uri: &str, kind: EvidenceKind, second: u32) -> EvidenceRef {
 fn active_memory_policy_is_bounded_and_public_types_are_thread_safe() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<DurableMemoryActivation>();
+    assert_send_sync::<DurableMemoryBindingV1>();
     assert_send_sync::<DurableMemoryRecallChannel>();
     assert_send_sync::<DurableMemoryRecallHit>();
     assert_send_sync::<DurableMemoryRecallPolicy>();
@@ -46,6 +48,28 @@ fn active_memory_policy_is_bounded_and_public_types_are_thread_safe() {
             .max_related_lookups(),
         4
     );
+
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
+    let policy = DurableMemoryRecallPolicy::try_new(3, 0.25)
+        .unwrap()
+        .try_with_related_lookups(2)
+        .unwrap();
+    let session = DurableMemorySession::active_recall(
+        Arc::new(InMemoryRepository::new()),
+        namespace.clone(),
+        policy,
+    );
+    let binding = session.binding();
+    assert_eq!(
+        binding.schema_version(),
+        DURABLE_MEMORY_BINDING_SCHEMA_VERSION
+    );
+    assert_eq!(binding.namespace(), &namespace);
+    assert_eq!(binding.mode(), DurableMemoryMode::ActiveRecall);
+    assert_eq!(binding.recall_policy(), Some(policy));
+    let roundtrip: DurableMemoryBindingV1 =
+        serde_json::from_str(&serde_json::to_string(&binding).unwrap()).unwrap();
+    assert_eq!(roundtrip, binding);
 }
 
 #[tokio::test]

@@ -3,8 +3,10 @@
 //! Allows the LLM to dispatch several independent tool calls in a single
 //! turn, reducing round-trips when operations don't depend on each other.
 
+#[cfg(test)]
+use crate::tools::registry_tool_invoker;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use crate::tools::{registry_tool_invoker, ToolInvoker, ToolRegistry, ToolResult};
+use crate::tools::{registry_bound_tool_invoker, ToolInvoker, ToolRegistry, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
@@ -23,9 +25,16 @@ pub struct BatchTool {
 }
 
 impl BatchTool {
+    #[cfg(test)]
     pub fn new(registry: Arc<ToolRegistry>) -> Self {
         Self {
             fallback_invoker: registry_tool_invoker(registry),
+        }
+    }
+
+    pub(crate) fn new_registry_bound(registry: Arc<ToolRegistry>) -> Self {
+        Self {
+            fallback_invoker: registry_bound_tool_invoker(registry),
         }
     }
 }

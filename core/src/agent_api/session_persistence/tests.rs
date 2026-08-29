@@ -40,6 +40,27 @@ fn immutable_content_session(
     .unwrap()
 }
 
+fn durable_memory_session(
+    scope: &str,
+    max_results: usize,
+) -> crate::durable_memory::DurableMemorySession {
+    let repository = Arc::new(a3s_memory::repository::InMemoryRepository::new());
+    let namespace =
+        a3s_memory::repository::MemoryNamespace::try_new("tenant", "principal", scope).unwrap();
+    let policy = crate::durable_memory::DurableMemoryRecallPolicy::try_new(max_results, 0.25)
+        .unwrap()
+        .try_with_related_lookups(2)
+        .unwrap();
+    crate::durable_memory::DurableMemorySession::active_recall(repository, namespace, policy)
+}
+
+fn durable_memory_shadow_session(scope: &str) -> crate::durable_memory::DurableMemorySession {
+    let repository = Arc::new(a3s_memory::repository::InMemoryRepository::new());
+    let namespace =
+        a3s_memory::repository::MemoryNamespace::try_new("tenant", "principal", scope).unwrap();
+    crate::durable_memory::DurableMemorySession::shadow(repository, namespace)
+}
+
 #[derive(Default)]
 struct SnapshotOnlyStore {
     aggregate_saves: std::sync::atomic::AtomicUsize,
@@ -147,6 +168,7 @@ fn persisted_data(model_name: Option<&str>, llm: Option<(&str, &str)>) -> Sessio
         principal: None,
         agent_template_id: None,
         correlation_id: None,
+        durable_memory_binding: None,
         cognitive_package_binding: None,
         immutable_content_adapter_binding: None,
     }
@@ -533,6 +555,66 @@ fn persisted_immutable_content_adapter_requires_exact_host_reinjection() {
 }
 
 #[test]
+fn persisted_durable_memory_requires_exact_host_reinjection() {
+    let mut data = persisted_data(Some("openai/gpt-4o"), None);
+    let exact = durable_memory_session("workspace-a", 5);
+    data.durable_memory_binding = Some(exact.binding());
+
+    let missing = apply_persisted_runtime_options(SessionOptions::new(), &data).unwrap_err();
+    assert!(matches!(
+        missing,
+        CodeError::SessionConfiguration {
+            field: "durable_memory",
+            ..
+        }
+    ));
+
+    for drifted in [
+        durable_memory_session("workspace-b", 5),
+        durable_memory_session("workspace-a", 3),
+        durable_memory_shadow_session("workspace-a"),
+    ] {
+        let error = apply_persisted_runtime_options(
+            SessionOptions::new().with_durable_memory(drifted),
+            &data,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CodeError::SessionConfiguration {
+                field: "durable_memory",
+                ..
+            }
+        ));
+    }
+
+    let restored = apply_persisted_runtime_options(
+        SessionOptions::new().with_durable_memory(exact.clone()),
+        &data,
+    )
+    .unwrap();
+    assert_eq!(
+        restored
+            .durable_memory
+            .as_ref()
+            .map(crate::durable_memory::DurableMemorySession::binding),
+        Some(exact.binding())
+    );
+
+    let unbound = persisted_data(Some("openai/gpt-4o"), None);
+    let acquired =
+        apply_persisted_runtime_options(SessionOptions::new().with_durable_memory(exact), &unbound)
+            .unwrap_err();
+    assert!(matches!(
+        acquired,
+        CodeError::SessionConfiguration {
+            field: "durable_memory",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn persisted_tool_presentation_profile_is_inherited_and_cannot_drift() {
     let mut data = persisted_data(Some("openai/gpt-4o"), None);
     let profile = crate::tools::ToolPresentationProfileV1::code();
@@ -619,6 +701,7 @@ async fn session_save_uses_exactly_one_aggregate_store_call() {
         principal: None,
         agent_template_id: None,
         correlation_id: None,
+        durable_memory_binding: None,
         capability_catalog: None,
         cognitive_package_binding: None,
         immutable_content_adapter_binding: None,
@@ -694,6 +777,7 @@ async fn repeated_saves_preserve_restored_metadata_usage_cost_and_tasks() {
         principal: None,
         agent_template_id: None,
         correlation_id: None,
+        durable_memory_binding: None,
         capability_catalog: None,
         cognitive_package_binding: None,
         immutable_content_adapter_binding: None,

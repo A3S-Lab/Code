@@ -113,7 +113,9 @@ scheduler nor A3S Memory's repository invents that policy.
   quality or robustness to a real provider.
 - Cost and tokens are normalized proxies, not billed usage.
 - File-repository crash recovery, concurrency, and revision integrity are
-  covered in A3S Memory's kernel tests rather than duplicated here.
+  covered in A3S Memory's kernel tests rather than duplicated here. Code's
+  separate `durable_memory_restart` gate covers exact binding reinjection,
+  repository reopen, serving, access replay, and lock release.
 - Long-horizon personalization, multi-agent sharing, decay quality, and
   production-distribution drift require host-owned versioned evaluations.
 
@@ -126,6 +128,7 @@ Run from the Code crate workspace:
 
 ```text
 cargo test -p a3s-code-core --test durable_memory_product_eval -- --nocapture
+cargo test -p a3s-code-core --test durable_memory_restart -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle owned_host_job_applies_verified_atomic_v2_supersession -- --nocapture
 ```
 

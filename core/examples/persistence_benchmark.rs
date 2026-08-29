@@ -191,6 +191,7 @@ fn benchmark_snapshot() -> SessionSnapshotV1 {
         principal: Some("performance-workflow".to_owned()),
         agent_template_id: Some("persistence-v1".to_owned()),
         correlation_id: Some("persistence-performance-v1".to_owned()),
+        durable_memory_binding: None,
         cognitive_package_binding: None,
         immutable_content_adapter_binding: None,
     })

@@ -245,6 +245,8 @@ pub struct SessionOptions {
     ///
     /// Shadow mode never recalls V2 nodes. Active recall additionally requires
     /// explicit evidence-backed activation and records final context admission.
+    /// The live repository remains runtime-only; its secret-free namespace,
+    /// mode, and recall policy are persisted for exact resume validation.
     pub durable_memory: Option<crate::durable_memory::DurableMemorySession>,
     /// Host observers notified after successful durable memory writes.
     pub memory_observers: Vec<Arc<dyn crate::memory::MemoryObserver>>,

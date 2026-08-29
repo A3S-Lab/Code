@@ -7,8 +7,8 @@ evidence-backed activation and fail-safe admission.
 
 ## Ownership boundaries
 
-- A3S Code owns turn extraction, redaction, candidate proposal, future
-  activation gates and context admission.
+- A3S Code owns turn extraction, redaction, candidate proposal, activation
+  gates, context admission, and exact resume-binding validation.
 - A3S Memory owns exact namespace isolation, atomic and idempotent change sets,
   revision history, non-destructive lifecycle state, pure query, access events,
   and durable repository recovery.
@@ -117,9 +117,32 @@ must match the namespace or session construction fails. The scope is never
 inferred from a path or a backend name; the host selects it explicitly.
 
 `DurableMemorySession` contains a live repository object and is intentionally
-not serialized in a session snapshot. On restore, the host must reconstruct the
-repository and inject the same exact namespace. Code never resolves `latest`,
-opens an implicit repository, or substitutes a global principal.
+not serialized in a session snapshot. Its secret-free
+`DurableMemoryBindingV1` is persisted instead: schema version, exact
+tenant/principal/scope, mode, result bound, lexical threshold, and relation
+lookup bound. On restore, the host reconstructs the repository and injects a
+binding equivalent at the typed value level. Resume fails closed when a
+bound session is missing that injection, any visible binding field drifts, or
+an older unbound session attempts to acquire memory authority during resume.
+A rollout from shadow to active recall therefore creates a new session rather
+than silently changing the semantics of an existing persisted session.
+
+The descriptor does not claim to authenticate a database path or remote
+service instance. Repository construction, credentials, fencing, and backend
+continuity remain host responsibilities; Code verifies only the namespace and
+serving authority it can observe. It never resolves `latest`, opens an implicit
+repository, or substitutes a global principal.
+
+The `durable_memory_restart` integration test uses real
+`FileMemoryRepository` and `FileSessionStore` instances across full close and
+reopen boundaries. It proves that a Candidate remains unavailable before
+verification, the snapshot retains the exact binding, missing and scope-drifted
+reinjection fail, verified Active memory reaches the resumed model input, and
+node evidence plus admission/use events survive another repository replay. It
+also asserts that Session teardown releases the repository lock. The latter
+regression is protected by weak back-references from registry-bound
+orchestrator and Skill tools, preventing tool registration cycles from
+retaining `AgentConfig.memory` after close.
 
 ## Owned maintenance and consolidation
 
@@ -218,12 +241,14 @@ enters model input.
    revisions; do not infer activation from LLM confidence alone.
 4. Enable bounded `ActiveRecall`, observe admission failures, and record use
    only for exact revisions actually used downstream.
-5. Run consolidation and retention through the owned maintenance lifecycle;
+5. Save, close, reopen the repository, and resume only with the persisted exact
+   `DurableMemoryBindingV1`; treat backend continuity as a separate host gate.
+6. Run consolidation and retention through the owned maintenance lifecycle;
    inspect health and close sessions explicitly.
-6. Run the locked lexical and relation-aware evaluation. Fixture v1 reaches
+7. Run the locked lexical and relation-aware evaluation. Fixture v1 reaches
    relation Recall@5 `0.90`, so vectors remain deferred. Add semantic vectors
    only when versioned, independently labeled failures fall below that gate.
-7. Run the product evaluation through real `AgentSession` turns. Require the
+8. Run the product evaluation through real `AgentSession` turns. Require the
    no-memory/V1/V2 task-success comparison, write precision, evidence fidelity,
    conflict preservation, context bound, provider-call bound, nominal cost
    bound, and real admission counters to pass before rollout.
@@ -241,6 +266,7 @@ Run checks from the Code crate workspace, not the monorepo root:
 cargo test -p a3s-code-core --lib durable_memory
 cargo test -p a3s-code-core --test durable_memory_shadow
 cargo test -p a3s-code-core --test durable_memory_active
+cargo test -p a3s-code-core --test durable_memory_restart
 cargo test -p a3s-code-core --test durable_memory_retrieval_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_product_eval -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle

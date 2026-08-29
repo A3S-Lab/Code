@@ -27,7 +27,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
 
@@ -512,14 +512,35 @@ fn workflow_step_description(step_id: &str, step_name: &str, input: Option<&Valu
 
 /// Model-visible tool that executes a dynamic workflow through A3S Flow.
 pub struct DynamicWorkflowTool {
-    registry: Arc<ToolRegistry>,
+    registry: DynamicWorkflowRegistry,
     graph_observer: Option<FlowGraphObserver>,
+}
+
+enum DynamicWorkflowRegistry {
+    Standalone(Arc<ToolRegistry>),
+    RegistryBound(Weak<ToolRegistry>),
+}
+
+impl DynamicWorkflowRegistry {
+    fn resolve(&self) -> Option<Arc<ToolRegistry>> {
+        match self {
+            Self::Standalone(registry) => Some(Arc::clone(registry)),
+            Self::RegistryBound(registry) => registry.upgrade(),
+        }
+    }
 }
 
 impl DynamicWorkflowTool {
     pub fn new(registry: Arc<ToolRegistry>) -> Self {
         Self {
-            registry,
+            registry: DynamicWorkflowRegistry::Standalone(registry),
+            graph_observer: None,
+        }
+    }
+
+    fn new_registry_bound(registry: Arc<ToolRegistry>) -> Self {
+        Self {
+            registry: DynamicWorkflowRegistry::RegistryBound(Arc::downgrade(&registry)),
             graph_observer: None,
         }
     }
@@ -585,6 +606,9 @@ impl Tool for DynamicWorkflowTool {
     }
 
     async fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let Some(registry) = self.registry.resolve() else {
+            return Ok(ToolOutput::error("Tool registry is closed"));
+        };
         let Some(source) = args.get("source").and_then(Value::as_str) else {
             return Ok(ToolOutput::error("dynamic_workflow requires source"));
         };
@@ -599,7 +623,7 @@ impl Tool for DynamicWorkflowTool {
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_else(|| default_allowed_tools(&self.registry));
+            .unwrap_or_else(|| default_allowed_tools(&registry));
         let limits = args
             .get("limits")
             .cloned()
@@ -607,7 +631,7 @@ impl Tool for DynamicWorkflowTool {
             .unwrap_or_default();
 
         let runtime = Arc::new(
-            DynamicWorkflowRuntime::new(Arc::clone(&self.registry), ctx.clone(), source)
+            DynamicWorkflowRuntime::new(registry, ctx.clone(), source)
                 .with_allowed_tools(allowed_tools)
                 .with_limits(limits),
         );
@@ -744,7 +768,9 @@ async fn drive_inline_retries(
 }
 
 pub fn register_dynamic_workflow(registry: &Arc<ToolRegistry>) {
-    registry.register(Arc::new(DynamicWorkflowTool::new(Arc::clone(registry))));
+    registry.register(Arc::new(DynamicWorkflowTool::new_registry_bound(
+        Arc::clone(registry),
+    )));
 }
 
 async fn flow_store_for_context(

@@ -202,6 +202,7 @@ fn portable_export(session_id: &str, turn: usize) -> SessionCheckpointExportV1 {
         principal: None,
         agent_template_id: None,
         correlation_id: None,
+        durable_memory_binding: None,
         cognitive_package_binding: None,
         immutable_content_adapter_binding: None,
     };

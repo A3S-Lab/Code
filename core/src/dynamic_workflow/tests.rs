@@ -7,6 +7,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+#[test]
+fn registered_dynamic_workflow_does_not_retain_its_registry() {
+    let registry = Arc::new(ToolRegistry::new(std::path::PathBuf::from(
+        "dynamic-workflow-cycle-test",
+    )));
+    let lifetime = Arc::downgrade(&registry);
+    register_dynamic_workflow(&registry);
+
+    drop(registry);
+
+    assert!(lifetime.upgrade().is_none());
+}
+
 struct DelayedObjectClient {
     delay: Duration,
 }
