@@ -156,7 +156,7 @@ telemetry remain opt-in.
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
-| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only V2 recall, and owned maintenance health                           | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; periodic pruning/consolidation is async, cancellable, and session-owned  |
+| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/one-hop relation recall, and owned maintenance health       | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; periodic pruning/consolidation is async, cancellable, and session-owned  |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
 | Model adapters          | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations                                                                                                                                                        | Configuration or host injection                                                                                                                                           |
@@ -729,10 +729,16 @@ exact A3S Memory V2 tenant, principal, and scope. The current
 content-addressed, evidence-backed `Candidate` nodes. It never activates or
 recalls V2 nodes, so migration can be measured without changing model context.
 The opt-in `ActiveRecall` mode additionally queries only explicitly activated
-nodes under a bounded lexical policy. Activation requires independent Manual or
-Verification evidence. Code records admission for the exact current revision
-after final context assembly; an unrecordable or stale item is removed before
-the model call. Exact V1/V2 content duplicates prefer the audited V2 item.
+nodes under a bounded lexical policy. Hosts may opt into a bounded, one-hop
+expansion over explicit `RelatedTo` edges; Code never follows conflict edges,
+recurses through the graph, or widens the exact namespace. The public
+`preview_recall` diagnostic is pure and cannot authorize prompt injection.
+Activation requires independent Manual or Verification evidence. Code records
+admission for the exact current revision after final context assembly; an
+unrecordable or stale item is removed before the model call. Exact V1/V2
+content duplicates prefer the audited V2 item. The locked synthetic retrieval
+fixture improves Recall@5 from `0.60` to `0.90` with relation expansion, meeting
+the predeclared gate without adding a vector serving dependency.
 Memory construction itself starts no tasks. Configured V1 pruning and optional
 host-supplied semantic consolidation jobs run only inside a session-owned
 `MemoryMaintenanceRuntime`; jobs are serialized per schedule, missed ticks are
@@ -741,8 +747,9 @@ them before final extraction drain. Maintenance requires asynchronous session
 construction. Consolidation jobs remain responsible for evidence, optimistic
 revisions, and idempotency; A3S Memory never invents that policy.
 The host must inject the binding again after restart. See
-[Durable Memory Integration](manual/DURABLE_MEMORY.md) for ownership,
-durability, and migration rules.
+[Durable Memory Integration](manual/DURABLE_MEMORY.md) and
+[Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md)
+for ownership, durability, migration rules, and the vector decision.
 
 Model adapters normalize text, reasoning, images, tool calls, token usage,
 streaming, cancellation, and retries. Structured generation uses native

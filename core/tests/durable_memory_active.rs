@@ -1,6 +1,6 @@
 use a3s_code_core::{
-    DurableMemoryActivation, DurableMemoryMode, DurableMemoryRecallPolicy, DurableMemorySession,
-    DurableMemoryUse,
+    DurableMemoryActivation, DurableMemoryMode, DurableMemoryRecallChannel, DurableMemoryRecallHit,
+    DurableMemoryRecallPolicy, DurableMemoryRecallPreview, DurableMemorySession, DurableMemoryUse,
 };
 use a3s_memory::repository::{
     DurableMemoryKind, EvidenceKind, EvidenceRef, InMemoryRepository, MemoryChangeSet,
@@ -23,7 +23,10 @@ fn evidence(uri: &str, kind: EvidenceKind, second: u32) -> EvidenceRef {
 fn active_memory_policy_is_bounded_and_public_types_are_thread_safe() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<DurableMemoryActivation>();
+    assert_send_sync::<DurableMemoryRecallChannel>();
+    assert_send_sync::<DurableMemoryRecallHit>();
     assert_send_sync::<DurableMemoryRecallPolicy>();
+    assert_send_sync::<DurableMemoryRecallPreview>();
     assert_send_sync::<DurableMemorySession>();
     assert_send_sync::<DurableMemoryUse>();
 
@@ -31,6 +34,18 @@ fn active_memory_policy_is_bounded_and_public_types_are_thread_safe() {
     assert!(DurableMemoryRecallPolicy::try_new(1, f32::NAN).is_err());
     assert!(DurableMemoryRecallPolicy::try_new(1, 1.01).is_err());
     assert!(DurableMemoryRecallPolicy::try_new(1, 0.0).is_ok());
+    assert!(DurableMemoryRecallPolicy::try_new(1, 0.0)
+        .unwrap()
+        .try_with_related_lookups(101)
+        .is_err());
+    assert_eq!(
+        DurableMemoryRecallPolicy::try_new(1, 0.0)
+            .unwrap()
+            .try_with_related_lookups(4)
+            .unwrap()
+            .max_related_lookups(),
+        4
+    );
 }
 
 #[tokio::test]

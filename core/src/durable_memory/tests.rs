@@ -1,7 +1,7 @@
 use super::*;
 use a3s_memory::repository::{
     EvidenceKind, EvidenceRef, InMemoryRepository, MemoryChangeSet, MemoryNodeDraft,
-    MemoryOperation, MemoryQuery,
+    MemoryOperation, MemoryQuery, MemoryRelation, MemoryRelationKind,
 };
 
 fn time(offset_seconds: i64) -> DateTime<Utc> {
@@ -269,4 +269,182 @@ async fn active_context_is_admitted_only_for_the_selected_current_revision() {
     );
     assert_eq!(assembly.items.len(), 1);
     assert_eq!(assembly.items[0].id, "ordinary");
+}
+
+#[tokio::test]
+async fn related_recall_is_bounded_active_only_and_excludes_conflicts() {
+    let repository = Arc::new(InMemoryRepository::new());
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
+    repository
+        .apply(MemoryChangeSet::new(
+            "seed-related-recall",
+            namespace.clone(),
+            time(1),
+            vec![
+                MemoryOperation::Create {
+                    node: MemoryNodeDraft::new(
+                        "rollback-index",
+                        namespace.clone(),
+                        DurableMemoryKind::Semantic,
+                        MemoryStatus::Active,
+                        "Deployment rollback playbook index",
+                        vec![evidence(
+                            "index-verification",
+                            EvidenceKind::Verification,
+                            1,
+                        )],
+                        time(1),
+                    )
+                    .with_relation(MemoryRelation::new(
+                        MemoryRelationKind::RelatedTo,
+                        "canary-procedure",
+                    ))
+                    .with_relation(MemoryRelation::new(
+                        MemoryRelationKind::RelatedTo,
+                        "zebra-procedure",
+                    ))
+                    .with_relation(MemoryRelation::new(
+                        MemoryRelationKind::ConflictsWith,
+                        "unsafe-procedure",
+                    )),
+                },
+                MemoryOperation::Create {
+                    node: MemoryNodeDraft::new(
+                        "zebra-procedure",
+                        namespace.clone(),
+                        DurableMemoryKind::Procedural,
+                        MemoryStatus::Active,
+                        "Restart every production shard at the same time",
+                        vec![evidence(
+                            "zebra-verification",
+                            EvidenceKind::Verification,
+                            1,
+                        )],
+                        time(1),
+                    )
+                    .with_relation(MemoryRelation::new(
+                        MemoryRelationKind::RelatedTo,
+                        "rollback-index",
+                    )),
+                },
+                MemoryOperation::Create {
+                    node: MemoryNodeDraft::new(
+                        "canary-procedure",
+                        namespace.clone(),
+                        DurableMemoryKind::Procedural,
+                        MemoryStatus::Active,
+                        "Drain the first ring before shifting production traffic",
+                        vec![evidence(
+                            "canary-verification",
+                            EvidenceKind::Verification,
+                            1,
+                        )],
+                        time(1),
+                    )
+                    .with_relation(MemoryRelation::new(
+                        MemoryRelationKind::RelatedTo,
+                        "rollback-index",
+                    )),
+                },
+                MemoryOperation::Create {
+                    node: MemoryNodeDraft::new(
+                        "unsafe-procedure",
+                        namespace.clone(),
+                        DurableMemoryKind::Procedural,
+                        MemoryStatus::Active,
+                        "Shift all traffic without observing the first ring",
+                        vec![evidence(
+                            "unsafe-verification",
+                            EvidenceKind::Verification,
+                            1,
+                        )],
+                        time(1),
+                    )
+                    .with_relation(MemoryRelation::new(
+                        MemoryRelationKind::ConflictsWith,
+                        "rollback-index",
+                    )),
+                },
+                MemoryOperation::Create {
+                    node: MemoryNodeDraft::new(
+                        "candidate-related",
+                        namespace.clone(),
+                        DurableMemoryKind::Procedural,
+                        MemoryStatus::Candidate,
+                        "Unverified recovery shortcut",
+                        vec![evidence("candidate-proposal", EvidenceKind::SessionTurn, 1)],
+                        time(1),
+                    ),
+                },
+            ],
+        ))
+        .await
+        .unwrap();
+    repository
+        .apply(MemoryChangeSet::new(
+            "attach-candidate-relation",
+            namespace.clone(),
+            time(2),
+            vec![
+                MemoryOperation::AddRelation {
+                    node_id: "rollback-index".into(),
+                    expected_revision: 1,
+                    relation: MemoryRelation::new(
+                        MemoryRelationKind::RelatedTo,
+                        "candidate-related",
+                    ),
+                },
+                MemoryOperation::AddRelation {
+                    node_id: "candidate-related".into(),
+                    expected_revision: 1,
+                    relation: MemoryRelation::new(MemoryRelationKind::RelatedTo, "rollback-index"),
+                },
+            ],
+        ))
+        .await
+        .unwrap();
+
+    let lexical = DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace.clone(),
+        DurableMemoryRecallPolicy::try_new(4, 0.2).unwrap(),
+    )
+    .preview_recall("deployment rollback")
+    .await
+    .unwrap();
+    assert_eq!(lexical.hits.len(), 1);
+    assert_eq!(lexical.hits[0].node_id, "rollback-index");
+
+    let related = DurableMemorySession::active_recall(
+        repository,
+        namespace,
+        DurableMemoryRecallPolicy::try_new(4, 0.2)
+            .unwrap()
+            .try_with_related_lookups(2)
+            .unwrap(),
+    )
+    .preview_recall("deployment rollback")
+    .await
+    .unwrap();
+    assert_eq!(related.hits.len(), 2);
+    assert_eq!(related.hits[0].node_id, "rollback-index");
+    assert_eq!(related.hits[0].channel, DurableMemoryRecallChannel::Lexical);
+    assert_eq!(related.hits[1].node_id, "canary-procedure");
+    assert_eq!(related.hits[1].channel, DurableMemoryRecallChannel::Related);
+    assert_eq!(
+        related.hits[1].related_from.as_deref(),
+        Some("rollback-index")
+    );
+    assert!(related
+        .hits
+        .iter()
+        .all(|hit| hit.node_id != "unsafe-procedure"));
+    assert!(related
+        .hits
+        .iter()
+        .all(|hit| hit.node_id != "candidate-related"));
+    assert!(related
+        .hits
+        .iter()
+        .all(|hit| hit.node_id != "zebra-procedure"));
 }

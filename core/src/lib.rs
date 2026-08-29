@@ -195,8 +195,8 @@ pub use config::{
     OsConfig, ProviderConfig,
 };
 pub use durable_memory::{
-    DurableMemoryActivation, DurableMemoryMode, DurableMemoryRecallPolicy, DurableMemorySession,
-    DurableMemoryUse,
+    DurableMemoryActivation, DurableMemoryMode, DurableMemoryRecallChannel, DurableMemoryRecallHit,
+    DurableMemoryRecallPolicy, DurableMemoryRecallPreview, DurableMemorySession, DurableMemoryUse,
 };
 pub use dynamic_workflow::{
     dynamic_workflow_store_path, DynamicWorkflowRuntime, DynamicWorkflowScriptLimits,

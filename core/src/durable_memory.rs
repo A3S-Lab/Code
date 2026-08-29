@@ -34,6 +34,7 @@ pub enum DurableMemoryMode {
 pub struct DurableMemoryRecallPolicy {
     max_results: usize,
     min_lexical_score: f32,
+    max_related_lookups: usize,
 }
 
 impl DurableMemoryRecallPolicy {
@@ -56,7 +57,24 @@ impl DurableMemoryRecallPolicy {
         Ok(Self {
             max_results,
             min_lexical_score,
+            max_related_lookups: 0,
         })
+    }
+
+    /// Enable a bounded number of exact `RelatedTo` target reads after lexical
+    /// seeding. Final results remain capped by `max_results`.
+    pub fn try_with_related_lookups(
+        mut self,
+        max_related_lookups: usize,
+    ) -> Result<Self, MemoryRepositoryError> {
+        if max_related_lookups > MAX_QUERY_LIMIT {
+            return Err(invalid(
+                "recallPolicy.maxRelatedLookups",
+                format!("must not exceed {MAX_QUERY_LIMIT}"),
+            ));
+        }
+        self.max_related_lookups = max_related_lookups;
+        Ok(self)
     }
 
     pub fn max_results(self) -> usize {
@@ -66,6 +84,42 @@ impl DurableMemoryRecallPolicy {
     pub fn min_lexical_score(self) -> f32 {
         self.min_lexical_score
     }
+
+    pub fn max_related_lookups(self) -> usize {
+        self.max_related_lookups
+    }
+}
+
+/// Retrieval branch that produced one pure recall preview hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DurableMemoryRecallChannel {
+    Lexical,
+    Related,
+}
+
+/// One active V2 hit returned by a pure diagnostic recall preview.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct DurableMemoryRecallHit {
+    pub node_id: String,
+    pub node_revision: u64,
+    pub kind: DurableMemoryKind,
+    pub content: String,
+    pub score: f32,
+    pub channel: DurableMemoryRecallChannel,
+    pub related_from: Option<String>,
+}
+
+/// Pure, bounded active-memory recall result. Previewing does not record an
+/// admission or use event and therefore cannot authorize prompt injection.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct DurableMemoryRecallPreview {
+    pub hits: Vec<DurableMemoryRecallHit>,
 }
 
 /// Explicit, evidence-backed request to activate one candidate revision.

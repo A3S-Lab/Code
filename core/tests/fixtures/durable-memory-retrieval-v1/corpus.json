@@ -1,0 +1,242 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "max_results": 5,
+    "min_lexical_score": 0.4,
+    "max_related_lookups": 8
+  },
+  "nodes": [
+    {
+      "id": "rust-format",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Rust formatting verification requires cargo fmt before focused tests",
+      "related_to": [],
+      "conflicts_with": []
+    },
+    {
+      "id": "dependency-lock",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Dependency update procedure regenerates and reviews the lockfile",
+      "related_to": [],
+      "conflicts_with": []
+    },
+    {
+      "id": "evidence-redaction",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Redact credentials before retaining an evidence reference",
+      "related_to": [],
+      "conflicts_with": []
+    },
+    {
+      "id": "session-maintenance",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Session shutdown cancels and joins memory maintenance workers",
+      "related_to": [],
+      "conflicts_with": []
+    },
+    {
+      "id": "schema-migration",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Database migration policy applies schema changes through versioned migrations",
+      "related_to": [],
+      "conflicts_with": []
+    },
+    {
+      "id": "namespace-boundary",
+      "kind": "semantic",
+      "status": "active",
+      "content": "Tenant principal scope identifiers enforce exact namespace isolation",
+      "related_to": [],
+      "conflicts_with": []
+    },
+    {
+      "id": "rollback-index",
+      "kind": "semantic",
+      "status": "active",
+      "content": "Blue green rollback guide index",
+      "related_to": ["canary-drain"],
+      "conflicts_with": ["unsafe-traffic"]
+    },
+    {
+      "id": "canary-drain",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Drain the first canary ring before shifting production traffic",
+      "related_to": ["rollback-index"],
+      "conflicts_with": []
+    },
+    {
+      "id": "unsafe-traffic",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Shift every production request immediately without observation",
+      "related_to": [],
+      "conflicts_with": ["rollback-index"]
+    },
+    {
+      "id": "saturation-index",
+      "kind": "semantic",
+      "status": "active",
+      "content": "Incident database saturation index",
+      "related_to": ["batch-throttle"],
+      "conflicts_with": []
+    },
+    {
+      "id": "batch-throttle",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Throttle batch writers until queue depth returns below threshold",
+      "related_to": ["saturation-index"],
+      "conflicts_with": []
+    },
+    {
+      "id": "signing-index",
+      "kind": "semantic",
+      "status": "active",
+      "content": "Release signing handbook index",
+      "related_to": ["provenance-check"],
+      "conflicts_with": []
+    },
+    {
+      "id": "provenance-check",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Verify provenance attestations and immutable builder identity",
+      "related_to": ["signing-index"],
+      "conflicts_with": []
+    },
+    {
+      "id": "concise-responses",
+      "kind": "semantic",
+      "status": "active",
+      "content": "Prefer compact responses with minimal repetition",
+      "related_to": [],
+      "conflicts_with": []
+    },
+    {
+      "id": "unverified-shortcut",
+      "kind": "procedural",
+      "status": "candidate",
+      "content": "Temporary unverified shortcut bypasses all review",
+      "related_to": [],
+      "conflicts_with": []
+    }
+  ],
+  "queries": [
+    {
+      "id": "direct-rust-format",
+      "category": "direct",
+      "query": "rust formatting verification",
+      "relevant_node_ids": ["rust-format"],
+      "expected_lexical_ids": ["rust-format"],
+      "expected_relation_ids": ["rust-format"]
+    },
+    {
+      "id": "direct-dependency-lock",
+      "category": "direct",
+      "query": "dependency update lockfile",
+      "relevant_node_ids": ["dependency-lock"],
+      "expected_lexical_ids": ["dependency-lock"],
+      "expected_relation_ids": ["dependency-lock"]
+    },
+    {
+      "id": "direct-evidence-redaction",
+      "category": "direct",
+      "query": "redact credentials evidence",
+      "relevant_node_ids": ["evidence-redaction"],
+      "expected_lexical_ids": ["evidence-redaction"],
+      "expected_relation_ids": ["evidence-redaction"]
+    },
+    {
+      "id": "direct-session-maintenance",
+      "category": "direct",
+      "query": "session shutdown memory maintenance",
+      "relevant_node_ids": ["session-maintenance"],
+      "expected_lexical_ids": ["session-maintenance"],
+      "expected_relation_ids": ["session-maintenance"]
+    },
+    {
+      "id": "direct-schema-migration",
+      "category": "direct",
+      "query": "database schema migration",
+      "relevant_node_ids": ["schema-migration"],
+      "expected_lexical_ids": ["schema-migration"],
+      "expected_relation_ids": ["schema-migration"]
+    },
+    {
+      "id": "direct-namespace-boundary",
+      "category": "direct",
+      "query": "tenant principal namespace isolation",
+      "relevant_node_ids": ["namespace-boundary"],
+      "expected_lexical_ids": ["namespace-boundary"],
+      "expected_relation_ids": ["namespace-boundary"]
+    },
+    {
+      "id": "related-rollback",
+      "category": "related",
+      "query": "blue green rollback guide",
+      "relevant_node_ids": ["canary-drain"],
+      "expected_lexical_ids": ["rollback-index"],
+      "expected_relation_ids": ["rollback-index", "canary-drain"]
+    },
+    {
+      "id": "related-saturation",
+      "category": "related",
+      "query": "incident database saturation index",
+      "relevant_node_ids": ["batch-throttle"],
+      "expected_lexical_ids": ["saturation-index"],
+      "expected_relation_ids": ["saturation-index", "batch-throttle"]
+    },
+    {
+      "id": "related-signing",
+      "category": "related",
+      "query": "release signing handbook",
+      "relevant_node_ids": ["provenance-check"],
+      "expected_lexical_ids": ["signing-index"],
+      "expected_relation_ids": ["signing-index", "provenance-check"]
+    },
+    {
+      "id": "paraphrase-concise",
+      "category": "paraphrase",
+      "query": "keep answers brief",
+      "relevant_node_ids": ["concise-responses"],
+      "expected_lexical_ids": [],
+      "expected_relation_ids": []
+    }
+  ],
+  "negative_queries": [
+    {
+      "id": "candidate-hidden",
+      "query": "temporary unverified shortcut",
+      "forbidden_node_ids": ["unverified-shortcut"]
+    },
+    {
+      "id": "conflict-not-expanded",
+      "query": "blue green rollback guide",
+      "forbidden_node_ids": ["unsafe-traffic"]
+    }
+  ],
+  "expected_summary": {
+    "no_memory": {
+      "recall_at_5": 0.0,
+      "mean_reciprocal_rank": 0.0
+    },
+    "lexical": {
+      "recall_at_5": 0.6,
+      "mean_reciprocal_rank": 0.6
+    },
+    "relation": {
+      "recall_at_5": 0.9,
+      "mean_reciprocal_rank": 0.75
+    }
+  },
+  "vector_gate": {
+    "minimum_relation_recall_at_5": 0.9,
+    "required": false
+  }
+}

@@ -40,19 +40,23 @@ repository's isolation or durability invariants.
 ## Explicit activation and active recall
 
 `DurableMemoryMode::ActiveRecall` retains candidate shadow writes and adds a
-bounded active-only lexical query. It does not auto-activate extraction output.
-The host submits `DurableMemoryActivation` for one exact candidate revision;
-Code accepts only new Manual or Verification decision evidence, and A3S Memory
-stores that evidence in the atomic activation revision. LLM confidence and
-importance remain annotations and cannot authorize activation.
+bounded active-only lexical query. An optional second stage performs a bounded
+number of exact reads for one-hop `RelatedTo` targets. It does not recurse,
+follow `ConflictsWith`, return non-Active targets, or widen the exact namespace.
+It does not auto-activate extraction output. The host submits
+`DurableMemoryActivation` for one exact candidate revision; Code accepts only
+new Manual or Verification decision evidence, and A3S Memory stores that
+evidence in the atomic activation revision. LLM confidence and importance
+remain annotations and cannot authorize activation.
 
 `DurableMemoryRecallPolicy` requires an explicit result bound and minimum
-lexical score. Query remains pure. Code waits for final context assembly, then
-records admission for each selected exact node revision. A stale, inactive, or
-unpersistable admission is removed before the model call. Candidate,
-superseded, conflicted, and tombstoned nodes are not queried. When V1 and V2
-return the same normalized content, the audited V2 item is used once rather
-than injecting duplicate text.
+lexical score; relation reads default to zero. `preview_recall` runs the same
+retrieval branch without recording admission or use and without adding content
+to a prompt. Code waits for final context assembly, then records admission for
+each selected exact node revision. A stale, inactive, or unpersistable
+admission is removed before the model call. Candidate, superseded, conflicted,
+and tombstoned nodes are not queried. When V1 and V2 return the same normalized
+content, the audited V2 item is used once rather than injecting duplicate text.
 
 Admission means the revision entered model input. Use is deliberately separate:
 the host calls `DurableMemorySession::record_use` only when a node was cited,
@@ -96,7 +100,8 @@ to active recall instead:
 # fn binding() -> anyhow::Result<DurableMemorySession> {
 # let repository = Arc::new(InMemoryRepository::new());
 # let namespace = MemoryNamespace::try_new("tenant", "principal", "scope")?;
-let recall = DurableMemoryRecallPolicy::try_new(5, 0.25)?;
+let recall = DurableMemoryRecallPolicy::try_new(5, 0.40)?
+    .try_with_related_lookups(8)?;
 let durable_memory = DurableMemorySession::active_recall(
     repository,
     namespace,
@@ -189,8 +194,12 @@ enters model input.
    only for exact revisions actually used downstream.
 5. Run consolidation and retention through the owned maintenance lifecycle;
    inspect health and close sessions explicitly.
-6. Add semantic vectors only after lexical and relation-aware evaluation shows
-   a measured retrieval gap.
+6. Run the locked lexical and relation-aware evaluation. Fixture v1 reaches
+   relation Recall@5 `0.90`, so vectors remain deferred. Add semantic vectors
+   only when versioned, independently labeled failures fall below that gate.
+
+See [Durable Memory Retrieval Evaluation](DURABLE_MEMORY_RETRIEVAL_EVAL.md) for
+the metric definitions, safety assertions, and current decision.
 
 ## Verification
 
@@ -200,6 +209,7 @@ Run checks from the Code crate workspace, not the monorepo root:
 cargo test -p a3s-code-core --lib durable_memory
 cargo test -p a3s-code-core --test durable_memory_shadow
 cargo test -p a3s-code-core --test durable_memory_active
+cargo test -p a3s-code-core --test durable_memory_retrieval_eval -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle
 cargo test -p a3s-code-core --lib
 ```
