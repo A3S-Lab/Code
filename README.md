@@ -156,7 +156,7 @@ telemetry remain opt-in.
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
-| Context and memory      | Ranked context, repeated compaction, three-tier memory, typed stores, recall, extraction, relations, and pruning                                                                                                                        | Host-selected and configurable                                                                                                                                            |
+| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, and evidence-backed V2 candidate shadowing                                                                   | Host-selected; V2 requires an exact host-injected repository/namespace binding and is never recalled in shadow mode                                                       |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
 | Model adapters          | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations                                                                                                                                                        | Configuration or host injection                                                                                                                                           |
@@ -720,7 +720,17 @@ Memory separates working, short-term, and durable state. When memory is active,
 semantic extraction is enabled by default and can be disabled. It records only
 validated reusable memories with source, confidence, scope, reason, workspace,
 session, and schema metadata rather than mechanically persisting every tool
-result or conversation turn.
+result or conversation turn. Supersession preserves the old V1 item for audit
+but excludes it from recall.
+
+Hosts can additionally install a typed `DurableMemorySession` bound to one
+exact A3S Memory V2 tenant, principal, and scope. The current
+`ShadowCandidates` mode mirrors only successful V1 extraction writes as
+content-addressed, evidence-backed `Candidate` nodes. It never activates or
+recalls V2 nodes, so migration can be measured without changing model context.
+The host must inject the binding again after restart. See
+[Durable Memory Integration](manual/DURABLE_MEMORY.md) for ownership,
+durability, and migration rules.
 
 Model adapters normalize text, reasoning, images, tool calls, token usage,
 streaming, cancellation, and retries. Structured generation uses native

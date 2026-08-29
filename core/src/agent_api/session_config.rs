@@ -135,11 +135,14 @@ impl ResolvedSessionConfig {
         let llm_client =
             resolve_session_llm_client(&agent.code_config, &options, Some(&session_id))?;
         let model_name = resolved_model_name(&agent.code_config, &options);
-        let memory = Arc::new(crate::memory::AgentMemory::with_config_and_observers(
-            memory_store,
-            agent.code_config.memory.clone().unwrap_or_default(),
-            options.memory_observers.clone(),
-        ));
+        let memory = Arc::new(
+            crate::memory::AgentMemory::with_config_observers_and_durable(
+                memory_store,
+                agent.code_config.memory.clone().unwrap_or_default(),
+                options.memory_observers.clone(),
+                options.durable_memory.clone(),
+            ),
+        );
         let mcp_manager = Arc::new(crate::mcp::manager::McpManager::new());
         let mut inherited_mcp_managers = Vec::new();
         let mut mcp_sources = Vec::new();
@@ -258,6 +261,20 @@ fn validate_session_options(options: &SessionOptions) -> Result<String> {
             field: "memory_store",
             message: "memory_store and file_memory_dir are mutually exclusive".to_string(),
         });
+    }
+    if let Some(binding) = &options.durable_memory {
+        if options.tenant_id.as_deref() != Some(binding.namespace().tenant_id()) {
+            return Err(CodeError::SessionConfiguration {
+                field: "tenant_id",
+                message: "must match the exact durable-memory namespace tenant".to_string(),
+            });
+        }
+        if options.principal.as_deref() != Some(binding.namespace().principal_id()) {
+            return Err(CodeError::SessionConfiguration {
+                field: "principal",
+                message: "must match the exact durable-memory namespace principal".to_string(),
+            });
+        }
     }
     if options.session_store.is_some() && options.file_session_store_dir.is_some() {
         return Err(CodeError::SessionConfiguration {
@@ -575,10 +592,11 @@ async fn resolve_session_memory(
 
     let memory_config = code_config.memory.clone().unwrap_or_default();
     Ok(Arc::new(
-        crate::memory::AgentMemory::with_config_and_observers(
+        crate::memory::AgentMemory::with_config_observers_and_durable(
             store,
             memory_config,
             opts.memory_observers.clone(),
+            opts.durable_memory.clone(),
         ),
     ))
 }
@@ -661,6 +679,7 @@ async fn resolve_session_mcp(
 mod tests {
     use super::*;
     use crate::llm::{LlmResponse, Message, StreamEvent, ToolDefinition};
+    use a3s_memory::repository::{InMemoryRepository, MemoryNamespace};
     // The LlmClient trait returns anyhow::Result; shadow super's crate::error::Result.
     use anyhow::Result;
     use async_trait::async_trait;
@@ -885,6 +904,48 @@ mod tests {
             error,
             CodeError::SessionConfiguration {
                 field: "tool_presentation_profile",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn durable_memory_binding_requires_exact_session_identity() {
+        let namespace = MemoryNamespace::try_new("tenant-a", "principal-a", "scope-a").unwrap();
+        let binding = crate::durable_memory::DurableMemorySession::shadow(
+            Arc::new(InMemoryRepository::new()),
+            namespace,
+        );
+
+        let matching = SessionOptions::new()
+            .with_session_id("durable-memory")
+            .with_tenant_id("tenant-a")
+            .with_principal("principal-a")
+            .with_durable_memory(binding.clone());
+        assert!(validate_session_options(&matching).is_ok());
+
+        let wrong_tenant = SessionOptions::new()
+            .with_session_id("durable-memory")
+            .with_tenant_id("tenant-b")
+            .with_principal("principal-a")
+            .with_durable_memory(binding.clone());
+        assert!(matches!(
+            validate_session_options(&wrong_tenant).unwrap_err(),
+            CodeError::SessionConfiguration {
+                field: "tenant_id",
+                ..
+            }
+        ));
+
+        let wrong_principal = SessionOptions::new()
+            .with_session_id("durable-memory")
+            .with_tenant_id("tenant-a")
+            .with_principal("principal-b")
+            .with_durable_memory(binding);
+        assert!(matches!(
+            validate_session_options(&wrong_principal).unwrap_err(),
+            CodeError::SessionConfiguration {
+                field: "principal",
                 ..
             }
         ));

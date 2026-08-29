@@ -22,6 +22,14 @@ use super::session_runtime::{
 
 pub(super) fn prepare_session_options(agent: &Agent, opts: SessionOptions) -> SessionOptions {
     let mut opts = opts;
+    if let Some(binding) = &opts.durable_memory {
+        if opts.tenant_id.is_none() {
+            opts.tenant_id = Some(binding.namespace().tenant_id().to_owned());
+        }
+        if opts.principal.is_none() {
+            opts.principal = Some(binding.namespace().principal_id().to_owned());
+        }
+    }
     if opts.session_id.is_none() {
         // Use the host-provided ID generator if one was supplied via
         // SessionOptions — this is the entry point that enables

@@ -88,6 +88,7 @@ pub mod commands;
 pub(crate) mod compaction;
 pub mod config;
 pub mod context;
+pub mod durable_memory;
 pub mod dynamic_workflow;
 pub mod embedding;
 pub mod error;
@@ -193,6 +194,7 @@ pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,
 };
+pub use durable_memory::{DurableMemoryMode, DurableMemorySession};
 pub use dynamic_workflow::{
     dynamic_workflow_store_path, DynamicWorkflowRuntime, DynamicWorkflowScriptLimits,
     DynamicWorkflowTool, DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,

@@ -1,5 +1,6 @@
 use super::execution_state::ExecutionLoopState;
 use super::{AgentEvent, AgentLoop};
+use crate::durable_memory::DurableTurnEvidence;
 use crate::llm::Message;
 use crate::memory::AgentMemory;
 use crate::tools::ToolContext;
@@ -241,10 +242,36 @@ impl AgentLoop {
 
         let max_items = memory.llm_extraction_max_items().clamp(1, 10);
         let related_memories = related_memories_for_extraction(&memory, prompt, response).await;
+        let transcript = turn_transcript(snapshot, memory.llm_extraction_max_input_chars());
+        let evidence_fields = normalized_turn_evidence_fields(prompt, response, &transcript);
+        let durable_evidence = memory.durable_memory().and_then(|_| {
+            let occurred_at = i64::try_from(self.config.host_env.now_ms())
+                .ok()
+                .and_then(chrono::DateTime::from_timestamp_millis);
+            let Some(occurred_at) = occurred_at else {
+                tracing::warn!("Skipping V2 memory shadow write because host time is invalid");
+                return None;
+            };
+            let turn_id = self.config.host_env.next_id();
+            match DurableTurnEvidence::try_new(
+                session_id,
+                &turn_id,
+                &evidence_fields.prompt,
+                &evidence_fields.response,
+                &evidence_fields.transcript,
+                occurred_at,
+            ) {
+                Ok(evidence) => Some(evidence),
+                Err(error) => {
+                    tracing::warn!(%error, "Skipping V2 memory shadow write because turn evidence is invalid");
+                    None
+                }
+            }
+        });
         let extraction_prompt = build_extraction_prompt(
             prompt,
             response,
-            &turn_transcript(snapshot, memory.llm_extraction_max_input_chars()),
+            &transcript,
             &related_memories.prompt,
             max_items,
         );
@@ -282,6 +309,7 @@ impl AgentLoop {
             if key.is_empty() || !seen.insert(key) {
                 continue;
             }
+            let shadow_item = item.clone();
             let item = if let Some(existing) =
                 similar_existing_memory(&memory, &item, &supersedes, &conflicts_with).await
             {
@@ -292,7 +320,19 @@ impl AgentLoop {
 
             match memory.remember_item(item).await {
                 Ok(item) => {
-                    delete_superseded_memories(&memory, &supersedes).await;
+                    if let (Some(binding), Some(evidence)) =
+                        (memory.durable_memory(), durable_evidence.as_ref())
+                    {
+                        if let Err(error) =
+                            binding.store_shadow_candidate(&shadow_item, evidence).await
+                        {
+                            tracing::warn!(
+                                %error,
+                                "Failed to store V2 shadow memory candidate"
+                            );
+                        }
+                    }
+                    mark_superseded_memories(&memory, &supersedes, &item.id).await;
                     if let Some(tx) = event_tx {
                         tx.send(AgentEvent::MemoryStored {
                             memory_id: item.id,
@@ -577,9 +617,10 @@ fn build_extraction_prompt(
     related_memories: &str,
     max_items: usize,
 ) -> String {
-    let prompt = redact_sensitive_text(&compact(prompt, MAX_DIRECT_TURN_FIELD_CHARS));
-    let response = redact_sensitive_text(&compact(response, MAX_DIRECT_TURN_FIELD_CHARS));
-    let transcript = redact_sensitive_text(&compact(transcript, MAX_DIRECT_TURN_FIELD_CHARS));
+    let fields = normalized_turn_evidence_fields(prompt, response, transcript);
+    let prompt = fields.prompt;
+    let response = fields.response;
+    let transcript = fields.transcript;
     format!(
         "\
 Extract at most {max_items} durable memories from this completed turn.
@@ -906,11 +947,33 @@ fn normalize_memory_content(content: &str) -> String {
         .to_ascii_lowercase()
 }
 
-async fn delete_superseded_memories(memory: &Arc<AgentMemory>, supersedes: &[String]) {
+async fn mark_superseded_memories(
+    memory: &Arc<AgentMemory>,
+    supersedes: &[String],
+    replacement_id: &str,
+) {
     for id in supersedes {
-        if let Err(e) = memory.forget(id).await {
-            tracing::warn!(memory_id = %id, error = %e, "Failed to delete superseded memory");
+        if let Err(e) = memory.mark_superseded(id, replacement_id).await {
+            tracing::warn!(memory_id = %id, error = %e, "Failed to archive superseded memory");
         }
+    }
+}
+
+struct NormalizedTurnEvidenceFields {
+    prompt: String,
+    response: String,
+    transcript: String,
+}
+
+fn normalized_turn_evidence_fields(
+    prompt: &str,
+    response: &str,
+    transcript: &str,
+) -> NormalizedTurnEvidenceFields {
+    NormalizedTurnEvidenceFields {
+        prompt: redact_sensitive_text(&compact(prompt, MAX_DIRECT_TURN_FIELD_CHARS)),
+        response: redact_sensitive_text(&compact(response, MAX_DIRECT_TURN_FIELD_CHARS)),
+        transcript: redact_sensitive_text(&compact(transcript, MAX_DIRECT_TURN_FIELD_CHARS)),
     }
 }
 

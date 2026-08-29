@@ -18,7 +18,7 @@ required-features = ["telemetry"]
 [dependencies]
 # Internal crates
 a3s-common = "0.1.1"
-a3s-memory = { version = "0.1.3", git = "https://github.com/A3S-Lab/Memory.git", rev = "216505634d81089cda89531d1b2d828c26170d62" }
+a3s-memory = { version = "0.1.3", git = "https://github.com/A3S-Lab/Memory.git", rev = "6f2e6cff647cf6fd7aae21eafd0f1c1cfb0cc71a" }
 a3s-lane = "0.5"
 a3s-search = { version = "3.0.9", git = "https://github.com/A3S-Lab/Search.git", rev = "2b7ec07d9a1b99758a3e8c950c6d4b6ca5b51fa9", default-features = false }
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false }

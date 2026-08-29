@@ -4,6 +4,7 @@ use crate::llm::{ContentBlock, StreamEvent};
 use crate::permissions::PermissionPolicy;
 use crate::prompts::AgentStyle;
 use crate::tools::ToolExecutor;
+use a3s_memory::repository::MemoryRepository;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
@@ -2507,6 +2508,72 @@ async fn test_agent_llm_memory_extraction_stores_durable_items() {
 }
 
 #[tokio::test]
+async fn llm_extraction_shadows_evidence_backed_v2_candidate_without_recall() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("Use focused memory tests after store changes."),
+        MockLlmClient::text_response(
+            r#"{"items":[{"memory_type":"procedural","content":"Run focused memory store tests after changing FileMemoryStore behavior.","importance":0.85,"confidence":0.94,"tags":["memory","tests"],"source":"workflow","scope":"workspace","reason":"This repeatable verification catches persistence regressions in future changes."}]}"#,
+        ),
+    ]));
+    let repository = Arc::new(a3s_memory::repository::InMemoryRepository::new());
+    let namespace =
+        a3s_memory::repository::MemoryNamespace::try_new("tenant", "principal", "repo").unwrap();
+    let binding =
+        crate::durable_memory::DurableMemorySession::shadow(repository.clone(), namespace.clone());
+    let memory = crate::memory::AgentMemory::with_config_observers_and_durable(
+        Arc::new(a3s_memory::InMemoryStore::new()),
+        crate::memory::MemoryConfig::default(),
+        Vec::new(),
+        Some(binding),
+    );
+    let host_env = Arc::new(crate::host_env::HostEnv::new(
+        Arc::new(crate::host_env::SequentialIdGenerator::new("memory")),
+        Arc::new(crate::host_env::FixedClock::new(1_777_000_000_000)),
+    ));
+    let temp_dir = tempfile::tempdir().unwrap();
+    let agent = AgentLoop::new(
+        mock_client,
+        Arc::new(ToolExecutor::new(temp_dir.path().display().to_string())),
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        AgentConfig {
+            memory: Some(Arc::new(memory)),
+            host_env,
+            ..Default::default()
+        },
+    );
+
+    agent
+        .execute_with_session(
+            &[],
+            "remember the workflow for FileMemoryStore changes",
+            Some("session/with space"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(repository
+        .query(a3s_memory::repository::MemoryQuery::new(namespace.clone()))
+        .await
+        .unwrap()
+        .hits
+        .is_empty());
+    let candidates = repository
+        .query(
+            a3s_memory::repository::MemoryQuery::new(namespace)
+                .with_statuses([a3s_memory::repository::MemoryStatus::Candidate]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(candidates.hits.len(), 1);
+    let candidate = &candidates.hits[0].node;
+    assert_eq!(candidate.confidence, 0.94);
+    assert_eq!(candidate.evidence.len(), 1);
+    assert!(candidate.evidence[0].uri.contains("session%2Fwith%20space"));
+}
+
+#[tokio::test]
 async fn completed_tool_results_do_not_become_long_term_memory_history() {
     let memory = Arc::new(crate::memory::AgentMemory::with_config(
         Arc::new(a3s_memory::InMemoryStore::new()),
@@ -3194,7 +3261,14 @@ async fn test_agent_llm_memory_extraction_supersedes_related_memory() {
         result.text,
         "Use focused memory and file store tests after changes."
     );
-    assert!(memory.store().retrieve(&old_id).await.unwrap().is_none());
+    let archived = memory.store().retrieve(&old_id).await.unwrap().unwrap();
+    assert_eq!(
+        archived
+            .metadata
+            .get("a3s.memory.status")
+            .map(String::as_str),
+        Some("superseded")
+    );
     let recalled = memory
         .recall_by_tags(&["consolidated".to_string()], 10)
         .await
@@ -3202,7 +3276,7 @@ async fn test_agent_llm_memory_extraction_supersedes_related_memory() {
     assert_eq!(recalled.len(), 1);
     assert_eq!(recalled[0].metadata.get("supersedes").unwrap(), &old_id);
     assert!(recalled[0].content.contains("file-backed persistence"));
-    assert_eq!(memory.stats().await.unwrap().long_term_count, 1);
+    assert_eq!(memory.stats().await.unwrap().long_term_count, 2);
 }
 
 #[tokio::test]

@@ -42,6 +42,7 @@ impl std::fmt::Debug for SessionOptions {
                 &self.enforce_active_skill_tool_restrictions,
             )
             .field("memory_store", &self.memory_store.is_some())
+            .field("durable_memory", &self.durable_memory)
             .field("memory_observers", &self.memory_observers.len())
             .field("file_memory_dir", &self.file_memory_dir)
             .field("session_store", &self.session_store.is_some())
@@ -303,6 +304,18 @@ impl SessionOptions {
     pub fn with_memory(mut self, store: Arc<dyn MemoryStore>) -> Self {
         self.memory_store = Some(store);
         self.file_memory_dir = None;
+        self
+    }
+
+    /// Install an exact, typed durable-memory repository binding.
+    ///
+    /// V2 starts in candidate-only shadow mode. The binding is runtime-only;
+    /// hosts restoring a persisted session must inject it again.
+    pub fn with_durable_memory(
+        mut self,
+        binding: crate::durable_memory::DurableMemorySession,
+    ) -> Self {
+        self.durable_memory = Some(binding);
         self
     }
 
