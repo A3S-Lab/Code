@@ -141,12 +141,16 @@ Schema `1` snapshots written before either profile existed deserialize as the
 legacy `a3s.memory.lexical.word.v1` retrieval profile and
 `a3s.code.memory.context.host-id.v0` context profile. Schema `2` introduced the
 current lexical profile but still used the legacy host-generated context ID.
-New bindings use schema `3` with both current profiles. Only those three exact
-schema/profile combinations validate. A current host can construct only schema
-`3`, so exact resume rejects either legacy/current mismatch; old binaries
-reject schema `3` instead of ignoring the new identity field. Backward-readable
-data is not treated as permission to change a live session's retrieval or
-admission identity behavior.
+Schema `3` introduced
+`a3s.code.memory.context.session-run-sequence-sha256.v1`, which separates
+process-local run IDs but cannot distinguish a run ID reused after FIFO
+retention and process restart. New bindings use schema `4` with
+`a3s.code.memory.context.session-run-invocation-sequence-sha256.v2`. Only those
+four exact schema/profile combinations validate. A current host can construct
+only schema `4`, so exact resume rejects every legacy/current mismatch; old
+binaries reject schema `4` instead of ignoring the new identity field.
+Backward-readable data is not permission to change a live session's retrieval
+or admission identity behavior.
 
 The descriptor does not claim to authenticate a database path or remote
 service instance. Repository construction, credentials, fencing, and backend
@@ -164,25 +168,34 @@ isolated; a host that wants a separate agent to share memory creates that agent
 and injects the binding explicitly.
 
 Every final model context uses the stable identity profile
-`a3s.code.memory.context.session-run-sequence-sha256.v1`. Code hashes the exact
-session ID, run ID, and invocation-local context sequence with domain
-separation, producing a bounded opaque `a3s-code-context-v1-*` value. The same
-tuple always maps to the same context ID, while multiple contexts assembled
-inside one planned run remain distinct. Different sessions remain distinct even
-if separate deterministic host environments emit the same local run ID. An
-admission retry remains subject to the repository's full-event idempotency
+`a3s.code.memory.context.session-run-invocation-sequence-sha256.v2`. Code hashes
+the exact session ID, run ID, Code-owned invocation incarnation, and
+invocation-local context sequence with domain separation, producing a bounded
+opaque `a3s-code-context-v2-*` value. Clones of one live invocation share its
+incarnation and monotonic sequence, while a separately reconstructed
+invocation receives a fresh incarnation. Different sessions remain distinct
+when host run IDs collide, and the same session remains distinct when a
+process-local run ID is legitimately reused after retained run history is
+evicted. Code does not rely on the weaker cross-process guarantee that the
+host's `IdGenerator` contract deliberately does not make.
+
+An admission retry remains subject to the repository's full-event idempotency
 contract, including its timestamp; conflicting replay fails closed instead of
 double-counting. If the scoped invocation identity, sequence, or host timestamp
 is unavailable, recalled V2 items are removed before the model call.
 `DurableMemoryBindingV1.contextIdProfile` persists this algorithm identity, so
-resume cannot silently replace legacy host-generated event identities with the
-current session/run/sequence contract.
+resume cannot silently replace an older admission identity with the current
+session/run/invocation/sequence contract. A normal new run also uses atomic
+reservation: collision with a still-retained run returns
+`RUN_IDENTITY_CONFLICT` before model use instead of overwriting history.
 
 This correlation value is not an authentication token. Namespace authority
 still comes from the exact host-injected binding, and repository fencing and
 globally meaningful session assignment remain host responsibilities. See
 [Durable Memory Multi-Agent Evaluation](DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
-the executable collision, lifecycle, isolation, and restart contract.
+the executable sharing contract and
+[Durable Memory Restart Endurance Evaluation](DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
+for cross-process reuse, retention, revision, and repeated-restart evidence.
 
 The `durable_memory_restart` integration test uses real
 `FileMemoryRepository` and `FileSessionStore` instances across full close and
@@ -193,7 +206,9 @@ node evidence plus admission/use events survive another repository replay. It
 also asserts that Session teardown releases the repository lock. The latter
 regression is protected by weak back-references from registry-bound
 orchestrator and Skill tools, preventing tool registration cycles from
-retaining `AgentConfig.memory` after close.
+retaining `AgentConfig.memory` after close. The same test rejects a retained
+host run-ID collision before model use and proves that the original run and
+admission count remain unchanged.
 
 ## Owned maintenance and consolidation
 
@@ -311,6 +326,10 @@ enters model input.
     distinct session/run admissions under colliding local generators, explicit
     Candidate and foreign-principal isolation, peer-independent teardown, and
     file-journal replay.
+11. Run the restart-endurance gate. Fully close and resume four independent
+    agents across three epochs with one retained run, reset each process-local
+    generator, revise the Active node, and require all 24 contexts plus exact
+    current-revision and namespace isolation after final journal replay.
 
 See [Durable Memory Retrieval Evaluation](DURABLE_MEMORY_RETRIEVAL_EVAL.md) for
 the retrieval metric definitions and vector decision. See
@@ -319,7 +338,9 @@ end-to-end serving, capture, cost, and consolidation evidence. See
 [Durable Memory Multilingual Evaluation](DURABLE_MEMORY_MULTILINGUAL_EVAL.md)
 for the query-profile contract, CJK gate, and its limits. See
 [Durable Memory Multi-Agent Evaluation](DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
-explicit sharing and context-identity semantics.
+explicit sharing and context-identity semantics. See
+[Durable Memory Restart Endurance Evaluation](DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
+for the bounded repeated-restart production slice.
 
 ## Verification
 
@@ -334,6 +355,7 @@ cargo test -p a3s-code-core --test durable_memory_retrieval_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_product_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_multilingual_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_multi_agent_eval -- --nocapture
+cargo test -p a3s-code-core --test durable_memory_restart_endurance_eval -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle
 cargo test -p a3s-code-core --lib
 ```

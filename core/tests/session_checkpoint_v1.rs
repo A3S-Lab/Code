@@ -327,7 +327,8 @@ fn portable_checkpoint_rejects_invalid_durable_memory_binding() {
     )
     .binding();
     let mut encoded = serde_json::to_value(binding).unwrap();
-    encoded["schemaVersion"] = serde_json::json!(3);
+    encoded["schemaVersion"] =
+        serde_json::json!(a3s_code_core::DURABLE_MEMORY_BINDING_SCHEMA_VERSION + 1);
     let invalid: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
     let mut invalid_snapshot = snapshot(false);
     invalid_snapshot.session.durable_memory_binding = Some(invalid);
@@ -382,6 +383,24 @@ fn portable_checkpoint_rejects_invalid_durable_memory_binding() {
     .binding();
     let mut encoded = serde_json::to_value(binding).unwrap();
     encoded["contextIdProfile"] = serde_json::json!("a3s.code.memory.context.unknown.v1");
+    let invalid: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
+    let mut invalid_snapshot = snapshot(false);
+    invalid_snapshot.session.durable_memory_binding = Some(invalid);
+
+    let error = SessionCheckpointExportV1::new(invalid_snapshot, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("context identity profile"), "{error}");
+
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "workspace").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        Arc::new(InMemoryRepository::new()),
+        namespace,
+        DurableMemoryRecallPolicy::try_new(5, 0.25).unwrap(),
+    )
+    .binding();
+    let mut encoded = serde_json::to_value(binding).unwrap();
+    encoded["schemaVersion"] = serde_json::json!(3);
     let invalid: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
     let mut invalid_snapshot = snapshot(false);
     invalid_snapshot.session.durable_memory_binding = Some(invalid);
@@ -476,6 +495,28 @@ fn portable_checkpoint_keeps_legacy_durable_memory_state_readable() {
     legacy_snapshot.session.durable_memory_binding = Some(legacy);
     SessionCheckpointExportV1::new(legacy_snapshot, None)
         .expect("schema 2 binding must remain readable and portable");
+
+    let mut encoded = serde_json::to_value(&binding).unwrap();
+    encoded["schemaVersion"] = serde_json::json!(3);
+    encoded["contextIdProfile"] =
+        serde_json::json!(a3s_code_core::DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1);
+    let legacy: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
+    assert_eq!(legacy.schema_version(), 3);
+    assert_eq!(
+        legacy.retrieval_profile(),
+        "a3s.memory.lexical.word-cjk-bigram.v1"
+    );
+    assert_eq!(
+        legacy.context_id_profile(),
+        a3s_code_core::DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1
+    );
+
+    let mut legacy_snapshot = snapshot(false);
+    legacy_snapshot.session.tenant_id = Some("tenant".to_string());
+    legacy_snapshot.session.principal = Some("principal".to_string());
+    legacy_snapshot.session.durable_memory_binding = Some(legacy);
+    SessionCheckpointExportV1::new(legacy_snapshot, None)
+        .expect("schema 3 binding must remain readable and portable");
 }
 
 #[test]

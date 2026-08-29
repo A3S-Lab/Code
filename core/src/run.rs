@@ -239,16 +239,18 @@ impl InMemoryRunStore {
     }
 
     pub async fn create_run(&self, session_id: &str, prompt: &str) -> RunSnapshot {
-        // Default ID generation when the caller has no host_env handy.
-        // Production callers reach `create_run_with_id` via
-        // `RunControlState::start_run` so the host's IdGenerator is honored.
+        // Default ID generation for callers that do not need a host-selected
+        // identity. Session orchestration uses `reserve_run_with_id` so a
+        // repeated host ID cannot replace retained Run history.
         let id = format!("run-{}", uuid::Uuid::new_v4());
         self.create_run_with_id(id, session_id, prompt).await
     }
 
-    /// Create a run with a caller-supplied id. Used by the session
-    /// orchestration layer so the parent session's host-provided
-    /// [`IdGenerator`](crate::host_env::IdGenerator) governs run ids.
+    /// Unconditionally insert a run with a caller-supplied id.
+    ///
+    /// This compatibility primitive replaces an existing record with the same
+    /// id. New orchestration paths that consume host- or externally-selected
+    /// identities must use [`Self::reserve_run_with_id`] instead.
     pub async fn create_run_with_id(
         &self,
         id: String,
@@ -284,8 +286,9 @@ impl InMemoryRunStore {
     }
 
     /// Atomically reserve a caller-supplied run id without replacing an
-    /// existing run. Headless hosts use this as the Code-owned idempotency
-    /// boundary when an external command is replayed after a lost receipt.
+    /// existing run. Normal session orchestration uses it to reject retained
+    /// host-ID collisions; headless hosts additionally use the returned
+    /// reservation as the Code-owned idempotency boundary for external replay.
     pub async fn reserve_run_with_id(
         &self,
         id: String,

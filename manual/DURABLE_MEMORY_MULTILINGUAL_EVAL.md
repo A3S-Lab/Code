@@ -27,10 +27,12 @@ phrase overlap in languages that commonly omit spaces.
 `DurableMemoryBindingV1.retrievalProfile` persists this identity. Old schema
 `1` snapshots without the field remain readable as
 `a3s.memory.lexical.word.v1`; schema `2` retains the current lexical profile but
-the legacy host-generated context identity; new schema `3` bindings retain both
-the current lexical and context-identity profiles. Only those exact combinations
+the legacy host-generated context identity; schema `3` retains the current
+lexical profile with the process-local session/run context profile. New schema
+`4` bindings add a Code-owned invocation incarnation so run IDs reused after
+restart and FIFO retention remain distinct. Only those exact combinations
 validate. Exact resume rejects reinjection from a current-profile host into a
-legacy session, while an old binary rejects schema `3` rather than ignoring the
+legacy session, while an old binary rejects schema `4` rather than ignoring the
 new fields. The migration rule is to start a new session when query or admission
 identity semantics change.
 
@@ -73,10 +75,10 @@ The negative set locks three boundaries:
   production-query distributions.
 - The deterministic model checks context availability and isolation, not real
   model reasoning quality.
-- Long-horizon retention, repeated restarts, semantic paraphrases, larger
-  multi-agent distributions, drift, latency, and real provider cost remain
-  `DM-PROD1` host qualification. The narrow explicit-sharing and collision
-  contract is covered separately by `DM-SHARE1`.
+- Long-horizon retention, semantic paraphrases, still-larger multi-agent
+  distributions, drift, latency, and real provider cost remain `DM-PROD1` host
+  qualification. `DM-SHARE1` covers narrow explicit sharing, while
+  `DM-ENDURE1` covers three bounded restart epochs and retained run-ID reuse.
 
 These limits are intentional. A semantic-vector dependency remains deferred
 until an independently labeled versioned corpus shows the lexical/relation

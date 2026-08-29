@@ -22,22 +22,27 @@ does not use a global backend and does not inherit memory into delegated
 children.
 
 The profile
-`a3s.code.memory.context.session-run-sequence-sha256.v1` hashes the exact
-`(session_id, run_id, context_sequence)` tuple with domain separation. The
-sequence belongs to the immutable invocation and is shared across its clones.
-It has four properties:
+`a3s.code.memory.context.session-run-invocation-sequence-sha256.v2` hashes the
+exact `(session_id, run_id, invocation_incarnation, context_sequence)` tuple
+with domain separation. Code creates a fresh incarnation for each actual
+invocation; the incarnation and sequence belong to that immutable invocation
+and are shared across its clones. It has five properties:
 
 - the same exact tuple deterministically produces the same context ID;
 - different sessions produce different context IDs even when independent
   deterministic host environments emit the same process-local run ID;
+- reconstructed invocations remain different when a resumed process reuses a
+  run ID after retained run history is evicted;
 - multiple model contexts assembled inside one planned run remain separate;
-- the opaque `a3s-code-context-v1-*` value is bounded for the Memory repository
+- the opaque `a3s-code-context-v2-*` value is bounded for the Memory repository
   and does not expose raw session or run identifiers.
 
-`DurableMemoryBindingV1.contextIdProfile` persists this profile in schema `3`.
+`DurableMemoryBindingV1.contextIdProfile` persists this profile in schema `4`.
 Schema `1` and `2` snapshots remain readable with the explicit legacy
-`a3s.code.memory.context.host-id.v0` identity, but a current host cannot silently
-resume them with new admission keys. Migration requires a new session.
+`a3s.code.memory.context.host-id.v0` identity. Schema `3` remains readable with
+`a3s.code.memory.context.session-run-sequence-sha256.v1`. A current host cannot
+silently resume any of them with new admission keys. Migration requires a new
+session.
 
 If Code cannot obtain the scoped invocation identity, it removes the recalled
 V2 items before the model call. The context ID is correlation evidence, not an
@@ -58,7 +63,7 @@ principal.
 
 | Dimension | Gate | Current result |
 | --- | ---: | ---: |
-| Durable-memory binding schema | `3` | `3` |
+| Durable-memory binding schema | `4` | `4` |
 | Independent agents | `2` | `2` |
 | Real model calls | `3` | `3` |
 | First process-local run IDs collide | `true` | `true` |
@@ -83,7 +88,9 @@ the complete access event; conflicting replay fails closed.
   real-model reasoning quality.
 - Two agents and three turns are not a concurrency soak or a representative
   organization workload.
-- One close/reopen boundary is not a repeated-restart endurance test.
+- The separate
+  [restart-endurance gate](DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md) covers
+  three bounded process epochs; neither gate is a months-long soak.
 - The gate does not qualify semantic cross-language retrieval, consolidation
   policy, remote repository fencing, latency, provider drift, or cost.
 - Delegated children remain isolated. A future inheritance policy would need a

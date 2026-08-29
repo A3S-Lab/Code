@@ -4,7 +4,7 @@ This fixture qualifies explicit host-authorized sharing of one durable-memory
 binding across two independent `Agent` instances.
 
 The evaluation report remains schema `1`; it requires durable-memory binding
-schema `3`, which persists the context identity profile alongside retrieval
+schema `4`, which persists the context identity profile alongside retrieval
 semantics.
 
 Both agents intentionally use separate deterministic host environments that
@@ -15,7 +15,10 @@ continue after the other closes, and that all admissions survive a
 file-repository restart.
 
 The context identity profile hashes the exact
-`(session_id, run_id, context_sequence)` tuple with domain separation. The
-sequence is shared by every clone of one immutable invocation, so multiple
-model contexts in one run remain distinct. It does not inherit durable memory
-into delegated children; sharing remains an explicit host binding decision.
+`(session_id, run_id, invocation_incarnation, context_sequence)` tuple with
+domain separation. Code owns the incarnation because host IDs guarantee
+uniqueness only inside one process. The sequence and incarnation are shared by
+every clone of one immutable invocation, so multiple model contexts in one run
+remain distinct while later invocations cannot collapse after restart. It does
+not inherit durable memory into delegated children; sharing remains an explicit
+host binding decision.

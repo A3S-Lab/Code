@@ -755,11 +755,19 @@ A versioned multi-agent fixture then binds the same exact
 `DurableMemorySession` to two independent `Agent` instances backed by one file
 repository. Separate deterministic host environments deliberately emit the
 same local run-ID sequence; the
-`a3s.code.memory.context.session-run-sequence-sha256.v1` profile still records
+`a3s.code.memory.context.session-run-invocation-sequence-sha256.v2` profile records
 all three session/run admissions, exposes no Candidate or foreign-principal
 content, allows one agent to continue after the other closes, and replays all
 three admissions after repository restart. Durable memory is never inherited
 by a delegated child: sharing remains an explicit host authority decision.
+A repeated-restart fixture then closes and resumes four independent agents over
+three complete process epochs with one retained run per session. Every host ID
+generator resets, so retained run IDs are deliberately reused after FIFO
+eviction; all 24 distinct model contexts are still admitted. A verified Active
+correction reaches only the final epoch, immutable history survives four file
+repository opens, and Candidate, stale-revision, and foreign-principal content
+remain absent. A collision with a run that is still retained now fails before
+model use instead of replacing its history.
 Memory construction itself starts no tasks. Configured V1 pruning and optional
 host-supplied semantic consolidation jobs run only inside a session-owned
 `MemoryMaintenanceRuntime`; jobs are serialized per schedule, missed ticks are
@@ -779,7 +787,8 @@ lock at session teardown. See
 [Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
 [Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md),
 [Durable Memory Multilingual Evaluation](manual/DURABLE_MEMORY_MULTILINGUAL_EVAL.md), and
-[Durable Memory Multi-Agent Evaluation](manual/DURABLE_MEMORY_MULTI_AGENT_EVAL.md)
+[Durable Memory Multi-Agent Evaluation](manual/DURABLE_MEMORY_MULTI_AGENT_EVAL.md), and
+[Durable Memory Restart Endurance Evaluation](manual/DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
 for ownership, durability, migration rules, retrieval profiles, the vector
 decision, end-to-end metrics, and declared evaluation limits.
 

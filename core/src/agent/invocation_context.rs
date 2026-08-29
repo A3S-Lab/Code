@@ -58,6 +58,7 @@ fn snapshot_confirmation_manager(
 pub(crate) struct InvocationContext {
     run_id: Arc<str>,
     session_id: Arc<str>,
+    memory_context_incarnation: Arc<str>,
     cancellation: CancellationToken,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
     agent_event_tx: Option<broadcast::Sender<AgentEvent>>,
@@ -118,6 +119,11 @@ impl InvocationContext {
         Self {
             run_id: run_id.into(),
             session_id: session_id.into(),
+            // Host IdGenerator values are guaranteed unique only within one
+            // process. A Code-owned incarnation keeps durable-memory context
+            // identities distinct when a resumed session legitimately reuses
+            // an evicted run ID after another process starts.
+            memory_context_incarnation: Arc::from(uuid::Uuid::new_v4().to_string()),
             cancellation,
             event_tx,
             agent_event_tx: None,
@@ -162,6 +168,10 @@ impl InvocationContext {
 
     pub(crate) fn session_id_option(&self) -> Option<&str> {
         (!self.session_id.is_empty()).then_some(self.session_id())
+    }
+
+    pub(crate) fn memory_context_incarnation(&self) -> &str {
+        &self.memory_context_incarnation
     }
 
     pub(crate) fn next_memory_context_sequence(&self) -> Option<u64> {
@@ -388,9 +398,36 @@ mod tests {
         );
         let clone = context.clone();
 
+        assert_eq!(
+            context.memory_context_incarnation(),
+            clone.memory_context_incarnation()
+        );
         assert_eq!(context.next_memory_context_sequence(), Some(1));
         assert_eq!(clone.next_memory_context_sequence(), Some(2));
         assert_eq!(context.next_memory_context_sequence(), Some(3));
+    }
+
+    #[test]
+    fn separate_invocations_never_share_a_memory_context_incarnation() {
+        let first = InvocationContext::new(
+            "run-1",
+            "session-1",
+            CancellationToken::new(),
+            None,
+            InvocationGovernance::default(),
+        );
+        let second = InvocationContext::new(
+            "run-1",
+            "session-1",
+            CancellationToken::new(),
+            None,
+            InvocationGovernance::default(),
+        );
+
+        assert_ne!(
+            first.memory_context_incarnation(),
+            second.memory_context_incarnation()
+        );
     }
 
     #[test]

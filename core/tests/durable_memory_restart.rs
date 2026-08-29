@@ -386,3 +386,6 @@ async fn file_repository_restart_requires_exact_binding_and_preserves_access_his
         Some(&expected_binding)
     );
 }
+
+#[path = "durable_memory_restart/run_identity.rs"]
+mod run_identity;

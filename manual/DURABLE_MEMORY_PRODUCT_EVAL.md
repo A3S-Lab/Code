@@ -119,9 +119,13 @@ scheduler nor A3S Memory's repository invents that policy.
 - File-repository crash recovery, concurrency, and revision integrity are
   covered in A3S Memory's kernel tests rather than duplicated here. Code's
   separate `durable_memory_restart` gate covers exact binding reinjection,
-  repository reopen, serving, access replay, and lock release.
-- Long-horizon personalization, multi-agent sharing, decay quality, and
-  production-distribution drift require host-owned versioned evaluations.
+  repository reopen, serving, access replay, collision rejection, and lock
+  release. The separate restart-endurance gate covers three process epochs,
+  four agents, retained run-ID reuse, and one verified correction.
+- Longer-horizon personalization, semantic cross-language retrieval, larger
+  multi-agent distributions, decay quality, remote fencing, real providers,
+  and production-distribution drift still require host-owned versioned
+  evaluations.
 
 These limits prevent the deterministic gate from being misrepresented as
 production qualification.
@@ -134,6 +138,7 @@ Run from the Code crate workspace:
 cargo test -p a3s-code-core --test durable_memory_product_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_multilingual_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_restart -- --nocapture
+cargo test -p a3s-code-core --test durable_memory_restart_endurance_eval -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle owned_host_job_applies_verified_atomic_v2_supersession -- --nocapture
 ```
 

@@ -104,10 +104,14 @@ impl RunControlState {
         // Honor the session's host-provided IdGenerator so deterministic
         // replay tooling can pin run ids alongside session_id.
         let id = format!("run-{}", self.host_env.next_id());
-        let snapshot = self
+        let reservation = self
             .run_store
-            .create_run_with_id(id, &self.session_id, prompt)
+            .reserve_run_with_id(id.clone(), &self.session_id, prompt)
             .await;
+        if reservation.replayed() {
+            return Err(CodeError::RunIdentityConflict { run_id: id });
+        }
+        let snapshot = reservation.snapshot().clone();
         if let Err(error) = self
             .bind_capability_generation(&snapshot.id, capability_binding)
             .await

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "binding_schema_version": 3,
-  "context_identity_profile": "a3s.code.memory.context.session-run-sequence-sha256.v1",
+  "binding_schema_version": 4,
+  "context_identity_profile": "a3s.code.memory.context.session-run-invocation-sequence-sha256.v2",
   "query": "What is the Project Atlas deployment procedure?",
   "shared_node": {
     "id": "atlas-shared-runbook",

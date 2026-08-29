@@ -660,6 +660,32 @@ fn legacy_durable_memory_profiles_are_readable_but_cannot_resume_with_new_semant
 
     let mut data = persisted_data(Some("openai/gpt-4o"), None);
     data.durable_memory_binding = Some(legacy);
+    let error = apply_persisted_runtime_options(
+        SessionOptions::new().with_durable_memory(current.clone()),
+        &data,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        CodeError::SessionConfiguration {
+            field: "durable_memory",
+            ..
+        }
+    ));
+
+    let mut encoded = serde_json::to_value(current.binding()).unwrap();
+    encoded["schemaVersion"] = serde_json::json!(3);
+    encoded["contextIdProfile"] =
+        serde_json::json!(crate::durable_memory::DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1);
+    let legacy: crate::durable_memory::DurableMemoryBindingV1 =
+        serde_json::from_value(encoded).unwrap();
+    assert_eq!(
+        legacy.context_id_profile(),
+        crate::durable_memory::DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1
+    );
+
+    let mut data = persisted_data(Some("openai/gpt-4o"), None);
+    data.durable_memory_binding = Some(legacy);
     let error =
         apply_persisted_runtime_options(SessionOptions::new().with_durable_memory(current), &data)
             .unwrap_err();

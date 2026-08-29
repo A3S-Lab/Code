@@ -90,6 +90,7 @@ impl AgentLoop {
                         crate::durable_memory::durable_memory_context_id(
                             invocation.session_id(),
                             invocation.run_id(),
+                            invocation.memory_context_incarnation(),
                             sequence,
                         )
                     })

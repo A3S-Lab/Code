@@ -4,7 +4,7 @@ use a3s_code_core::llm::{ContentBlock, LlmClient, LlmResponse, Message, StreamEv
 use a3s_code_core::memory::MemoryConfig;
 use a3s_code_core::{
     Agent, DurableMemoryRecallPolicy, DurableMemorySession, PlanningMode, SessionOptions,
-    DURABLE_MEMORY_BINDING_SCHEMA_VERSION, DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1,
+    DURABLE_MEMORY_BINDING_SCHEMA_VERSION, DURABLE_MEMORY_CONTEXT_ID_PROFILE_V2,
 };
 use a3s_memory::repository::{
     DurableMemoryKind, EvidenceKind, EvidenceRef, FileMemoryRepository, MemoryChangeSet,
@@ -292,7 +292,7 @@ async fn independent_agents_share_exact_memory_without_admission_collisions() {
     assert_eq!(fixture.agents.len(), 2);
     assert_eq!(
         fixture.context_identity_profile,
-        DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1
+        DURABLE_MEMORY_CONTEXT_ID_PROFILE_V2
     );
 
     let repository_root = tempfile::tempdir().expect("create memory repository root");
@@ -470,7 +470,7 @@ async fn independent_agents_share_exact_memory_without_admission_collisions() {
         serde_json::to_string(&Report {
             schema_version: fixture.schema_version,
             binding_schema_version: DURABLE_MEMORY_BINDING_SCHEMA_VERSION,
-            context_identity_profile: DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1,
+            context_identity_profile: DURABLE_MEMORY_CONTEXT_ID_PROFILE_V2,
             independent_agents: fixture.agents.len(),
             model_calls: observations.len(),
             colliding_local_run_ids,
