@@ -57,6 +57,7 @@ impl TaskExecutor {
             Some(cancellation) => Arc::new(ScopedTaskExecutor {
                 executor: Arc::clone(self),
                 parent_cancellation: cancellation.clone(),
+                parallel_lifecycle: None,
             }),
             None => Arc::<Self>::clone(self),
         };
@@ -124,9 +125,11 @@ impl TaskExecutor {
             .clamp(1, task_count.max(1));
 
         let max_concurrency = self.max_parallel_tasks.max(1);
+        let parallel_lifecycle = Arc::new(ParallelTaskLifecycle::default());
         let scoped_executor: Arc<dyn AgentExecutor> = Arc::new(ScopedTaskExecutor {
             executor: Arc::clone(self),
             parent_cancellation: parallel_cancellation.clone(),
+            parallel_lifecycle: Some(Arc::clone(&parallel_lifecycle)),
         });
         let mut pending = specs.into_iter().enumerate();
         let mut join_set = JoinSet::new();
@@ -247,11 +250,6 @@ impl TaskExecutor {
             }
         }
 
-        if timed_out || returned_early || active_count > 0 {
-            parallel_cancellation.cancel();
-            settle_cancelled_parallel_tasks(&mut join_set).await;
-        }
-
         let unfinished_message = if timed_out {
             format!(
                 "Task timed out before parallel_task finished collecting child results after {} ms.",
@@ -264,6 +262,20 @@ impl TaskExecutor {
         } else {
             "Task did not return a result before parallel_task ended.".to_string()
         };
+        if timed_out || returned_early || active_count > 0 {
+            let cancelled_indexes = active_indexes.values().copied().collect::<Vec<_>>();
+            parallel_cancellation.cancel();
+            settle_cancelled_parallel_tasks(&mut join_set, &mut active_indexes).await;
+            self.emit_abandoned_parallel_task_ends(
+                &cancelled_indexes,
+                &labels,
+                event_tx.as_ref(),
+                &unfinished_message,
+                Some(&parallel_lifecycle),
+            )
+            .await;
+        }
+
         let results = results
             .into_iter()
             .enumerate()
@@ -290,16 +302,76 @@ impl TaskExecutor {
             min_success_count,
         }
     }
+
+    /// Emit a terminal lifecycle event for a child that could not settle
+    /// within the bounded cancellation grace period. A parent fan-out still
+    /// returns a deterministic failed result for such a child, so its
+    /// `subagent_start` must not remain open in the event stream or tracker.
+    async fn emit_abandoned_parallel_task_ends(
+        &self,
+        indexes: &[usize],
+        labels: &[(String, String)],
+        event_tx: Option<&broadcast::Sender<AgentEvent>>,
+        output: &str,
+        lifecycle: Option<&ParallelTaskLifecycle>,
+    ) {
+        for &index in indexes {
+            let Some((task_id, agent)) = labels.get(index) else {
+                continue;
+            };
+            if let Some(lifecycle) = lifecycle {
+                if !lifecycle.is_started(task_id) || lifecycle.is_ended(task_id) {
+                    continue;
+                }
+            }
+            let event = AgentEvent::SubagentEnd {
+                task_id: task_id.clone(),
+                session_id: format!("task-run-{task_id}"),
+                agent: agent.clone(),
+                output: output.to_string(),
+                success: false,
+                finished_ms: epoch_ms(),
+            };
+            let event = self
+                .parent_context
+                .as_ref()
+                .and_then(|context| context.security_provider.as_deref())
+                .map(|provider| crate::security::sanitize_agent_event(provider, &event))
+                .unwrap_or(event);
+
+            if let Some(tracker) = &self.subagent_tracker {
+                // Preserve the explicit cancellation state in the materialized
+                // tracker when a child did not reach its own end-event path.
+                // `record_event` then fills in the terminal output/timestamp;
+                // a late child end cannot downgrade Cancelled.
+                let _ = tracker.cancel(task_id).await;
+                tracker.record_event(&event).await;
+                tracker.clear_canceller(task_id).await;
+            }
+            if let Some(tx) = event_tx {
+                let _ = tx.send(event);
+            }
+            if let Some(lifecycle) = lifecycle {
+                lifecycle.mark_ended(task_id);
+            }
+        }
+    }
 }
 
 async fn settle_cancelled_parallel_tasks(
     join_set: &mut JoinSet<(usize, std::result::Result<StepOutcome, String>)>,
+    active_indexes: &mut HashMap<tokio::task::Id, usize>,
 ) {
     const SETTLEMENT_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
     let deadline = tokio::time::Instant::now() + SETTLEMENT_GRACE;
     while !join_set.is_empty() {
-        match tokio::time::timeout_at(deadline, join_set.join_next()).await {
-            Ok(Some(_)) => {}
+        match tokio::time::timeout_at(deadline, join_set.join_next_with_id()).await {
+            Ok(Some(Ok((task_id, _)))) => {
+                active_indexes.remove(&task_id);
+            }
+            Ok(Some(Err(error))) => {
+                active_indexes.remove(&error.id());
+            }
             Ok(None) => return,
             Err(_) => break,
         }
@@ -309,7 +381,17 @@ async fn settle_cancelled_parallel_tasks(
         return;
     }
     join_set.abort_all();
-    while join_set.join_next().await.is_some() {}
+    while let Some(joined) = join_set.join_next_with_id().await {
+        match joined {
+            Ok((task_id, _)) => {
+                active_indexes.remove(&task_id);
+            }
+            Err(error) => {
+                active_indexes.remove(&error.id());
+            }
+        }
+    }
+    active_indexes.clear();
 }
 
 fn spawn_parallel_task_step(
@@ -397,6 +479,7 @@ impl AgentExecutor for TaskExecutor {
             spec,
             event_tx,
             self.parent_cancellation.as_ref(),
+            None,
         )
         .await
     }
@@ -412,6 +495,7 @@ impl TaskExecutor {
         spec: AgentStepSpec,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
         parent_cancellation: Option<&CancellationToken>,
+        parallel_lifecycle: Option<Arc<ParallelTaskLifecycle>>,
     ) -> StepOutcome {
         let agent = spec.agent.clone();
         let task_id = spec.task_id.clone();
@@ -437,6 +521,7 @@ impl TaskExecutor {
                     emit_start: true,
                     parent_cancellation,
                     admitted_capability_subtask: None,
+                    parallel_lifecycle,
                 },
             )
             .await
@@ -534,6 +619,7 @@ impl TaskExecutor {
 struct ScopedTaskExecutor {
     executor: Arc<TaskExecutor>,
     parent_cancellation: CancellationToken,
+    parallel_lifecycle: Option<Arc<ParallelTaskLifecycle>>,
 }
 
 #[async_trait]
@@ -544,7 +630,12 @@ impl AgentExecutor for ScopedTaskExecutor {
         event_tx: Option<broadcast::Sender<AgentEvent>>,
     ) -> StepOutcome {
         self.executor
-            .execute_step_with_parent_cancellation(spec, event_tx, Some(&self.parent_cancellation))
+            .execute_step_with_parent_cancellation(
+                spec,
+                event_tx,
+                Some(&self.parent_cancellation),
+                self.parallel_lifecycle.clone(),
+            )
             .await
     }
 
@@ -556,6 +647,30 @@ impl AgentExecutor for ScopedTaskExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoopLlmClient;
+
+    #[async_trait::async_trait]
+    impl LlmClient for NoopLlmClient {
+        async fn complete(
+            &self,
+            _messages: &[crate::llm::Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<crate::llm::LlmResponse> {
+            anyhow::bail!("NoopLlmClient must not be called")
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[crate::llm::Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+            _cancel_token: CancellationToken,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+            anyhow::bail!("NoopLlmClient must not be called")
+        }
+    }
 
     #[tokio::test]
     async fn aborted_join_keeps_the_spawned_branch_index() {
@@ -576,6 +691,78 @@ mod tests {
             take_parallel_task_index(&mut active_indexes, error.id()),
             Some(7)
         );
+        assert!(active_indexes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn abandoned_parallel_settlement_emits_terminal_end_and_updates_tracker() {
+        use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
+
+        let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+        let task_id = "task-abandoned".to_string();
+        let lifecycle = Arc::new(ParallelTaskLifecycle::default());
+        lifecycle.mark_started(&task_id);
+        tracker
+            .record_event(&AgentEvent::SubagentStart {
+                task_id: task_id.clone(),
+                session_id: format!("task-run-{task_id}"),
+                parent_session_id: "parent".to_string(),
+                agent: "worker".to_string(),
+                description: "abandoned branch".to_string(),
+                started_ms: 1,
+            })
+            .await;
+        tracker
+            .register_canceller(&task_id, CancellationToken::new())
+            .await;
+
+        let executor = TaskExecutor::new(
+            Arc::new(AgentRegistry::new()),
+            Arc::new(NoopLlmClient),
+            ".".to_string(),
+        )
+        .with_subagent_tracker(Arc::clone(&tracker));
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        executor
+            .emit_abandoned_parallel_task_ends(
+                &[0],
+                &[(task_id.clone(), "worker".to_string())],
+                Some(&event_tx),
+                "Task cancelled after parallel_task collected one successful child result(s).",
+                Some(&lifecycle),
+            )
+            .await;
+
+        let event = event_rx.try_recv().expect("synthetic end event");
+        match event {
+            AgentEvent::SubagentEnd {
+                task_id: event_task_id,
+                success,
+                output,
+                ..
+            } => {
+                assert_eq!(event_task_id, task_id);
+                assert!(!success);
+                assert!(output.contains("cancelled"));
+            }
+            other => panic!("expected SubagentEnd, got {other:?}"),
+        }
+        assert_eq!(
+            tracker.get(&task_id).await.unwrap().status,
+            SubagentStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_parallel_settlement_drains_join_set() {
+        let mut join_set = JoinSet::new();
+        let handle = join_set.spawn(async {
+            std::future::pending::<(usize, std::result::Result<StepOutcome, String>)>().await
+        });
+        let mut active_indexes = HashMap::from([(handle.id(), 3)]);
+
+        settle_cancelled_parallel_tasks(&mut join_set, &mut active_indexes).await;
+        assert!(join_set.is_empty());
         assert!(active_indexes.is_empty());
     }
 }
