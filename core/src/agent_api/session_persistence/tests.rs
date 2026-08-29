@@ -615,6 +615,30 @@ fn persisted_durable_memory_requires_exact_host_reinjection() {
 }
 
 #[test]
+fn legacy_durable_memory_profile_is_readable_but_cannot_resume_with_new_semantics() {
+    let current = durable_memory_session("workspace-a", 5);
+    let mut encoded = serde_json::to_value(current.binding()).unwrap();
+    encoded["schemaVersion"] = serde_json::json!(1);
+    encoded.as_object_mut().unwrap().remove("retrievalProfile");
+    let legacy: crate::durable_memory::DurableMemoryBindingV1 =
+        serde_json::from_value(encoded).unwrap();
+    assert_eq!(legacy.retrieval_profile(), "a3s.memory.lexical.word.v1");
+
+    let mut data = persisted_data(Some("openai/gpt-4o"), None);
+    data.durable_memory_binding = Some(legacy);
+    let error =
+        apply_persisted_runtime_options(SessionOptions::new().with_durable_memory(current), &data)
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        CodeError::SessionConfiguration {
+            field: "durable_memory",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn persisted_tool_presentation_profile_is_inherited_and_cannot_drift() {
     let mut data = persisted_data(Some("openai/gpt-4o"), None);
     let profile = crate::tools::ToolPresentationProfileV1::code();

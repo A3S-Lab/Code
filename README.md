@@ -733,6 +733,10 @@ nodes under a bounded lexical policy. Hosts may opt into a bounded, one-hop
 expansion over explicit `RelatedTo` edges; Code never follows conflict edges,
 recurses through the graph, or widens the exact namespace. The public
 `preview_recall` diagnostic is pure and cannot authorize prompt injection.
+The bound `a3s.memory.lexical.word-cjk-bigram.v1` profile preserves lowercase
+word matching and adds overlapping bigrams for contiguous Han, Kana, Hangul,
+and related CJK runs. It improves same-language phrase variation without
+claiming cross-language or no-token-overlap semantic retrieval.
 Activation requires independent Manual or Verification evidence. Code records
 admission for the exact current revision after final context assembly; an
 unrecordable or stale item is removed before the model call. Exact V1/V2
@@ -743,6 +747,10 @@ product fixture drives the same no-memory, V1, and V2 arms through real
 `AgentSession` turns: task success is `0.00`, `0.60`, and `0.90`; accepted-write
 precision and evidence fidelity are both `1.00`; conflicts remain
 non-destructive; and selected V2 revisions record admission before model use.
+A separate versioned multilingual fixture drives real `AgentSession` turns for
+English, Simplified Chinese, Japanese, and Korean. It locks Recall@3 and MRR at
+`1.00`, one model call and at most one memory node per task, and zero Candidate
+or foreign-namespace leakage.
 Memory construction itself starts no tasks. Configured V1 pruning and optional
 host-supplied semantic consolidation jobs run only inside a session-owned
 `MemoryMaintenanceRuntime`; jobs are serialized per schedule, missed ticks are
@@ -750,17 +758,19 @@ skipped, health is observable, and `session.close().await` cancels and joins
 them before final extraction drain. Maintenance requires asynchronous session
 construction. Consolidation jobs remain responsible for evidence, optimistic
 revisions, and idempotency; A3S Memory never invents that policy.
-The secret-free V2 namespace, mode, and recall policy are persisted in the
-session snapshot. The live repository remains host-owned and must be injected
-again after restart; resume rejects a missing or drifted binding. A real
+The secret-free V2 namespace, mode, recall policy, and retrieval profile are
+persisted in the session snapshot. The live repository remains host-owned and
+must be injected again after restart; resume rejects a missing or drifted
+binding, including a query-algorithm change. A real
 file-repository test also proves candidate isolation before activation,
 post-activation serving, access-history replay, and release of the repository
 lock at session teardown. See
 [Durable Memory Integration](manual/DURABLE_MEMORY.md) and
 [Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
-and [Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md)
-for ownership, durability, migration rules, the vector decision, end-to-end
-metrics, and declared evaluation limits.
+[Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md), and
+[Durable Memory Multilingual Evaluation](manual/DURABLE_MEMORY_MULTILINGUAL_EVAL.md)
+for ownership, durability, migration rules, retrieval profiles, the vector
+decision, end-to-end metrics, and declared evaluation limits.
 
 Model adapters normalize text, reasoning, images, tool calls, token usage,
 streaming, cancellation, and retries. Structured generation uses native

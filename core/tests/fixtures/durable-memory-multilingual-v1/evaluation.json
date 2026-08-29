@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "retrieval_profile": "a3s.memory.lexical.word-cjk-bigram.v1",
+  "policy": {
+    "max_results": 3,
+    "min_lexical_score": 0.25,
+    "max_related_lookups": 0
+  },
+  "nodes": [
+    {
+      "id": "zh-database-migration",
+      "kind": "procedural",
+      "status": "active",
+      "content": "部署前执行数据库迁移并验证架构版本"
+    },
+    {
+      "id": "ja-lockfile-regeneration",
+      "kind": "procedural",
+      "status": "active",
+      "content": "依存関係を更新した後にロックファイルを再生成して確認する"
+    },
+    {
+      "id": "ko-schema-migration",
+      "kind": "procedural",
+      "status": "active",
+      "content": "배포 전에 데이터베이스 마이그레이션을 실행하고 스키마 버전을 확인한다"
+    },
+    {
+      "id": "en-rust-format",
+      "kind": "procedural",
+      "status": "active",
+      "content": "Before focused Rust tests run cargo fmt and review the formatting diff"
+    },
+    {
+      "id": "zh-observability",
+      "kind": "procedural",
+      "status": "active",
+      "content": "发布后检查日志采集和告警通知状态"
+    },
+    {
+      "id": "ja-cache-monitoring",
+      "kind": "procedural",
+      "status": "active",
+      "content": "障害対応後にキャッシュを消去して監視画面を確認する"
+    },
+    {
+      "id": "ko-incident-observability",
+      "kind": "procedural",
+      "status": "active",
+      "content": "장애 복구 후 로그 수집과 알림 상태를 점검한다"
+    },
+    {
+      "id": "en-release-notes",
+      "kind": "semantic",
+      "status": "active",
+      "content": "Release notes record public API changes and compatibility impact"
+    },
+    {
+      "id": "candidate-unverified-shortcut",
+      "kind": "procedural",
+      "status": "candidate",
+      "content": "临时捷径绕过全部人工审批"
+    }
+  ],
+  "foreign_node": {
+    "id": "foreign-private-cache",
+    "kind": "procedural",
+    "status": "active",
+    "content": "租户私有缓存清理需要双重批准"
+  },
+  "queries": [
+    {
+      "id": "zh-phrase-variation",
+      "language": "zh-Hans",
+      "query": "数据库迁移验证",
+      "relevant_node_id": "zh-database-migration"
+    },
+    {
+      "id": "ja-phrase-variation",
+      "language": "ja",
+      "query": "ロックファイル再生成確認",
+      "relevant_node_id": "ja-lockfile-regeneration"
+    },
+    {
+      "id": "ko-phrase-variation",
+      "language": "ko",
+      "query": "데이터베이스 마이그레이션 스키마 확인",
+      "relevant_node_id": "ko-schema-migration"
+    },
+    {
+      "id": "en-word-baseline",
+      "language": "en",
+      "query": "cargo fmt focused tests",
+      "relevant_node_id": "en-rust-format"
+    }
+  ],
+  "negative_queries": [
+    {
+      "id": "cross-language-no-semantic-claim",
+      "query": "validate database migration version"
+    },
+    {
+      "id": "candidate-remains-hidden",
+      "query": "临时捷径绕过全部人工审批"
+    },
+    {
+      "id": "foreign-namespace-remains-hidden",
+      "query": "租户私有缓存清理需要双重批准"
+    }
+  ],
+  "thresholds": {
+    "minimum_recall_at_3": 1.0,
+    "minimum_mean_reciprocal_rank": 1.0,
+    "maximum_context_nodes_per_query": 1,
+    "maximum_model_calls_per_query": 1,
+    "expected_admissions": 4
+  }
+}

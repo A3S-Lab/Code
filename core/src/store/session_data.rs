@@ -227,7 +227,8 @@ pub struct SessionData {
     ///
     /// The repository handle is intentionally not serialized. A resume host
     /// must re-inject a live repository whose binding matches this descriptor;
-    /// Code rejects missing or drifted namespace, mode, and recall policy.
+    /// Code rejects missing or drifted namespace, mode, recall policy, and
+    /// retrieval profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub durable_memory_binding: Option<crate::durable_memory::DurableMemoryBindingV1>,
 

@@ -426,7 +426,7 @@ pub(super) fn apply_persisted_runtime_options(
         (Some(_), Some(_)) => {
             return Err(CodeError::SessionConfiguration {
                 field: "durable_memory",
-                message: "resume binding differs from the exact durable-memory namespace and serving policy retained by the session snapshot".to_string(),
+                message: "resume binding differs from the exact durable-memory namespace, serving policy, or retrieval profile retained by the session snapshot".to_string(),
             });
         }
         (Some(_), None) => {

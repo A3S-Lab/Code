@@ -323,14 +323,16 @@ consolidation policy.
 | `DM-MAINT1` | Delivered | Session-owned typed maintenance jobs can apply host-decided V2 lifecycle changes without placing policy in the repository | Verified atomic supersession retains old history and inverse relations; health is bounded; close cancels and joins workers |
 | `DM-EVAL1` | Delivered | Versioned retrieval and product fixtures compare no memory, V1, and V2 through deterministic public APIs and real `AgentSession` turns | Relation Recall@5 and V2 task success reach `0.90`; write precision and evidence fidelity reach `1.00`; context, calls, nominal cost, conflict preservation, and admissions pass locked gates |
 | `DM-RESTART1` | Delivered | Session snapshots retain a versioned, secret-free durable-memory binding while the host re-injects the live repository | Missing, newly acquired, scope-drifted, mode-drifted, or policy-drifted bindings fail closed; file-repository restart preserves evidence and admission/use history; Session teardown releases the repository lock |
-| `DM-PROD1` | Planned | Host qualification on representative long-horizon, multilingual, multi-agent, restart, and drift distributions | A new versioned corpus and retained report justify any semantic-vector, consolidation-policy, or rollout change without weakening namespace, evidence, history, admission, or lifecycle invariants |
+| `DM-MULTI1` | Delivered | A versioned word/CJK-bigram retrieval profile is persisted in the exact binding and exercised through real English, Simplified Chinese, Japanese, and Korean `AgentSession` turns | Recall@3 and MRR are `1.00`; context is at most one node per task; Candidate, foreign-namespace, and no-overlap translated queries produce no leakage; legacy query semantics cannot silently resume as current |
+| `DM-PROD1` | Planned | Host qualification on representative long-horizon, cross-language semantic, multi-agent, repeated-restart, and production-drift distributions | New versioned corpora and retained reports justify any semantic-vector, consolidation-policy, or rollout change without weakening namespace, evidence, history, admission, or lifecycle invariants |
 
 The deterministic gate deliberately leaves the known no-token-overlap
 paraphrase as a miss. Semantic vectors remain deferred until new independent
 labels fall below the declared `0.90` threshold. See
 [Durable Memory Integration](manual/DURABLE_MEMORY.md),
 [Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
-and [Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md).
+[Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md), and
+[Durable Memory Multilingual Evaluation](manual/DURABLE_MEMORY_MULTILINGUAL_EVAL.md).
 
 ## 4. Invariants
 

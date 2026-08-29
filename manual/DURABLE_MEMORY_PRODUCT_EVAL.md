@@ -108,7 +108,11 @@ scheduler nor A3S Memory's repository invents that policy.
 
 ## Known limits
 
-- The corpus is small, English, synthetic, and coding-workflow focused.
+- This product corpus is small, English, synthetic, and coding-workflow
+  focused. The separate
+  [multilingual gate](DURABLE_MEMORY_MULTILINGUAL_EVAL.md) adds deterministic
+  same-language English, Simplified Chinese, Japanese, and Korean coverage, but
+  is not a production-language distribution.
 - The model is deterministic and tests context availability, not reasoning
   quality or robustness to a real provider.
 - Cost and tokens are normalized proxies, not billed usage.
@@ -128,6 +132,7 @@ Run from the Code crate workspace:
 
 ```text
 cargo test -p a3s-code-core --test durable_memory_product_eval -- --nocapture
+cargo test -p a3s-code-core --test durable_memory_multilingual_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_restart -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle owned_host_job_applies_verified_atomic_v2_supersession -- --nocapture
 ```

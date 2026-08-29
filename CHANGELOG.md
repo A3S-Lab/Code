@@ -10,8 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Persisted `DurableMemoryBindingV1` identity and fail-closed resume checks for
-  exact durable-memory namespace, mode, and recall policy, plus a real
-  file-repository restart integration gate.
+  exact durable-memory namespace, mode, recall policy, and retrieval profile,
+  plus a real file-repository restart integration gate.
+- Added the versioned word/CJK-bigram lexical profile and a deterministic real
+  `AgentSession` gate for English, Simplified Chinese, Japanese, and Korean
+  phrase variation, candidate isolation, and tenant isolation.
+
+### Changed
+
+- Pinned A3S Memory to the CJK lexical-query release. Existing snapshots that
+  predate retrieval-profile persistence remain readable, but cannot silently
+  resume under the changed query semantics. Current bindings use schema `2` so
+  older binaries also fail closed instead of ignoring the new profile field.
 
 ### Fixed
 

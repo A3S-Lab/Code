@@ -6,7 +6,10 @@
 
 mod binding;
 mod context;
-pub use binding::{DurableMemoryBindingV1, DURABLE_MEMORY_BINDING_SCHEMA_VERSION};
+pub use binding::{
+    DurableMemoryBindingV1, DURABLE_MEMORY_BINDING_SCHEMA_VERSION,
+    DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
+};
 pub(crate) use context::DurableMemoryRecallIdentity;
 
 use a3s_memory::repository::{

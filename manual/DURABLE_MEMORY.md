@@ -67,6 +67,15 @@ marks the older item as superseded and protects it from pruning. Recall filters
 the archived item, but the original content and replacement link remain
 available for audit.
 
+The lexical algorithm has an explicit stable identity:
+`a3s.memory.lexical.word-cjk-bigram.v1`. It lowercases and matches ordinary
+alphanumeric words. For contiguous Han, Kana, Hangul, Bopomofo, and related CJK
+runs, it also indexes the whole run and overlapping character bigrams. It does
+not add single-character unigrams. This supports deterministic same-language
+phrase variation in text that has no spaces while limiting broad accidental
+matches. It is not a stemmer, translator, embedding model, or cross-language
+semantic search system.
+
 ## Host wiring
 
 ```rust,no_run
@@ -120,12 +129,22 @@ inferred from a path or a backend name; the host selects it explicitly.
 not serialized in a session snapshot. Its secret-free
 `DurableMemoryBindingV1` is persisted instead: schema version, exact
 tenant/principal/scope, mode, result bound, lexical threshold, and relation
-lookup bound. On restore, the host reconstructs the repository and injects a
-binding equivalent at the typed value level. Resume fails closed when a
-bound session is missing that injection, any visible binding field drifts, or
-an older unbound session attempts to acquire memory authority during resume.
+lookup bound, plus the lexical retrieval profile. On restore, the host
+reconstructs the repository and injects a binding equivalent at the typed
+value level. Resume fails closed when a bound session is missing that
+injection, any visible binding field drifts, or an older unbound session
+attempts to acquire memory authority during resume.
 A rollout from shadow to active recall therefore creates a new session rather
 than silently changing the semantics of an existing persisted session.
+
+Schema `1` snapshots written before `retrievalProfile` existed deserialize as
+the legacy `a3s.memory.lexical.word.v1` profile so their state remains
+inspectable and portable. New bindings use schema `2` with the current profile.
+Only those two schema/profile pairs validate. A current host can only construct
+the current pair, so exact resume rejects the legacy/current mismatch; an old
+binary rejects schema `2` instead of ignoring the new identity field.
+Backward-readable data is not treated as permission to change a live session's
+retrieval behavior.
 
 The descriptor does not claim to authenticate a database path or remote
 service instance. Repository construction, credentials, fencing, and backend
@@ -252,11 +271,17 @@ enters model input.
    no-memory/V1/V2 task-success comparison, write precision, evidence fidelity,
    conflict preservation, context bound, provider-call bound, nominal cost
    bound, and real admission counters to pass before rollout.
+9. Run the multilingual gate. Require the persisted retrieval-profile identity,
+   English and CJK same-language ranking, real-session context bounds,
+   Candidate isolation, namespace isolation, and the explicit cross-language
+   miss to remain stable.
 
 See [Durable Memory Retrieval Evaluation](DURABLE_MEMORY_RETRIEVAL_EVAL.md) for
 the retrieval metric definitions and vector decision. See
 [Durable Memory Product Evaluation](DURABLE_MEMORY_PRODUCT_EVAL.md) for the
-end-to-end serving, capture, cost, and consolidation evidence and its limits.
+end-to-end serving, capture, cost, and consolidation evidence. See
+[Durable Memory Multilingual Evaluation](DURABLE_MEMORY_MULTILINGUAL_EVAL.md)
+for the query-profile contract, CJK gate, and its limits.
 
 ## Verification
 
@@ -269,6 +294,7 @@ cargo test -p a3s-code-core --test durable_memory_active
 cargo test -p a3s-code-core --test durable_memory_restart
 cargo test -p a3s-code-core --test durable_memory_retrieval_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_product_eval -- --nocapture
+cargo test -p a3s-code-core --test durable_memory_multilingual_eval -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle
 cargo test -p a3s-code-core --lib
 ```
