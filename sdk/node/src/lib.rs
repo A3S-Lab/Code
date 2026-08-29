@@ -856,6 +856,9 @@ use session::*;
 
 mod session_memory;
 
+mod memory_maintenance;
+pub use memory_maintenance::*;
+
 mod session_tools;
 
 mod workspace_retrieval;

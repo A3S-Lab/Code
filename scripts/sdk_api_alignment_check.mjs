@@ -146,6 +146,14 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
     'session_checkpoint_export_sink',
     'Rust SessionCheckpointExportSink trait object; cross-language hosts need a typed immutable-object callback adapter before this can be value-typed.',
   ],
+  [
+    'durable_memory',
+    'Rust live MemoryRepository binding with an exact namespace; SDKs need a typed repository provider before this can cross FFI.',
+  ],
+  [
+    'memory_maintenance',
+    'Rust MemoryMaintenanceJob trait objects; SDKs observe health, while custom jobs require a typed callback provider.',
+  ],
 ]);
 
 const SESSION_OPTION_ALIASES = new Map([
@@ -553,6 +561,7 @@ assertContainsAll('Go Session', goSession, [
   'Run',
   'Send',
   'TaskSchedulerStats',
+  'MemoryMaintenanceHealth',
   'SpawnRunWithID',
   'SpawnRecoveryWithRunID',
   'Stream',

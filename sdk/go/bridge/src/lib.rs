@@ -47,6 +47,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_resume",
     "session_info",
     "session_task_scheduler_stats",
+    "session_memory_maintenance_health",
     "session_workspace_retrieval_status",
     "session_semantic_search",
     "session_hybrid_search",
@@ -592,6 +593,13 @@ impl BridgeState {
                     .task_scheduler_stats()
                     .await?;
                 encode(stats)
+            }
+            "session_memory_maintenance_health" => {
+                let health = self
+                    .request_session(&request.params)
+                    .await?
+                    .memory_maintenance_health();
+                encode(health)
             }
             "session_workspace_retrieval_status" => {
                 let status = self
@@ -3194,6 +3202,18 @@ mod tests {
         .unwrap();
         assert_eq!(agent_stats["maxActive"], session_stats["maxActive"]);
         assert_eq!(agent_stats["pending"], Value::from(0));
+
+        let maintenance_health = dispatch_boxed(
+            &state,
+            &request(
+                "session_memory_maintenance_health",
+                json!({ "session_handle": session_handle }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(maintenance_health["phase"], "disabled");
+        assert_eq!(maintenance_health["jobs"], json!([]));
 
         dispatch_boxed(
             &state,

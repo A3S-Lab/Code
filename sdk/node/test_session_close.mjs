@@ -39,6 +39,11 @@ function makeSession(sessionId) {
 // 1. Fresh session: isClosed is false; agent.listSessions sees it.
 const sessionA = makeSession('node-close-1')
 assert.equal(sessionA.isClosed(), false, 'fresh session should not be closed')
+assert.deepEqual(
+  sessionA.memoryMaintenanceHealth(),
+  { phase: 'disabled', jobs: [] },
+  'an unconfigured session must report disabled maintenance',
+)
 
 const listedBefore = await agent.listSessions()
 assert.ok(

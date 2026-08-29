@@ -18,6 +18,7 @@ import type {
   SessionOptions,
   ToolPresentationProfile,
   TaskSchedulerStats,
+  MemoryMaintenanceHealth,
   CallbackEmbeddingProvider,
   DeterministicWorkspaceReranker,
   LineWorkspaceChunkingStrategy,
@@ -70,6 +71,7 @@ const _primitivePresentationProfileIsRejected: 'code' extends NonNullable<
   ? false
   : true = true
 declare const _schedulerStats: TaskSchedulerStats
+declare const _memoryMaintenanceHealth: MemoryMaintenanceHealth
 declare const _embeddingProvider: CallbackEmbeddingProvider
 declare const _deterministicReranker: DeterministicWorkspaceReranker
 declare const _lineChunking: LineWorkspaceChunkingStrategy
@@ -131,6 +133,7 @@ void _session.agentTemplateId
 void _session.correlationId
 void _session.hasMemory
 void _session.taskSchedulerStats()
+void _session.memoryMaintenanceHealth()
 void _session.workspaceRetrievalStatus()
 void _session.semanticSearch({ query: 'session cleanup', limit: 5 })
 void _session.hybridSearch({ query: 'terminate_owned_tasks', path: 'src' })
@@ -150,6 +153,7 @@ void _embeddingResponse.vectors[0]?.values
 void _embeddingProvider
 void _agent.taskSchedulerStats()
 void _schedulerStats.activeByPriority.interactive
+void _memoryMaintenanceHealth.jobs[0]?.lastAffectedItems
 void _agent.session('repo', {
   ..._sessionOptions,
   llmApiTimeoutMs: 30_000,

@@ -173,6 +173,26 @@ synchronous compatibility factory rejects configured maintenance instead of
 silently skipping it. Like the durable repository binding, host jobs are
 runtime-only and must be injected again after restart.
 
+## Cross-language boundary
+
+Rust hosts own the complete V2 surface because `DurableMemorySession` contains
+a live `MemoryRepository` and custom maintenance contains a live
+`MemoryMaintenanceJob`. Node.js, Python, and Go do not accept a raw backend
+name, path, or untyped callback as a substitute for those authority-bearing
+objects. A future SDK extension must introduce typed repository and job
+providers with explicit lifecycle and namespace semantics.
+
+Operational observation does cross the boundary now. The same non-sensitive
+health shape is available as:
+
+- Rust: `session.memory_maintenance_health()`;
+- Node.js: `session.memoryMaintenanceHealth()`;
+- Python: `session.memory_maintenance_health()`;
+- Go: `session.MemoryMaintenanceHealth(ctx)`.
+
+The snapshot contains phase, bounded counters, worker state, and bounded error
+text, but no memory content, evidence, credentials, or repository handles.
+
 ## Evidence and privacy
 
 The V2 node stores a reference and SHA-256 digest, not the turn body. The digest

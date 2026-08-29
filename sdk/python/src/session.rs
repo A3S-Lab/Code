@@ -22,6 +22,11 @@ impl PySession {
         task_scheduler_stats_to_py(py, &stats)
     }
 
+    /// Observe periodic pruning and host-owned consolidation for this session.
+    fn memory_maintenance_health(&self, py: Python<'_>) -> PyResult<PyObject> {
+        memory_maintenance_health_to_py(py, &self.inner.memory_maintenance_health())
+    }
+
     /// Send a prompt or request and wait for the complete response.
     ///
     /// Args:

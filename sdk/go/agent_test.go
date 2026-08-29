@@ -57,6 +57,38 @@ func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
 	}
 }
 
+func TestMemoryMaintenanceHealthUsesStableSessionOperation(t *testing.T) {
+	lastAffected := uint64(3)
+	lastError := "bounded failure"
+	runtime := &fakeRuntime{
+		request: func(
+			_ context.Context,
+			operation string,
+			params map[string]any,
+		) (any, error) {
+			if operation != "session_memory_maintenance_health" ||
+				params["session_handle"] != "session-1" {
+				t.Fatalf("unexpected request: %s %#v", operation, params)
+			}
+			return MemoryMaintenanceHealth{
+				Phase: MemoryMaintenanceDegraded,
+				Jobs: []MemoryMaintenanceJobHealth{{
+					Name:              "prune_v1",
+					FailedRuns:        1,
+					LastAffectedItems: &lastAffected,
+					LastError:         &lastError,
+				}},
+			}, nil
+		},
+	}
+	session := &Session{runtime: runtime, handle: "session-1"}
+	health, err := session.MemoryMaintenanceHealth(context.Background())
+	if err != nil || health.Phase != MemoryMaintenanceDegraded ||
+		*health.Jobs[0].LastAffectedItems != 3 || *health.Jobs[0].LastError != lastError {
+		t.Fatalf("health = %#v, %v", health, err)
+	}
+}
+
 func TestDefaultSecurityProviderUsesTypedSessionOption(t *testing.T) {
 	encoded, err := json.Marshal(SessionOptions{
 		SecurityProvider: NewDefaultSecurityProvider(),

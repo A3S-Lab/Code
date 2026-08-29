@@ -202,6 +202,18 @@ fn task_scheduler_stats_to_py(
     json_string_to_py(py, &json)
 }
 
+fn memory_maintenance_health_to_py(
+    py: Python<'_>,
+    health: &a3s_code_core::memory::MemoryMaintenanceHealth,
+) -> PyResult<PyObject> {
+    let json = serde_json::to_string(health).map_err(|error| {
+        PyRuntimeError::new_err(format!(
+            "Failed to serialize memory maintenance health: {error}"
+        ))
+    })?;
+    json_string_to_py(py, &json)
+}
+
 // ============================================================================
 // AgentResult
 // ============================================================================

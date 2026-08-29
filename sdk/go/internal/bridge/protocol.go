@@ -27,6 +27,7 @@ var RequiredOperations = []string{
 	"session_resume",
 	"session_info",
 	"session_task_scheduler_stats",
+	"session_memory_maintenance_health",
 	"session_workspace_retrieval_status",
 	"session_semantic_search",
 	"session_hybrid_search",

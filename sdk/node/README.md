@@ -175,6 +175,19 @@ The returned `TaskSchedulerStats` reports `maxActive`, active and pending
 totals, per-priority counts, and shutdown state. It is a point-in-time
 diagnostic snapshot, not a capacity reservation.
 
+## Memory maintenance health
+
+`session.memoryMaintenanceHealth()` returns the same non-sensitive lifecycle
+snapshot as Rust Core. Unconfigured sessions report
+`{ phase: 'disabled', jobs: [] }`; configured jobs expose their bounded run,
+failure, affected-item, and worker-alive counters. The snapshot contains no
+memory content or evidence.
+
+Full A3S Memory V2 repository injection, activation, and custom consolidation
+remain Rust-host APIs. They require live repository/job objects and exact
+namespace authority; the Node SDK will expose them only through typed provider
+objects, not primitive backend names.
+
 ## Deterministic Tool-result projection
 
 Pin the context-efficient profile when long Tool output should retain both its

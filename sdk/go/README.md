@@ -236,6 +236,19 @@ task_scheduler {
 per-priority counts, and shutdown state. It is a point-in-time diagnostic
 snapshot, not a capacity reservation.
 
+## Memory maintenance health
+
+`session.MemoryMaintenanceHealth(ctx)` reads the same non-sensitive lifecycle
+snapshot from the versioned bridge. Unconfigured sessions return
+`MemoryMaintenanceDisabled` with no jobs; configured jobs expose bounded run,
+failure, affected-item, and worker-alive counters. The snapshot contains no
+memory content or evidence.
+
+Full A3S Memory V2 repository injection, activation, and custom consolidation
+remain Rust-host APIs. They require live repository/job objects and exact
+namespace authority; the Go SDK will expose them only through typed provider
+objects, not primitive backend names.
+
 ## Deterministic Tool-result projection
 
 Pin the context-efficient policy when long Tool output should retain both its

@@ -245,6 +245,18 @@ The returned dictionaries report `maxActive`, active and pending totals,
 per-priority counts, and shutdown state. They are point-in-time diagnostic
 snapshots, not capacity reservations.
 
+## Memory maintenance health
+
+`session.memory_maintenance_health()` returns a typed, non-sensitive lifecycle
+snapshot. Unconfigured sessions report `{"phase": "disabled", "jobs": []}`;
+configured jobs expose bounded run, failure, affected-item, and worker-alive
+counters. The snapshot contains no memory content or evidence.
+
+Full A3S Memory V2 repository injection, activation, and custom consolidation
+remain Rust-host APIs. They require live repository/job objects and exact
+namespace authority; the Python SDK will expose them only through typed
+provider objects, not primitive backend names.
+
 ## Deterministic Tool-result projection
 
 Pin the context-efficient profile when long Tool output should retain both its

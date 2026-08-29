@@ -16,8 +16,15 @@ Run with: python -m sdk/python/tests/test_session_close
 from __future__ import annotations
 
 import tempfile
+from typing import cast
 
-from a3s_code import Agent, LocalWorkspaceBackend, PermissionPolicy, SessionOptions
+from a3s_code import (
+    Agent,
+    LocalWorkspaceBackend,
+    MemoryMaintenanceHealth,
+    PermissionPolicy,
+    SessionOptions,
+)
 
 
 INLINE_CONFIG = """
@@ -47,6 +54,8 @@ def main() -> None:
     # 1. Fresh session: is_closed is False, list_sessions sees it.
     session = _make_session(agent, workspace, "py-close-1")
     assert session.is_closed is False, "fresh session should not be closed"
+    health = cast(MemoryMaintenanceHealth, session.memory_maintenance_health())
+    assert health == {"phase": "disabled", "jobs": []}
 
     listed = agent.list_sessions()
     assert "py-close-1" in listed, (

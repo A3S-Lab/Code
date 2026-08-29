@@ -864,6 +864,23 @@ export interface BudgetGuardHandlers {
    */
   timeoutMs?: number
 }
+/** Current health of one scheduled memory maintenance job. */
+export interface MemoryMaintenanceJobHealth {
+  name: string
+  intervalMs: number
+  workerAlive: boolean
+  runInProgress: boolean
+  successfulRuns: number
+  failedRuns: number
+  totalAffectedItems: number
+  lastAffectedItems?: number
+  lastError?: string
+}
+/** Non-sensitive point-in-time snapshot of session-owned maintenance. */
+export interface MemoryMaintenanceHealth {
+  phase: string
+  jobs: Array<MemoryMaintenanceJobHealth>
+}
 export interface WorkspaceRetrievalOptionsObject {
   /** Opaque live provider identity. Pass a `WorkspaceRetrievalOptions` instance. */
   instanceId: string
@@ -1667,6 +1684,8 @@ export declare class Session {
    * Removes all session-scoped memory items without affecting long-term or working memory.
    */
   clearShortTerm(): Promise<void>
+  /** Observe periodic pruning and host-owned consolidation for this session. */
+  memoryMaintenanceHealth(): MemoryMaintenanceHealth
   /**
    * Execute a tool by name, bypassing the LLM and treating the host as the
    * authority that already approved permission and HITL requirements.

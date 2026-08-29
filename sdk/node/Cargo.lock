@@ -159,13 +159,15 @@ dependencies = [
 [[package]]
 name = "a3s-memory"
 version = "0.1.3"
-source = "git+https://github.com/A3S-Lab/Memory.git?rev=216505634d81089cda89531d1b2d828c26170d62#216505634d81089cda89531d1b2d828c26170d62"
+source = "git+https://github.com/A3S-Lab/Memory.git?rev=b66f6a8e71f3ffcb5c9650f52ab727f6e1be37de#b66f6a8e71f3ffcb5c9650f52ab727f6e1be37de"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "fs2",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "uuid",
 ]

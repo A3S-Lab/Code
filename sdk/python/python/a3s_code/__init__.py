@@ -9,6 +9,11 @@ from .event_protocol_v1 import (
     KnownAgentEventTypeV1,
 )
 from .errors import CodeErrorCode
+from .memory_maintenance import (
+    MemoryMaintenanceHealth,
+    MemoryMaintenanceJobHealth,
+    MemoryMaintenancePhase,
+)
 from .workspace_retrieval import (
     EmbeddingBatchFailure,
     EmbeddingBatchRequest,
