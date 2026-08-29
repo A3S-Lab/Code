@@ -198,7 +198,7 @@ pub use durable_memory::{
     DurableMemoryActivation, DurableMemoryBindingV1, DurableMemoryMode, DurableMemoryRecallChannel,
     DurableMemoryRecallHit, DurableMemoryRecallPolicy, DurableMemoryRecallPreview,
     DurableMemorySession, DurableMemoryUse, DURABLE_MEMORY_BINDING_SCHEMA_VERSION,
-    DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
+    DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1, DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
 };
 pub use dynamic_workflow::{
     dynamic_workflow_store_path, DynamicWorkflowRuntime, DynamicWorkflowScriptLimits,

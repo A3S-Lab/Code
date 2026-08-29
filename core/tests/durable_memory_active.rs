@@ -2,7 +2,7 @@ use a3s_code_core::{
     DurableMemoryActivation, DurableMemoryBindingV1, DurableMemoryMode, DurableMemoryRecallChannel,
     DurableMemoryRecallHit, DurableMemoryRecallPolicy, DurableMemoryRecallPreview,
     DurableMemorySession, DurableMemoryUse, DURABLE_MEMORY_BINDING_SCHEMA_VERSION,
-    DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
+    DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1, DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
 };
 use a3s_memory::repository::{
     DurableMemoryKind, EvidenceKind, EvidenceRef, InMemoryRepository, MemoryChangeSet,
@@ -71,6 +71,10 @@ fn active_memory_policy_is_bounded_and_public_types_are_thread_safe() {
     assert_eq!(
         binding.retrieval_profile(),
         DURABLE_MEMORY_RETRIEVAL_PROFILE_V1
+    );
+    assert_eq!(
+        binding.context_id_profile(),
+        DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1
     );
     let roundtrip: DurableMemoryBindingV1 =
         serde_json::from_str(&serde_json::to_string(&binding).unwrap()).unwrap();

@@ -381,6 +381,42 @@ fn portable_checkpoint_rejects_invalid_durable_memory_binding() {
     )
     .binding();
     let mut encoded = serde_json::to_value(binding).unwrap();
+    encoded["contextIdProfile"] = serde_json::json!("a3s.code.memory.context.unknown.v1");
+    let invalid: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
+    let mut invalid_snapshot = snapshot(false);
+    invalid_snapshot.session.durable_memory_binding = Some(invalid);
+
+    let error = SessionCheckpointExportV1::new(invalid_snapshot, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("context identity profile"), "{error}");
+
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "workspace").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        Arc::new(InMemoryRepository::new()),
+        namespace,
+        DurableMemoryRecallPolicy::try_new(5, 0.25).unwrap(),
+    )
+    .binding();
+    let mut encoded = serde_json::to_value(binding).unwrap();
+    encoded["schemaVersion"] = serde_json::json!(2);
+    let invalid: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
+    let mut invalid_snapshot = snapshot(false);
+    invalid_snapshot.session.durable_memory_binding = Some(invalid);
+
+    let error = SessionCheckpointExportV1::new(invalid_snapshot, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("context identity profile"), "{error}");
+
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "workspace").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        Arc::new(InMemoryRepository::new()),
+        namespace,
+        DurableMemoryRecallPolicy::try_new(5, 0.25).unwrap(),
+    )
+    .binding();
+    let mut encoded = serde_json::to_value(binding).unwrap();
     encoded["schemaVersion"] = serde_json::json!(1);
     let invalid: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
     let mut invalid_snapshot = snapshot(false);
@@ -401,12 +437,17 @@ fn portable_checkpoint_keeps_legacy_durable_memory_state_readable() {
         DurableMemoryRecallPolicy::try_new(5, 0.25).unwrap(),
     )
     .binding();
-    let mut encoded = serde_json::to_value(binding).unwrap();
+    let mut encoded = serde_json::to_value(&binding).unwrap();
     encoded["schemaVersion"] = serde_json::json!(1);
     encoded.as_object_mut().unwrap().remove("retrievalProfile");
+    encoded.as_object_mut().unwrap().remove("contextIdProfile");
     let legacy: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
     assert_eq!(legacy.schema_version(), 1);
     assert_eq!(legacy.retrieval_profile(), "a3s.memory.lexical.word.v1");
+    assert_eq!(
+        legacy.context_id_profile(),
+        "a3s.code.memory.context.host-id.v0"
+    );
 
     let mut legacy_snapshot = snapshot(false);
     legacy_snapshot.session.tenant_id = Some("tenant".to_string());
@@ -414,6 +455,27 @@ fn portable_checkpoint_keeps_legacy_durable_memory_state_readable() {
     legacy_snapshot.session.durable_memory_binding = Some(legacy);
     SessionCheckpointExportV1::new(legacy_snapshot, None)
         .expect("legacy binding must remain readable and portable");
+
+    let mut encoded = serde_json::to_value(&binding).unwrap();
+    encoded["schemaVersion"] = serde_json::json!(2);
+    encoded.as_object_mut().unwrap().remove("contextIdProfile");
+    let legacy: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
+    assert_eq!(legacy.schema_version(), 2);
+    assert_eq!(
+        legacy.retrieval_profile(),
+        "a3s.memory.lexical.word-cjk-bigram.v1"
+    );
+    assert_eq!(
+        legacy.context_id_profile(),
+        "a3s.code.memory.context.host-id.v0"
+    );
+
+    let mut legacy_snapshot = snapshot(false);
+    legacy_snapshot.session.tenant_id = Some("tenant".to_string());
+    legacy_snapshot.session.principal = Some("principal".to_string());
+    legacy_snapshot.session.durable_memory_binding = Some(legacy);
+    SessionCheckpointExportV1::new(legacy_snapshot, None)
+        .expect("schema 2 binding must remain readable and portable");
 }
 
 #[test]

@@ -64,6 +64,7 @@ pub(crate) struct InvocationContext {
     agent_event_barrier: Option<AgentEventBarrier>,
     governance: InvocationGovernance,
     model_evidence: Option<ModelEvidenceState>,
+    memory_context_sequence: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -123,6 +124,7 @@ impl InvocationContext {
             agent_event_barrier: None,
             governance,
             model_evidence: None,
+            memory_context_sequence: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -160,6 +162,15 @@ impl InvocationContext {
 
     pub(crate) fn session_id_option(&self) -> Option<&str> {
         (!self.session_id.is_empty()).then_some(self.session_id())
+    }
+
+    pub(crate) fn next_memory_context_sequence(&self) -> Option<u64> {
+        self.memory_context_sequence
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .ok()
+            .map(|previous| previous + 1)
     }
 
     pub(crate) fn cancellation(&self) -> &CancellationToken {
@@ -364,6 +375,22 @@ mod tests {
         assert!(!tool_context.is_cancelled());
         token.cancel();
         assert!(tool_context.is_cancelled());
+    }
+
+    #[test]
+    fn invocation_clones_share_one_monotonic_memory_context_sequence() {
+        let context = InvocationContext::new(
+            "run-1",
+            "session-1",
+            CancellationToken::new(),
+            None,
+            InvocationGovernance::default(),
+        );
+        let clone = context.clone();
+
+        assert_eq!(context.next_memory_context_sequence(), Some(1));
+        assert_eq!(clone.next_memory_context_sequence(), Some(2));
+        assert_eq!(context.next_memory_context_sequence(), Some(3));
     }
 
     #[test]

@@ -10,7 +10,8 @@ pub use binding::{
     DurableMemoryBindingV1, DURABLE_MEMORY_BINDING_SCHEMA_VERSION,
     DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
 };
-pub(crate) use context::DurableMemoryRecallIdentity;
+pub use context::DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1;
+pub(crate) use context::{durable_memory_context_id, DurableMemoryRecallIdentity};
 
 use a3s_memory::repository::{
     DurableMemoryKind, EvidenceKind, EvidenceRef, MemoryAccessEvent, MemoryChangeSet,

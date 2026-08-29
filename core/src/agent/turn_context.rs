@@ -85,12 +85,20 @@ impl AgentLoop {
                 let occurred_at = i64::try_from(self.config.host_env.now_ms())
                     .ok()
                     .and_then(chrono::DateTime::from_timestamp_millis);
-                let context_id = self.config.host_env.next_id();
+                let context_id = self.bound_invocation.as_ref().and_then(|invocation| {
+                    invocation.next_memory_context_sequence().map(|sequence| {
+                        crate::durable_memory::durable_memory_context_id(
+                            invocation.session_id(),
+                            invocation.run_id(),
+                            sequence,
+                        )
+                    })
+                });
                 binding
                     .admit_selected_context(
                         &mut context_assembly,
                         &durable_recall,
-                        &context_id,
+                        context_id.as_deref(),
                         occurred_at,
                     )
                     .await;

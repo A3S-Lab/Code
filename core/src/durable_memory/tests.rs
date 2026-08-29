@@ -187,6 +187,20 @@ async fn active_context_is_admitted_only_for_the_selected_current_revision() {
         .unwrap();
     assert_eq!(batch.result.items.len(), 1);
     assert_eq!(batch.identities[0].node_id, "active-node");
+    let mut unbound = crate::context::ContextAssembly {
+        items: batch.result.items.clone(),
+        total_tokens: batch.result.items[0].token_count,
+        truncated: false,
+    };
+    assert_eq!(
+        binding
+            .admit_selected_context(&mut unbound, &batch.identities, None, Some(time(3)))
+            .await,
+        0,
+        "memory without an exact invocation identity must fail closed"
+    );
+    assert!(unbound.items.is_empty());
+    assert_eq!(unbound.total_tokens, 0);
     let mut unselected = crate::context::ContextAssembly {
         items: vec![crate::context::ContextItem::new(
             "ordinary-only",
@@ -202,7 +216,7 @@ async fn active_context_is_admitted_only_for_the_selected_current_revision() {
             .admit_selected_context(
                 &mut unselected,
                 &batch.identities,
-                "context-unselected",
+                Some("context-unselected"),
                 Some(time(3)),
             )
             .await,
@@ -228,7 +242,7 @@ async fn active_context_is_admitted_only_for_the_selected_current_revision() {
             .admit_selected_context(
                 &mut assembly,
                 &batch.identities,
-                "context-one",
+                Some("context-one"),
                 Some(time(3)),
             )
             .await,
@@ -261,7 +275,7 @@ async fn active_context_is_admitted_only_for_the_selected_current_revision() {
             .admit_selected_context(
                 &mut assembly,
                 &batch.identities,
-                "context-two",
+                Some("context-two"),
                 Some(time(5)),
             )
             .await,

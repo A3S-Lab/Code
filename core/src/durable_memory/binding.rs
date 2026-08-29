@@ -1,4 +1,6 @@
-use super::{invalid, DurableMemoryMode, DurableMemoryRecallPolicy};
+use super::{
+    invalid, DurableMemoryMode, DurableMemoryRecallPolicy, DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1,
+};
 use a3s_memory::repository::{
     MemoryNamespace, MemoryRepositoryError, MEMORY_LEXICAL_QUERY_PROFILE_V1,
 };
@@ -6,24 +8,30 @@ use serde::{Deserialize, Serialize};
 
 /// Schema version for the secret-free durable-memory binding persisted with a
 /// session snapshot.
-pub const DURABLE_MEMORY_BINDING_SCHEMA_VERSION: u32 = 2;
+pub const DURABLE_MEMORY_BINDING_SCHEMA_VERSION: u32 = 3;
 
 /// Current A3S Memory query algorithm bound into new durable-memory sessions.
 pub const DURABLE_MEMORY_RETRIEVAL_PROFILE_V1: &str = MEMORY_LEXICAL_QUERY_PROFILE_V1;
 
 const LEGACY_WORD_RETRIEVAL_PROFILE_V1: &str = "a3s.memory.lexical.word.v1";
-const LEGACY_DURABLE_MEMORY_BINDING_SCHEMA_VERSION: u32 = 1;
+const LEGACY_HOST_CONTEXT_ID_PROFILE_V0: &str = "a3s.code.memory.context.host-id.v0";
+const LEGACY_RETRIEVAL_BINDING_SCHEMA_VERSION: u32 = 2;
+const LEGACY_BASE_BINDING_SCHEMA_VERSION: u32 = 1;
 
 fn legacy_retrieval_profile() -> String {
     LEGACY_WORD_RETRIEVAL_PROFILE_V1.to_string()
+}
+
+fn legacy_context_id_profile() -> String {
+    LEGACY_HOST_CONTEXT_ID_PROFILE_V0.to_string()
 }
 
 /// Exact Code-visible durable-memory authority and serving policy.
 ///
 /// The live repository is intentionally absent. Hosts own repository
 /// construction and must re-inject it after restart, while Code persists this
-/// descriptor to reject namespace, mode, recall-policy, or query-semantics
-/// drift.
+/// descriptor to reject namespace, mode, recall-policy, query-semantics, or
+/// admission-identity drift.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DurableMemoryBindingV1 {
@@ -34,6 +42,8 @@ pub struct DurableMemoryBindingV1 {
     recall_policy: Option<DurableMemoryRecallPolicy>,
     #[serde(default = "legacy_retrieval_profile")]
     retrieval_profile: String,
+    #[serde(default = "legacy_context_id_profile")]
+    context_id_profile: String,
 }
 
 impl DurableMemoryBindingV1 {
@@ -48,6 +58,7 @@ impl DurableMemoryBindingV1 {
             mode,
             recall_policy,
             retrieval_profile: DURABLE_MEMORY_RETRIEVAL_PROFILE_V1.to_string(),
+            context_id_profile: DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1.to_string(),
         }
     }
 
@@ -71,20 +82,11 @@ impl DurableMemoryBindingV1 {
         &self.retrieval_profile
     }
 
+    pub fn context_id_profile(&self) -> &str {
+        &self.context_id_profile
+    }
+
     pub(crate) fn validate(&self) -> Result<(), MemoryRepositoryError> {
-        if self.schema_version != DURABLE_MEMORY_BINDING_SCHEMA_VERSION
-            && self.schema_version != LEGACY_DURABLE_MEMORY_BINDING_SCHEMA_VERSION
-        {
-            return Err(invalid(
-                "durableMemoryBinding.schemaVersion",
-                format!(
-                    "unsupported schema version {}; expected {} or legacy {}",
-                    self.schema_version,
-                    DURABLE_MEMORY_BINDING_SCHEMA_VERSION,
-                    LEGACY_DURABLE_MEMORY_BINDING_SCHEMA_VERSION
-                ),
-            ));
-        }
         if self.retrieval_profile != DURABLE_MEMORY_RETRIEVAL_PROFILE_V1
             && self.retrieval_profile != LEGACY_WORD_RETRIEVAL_PROFILE_V1
         {
@@ -96,16 +98,58 @@ impl DurableMemoryBindingV1 {
                 ),
             ));
         }
-        let current_pair = self.schema_version == DURABLE_MEMORY_BINDING_SCHEMA_VERSION
-            && self.retrieval_profile == DURABLE_MEMORY_RETRIEVAL_PROFILE_V1;
-        let legacy_pair = self.schema_version == LEGACY_DURABLE_MEMORY_BINDING_SCHEMA_VERSION
-            && self.retrieval_profile == LEGACY_WORD_RETRIEVAL_PROFILE_V1;
-        if !current_pair && !legacy_pair {
+        if self.context_id_profile != DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1
+            && self.context_id_profile != LEGACY_HOST_CONTEXT_ID_PROFILE_V0
+        {
+            return Err(invalid(
+                "durableMemoryBinding.contextIdProfile",
+                format!(
+                    "unrecognized durable-memory context identity profile `{}`",
+                    self.context_id_profile
+                ),
+            ));
+        }
+        let (expected_retrieval_profile, expected_context_id_profile) = match self.schema_version {
+            DURABLE_MEMORY_BINDING_SCHEMA_VERSION => (
+                DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
+                DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1,
+            ),
+            LEGACY_RETRIEVAL_BINDING_SCHEMA_VERSION => (
+                DURABLE_MEMORY_RETRIEVAL_PROFILE_V1,
+                LEGACY_HOST_CONTEXT_ID_PROFILE_V0,
+            ),
+            LEGACY_BASE_BINDING_SCHEMA_VERSION => (
+                LEGACY_WORD_RETRIEVAL_PROFILE_V1,
+                LEGACY_HOST_CONTEXT_ID_PROFILE_V0,
+            ),
+            _ => {
+                return Err(invalid(
+                    "durableMemoryBinding.schemaVersion",
+                    format!(
+                        "unsupported schema version {}; expected {}, legacy {}, or legacy {}",
+                        self.schema_version,
+                        DURABLE_MEMORY_BINDING_SCHEMA_VERSION,
+                        LEGACY_RETRIEVAL_BINDING_SCHEMA_VERSION,
+                        LEGACY_BASE_BINDING_SCHEMA_VERSION
+                    ),
+                ));
+            }
+        };
+        if self.retrieval_profile != expected_retrieval_profile {
             return Err(invalid(
                 "durableMemoryBinding.retrievalProfile",
                 format!(
                     "retrieval profile `{}` is incompatible with schema version {}",
                     self.retrieval_profile, self.schema_version
+                ),
+            ));
+        }
+        if self.context_id_profile != expected_context_id_profile {
+            return Err(invalid(
+                "durableMemoryBinding.contextIdProfile",
+                format!(
+                    "context identity profile `{}` is incompatible with schema version {}",
+                    self.context_id_profile, self.schema_version
                 ),
             ));
         }

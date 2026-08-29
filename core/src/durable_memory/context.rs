@@ -12,6 +12,12 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
+/// Stable profile used to correlate one admitted model context with its exact
+/// session, run, and invocation-local sequence without trusting process-local
+/// ID generators to coordinate.
+pub const DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1: &str =
+    "a3s.code.memory.context.session-run-sequence-sha256.v1";
+
 const PROVIDER: &str = "durable_memory_v2";
 const RELATED_SCORE_FACTOR: f32 = 0.75;
 
@@ -211,14 +217,14 @@ impl DurableMemorySession {
         &self,
         assembly: &mut ContextAssembly,
         identities: &[DurableMemoryRecallIdentity],
-        context_id: &str,
+        context_id: Option<&str>,
         occurred_at: Option<DateTime<Utc>>,
     ) -> usize {
         if identities.is_empty() {
             return 0;
         }
         let mut admitted = HashSet::new();
-        if let Some(occurred_at) = occurred_at {
+        if let (Some(context_id), Some(occurred_at)) = (context_id, occurred_at) {
             for item in &assembly.items {
                 let Some(identity) = identities.iter().find(|identity| identity.matches(item))
                 else {
@@ -247,6 +253,8 @@ impl DurableMemorySession {
                     }
                 }
             }
+        } else if context_id.is_none() {
+            tracing::warn!("Dropping V2 memory context because invocation identity is unavailable");
         } else {
             tracing::warn!("Dropping V2 memory context because host time is invalid");
         }
@@ -268,6 +276,22 @@ impl DurableMemorySession {
             .sum();
         admitted.len()
     }
+}
+
+pub(crate) fn durable_memory_context_id(
+    session_id: &str,
+    run_id: &str,
+    context_sequence: u64,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1.as_bytes());
+    hasher.update(b"\0session\0");
+    hasher.update(Sha256::digest(session_id.as_bytes()));
+    hasher.update(b"\0run\0");
+    hasher.update(Sha256::digest(run_id.as_bytes()));
+    hasher.update(b"\0sequence\0");
+    hasher.update(context_sequence.to_le_bytes());
+    format!("a3s-code-context-v1-{:x}", hasher.finalize())
 }
 
 fn kind_label(kind: DurableMemoryKind) -> &'static str {
@@ -305,4 +329,44 @@ fn admission_id(context_id: &str, node_id: &str, node_revision: u64) -> String {
     hasher.update(b"\0");
     hasher.update(node_revision.to_le_bytes());
     format!("a3s-code-admission-{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_identity_is_deterministic_for_an_exact_tuple() {
+        let identity = durable_memory_context_id("session-a", "run-1", 1);
+        assert_eq!(identity, durable_memory_context_id("session-a", "run-1", 1));
+        assert_eq!(
+            identity,
+            "a3s-code-context-v1-50f4b682ba591093d9d800ab367bcd41cef14334d66c55cd29d7e487270a1e03"
+        );
+    }
+
+    #[test]
+    fn context_identity_separates_sessions_with_colliding_local_run_ids() {
+        assert_ne!(
+            durable_memory_context_id("session-a", "run-local-1", 1),
+            durable_memory_context_id("session-b", "run-local-1", 1)
+        );
+    }
+
+    #[test]
+    fn context_identity_separates_runs_and_is_repository_safe() {
+        let first = durable_memory_context_id("session-a", "run-1", 1);
+        let second = durable_memory_context_id("session-a", "run-2", 1);
+        assert_ne!(first, second);
+        assert!(first.starts_with("a3s-code-context-v1-"));
+        assert!(first.len() <= a3s_memory::repository::MAX_IDENTIFIER_BYTES);
+    }
+
+    #[test]
+    fn context_identity_separates_multiple_contexts_in_one_run() {
+        assert_ne!(
+            durable_memory_context_id("session-a", "run-1", 1),
+            durable_memory_context_id("session-a", "run-1", 2)
+        );
+    }
 }

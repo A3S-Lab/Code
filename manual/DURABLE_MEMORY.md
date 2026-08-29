@@ -129,28 +129,60 @@ inferred from a path or a backend name; the host selects it explicitly.
 not serialized in a session snapshot. Its secret-free
 `DurableMemoryBindingV1` is persisted instead: schema version, exact
 tenant/principal/scope, mode, result bound, lexical threshold, and relation
-lookup bound, plus the lexical retrieval profile. On restore, the host
-reconstructs the repository and injects a binding equivalent at the typed
-value level. Resume fails closed when a bound session is missing that
-injection, any visible binding field drifts, or an older unbound session
-attempts to acquire memory authority during resume.
+lookup bound, plus the lexical retrieval and admission context-identity
+profiles. On restore, the host reconstructs the repository and injects a
+binding equivalent at the typed value level. Resume fails closed when a bound
+session is missing that injection, any visible binding field drifts, or an
+older unbound session attempts to acquire memory authority during resume.
 A rollout from shadow to active recall therefore creates a new session rather
 than silently changing the semantics of an existing persisted session.
 
-Schema `1` snapshots written before `retrievalProfile` existed deserialize as
-the legacy `a3s.memory.lexical.word.v1` profile so their state remains
-inspectable and portable. New bindings use schema `2` with the current profile.
-Only those two schema/profile pairs validate. A current host can only construct
-the current pair, so exact resume rejects the legacy/current mismatch; an old
-binary rejects schema `2` instead of ignoring the new identity field.
-Backward-readable data is not treated as permission to change a live session's
-retrieval behavior.
+Schema `1` snapshots written before either profile existed deserialize as the
+legacy `a3s.memory.lexical.word.v1` retrieval profile and
+`a3s.code.memory.context.host-id.v0` context profile. Schema `2` introduced the
+current lexical profile but still used the legacy host-generated context ID.
+New bindings use schema `3` with both current profiles. Only those three exact
+schema/profile combinations validate. A current host can construct only schema
+`3`, so exact resume rejects either legacy/current mismatch; old binaries
+reject schema `3` instead of ignoring the new identity field. Backward-readable
+data is not treated as permission to change a live session's retrieval or
+admission identity behavior.
 
 The descriptor does not claim to authenticate a database path or remote
 service instance. Repository construction, credentials, fencing, and backend
 continuity remain host responsibilities; Code verifies only the namespace and
 serving authority it can observe. It never resolves `latest`, opens an implicit
 repository, or substitutes a global principal.
+
+## Explicit multi-agent sharing
+
+Independent agents collaborate through durable memory only when the host gives
+each session a `DurableMemorySession` with the same exact repository and
+namespace. Code does not discover a global memory backend, widen a binding, or
+inherit the parent's binding into delegated children. An unbound child remains
+isolated; a host that wants a separate agent to share memory creates that agent
+and injects the binding explicitly.
+
+Every final model context uses the stable identity profile
+`a3s.code.memory.context.session-run-sequence-sha256.v1`. Code hashes the exact
+session ID, run ID, and invocation-local context sequence with domain
+separation, producing a bounded opaque `a3s-code-context-v1-*` value. The same
+tuple always maps to the same context ID, while multiple contexts assembled
+inside one planned run remain distinct. Different sessions remain distinct even
+if separate deterministic host environments emit the same local run ID. An
+admission retry remains subject to the repository's full-event idempotency
+contract, including its timestamp; conflicting replay fails closed instead of
+double-counting. If the scoped invocation identity, sequence, or host timestamp
+is unavailable, recalled V2 items are removed before the model call.
+`DurableMemoryBindingV1.contextIdProfile` persists this algorithm identity, so
+resume cannot silently replace legacy host-generated event identities with the
+current session/run/sequence contract.
+
+This correlation value is not an authentication token. Namespace authority
+still comes from the exact host-injected binding, and repository fencing and
+globally meaningful session assignment remain host responsibilities. See
+[Durable Memory Multi-Agent Evaluation](DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
+the executable collision, lifecycle, isolation, and restart contract.
 
 The `durable_memory_restart` integration test uses real
 `FileMemoryRepository` and `FileSessionStore` instances across full close and
@@ -275,13 +307,19 @@ enters model input.
    English and CJK same-language ranking, real-session context bounds,
    Candidate isolation, namespace isolation, and the explicit cross-language
    miss to remain stable.
+10. Run the multi-agent gate. Share only an exact host-injected binding; require
+    distinct session/run admissions under colliding local generators, explicit
+    Candidate and foreign-principal isolation, peer-independent teardown, and
+    file-journal replay.
 
 See [Durable Memory Retrieval Evaluation](DURABLE_MEMORY_RETRIEVAL_EVAL.md) for
 the retrieval metric definitions and vector decision. See
 [Durable Memory Product Evaluation](DURABLE_MEMORY_PRODUCT_EVAL.md) for the
 end-to-end serving, capture, cost, and consolidation evidence. See
 [Durable Memory Multilingual Evaluation](DURABLE_MEMORY_MULTILINGUAL_EVAL.md)
-for the query-profile contract, CJK gate, and its limits.
+for the query-profile contract, CJK gate, and its limits. See
+[Durable Memory Multi-Agent Evaluation](DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
+explicit sharing and context-identity semantics.
 
 ## Verification
 
@@ -295,6 +333,7 @@ cargo test -p a3s-code-core --test durable_memory_restart
 cargo test -p a3s-code-core --test durable_memory_retrieval_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_product_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_multilingual_eval -- --nocapture
+cargo test -p a3s-code-core --test durable_memory_multi_agent_eval -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle
 cargo test -p a3s-code-core --lib
 ```

@@ -751,6 +751,15 @@ A separate versioned multilingual fixture drives real `AgentSession` turns for
 English, Simplified Chinese, Japanese, and Korean. It locks Recall@3 and MRR at
 `1.00`, one model call and at most one memory node per task, and zero Candidate
 or foreign-namespace leakage.
+A versioned multi-agent fixture then binds the same exact
+`DurableMemorySession` to two independent `Agent` instances backed by one file
+repository. Separate deterministic host environments deliberately emit the
+same local run-ID sequence; the
+`a3s.code.memory.context.session-run-sequence-sha256.v1` profile still records
+all three session/run admissions, exposes no Candidate or foreign-principal
+content, allows one agent to continue after the other closes, and replays all
+three admissions after repository restart. Durable memory is never inherited
+by a delegated child: sharing remains an explicit host authority decision.
 Memory construction itself starts no tasks. Configured V1 pruning and optional
 host-supplied semantic consolidation jobs run only inside a session-owned
 `MemoryMaintenanceRuntime`; jobs are serialized per schedule, missed ticks are
@@ -758,17 +767,19 @@ skipped, health is observable, and `session.close().await` cancels and joins
 them before final extraction drain. Maintenance requires asynchronous session
 construction. Consolidation jobs remain responsible for evidence, optimistic
 revisions, and idempotency; A3S Memory never invents that policy.
-The secret-free V2 namespace, mode, recall policy, and retrieval profile are
-persisted in the session snapshot. The live repository remains host-owned and
-must be injected again after restart; resume rejects a missing or drifted
-binding, including a query-algorithm change. A real
+The secret-free V2 namespace, mode, recall policy, retrieval profile, and
+context-identity profile are persisted in the session snapshot. The live
+repository remains host-owned and must be injected again after restart; resume
+rejects a missing or drifted binding, including a query or admission-identity
+algorithm change. A real
 file-repository test also proves candidate isolation before activation,
 post-activation serving, access-history replay, and release of the repository
 lock at session teardown. See
 [Durable Memory Integration](manual/DURABLE_MEMORY.md) and
 [Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
-[Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md), and
-[Durable Memory Multilingual Evaluation](manual/DURABLE_MEMORY_MULTILINGUAL_EVAL.md)
+[Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md),
+[Durable Memory Multilingual Evaluation](manual/DURABLE_MEMORY_MULTILINGUAL_EVAL.md), and
+[Durable Memory Multi-Agent Evaluation](manual/DURABLE_MEMORY_MULTI_AGENT_EVAL.md)
 for ownership, durability, migration rules, retrieval profiles, the vector
 decision, end-to-end metrics, and declared evaluation limits.
 
