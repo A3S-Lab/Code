@@ -3264,16 +3264,16 @@ mod tests {
     async fn governed_direct_tool_applies_session_permission_policy() {
         let workspace = tempfile::tempdir().unwrap();
         let state = BridgeState::new();
-        let created = state
-            .dispatch(&request(
-                "agent_create",
-                json!({ "config_source": test_acl() }),
-            ))
-            .await
-            .unwrap();
+        let created = dispatch_boxed(
+            &state,
+            &request("agent_create", json!({ "config_source": test_acl() })),
+        )
+        .await
+        .unwrap();
         let agent_id = created["agent_id"].as_str().unwrap();
-        let created = state
-            .dispatch(&request(
+        let created = dispatch_boxed(
+            &state,
+            &request(
                 "session_create",
                 json!({
                     "agent_id": agent_id,
@@ -3286,13 +3286,15 @@ mod tests {
                         }
                     }
                 }),
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         let session_handle = created["session_handle"].as_str().unwrap();
 
-        let trusted = state
-            .dispatch(&request(
+        let trusted = dispatch_boxed(
+            &state,
+            &request(
                 "session_tool",
                 json!({
                     "session_handle": session_handle,
@@ -3302,14 +3304,16 @@ mod tests {
                         "content": "trusted"
                     }
                 }),
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         assert_eq!(trusted["exit_code"], Value::from(0));
         assert!(workspace.path().join("trusted-host-write.txt").exists());
 
-        let governed = state
-            .dispatch(&request(
+        let governed = dispatch_boxed(
+            &state,
+            &request(
                 "session_governed_tool",
                 json!({
                     "session_handle": session_handle,
@@ -3319,9 +3323,10 @@ mod tests {
                         "content": "must not exist"
                     }
                 }),
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         assert_ne!(governed["exit_code"], Value::from(0));
         assert!(!workspace.path().join("denied-governed-write.txt").exists());
     }

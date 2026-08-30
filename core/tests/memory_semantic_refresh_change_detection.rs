@@ -119,16 +119,12 @@ fn session_options(
         .with_memory_maintenance(MemoryMaintenanceOptions::new().with_semantic_refresh(schedule))
 }
 
-async fn settle_workers() {
-    for _ in 0..32 {
-        tokio::task::yield_now().await;
-    }
-}
-
 async fn advance_until_runs(session: &AgentSession, expected_runs: u64) {
-    settle_workers().await;
-    tokio::time::advance(Duration::from_secs(1)).await;
-    for _ in 0..256 {
+    // Awaiting a timer lets Tokio poll newly spawned workers and arm their
+    // intervals before the paused clock advances. A direct `advance` here can
+    // race worker startup and move the clock before the first tick exists.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for _ in 0..4096 {
         if session
             .memory_maintenance_health()
             .jobs
@@ -143,9 +139,8 @@ async fn advance_until_runs(session: &AgentSession, expected_runs: u64) {
 }
 
 async fn advance_until_failures(session: &AgentSession, expected_failures: u64) {
-    settle_workers().await;
-    tokio::time::advance(Duration::from_secs(1)).await;
-    for _ in 0..256 {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for _ in 0..4096 {
         if session
             .memory_maintenance_health()
             .jobs
