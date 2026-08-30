@@ -763,7 +763,14 @@ Rust hosts can install `ScheduledSemanticRefresh` in the existing owned memory
 maintenance runtime. The host selects the interval; Code rejects a missing
 semantic binding or non-CAS backend before spawning, skips missed ticks, retains
 the latest successful receipt on the cloned schedule handle, and completes
-post-publication verification during clean bounded session shutdown.
+post-publication verification during clean bounded session shutdown. After the
+first publication, every tick still obtains and verifies the complete bounded
+Active snapshot. It avoids embedding and vector mutation only when that snapshot,
+the exact semantic generation, the ownership-epoch receipt, the CAS-captured
+revision, and the full post-snapshot index status all match. Such a successful
+no-change run reports zero affected items and retains the receipt; source or
+index drift performs a full verified rebuild, and a replacement owner starts
+without the previous process-local receipt.
 Activation requires independent Manual or Verification evidence. Code records
 admission for the exact current revision after final context assembly; an
 unrecordable or stale item is removed before the model call. Exact V1/V2
@@ -805,7 +812,8 @@ model use instead of replacing its history.
 Memory construction itself starts no tasks. Configured V1 pruning, opt-in
 verified semantic refresh, and host-supplied consolidation jobs run only inside
 a session-owned `MemoryMaintenanceRuntime`; jobs are serialized per schedule,
-missed ticks are skipped, and health is observable. Clean
+missed ticks are skipped, verified no-change semantic ticks avoid embedding and
+publication, and health is observable. Clean
 `session.close().await` lets a published refresh finish source verification
 within the total close deadline before final extraction drain. Maintenance
 requires asynchronous session construction. Consolidation jobs remain

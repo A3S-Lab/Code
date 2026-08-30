@@ -50,6 +50,10 @@ impl SemanticIndexPublication {
         self.consistency
     }
 
+    pub(super) fn expected_revision(self) -> Option<VectorRevision> {
+        self.expected_revision
+    }
+
     pub(super) fn after_publication(self, revision: VectorRevision) -> Self {
         Self {
             consistency: self.consistency,

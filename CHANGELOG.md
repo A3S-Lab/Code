@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semantic binding and revision-CAS backend before starting, skips missed ticks,
   never overlaps itself, reports through maintenance health, and retains the
   latest successful secret-free refresh receipt for its host-held handle.
+- Added change-aware scheduled semantic refresh. Every tick still verifies a
+  complete bounded Active snapshot, but an exact ownership-epoch receipt,
+  semantic generation, source digest, CAS revision, and full index-status match
+  avoids redundant embedding and vector publication. Source or index drift
+  rebuilds conservatively, and a replacement schedule owner discards the prior
+  process-local receipt.
 
 ### Changed
 

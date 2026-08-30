@@ -352,6 +352,16 @@ keeps the lease until every aborted worker has actually settled. The host still
 chooses the interval, stores receipts durably, and operates any distributed
 lease.
 
+After its first full publication, a scheduled tick still obtains and recomputes
+the complete bounded Active snapshot. It reports a successful zero-item run and
+avoids embedding plus vector mutation only when the current ownership-epoch
+receipt, source identity, semantic generation, CAS revision captured before the
+snapshot, and full index status observed afterward all match exactly. Source or
+index drift triggers a full verified rebuild. A replacement owner clears the
+process-local receipt before its first tick, so it cannot authorize a skip on a
+different injected backend. The remaining snapshot read and digest work, real
+provider cost, and production interval selection are host qualifications.
+
 Semantic consolidation stays host policy. A host injects a typed
 `ScheduledMemoryMaintenance` whose `MemoryMaintenanceJob` can inspect the exact
 `MemoryMaintenanceContext`. Any V2 mutation must still carry deterministic
@@ -470,8 +480,10 @@ authority digest that contains no credential.
     strict revision-CAS admission, delayed independent publication/cleanup
     rejection, and retained secret-free receipts. If periodic refresh is needed,
     require pre-spawn CAS admission, exclusive schedule ownership, observable
-    health, retained receipts, and post-publication close settlement. Treat
-    production cadence, distributed lease policy, and remote-backend behavior as
+    health, retained receipts, verified unchanged-tick embedding/publication
+    suppression, conservative source/index-drift rebuild, ownership-epoch reset,
+    and post-publication close settlement. Treat production cadence, remaining
+    snapshot cost, distributed lease policy, and remote-backend behavior as
     separate host qualifications.
 12. Run the multi-agent gate. Share only an exact host-injected binding; require
      distinct session/run admissions under colliding local generators, explicit

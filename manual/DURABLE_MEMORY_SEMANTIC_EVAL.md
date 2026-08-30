@@ -90,7 +90,8 @@ execution policy.
 The separate [semantic refresh gate](DURABLE_MEMORY_SEMANTIC_REFRESH.md) covers
 complete dual-budget repository snapshots, explicit atomic rebuild, source
 drift cleanup, serialized live-generation mutation, shared-index revision CAS,
-and refresh receipts.
+refresh receipts, owned scheduling, and verified suppression of redundant
+embedding/publication on unchanged scheduled ticks.
 
 ## What this gate does not claim
 

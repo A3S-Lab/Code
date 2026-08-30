@@ -4,8 +4,10 @@
 A3S Memory repository and a caller-owned semantic vector index. `DM-CAS1` adds
 revision-conditional publication for independently constructed runtimes sharing
 one capable index. `DM-SCHED1` adds an opt-in Code-owned periodic lifecycle for
-that same verified operation. None of these gates adds a distributed lease or
-moves embedding policy into the repository.
+that same verified operation. `DM-SKIP1` lets that owned schedule suppress
+redundant embedding and publication only after proving the source and index are
+unchanged. None of these gates adds a distributed lease or moves embedding
+policy into the repository.
 
 ## Contract
 
@@ -52,6 +54,10 @@ egress. The CAS precondition is the global index revision, so unrelated
 partition churn can conservatively reject publication or cleanup; the host may
 retry from a fresh source snapshot.
 
+Direct `refresh_semantic_recall` calls remain unconditional. Change detection is
+an owned-schedule optimization because its proof depends on the latest receipt
+from the current schedule-ownership epoch.
+
 Publication is the commit point. Cancellation after atomic replacement does
 not interrupt the required post-publication source verification and cleanup.
 Dropping a directly invoked Rust future can still interrupt any future; the
@@ -77,6 +83,24 @@ storage remains a host responsibility. One cloned schedule family can have only
 one active maintenance owner, keeping that receipt attributable. Clean close
 releases the claim deterministically; an unclosed runtime keeps its lease until
 every aborted worker has actually settled.
+
+The first run always performs a full verified refresh. On a later tick, Code
+captures the CAS revision before reading and recomputing the complete bounded
+Active snapshot, then reads the full index status after the snapshot. Embedding
+and publication are skipped only when all of these values exactly match the
+current ownership-epoch receipt: refresh and snapshot profiles, source digest
+and byte count, Active-node count, semantic binding schema and serving generation,
+mutation consistency, CAS revision, and complete index status. This revision
+sandwich proves one interval in which both source and index still matched the
+receipt. A weaker `partition_atomic` backend cannot establish that proof and
+never skips.
+
+A verified no-change tick is a successful maintenance run with zero affected
+items and leaves `last_receipt()` unchanged. Any source, generation, receipt, or
+index drift falls back to the full refresh and its existing post-publication
+verification. When a replacement runtime successfully claims the schedule, it
+starts a new ownership epoch and clears the process-local receipt before the
+first tick; it therefore cannot use evidence from a different injected backend.
 
 ## Ownership
 
@@ -110,6 +134,7 @@ cargo test -p a3s-code-core --test durable_memory_semantic_refresh
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_cas
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
 cargo test -p a3s-code-core --test memory_semantic_refresh_schedule
+cargo test -p a3s-code-core --test memory_semantic_refresh_change_detection
 cargo test -p a3s-code-core --test memory_maintenance_close
 ```
 
@@ -120,8 +145,10 @@ delayed independent publication and cleanup races, provider failure preserving
 the previous partition, forged snapshot rejection, receipt identity, and public
 `Send + Sync` behavior. The schedule contracts additionally cover strict
 pre-spawn admission, repeated refresh, retained receipts, clean
-post-publication close settlement, and bounded abort for a non-cooperative job.
-A3S Memory's contracts separately cover deterministic
+post-publication close settlement, verified unchanged-tick embedding/publication
+suppression, source- and index-drift rebuilds, ownership-epoch receipt clearing,
+and bounded abort for a non-cooperative job. A3S Memory's contracts separately
+cover deterministic
 snapshot identity, byte and node overflow, restart-stable digests, exactly one
 winner under concurrent CAS, stale replacement/cleanup rejection, and
 source-compatible custom-backend defaults.
@@ -131,4 +158,5 @@ source-compatible custom-backend defaults.
 These gates do not qualify a distributed generation lease, a durable remote CAS
 vector backend, a real embedding provider, production refresh cadence, large
 independently labeled corpora, latency, billed cost, or refresh behavior during
-remote failover. Those remain `DM-PROD1` host qualifications.
+remote failover. An unchanged tick still pays for a bounded repository snapshot
+and digest verification. Those remain `DM-PROD1` host qualifications.

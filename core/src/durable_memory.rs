@@ -26,6 +26,7 @@ pub use semantic_binding::{
     DurableMemorySemanticBindingV1, DurableMemorySemanticError, DurableMemorySemanticRecallPolicy,
     DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1, DURABLE_MEMORY_SEMANTIC_FUSION_PROFILE_V1,
 };
+pub(crate) use semantic_refresh::DurableMemorySemanticRefreshRun;
 pub use semantic_refresh::{
     DurableMemorySemanticRefreshReceipt, DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
 };

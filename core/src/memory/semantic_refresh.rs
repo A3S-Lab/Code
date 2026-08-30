@@ -3,7 +3,7 @@ use super::maintenance::{
     MemoryMaintenanceOutcome, ScheduledMemoryMaintenance,
 };
 use super::AgentMemory;
-use crate::durable_memory::DurableMemorySemanticRefreshReceipt;
+use crate::durable_memory::{DurableMemorySemanticRefreshReceipt, DurableMemorySemanticRefreshRun};
 use a3s_memory::vector::VectorMutationConsistency;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,9 +50,10 @@ impl ScheduledSemanticRefresh {
 
     /// Return the most recent successful, secret-free refresh receipt.
     ///
-    /// Clones share this observation state. A failed later run leaves the last
-    /// successful receipt intact while generic maintenance health records the
-    /// failure.
+    /// Clones share this observation state for one active ownership epoch. A
+    /// failed later run leaves the last successful receipt intact while generic
+    /// maintenance health records the failure. A replacement owner starts a new
+    /// epoch and clears the process-local receipt before its first run.
     pub fn last_receipt(&self) -> Option<DurableMemorySemanticRefreshReceipt> {
         read_unpoisoned(&self.last_receipt).clone()
     }
@@ -86,14 +87,17 @@ impl ScheduledSemanticRefresh {
     pub(super) fn try_claim(
         &self,
     ) -> Result<ScheduledSemanticRefreshClaim, MemoryMaintenanceError> {
-        self.claimed
+        let claim = self
+            .claimed
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| ScheduledSemanticRefreshClaim {
                 _lease: Arc::new(ScheduledSemanticRefreshClaimLease {
                     claimed: Arc::clone(&self.claimed),
                 }),
             })
-            .map_err(|_| MemoryMaintenanceError::SemanticRefreshAlreadyOwned)
+            .map_err(|_| MemoryMaintenanceError::SemanticRefreshAlreadyOwned)?;
+        *write_unpoisoned(&self.last_receipt) = None;
+        Ok(claim)
     }
 
     pub(super) fn as_maintenance(
@@ -149,15 +153,37 @@ impl MemoryMaintenanceJob for SemanticRefreshJob {
         let durable = context
             .durable_memory()
             .ok_or_else(|| anyhow::anyhow!("scheduled semantic refresh binding is unavailable"))?;
-        let receipt = durable
-            .refresh_semantic_recall_requiring(
-                VectorMutationConsistency::IndexRevisionCas,
-                cancellation,
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!(error.redacted_message()))?;
-        let affected_items = receipt.active_node_count();
-        *write_unpoisoned(&self.last_receipt) = Some(receipt);
+        let previous = read_unpoisoned(&self.last_receipt).clone();
+        let run = match previous.as_ref() {
+            Some(previous) => {
+                durable
+                    .refresh_semantic_recall_if_stale_requiring(
+                        previous,
+                        VectorMutationConsistency::IndexRevisionCas,
+                        cancellation,
+                    )
+                    .await
+            }
+            None => durable
+                .refresh_semantic_recall_requiring(
+                    VectorMutationConsistency::IndexRevisionCas,
+                    cancellation,
+                )
+                .await
+                .map(DurableMemorySemanticRefreshRun::Published),
+        }
+        .map_err(|error| anyhow::anyhow!(error.redacted_message()))?;
+        let affected_items = match run {
+            DurableMemorySemanticRefreshRun::Published(receipt) => {
+                let affected_items = receipt.active_node_count();
+                *write_unpoisoned(&self.last_receipt) = Some(receipt);
+                affected_items
+            }
+            DurableMemorySemanticRefreshRun::Unchanged(receipt) => {
+                debug_assert_eq!(Some(receipt), previous);
+                0
+            }
+        };
         Ok(MemoryMaintenanceOutcome::new(affected_items))
     }
 }
