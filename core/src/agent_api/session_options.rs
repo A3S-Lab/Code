@@ -344,9 +344,10 @@ impl SessionOptions {
         self
     }
 
-    /// Install typed, host-owned scheduled memory jobs and their bounded close
-    /// policy. Built-in V1 pruning is included automatically when configured
-    /// in [`MemoryConfig`](crate::memory::MemoryConfig).
+    /// Install typed scheduled memory jobs and their bounded close policy.
+    /// Built-in V1 pruning is included automatically when configured in
+    /// [`MemoryConfig`](crate::memory::MemoryConfig); verified semantic refresh
+    /// remains an explicit schedule in these options.
     pub fn with_memory_maintenance(
         mut self,
         maintenance: crate::memory::MemoryMaintenanceOptions,

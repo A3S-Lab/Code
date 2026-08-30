@@ -262,13 +262,13 @@ or admission identity behavior.
 
 The descriptor does not claim to authenticate a database path or remote
 service instance. Repository/index construction, credentials, distributed lease
-policy, refresh scheduling, retained receipt continuity, and remote-backend
-continuity remain host responsibilities. Code verifies complete snapshot
-identity before and after one live-generation refresh and, when required,
-enforces the backend's atomic global-revision CAS contract. It also verifies the
-namespace, current node revision/content, vector revision, and serving identity
-it can observe. It never resolves `latest`, opens an implicit repository or
-vector database, or substitutes a global principal.
+policy, refresh cadence, durable receipt storage, and remote-backend continuity
+remain host responsibilities. Code verifies complete snapshot identity before
+and after one live-generation refresh and, when required, enforces the backend's
+atomic global-revision CAS contract. It also verifies the namespace, current
+node revision/content, vector revision, and serving identity it can observe. It
+never resolves `latest`, opens an implicit repository or vector database, or
+substitutes a global principal.
 
 ## Explicit multi-agent sharing
 
@@ -326,8 +326,8 @@ admission count remain unchanged.
 
 `AgentMemory` construction is side-effect free. A configured V1 `PrunePolicy`
 does not spawn an immortal task from its constructor. Asynchronous session
-construction starts one `MemoryMaintenanceRuntime` only when pruning or typed
-host jobs are configured. The session is its owner:
+construction starts one `MemoryMaintenanceRuntime` only when pruning, verified
+semantic refresh, or typed host jobs are configured. The session is its owner:
 
 - each schedule waits one full interval before its first run;
 - one job never overlaps itself, and missed ticks are skipped instead of
@@ -335,9 +335,22 @@ host jobs are configured. The session is its owner:
 - `memory_maintenance_health()` reports run counts, affected items, current
   work, and bounded last-error text;
 - a failed run degrades health; a later success clears that transient error;
-- `session.close().await` cancels and joins maintenance before draining final
-  extraction writes, with bounded abort as a last resort;
+- `session.close().await` cancels maintenance, lets an active job settle within
+  one total deadline, then uses bounded abort only as a last resort before
+  draining final extraction writes;
 - dropping the final runtime owner cancels and aborts remaining workers.
+
+`ScheduledSemanticRefresh::try_new(interval)` provides the typed opt-in path for
+periodic semantic indexing. Session construction fails before worker spawn
+unless the exact durable binding has a semantic generation backed by
+`index_revision_cas`. The schedule invokes the same verified complete-snapshot
+refresh used by direct callers, reports through generic maintenance health, and
+retains the latest successful secret-free receipt on every clone. One cloned
+schedule family can have only one active owner. Clean close releases it
+deterministically for an explicit replacement session; an unclosed runtime
+keeps the lease until every aborted worker has actually settled. The host still
+chooses the interval, stores receipts durably, and operates any distributed
+lease.
 
 Semantic consolidation stays host policy. A host injects a typed
 `ScheduledMemoryMaintenance` whose `MemoryMaintenanceJob` can inspect the exact
@@ -354,6 +367,7 @@ is executable evidence for the mechanism, not a default consolidation policy.
 ```rust,no_run
 use a3s_code_core::memory::{
     MemoryMaintenanceJob, MemoryMaintenanceOptions, ScheduledMemoryMaintenance,
+    ScheduledSemanticRefresh,
 };
 use a3s_code_core::SessionOptions;
 use std::{sync::Arc, time::Duration};
@@ -366,7 +380,9 @@ let consolidation = ScheduledMemoryMaintenance::try_new(
     Duration::from_secs(900),
     consolidator,
 )?;
+let semantic_refresh = ScheduledSemanticRefresh::try_new(Duration::from_secs(300))?;
 let maintenance = MemoryMaintenanceOptions::new()
+    .with_semantic_refresh(semantic_refresh.clone())
     .with_job(consolidation)
     .try_with_shutdown_timeout(Duration::from_secs(5))?;
 let options = SessionOptions::new().with_memory_maintenance(maintenance);
@@ -377,8 +393,8 @@ let options = SessionOptions::new().with_memory_maintenance(maintenance);
 Because maintenance owns Tokio tasks, use
 `agent.session_builder(workspace).options(options).build().await`; the
 synchronous compatibility factory rejects configured maintenance instead of
-silently skipping it. Like the durable repository binding, host jobs are
-runtime-only and must be injected again after restart.
+silently skipping it. Like the durable repository binding, semantic refresh and
+host-job schedules are runtime-only and must be injected again after restart.
 
 ## Cross-language boundary
 
@@ -431,8 +447,8 @@ authority digest that contains no credential.
    only for exact revisions actually used downstream.
 5. Save, close, reopen the repository, and resume only with the persisted exact
    `DurableMemoryBindingV1`; treat backend continuity as a separate host gate.
-6. Run consolidation and retention through the owned maintenance lifecycle;
-   inspect health and close sessions explicitly.
+6. Run consolidation, retention, and any opted-in semantic refresh through the
+   owned maintenance lifecycle; inspect health and close sessions explicitly.
 7. Run the locked lexical and relation-aware evaluation. Fixture v1 reaches
    relation Recall@5 `0.90`; keep that dependency-free branch as the fallback.
 8. Run the product evaluation through real `AgentSession` turns. Require the
@@ -452,9 +468,11 @@ authority digest that contains no credential.
     snapshots, backend-response recomputation, pre/post publication identity,
     serialized cloned-session mutation, failure preservation or drift cleanup,
     strict revision-CAS admission, delayed independent publication/cleanup
-    rejection, and retained secret-free receipts. Treat distributed lease
-    policy, remote-backend behavior, and refresh scheduling as separate host
-    qualifications.
+    rejection, and retained secret-free receipts. If periodic refresh is needed,
+    require pre-spawn CAS admission, exclusive schedule ownership, observable
+    health, retained receipts, and post-publication close settlement. Treat
+    production cadence, distributed lease policy, and remote-backend behavior as
+    separate host qualifications.
 12. Run the multi-agent gate. Share only an exact host-injected binding; require
      distinct session/run admissions under colliding local generators, explicit
      Candidate and foreign-principal isolation, peer-independent teardown, and
@@ -474,7 +492,7 @@ for the query-profile contract, CJK gate, and its limits. See
 typed hybrid serving, current-revision verification, and cross-language gate.
 See [Durable Memory Semantic Refresh](DURABLE_MEMORY_SEMANTIC_REFRESH.md) for
 complete snapshot rebuild, drift cleanup, shared-index revision CAS, and
-refresh-receipt semantics.
+owned schedule and refresh-receipt semantics.
 See
 [Durable Memory Multi-Agent Evaluation](DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
 explicit sharing and context-identity semantics. See
@@ -498,6 +516,8 @@ cargo test -p a3s-code-core --test durable_memory_semantic_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_cas
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
+cargo test -p a3s-code-core --test memory_semantic_refresh_schedule
+cargo test -p a3s-code-core --test memory_maintenance_close
 cargo test -p a3s-code-core --test durable_memory_multi_agent_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_restart_endurance_eval -- --nocapture
 cargo test -p a3s-code-core --test memory_maintenance_lifecycle

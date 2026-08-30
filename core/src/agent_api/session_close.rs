@@ -58,7 +58,7 @@ pub(crate) struct SessionCloseHandle {
     /// They are drained before session cancellation so durable memories are not
     /// lost merely because the host closes immediately after receiving output.
     pub(crate) memory: Option<Arc<crate::memory::AgentMemory>>,
-    /// Every periodic pruning or host consolidation task owned by this session.
+    /// Every periodic prune, semantic refresh, or host job owned by this session.
     pub(crate) memory_maintenance: Option<Arc<crate::memory::MemoryMaintenanceRuntime>>,
     /// Session-owned MCP source. Inherited/global managers are deliberately
     /// absent so closing one session cannot tear down shared connections.
@@ -135,7 +135,7 @@ impl SessionCloseHandle {
             queue.shutdown().await;
         }
 
-        // 2. Stop periodic store mutation before draining the final accepted
+        // 2. Stop periodic memory mutation before draining the final accepted
         // extraction writes. The runtime applies its own bounded join policy.
         if let Some(maintenance) = &self.memory_maintenance {
             let report = maintenance.close().await;

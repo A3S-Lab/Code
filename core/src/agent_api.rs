@@ -251,10 +251,10 @@ pub struct SessionOptions {
     pub durable_memory: Option<crate::durable_memory::DurableMemorySession>,
     /// Host observers notified after successful durable memory writes.
     pub memory_observers: Vec<Arc<dyn crate::memory::MemoryObserver>>,
-    /// Typed host jobs and shutdown limits for session-owned memory maintenance.
+    /// Typed built-in and host jobs plus shutdown limits for owned memory maintenance.
     ///
     /// This runtime-only option is not persisted. A resumed session must inject
-    /// semantic consolidation jobs again.
+    /// semantic refresh and custom consolidation schedules again.
     pub memory_maintenance: crate::memory::MemoryMaintenanceOptions,
     /// Deferred file memory directory — constructed async in `build_session()`
     pub(crate) file_memory_dir: Option<PathBuf>,

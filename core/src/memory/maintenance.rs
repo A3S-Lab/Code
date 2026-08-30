@@ -2,10 +2,12 @@
 //!
 //! Storage construction is intentionally side-effect free. A host starts this
 //! runtime, observes its health, and closes it at the same lifecycle boundary
-//! that owns the associated [`AgentMemory`]. Semantic consolidation remains a
-//! host policy supplied through [`MemoryMaintenanceJob`].
+//! that owns the associated [`AgentMemory`]. Verified semantic index refresh is
+//! available as an opt-in built-in schedule; consolidation remains a host policy
+//! supplied through [`MemoryMaintenanceJob`].
 
-use super::AgentMemory;
+use super::semantic_refresh::ScheduledSemanticRefreshClaim;
+use super::{AgentMemory, ScheduledSemanticRefresh, SEMANTIC_REFRESH_JOB_NAME};
 use async_trait::async_trait;
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -131,11 +133,12 @@ impl std::fmt::Debug for ScheduledMemoryMaintenance {
     }
 }
 
-/// Typed, host-owned additions to built-in memory retention.
+/// Typed, session-owned memory maintenance schedules and shutdown policy.
 #[derive(Clone, Debug)]
 #[must_use = "maintenance options do nothing until installed on a session or runtime"]
 pub struct MemoryMaintenanceOptions {
     jobs: Vec<ScheduledMemoryMaintenance>,
+    semantic_refresh: Option<ScheduledSemanticRefresh>,
     shutdown_timeout: Duration,
 }
 
@@ -143,6 +146,7 @@ impl Default for MemoryMaintenanceOptions {
     fn default() -> Self {
         Self {
             jobs: Vec::new(),
+            semantic_refresh: None,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
         }
     }
@@ -155,6 +159,13 @@ impl MemoryMaintenanceOptions {
 
     pub fn with_job(mut self, job: ScheduledMemoryMaintenance) -> Self {
         self.jobs.push(job);
+        self
+    }
+
+    /// Install or replace the single built-in verified semantic refresh
+    /// schedule.
+    pub fn with_semantic_refresh(mut self, schedule: ScheduledSemanticRefresh) -> Self {
+        self.semantic_refresh = Some(schedule);
         self
     }
 
@@ -171,12 +182,16 @@ impl MemoryMaintenanceOptions {
         &self.jobs
     }
 
+    pub fn semantic_refresh(&self) -> Option<&ScheduledSemanticRefresh> {
+        self.semantic_refresh.as_ref()
+    }
+
     pub fn shutdown_timeout(&self) -> Duration {
         self.shutdown_timeout
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.jobs.is_empty()
+        self.jobs.is_empty() && self.semantic_refresh.is_none()
     }
 }
 
@@ -273,6 +288,8 @@ pub enum MemoryMaintenanceError {
     AsyncRuntimeRequired,
     #[error("this AgentMemory already has an active maintenance owner")]
     AlreadyOwned,
+    #[error("this semantic refresh schedule already has an active maintenance owner")]
+    SemanticRefreshAlreadyOwned,
     #[error("no memory maintenance jobs are configured")]
     NoJobsConfigured,
 }
@@ -281,6 +298,7 @@ pub enum MemoryMaintenanceError {
 #[must_use = "the owner must be retained and closed to govern its maintenance tasks"]
 pub struct MemoryMaintenanceRuntime {
     memory: Arc<AgentMemory>,
+    semantic_refresh_claim: Mutex<Option<ScheduledSemanticRefreshClaim>>,
     lifetime: CancellationToken,
     health: Arc<RwLock<MemoryMaintenanceHealth>>,
     tasks: Mutex<Option<Vec<JoinHandle<()>>>>,
@@ -324,6 +342,18 @@ impl MemoryMaintenanceRuntime {
         {
             return Err(MemoryMaintenanceError::AlreadyOwned);
         }
+        let semantic_refresh_claim = match &options.semantic_refresh {
+            Some(schedule) => match schedule.try_claim() {
+                Ok(claim) => Some(claim),
+                Err(error) => {
+                    memory
+                        .maintenance_claimed
+                        .store(false, std::sync::atomic::Ordering::Release);
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
 
         let context = MemoryMaintenanceContext {
             owner_id: Arc::from(owner_id),
@@ -337,8 +367,10 @@ impl MemoryMaintenanceRuntime {
                 .collect(),
         }));
         let lifetime = CancellationToken::new();
+        let worker_semantic_refresh_claim = semantic_refresh_claim.clone();
         let runtime = Arc::new(Self {
             memory,
+            semantic_refresh_claim: Mutex::new(semantic_refresh_claim),
             lifetime: lifetime.clone(),
             health: Arc::clone(&health),
             tasks: Mutex::new(None),
@@ -354,6 +386,7 @@ impl MemoryMaintenanceRuntime {
                 let context = context.clone();
                 let health = Arc::clone(&health);
                 let cancellation = lifetime.child_token();
+                let semantic_refresh_claim = worker_semantic_refresh_claim.clone();
                 handle.spawn(async move {
                     let observe_cancellation = cancellation.clone();
                     let result = AssertUnwindSafe(run_schedule(
@@ -373,6 +406,7 @@ impl MemoryMaintenanceRuntime {
                         job.failed_runs = job.failed_runs.saturating_add(1);
                         job.last_error = Some("maintenance worker panicked".to_string());
                     }
+                    drop(semantic_refresh_claim);
                 })
             })
             .collect();
@@ -410,11 +444,18 @@ impl MemoryMaintenanceRuntime {
                 }),
             )?);
         }
+        if let Some(semantic_refresh) = &options.semantic_refresh {
+            semantic_refresh.validate_for(memory)?;
+            schedules.push(semantic_refresh.as_maintenance()?);
+        }
         for schedule in &options.jobs {
-            if schedule.name == PRUNE_JOB_NAME {
+            if matches!(
+                schedule.name.as_str(),
+                PRUNE_JOB_NAME | SEMANTIC_REFRESH_JOB_NAME
+            ) {
                 return Err(invalid(
                     "jobs.name",
-                    format!("'{PRUNE_JOB_NAME}' is reserved for built-in pruning"),
+                    format!("'{}' is reserved for built-in maintenance", schedule.name),
                 ));
             }
             schedules.push(schedule.clone());
@@ -505,6 +546,7 @@ impl MemoryMaintenanceRuntime {
             self.memory
                 .maintenance_claimed
                 .store(false, std::sync::atomic::Ordering::Release);
+            drop(lock_unpoisoned(&self.semantic_refresh_claim).take());
         }
     }
 }
@@ -567,17 +609,15 @@ async fn run_schedule(
             snapshot.jobs[health_index].run_in_progress = true;
         }
         let run_cancellation = cancellation.child_token();
-        let result = tokio::select! {
+        let run = schedule.job.run(&context, run_cancellation.clone());
+        tokio::pin!(run);
+        let (result, close_after_run) = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
                 run_cancellation.cancel();
-                None
+                (run.await, true)
             }
-            result = schedule.job.run(&context, run_cancellation.clone()) => Some(result),
-        };
-        let Some(result) = result else {
-            write_unpoisoned(&health).jobs[health_index].run_in_progress = false;
-            break;
+            result = &mut run => (result, false),
         };
         let mut snapshot = write_unpoisoned(&health);
         let job = &mut snapshot.jobs[health_index];
@@ -602,6 +642,10 @@ async fn run_schedule(
                     "Memory maintenance job failed"
                 );
             }
+        }
+        drop(snapshot);
+        if close_after_run {
+            break;
         }
     }
 }
@@ -631,7 +675,7 @@ fn validate_job_name(name: &str) -> Result<(), MemoryMaintenanceError> {
     Ok(())
 }
 
-fn validate_interval(interval: Duration) -> Result<(), MemoryMaintenanceError> {
+pub(super) fn validate_interval(interval: Duration) -> Result<(), MemoryMaintenanceError> {
     if interval < MIN_JOB_INTERVAL || interval > MAX_JOB_INTERVAL {
         return Err(invalid(
             "job.interval",

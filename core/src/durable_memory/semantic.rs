@@ -28,8 +28,8 @@ const LABEL_CONTENT_DIGEST: &str = "a3s.memory.semantic.content_digest";
 /// Explicit host-owned embedding generation plus caller-owned vector index.
 ///
 /// Construction and namespace replacement are inert with respect to background
-/// work. The host decides when verified repository snapshots are embedded and
-/// replaced; Code owns bounded query execution and candidate verification.
+/// work. The host decides whether to invoke refresh directly or install an
+/// owned schedule; Code owns bounded query execution and candidate verification.
 #[derive(Clone)]
 pub struct DurableMemorySemanticRecall {
     binding: DurableMemorySemanticBindingV1,
@@ -99,6 +99,12 @@ impl DurableMemorySemanticRecall {
 
     pub fn index_status(&self) -> VectorIndexStatus {
         self.index.status()
+    }
+
+    /// Return the strongest partition-mutation ordering advertised by the
+    /// injected vector backend.
+    pub fn mutation_consistency(&self) -> VectorMutationConsistency {
+        self.index.mutation_consistency()
     }
 
     pub(super) fn serving_generation_digest(&self) -> &str {

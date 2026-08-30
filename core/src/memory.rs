@@ -16,12 +16,15 @@ use tokio::sync::{oneshot, Notify, RwLock};
 
 #[path = "memory/maintenance.rs"]
 mod maintenance;
+#[path = "memory/semantic_refresh.rs"]
+mod semantic_refresh;
 pub use maintenance::{
     MemoryMaintenanceCloseReport, MemoryMaintenanceContext, MemoryMaintenanceError,
     MemoryMaintenanceHealth, MemoryMaintenanceJob, MemoryMaintenanceJobHealth,
     MemoryMaintenanceOptions, MemoryMaintenanceOutcome, MemoryMaintenancePhase,
     MemoryMaintenanceRuntime, ScheduledMemoryMaintenance,
 };
+pub use semantic_refresh::{ScheduledSemanticRefresh, SEMANTIC_REFRESH_JOB_NAME};
 
 const MEMORY_STATUS_METADATA: &str = "a3s.memory.status";
 const MEMORY_STATUS_SUPERSEDED: &str = "superseded";

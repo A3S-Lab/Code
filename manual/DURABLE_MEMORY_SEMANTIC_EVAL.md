@@ -95,7 +95,7 @@ and refresh receipts.
 ## What this gate does not claim
 
 This gate does not establish production embedding quality, real-provider
-latency or cost, scheduled refresh, durable remote-vector storage,
+latency or cost, production refresh cadence, durable remote-vector storage,
 distributed lease policy, remote CAS/failover behavior, long-horizon
 consolidation/decay quality, or
 representative tenant scale. Those remain `DM-PROD1` host qualifications.

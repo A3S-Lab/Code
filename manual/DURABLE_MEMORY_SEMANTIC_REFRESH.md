@@ -3,8 +3,9 @@
 `DM-REFRESH1` qualifies the explicit lifecycle boundary between the authoritative
 A3S Memory repository and a caller-owned semantic vector index. `DM-CAS1` adds
 revision-conditional publication for independently constructed runtimes sharing
-one capable index. Neither gate adds a background scheduler, distributed lease,
-or embedding policy to the repository.
+one capable index. `DM-SCHED1` adds an opt-in Code-owned periodic lifecycle for
+that same verified operation. None of these gates adds a distributed lease or
+moves embedding policy into the repository.
 
 ## Contract
 
@@ -53,6 +54,29 @@ retry from a fresh source snapshot.
 
 Publication is the commit point. Cancellation after atomic replacement does
 not interrupt the required post-publication source verification and cleanup.
+Dropping a directly invoked Rust future can still interrupt any future; the
+direct host must await it. The owned schedule cancels the run token on close but
+keeps the job future alive until it settles or the configured total shutdown
+deadline forces an observable abort.
+
+## Scheduled lifecycle
+
+`ScheduledSemanticRefresh::try_new(interval)` is inert. Installing it through
+`MemoryMaintenanceOptions::with_semantic_refresh` and building an asynchronous
+session starts one worker after validating the exact durable-memory binding,
+attached semantic generation, and `index_revision_cas` backend. A missing or
+weaker binding fails session construction before repository or model I/O.
+
+The first refresh waits one full host-selected interval. Runs never overlap and
+missed ticks are skipped rather than replayed in a burst. Generic maintenance
+health exposes the reserved `v2_semantic_refresh` worker, run/failure counts,
+affected Active-node counts, and bounded errors. Clones of the schedule share
+`last_receipt()`, which retains the latest successful secret-free receipt; a
+later failure leaves that evidence intact for host inspection. Durable receipt
+storage remains a host responsibility. One cloned schedule family can have only
+one active maintenance owner, keeping that receipt attributable. Clean close
+releases the claim deterministically; an unclosed runtime keeps its lease until
+every aborted worker has actually settled.
 
 ## Ownership
 
@@ -60,7 +84,7 @@ A3S Memory owns complete bounded snapshot construction and identity. Code owns
 embedding execution, single-live-generation serialization, atomic publication,
 post-publication reconciliation, and the receipt. The host still owns:
 
-- when refresh is requested;
+- whether to refresh directly or install a schedule, and at what interval;
 - repository, provider, and vector-index construction;
 - credentials and memory/query egress authorization;
 - durable receipt storage and alerting;
@@ -85,6 +109,8 @@ Run from the Code crate workspace:
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_cas
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
+cargo test -p a3s-code-core --test memory_semantic_refresh_schedule
+cargo test -p a3s-code-core --test memory_maintenance_close
 ```
 
 The contracts cover complete Active-only publication, Candidate exclusion,
@@ -92,14 +118,17 @@ revision and status replacement, node/byte-budget failure, source drift cleanup,
 serialized cloned-session refreshes, strict consistency rejection before I/O,
 delayed independent publication and cleanup races, provider failure preserving
 the previous partition, forged snapshot rejection, receipt identity, and public
-`Send + Sync` behavior. A3S Memory's contracts separately cover deterministic
+`Send + Sync` behavior. The schedule contracts additionally cover strict
+pre-spawn admission, repeated refresh, retained receipts, clean
+post-publication close settlement, and bounded abort for a non-cooperative job.
+A3S Memory's contracts separately cover deterministic
 snapshot identity, byte and node overflow, restart-stable digests, exactly one
 winner under concurrent CAS, stale replacement/cleanup rejection, and
 source-compatible custom-backend defaults.
 
 ## Non-claims
 
-These gates do not qualify a periodic scheduler, a distributed generation
-lease, a durable remote CAS vector backend, a real embedding provider, large
+These gates do not qualify a distributed generation lease, a durable remote CAS
+vector backend, a real embedding provider, production refresh cadence, large
 independently labeled corpora, latency, billed cost, or refresh behavior during
 remote failover. Those remain `DM-PROD1` host qualifications.

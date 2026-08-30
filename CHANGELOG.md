@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A strict host requirement fails before snapshot or embedding work on weaker
   backends; delayed independent publication and cleanup cannot replace or
   remove a newer shared-index generation.
+- Added opt-in, session-owned `ScheduledSemanticRefresh`. It validates an exact
+  semantic binding and revision-CAS backend before starting, skips missed ticks,
+  never overlaps itself, reports through maintenance health, and retains the
+  latest successful secret-free refresh receipt for its host-held handle.
 
 ### Changed
 
@@ -41,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced A3S Memory to the exact vector mutation-consistency revision. Custom
   backends retain source compatibility and fail closed for conditional methods
   until they implement atomic global-revision compare-and-swap.
+- Memory maintenance close now cancels an active job and awaits its settlement
+  within the configured total deadline before using bounded abort. A semantic
+  refresh that has published vectors can therefore finish mandatory source
+  verification and receipt publication during a clean session close.
 
 ### Fixed
 

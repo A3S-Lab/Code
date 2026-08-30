@@ -156,7 +156,7 @@ telemetry remain opt-in.
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
-| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
+| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
 | Model adapters          | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations                                                                                                                                                        | Configuration or host injection                                                                                                                                           |
@@ -742,13 +742,14 @@ revision-pinned embedding provider, searches a caller-owned A3S Memory vector
 index, then treats every vector hit as an untrusted candidate. It re-reads the
 exact repository namespace and requires the current Active revision and content
 digest before deterministic lexical/semantic RRF. Semantic failure preserves
-the lexical result, and indexing remains an explicit host operation rather than
-an implicit background task. `refresh_semantic_recall` obtains and recomputes a
-complete Active-only A3S Memory snapshot under node and byte budgets, embeds it
-off-index, atomically replaces the exact namespace/generation partition, and
-verifies the source snapshot again. Drift requires partition invalidation before
-the call can succeed; an invalidation error is propagated and no receipt is
-returned. Pre-publication failures preserve the previous complete partition.
+the lexical result, and indexing remains inert unless the host explicitly
+calls refresh or installs a typed schedule. `refresh_semantic_recall` obtains
+and recomputes a complete Active-only A3S Memory snapshot under node and byte
+budgets, embeds it off-index, atomically replaces the exact
+namespace/generation partition, and verifies the source snapshot again. Drift
+requires partition invalidation before the call can succeed; an invalidation
+error is propagated and no receipt is returned. Pre-publication failures
+preserve the previous complete partition.
 Successful calls return a secret-free receipt binding source digest/bytes,
 semantic generation, node count, vector revision, and mutation consistency.
 Cloned sessions serialize refresh and direct replacement through the same
@@ -758,6 +759,11 @@ conditionally cleans up using the published revision. Delayed independent
 runtimes therefore cannot overwrite or remove a newer generation. Production
 hosts can call `refresh_semantic_recall_requiring(IndexRevisionCas, ...)` to
 reject a weaker backend before repository or embedding work begins.
+Rust hosts can install `ScheduledSemanticRefresh` in the existing owned memory
+maintenance runtime. The host selects the interval; Code rejects a missing
+semantic binding or non-CAS backend before spawning, skips missed ticks, retains
+the latest successful receipt on the cloned schedule handle, and completes
+post-publication verification during clean bounded session shutdown.
 Activation requires independent Manual or Verification evidence. Code records
 admission for the exact current revision after final context assembly; an
 unrecordable or stale item is removed before the model call. Exact V1/V2
@@ -796,13 +802,15 @@ correction reaches only the final epoch, immutable history survives four file
 repository opens, and Candidate, stale-revision, and foreign-principal content
 remain absent. A collision with a run that is still retained now fails before
 model use instead of replacing its history.
-Memory construction itself starts no tasks. Configured V1 pruning and optional
-host-supplied semantic consolidation jobs run only inside a session-owned
-`MemoryMaintenanceRuntime`; jobs are serialized per schedule, missed ticks are
-skipped, health is observable, and `session.close().await` cancels and joins
-them before final extraction drain. Maintenance requires asynchronous session
-construction. Consolidation jobs remain responsible for evidence, optimistic
-revisions, and idempotency; A3S Memory never invents that policy.
+Memory construction itself starts no tasks. Configured V1 pruning, opt-in
+verified semantic refresh, and host-supplied consolidation jobs run only inside
+a session-owned `MemoryMaintenanceRuntime`; jobs are serialized per schedule,
+missed ticks are skipped, and health is observable. Clean
+`session.close().await` lets a published refresh finish source verification
+within the total close deadline before final extraction drain. Maintenance
+requires asynchronous session construction. Consolidation jobs remain
+responsible for evidence, optimistic revisions, and idempotency; A3S Memory
+never invents that policy.
 The secret-free V2 namespace, mode, recall policy, retrieval profile, and
 context-identity profile are persisted in the session snapshot. Lexical-only
 sessions use binding schema 4. Semantic sessions use schema 5 and additionally

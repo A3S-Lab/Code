@@ -396,7 +396,7 @@ impl AgentSession {
         SessionView::from_session(self).memory()
     }
 
-    /// Observe periodic pruning and host-owned consolidation for this session.
+    /// Observe periodic pruning, semantic refresh, and host jobs for this session.
     /// Sessions without configured maintenance return a stable `disabled`
     /// snapshot; a closed runtime remains observable as `closed`.
     pub fn memory_maintenance_health(&self) -> crate::memory::MemoryMaintenanceHealth {
