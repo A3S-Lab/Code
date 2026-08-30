@@ -24,7 +24,10 @@ pub use maintenance::{
     MemoryMaintenanceOptions, MemoryMaintenanceOutcome, MemoryMaintenancePhase,
     MemoryMaintenanceRuntime, ScheduledMemoryMaintenance,
 };
-pub use semantic_refresh::{ScheduledSemanticRefresh, SEMANTIC_REFRESH_JOB_NAME};
+pub use semantic_refresh::{
+    ScheduledSemanticRefresh, SemanticRefreshMetrics, SemanticRefreshRunMetrics,
+    SemanticRefreshRunOutcome, SEMANTIC_REFRESH_JOB_NAME, SEMANTIC_REFRESH_RECENT_RUN_LIMIT,
+};
 
 const MEMORY_STATUS_METADATA: &str = "a3s.memory.status";
 const MEMORY_STATUS_SUPERSEDED: &str = "superseded";

@@ -137,6 +137,58 @@ async fn retries_only_typed_transient_failures_with_a_hard_attempt_bound() {
 }
 
 #[tokio::test]
+async fn detailed_request_metrics_count_retry_provider_boundary_work() {
+    let provider = FakeProvider::new(
+        descriptor(2),
+        vec![
+            FakeAction::Error(EmbeddingProviderError::RateLimited {
+                retry_after: Some(Duration::ZERO),
+            }),
+            FakeAction::Success,
+            FakeAction::Success,
+        ],
+    );
+    let config = EmbeddingExecutorConfig {
+        max_batch_inputs: 1,
+        ..fast_config()
+    };
+    let metrics = EmbeddingProviderRequestMetrics::default();
+
+    let result = executor(&provider, config)
+        .embed_observed(
+            vec![input(0, "first"), input(1, "second")],
+            CancellationToken::new(),
+            &metrics,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.provider_attempts, 3);
+    assert_eq!(metrics.requests(), 3);
+    assert_eq!(metrics.inputs(), 3);
+    assert_eq!(metrics.input_bytes(), "first".len() * 2 + "second".len());
+}
+
+#[tokio::test]
+async fn detailed_request_metrics_do_not_count_pre_provider_cancellation() {
+    let provider = FakeProvider::new(descriptor(2), Vec::new());
+    let metrics = EmbeddingProviderRequestMetrics::default();
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let error = executor(&provider, fast_config())
+        .embed_observed(vec![input(0, "source")], cancellation, &metrics)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, EmbeddingError::Cancelled);
+    assert_eq!(metrics.requests(), 0);
+    assert_eq!(metrics.inputs(), 0);
+    assert_eq!(metrics.input_bytes(), 0);
+    assert_eq!(provider.call_count(), 0);
+}
+
+#[tokio::test]
 async fn timeout_is_typed_and_bounded() {
     let provider = FakeProvider::new(
         descriptor(2),

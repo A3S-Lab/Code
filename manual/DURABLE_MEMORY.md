@@ -345,12 +345,16 @@ periodic semantic indexing. Session construction fails before worker spawn
 unless the exact durable binding has a semantic generation backed by
 `index_revision_cas`. The schedule invokes the same verified complete-snapshot
 refresh used by direct callers, reports through generic maintenance health, and
-retains the latest successful secret-free receipt on every clone. One cloned
+retains the latest successful secret-free receipt plus bounded `metrics()` on
+every clone. Metrics cover every settled successful, unchanged, or failed
+attempt in the current ownership epoch and retain at most the latest 64 runs.
+One cloned
 schedule family can have only one active owner. Clean close releases it
-deterministically for an explicit replacement session; an unclosed runtime
-keeps the lease until every aborted worker has actually settled. The host still
-chooses the interval, stores receipts durably, and operates any distributed
-lease.
+deterministically for an explicit replacement session while retaining receipt
+and metrics for inspection; a replacement owner clears both and starts a new
+metrics epoch. An unclosed runtime keeps the lease until every aborted worker
+has actually settled. The host still chooses the interval, stores observations
+durably, and operates any distributed lease.
 
 After its first full publication, a scheduled tick still obtains and recomputes
 the complete bounded Active snapshot. It reports a successful zero-item run and
@@ -371,6 +375,20 @@ all records under index-revision CAS. A failed provider call, CAS race, cleanup,
 or source verification never promotes prepared vectors. Clean close drops the
 cache while leaving `last_receipt()` observable, and the next owner starts
 without either cache or receipt. Explicit direct refresh remains uncached.
+
+The schedule metrics distinguish bounded executor misses from invocations that
+reach Code's provider-adapter boundary. They count snapshot requests/node
+reads/canonical bytes, cache hits, logical embedding inputs and bytes,
+provider-adapter invocations/inputs/bytes including retries, publication
+attempts/records, and elapsed time. Publication metrics describe complete
+partition calls, including CAS rejection, but exclude later invalidation
+cleanup. They retain no memory text, identifiers, digests, vectors, provider
+identity, or error bodies. Adapter-boundary counts do not prove remote
+transmission or billing. They let hosts correlate production cache, latency,
+and provider-cost distributions with provider telemetry; they do not qualify
+those distributions by themselves. Force-aborted
+noncooperative jobs remain visible through generic maintenance close reporting
+but cannot contribute a terminal run observation because they never settle.
 
 Semantic consolidation stays host policy. A host injects a typed
 `ScheduledMemoryMaintenance` whose `MemoryMaintenanceJob` can inspect the exact
@@ -406,6 +424,8 @@ let maintenance = MemoryMaintenanceOptions::new()
     .with_job(consolidation)
     .try_with_shutdown_timeout(Duration::from_secs(5))?;
 let options = SessionOptions::new().with_memory_maintenance(maintenance);
+let current_metrics = semantic_refresh.metrics();
+# let _ = current_metrics;
 # Ok(options)
 # }
 ```
@@ -436,6 +456,9 @@ health shape is available as:
 
 The snapshot contains phase, bounded counters, worker state, and bounded error
 text, but no memory content, evidence, credentials, or repository handles.
+The more detailed `ScheduledSemanticRefresh::metrics()` surface remains on the
+Rust host-held typed schedule because the live V2 schedule/provider/index
+binding is not exposed as an untyped cross-language option.
 
 ## Evidence and privacy
 
@@ -541,6 +564,8 @@ cargo test -p a3s-code-core --test durable_memory_semantic_refresh
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_cas
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
 cargo test -p a3s-code-core --test memory_semantic_refresh_schedule
+cargo test -p a3s-code-core --test memory_semantic_refresh_change_detection
+cargo test -p a3s-code-core --test memory_semantic_refresh_metrics
 cargo test -p a3s-code-core --test memory_maintenance_close
 cargo test -p a3s-code-core --test durable_memory_multi_agent_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_restart_endurance_eval -- --nocapture

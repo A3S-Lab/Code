@@ -1,3 +1,4 @@
+use super::provider_metrics::{EmbeddingProviderRequestMetrics, ProviderRequestObservation};
 use super::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingError, EmbeddingExecution,
     EmbeddingFailureKind, EmbeddingInput, EmbeddingNormalization, EmbeddingProvider,
@@ -7,7 +8,7 @@ use futures::FutureExt;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -185,15 +186,33 @@ impl EmbeddingExecutor {
         cancellation: CancellationToken,
         provider_requests: &AtomicUsize,
     ) -> EmbeddingResult<EmbeddingExecution> {
-        self.embed_inner(inputs, cancellation, Some(provider_requests))
-            .await
+        self.embed_inner(
+            inputs,
+            cancellation,
+            Some(ProviderRequestObservation::Requests(provider_requests)),
+        )
+        .await
+    }
+
+    pub(crate) async fn embed_observed(
+        &self,
+        inputs: Vec<EmbeddingInput>,
+        cancellation: CancellationToken,
+        metrics: &EmbeddingProviderRequestMetrics,
+    ) -> EmbeddingResult<EmbeddingExecution> {
+        self.embed_inner(
+            inputs,
+            cancellation,
+            Some(ProviderRequestObservation::Detailed(metrics)),
+        )
+        .await
     }
 
     async fn embed_inner(
         &self,
         inputs: Vec<EmbeddingInput>,
         cancellation: CancellationToken,
-        provider_requests: Option<&AtomicUsize>,
+        provider_observation: Option<ProviderRequestObservation<'_>>,
     ) -> EmbeddingResult<EmbeddingExecution> {
         if cancellation.is_cancelled() {
             return Err(EmbeddingError::Cancelled);
@@ -204,7 +223,7 @@ impl EmbeddingExecutor {
         for range in &batches {
             let request = EmbeddingBatchRequest::new(inputs[range.clone()].to_vec());
             let (response, attempts) = self
-                .call_batch(request.clone(), &cancellation, provider_requests)
+                .call_batch(request.clone(), &cancellation, provider_observation)
                 .await?;
             provider_attempts = provider_attempts.saturating_add(attempts);
             vectors.extend(validate_response(
@@ -225,19 +244,22 @@ impl EmbeddingExecutor {
         &self,
         request: EmbeddingBatchRequest,
         cancellation: &CancellationToken,
-        provider_requests: Option<&AtomicUsize>,
+        provider_observation: Option<ProviderRequestObservation<'_>>,
     ) -> EmbeddingResult<(EmbeddingBatchResponse, usize)> {
         for attempt in 0..=self.config.max_retries {
             if cancellation.is_cancelled() {
                 return Err(EmbeddingError::Cancelled);
             }
-            if let Some(provider_requests) = provider_requests {
-                provider_requests.fetch_add(1, Ordering::Relaxed);
-            }
             let attempt_token = cancellation.child_token();
-            let provider_call =
-                AssertUnwindSafe(self.provider.embed(request.clone(), attempt_token.clone()))
-                    .catch_unwind();
+            let provider_call = AssertUnwindSafe(async {
+                if let Some(provider_observation) = provider_observation {
+                    provider_observation.observe(&request);
+                }
+                self.provider
+                    .embed(request.clone(), attempt_token.clone())
+                    .await
+            })
+            .catch_unwind();
             let result = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => {

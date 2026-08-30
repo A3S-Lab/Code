@@ -93,7 +93,11 @@ drift cleanup, serialized live-generation mutation, shared-index revision CAS,
 refresh receipts, owned scheduling, and verified suppression of redundant
 embedding/publication on unchanged scheduled ticks. It also verifies bounded
 reuse of exact committed embeddings when an index-only or partial-source drift
-still requires complete atomic publication.
+still requires complete atomic publication. Its bounded ownership-epoch metrics
+separately quantify snapshot work, cache hits, logical embedding misses,
+provider-adapter invocations including retries, publication effort, and elapsed
+time for settled successful, unchanged, and failed scheduled attempts. The
+adapter-boundary counts do not prove remote transmission or billing.
 
 ## What this gate does not claim
 
@@ -102,6 +106,8 @@ latency or cost, production refresh cadence, durable remote-vector storage,
 distributed lease policy, remote CAS/failover behavior, long-horizon
 consolidation/decay quality, or
 representative tenant scale. Those remain `DM-PROD1` host qualifications.
+The new metrics make those distributions measurable but do not substitute a
+retained report from representative providers, corpora, cadence, and failures.
 
 The host must authorize memory text and query egress to the selected embedding
 provider and must protect the vector index, whose labels retain node IDs,

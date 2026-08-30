@@ -1,3 +1,11 @@
+#[path = "semantic_refresh/metrics.rs"]
+mod metrics;
+
+pub use metrics::{
+    SemanticRefreshMetrics, SemanticRefreshRunMetrics, SemanticRefreshRunOutcome,
+    SEMANTIC_REFRESH_RECENT_RUN_LIMIT,
+};
+
 use super::maintenance::{
     validate_interval, MemoryMaintenanceContext, MemoryMaintenanceError, MemoryMaintenanceJob,
     MemoryMaintenanceOutcome, ScheduledMemoryMaintenance,
@@ -9,6 +17,7 @@ use crate::durable_memory::{
 };
 use a3s_memory::vector::VectorMutationConsistency;
 use async_trait::async_trait;
+use metrics::SemanticRefreshRunObservation;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -24,7 +33,8 @@ pub const SEMANTIC_REFRESH_JOB_NAME: &str = "v2_semantic_refresh";
 /// process-local ordering guarantee. Construction is inert; a worker starts
 /// only after the schedule is installed in [`super::MemoryMaintenanceOptions`]
 /// and an asynchronous session is built. Clones form one ownership family, so
-/// only one active maintenance runtime can publish its shared receipt at once.
+/// only one active maintenance runtime can publish its shared receipt and
+/// metrics epoch at once.
 #[derive(Clone)]
 #[must_use = "a semantic refresh schedule does nothing until installed in maintenance options"]
 pub struct ScheduledSemanticRefresh {
@@ -37,6 +47,7 @@ pub struct ScheduledSemanticRefresh {
 struct ScheduledSemanticRefreshState {
     last_receipt: Option<DurableMemorySemanticRefreshReceipt>,
     embedding_cache: Option<Arc<SemanticRefreshEmbeddingCache>>,
+    metrics: SemanticRefreshMetrics,
 }
 
 impl ScheduledSemanticRefresh {
@@ -65,6 +76,15 @@ impl ScheduledSemanticRefresh {
     /// epoch and clears the process-local receipt before its first run.
     pub fn last_receipt(&self) -> Option<DurableMemorySemanticRefreshReceipt> {
         read_unpoisoned(&self.state).last_receipt.clone()
+    }
+
+    /// Return bounded, non-sensitive evidence for the current ownership epoch.
+    ///
+    /// A never-owned schedule reports epoch zero. Clean close retains the last
+    /// epoch for inspection; a successful replacement claim increments the
+    /// epoch and clears all prior counters and recent runs.
+    pub fn metrics(&self) -> SemanticRefreshMetrics {
+        read_unpoisoned(&self.state).metrics.clone()
     }
 
     pub(super) fn validate_for(&self, memory: &AgentMemory) -> Result<(), MemoryMaintenanceError> {
@@ -106,7 +126,12 @@ impl ScheduledSemanticRefresh {
                 }),
             })
             .map_err(|_| MemoryMaintenanceError::SemanticRefreshAlreadyOwned)?;
-        *write_unpoisoned(&self.state) = ScheduledSemanticRefreshState::default();
+        let mut state = write_unpoisoned(&self.state);
+        let ownership_epoch = state.metrics.ownership_epoch().saturating_add(1);
+        *state = ScheduledSemanticRefreshState {
+            metrics: SemanticRefreshMetrics::for_epoch(ownership_epoch),
+            ..ScheduledSemanticRefreshState::default()
+        };
         Ok(claim)
     }
 
@@ -145,11 +170,14 @@ impl Drop for ScheduledSemanticRefreshClaimLease {
 
 impl std::fmt::Debug for ScheduledSemanticRefresh {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = read_unpoisoned(&self.state);
         formatter
             .debug_struct("ScheduledSemanticRefresh")
             .field("interval", &self.interval)
             .field("required_consistency", &self.required_consistency())
-            .field("has_receipt", &self.last_receipt().is_some())
+            .field("has_receipt", &state.last_receipt.is_some())
+            .field("ownership_epoch", &state.metrics.ownership_epoch())
+            .field("attempted_runs", &state.metrics.attempted_runs())
             .finish()
     }
 }
@@ -172,29 +200,55 @@ impl MemoryMaintenanceJob for SemanticRefreshJob {
             let state = read_unpoisoned(&self.state);
             (state.last_receipt.clone(), state.embedding_cache.clone())
         };
-        let run = durable
+        let attempt = durable
             .refresh_semantic_recall_scheduled(
                 previous.as_ref(),
                 previous_cache.as_deref(),
                 cancellation,
             )
-            .await
-            .map_err(|error| anyhow::anyhow!(error.redacted_message()))?;
-        let affected_items = match run {
-            DurableMemorySemanticRefreshRun::Published {
+            .await;
+        let outcome = match &attempt.result {
+            Ok(DurableMemorySemanticRefreshRun::Published { .. }) => {
+                SemanticRefreshRunOutcome::Published
+            }
+            Ok(DurableMemorySemanticRefreshRun::Unchanged(_)) => {
+                SemanticRefreshRunOutcome::Unchanged
+            }
+            Err(_) => SemanticRefreshRunOutcome::Failed,
+        };
+        let observation = SemanticRefreshRunObservation {
+            outcome,
+            elapsed: attempt.elapsed,
+            source_snapshot_requests: attempt.work.source_snapshot_requests,
+            source_snapshot_node_reads: attempt.work.source_snapshot_node_reads,
+            source_snapshot_bytes: attempt.work.source_snapshot_bytes,
+            embedding_cache_hits: attempt.work.embedding_cache_hits,
+            embedding_inputs: attempt.work.embedding_inputs,
+            embedding_input_bytes: attempt.work.embedding_input_bytes,
+            provider_requests: attempt.work.provider_requests,
+            provider_inputs: attempt.work.provider_inputs,
+            provider_input_bytes: attempt.work.provider_input_bytes,
+            publication_attempts: attempt.work.publication_attempts,
+            publication_records: attempt.work.publication_records,
+        };
+        let mut state = write_unpoisoned(&self.state);
+        state.metrics.record(observation);
+        let affected_items = match attempt.result {
+            Ok(DurableMemorySemanticRefreshRun::Published {
                 receipt,
                 embedding_cache,
-            } => {
+            }) => {
                 let affected_items = receipt.active_node_count();
-                *write_unpoisoned(&self.state) = ScheduledSemanticRefreshState {
-                    last_receipt: Some(receipt),
-                    embedding_cache,
-                };
+                state.last_receipt = Some(receipt);
+                state.embedding_cache = embedding_cache;
                 affected_items
             }
-            DurableMemorySemanticRefreshRun::Unchanged(receipt) => {
+            Ok(DurableMemorySemanticRefreshRun::Unchanged(receipt)) => {
                 debug_assert_eq!(Some(receipt), previous);
                 0
+            }
+            Err(error) => {
+                return Err(anyhow::anyhow!(error.redacted_message()));
             }
         };
         Ok(MemoryMaintenanceOutcome::new(affected_items))

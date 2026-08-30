@@ -773,11 +773,20 @@ index drift performs a full verified rebuild, and a replacement owner starts
 without the previous process-local receipt. Rebuilds retain one bounded,
 text-free vector set for the active ownership epoch. Exact semantic record IDs
 bind reuse to namespace, generation, node, revision, and content digest, so
-index-only drift can republish without provider egress and a partial source
-change embeds only misses before atomically publishing the complete partition.
-Only a post-publication verified success replaces this cache. Close releases
-its vectors while keeping the receipt observable; direct explicit refreshes
-remain uncached and unconditional.
+index-only drift can republish without provider-adapter input and a partial
+source change embeds only misses before atomically publishing the complete
+partition. Only a post-publication verified success replaces this cache. Close
+releases its vectors while keeping the receipt observable; direct explicit refreshes
+remain uncached and unconditional. Cloned schedule handles also expose bounded
+`metrics()` for the current ownership epoch. Cumulative counters and the latest
+64 runs distinguish settled published, unchanged, and failed attempts while
+measuring snapshot node/byte reads, exact cache hits and misses,
+provider-adapter invocations/input bytes including retries, publication work,
+and elapsed time.
+These observations contain no source text, node IDs, digests, vectors, provider
+identity, or error bodies; close retains them for inspection and the next owner
+starts a new empty epoch. Adapter-boundary counts do not prove remote
+transmission or billing; hosts correlate them with provider telemetry.
 Activation requires independent Manual or Verification evidence. Code records
 admission for the exact current revision after final context assembly; an
 unrecordable or stale item is removed before the model call. Exact V1/V2
@@ -820,8 +829,8 @@ Memory construction itself starts no tasks. Configured V1 pruning, opt-in
 verified semantic refresh, and host-supplied consolidation jobs run only inside
 a session-owned `MemoryMaintenanceRuntime`; jobs are serialized per schedule,
 missed ticks are skipped, verified no-change semantic ticks avoid embedding and
-publication, verified rebuilds reuse exact committed embeddings, and health is
-observable. Clean
+publication, verified rebuilds reuse exact committed embeddings, and bounded
+per-epoch refresh work is observable. Clean
 `session.close().await` lets a published refresh finish source verification
 within the total close deadline before final extraction drain. Maintenance
 requires asynchronous session construction. Consolidation jobs remain

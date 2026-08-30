@@ -6,10 +6,12 @@
 
 mod executor;
 mod provider;
+mod provider_metrics;
 mod types;
 
 pub use executor::{EmbeddingExecutor, EmbeddingExecutorConfig};
 pub use provider::EmbeddingProvider;
+pub(crate) use provider_metrics::EmbeddingProviderRequestMetrics;
 pub use types::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingError, EmbeddingExecution,
     EmbeddingFailureKind, EmbeddingInput, EmbeddingNormalization, EmbeddingProviderDescriptor,

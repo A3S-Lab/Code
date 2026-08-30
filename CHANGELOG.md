@@ -39,10 +39,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process-local receipt.
 - Added bounded ownership-epoch embedding reuse for scheduled semantic rebuilds.
   Exact semantic record IDs reuse only vectors already committed by a verified
-  refresh, so index-only drift needs no provider egress and partial source drift
-  embeds only cache misses while still atomically publishing the complete
-  partition. Failed publication never promotes prepared vectors, and close
-  releases the text-free cache while retaining the observable receipt.
+  refresh, so index-only drift needs no provider-adapter input and partial
+  source drift embeds only cache misses while still atomically publishing the
+  complete partition. Failed publication never promotes prepared vectors, and
+  close releases the text-free cache while retaining the observable receipt.
+- Added bounded ownership-epoch metrics for scheduled semantic refresh. Every
+  settled published, unchanged, or failed attempt records source-snapshot
+  reads, logical cache hits and embedding misses, provider-adapter
+  invocations/inputs/bytes including retries, publication effort, and elapsed
+  time without retaining content or identifiers. The latest 64 runs and
+  cumulative counters survive close for inspection and reset before a
+  replacement owner starts; adapter-boundary counts do not claim remote
+  transmission or billing.
 
 ### Changed
 

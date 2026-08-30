@@ -7,8 +7,9 @@ one capable index. `DM-SCHED1` adds an opt-in Code-owned periodic lifecycle for
 that same verified operation. `DM-SKIP1` lets that owned schedule suppress
 redundant embedding and publication only after proving the source and index are
 unchanged. `DM-REUSE1` lets a required rebuild reuse exact embeddings already
-committed and verified in the current ownership epoch. None of these gates adds
-a distributed lease or moves embedding policy into the repository.
+committed and verified in the current ownership epoch. `DM-OBS1` exposes the
+bounded work performed by every scheduled attempt. None of these gates adds a
+distributed lease or moves embedding policy into the repository.
 
 ## Contract
 
@@ -124,6 +125,41 @@ promoted. Clean close releases the vector cache before making the next owner
 claimable while preserving `last_receipt()` for host inspection. A new owner
 always starts without cached vectors or a receipt.
 
+## Operational metrics
+
+Cloned schedule handles expose `metrics()` independently from generic
+maintenance health. A never-owned schedule reports ownership epoch zero. The
+first successful claim increments the epoch; clean close retains its metrics for
+inspection, while a replacement claim increments the epoch again and clears all
+prior counters and recent runs before any repository or provider work.
+
+Every settled published, verified-unchanged, or failed attempt contributes one
+bounded `SemanticRefreshRunMetrics` observation. `SemanticRefreshMetrics`
+retains saturating cumulative counters and at most the latest 64 observations.
+They measure:
+
+- elapsed refresh time;
+- source snapshot requests plus materialized node and canonical-payload bytes,
+  including both pre- and post-publication verification reads;
+- logical embedding cache hits, misses presented to the bounded executor, and
+  miss text bytes;
+- provider-adapter invocations, input count, and UTF-8 input bytes, counting
+  the same input again when a retry reaches the adapter boundary;
+- complete-partition publication calls actually attempted and their record
+  counts. A CAS rejection counts; later invalidation cleanup does not.
+
+Metrics do not retain source or query text, node/record IDs, namespace or
+generation digests, vectors, provider identity, credentials, or provider/error
+bodies. Failed adapter invocations remain visible even when no vector or
+receipt is returned. These counters prove work reached Code's provider-adapter
+boundary; they do not prove that the adapter transmitted a remote request or
+incurred a charge. A lost CAS publication is an attempted publication, but its
+prepared embedding still cannot become the verified cache. Direct explicit
+refresh remains outside this schedule-owned epoch and does not mutate these
+metrics. A force-aborted non-cooperative job cannot publish a terminal run
+observation because its future never settles; generic maintenance close
+reporting remains the evidence for that bounded-abort path.
+
 ## Ownership
 
 A3S Memory owns complete bounded snapshot construction and identity. Code owns
@@ -157,6 +193,7 @@ cargo test -p a3s-code-core --test durable_memory_semantic_refresh_cas
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
 cargo test -p a3s-code-core --test memory_semantic_refresh_schedule
 cargo test -p a3s-code-core --test memory_semantic_refresh_change_detection
+cargo test -p a3s-code-core --test memory_semantic_refresh_metrics
 cargo test -p a3s-code-core --test memory_maintenance_close
 ```
 
@@ -171,8 +208,11 @@ post-publication close settlement, verified unchanged-tick embedding/publication
 suppression, source- and index-drift rebuilds, ownership-epoch receipt clearing,
 exact committed-vector reuse across index drift, partial source change and
 Active removal, rejection of prepared vectors after a lost CAS race, cache
-release on owner close, and bounded abort for a non-cooperative job. A3S
-Memory's contracts separately cover deterministic
+release on owner close, exact settled successful/unchanged/failed work
+accounting, provider-boundary retry accounting, bounded redacted retention,
+ownership-epoch reset, and bounded abort for a non-cooperative job. A3S
+Memory's contracts
+separately cover deterministic
 snapshot identity, byte and node overflow, restart-stable digests, exactly one
 winner under concurrent CAS, stale replacement/cleanup rejection, and
 source-compatible custom-backend defaults.
@@ -183,6 +223,8 @@ These gates do not qualify a distributed generation lease, a durable remote CAS
 vector backend, a real embedding provider, production refresh cadence, large
 independently labeled corpora, latency, billed cost, or refresh behavior during
 remote failover. An unchanged tick still pays for a bounded repository snapshot
-and digest verification, and deterministic fixture reuse does not establish a
-production cache-hit or billed-cost distribution. Those remain `DM-PROD1` host
-qualifications.
+and digest verification. The metrics make representative distributions
+measurable; deterministic fixture observations do not establish production
+cache-hit, latency, or billed-cost distributions. Hosts must correlate the
+adapter-boundary counters with provider telemetry to establish transmission or
+billing. Those remain `DM-PROD1` host qualifications.

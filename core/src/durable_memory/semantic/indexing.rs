@@ -4,7 +4,7 @@ use super::{
     LABEL_SCHEMA, RECORD_SCHEMA_V1,
 };
 use crate::durable_memory::semantic_binding::{invalid, DurableMemorySemanticError};
-use crate::embedding::{EmbeddingError, EmbeddingInput};
+use crate::embedding::{EmbeddingError, EmbeddingInput, EmbeddingProviderRequestMetrics};
 use a3s_memory::repository::{MemoryNamespace, MemoryNode, MemoryStatus};
 use a3s_memory::vector::{
     VectorIndexStatus, VectorMutationConsistency, VectorRecord, VectorRevision,
@@ -64,6 +64,33 @@ impl std::fmt::Debug for SemanticRefreshEmbeddingCache {
 pub(in crate::durable_memory) struct SemanticIndexReplacement {
     pub(in crate::durable_memory) status: VectorIndexStatus,
     pub(in crate::durable_memory) embedding_cache: SemanticRefreshEmbeddingCache,
+}
+
+#[derive(Default)]
+pub(in crate::durable_memory) struct SemanticIndexWork {
+    pub(in crate::durable_memory) embedding_cache_hits: usize,
+    pub(in crate::durable_memory) embedding_inputs: usize,
+    pub(in crate::durable_memory) embedding_input_bytes: usize,
+    pub(in crate::durable_memory) provider_requests: usize,
+    pub(in crate::durable_memory) provider_inputs: usize,
+    pub(in crate::durable_memory) provider_input_bytes: usize,
+    pub(in crate::durable_memory) publication_attempts: usize,
+    pub(in crate::durable_memory) publication_records: usize,
+}
+
+pub(in crate::durable_memory) struct SemanticIndexReplacementAttempt {
+    pub(in crate::durable_memory) result:
+        Result<SemanticIndexReplacement, DurableMemorySemanticError>,
+    pub(in crate::durable_memory) work: SemanticIndexWork,
+}
+
+struct SemanticIndexReuseRequest<'a> {
+    namespace: &'a MemoryNamespace,
+    nodes: Vec<MemoryNode>,
+    previous_cache: Option<&'a SemanticRefreshEmbeddingCache>,
+    cancellation: CancellationToken,
+    publication: SemanticIndexPublication,
+    provider_metrics: &'a EmbeddingProviderRequestMetrics,
 }
 
 struct PreparedSemanticRecord {
@@ -247,10 +274,45 @@ impl DurableMemorySemanticRecall {
         previous_cache: Option<&SemanticRefreshEmbeddingCache>,
         cancellation: CancellationToken,
         publication: SemanticIndexPublication,
+    ) -> SemanticIndexReplacementAttempt {
+        let provider_metrics = EmbeddingProviderRequestMetrics::default();
+        let mut work = SemanticIndexWork::default();
+        let result = self
+            .replace_namespace_locked_reusing_inner(
+                SemanticIndexReuseRequest {
+                    namespace,
+                    nodes,
+                    previous_cache,
+                    cancellation,
+                    publication,
+                    provider_metrics: &provider_metrics,
+                },
+                &mut work,
+            )
+            .await;
+        work.provider_requests = provider_metrics.requests();
+        work.provider_inputs = provider_metrics.inputs();
+        work.provider_input_bytes = provider_metrics.input_bytes();
+        SemanticIndexReplacementAttempt { result, work }
+    }
+
+    async fn replace_namespace_locked_reusing_inner(
+        &self,
+        request: SemanticIndexReuseRequest<'_>,
+        work: &mut SemanticIndexWork,
     ) -> Result<SemanticIndexReplacement, DurableMemorySemanticError> {
+        let SemanticIndexReuseRequest {
+            namespace,
+            nodes,
+            previous_cache,
+            cancellation,
+            publication,
+            provider_metrics,
+        } = request;
         check_cancellation(&cancellation)?;
         let (partition, prepared) = self.prepare_namespace_records(namespace, nodes)?;
         if prepared.is_empty() {
+            work.publication_attempts = 1;
             let status = self
                 .publish_partition(&partition, Vec::new(), publication)
                 .await?;
@@ -266,17 +328,25 @@ impl DurableMemorySemanticRecall {
         for record in &prepared {
             let cached = previous_cache
                 .and_then(|cache| cache.get(&partition, &record.record_id, dimension));
-            if cached.is_none() {
-                missing_inputs.push(record.input.clone());
+            match &cached {
+                Some(_) => {
+                    work.embedding_cache_hits = work.embedding_cache_hits.saturating_add(1);
+                }
+                None => missing_inputs.push(record.input.clone()),
             }
             resolved.push(cached);
         }
+
+        work.embedding_inputs = missing_inputs.len();
+        work.embedding_input_bytes = missing_inputs.iter().fold(0usize, |total, input| {
+            total.saturating_add(input.text_bytes())
+        });
 
         let mut generated = HashMap::with_capacity(missing_inputs.len());
         if !missing_inputs.is_empty() {
             let execution = self
                 .executor
-                .embed(missing_inputs, cancellation.clone())
+                .embed_observed(missing_inputs, cancellation.clone(), provider_metrics)
                 .await?;
             check_cancellation(&cancellation)?;
             for vector in execution.vectors {
@@ -306,6 +376,8 @@ impl DurableMemorySemanticRecall {
             ));
         }
         check_cancellation(&cancellation)?;
+        work.publication_attempts = 1;
+        work.publication_records = records.len();
         let status = self
             .publish_partition(&partition, records, publication)
             .await?;
