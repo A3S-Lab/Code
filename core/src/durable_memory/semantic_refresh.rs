@@ -6,7 +6,7 @@ use a3s_memory::repository::{
     MemoryNamespace, MemoryNamespaceChangeToken, MemoryNamespaceSnapshot, MemoryRepository,
     MemorySnapshotRequest, MemoryStatus, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_NODES,
 };
-use a3s_memory::vector::{VectorIndexChangeToken, VectorMutationConsistency};
+use a3s_memory::vector::{VectorIndexObservation, VectorMutationConsistency};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -18,7 +18,7 @@ mod receipt;
 pub use checkpoint::{
     DurableMemorySemanticRefreshCheckpoint, DURABLE_MEMORY_SEMANTIC_REFRESH_CHECKPOINT_SCHEMA_V1,
 };
-use receipt::VectorIndexObservation;
+use receipt::RefreshIndexObservation;
 pub use receipt::{
     DurableMemorySemanticRefreshReceipt, DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
 };
@@ -97,14 +97,12 @@ async fn read_source_change_token(
     Ok(token)
 }
 
-fn read_index_change_token(
+async fn read_index_observation(
     semantic: &DurableMemorySemanticRecall,
-) -> Result<Option<VectorIndexChangeToken>, DurableMemorySemanticError> {
-    let token = semantic.index_change_token();
-    if let Some(token) = token.as_ref() {
-        token.verify()?;
-    }
-    Ok(token)
+) -> Result<VectorIndexObservation, DurableMemorySemanticError> {
+    let observation = semantic.observe_index().await?;
+    observation.verify()?;
+    Ok(observation)
 }
 
 impl DurableMemorySemanticRefreshRun {
@@ -218,7 +216,12 @@ impl DurableMemorySemanticRecall {
                 return Err(crate::embedding::EmbeddingError::Cancelled.into());
             }
         };
-        let publication = self.begin_index_publication(required_consistency)?;
+        let publication = tokio::select! {
+            result = self.begin_index_publication(required_consistency) => result?,
+            _ = cancellation.cancelled() => {
+                return Err(crate::embedding::EmbeddingError::Cancelled.into());
+            }
+        };
         let request = MemorySnapshotRequest::new(
             namespace.clone(),
             self.refresh_node_limit()?.min(MAX_SNAPSHOT_NODES),
@@ -236,16 +239,19 @@ impl DurableMemorySemanticRecall {
             // status read observes it afterward. The schedule keeps receipts
             // inside one repository-history ownership epoch, so exact token
             // equality proves the source snapshot identity is still current.
-            let current_index_change_token = read_index_change_token(self)?;
-            let current_index_status = self.index_status();
+            let current_index = tokio::select! {
+                result = read_index_observation(self) => result?,
+                _ = cancellation.cancelled() => {
+                    return Err(crate::embedding::EmbeddingError::Cancelled.into());
+                }
+            };
             if previous.matches_current_change_token(
                 self,
                 token,
-                VectorIndexObservation {
+                RefreshIndexObservation {
                     consistency: publication.consistency(),
                     expected_revision: publication.expected_revision(),
-                    change_token: current_index_change_token.as_ref(),
-                    status: &current_index_status,
+                    observation: &current_index,
                     require_history_continuity: false,
                 },
             ) {
@@ -288,16 +294,19 @@ impl DurableMemorySemanticRecall {
             // backend does not expose an exact change token. It also advances
             // a receipt's token after a namespace-only change left the Active
             // projection unchanged.
-            let current_index_change_token = read_index_change_token(self)?;
-            let current_index_status = self.index_status();
+            let current_index = tokio::select! {
+                result = read_index_observation(self) => result?,
+                _ = cancellation.cancelled() => {
+                    return Err(crate::embedding::EmbeddingError::Cancelled.into());
+                }
+            };
             if previous.matches_current(
                 self,
                 &before,
-                VectorIndexObservation {
+                RefreshIndexObservation {
                     consistency: publication.consistency(),
                     expected_revision: publication.expected_revision(),
-                    change_token: current_index_change_token.as_ref(),
-                    status: &current_index_status,
+                    observation: &current_index,
                     require_history_continuity: previous_requires_index_continuity,
                 },
             ) {
@@ -411,15 +420,15 @@ impl DurableMemorySemanticRecall {
                 return Err(DurableMemorySemanticError::RepositoryChangedDuringRefresh);
             }
         }
-        let index_change_token = read_index_change_token(self)?;
-        let current_index_status = self.index_status();
-        if current_index_status != index_status
-            || index_change_token
-                .as_ref()
-                .is_some_and(|token| token.revision() != index_status.revision)
-        {
+        // Publication has already committed. This verification must settle even
+        // after owner cancellation so close can retain a verified receipt or
+        // surface the drift instead of abandoning the post-publication fence.
+        let current_index = read_index_observation(self).await?;
+        if current_index.status != index_status {
             return Err(DurableMemorySemanticError::IndexRevisionChanged);
         }
+        let index_change_token = current_index.change_token;
+        let index_status = current_index.status;
 
         Ok(DurableMemorySemanticRefreshRun::Published {
             receipt: DurableMemorySemanticRefreshReceipt {

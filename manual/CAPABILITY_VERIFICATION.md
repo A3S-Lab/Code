@@ -216,6 +216,15 @@ requires one complete Active snapshot and exact vector-index history continuity,
 avoids provider/publication work only after that proof, and rebuilds for
 repository-token collisions, vector-status collisions, or missing vector-token
 support.
+[`memory_semantic_index_observation`](../core/tests/memory_semantic_index_observation.rs)
+proves that semantic publication and query correctness use the fallible async
+index observation even when the synchronous status hint is permanently stale.
+With `durable-memory-sqlite`,
+[`memory_semantic_refresh_sqlite`](../core/tests/memory_semantic_refresh_sqlite.rs)
+fully releases and reopens the local SQLite vector index, preserves the exact
+history token and revision, and recovers a checkpoint with one source snapshot
+and zero duplicate provider or publication work. This does not qualify remote
+replication or distributed lease fencing.
 [`memory_semantic_refresh_metrics`](../core/tests/memory_semantic_refresh_metrics.rs)
 proves that settled published, unchanged, provider-failed, CAS-lost, and
 recovered runs report exact snapshot, cache, logical embedding,

@@ -11,7 +11,7 @@ use crate::embedding::{
 };
 use a3s_memory::repository::{MemoryNamespace, MemoryNode, MemoryRepository, MemoryStatus};
 use a3s_memory::vector::{
-    VectorIndex, VectorIndexChangeToken, VectorIndexStatus, VectorMutationConsistency,
+    VectorIndex, VectorIndexObservation, VectorIndexStatus, VectorMutationConsistency,
     VectorSearchRequest,
 };
 use sha2::{Digest, Sha256};
@@ -82,12 +82,18 @@ impl DurableMemorySemanticRecall {
         &self.binding
     }
 
+    /// Return the backend's latest locally cached compatibility status.
+    ///
+    /// Durable correctness paths use [`Self::observe_index`] instead.
     pub fn index_status(&self) -> VectorIndexStatus {
         self.index.status()
     }
 
-    pub(super) fn index_change_token(&self) -> Option<VectorIndexChangeToken> {
-        self.index.change_token()
+    /// Read one exact, fallible index status/history observation.
+    pub async fn observe_index(
+        &self,
+    ) -> Result<VectorIndexObservation, DurableMemorySemanticError> {
+        self.index.observe().await.map_err(Into::into)
     }
 
     /// Return the strongest partition-mutation ordering advertised by the
@@ -123,7 +129,10 @@ impl DurableMemorySemanticRecall {
         check_cancellation(&cancellation)?;
 
         let partition = semantic_partition_id(namespace, &self.serving_generation_digest);
-        let observed_revision = self.index.status().revision;
+        let observed = tokio::select! {
+            result = self.observe_index() => result?,
+            _ = cancellation.cancelled() => return Err(EmbeddingError::Cancelled.into()),
+        };
         let request =
             VectorSearchRequest::new(vector.values, self.binding.policy().candidate_limit())
                 .with_partition(&partition)
@@ -132,9 +141,11 @@ impl DurableMemorySemanticRecall {
             result = self.index.search(request) => result?,
             _ = cancellation.cancelled() => return Err(EmbeddingError::Cancelled.into()),
         };
-        if result.status.revision != observed_revision
-            || self.index.status().revision != observed_revision
-        {
+        let after_search = tokio::select! {
+            result = self.observe_index() => result?,
+            _ = cancellation.cancelled() => return Err(EmbeddingError::Cancelled.into()),
+        };
+        if result.status != observed.status || after_search != observed {
             return Err(DurableMemorySemanticError::IndexRevisionChanged);
         }
 
@@ -187,7 +198,11 @@ impl DurableMemorySemanticRecall {
             });
         }
         check_cancellation(&cancellation)?;
-        if self.index.status().revision != observed_revision {
+        let after_verification = tokio::select! {
+            result = self.observe_index() => result?,
+            _ = cancellation.cancelled() => return Err(EmbeddingError::Cancelled.into()),
+        };
+        if after_verification != observed {
             return Err(DurableMemorySemanticError::IndexRevisionChanged);
         }
         candidates.sort_by(|left, right| {

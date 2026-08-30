@@ -61,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repository-local change token is never persisted, unrelated repository or
   vector histories cannot authorize a skip, and a missing history token falls
   back to a complete verified rebuild.
+- Added the opt-in `durable-memory-sqlite` Rust feature and a real close/reopen
+  semantic-refresh recovery gate. A matching persisted index history recovers
+  without repeated embedding or publication; this is local durability, not a
+  distributed lease or replicated remote store. Copying or atomically replacing
+  the closed database forks its history token on Unix and Windows.
 
 ### Changed
 
@@ -84,6 +89,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional token binds one linear mutation history with a canonical SHA-256
   digest without exposing a raw backend, endpoint, or tenant identity; custom
   indexes remain source-compatible and return `None` by default.
+- Advanced A3S Memory to the exact asynchronous vector-observation and durable
+  SQLite-index revision. Semantic query, CAS publication, and checkpoint
+  recovery now use one fallible status/token observation; synchronous status
+  remains a diagnostic compatibility hint.
 - Memory maintenance close now cancels an active job and awaits its settlement
   within the configured total deadline before using bounded abort. A semantic
   refresh that has published vectors can therefore finish mandatory source

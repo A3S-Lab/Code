@@ -4,15 +4,15 @@ use crate::durable_memory::{
 };
 use a3s_memory::repository::{MemoryNamespaceChangeToken, MemoryNamespaceSnapshot};
 use a3s_memory::vector::{
-    VectorIndexChangeToken, VectorIndexStatus, VectorMutationConsistency, VectorRevision,
+    VectorIndexChangeToken, VectorIndexObservation, VectorIndexStatus, VectorMutationConsistency,
+    VectorRevision,
 };
 use serde::Serialize;
 
-pub(super) struct VectorIndexObservation<'a> {
+pub(super) struct RefreshIndexObservation<'a> {
     pub(super) consistency: VectorMutationConsistency,
     pub(super) expected_revision: Option<VectorRevision>,
-    pub(super) change_token: Option<&'a VectorIndexChangeToken>,
-    pub(super) status: &'a VectorIndexStatus,
+    pub(super) observation: &'a VectorIndexObservation,
     pub(super) require_history_continuity: bool,
 }
 
@@ -94,7 +94,7 @@ impl DurableMemorySemanticRefreshReceipt {
         &self,
         semantic: &DurableMemorySemanticRecall,
         snapshot: &MemoryNamespaceSnapshot,
-        index: VectorIndexObservation<'_>,
+        index: RefreshIndexObservation<'_>,
     ) -> bool {
         self.profile == DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1
             && self.source_snapshot_profile == snapshot.profile()
@@ -106,18 +106,18 @@ impl DurableMemorySemanticRefreshReceipt {
             && self.mutation_consistency == index.consistency
             && index.expected_revision == Some(self.index_status.revision)
             && self.matches_index_continuity(
-                index.change_token,
-                index.status,
+                index.observation.change_token.as_ref(),
+                &index.observation.status,
                 index.require_history_continuity,
             )
-            && self.index_status == *index.status
+            && self.index_status == index.observation.status
     }
 
     pub(super) fn matches_current_change_token(
         &self,
         semantic: &DurableMemorySemanticRecall,
         token: &MemoryNamespaceChangeToken,
-        index: VectorIndexObservation<'_>,
+        index: RefreshIndexObservation<'_>,
     ) -> bool {
         self.profile == DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1
             && self.source_change_token.as_ref() == Some(token)
@@ -126,11 +126,11 @@ impl DurableMemorySemanticRefreshReceipt {
             && self.mutation_consistency == index.consistency
             && index.expected_revision == Some(self.index_status.revision)
             && self.matches_index_continuity(
-                index.change_token,
-                index.status,
+                index.observation.change_token.as_ref(),
+                &index.observation.status,
                 index.require_history_continuity,
             )
-            && self.index_status == *index.status
+            && self.index_status == index.observation.status
     }
 
     fn matches_index_continuity(

@@ -160,7 +160,7 @@ impl DurableMemorySemanticRecall {
         self.executor.config().max_request_text_bytes
     }
 
-    pub(in crate::durable_memory) fn begin_index_publication(
+    pub(in crate::durable_memory) async fn begin_index_publication(
         &self,
         required_consistency: VectorMutationConsistency,
     ) -> Result<SemanticIndexPublication, DurableMemorySemanticError> {
@@ -186,7 +186,9 @@ impl DurableMemorySemanticRecall {
         }
         let expected_revision = match consistency {
             VectorMutationConsistency::PartitionAtomic => None,
-            VectorMutationConsistency::IndexRevisionCas => Some(self.index.status().revision),
+            VectorMutationConsistency::IndexRevisionCas => {
+                Some(self.observe_index().await?.status.revision)
+            }
             _ => {
                 return Err(invalid(
                     "vectorIndex.mutationConsistency",
@@ -235,8 +237,12 @@ impl DurableMemorySemanticRecall {
                 return Err(EmbeddingError::Cancelled.into());
             }
         };
-        let publication =
-            self.begin_index_publication(VectorMutationConsistency::PartitionAtomic)?;
+        let publication = tokio::select! {
+            result = self.begin_index_publication(VectorMutationConsistency::PartitionAtomic) => result?,
+            _ = cancellation.cancelled() => {
+                return Err(EmbeddingError::Cancelled.into());
+            }
+        };
         self.replace_namespace_locked(namespace, nodes, cancellation, publication)
             .await
     }

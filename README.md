@@ -756,6 +756,10 @@ Successful calls return a secret-free receipt binding source digest/bytes,
 an optional content-free source change token, semantic generation, node count,
 vector revision, mutation consistency, and an optional exact vector-index
 history token.
+All publication, recovery, and query fences read the fallible asynchronous
+`VectorIndex::observe()` status/token pair. The synchronous `index_status()`
+surface is retained only as a locally cached diagnostic hint, so a durable
+backend never needs to block a Tokio worker to satisfy that compatibility API.
 Cloned sessions serialize refresh and direct replacement through the same
 live-generation lock. On a backend advertising atomic index-revision CAS, Code
 captures the base revision before snapshot work, conditionally publishes, and
@@ -804,6 +808,16 @@ These observations contain no source text, node IDs, digests, vectors, provider
 identity, or error bodies; close retains them for inspection and the next owner
 starts a new empty epoch. Adapter-boundary counts do not prove remote
 transmission or billing; hosts correlate them with provider telemetry.
+
+Rust hosts that enable Code's `durable-memory-sqlite` feature can inject A3S
+Memory's `SqliteVectorIndex`. It preserves the exact vector history, global
+revision CAS, records, and integrity accounting across a real close/reopen, so
+a matching host-persisted checkpoint can recover with one source snapshot and
+no repeated embedding or publication. The backend is local SQLite durability;
+on Unix and Windows, copying or atomically replacing the closed database forks
+its history token on next open. Restore must replace the database file rather
+than overwrite it in place. Distributed lease ownership, replicated remote
+CAS, failover, and production cadence remain host qualifications.
 Activation requires independent Manual or Verification evidence. Code records
 admission for the exact current revision after final context assembly; an
 unrecordable or stale item is removed before the model call. Exact V1/V2

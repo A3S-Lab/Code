@@ -11,9 +11,10 @@ remove redundant source snapshots from that proof. `DM-REUSE1` lets a required
 rebuild reuse exact embeddings already committed and verified in the current
 ownership epoch. `DM-OBS1` exposes the bounded work performed by every
 scheduled attempt. `DM-RECOVER1` lets a host persist secret-free recovery
-evidence without trusting a token from another repository history. None of
-these gates adds a distributed lease or moves embedding policy into the
-repository.
+evidence without trusting a token from another repository history.
+`DM-SQLITE1` proves that the same recovery contract survives a real close and
+reopen of A3S Memory's local SQLite vector backend. None of these gates adds a
+distributed lease or moves embedding policy into the repository.
 
 ## Contract
 
@@ -22,8 +23,9 @@ bound namespace. One successful call performs this sequence:
 
 1. Acquire the live semantic generation's refresh lock. Cloned sessions and
    direct namespace replacement share the same lock. Read the backend's typed
-   mutation consistency and, for `index_revision_cas`, capture the global index
-   revision before repository or embedding work.
+   mutation consistency and, for `index_revision_cas`, use the fallible
+   asynchronous index observation to capture the global revision before
+   repository or embedding work.
 2. Read the repository's optional exact namespace change token, then request
    the complete current `Active` view under node and canonical-payload byte
    budgets derived from the bound embedding execution policy.
@@ -45,7 +47,8 @@ bound namespace. One successful call performs this sequence:
    profile/digest/bytes, optional content-free source change token, semantic
    binding schema, serving-generation digest, Active node count, mutation
    consistency, optional exact vector-index history token, and published
-   vector-index status.
+   vector-index status. Status and token come from one exact post-publication
+   observation rather than separate synchronous reads.
 
 An over-budget snapshot, cancellation before publication, repository failure,
 forged snapshot response, embedding failure, or vector replacement failure
@@ -178,9 +181,16 @@ attempt retains the checkpoint only as unverified recovery evidence for retry.
 
 The built-in in-memory index preserves its history token across clones of the
 same live object. Constructing a new index creates a new history and therefore
-rebuilds. A durable remote backend can enable cross-process recovery only by
-persisting one token across the same linear mutation history and issuing a new
-history digest after recreation, rollback, or divergent restore.
+rebuilds. With Code's `durable-memory-sqlite` feature, A3S Memory's
+`SqliteVectorIndex` persists the token, descriptor, revision, and content in one
+local database; the deterministic gate closes the first handle, reopens the
+database, and proves unchanged recovery without provider or publication work.
+A copied or atomically replaced closed database forks its token on Unix and
+Windows; backup restore must replace the database file instead of overwriting
+it in place. Concurrent out-of-band file operations are unsupported.
+A durable remote backend can provide the same capability only by persisting one
+token across the same linear mutation history and issuing a new history digest
+after recreation, rollback, or divergent restore.
 
 ## Operational metrics
 
@@ -230,6 +240,7 @@ receipt promotion. The host still owns:
 
 - whether to refresh directly or install a schedule, and at what interval;
 - repository, provider, and vector-index construction;
+- local SQLite path, permissions, encryption, retention, backup, and deletion;
 - credentials and memory/query egress authorization;
 - durable checkpoint/receipt storage and alerting;
 - selecting and operating any distributed lease policy in addition to revision
@@ -257,6 +268,8 @@ cargo test -p a3s-code-core --test memory_semantic_refresh_schedule
 cargo test -p a3s-code-core --test memory_semantic_refresh_change_detection
 cargo test -p a3s-code-core --test memory_semantic_refresh_change_token
 cargo test -p a3s-code-core --test memory_semantic_refresh_checkpoint
+cargo test -p a3s-code-core --test memory_semantic_index_observation
+cargo test -p a3s-code-core --features durable-memory-sqlite --test memory_semantic_refresh_sqlite
 cargo test -p a3s-code-core --test memory_semantic_refresh_metrics
 cargo test -p a3s-code-core --test memory_maintenance_close
 ```
@@ -275,6 +288,8 @@ two-snapshot fallback, pre-provider token-drift rejection, post-publication
 conditional cleanup, inactive-only receipt advancement,
 host-persisted checkpoint validation, one-snapshot unchanged recovery,
 repository- and vector-history collision rejection, missing-token fallback,
+exact asynchronous observation despite stale synchronous status hints, local
+SQLite close/reopen checkpoint continuity without duplicate provider work,
 exact committed-vector reuse across index drift, partial source change and
 Active removal, rejection of prepared vectors after a lost CAS race, cache
 release on owner close, exact settled successful/unchanged/failed work
@@ -299,8 +314,9 @@ avoid that snapshot but still pay for token and index-status reads. The metrics
 make representative distributions measurable. A checkpoint does not itself
 prove vector-backend continuity: a backend without a durable exact history token
 rebuilds, and the in-memory token applies only to the retained index object and
-its clones. Cross-process skipping therefore remains conditional on a qualified
-durable backend implementation. Deterministic fixture observations do not
+its clones. Local cross-process skipping is qualified only for the injected
+SQLite implementation; remote skipping remains conditional on a separately
+qualified durable backend. Deterministic fixture observations do not
 establish production cache-hit,
 latency, or billed-cost distributions. Hosts must correlate the adapter-boundary
 counters with provider telemetry to establish transmission or billing. Those

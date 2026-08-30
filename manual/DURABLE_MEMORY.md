@@ -14,7 +14,8 @@ retrieval policy into the A3S Memory storage kernel.
 - A3S Memory owns exact namespace isolation, atomic and idempotent change sets,
   revision history, non-destructive lifecycle state, pure query, access events,
   complete dual-budget namespace snapshots, durable repository recovery, and
-  caller-owned atomic and revision-CAS vector-index primitives.
+  caller-owned atomic and revision-CAS vector-index primitives, including an
+  opt-in locally durable SQLite implementation.
 - A3S Code owns bounded embedding execution, hybrid fusion, candidate
   re-verification, lexical fallback, cancellation, verified snapshot refresh,
   conditional publication, drift cleanup, and receipts for an attached semantic
@@ -106,7 +107,8 @@ At query time, Code treats vector results as untrusted candidates:
    policy retained by the session binding;
 2. search only the opaque partition derived from the exact memory namespace
    and semantic serving generation;
-3. fence the vector-index revision across search and verification;
+3. fence one exact asynchronous vector-index status/history observation across
+   search and verification;
 4. re-read every candidate by ID from the bound `MemoryRepository` namespace;
 5. require `Active` status, the exact current node revision, and the exact
    content digest recorded with the vector;
@@ -378,8 +380,16 @@ provider or publication work. The next stable tick can then use the zero-snapsho
 token path. Unrelated repository histories, colliding vector status from an
 unrelated index, missing vector-history support, or any drift conservatively
 rebuilds. `last_receipt()` stays empty until current-epoch verification succeeds.
-Durable checkpoint storage and backend token persistence remain host
-responsibilities.
+Code reads these values through `VectorIndex::observe`; synchronous status is a
+diagnostic compatibility hint and never guards publication or recovery.
+Durable checkpoint storage remains a host responsibility. With the
+`durable-memory-sqlite` Cargo feature, a Rust host may inject A3S Memory's
+`SqliteVectorIndex`, which persists the token and index content across a real
+local close/reopen. On Unix and Windows, a copied or atomically replaced closed
+database receives a new history token on next open. Restore must replace the
+file; in-place overwrite and concurrent out-of-band file operations are not
+part of the storage protocol. Remote replication and distributed lease fencing
+remain separate host qualifications.
 
 If a verified rebuild is required, the active owner retains one bounded,
 text-free set of vectors from its latest successful partition. Reuse requires
@@ -494,6 +504,11 @@ log source or query text. Hosts must still authorize the provider and index for
 that tenant/principal/scope, protect their storage and transport, and choose an
 authority digest that contains no credential.
 
+The optional SQLite vector backend stores those embeddings and bounded labels
+on local disk. Hosts must select a tenant-appropriate path and apply their own
+filesystem permissions, encryption, retention, backup, and deletion policy.
+Code never chooses that path or silently enables the backend.
+
 ## Migration sequence
 
 1. Run shadow mode beside the existing V1 serving path.
@@ -534,7 +549,9 @@ authority digest that contains no credential.
     rebuild, ownership-epoch reset and cache release, host-persisted checkpoint
     validation, one-snapshot recovery with exact vector-history continuity,
     collision and missing-token fallback, and post-publication close settlement.
-    Treat production cadence, remaining snapshot cost, real cache
+    When local persistence is selected, also require a true SQLite close/reopen
+    checkpoint recovery with no duplicate provider or publication work. Treat
+    production cadence, remaining snapshot cost, real cache
     hit/cost distributions, distributed lease policy, and remote-backend behavior
     as separate host qualifications.
 12. Run the multi-agent gate. Share only an exact host-injected binding; require
@@ -583,6 +600,8 @@ cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
 cargo test -p a3s-code-core --test memory_semantic_refresh_schedule
 cargo test -p a3s-code-core --test memory_semantic_refresh_change_detection
 cargo test -p a3s-code-core --test memory_semantic_refresh_checkpoint
+cargo test -p a3s-code-core --test memory_semantic_index_observation
+cargo test -p a3s-code-core --features durable-memory-sqlite --test memory_semantic_refresh_sqlite
 cargo test -p a3s-code-core --test memory_semantic_refresh_metrics
 cargo test -p a3s-code-core --test memory_maintenance_close
 cargo test -p a3s-code-core --test durable_memory_multi_agent_eval -- --nocapture
