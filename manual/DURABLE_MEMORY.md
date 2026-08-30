@@ -368,6 +368,19 @@ process-local receipt before its first tick, so it cannot authorize a skip on a
 different injected backend. Real provider cost and production interval
 selection remain host qualifications.
 
+A host can explicitly carry safe recovery evidence across schedule owners by
+serializing `receipt.checkpoint()` from a successful `last_receipt()` and later
+calling `ScheduledSemanticRefresh::try_new_with_checkpoint`. The checkpoint
+excludes the repository-local change token. Its first run always verifies one
+complete Active snapshot and requires the exact A3S Memory vector-index history
+token, matching revision, and full status before it can return unchanged without
+provider or publication work. The next stable tick can then use the zero-snapshot
+token path. Unrelated repository histories, colliding vector status from an
+unrelated index, missing vector-history support, or any drift conservatively
+rebuilds. `last_receipt()` stays empty until current-epoch verification succeeds.
+Durable checkpoint storage and backend token persistence remain host
+responsibilities.
+
 If a verified rebuild is required, the active owner retains one bounded,
 text-free set of vectors from its latest successful partition. Reuse requires
 the complete semantic record ID, which binds namespace, generation, node,
@@ -518,8 +531,10 @@ authority digest that contains no credential.
     health, retained receipts, verified unchanged-tick embedding/publication
     suppression, exact committed-vector reuse for index drift and partial source
     change, rejection of uncommitted cache candidates, conservative drift
-    rebuild, ownership-epoch reset and cache release, and post-publication close
-    settlement. Treat production cadence, remaining snapshot cost, real cache
+    rebuild, ownership-epoch reset and cache release, host-persisted checkpoint
+    validation, one-snapshot recovery with exact vector-history continuity,
+    collision and missing-token fallback, and post-publication close settlement.
+    Treat production cadence, remaining snapshot cost, real cache
     hit/cost distributions, distributed lease policy, and remote-backend behavior
     as separate host qualifications.
 12. Run the multi-agent gate. Share only an exact host-injected binding; require
@@ -541,7 +556,7 @@ for the query-profile contract, CJK gate, and its limits. See
 typed hybrid serving, current-revision verification, and cross-language gate.
 See [Durable Memory Semantic Refresh](DURABLE_MEMORY_SEMANTIC_REFRESH.md) for
 complete snapshot rebuild, drift cleanup, shared-index revision CAS, and
-owned schedule and refresh-receipt semantics.
+owned schedule, refresh-receipt, and checkpoint-recovery semantics.
 See
 [Durable Memory Multi-Agent Evaluation](DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
 explicit sharing and context-identity semantics. See
@@ -567,6 +582,7 @@ cargo test -p a3s-code-core --test durable_memory_semantic_refresh_cas
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
 cargo test -p a3s-code-core --test memory_semantic_refresh_schedule
 cargo test -p a3s-code-core --test memory_semantic_refresh_change_detection
+cargo test -p a3s-code-core --test memory_semantic_refresh_checkpoint
 cargo test -p a3s-code-core --test memory_semantic_refresh_metrics
 cargo test -p a3s-code-core --test memory_maintenance_close
 cargo test -p a3s-code-core --test durable_memory_multi_agent_eval -- --nocapture

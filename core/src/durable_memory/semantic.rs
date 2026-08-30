@@ -11,7 +11,8 @@ use crate::embedding::{
 };
 use a3s_memory::repository::{MemoryNamespace, MemoryNode, MemoryRepository, MemoryStatus};
 use a3s_memory::vector::{
-    VectorIndex, VectorIndexStatus, VectorMutationConsistency, VectorSearchRequest,
+    VectorIndex, VectorIndexChangeToken, VectorIndexStatus, VectorMutationConsistency,
+    VectorSearchRequest,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -83,6 +84,10 @@ impl DurableMemorySemanticRecall {
 
     pub fn index_status(&self) -> VectorIndexStatus {
         self.index.status()
+    }
+
+    pub(super) fn index_change_token(&self) -> Option<VectorIndexChangeToken> {
+        self.index.change_token()
     }
 
     /// Return the strongest partition-mutation ordering advertised by the

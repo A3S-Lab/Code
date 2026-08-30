@@ -164,7 +164,7 @@ dependencies = [
 [[package]]
 name = "a3s-memory"
 version = "0.1.3"
-source = "git+https://github.com/A3S-Lab/Memory.git?rev=3ab4ce297a6866633b060e86040c1091055aca88#3ab4ce297a6866633b060e86040c1091055aca88"
+source = "git+https://github.com/A3S-Lab/Memory.git?rev=46de912c5bbe9b605c47b444bd83d8c245d8f8e1#46de912c5bbe9b605c47b444bd83d8c245d8f8e1"
 dependencies = [
  "anyhow",
  "async-trait",

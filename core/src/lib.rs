@@ -198,11 +198,14 @@ pub use durable_memory::{
     DurableMemoryActivation, DurableMemoryBindingV1, DurableMemoryMode, DurableMemoryRecallChannel,
     DurableMemoryRecallHit, DurableMemoryRecallPolicy, DurableMemoryRecallPreview,
     DurableMemorySemanticBindingV1, DurableMemorySemanticError, DurableMemorySemanticRecall,
-    DurableMemorySemanticRecallPolicy, DurableMemorySemanticRefreshReceipt, DurableMemorySession,
-    DurableMemoryUse, DURABLE_MEMORY_BINDING_SCHEMA_VERSION, DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1,
+    DurableMemorySemanticRecallPolicy, DurableMemorySemanticRefreshCheckpoint,
+    DurableMemorySemanticRefreshReceipt, DurableMemorySession, DurableMemoryUse,
+    DURABLE_MEMORY_BINDING_SCHEMA_VERSION, DURABLE_MEMORY_CONTEXT_ID_PROFILE_V1,
     DURABLE_MEMORY_CONTEXT_ID_PROFILE_V2, DURABLE_MEMORY_HYBRID_BINDING_SCHEMA_VERSION,
     DURABLE_MEMORY_RETRIEVAL_PROFILE_V1, DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1,
-    DURABLE_MEMORY_SEMANTIC_FUSION_PROFILE_V1, DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
+    DURABLE_MEMORY_SEMANTIC_FUSION_PROFILE_V1,
+    DURABLE_MEMORY_SEMANTIC_REFRESH_CHECKPOINT_SCHEMA_V1,
+    DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
 };
 pub use dynamic_workflow::{
     dynamic_workflow_store_path, DynamicWorkflowRuntime, DynamicWorkflowScriptLimits,

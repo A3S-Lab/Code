@@ -29,7 +29,9 @@ pub use semantic_binding::{
 };
 pub(crate) use semantic_refresh::DurableMemorySemanticRefreshRun;
 pub use semantic_refresh::{
-    DurableMemorySemanticRefreshReceipt, DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
+    DurableMemorySemanticRefreshCheckpoint, DurableMemorySemanticRefreshReceipt,
+    DURABLE_MEMORY_SEMANTIC_REFRESH_CHECKPOINT_SCHEMA_V1,
+    DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
 };
 
 use a3s_memory::repository::{

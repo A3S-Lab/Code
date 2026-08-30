@@ -156,7 +156,7 @@ telemetry remain opt-in.
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
-| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
+| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, host-persisted safe refresh checkpoints, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
 | Model adapters          | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations                                                                                                                                                        | Configuration or host injection                                                                                                                                           |
@@ -754,7 +754,8 @@ the call can succeed; an invalidation error is propagated and no receipt is
 returned. Pre-publication failures preserve the previous complete partition.
 Successful calls return a secret-free receipt binding source digest/bytes,
 an optional content-free source change token, semantic generation, node count,
-vector revision, and mutation consistency.
+vector revision, mutation consistency, and an optional exact vector-index
+history token.
 Cloned sessions serialize refresh and direct replacement through the same
 live-generation lock. On a backend advertising atomic index-revision CAS, Code
 captures the base revision before snapshot work, conditionally publishes, and
@@ -774,7 +775,18 @@ without the token retains complete bounded snapshot verification. A token
 change triggers one full Active snapshot; if only inactive state changed, Code
 advances the receipt without republishing. Source or index drift performs a
 full verified rebuild, and a replacement owner starts without the previous
-process-local receipt. Rebuilds retain one bounded,
+process-local receipt. A host that needs recovery across owners can serialize
+`receipt.checkpoint()` and pass the decoded value to
+`ScheduledSemanticRefresh::try_new_with_checkpoint`. The checkpoint deliberately
+omits the repository change token because it is meaningful only within one
+repository history. Its first recovered run always verifies one complete Active
+snapshot and the current index. Only an equal source identity, semantic
+generation, full index status, and exact vector-index history token at the same
+revision can avoid provider and publication work; after that promotion, the next
+stable tick can use the normal zero-snapshot namespace-token path. A missing or
+different vector token, unrelated repository or vector history, colliding index
+status, or any drift triggers the complete verified rebuild. Until this proof
+succeeds, `last_receipt()` remains empty. Rebuilds retain one bounded,
 text-free vector set for the active ownership epoch. Exact semantic record IDs
 bind reuse to namespace, generation, node, revision, and content digest, so
 index-only drift can republish without provider-adapter input and a partial

@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cumulative counters survive close for inspection and reset before a
   replacement owner starts; adapter-boundary counts do not claim remote
   transmission or billing.
+- Added versioned, secret-free semantic-refresh recovery checkpoints. A host can
+  persist `receipt.checkpoint()` and install it through
+  `ScheduledSemanticRefresh::try_new_with_checkpoint`; the recovered owner must
+  verify one complete Active snapshot plus the exact vector-index history token,
+  revision, and full status before avoiding provider or publication work. The
+  repository-local change token is never persisted, unrelated repository or
+  vector histories cannot authorize a skip, and a missing history token falls
+  back to a complete verified rebuild.
 
 ### Changed
 
@@ -72,6 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restart; custom repositories remain source-compatible and return `None` by
   default. The pinned revision also fixes `sqlite-vec` registration before the
   first concurrent SQLite connections are opened.
+- Advanced A3S Memory to the exact vector-index history-token revision. The
+  optional token binds one linear mutation history with a canonical SHA-256
+  digest without exposing a raw backend, endpoint, or tenant identity; custom
+  indexes remain source-compatible and return `None` by default.
 - Memory maintenance close now cancels an active job and awaits its settlement
   within the configured total deadline before using bounded abort. A semantic
   refresh that has published vectors can therefore finish mandatory source

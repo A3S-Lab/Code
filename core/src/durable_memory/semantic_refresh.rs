@@ -6,121 +6,22 @@ use a3s_memory::repository::{
     MemoryNamespace, MemoryNamespaceChangeToken, MemoryNamespaceSnapshot, MemoryRepository,
     MemorySnapshotRequest, MemoryStatus, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_NODES,
 };
-use a3s_memory::vector::{VectorIndexStatus, VectorMutationConsistency, VectorRevision};
-use serde::Serialize;
+use a3s_memory::vector::{VectorIndexChangeToken, VectorMutationConsistency};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-/// Stable identity of the verified full-snapshot refresh algorithm.
-pub const DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1: &str =
-    "a3s.code.memory.semantic-refresh.full-snapshot.v1";
-
-/// Secret-free evidence that one exact Active snapshot was published.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DurableMemorySemanticRefreshReceipt {
-    profile: String,
-    source_snapshot_profile: String,
-    source_snapshot_digest: String,
-    source_snapshot_bytes: usize,
-    source_change_token: Option<MemoryNamespaceChangeToken>,
-    semantic_binding_schema: String,
-    serving_generation_digest: String,
-    active_node_count: usize,
-    mutation_consistency: VectorMutationConsistency,
-    index_status: VectorIndexStatus,
-}
-
-impl DurableMemorySemanticRefreshReceipt {
-    pub fn profile(&self) -> &str {
-        &self.profile
-    }
-
-    pub fn source_snapshot_profile(&self) -> &str {
-        &self.source_snapshot_profile
-    }
-
-    pub fn source_snapshot_digest(&self) -> &str {
-        &self.source_snapshot_digest
-    }
-
-    pub fn source_snapshot_bytes(&self) -> usize {
-        self.source_snapshot_bytes
-    }
-
-    /// Optional bounded change evidence scoped to one repository history and
-    /// schedule-ownership epoch.
-    pub fn source_change_token(&self) -> Option<&MemoryNamespaceChangeToken> {
-        self.source_change_token.as_ref()
-    }
-
-    pub fn semantic_binding_schema(&self) -> &str {
-        &self.semantic_binding_schema
-    }
-
-    pub fn serving_generation_digest(&self) -> &str {
-        &self.serving_generation_digest
-    }
-
-    pub fn active_node_count(&self) -> usize {
-        self.active_node_count
-    }
-
-    pub fn mutation_consistency(&self) -> VectorMutationConsistency {
-        self.mutation_consistency
-    }
-
-    pub fn index_status(&self) -> &VectorIndexStatus {
-        &self.index_status
-    }
-
-    fn matches_current(
-        &self,
-        semantic: &DurableMemorySemanticRecall,
-        snapshot: &MemoryNamespaceSnapshot,
-        consistency: VectorMutationConsistency,
-        expected_revision: Option<VectorRevision>,
-        index_status: &VectorIndexStatus,
-    ) -> bool {
-        self.profile == DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1
-            && self.source_snapshot_profile == snapshot.profile()
-            && self.source_snapshot_digest == snapshot.digest()
-            && self.source_snapshot_bytes == snapshot.byte_count()
-            && self.semantic_binding_schema == DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1
-            && self.serving_generation_digest == semantic.serving_generation_digest()
-            && self.active_node_count == snapshot.nodes().len()
-            && self.mutation_consistency == consistency
-            && expected_revision == Some(self.index_status.revision)
-            && self.index_status == *index_status
-    }
-
-    fn matches_current_change_token(
-        &self,
-        semantic: &DurableMemorySemanticRecall,
-        token: &MemoryNamespaceChangeToken,
-        consistency: VectorMutationConsistency,
-        expected_revision: Option<VectorRevision>,
-        index_status: &VectorIndexStatus,
-    ) -> bool {
-        self.profile == DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1
-            && self.source_change_token.as_ref() == Some(token)
-            && self.semantic_binding_schema == DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1
-            && self.serving_generation_digest == semantic.serving_generation_digest()
-            && self.mutation_consistency == consistency
-            && expected_revision == Some(self.index_status.revision)
-            && self.index_status == *index_status
-    }
-
-    fn with_source_change_token(
-        &self,
-        source_change_token: Option<MemoryNamespaceChangeToken>,
-    ) -> Self {
-        let mut receipt = self.clone();
-        receipt.source_change_token = source_change_token;
-        receipt
-    }
-}
+#[path = "semantic_refresh/checkpoint.rs"]
+mod checkpoint;
+#[path = "semantic_refresh/receipt.rs"]
+mod receipt;
+pub use checkpoint::{
+    DurableMemorySemanticRefreshCheckpoint, DURABLE_MEMORY_SEMANTIC_REFRESH_CHECKPOINT_SCHEMA_V1,
+};
+use receipt::VectorIndexObservation;
+pub use receipt::{
+    DurableMemorySemanticRefreshReceipt, DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
+};
 
 pub(crate) enum DurableMemorySemanticRefreshRun {
     Published {
@@ -196,6 +97,16 @@ async fn read_source_change_token(
     Ok(token)
 }
 
+fn read_index_change_token(
+    semantic: &DurableMemorySemanticRecall,
+) -> Result<Option<VectorIndexChangeToken>, DurableMemorySemanticError> {
+    let token = semantic.index_change_token();
+    if let Some(token) = token.as_ref() {
+        token.verify()?;
+    }
+    Ok(token)
+}
+
 impl DurableMemorySemanticRefreshRun {
     pub(crate) fn into_receipt(self) -> DurableMemorySemanticRefreshReceipt {
         match self {
@@ -214,6 +125,7 @@ struct SemanticRefreshExecution<'a> {
     namespace: &'a MemoryNamespace,
     required_consistency: VectorMutationConsistency,
     previous: Option<&'a DurableMemorySemanticRefreshReceipt>,
+    previous_requires_index_continuity: bool,
     cache_mode: SemanticRefreshCacheMode<'a>,
     cancellation: CancellationToken,
 }
@@ -223,6 +135,7 @@ impl DurableMemorySession {
         &self,
         previous: Option<&DurableMemorySemanticRefreshReceipt>,
         previous_cache: Option<&SemanticRefreshEmbeddingCache>,
+        previous_requires_index_continuity: bool,
         cancellation: CancellationToken,
     ) -> DurableMemorySemanticRefreshAttempt {
         let started = Instant::now();
@@ -236,6 +149,7 @@ impl DurableMemorySession {
                             namespace: &self.namespace,
                             required_consistency: VectorMutationConsistency::IndexRevisionCas,
                             previous,
+                            previous_requires_index_continuity,
                             cache_mode: SemanticRefreshCacheMode::Capture(previous_cache),
                             cancellation,
                         },
@@ -270,6 +184,7 @@ impl DurableMemorySemanticRecall {
                 namespace,
                 required_consistency,
                 previous: None,
+                previous_requires_index_continuity: false,
                 cache_mode: SemanticRefreshCacheMode::Disabled,
                 cancellation,
             },
@@ -289,6 +204,7 @@ impl DurableMemorySemanticRecall {
             namespace,
             required_consistency,
             previous,
+            previous_requires_index_continuity,
             cache_mode,
             cancellation,
         } = execution;
@@ -320,13 +236,18 @@ impl DurableMemorySemanticRecall {
             // status read observes it afterward. The schedule keeps receipts
             // inside one repository-history ownership epoch, so exact token
             // equality proves the source snapshot identity is still current.
+            let current_index_change_token = read_index_change_token(self)?;
             let current_index_status = self.index_status();
             if previous.matches_current_change_token(
                 self,
                 token,
-                publication.consistency(),
-                publication.expected_revision(),
-                &current_index_status,
+                VectorIndexObservation {
+                    consistency: publication.consistency(),
+                    expected_revision: publication.expected_revision(),
+                    change_token: current_index_change_token.as_ref(),
+                    status: &current_index_status,
+                    require_history_continuity: false,
+                },
             ) {
                 return Ok(DurableMemorySemanticRefreshRun::Unchanged(previous.clone()));
             }
@@ -367,13 +288,18 @@ impl DurableMemorySemanticRecall {
             // backend does not expose an exact change token. It also advances
             // a receipt's token after a namespace-only change left the Active
             // projection unchanged.
+            let current_index_change_token = read_index_change_token(self)?;
             let current_index_status = self.index_status();
             if previous.matches_current(
                 self,
                 &before,
-                publication.consistency(),
-                publication.expected_revision(),
-                &current_index_status,
+                VectorIndexObservation {
+                    consistency: publication.consistency(),
+                    expected_revision: publication.expected_revision(),
+                    change_token: current_index_change_token.as_ref(),
+                    status: &current_index_status,
+                    require_history_continuity: previous_requires_index_continuity,
+                },
             ) {
                 return Ok(DurableMemorySemanticRefreshRun::Unchanged(
                     previous.with_source_change_token(stable_source_change_token),
@@ -485,7 +411,13 @@ impl DurableMemorySemanticRecall {
                 return Err(DurableMemorySemanticError::RepositoryChangedDuringRefresh);
             }
         }
-        if self.index_status().revision != index_status.revision {
+        let index_change_token = read_index_change_token(self)?;
+        let current_index_status = self.index_status();
+        if current_index_status != index_status
+            || index_change_token
+                .as_ref()
+                .is_some_and(|token| token.revision() != index_status.revision)
+        {
             return Err(DurableMemorySemanticError::IndexRevisionChanged);
         }
 
@@ -500,6 +432,7 @@ impl DurableMemorySemanticRecall {
                 serving_generation_digest: self.serving_generation_digest().to_string(),
                 active_node_count,
                 mutation_consistency: publication.consistency(),
+                index_change_token,
                 index_status,
             },
             embedding_cache,

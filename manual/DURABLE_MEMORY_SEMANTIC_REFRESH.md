@@ -10,8 +10,10 @@ unchanged. `DM-TOKEN1` uses A3S Memory's optional exact namespace token to
 remove redundant source snapshots from that proof. `DM-REUSE1` lets a required
 rebuild reuse exact embeddings already committed and verified in the current
 ownership epoch. `DM-OBS1` exposes the bounded work performed by every
-scheduled attempt. None of these gates adds a distributed lease or moves
-embedding policy into the repository.
+scheduled attempt. `DM-RECOVER1` lets a host persist secret-free recovery
+evidence without trusting a token from another repository history. None of
+these gates adds a distributed lease or moves embedding policy into the
+repository.
 
 ## Contract
 
@@ -42,7 +44,8 @@ bound namespace. One successful call performs this sequence:
 6. Return a secret-free receipt containing the refresh profile, source snapshot
    profile/digest/bytes, optional content-free source change token, semantic
    binding schema, serving-generation digest, Active node count, mutation
-   consistency, and published vector-index status.
+   consistency, optional exact vector-index history token, and published
+   vector-index status.
 
 An over-budget snapshot, cancellation before publication, repository failure,
 forged snapshot response, embedding failure, or vector replacement failure
@@ -123,7 +126,8 @@ token after an inactive-only change. Any source, generation, receipt, or index
 drift falls back to the full refresh and its existing publication verification.
 When a replacement runtime successfully claims the schedule, it starts a new
 ownership epoch and clears the process-local receipt before the first tick; it
-therefore cannot use evidence from a different injected backend.
+therefore cannot implicitly use evidence from a different injected backend. A
+host may explicitly provide the validated checkpoint described below.
 
 When a full publication is required, the active owner may reuse the vector for
 an exact semantic record ID from its latest verified success. That ID binds the
@@ -143,7 +147,40 @@ verification succeed. Provider, CAS, cleanup, or source-verification failure
 retains the previous verified cache; prepared but uncommitted vectors are not
 promoted. Clean close releases the vector cache before making the next owner
 claimable while preserving `last_receipt()` for host inspection. A new owner
-always starts without cached vectors or a receipt.
+always starts without cached vectors or an observable receipt, including when it
+has unverified checkpoint recovery evidence.
+
+## Checkpoint recovery
+
+`DurableMemorySemanticRefreshReceipt::checkpoint()` produces a versioned,
+serializable `DurableMemorySemanticRefreshCheckpoint`. The host owns its durable
+storage and supplies a decoded value through
+`ScheduledSemanticRefresh::try_new_with_checkpoint(interval, checkpoint)`.
+Deserialization rejects unknown top-level fields, and schedule construction
+verifies all profiles, canonical digests, snapshot bounds, mutation consistency,
+index status, and token revision before a worker can start.
+
+The checkpoint excludes the namespace change token. That token is exact only
+inside one repository history, so persisting it could let unrelated repositories
+with the same local sequence collide. Recovery instead always reads and verifies
+one complete bounded Active snapshot. It then compares the source and semantic
+generation with the checkpoint and sandwiches the current full index status
+with the index revision and A3S Memory's exact vector-index history token.
+
+When every value matches, the first recovered run is verified unchanged: it
+performs one snapshot read but no provider-adapter invocation or vector
+publication, promotes a current-epoch receipt, and lets the next stable tick use
+the ordinary zero-snapshot namespace-token path. `last_receipt()` remains `None`
+until that proof succeeds. A changed source, unrelated repository history,
+different vector history, colliding revision/count/byte status, missing vector
+token, or any other mismatch performs the complete safe rebuild. A failed
+attempt retains the checkpoint only as unverified recovery evidence for retry.
+
+The built-in in-memory index preserves its history token across clones of the
+same live object. Constructing a new index creates a new history and therefore
+rebuilds. A durable remote backend can enable cross-process recovery only by
+persisting one token across the same linear mutation history and issuing a new
+history digest after recreation, rollback, or divergent restore.
 
 ## Operational metrics
 
@@ -184,16 +221,17 @@ reporting remains the evidence for that bounded-abort path.
 
 ## Ownership
 
-A3S Memory owns complete bounded snapshot construction and identity plus the
-optional token's same-namespace, same-repository-history linearization
-contract. Code owns embedding execution, single-live-generation serialization,
-atomic publication, post-publication reconciliation, and the ownership-epoch
-receipt. The host still owns:
+A3S Memory owns complete bounded snapshot construction and identity, the
+optional namespace token's same-repository-history linearization contract, and
+the optional vector token's exact index-history contract. Code owns embedding
+execution, single-live-generation serialization, atomic publication,
+post-publication reconciliation, checkpoint validation, and ownership-epoch
+receipt promotion. The host still owns:
 
 - whether to refresh directly or install a schedule, and at what interval;
 - repository, provider, and vector-index construction;
 - credentials and memory/query egress authorization;
-- durable receipt storage and alerting;
+- durable checkpoint/receipt storage and alerting;
 - selecting and operating any distributed lease policy in addition to revision
   CAS;
 - remote-vector durability, failover, and disaster recovery.
@@ -218,6 +256,7 @@ cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
 cargo test -p a3s-code-core --test memory_semantic_refresh_schedule
 cargo test -p a3s-code-core --test memory_semantic_refresh_change_detection
 cargo test -p a3s-code-core --test memory_semantic_refresh_change_token
+cargo test -p a3s-code-core --test memory_semantic_refresh_checkpoint
 cargo test -p a3s-code-core --test memory_semantic_refresh_metrics
 cargo test -p a3s-code-core --test memory_maintenance_close
 ```
@@ -234,6 +273,8 @@ suppression, source- and index-drift rebuilds, ownership-epoch receipt clearing,
 zero-snapshot stable ticks, one-snapshot stable rebuilds, source-compatible
 two-snapshot fallback, pre-provider token-drift rejection, post-publication
 conditional cleanup, inactive-only receipt advancement,
+host-persisted checkpoint validation, one-snapshot unchanged recovery,
+repository- and vector-history collision rejection, missing-token fallback,
 exact committed-vector reuse across index drift, partial source change and
 Active removal, rejection of prepared vectors after a lost CAS race, cache
 release on owner close, exact settled successful/unchanged/failed work
@@ -243,8 +284,9 @@ Memory's contracts
 separately cover deterministic
 snapshot identity, byte and node overflow, restart-stable digests, exactly one
 winner under concurrent CAS, stale replacement/cleanup rejection, and
-source-compatible custom-backend defaults, exact namespace-token advancement,
-and restart reconstruction.
+source-compatible custom-backend defaults, exact namespace-token advancement
+and restart reconstruction, and exact vector-history token continuity without
+raw backend identity disclosure.
 
 ## Non-claims
 
@@ -254,8 +296,12 @@ independently labeled corpora, latency, billed cost, or refresh behavior during
 remote failover. An unchanged tick on a repository without the optional token
 still pays for a bounded snapshot and digest verification; built-in repositories
 avoid that snapshot but still pay for token and index-status reads. The metrics
-make representative distributions measurable;
-deterministic fixture observations do not establish production cache-hit,
+make representative distributions measurable. A checkpoint does not itself
+prove vector-backend continuity: a backend without a durable exact history token
+rebuilds, and the in-memory token applies only to the retained index object and
+its clones. Cross-process skipping therefore remains conditional on a qualified
+durable backend implementation. Deterministic fixture observations do not
+establish production cache-hit,
 latency, or billed-cost distributions. Hosts must correlate the adapter-boundary
 counters with provider telemetry to establish transmission or billing. Those
 remain `DM-PROD1` host qualifications.
