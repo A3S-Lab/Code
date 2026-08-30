@@ -818,6 +818,13 @@ on Unix and Windows, copying or atomically replacing the closed database forks
 its history token on next open. Restore must replace the database file rather
 than overwrite it in place. Distributed lease ownership, replicated remote
 CAS, failover, and production cadence remain host qualifications.
+The release-only `durable_memory_semantic_refresh_benchmark` locks a local
+10,000-node, 384-dimensional durability profile across initial publication,
+zero-snapshot stable ticks, one-node source drift, index-only drift, a
+host-synchronized checkpoint, real file/SQLite close and reopen, one-snapshot
+recovery, warm semantic-query percentiles, disk ceilings, and Linux RSS. It
+uses a deterministic in-process adapter and explicitly does not claim real
+embedding quality, remote CAS/leases, provider billing, or remote failover.
 Activation requires independent Manual or Verification evidence. Code records
 admission for the exact current revision after final context assembly; an
 unrecordable or stale item is removed before the model call. Exact V1/V2
@@ -1420,9 +1427,10 @@ profile, inclusion rules, and measured results.
 
 The targeted [Performance Qualification](.github/workflows/performance.yml)
 workflow runs release-mode convergence, retrieval, Flow/State Graph, Code
-Intelligence, context/memory, and persistence profiles when their critical
-paths change and on a weekly schedule. It retains machine-readable JSON
-artifacts. The [qualification record](manual/PERFORMANCE_QUALIFICATION.md)
+Intelligence, context/memory, durable semantic refresh/SQLite recovery, and
+persistence profiles when their critical paths change and on a weekly schedule.
+It retains machine-readable JSON artifacts. The
+[qualification record](manual/PERFORMANCE_QUALIFICATION.md)
 captures workload and inclusion rules, observed percentiles, resource results,
 run links, and artifact digests. Ordinary CI gates deterministic work
 amplification and resource ceilings; remote model and public search-engine

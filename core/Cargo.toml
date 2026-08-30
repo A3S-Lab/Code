@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "telemetry_collector_qualification"
 required-features = ["telemetry"]
 
+[[example]]
+name = "durable_memory_semantic_refresh_benchmark"
+required-features = ["durable-memory-sqlite"]
+
 [dependencies]
 # Internal crates
 a3s-common = "0.1.1"

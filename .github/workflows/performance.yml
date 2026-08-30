@@ -15,6 +15,8 @@ on:
       - "core/examples/agent_convergence_benchmark.rs"
       - "core/examples/code_intelligence_benchmark.rs"
       - "core/examples/context_memory_benchmark.rs"
+      - "core/examples/durable_memory_semantic_refresh_benchmark.rs"
+      - "core/examples/durable_memory_semantic_refresh_benchmark/**"
       - "core/examples/flow_graph_benchmark.rs"
       - "core/examples/persistence_benchmark.rs"
       - "core/examples/workspace_retrieval_benchmark.rs"
@@ -24,6 +26,9 @@ on:
       - "core/src/agent_api/**"
       - "core/src/embedding/**"
       - "core/src/memory.rs"
+      - "core/src/memory/**"
+      - "core/src/durable_memory.rs"
+      - "core/src/durable_memory/**"
       - "core/src/store/**"
       - "core/src/task_scheduler.rs"
       - "core/src/tools/**"
@@ -40,6 +45,8 @@ on:
       - "core/examples/agent_convergence_benchmark.rs"
       - "core/examples/code_intelligence_benchmark.rs"
       - "core/examples/context_memory_benchmark.rs"
+      - "core/examples/durable_memory_semantic_refresh_benchmark.rs"
+      - "core/examples/durable_memory_semantic_refresh_benchmark/**"
       - "core/examples/flow_graph_benchmark.rs"
       - "core/examples/persistence_benchmark.rs"
       - "core/examples/workspace_retrieval_benchmark.rs"
@@ -49,6 +56,9 @@ on:
       - "core/src/agent_api/**"
       - "core/src/embedding/**"
       - "core/src/memory.rs"
+      - "core/src/memory/**"
+      - "core/src/durable_memory.rs"
+      - "core/src/durable_memory/**"
       - "core/src/store/**"
       - "core/src/task_scheduler.rs"
       - "core/src/tools/**"
@@ -127,6 +137,13 @@ jobs:
           --example context_memory_benchmark
           | tee performance-results/context-memory.json
 
+      - name: Qualify durable semantic refresh and SQLite recovery
+        run: >-
+          cargo run --locked --release -p a3s-code-core
+          --features durable-memory-sqlite
+          --example durable_memory_semantic_refresh_benchmark
+          | tee performance-results/durable-memory-semantic-refresh.json
+
       - name: Qualify session persistence backends
         run: >-
           cargo run --locked --release -p a3s-code-core
@@ -139,7 +156,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           reports=(performance-results/*.json)
-          test "${#reports[@]}" -eq 6
+          test "${#reports[@]}" -eq 7
           for report in "${reports[@]}"; do
             jq -e '.passed == true' "$report" >/dev/null
           done

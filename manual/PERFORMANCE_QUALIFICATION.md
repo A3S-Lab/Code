@@ -116,7 +116,9 @@ gh run watch <run-id> --repo A3S-Lab/Code --exit-status
 gh run download <run-id> --repo A3S-Lab/Code
 ```
 
-The workflow requires exactly six JSON files and rejects any report whose
-top-level `passed` value is not `true`. The capability ledger explains how
-these profiles combine with deterministic correctness, SDK runtime, and
-external qualification evidence.
+The current workflow requires exactly seven JSON files and rejects any report
+whose top-level `passed` value is not `true`. The authoritative run above
+predates `DM-QUAL1` and therefore contains the previous six-profile set; the
+first successful seven-profile run will supersede that record. The capability
+ledger explains how these profiles combine with deterministic correctness, SDK
+runtime, and external qualification evidence.

@@ -66,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without repeated embedding or publication; this is local durability, not a
   distributed lease or replicated remote store. Copying or atomically replacing
   the closed database forks its history token on Unix and Windows.
+- Added a release-only durable semantic-refresh qualification profile over
+  10,000 synchronized file-repository nodes and 384-dimensional SQLite vectors.
+  It fail-closes on exact initial/stable/source-drift/index-drift/recovery work,
+  persists and synchronizes the checkpoint across a real handle close/reopen,
+  measures warm semantic-query percentiles, and gates local disk and Linux RSS
+  ceilings without claiming a real provider, remote CAS/lease, billing, or
+  failover.
 
 ### Changed
 

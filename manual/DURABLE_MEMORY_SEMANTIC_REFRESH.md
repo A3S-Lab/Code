@@ -13,8 +13,10 @@ ownership epoch. `DM-OBS1` exposes the bounded work performed by every
 scheduled attempt. `DM-RECOVER1` lets a host persist secret-free recovery
 evidence without trusting a token from another repository history.
 `DM-SQLITE1` proves that the same recovery contract survives a real close and
-reopen of A3S Memory's local SQLite vector backend. None of these gates adds a
-distributed lease or moves embedding policy into the repository.
+reopen of A3S Memory's local SQLite vector backend. `DM-QUAL1` adds a retained
+release profile over 10,000 durable source nodes and 384-dimensional SQLite
+vectors. None of these gates adds a distributed lease or moves embedding policy
+into the repository.
 
 ## Contract
 
@@ -229,6 +231,40 @@ metrics. A force-aborted non-cooperative job cannot publish a terminal run
 observation because its future never settles; generic maintenance close
 reporting remains the evidence for that bounded-abort path.
 
+## Local release qualification
+
+`durable_memory_semantic_refresh_benchmark` is the `DM-QUAL1` operational gate.
+It constructs 10,000 Active nodes in A3S Memory's synchronized
+`FileMemoryRepository`, refreshes a 384-dimensional `SqliteVectorIndex` through
+the real owned schedule, persists and synchronizes a checkpoint, closes every
+repository/index/runtime owner, and reopens both durable backends. Its exact
+work assertions require:
+
+- an initial complete publication with all 10,000 embedding inputs;
+- a stable tick with zero snapshot, embedding, or publication work;
+- one corrected node to produce 9,999 exact cache hits, one provider input,
+  and one complete 10,000-record atomic publication;
+- index-only drift to produce 10,000 cache hits, zero provider inputs, and one
+  complete publication;
+- the first recovered tick to read one complete source snapshot but perform
+  zero provider and publication work; and
+- the next stable recovered tick to return to the zero-snapshot fast path.
+
+The release report also retains synchronized source and SQLite disk bytes,
+logical vector bytes, clean-close evidence, Linux active/retained RSS, and warm
+`DurableMemorySession::preview_recall` p50/p95/max over three warmups and 20
+measured samples. The recall fixture has no lexical overlap with its target and
+must rank that target first through the semantic channel. The p95 ceiling is a
+regression budget for the fixed local workflow runner, not a remote or product
+SLA. Setup, one-off refresh elapsed observations, and backend reopen time are
+reported separately rather than folded into query percentiles.
+
+The embedding adapter is deterministic and in process. Its counters prove the
+Code adapter boundary and cache behavior, but the profile includes no provider
+network, real model, billing, operating-system process restart, remote vector
+service, or distributed lease. The Performance Qualification workflow retains
+the JSON output as one of its fail-closed release artifacts.
+
 ## Ownership
 
 A3S Memory owns complete bounded snapshot construction and identity, the
@@ -272,6 +308,7 @@ cargo test -p a3s-code-core --test memory_semantic_index_observation
 cargo test -p a3s-code-core --features durable-memory-sqlite --test memory_semantic_refresh_sqlite
 cargo test -p a3s-code-core --test memory_semantic_refresh_metrics
 cargo test -p a3s-code-core --test memory_maintenance_close
+cargo run --locked --release -p a3s-code-core --features durable-memory-sqlite --example durable_memory_semantic_refresh_benchmark
 ```
 
 The contracts cover complete Active-only publication, Candidate exclusion,
@@ -306,18 +343,21 @@ raw backend identity disclosure.
 ## Non-claims
 
 These gates do not qualify a distributed generation lease, a durable remote CAS
-vector backend, a real embedding provider, production refresh cadence, large
-independently labeled corpora, latency, billed cost, or refresh behavior during
-remote failover. An unchanged tick on a repository without the optional token
+vector backend, a real embedding provider, deployment-selected production
+cadence, independently labeled quality corpora, remote/provider latency, billed
+cost, long-horizon consolidation, or refresh behavior during remote failover.
+An unchanged tick on a repository without the optional token
 still pays for a bounded snapshot and digest verification; built-in repositories
 avoid that snapshot but still pay for token and index-status reads. The metrics
 make representative distributions measurable. A checkpoint does not itself
 prove vector-backend continuity: a backend without a durable exact history token
 rebuilds, and the in-memory token applies only to the retained index object and
-its clones. Local cross-process skipping is qualified only for the injected
-SQLite implementation; remote skipping remains conditional on a separately
-qualified durable backend. Deterministic fixture observations do not
-establish production cache-hit,
-latency, or billed-cost distributions. Hosts must correlate the adapter-boundary
-counters with provider telemetry to establish transmission or billing. Those
-remain `DM-PROD1` host qualifications.
+its clones. Local close/reopen skipping is qualified only for the injected
+SQLite implementation; the release profile explicitly does not restart the
+operating system process. Remote skipping remains conditional on a separately
+qualified durable backend. Deterministic fixture observations establish the
+locked local work-amplification and SQLite query profile only; they do not
+establish production model quality, cache-hit, remote-latency, or billed-cost
+distributions. Hosts must correlate the adapter-boundary counters with provider
+telemetry to establish transmission or billing. Those remain `DM-PROD1` host
+qualifications.

@@ -231,6 +231,15 @@ recovered runs report exact snapshot, cache, logical embedding,
 provider-boundary retry, and publication work; observations are bounded,
 redacted, retained through close, and reset before replacement ownership. The
 adapter-boundary counts do not claim remote transmission or billing.
+The release-only
+[`durable_memory_semantic_refresh_benchmark`](../core/examples/durable_memory_semantic_refresh_benchmark.rs)
+adds a retained 10,000-node, 384-dimensional local profile over the synchronized
+file repository and SQLite vector index. It gates exact stable/source-drift/
+index-drift/recovery work, a host-synchronized checkpoint across real handle
+close/reopen, semantic-query p50/p95/max, disk ceilings, and Linux RSS. The
+deterministic in-process adapter does not qualify real-model quality, provider
+network or billing, an operating-system process restart, remote CAS/leases, or
+remote failover; those remain `DM-PROD1` host evidence.
 
 ## Runtime surface ledger
 
@@ -282,7 +291,8 @@ Latency claims require all of the following:
 The targeted Performance Qualification workflow runs deterministic agent
 convergence plus release profiles for 25,000-record workspace retrieval,
 Flow/State Graph, a 5,000-file Code Intelligence workspace, 25,000-item context
-assembly and 2,500-item memory recall, and 1–2 MiB session persistence. The
+assembly and 2,500-item memory recall, 10,000-node durable semantic refresh and
+SQLite recovery, and 1–2 MiB session persistence. The
 [performance qualification record](PERFORMANCE_QUALIFICATION.md) retains the
 latest workload, inclusion, percentile, resource, machine, run, and artifact
 digest evidence. External LLM and public search-engine latency is reported
