@@ -31,12 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semantic binding and revision-CAS backend before starting, skips missed ticks,
   never overlaps itself, reports through maintenance health, and retains the
   latest successful secret-free refresh receipt for its host-held handle.
-- Added change-aware scheduled semantic refresh. Every tick still verifies a
-  complete bounded Active snapshot, but an exact ownership-epoch receipt,
-  semantic generation, source digest, CAS revision, and full index-status match
-  avoids redundant embedding and vector publication. Source or index drift
-  rebuilds conservatively, and a replacement schedule owner discards the prior
-  process-local receipt.
+- Added change-aware scheduled semantic refresh. An exact ownership-epoch
+  receipt, semantic generation, source identity, CAS revision, and full index
+  status avoid redundant embedding and vector publication. Repositories with
+  an exact namespace change token now also avoid the snapshot itself on a
+  stable tick; unsupported repositories retain the complete-snapshot proof.
+  Source or index drift rebuilds conservatively, and a replacement schedule
+  owner discards the prior process-local receipt.
 - Added bounded ownership-epoch embedding reuse for scheduled semantic rebuilds.
   Exact semantic record IDs reuse only vectors already committed by a verified
   refresh, so index-only drift needs no provider-adapter input and partial
@@ -44,10 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complete partition. Failed publication never promotes prepared vectors, and
   close releases the text-free cache while retaining the observable receipt.
 - Added bounded ownership-epoch metrics for scheduled semantic refresh. Every
-  settled published, unchanged, or failed attempt records source-snapshot
-  reads, logical cache hits and embedding misses, provider-adapter
-  invocations/inputs/bytes including retries, publication effort, and elapsed
-  time without retaining content or identifiers. The latest 64 runs and
+  settled published, unchanged, or failed attempt records source change-token
+  requests/valid observations, source-snapshot reads, logical cache hits and
+  embedding misses, provider-adapter invocations/inputs/bytes including
+  retries, publication effort, and elapsed time without retaining content or
+  identifiers. The latest 64 runs and
   cumulative counters survive close for inspection and reset before a
   replacement owner starts; adapter-boundary counts do not claim remote
   transmission or billing.
@@ -65,6 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced A3S Memory to the exact vector mutation-consistency revision. Custom
   backends retain source compatibility and fail closed for conditional methods
   until they implement atomic global-revision compare-and-swap.
+- Advanced A3S Memory to the exact namespace change-token revision. Built-in
+  repositories publish the token with node state and reconstruct it on file
+  restart; custom repositories remain source-compatible and return `None` by
+  default. The pinned revision also fixes `sqlite-vec` registration before the
+  first concurrent SQLite connections are opened.
 - Memory maintenance close now cancels an active job and awaits its settlement
   within the configured total deadline before using bounded abort. A semantic
   refresh that has published vectors can therefore finish mandatory source

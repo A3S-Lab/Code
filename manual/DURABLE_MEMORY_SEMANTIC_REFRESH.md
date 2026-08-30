@@ -6,10 +6,12 @@ revision-conditional publication for independently constructed runtimes sharing
 one capable index. `DM-SCHED1` adds an opt-in Code-owned periodic lifecycle for
 that same verified operation. `DM-SKIP1` lets that owned schedule suppress
 redundant embedding and publication only after proving the source and index are
-unchanged. `DM-REUSE1` lets a required rebuild reuse exact embeddings already
-committed and verified in the current ownership epoch. `DM-OBS1` exposes the
-bounded work performed by every scheduled attempt. None of these gates adds a
-distributed lease or moves embedding policy into the repository.
+unchanged. `DM-TOKEN1` uses A3S Memory's optional exact namespace token to
+remove redundant source snapshots from that proof. `DM-REUSE1` lets a required
+rebuild reuse exact embeddings already committed and verified in the current
+ownership epoch. `DM-OBS1` exposes the bounded work performed by every
+scheduled attempt. None of these gates adds a distributed lease or moves
+embedding policy into the repository.
 
 ## Contract
 
@@ -20,23 +22,27 @@ bound namespace. One successful call performs this sequence:
    direct namespace replacement share the same lock. Read the backend's typed
    mutation consistency and, for `index_revision_cas`, capture the global index
    revision before repository or embedding work.
-2. Request the complete current `Active` view from `MemoryRepository` under
-   node and canonical-payload byte budgets derived from the bound embedding
-   execution policy.
+2. Read the repository's optional exact namespace change token, then request
+   the complete current `Active` view under node and canonical-payload byte
+   budgets derived from the bound embedding execution policy.
 3. Recompute the snapshot shape, deterministic ordering, byte count, and
    domain-separated SHA-256 identity. A custom repository's claimed digest is
-   not trusted.
+   not trusted. When the first token was present, read it again and reject
+   drift before embedding work begins.
 4. Embed the complete snapshot off-index and atomically replace the exact
    namespace plus semantic-generation partition. A CAS-capable backend compares
    the captured revision at the same linearization point as publication.
-5. Read and verify the repository snapshot again. If it changed while vectors
-   were being prepared, require invalidation of the published partition and
-   fail closed. CAS cleanup expects the revision returned by publication, so a
-   delayed cleanup cannot remove a newer generation. Invalidation failures are
-   propagated rather than hidden.
+5. Read the exact token again. Equality proves that the namespace did not
+   change while vectors were prepared and avoids a second materialized
+   snapshot. If the token is unavailable, retain the original complete
+   post-publication snapshot comparison. Detected drift requires invalidation
+   of the published partition and fails closed. CAS cleanup expects the
+   revision returned by publication, so delayed cleanup cannot remove a newer
+   generation. Invalidation failures are propagated rather than hidden.
 6. Return a secret-free receipt containing the refresh profile, source snapshot
-   profile/digest/bytes, semantic binding schema, serving-generation digest,
-   Active node count, mutation consistency, and published vector-index status.
+   profile/digest/bytes, optional content-free source change token, semantic
+   binding schema, serving-generation digest, Active node count, mutation
+   consistency, and published vector-index status.
 
 An over-budget snapshot, cancellation before publication, repository failure,
 forged snapshot response, embedding failure, or vector replacement failure
@@ -58,8 +64,10 @@ retry from a fresh source snapshot.
 
 Direct `refresh_semantic_recall` calls remain unconditional. Change detection is
 an owned-schedule optimization because its proof depends on the latest receipt
-from the current schedule-ownership epoch. Direct calls also remain uncached;
-embedding reuse is owned by the same bounded scheduled lifecycle as its receipt.
+from the current schedule-ownership epoch. A direct call may use a stable token
+only to replace its second source snapshot; it still builds one complete
+snapshot and publishes. Direct calls also remain uncached; embedding reuse is
+owned by the same bounded scheduled lifecycle as its receipt.
 
 Publication is the commit point. Cancellation after atomic replacement does
 not interrupt the required post-publication source verification and cleanup.
@@ -87,23 +95,35 @@ one active maintenance owner, keeping that receipt attributable. Clean close
 releases the claim deterministically; an unclosed runtime keeps its lease until
 every aborted worker has actually settled.
 
-The first run always performs a full verified refresh. On a later tick, Code
-captures the CAS revision before reading and recomputing the complete bounded
-Active snapshot, then reads the full index status after the snapshot. Embedding
-and publication are skipped only when all of these values exactly match the
-current ownership-epoch receipt: refresh and snapshot profiles, source digest
-and byte count, Active-node count, semantic binding schema and serving generation,
-mutation consistency, CAS revision, and complete index status. This revision
-sandwich proves one interval in which both source and index still matched the
-receipt. A weaker `partition_atomic` backend cannot establish that proof and
-never skips.
+The first run always constructs one complete verified Active snapshot. With a
+token-capable repository it brackets that snapshot with equal token reads,
+publishes, and verifies a third equal token instead of materializing a second
+snapshot. A repository returning `None` retains the original pre- and
+post-publication snapshot proof.
+
+On a later tick, Code captures the CAS revision before reading the exact token,
+then reads the full index status afterward. Embedding, snapshot construction,
+and publication are skipped only when the token and these ownership-epoch
+receipt fields match exactly: semantic binding and serving generation, mutation
+consistency, CAS revision, and complete index status. This revision sandwich
+proves one interval in which both source and index still matched the receipt. A
+weaker `partition_atomic` backend cannot establish that proof and never skips.
+
+If the token changed, Code constructs and verifies one complete bounded Active
+snapshot. A stable Active projection can return an unchanged run while advancing
+the receipt token, so an inactive-only namespace change costs one snapshot but
+no embedding or publication; the following stable tick returns to the
+zero-snapshot path. Token drift around that snapshot fails before provider work.
+Drift after publication conditionally invalidates the published revision and
+never promotes a receipt. Capability loss falls back to the full snapshot proof.
 
 A verified no-change tick is a successful maintenance run with zero affected
-items and leaves `last_receipt()` unchanged. Any source, generation, receipt, or
-index drift falls back to the full refresh and its existing post-publication
-verification. When a replacement runtime successfully claims the schedule, it
-starts a new ownership epoch and clears the process-local receipt before the
-first tick; it therefore cannot use evidence from a different injected backend.
+items. It usually retains `last_receipt()` exactly and may update only its source
+token after an inactive-only change. Any source, generation, receipt, or index
+drift falls back to the full refresh and its existing publication verification.
+When a replacement runtime successfully claims the schedule, it starts a new
+ownership epoch and clears the process-local receipt before the first tick; it
+therefore cannot use evidence from a different injected backend.
 
 When a full publication is required, the active owner may reuse the vector for
 an exact semantic record ID from its latest verified success. That ID binds the
@@ -139,6 +159,8 @@ retains saturating cumulative counters and at most the latest 64 observations.
 They measure:
 
 - elapsed refresh time;
+- source change-token requests and valid `Some` observations; an unsupported
+  `None` response counts only as a request;
 - source snapshot requests plus materialized node and canonical-payload bytes,
   including both pre- and post-publication verification reads;
 - logical embedding cache hits, misses presented to the bounded executor, and
@@ -162,9 +184,11 @@ reporting remains the evidence for that bounded-abort path.
 
 ## Ownership
 
-A3S Memory owns complete bounded snapshot construction and identity. Code owns
-embedding execution, single-live-generation serialization, atomic publication,
-post-publication reconciliation, and the receipt. The host still owns:
+A3S Memory owns complete bounded snapshot construction and identity plus the
+optional token's same-namespace, same-repository-history linearization
+contract. Code owns embedding execution, single-live-generation serialization,
+atomic publication, post-publication reconciliation, and the ownership-epoch
+receipt. The host still owns:
 
 - whether to refresh directly or install a schedule, and at what interval;
 - repository, provider, and vector-index construction;
@@ -193,6 +217,7 @@ cargo test -p a3s-code-core --test durable_memory_semantic_refresh_cas
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
 cargo test -p a3s-code-core --test memory_semantic_refresh_schedule
 cargo test -p a3s-code-core --test memory_semantic_refresh_change_detection
+cargo test -p a3s-code-core --test memory_semantic_refresh_change_token
 cargo test -p a3s-code-core --test memory_semantic_refresh_metrics
 cargo test -p a3s-code-core --test memory_maintenance_close
 ```
@@ -206,6 +231,9 @@ the previous partition, forged snapshot rejection, receipt identity, and public
 pre-spawn admission, repeated refresh, retained receipts, clean
 post-publication close settlement, verified unchanged-tick embedding/publication
 suppression, source- and index-drift rebuilds, ownership-epoch receipt clearing,
+zero-snapshot stable ticks, one-snapshot stable rebuilds, source-compatible
+two-snapshot fallback, pre-provider token-drift rejection, post-publication
+conditional cleanup, inactive-only receipt advancement,
 exact committed-vector reuse across index drift, partial source change and
 Active removal, rejection of prepared vectors after a lost CAS race, cache
 release on owner close, exact settled successful/unchanged/failed work
@@ -215,16 +243,19 @@ Memory's contracts
 separately cover deterministic
 snapshot identity, byte and node overflow, restart-stable digests, exactly one
 winner under concurrent CAS, stale replacement/cleanup rejection, and
-source-compatible custom-backend defaults.
+source-compatible custom-backend defaults, exact namespace-token advancement,
+and restart reconstruction.
 
 ## Non-claims
 
 These gates do not qualify a distributed generation lease, a durable remote CAS
 vector backend, a real embedding provider, production refresh cadence, large
 independently labeled corpora, latency, billed cost, or refresh behavior during
-remote failover. An unchanged tick still pays for a bounded repository snapshot
-and digest verification. The metrics make representative distributions
-measurable; deterministic fixture observations do not establish production
-cache-hit, latency, or billed-cost distributions. Hosts must correlate the
-adapter-boundary counters with provider telemetry to establish transmission or
-billing. Those remain `DM-PROD1` host qualifications.
+remote failover. An unchanged tick on a repository without the optional token
+still pays for a bounded snapshot and digest verification; built-in repositories
+avoid that snapshot but still pay for token and index-status reads. The metrics
+make representative distributions measurable;
+deterministic fixture observations do not establish production cache-hit,
+latency, or billed-cost distributions. Hosts must correlate the adapter-boundary
+counters with provider telemetry to establish transmission or billing. Those
+remain `DM-PROD1` host qualifications.

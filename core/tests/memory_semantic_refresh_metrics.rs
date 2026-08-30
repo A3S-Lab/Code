@@ -177,16 +177,25 @@ async fn metrics_quantify_snapshot_cache_provider_and_publication_work_per_epoch
 
     advance_until(runtime.as_ref(), 1, 0).await;
     let first_receipt = schedule.last_receipt().expect("initial receipt");
+    assert_eq!(
+        first_receipt
+            .source_change_token()
+            .expect("built-in repository token")
+            .sequence(),
+        2
+    );
     let first = schedule.metrics();
     assert_eq!(first.attempted_runs(), 1);
     assert_eq!(first.published_runs(), 1);
     assert_eq!(first.unchanged_runs(), 0);
     assert_eq!(first.failed_runs(), 0);
-    assert_eq!(first.total_source_snapshot_requests(), 2);
-    assert_eq!(first.total_source_snapshot_node_reads(), 4);
+    assert_eq!(first.total_source_change_token_requests(), 3);
+    assert_eq!(first.total_source_change_token_observations(), 3);
+    assert_eq!(first.total_source_snapshot_requests(), 1);
+    assert_eq!(first.total_source_snapshot_node_reads(), 2);
     assert_eq!(
         first.total_source_snapshot_bytes(),
-        u64::try_from(first_receipt.source_snapshot_bytes()).unwrap() * 2
+        u64::try_from(first_receipt.source_snapshot_bytes()).unwrap()
     );
     assert_eq!(first.total_embedding_cache_hits(), 0);
     assert_eq!(first.total_embedding_inputs(), 2);
@@ -212,8 +221,10 @@ async fn metrics_quantify_snapshot_cache_provider_and_publication_work_per_epoch
     let unchanged = schedule.metrics();
     assert_eq!(unchanged.attempted_runs(), 2);
     assert_eq!(unchanged.unchanged_runs(), 1);
-    assert_eq!(unchanged.total_source_snapshot_requests(), 3);
-    assert_eq!(unchanged.total_source_snapshot_node_reads(), 6);
+    assert_eq!(unchanged.total_source_change_token_requests(), 4);
+    assert_eq!(unchanged.total_source_change_token_observations(), 4);
+    assert_eq!(unchanged.total_source_snapshot_requests(), 1);
+    assert_eq!(unchanged.total_source_snapshot_node_reads(), 2);
     assert_eq!(unchanged.total_embedding_inputs(), 2);
     assert_eq!(unchanged.total_provider_requests(), 1);
     assert_eq!(unchanged.total_provider_inputs(), 2);
@@ -221,6 +232,20 @@ async fn metrics_quantify_snapshot_cache_provider_and_publication_work_per_epoch
     assert_eq!(
         unchanged.last_run().expect("unchanged run").outcome(),
         SemanticRefreshRunOutcome::Unchanged
+    );
+    assert_eq!(
+        unchanged
+            .last_run()
+            .expect("unchanged run")
+            .source_change_token_requests(),
+        1
+    );
+    assert_eq!(
+        unchanged
+            .last_run()
+            .expect("unchanged run")
+            .source_snapshot_requests(),
+        0
     );
 
     index
@@ -233,6 +258,9 @@ async fn metrics_quantify_snapshot_cache_provider_and_publication_work_per_epoch
     advance_until(runtime.as_ref(), 3, 0).await;
     let index_drift = schedule.metrics();
     assert_eq!(index_drift.published_runs(), 2);
+    assert_eq!(index_drift.total_source_change_token_requests(), 7);
+    assert_eq!(index_drift.total_source_change_token_observations(), 7);
+    assert_eq!(index_drift.total_source_snapshot_requests(), 2);
     assert_eq!(index_drift.total_embedding_cache_hits(), 2);
     assert_eq!(index_drift.total_embedding_inputs(), 2);
     assert_eq!(index_drift.total_provider_requests(), 1);
@@ -261,6 +289,9 @@ async fn metrics_quantify_snapshot_cache_provider_and_publication_work_per_epoch
     let failed = schedule.metrics();
     assert_eq!(failed.attempted_runs(), 4);
     assert_eq!(failed.failed_runs(), 1);
+    assert_eq!(failed.total_source_change_token_requests(), 9);
+    assert_eq!(failed.total_source_change_token_observations(), 9);
+    assert_eq!(failed.total_source_snapshot_requests(), 3);
     assert_eq!(failed.total_embedding_cache_hits(), 3);
     assert_eq!(failed.total_embedding_inputs(), 3);
     assert_eq!(failed.total_provider_requests(), 2);
@@ -281,6 +312,9 @@ async fn metrics_quantify_snapshot_cache_provider_and_publication_work_per_epoch
     assert_eq!(recovered.published_runs(), 3);
     assert_eq!(recovered.unchanged_runs(), 1);
     assert_eq!(recovered.failed_runs(), 1);
+    assert_eq!(recovered.total_source_change_token_requests(), 12);
+    assert_eq!(recovered.total_source_change_token_observations(), 12);
+    assert_eq!(recovered.total_source_snapshot_requests(), 4);
     assert_eq!(recovered.total_embedding_cache_hits(), 4);
     assert_eq!(recovered.total_embedding_inputs(), 4);
     assert_eq!(recovered.total_provider_requests(), 3);
@@ -352,6 +386,9 @@ async fn failed_provider_requests_are_observable_without_content_or_error_bodies
     let failed = schedule.metrics();
     assert_eq!(failed.attempted_runs(), 1);
     assert_eq!(failed.failed_runs(), 1);
+    assert_eq!(failed.total_source_change_token_requests(), 2);
+    assert_eq!(failed.total_source_change_token_observations(), 2);
+    assert_eq!(failed.total_source_snapshot_requests(), 1);
     assert_eq!(failed.total_embedding_inputs(), 1);
     assert_eq!(failed.total_provider_requests(), 1);
     assert_eq!(failed.total_provider_inputs(), 1);
@@ -367,6 +404,9 @@ async fn failed_provider_requests_are_observable_without_content_or_error_bodies
     assert_eq!(recovered.attempted_runs(), 2);
     assert_eq!(recovered.published_runs(), 1);
     assert_eq!(recovered.failed_runs(), 1);
+    assert_eq!(recovered.total_source_change_token_requests(), 5);
+    assert_eq!(recovered.total_source_change_token_observations(), 5);
+    assert_eq!(recovered.total_source_snapshot_requests(), 2);
     assert_eq!(recovered.total_embedding_inputs(), 2);
     assert_eq!(recovered.total_provider_requests(), 2);
     assert_eq!(recovered.total_provider_inputs(), 2);

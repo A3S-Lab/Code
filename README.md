@@ -156,7 +156,7 @@ telemetry remain opt-in.
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
-| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
+| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
 | Model adapters          | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations                                                                                                                                                        | Configuration or host injection                                                                                                                                           |
@@ -746,12 +746,15 @@ the lexical result, and indexing remains inert unless the host explicitly
 calls refresh or installs a typed schedule. `refresh_semantic_recall` obtains
 and recomputes a complete Active-only A3S Memory snapshot under node and byte
 budgets, embeds it off-index, atomically replaces the exact
-namespace/generation partition, and verifies the source snapshot again. Drift
-requires partition invalidation before the call can succeed; an invalidation
-error is propagated and no receipt is returned. Pre-publication failures
-preserve the previous complete partition.
+namespace/generation partition, and verifies the source again. An exact
+namespace change token lets built-in repositories perform that final proof
+without rereading the snapshot; repositories that return `None` retain the
+original second-snapshot check. Drift requires partition invalidation before
+the call can succeed; an invalidation error is propagated and no receipt is
+returned. Pre-publication failures preserve the previous complete partition.
 Successful calls return a secret-free receipt binding source digest/bytes,
-semantic generation, node count, vector revision, and mutation consistency.
+an optional content-free source change token, semantic generation, node count,
+vector revision, and mutation consistency.
 Cloned sessions serialize refresh and direct replacement through the same
 live-generation lock. On a backend advertising atomic index-revision CAS, Code
 captures the base revision before snapshot work, conditionally publishes, and
@@ -764,13 +767,14 @@ maintenance runtime. The host selects the interval; Code rejects a missing
 semantic binding or non-CAS backend before spawning, skips missed ticks, retains
 the latest successful receipt on the cloned schedule handle, and completes
 post-publication verification during clean bounded session shutdown. After the
-first publication, every tick still obtains and verifies the complete bounded
-Active snapshot. It avoids embedding and vector mutation only when that snapshot,
-the exact semantic generation, the ownership-epoch receipt, the CAS-captured
-revision, and the full post-snapshot index status all match. Such a successful
-no-change run reports zero affected items and retains the receipt; source or
-index drift performs a full verified rebuild, and a replacement owner starts
-without the previous process-local receipt. Rebuilds retain one bounded,
+first publication, an equal exact namespace change token, semantic generation,
+ownership-epoch receipt, CAS-captured revision, and full index status prove a
+no-change tick without a snapshot, embedding, or vector mutation. A backend
+without the token retains complete bounded snapshot verification. A token
+change triggers one full Active snapshot; if only inactive state changed, Code
+advances the receipt without republishing. Source or index drift performs a
+full verified rebuild, and a replacement owner starts without the previous
+process-local receipt. Rebuilds retain one bounded,
 text-free vector set for the active ownership epoch. Exact semantic record IDs
 bind reuse to namespace, generation, node, revision, and content digest, so
 index-only drift can republish without provider-adapter input and a partial
@@ -780,7 +784,8 @@ releases its vectors while keeping the receipt observable; direct explicit refre
 remain uncached and unconditional. Cloned schedule handles also expose bounded
 `metrics()` for the current ownership epoch. Cumulative counters and the latest
 64 runs distinguish settled published, unchanged, and failed attempts while
-measuring snapshot node/byte reads, exact cache hits and misses,
+measuring change-token requests and valid observations, snapshot node/byte
+reads, exact cache hits and misses,
 provider-adapter invocations/input bytes including retries, publication work,
 and elapsed time.
 These observations contain no source text, node IDs, digests, vectors, provider

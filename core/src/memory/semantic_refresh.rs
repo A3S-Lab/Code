@@ -73,7 +73,8 @@ impl ScheduledSemanticRefresh {
     /// Clones share this observation state for one active ownership epoch. A
     /// failed later run leaves the last successful receipt intact while generic
     /// maintenance health records the failure. A replacement owner starts a new
-    /// epoch and clears the process-local receipt before its first run.
+    /// epoch and clears the process-local receipt before its first run, so an
+    /// optional source change token is never reused across repository owners.
     pub fn last_receipt(&self) -> Option<DurableMemorySemanticRefreshReceipt> {
         read_unpoisoned(&self.state).last_receipt.clone()
     }
@@ -219,6 +220,8 @@ impl MemoryMaintenanceJob for SemanticRefreshJob {
         let observation = SemanticRefreshRunObservation {
             outcome,
             elapsed: attempt.elapsed,
+            source_change_token_requests: attempt.work.source_change_token_requests,
+            source_change_token_observations: attempt.work.source_change_token_observations,
             source_snapshot_requests: attempt.work.source_snapshot_requests,
             source_snapshot_node_reads: attempt.work.source_snapshot_node_reads,
             source_snapshot_bytes: attempt.work.source_snapshot_bytes,
@@ -244,7 +247,7 @@ impl MemoryMaintenanceJob for SemanticRefreshJob {
                 affected_items
             }
             Ok(DurableMemorySemanticRefreshRun::Unchanged(receipt)) => {
-                debug_assert_eq!(Some(receipt), previous);
+                state.last_receipt = Some(receipt);
                 0
             }
             Err(error) => {

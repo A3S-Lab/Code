@@ -21,6 +21,8 @@ pub struct SemanticRefreshRunMetrics {
     sequence: u64,
     outcome: SemanticRefreshRunOutcome,
     elapsed_ms: u64,
+    source_change_token_requests: u64,
+    source_change_token_observations: u64,
     source_snapshot_requests: u64,
     source_snapshot_node_reads: u64,
     source_snapshot_bytes: u64,
@@ -45,6 +47,16 @@ impl SemanticRefreshRunMetrics {
 
     pub fn elapsed_ms(&self) -> u64 {
         self.elapsed_ms
+    }
+
+    /// Repository change-token calls started by this refresh attempt.
+    pub fn source_change_token_requests(&self) -> u64 {
+        self.source_change_token_requests
+    }
+
+    /// Valid `Some` change tokens returned by those repository calls.
+    pub fn source_change_token_observations(&self) -> u64 {
+        self.source_change_token_observations
     }
 
     pub fn source_snapshot_requests(&self) -> u64 {
@@ -120,6 +132,8 @@ pub struct SemanticRefreshMetrics {
     failed_runs: u64,
     total_elapsed_ms: u64,
     max_elapsed_ms: u64,
+    total_source_change_token_requests: u64,
+    total_source_change_token_observations: u64,
     total_source_snapshot_requests: u64,
     total_source_snapshot_node_reads: u64,
     total_source_snapshot_bytes: u64,
@@ -164,6 +178,14 @@ impl SemanticRefreshMetrics {
 
     pub fn max_elapsed_ms(&self) -> u64 {
         self.max_elapsed_ms
+    }
+
+    pub fn total_source_change_token_requests(&self) -> u64 {
+        self.total_source_change_token_requests
+    }
+
+    pub fn total_source_change_token_observations(&self) -> u64 {
+        self.total_source_change_token_observations
     }
 
     pub fn total_source_snapshot_requests(&self) -> u64 {
@@ -254,6 +276,12 @@ impl SemanticRefreshMetrics {
         let elapsed_ms = duration_ms(observation.elapsed);
         self.total_elapsed_ms = self.total_elapsed_ms.saturating_add(elapsed_ms);
         self.max_elapsed_ms = self.max_elapsed_ms.max(elapsed_ms);
+        self.total_source_change_token_requests = self
+            .total_source_change_token_requests
+            .saturating_add(as_u64(observation.source_change_token_requests));
+        self.total_source_change_token_observations = self
+            .total_source_change_token_observations
+            .saturating_add(as_u64(observation.source_change_token_observations));
         self.total_source_snapshot_requests = self
             .total_source_snapshot_requests
             .saturating_add(as_u64(observation.source_snapshot_requests));
@@ -295,6 +323,8 @@ impl SemanticRefreshMetrics {
             sequence: self.attempted_runs,
             outcome: observation.outcome,
             elapsed_ms,
+            source_change_token_requests: as_u64(observation.source_change_token_requests),
+            source_change_token_observations: as_u64(observation.source_change_token_observations),
             source_snapshot_requests: as_u64(observation.source_snapshot_requests),
             source_snapshot_node_reads: as_u64(observation.source_snapshot_node_reads),
             source_snapshot_bytes: as_u64(observation.source_snapshot_bytes),
@@ -313,6 +343,8 @@ impl SemanticRefreshMetrics {
 pub(super) struct SemanticRefreshRunObservation {
     pub(super) outcome: SemanticRefreshRunOutcome,
     pub(super) elapsed: Duration,
+    pub(super) source_change_token_requests: usize,
+    pub(super) source_change_token_observations: usize,
     pub(super) source_snapshot_requests: usize,
     pub(super) source_snapshot_node_reads: usize,
     pub(super) source_snapshot_bytes: usize,
@@ -342,6 +374,8 @@ mod tests {
         SemanticRefreshRunObservation {
             outcome,
             elapsed: Duration::from_millis(3),
+            source_change_token_requests: 3,
+            source_change_token_observations: 3,
             source_snapshot_requests: 2,
             source_snapshot_node_reads: 4,
             source_snapshot_bytes: 128,
@@ -365,6 +399,8 @@ mod tests {
         assert_eq!(metrics.ownership_epoch(), 7);
         assert_eq!(metrics.attempted_runs(), 67);
         assert_eq!(metrics.published_runs(), 67);
+        assert_eq!(metrics.total_source_change_token_requests(), 201);
+        assert_eq!(metrics.total_source_change_token_observations(), 201);
         assert_eq!(metrics.total_provider_requests(), 134);
         assert_eq!(metrics.total_provider_inputs(), 134);
         assert_eq!(metrics.total_provider_input_bytes(), 8_576);

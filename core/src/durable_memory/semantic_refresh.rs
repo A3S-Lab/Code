@@ -3,8 +3,8 @@ use super::{
     SemanticRefreshEmbeddingCache, DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1,
 };
 use a3s_memory::repository::{
-    MemoryNamespace, MemoryNamespaceSnapshot, MemoryRepository, MemorySnapshotRequest,
-    MemoryStatus, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_NODES,
+    MemoryNamespace, MemoryNamespaceChangeToken, MemoryNamespaceSnapshot, MemoryRepository,
+    MemorySnapshotRequest, MemoryStatus, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_NODES,
 };
 use a3s_memory::vector::{VectorIndexStatus, VectorMutationConsistency, VectorRevision};
 use serde::Serialize;
@@ -24,6 +24,7 @@ pub struct DurableMemorySemanticRefreshReceipt {
     source_snapshot_profile: String,
     source_snapshot_digest: String,
     source_snapshot_bytes: usize,
+    source_change_token: Option<MemoryNamespaceChangeToken>,
     semantic_binding_schema: String,
     serving_generation_digest: String,
     active_node_count: usize,
@@ -46,6 +47,12 @@ impl DurableMemorySemanticRefreshReceipt {
 
     pub fn source_snapshot_bytes(&self) -> usize {
         self.source_snapshot_bytes
+    }
+
+    /// Optional bounded change evidence scoped to one repository history and
+    /// schedule-ownership epoch.
+    pub fn source_change_token(&self) -> Option<&MemoryNamespaceChangeToken> {
+        self.source_change_token.as_ref()
     }
 
     pub fn semantic_binding_schema(&self) -> &str {
@@ -87,6 +94,32 @@ impl DurableMemorySemanticRefreshReceipt {
             && expected_revision == Some(self.index_status.revision)
             && self.index_status == *index_status
     }
+
+    fn matches_current_change_token(
+        &self,
+        semantic: &DurableMemorySemanticRecall,
+        token: &MemoryNamespaceChangeToken,
+        consistency: VectorMutationConsistency,
+        expected_revision: Option<VectorRevision>,
+        index_status: &VectorIndexStatus,
+    ) -> bool {
+        self.profile == DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1
+            && self.source_change_token.as_ref() == Some(token)
+            && self.semantic_binding_schema == DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1
+            && self.serving_generation_digest == semantic.serving_generation_digest()
+            && self.mutation_consistency == consistency
+            && expected_revision == Some(self.index_status.revision)
+            && self.index_status == *index_status
+    }
+
+    fn with_source_change_token(
+        &self,
+        source_change_token: Option<MemoryNamespaceChangeToken>,
+    ) -> Self {
+        let mut receipt = self.clone();
+        receipt.source_change_token = source_change_token;
+        receipt
+    }
 }
 
 pub(crate) enum DurableMemorySemanticRefreshRun {
@@ -105,6 +138,8 @@ pub(crate) struct DurableMemorySemanticRefreshAttempt {
 
 #[derive(Default)]
 pub(crate) struct DurableMemorySemanticRefreshWork {
+    pub(crate) source_change_token_requests: usize,
+    pub(crate) source_change_token_observations: usize,
     pub(crate) source_snapshot_requests: usize,
     pub(crate) source_snapshot_node_reads: usize,
     pub(crate) source_snapshot_bytes: usize,
@@ -119,6 +154,15 @@ pub(crate) struct DurableMemorySemanticRefreshWork {
 }
 
 impl DurableMemorySemanticRefreshWork {
+    fn observe_change_token_request(&mut self) {
+        self.source_change_token_requests = self.source_change_token_requests.saturating_add(1);
+    }
+
+    fn observe_change_token(&mut self) {
+        self.source_change_token_observations =
+            self.source_change_token_observations.saturating_add(1);
+    }
+
     fn observe_snapshot_request(&mut self) {
         self.source_snapshot_requests = self.source_snapshot_requests.saturating_add(1);
     }
@@ -131,6 +175,25 @@ impl DurableMemorySemanticRefreshWork {
             .source_snapshot_bytes
             .saturating_add(snapshot.byte_count());
     }
+}
+
+async fn read_source_change_token(
+    repository: &dyn MemoryRepository,
+    namespace: &MemoryNamespace,
+    work: Option<&mut DurableMemorySemanticRefreshWork>,
+) -> Result<Option<MemoryNamespaceChangeToken>, DurableMemorySemanticError> {
+    let mut work = work;
+    if let Some(work) = work.as_deref_mut() {
+        work.observe_change_token_request();
+    }
+    let token = repository.namespace_change_token(namespace).await?;
+    if let Some(token) = token.as_ref() {
+        token.verify()?;
+        if let Some(work) = work {
+            work.observe_change_token();
+        }
+    }
+    Ok(token)
 }
 
 impl DurableMemorySemanticRefreshRun {
@@ -246,6 +309,28 @@ impl DurableMemorySemanticRecall {
             self.refresh_snapshot_byte_limit().min(MAX_SNAPSHOT_BYTES),
         )
         .with_statuses([MemoryStatus::Active]);
+        let source_change_token_before = tokio::select! {
+            result = read_source_change_token(repository, namespace, work.as_deref_mut()) => result?,
+            _ = cancellation.cancelled() => {
+                return Err(crate::embedding::EmbeddingError::Cancelled.into());
+            }
+        };
+        if let (Some(previous), Some(token)) = (previous, source_change_token_before.as_ref()) {
+            // CAS captures the index revision before the token read, and this
+            // status read observes it afterward. The schedule keeps receipts
+            // inside one repository-history ownership epoch, so exact token
+            // equality proves the source snapshot identity is still current.
+            let current_index_status = self.index_status();
+            if previous.matches_current_change_token(
+                self,
+                token,
+                publication.consistency(),
+                publication.expected_revision(),
+                &current_index_status,
+            ) {
+                return Ok(DurableMemorySemanticRefreshRun::Unchanged(previous.clone()));
+            }
+        }
         if let Some(work) = work.as_deref_mut() {
             work.observe_snapshot_request();
         }
@@ -259,11 +344,29 @@ impl DurableMemorySemanticRecall {
             work.observe_snapshot(&before);
         }
         before.verify(&request)?;
+        let stable_source_change_token = match source_change_token_before {
+            Some(expected) => {
+                let observed = tokio::select! {
+                    result = read_source_change_token(repository, namespace, work.as_deref_mut()) => result?,
+                    _ = cancellation.cancelled() => {
+                        return Err(crate::embedding::EmbeddingError::Cancelled.into());
+                    }
+                };
+                match observed {
+                    Some(actual) if actual == expected => Some(expected),
+                    Some(_) => {
+                        return Err(DurableMemorySemanticError::RepositoryChangedDuringRefresh);
+                    }
+                    None => None,
+                }
+            }
+            None => None,
+        };
         if let Some(previous) = previous {
-            // CAS captures the index revision before the source snapshot, and
-            // this status read observes it afterward. Exact equality proves
-            // there was one interval where both source and index still matched
-            // the receipt; weaker partition-atomic ordering never skips.
+            // The verified snapshot remains the compatibility proof when a
+            // backend does not expose an exact change token. It also advances
+            // a receipt's token after a namespace-only change left the Active
+            // projection unchanged.
             let current_index_status = self.index_status();
             if previous.matches_current(
                 self,
@@ -272,7 +375,9 @@ impl DurableMemorySemanticRecall {
                 publication.expected_revision(),
                 &current_index_status,
             ) {
-                return Ok(DurableMemorySemanticRefreshRun::Unchanged(previous.clone()));
+                return Ok(DurableMemorySemanticRefreshRun::Unchanged(
+                    previous.with_source_change_token(stable_source_change_token),
+                ));
             }
         }
         let source_snapshot_profile = before.profile().to_string();
@@ -321,30 +426,64 @@ impl DurableMemorySemanticRecall {
         let cleanup_publication = publication.after_publication(index_status.revision);
 
         // Publication is the commit point. Finish source verification even if
-        // the caller cancels after the atomic index replacement completed.
-        if let Some(work) = work.as_deref_mut() {
-            work.observe_snapshot_request();
-        }
-        let after = match repository.snapshot_namespace(request.clone()).await {
-            Ok(after) => after,
-            Err(error) => {
+        // the caller cancels after the atomic index replacement completed. A
+        // stable exact token avoids rereading the full namespace; capability
+        // loss falls back to the original verified snapshot proof.
+        let mut source_change_token = None;
+        let require_snapshot_verification =
+            match stable_source_change_token {
+                Some(expected) => {
+                    let observed =
+                        match read_source_change_token(repository, namespace, work.as_deref_mut())
+                            .await
+                        {
+                            Ok(observed) => observed,
+                            Err(error) => {
+                                self.invalidate_namespace(namespace, cleanup_publication)
+                                    .await?;
+                                return Err(error);
+                            }
+                        };
+                    match observed {
+                        Some(actual) if actual == expected => {
+                            source_change_token = Some(expected);
+                            false
+                        }
+                        Some(_) => {
+                            self.invalidate_namespace(namespace, cleanup_publication)
+                                .await?;
+                            return Err(DurableMemorySemanticError::RepositoryChangedDuringRefresh);
+                        }
+                        None => true,
+                    }
+                }
+                None => true,
+            };
+        if require_snapshot_verification {
+            if let Some(work) = work.as_deref_mut() {
+                work.observe_snapshot_request();
+            }
+            let after = match repository.snapshot_namespace(request.clone()).await {
+                Ok(after) => after,
+                Err(error) => {
+                    self.invalidate_namespace(namespace, cleanup_publication)
+                        .await?;
+                    return Err(error.into());
+                }
+            };
+            if let Some(work) = work {
+                work.observe_snapshot(&after);
+            }
+            if let Err(error) = after.verify(&request) {
                 self.invalidate_namespace(namespace, cleanup_publication)
                     .await?;
                 return Err(error.into());
             }
-        };
-        if let Some(work) = work {
-            work.observe_snapshot(&after);
-        }
-        if let Err(error) = after.verify(&request) {
-            self.invalidate_namespace(namespace, cleanup_publication)
-                .await?;
-            return Err(error.into());
-        }
-        if after.digest() != source_snapshot_digest {
-            self.invalidate_namespace(namespace, cleanup_publication)
-                .await?;
-            return Err(DurableMemorySemanticError::RepositoryChangedDuringRefresh);
+            if after.digest() != source_snapshot_digest {
+                self.invalidate_namespace(namespace, cleanup_publication)
+                    .await?;
+                return Err(DurableMemorySemanticError::RepositoryChangedDuringRefresh);
+            }
         }
         if self.index_status().revision != index_status.revision {
             return Err(DurableMemorySemanticError::IndexRevisionChanged);
@@ -356,6 +495,7 @@ impl DurableMemorySemanticRecall {
                 source_snapshot_profile,
                 source_snapshot_digest,
                 source_snapshot_bytes,
+                source_change_token,
                 semantic_binding_schema: DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1.to_string(),
                 serving_generation_digest: self.serving_generation_digest().to_string(),
                 active_node_count,

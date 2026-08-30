@@ -356,15 +356,17 @@ metrics epoch. An unclosed runtime keeps the lease until every aborted worker
 has actually settled. The host still chooses the interval, stores observations
 durably, and operates any distributed lease.
 
-After its first full publication, a scheduled tick still obtains and recomputes
-the complete bounded Active snapshot. It reports a successful zero-item run and
-avoids embedding plus vector mutation only when the current ownership-epoch
-receipt, source identity, semantic generation, CAS revision captured before the
-snapshot, and full index status observed afterward all match exactly. Source or
-index drift triggers a full verified rebuild. A replacement owner clears the
+After its first full publication, a scheduled tick first reads the repository's
+optional exact namespace change token. An equal token plus the current
+ownership-epoch receipt, semantic generation, CAS revision, and full index
+status proves a successful zero-item run without a snapshot, embedding, or
+vector mutation. A token change triggers one complete bounded Active snapshot;
+an inactive-only change can advance the receipt without republishing. A custom
+repository returning `None` retains the original full-snapshot proof. Source or
+index drift triggers a verified rebuild. A replacement owner clears the
 process-local receipt before its first tick, so it cannot authorize a skip on a
-different injected backend. The remaining snapshot read and digest work, real
-provider cost, and production interval selection are host qualifications.
+different injected backend. Real provider cost and production interval
+selection remain host qualifications.
 
 If a verified rebuild is required, the active owner retains one bounded,
 text-free set of vectors from its latest successful partition. Reuse requires
@@ -377,11 +379,11 @@ cache while leaving `last_receipt()` observable, and the next owner starts
 without either cache or receipt. Explicit direct refresh remains uncached.
 
 The schedule metrics distinguish bounded executor misses from invocations that
-reach Code's provider-adapter boundary. They count snapshot requests/node
-reads/canonical bytes, cache hits, logical embedding inputs and bytes,
-provider-adapter invocations/inputs/bytes including retries, publication
-attempts/records, and elapsed time. Publication metrics describe complete
-partition calls, including CAS rejection, but exclude later invalidation
+reach Code's provider-adapter boundary. They count change-token requests/valid
+observations, snapshot requests/node reads/canonical bytes, cache hits, logical
+embedding inputs and bytes, provider-adapter invocations/inputs/bytes including
+retries, publication attempts/records, and elapsed time. Publication metrics
+describe complete partition calls, including CAS rejection, but exclude later invalidation
 cleanup. They retain no memory text, identifiers, digests, vectors, provider
 identity, or error bodies. Adapter-boundary counts do not prove remote
 transmission or billing. They let hosts correlate production cache, latency,
