@@ -6,8 +6,9 @@ revision-conditional publication for independently constructed runtimes sharing
 one capable index. `DM-SCHED1` adds an opt-in Code-owned periodic lifecycle for
 that same verified operation. `DM-SKIP1` lets that owned schedule suppress
 redundant embedding and publication only after proving the source and index are
-unchanged. None of these gates adds a distributed lease or moves embedding
-policy into the repository.
+unchanged. `DM-REUSE1` lets a required rebuild reuse exact embeddings already
+committed and verified in the current ownership epoch. None of these gates adds
+a distributed lease or moves embedding policy into the repository.
 
 ## Contract
 
@@ -56,7 +57,8 @@ retry from a fresh source snapshot.
 
 Direct `refresh_semantic_recall` calls remain unconditional. Change detection is
 an owned-schedule optimization because its proof depends on the latest receipt
-from the current schedule-ownership epoch.
+from the current schedule-ownership epoch. Direct calls also remain uncached;
+embedding reuse is owned by the same bounded scheduled lifecycle as its receipt.
 
 Publication is the commit point. Cancellation after atomic replacement does
 not interrupt the required post-publication source verification and cleanup.
@@ -101,6 +103,26 @@ index drift falls back to the full refresh and its existing post-publication
 verification. When a replacement runtime successfully claims the schedule, it
 starts a new ownership epoch and clears the process-local receipt before the
 first tick; it therefore cannot use evidence from a different injected backend.
+
+When a full publication is required, the active owner may reuse the vector for
+an exact semantic record ID from its latest verified success. That ID binds the
+namespace partition, serving generation, node identity, node revision, and
+content digest. Code does not infer reuse from similar text, a digest alone, or
+an index hit. It reconstructs every current record and label from the complete
+verified source snapshot, embeds only cache misses, and still CAS-publishes the
+entire partition atomically. Consequently, unrelated index drift can rebuild
+with zero provider inputs, a one-node source change sends only that node, and an
+Active-node removal can rebuild entirely from retained vectors.
+
+The cache contains no source text and retains at most the current schedule's one
+semantic partition. Its record count and vector payload remain bounded by the
+same refresh input and vector-byte budgets. A candidate cache replaces the old
+one only after CAS publication and mandatory post-publication source/index
+verification succeed. Provider, CAS, cleanup, or source-verification failure
+retains the previous verified cache; prepared but uncommitted vectors are not
+promoted. Clean close releases the vector cache before making the next owner
+claimable while preserving `last_receipt()` for host inspection. A new owner
+always starts without cached vectors or a receipt.
 
 ## Ownership
 
@@ -147,8 +169,10 @@ the previous partition, forged snapshot rejection, receipt identity, and public
 pre-spawn admission, repeated refresh, retained receipts, clean
 post-publication close settlement, verified unchanged-tick embedding/publication
 suppression, source- and index-drift rebuilds, ownership-epoch receipt clearing,
-and bounded abort for a non-cooperative job. A3S Memory's contracts separately
-cover deterministic
+exact committed-vector reuse across index drift, partial source change and
+Active removal, rejection of prepared vectors after a lost CAS race, cache
+release on owner close, and bounded abort for a non-cooperative job. A3S
+Memory's contracts separately cover deterministic
 snapshot identity, byte and node overflow, restart-stable digests, exactly one
 winner under concurrent CAS, stale replacement/cleanup rejection, and
 source-compatible custom-backend defaults.
@@ -159,4 +183,6 @@ These gates do not qualify a distributed generation lease, a durable remote CAS
 vector backend, a real embedding provider, production refresh cadence, large
 independently labeled corpora, latency, billed cost, or refresh behavior during
 remote failover. An unchanged tick still pays for a bounded repository snapshot
-and digest verification. Those remain `DM-PROD1` host qualifications.
+and digest verification, and deterministic fixture reuse does not establish a
+production cache-hit or billed-cost distribution. Those remain `DM-PROD1` host
+qualifications.

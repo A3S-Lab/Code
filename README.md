@@ -770,7 +770,14 @@ the exact semantic generation, the ownership-epoch receipt, the CAS-captured
 revision, and the full post-snapshot index status all match. Such a successful
 no-change run reports zero affected items and retains the receipt; source or
 index drift performs a full verified rebuild, and a replacement owner starts
-without the previous process-local receipt.
+without the previous process-local receipt. Rebuilds retain one bounded,
+text-free vector set for the active ownership epoch. Exact semantic record IDs
+bind reuse to namespace, generation, node, revision, and content digest, so
+index-only drift can republish without provider egress and a partial source
+change embeds only misses before atomically publishing the complete partition.
+Only a post-publication verified success replaces this cache. Close releases
+its vectors while keeping the receipt observable; direct explicit refreshes
+remain uncached and unconditional.
 Activation requires independent Manual or Verification evidence. Code records
 admission for the exact current revision after final context assembly; an
 unrecordable or stale item is removed before the model call. Exact V1/V2
@@ -813,7 +820,8 @@ Memory construction itself starts no tasks. Configured V1 pruning, opt-in
 verified semantic refresh, and host-supplied consolidation jobs run only inside
 a session-owned `MemoryMaintenanceRuntime`; jobs are serialized per schedule,
 missed ticks are skipped, verified no-change semantic ticks avoid embedding and
-publication, and health is observable. Clean
+publication, verified rebuilds reuse exact committed embeddings, and health is
+observable. Clean
 `session.close().await` lets a published refresh finish source verification
 within the total close deadline before final extraction drain. Maintenance
 requires asynchronous session construction. Consolidation jobs remain

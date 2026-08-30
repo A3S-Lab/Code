@@ -206,7 +206,10 @@ The context-and-memory gate also runs
 [`memory_semantic_refresh_change_detection`](../core/tests/memory_semantic_refresh_change_detection.rs).
 It proves that a verified unchanged scheduled tick performs no embedding or
 vector mutation, source or independent index drift triggers a rebuild, and a
-replacement schedule owner cannot reuse the previous process-local receipt.
+replacement schedule owner cannot reuse the previous process-local receipt. The
+same gate proves exact committed-vector reuse for index-only drift, partial
+source changes and Active removal; a failed CAS publication cannot promote its
+prepared embeddings, and owner replacement forces fresh provider input.
 
 ## Runtime surface ledger
 

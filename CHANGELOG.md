@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   avoids redundant embedding and vector publication. Source or index drift
   rebuilds conservatively, and a replacement schedule owner discards the prior
   process-local receipt.
+- Added bounded ownership-epoch embedding reuse for scheduled semantic rebuilds.
+  Exact semantic record IDs reuse only vectors already committed by a verified
+  refresh, so index-only drift needs no provider egress and partial source drift
+  embeds only cache misses while still atomically publishing the complete
+  partition. Failed publication never promotes prepared vectors, and close
+  releases the text-free cache while retaining the observable receipt.
 
 ### Changed
 

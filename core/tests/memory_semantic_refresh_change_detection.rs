@@ -50,11 +50,29 @@ impl LlmClient for UnusedLlmClient {
 #[derive(Default)]
 struct CountingProvider {
     calls: AtomicUsize,
+    inputs: AtomicUsize,
+    interference_index: Option<Arc<InMemoryVectorIndex>>,
+    interfere_next: std::sync::atomic::AtomicBool,
 }
 
 impl CountingProvider {
+    fn with_interference(index: Arc<InMemoryVectorIndex>) -> Self {
+        Self {
+            interference_index: Some(index),
+            ..Self::default()
+        }
+    }
+
     fn call_count(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
+    }
+
+    fn input_count(&self) -> usize {
+        self.inputs.load(Ordering::SeqCst)
+    }
+
+    fn interfere_once(&self) {
+        self.interfere_next.store(true, Ordering::SeqCst);
     }
 }
 
@@ -70,6 +88,19 @@ impl EmbeddingProvider for CountingProvider {
         cancellation: CancellationToken,
     ) -> Result<EmbeddingBatchResponse, EmbeddingProviderError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.inputs
+            .fetch_add(request.inputs().len(), Ordering::SeqCst);
+        if self.interfere_next.swap(false, Ordering::SeqCst) {
+            self.interference_index
+                .as_ref()
+                .expect("interference index")
+                .replace_partition(
+                    "provider-interference",
+                    vec![VectorRecord::new("interference", vec![0.0, 1.0])],
+                )
+                .await
+                .expect("publish provider interference");
+        }
         FixtureProvider.embed(request, cancellation).await
     }
 }
@@ -111,6 +142,23 @@ async fn advance_until_runs(session: &AgentSession, expected_runs: u64) {
     panic!("semantic refresh did not complete run {expected_runs}");
 }
 
+async fn advance_until_failures(session: &AgentSession, expected_failures: u64) {
+    settle_workers().await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    for _ in 0..256 {
+        if session
+            .memory_maintenance_health()
+            .jobs
+            .iter()
+            .any(|job| job.failed_runs >= expected_failures)
+        {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("semantic refresh did not record failure {expected_failures}");
+}
+
 #[tokio::test(start_paused = true)]
 async fn unchanged_ticks_skip_embedding_but_source_or_index_drift_rebuilds() {
     let namespace = namespace("scheduled-change-detection");
@@ -122,6 +170,16 @@ async fn unchanged_ticks_skip_embedding_but_source_or_index_drift_rebuilds() {
         "alpha",
         MemoryStatus::Active,
         ALPHA,
+        1,
+    )
+    .await;
+    create_node(
+        repository.as_ref(),
+        &namespace,
+        "create-beta",
+        "beta",
+        MemoryStatus::Active,
+        BETA,
         1,
     )
     .await;
@@ -156,6 +214,7 @@ async fn unchanged_ticks_skip_embedding_but_source_or_index_drift_rebuilds() {
     let first_receipt = schedule.last_receipt().expect("initial refresh receipt");
     let first_index_status = index.status();
     assert_eq!(provider.call_count(), 1);
+    assert_eq!(provider.input_count(), 2);
 
     advance_until_runs(&agent_session, 2).await;
     assert_eq!(
@@ -163,11 +222,12 @@ async fn unchanged_ticks_skip_embedding_but_source_or_index_drift_rebuilds() {
         1,
         "an unchanged verified snapshot must not be embedded again"
     );
+    assert_eq!(provider.input_count(), 2);
     assert_eq!(index.status(), first_index_status);
     assert_eq!(schedule.last_receipt(), Some(first_receipt.clone()));
     let unchanged_health = agent_session.memory_maintenance_health();
     assert_eq!(unchanged_health.jobs[0].successful_runs, 2);
-    assert_eq!(unchanged_health.jobs[0].total_affected_items, 1);
+    assert_eq!(unchanged_health.jobs[0].total_affected_items, 2);
     assert_eq!(unchanged_health.jobs[0].last_affected_items, Some(0));
 
     index
@@ -179,7 +239,12 @@ async fn unchanged_ticks_skip_embedding_but_source_or_index_drift_rebuilds() {
         .unwrap();
     let independent_status = index.status();
     advance_until_runs(&agent_session, 3).await;
-    assert_eq!(provider.call_count(), 2);
+    assert_eq!(
+        provider.call_count(),
+        1,
+        "index drift must republish verified cached vectors without provider egress"
+    );
+    assert_eq!(provider.input_count(), 2);
     assert!(index.status().revision > independent_status.revision);
     let index_drift_receipt = schedule
         .last_receipt()
@@ -193,7 +258,7 @@ async fn unchanged_ticks_skip_embedding_but_source_or_index_drift_rebuilds() {
     repository
         .apply(MemoryChangeSet::new(
             "scheduled-source-change",
-            namespace,
+            namespace.clone(),
             time(2),
             vec![MemoryOperation::Revise {
                 node_id: "alpha".into(),
@@ -208,15 +273,49 @@ async fn unchanged_ticks_skip_embedding_but_source_or_index_drift_rebuilds() {
         .await
         .unwrap();
     advance_until_runs(&agent_session, 4).await;
-    assert_eq!(provider.call_count(), 3);
+    assert_eq!(provider.call_count(), 2);
+    assert_eq!(
+        provider.input_count(),
+        3,
+        "only the changed Active node may leave the process for embedding"
+    );
     let source_drift_receipt = schedule.last_receipt().expect("source rebuild receipt");
     assert_ne!(
         source_drift_receipt.source_snapshot_digest(),
         index_drift_receipt.source_snapshot_digest()
     );
+
+    repository
+        .apply(MemoryChangeSet::new(
+            "scheduled-active-removal",
+            namespace,
+            time(3),
+            vec![MemoryOperation::SetStatus {
+                node_id: "beta".into(),
+                expected_revision: 1,
+                status: MemoryStatus::Tombstoned,
+            }],
+        ))
+        .await
+        .unwrap();
+    advance_until_runs(&agent_session, 5).await;
+    assert_eq!(provider.call_count(), 2);
+    assert_eq!(
+        provider.input_count(),
+        3,
+        "removing an Active node must rebuild entirely from retained verified vectors"
+    );
+    let removal_receipt = schedule.last_receipt().expect("removal rebuild receipt");
+    assert_eq!(removal_receipt.active_node_count(), 1);
+    assert_ne!(
+        removal_receipt.source_snapshot_digest(),
+        source_drift_receipt.source_snapshot_digest()
+    );
+    assert_eq!(index.status().record_count, 2);
     let running = agent_session.memory_maintenance_health();
-    assert_eq!(running.jobs[0].successful_runs, 4);
-    assert_eq!(running.jobs[0].total_affected_items, 3);
+    assert_eq!(running.jobs[0].successful_runs, 5);
+    assert_eq!(running.jobs[0].total_affected_items, 7);
+    assert_eq!(running.jobs[0].last_affected_items, Some(1));
     agent_session.close().await;
 }
 
@@ -293,6 +392,107 @@ async fn a_new_schedule_owner_discards_the_previous_process_local_receipt() {
     );
     advance_until_runs(&replacement, 1).await;
     assert_eq!(replacement_provider.call_count(), 1);
+    assert_eq!(replacement_provider.input_count(), 1);
     assert_eq!(replacement_index.status().revision.value(), 1);
     replacement.close().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_cas_publication_does_not_promote_prepared_embeddings() {
+    let namespace = namespace("scheduled-cache-publication");
+    let repository = Arc::new(InMemoryRepository::new());
+    create_node(
+        repository.as_ref(),
+        &namespace,
+        "create-alpha",
+        "alpha",
+        MemoryStatus::Active,
+        ALPHA,
+        1,
+    )
+    .await;
+    create_node(
+        repository.as_ref(),
+        &namespace,
+        "create-beta",
+        "beta",
+        MemoryStatus::Active,
+        BETA,
+        1,
+    )
+    .await;
+    let index = Arc::new(InMemoryVectorIndex::new(VectorIndexDescriptor::new(2)).unwrap());
+    let provider = Arc::new(CountingProvider::with_interference(index.clone()));
+    let vector_index: Arc<dyn VectorIndex> = index.clone();
+    let durable = session(
+        repository.clone(),
+        namespace.clone(),
+        semantic(
+            provider.clone(),
+            EmbeddingExecutorConfig::default(),
+            vector_index,
+        ),
+    );
+    let schedule = ScheduledSemanticRefresh::try_new(Duration::from_secs(1)).unwrap();
+    let agent = Agent::from_config(CodeConfig::default()).await.unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let agent_session = agent
+        .session_async(
+            workspace.path().display().to_string(),
+            Some(session_options(
+                "scheduled-cache-publication",
+                durable,
+                schedule.clone(),
+            )),
+        )
+        .await
+        .unwrap();
+
+    advance_until_runs(&agent_session, 1).await;
+    let first_receipt = schedule.last_receipt().expect("initial refresh receipt");
+    assert_eq!(provider.input_count(), 2);
+
+    repository
+        .apply(MemoryChangeSet::new(
+            "scheduled-cache-source-change",
+            namespace,
+            time(2),
+            vec![MemoryOperation::Revise {
+                node_id: "alpha".into(),
+                expected_revision: 1,
+                content: GAMMA.into(),
+                mode: RevisionMode::Correction,
+                evidence: vec![evidence("scheduled-cache-source-change", 2)],
+                confidence: None,
+                importance: None,
+            }],
+        ))
+        .await
+        .unwrap();
+    provider.interfere_once();
+    advance_until_failures(&agent_session, 1).await;
+    assert_eq!(provider.input_count(), 3);
+    assert_eq!(schedule.last_receipt(), Some(first_receipt.clone()));
+    let failed = agent_session.memory_maintenance_health();
+    assert_eq!(failed.jobs[0].successful_runs, 1);
+    assert_eq!(failed.jobs[0].failed_runs, 1);
+    assert_eq!(failed.jobs[0].total_affected_items, 2);
+
+    advance_until_runs(&agent_session, 2).await;
+    assert_eq!(provider.call_count(), 3);
+    assert_eq!(
+        provider.input_count(),
+        4,
+        "the changed node must be embedded again after its prepared CAS publication lost"
+    );
+    let recovered = schedule.last_receipt().expect("recovered refresh receipt");
+    assert_ne!(
+        recovered.source_snapshot_digest(),
+        first_receipt.source_snapshot_digest()
+    );
+    let healthy = agent_session.memory_maintenance_health();
+    assert_eq!(healthy.jobs[0].successful_runs, 2);
+    assert_eq!(healthy.jobs[0].failed_runs, 1);
+    assert_eq!(healthy.jobs[0].total_affected_items, 4);
+    agent_session.close().await;
 }

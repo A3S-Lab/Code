@@ -362,6 +362,16 @@ process-local receipt before its first tick, so it cannot authorize a skip on a
 different injected backend. The remaining snapshot read and digest work, real
 provider cost, and production interval selection are host qualifications.
 
+If a verified rebuild is required, the active owner retains one bounded,
+text-free set of vectors from its latest successful partition. Reuse requires
+the complete semantic record ID, which binds namespace, generation, node,
+revision, and content digest. Code reconstructs the complete current partition
+from the verified snapshot, embeds only missing record IDs, and still publishes
+all records under index-revision CAS. A failed provider call, CAS race, cleanup,
+or source verification never promotes prepared vectors. Clean close drops the
+cache while leaving `last_receipt()` observable, and the next owner starts
+without either cache or receipt. Explicit direct refresh remains uncached.
+
 Semantic consolidation stays host policy. A host injects a typed
 `ScheduledMemoryMaintenance` whose `MemoryMaintenanceJob` can inspect the exact
 `MemoryMaintenanceContext`. Any V2 mutation must still carry deterministic
@@ -481,10 +491,12 @@ authority digest that contains no credential.
     rejection, and retained secret-free receipts. If periodic refresh is needed,
     require pre-spawn CAS admission, exclusive schedule ownership, observable
     health, retained receipts, verified unchanged-tick embedding/publication
-    suppression, conservative source/index-drift rebuild, ownership-epoch reset,
-    and post-publication close settlement. Treat production cadence, remaining
-    snapshot cost, distributed lease policy, and remote-backend behavior as
-    separate host qualifications.
+    suppression, exact committed-vector reuse for index drift and partial source
+    change, rejection of uncommitted cache candidates, conservative drift
+    rebuild, ownership-epoch reset and cache release, and post-publication close
+    settlement. Treat production cadence, remaining snapshot cost, real cache
+    hit/cost distributions, distributed lease policy, and remote-backend behavior
+    as separate host qualifications.
 12. Run the multi-agent gate. Share only an exact host-injected binding; require
      distinct session/run admissions under colliding local generators, explicit
      Candidate and foreign-principal isolation, peer-independent teardown, and

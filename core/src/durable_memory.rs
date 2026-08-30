@@ -22,6 +22,7 @@ pub use policy::{
     DurableMemoryRecallPolicy, DurableMemoryRecallPreview,
 };
 pub use semantic::DurableMemorySemanticRecall;
+pub(crate) use semantic::SemanticRefreshEmbeddingCache;
 pub use semantic_binding::{
     DurableMemorySemanticBindingV1, DurableMemorySemanticError, DurableMemorySemanticRecallPolicy,
     DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1, DURABLE_MEMORY_SEMANTIC_FUSION_PROFILE_V1,

@@ -1,6 +1,6 @@
 use super::{
     DurableMemorySemanticError, DurableMemorySemanticRecall, DurableMemorySession,
-    DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1,
+    SemanticRefreshEmbeddingCache, DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1,
 };
 use a3s_memory::repository::{
     MemoryNamespace, MemoryNamespaceSnapshot, MemoryRepository, MemorySnapshotRequest,
@@ -8,6 +8,7 @@ use a3s_memory::repository::{
 };
 use a3s_memory::vector::{VectorIndexStatus, VectorMutationConsistency, VectorRevision};
 use serde::Serialize;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// Stable identity of the verified full-snapshot refresh algorithm.
@@ -88,23 +89,31 @@ impl DurableMemorySemanticRefreshReceipt {
 }
 
 pub(crate) enum DurableMemorySemanticRefreshRun {
-    Published(DurableMemorySemanticRefreshReceipt),
+    Published {
+        receipt: DurableMemorySemanticRefreshReceipt,
+        embedding_cache: Option<Arc<SemanticRefreshEmbeddingCache>>,
+    },
     Unchanged(DurableMemorySemanticRefreshReceipt),
 }
 
 impl DurableMemorySemanticRefreshRun {
     pub(crate) fn into_receipt(self) -> DurableMemorySemanticRefreshReceipt {
         match self {
-            Self::Published(receipt) | Self::Unchanged(receipt) => receipt,
+            Self::Published { receipt, .. } | Self::Unchanged(receipt) => receipt,
         }
     }
 }
 
+enum SemanticRefreshCacheMode<'a> {
+    Disabled,
+    Capture(Option<&'a SemanticRefreshEmbeddingCache>),
+}
+
 impl DurableMemorySession {
-    pub(crate) async fn refresh_semantic_recall_if_stale_requiring(
+    pub(crate) async fn refresh_semantic_recall_scheduled(
         &self,
-        previous: &DurableMemorySemanticRefreshReceipt,
-        required_consistency: VectorMutationConsistency,
+        previous: Option<&DurableMemorySemanticRefreshReceipt>,
+        previous_cache: Option<&SemanticRefreshEmbeddingCache>,
         cancellation: CancellationToken,
     ) -> Result<DurableMemorySemanticRefreshRun, DurableMemorySemanticError> {
         let semantic = self.semantic_recall.as_ref().ok_or_else(|| {
@@ -117,8 +126,9 @@ impl DurableMemorySession {
             .refresh_repository_namespace_if_stale(
                 self.repository.as_ref(),
                 &self.namespace,
-                required_consistency,
-                Some(previous),
+                VectorMutationConsistency::IndexRevisionCas,
+                previous,
+                SemanticRefreshCacheMode::Capture(previous_cache),
                 cancellation,
             )
             .await
@@ -138,18 +148,20 @@ impl DurableMemorySemanticRecall {
             namespace,
             required_consistency,
             None,
+            SemanticRefreshCacheMode::Disabled,
             cancellation,
         )
         .await
         .map(DurableMemorySemanticRefreshRun::into_receipt)
     }
 
-    pub(super) async fn refresh_repository_namespace_if_stale(
+    async fn refresh_repository_namespace_if_stale(
         &self,
         repository: &dyn MemoryRepository,
         namespace: &MemoryNamespace,
         required_consistency: VectorMutationConsistency,
         previous: Option<&DurableMemorySemanticRefreshReceipt>,
+        cache_mode: SemanticRefreshCacheMode<'_>,
         cancellation: CancellationToken,
     ) -> Result<DurableMemorySemanticRefreshRun, DurableMemorySemanticError> {
         if cancellation.is_cancelled() {
@@ -197,9 +209,33 @@ impl DurableMemorySemanticRecall {
         let source_snapshot_bytes = before.byte_count();
         let active_node_count = before.nodes().len();
 
-        let index_status = self
-            .replace_namespace_locked(namespace, before.into_nodes(), cancellation, publication)
-            .await?;
+        let (index_status, embedding_cache) = match cache_mode {
+            SemanticRefreshCacheMode::Disabled => (
+                self.replace_namespace_locked(
+                    namespace,
+                    before.into_nodes(),
+                    cancellation,
+                    publication,
+                )
+                .await?,
+                None,
+            ),
+            SemanticRefreshCacheMode::Capture(previous_cache) => {
+                let replacement = self
+                    .replace_namespace_locked_reusing(
+                        namespace,
+                        before.into_nodes(),
+                        previous_cache,
+                        cancellation,
+                        publication,
+                    )
+                    .await?;
+                (
+                    replacement.status,
+                    Some(Arc::new(replacement.embedding_cache)),
+                )
+            }
+        };
         let cleanup_publication = publication.after_publication(index_status.revision);
 
         // Publication is the commit point. Finish source verification even if
@@ -226,8 +262,8 @@ impl DurableMemorySemanticRecall {
             return Err(DurableMemorySemanticError::IndexRevisionChanged);
         }
 
-        Ok(DurableMemorySemanticRefreshRun::Published(
-            DurableMemorySemanticRefreshReceipt {
+        Ok(DurableMemorySemanticRefreshRun::Published {
+            receipt: DurableMemorySemanticRefreshReceipt {
                 profile: DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1.to_string(),
                 source_snapshot_profile,
                 source_snapshot_digest,
@@ -238,6 +274,7 @@ impl DurableMemorySemanticRecall {
                 mutation_consistency: publication.consistency(),
                 index_status,
             },
-        ))
+            embedding_cache,
+        })
     }
 }

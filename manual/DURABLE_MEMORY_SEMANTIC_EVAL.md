@@ -91,7 +91,9 @@ The separate [semantic refresh gate](DURABLE_MEMORY_SEMANTIC_REFRESH.md) covers
 complete dual-budget repository snapshots, explicit atomic rebuild, source
 drift cleanup, serialized live-generation mutation, shared-index revision CAS,
 refresh receipts, owned scheduling, and verified suppression of redundant
-embedding/publication on unchanged scheduled ticks.
+embedding/publication on unchanged scheduled ticks. It also verifies bounded
+reuse of exact committed embeddings when an index-only or partial-source drift
+still requires complete atomic publication.
 
 ## What this gate does not claim
 
