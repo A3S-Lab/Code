@@ -59,7 +59,7 @@ async fn close_cancels_then_boundedly_aborts_a_non_cooperative_job() {
     .unwrap();
 
     settle_workers().await;
-    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     started.notified().await;
     assert!(runtime.health().jobs[0].run_in_progress);
 
@@ -71,7 +71,7 @@ async fn close_cancels_then_boundedly_aborts_a_non_cooperative_job() {
         "close dropped the job instead of awaiting cancellation settlement"
     );
 
-    tokio::time::advance(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
     settle_workers().await;
     let report = close.await.unwrap();
     assert_eq!(report.jobs_joined, 0);

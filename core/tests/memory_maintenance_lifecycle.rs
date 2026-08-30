@@ -243,7 +243,7 @@ async fn session_owns_pruning_and_host_consolidation_until_bounded_close() {
     assert_eq!(consolidator.runs.load(Ordering::SeqCst), 0);
 
     tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
     for _ in 0..8 {
         tokio::task::yield_now().await;
     }
@@ -259,7 +259,7 @@ async fn session_owns_pruning_and_host_consolidation_until_bounded_close() {
     assert_eq!(closed.phase, MemoryMaintenancePhase::Closed);
     assert!(closed.jobs.iter().all(|job| !job.worker_alive));
 
-    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::time::sleep(Duration::from_secs(30)).await;
     tokio::task::yield_now().await;
     assert_eq!(consolidator.runs.load(Ordering::SeqCst), 1);
 }
@@ -324,7 +324,7 @@ async fn owned_host_job_applies_verified_atomic_v2_supersession() {
         .unwrap();
 
     tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
     for _ in 0..8 {
         tokio::task::yield_now().await;
     }
@@ -365,7 +365,7 @@ async fn owned_host_job_applies_verified_atomic_v2_supersession() {
     assert_eq!(health.jobs[0].total_affected_items, 2);
 
     session.close().await;
-    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
     tokio::task::yield_now().await;
     assert_eq!(consolidator.runs.load(Ordering::SeqCst), 1);
 }
@@ -389,7 +389,7 @@ async fn agent_memory_construction_is_inert_and_runtime_ownership_is_exclusive()
         },
     ));
 
-    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::time::sleep(Duration::from_secs(30)).await;
     tokio::task::yield_now().await;
     assert_eq!(store.count().await.unwrap(), 1);
 
@@ -408,7 +408,7 @@ async fn agent_memory_construction_is_inert_and_runtime_ownership_is_exclusive()
         Err(MemoryMaintenanceError::AlreadyOwned)
     ));
     tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
     for _ in 0..4 {
         tokio::task::yield_now().await;
     }
@@ -451,7 +451,7 @@ async fn failed_job_degrades_health_and_later_success_recovers_it() {
     .unwrap();
 
     tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
     for _ in 0..4 {
         tokio::task::yield_now().await;
     }
@@ -463,7 +463,7 @@ async fn failed_job_degrades_health_and_later_success_recovers_it() {
         .as_deref()
         .is_some_and(|error| error.contains("verification service")));
 
-    tokio::time::advance(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
     for _ in 0..4 {
         tokio::task::yield_now().await;
     }

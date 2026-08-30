@@ -222,16 +222,9 @@ fn start_runtime(
     .unwrap()
 }
 
-async fn settle_workers() {
-    for _ in 0..32 {
-        tokio::task::yield_now().await;
-    }
-}
-
 async fn advance_until(runtime: &MemoryMaintenanceRuntime, successes: u64, failures: u64) {
-    settle_workers().await;
-    tokio::time::advance(Duration::from_secs(1)).await;
-    for _ in 0..256 {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for _ in 0..4096 {
         let health = runtime.health();
         if health.jobs[0].successful_runs >= successes && health.jobs[0].failed_runs >= failures {
             return;

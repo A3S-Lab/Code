@@ -172,9 +172,8 @@ async fn settle_workers() {
 }
 
 async fn advance_until_runs(session: &AgentSession, interval: Duration, expected_runs: u64) {
-    settle_workers().await;
-    tokio::time::advance(interval).await;
-    for _ in 0..256 {
+    tokio::time::sleep(interval).await;
+    for _ in 0..4096 {
         if session
             .memory_maintenance_health()
             .jobs
@@ -313,7 +312,7 @@ async fn scheduled_semantic_refresh_publishes_revisions_retains_receipts_and_sto
         agent_session.memory_maintenance_health().phase,
         MemoryMaintenancePhase::Closed
     );
-    tokio::time::advance(Duration::from_secs(15)).await;
+    tokio::time::sleep(Duration::from_secs(15)).await;
     settle_workers().await;
     assert_eq!(index.status().revision, closed_revision);
     assert_eq!(schedule.last_receipt(), Some(second));
@@ -381,7 +380,7 @@ async fn close_waits_for_post_publication_verification_and_retains_the_receipt()
     );
 
     settle_workers().await;
-    tokio::time::advance(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
     published.notified().await;
     assert_eq!(gated_index.status().revision.value(), 1);
     assert!(schedule.last_receipt().is_none());
