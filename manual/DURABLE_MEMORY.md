@@ -14,16 +14,17 @@ retrieval policy into the A3S Memory storage kernel.
 - A3S Memory owns exact namespace isolation, atomic and idempotent change sets,
   revision history, non-destructive lifecycle state, pure query, access events,
   complete dual-budget namespace snapshots, durable repository recovery, and
-  caller-owned vector-index primitives.
+  caller-owned atomic and revision-CAS vector-index primitives.
 - A3S Code owns bounded embedding execution, hybrid fusion, candidate
   re-verification, lexical fallback, cancellation, verified snapshot refresh,
-  drift cleanup, and receipts for an attached semantic generation.
+  conditional publication, drift cleanup, and receipts for an attached semantic
+  generation.
 - The embedding host owns repository, embedding provider, and vector-index
   construction; tenant/principal/scope selection; evidence retention; explicit
-  refresh timing and receipt retention; restart reinjection; remote fencing;
-  and semantic lifecycle jobs. Code can own their session schedule; A3S Flow
-  may orchestrate broader jobs, but neither truth nor consolidation policy
-  belongs to the storage kernel.
+  refresh timing and receipt retention; restart reinjection; distributed lease
+  policy and remote-backend qualification; and semantic lifecycle jobs. Code
+  can own their session schedule; A3S Flow may orchestrate broader jobs, but
+  neither truth nor consolidation policy belongs to the storage kernel.
 
 This division keeps the repository policy-free. A storage backend cannot decide
 whether an LLM statement is true, and an extraction prompt cannot weaken the
@@ -94,8 +95,10 @@ verifies its identity, and atomically replaces the opaque partition derived
 from the namespace and exact semantic serving binding. A low-level host that
 already owns a qualified complete snapshot may call `replace_namespace`
 directly, but that method cannot prove repository completeness or return a
-source receipt. Distinct serving generations do not overwrite each other when
-a host deliberately shares one vector index.
+source receipt. On an index advertising `index_revision_cas`, both paths capture
+the global revision before preparation and conditionally publish. Distinct
+serving generations do not overwrite each other when a host deliberately shares
+one vector index.
 
 At query time, Code treats vector results as untrusted candidates:
 
@@ -168,7 +171,7 @@ bound repository:
 # use a3s_code_core::embedding::{EmbeddingExecutorConfig, EmbeddingProvider};
 # use a3s_code_core::{DurableMemoryRecallPolicy, DurableMemorySemanticRecall, DurableMemorySemanticRecallPolicy, DurableMemorySession};
 # use a3s_memory::repository::{InMemoryRepository, MemoryNamespace};
-# use a3s_memory::vector::VectorIndex;
+# use a3s_memory::vector::{VectorIndex, VectorMutationConsistency};
 # use std::sync::Arc;
 # use tokio_util::sync::CancellationToken;
 # async fn binding(
@@ -191,7 +194,10 @@ let durable_memory = DurableMemorySession::active_recall(
 )
 .with_semantic_recall(semantic)?;
 let receipt = durable_memory
-    .refresh_semantic_recall(CancellationToken::new())
+    .refresh_semantic_recall_requiring(
+        VectorMutationConsistency::IndexRevisionCas,
+        CancellationToken::new(),
+    )
     .await?;
 assert_eq!(receipt.active_node_count(), 0);
 # Ok(durable_memory)
@@ -205,11 +211,15 @@ that authority changes and must choose when vector partitions refresh after
 Active repository content changes. `refresh_semantic_recall` obtains a complete
 Active-only repository snapshot under node and canonical-byte budgets,
 recomputes its identity, embeds it off-index, atomically publishes it, and then
-verifies the repository snapshot again. Source drift requires partition
-invalidation and returns an error; an invalidation failure is propagated and no
-success receipt is returned. A successful call returns a secret-free refresh
-receipt. Stale vectors are still filtered at serving time, but an unrequested
-refresh can reduce recall.
+verifies the repository snapshot again. CAS-capable indexes reject publication
+when any index revision changed after preparation, and drift cleanup expects the
+published revision so it cannot delete a newer independent refresh. A strict
+caller can require CAS and reject weaker backends before repository or embedding
+I/O. Source drift requires partition invalidation and returns an error; an
+invalidation failure is propagated and no success receipt is returned. A
+successful call returns a secret-free receipt including the actual mutation
+consistency. Stale vectors are still filtered at serving time, but an
+unrequested refresh can reduce recall.
 
 During session preparation, Code fills an omitted `tenant_id` and `principal`
 from the exact namespace. If the caller supplies either field explicitly, it
@@ -251,13 +261,14 @@ Backward-readable data is not permission to change a live session's retrieval
 or admission identity behavior.
 
 The descriptor does not claim to authenticate a database path or remote
-service instance. Repository/index construction, credentials, remote fencing,
-refresh scheduling, retained receipt continuity, and backend continuity remain
-host responsibilities. Code verifies complete snapshot identity before and
-after one live-generation refresh, plus the namespace, current node
-revision/content, vector revision, and serving identity it can observe. It
-never resolves `latest`, opens an implicit repository or vector database, or
-substitutes a global principal.
+service instance. Repository/index construction, credentials, distributed lease
+policy, refresh scheduling, retained receipt continuity, and remote-backend
+continuity remain host responsibilities. Code verifies complete snapshot
+identity before and after one live-generation refresh and, when required,
+enforces the backend's atomic global-revision CAS contract. It also verifies the
+namespace, current node revision/content, vector revision, and serving identity
+it can observe. It never resolves `latest`, opens an implicit repository or
+vector database, or substitutes a global principal.
 
 ## Explicit multi-agent sharing
 
@@ -440,8 +451,10 @@ authority digest that contains no credential.
 11. Run the semantic refresh gate. Require complete node/byte-bounded Active
     snapshots, backend-response recomputation, pre/post publication identity,
     serialized cloned-session mutation, failure preservation or drift cleanup,
-    and retained secret-free receipts. Treat cross-process fencing and refresh
-    scheduling as separate host qualifications.
+    strict revision-CAS admission, delayed independent publication/cleanup
+    rejection, and retained secret-free receipts. Treat distributed lease
+    policy, remote-backend behavior, and refresh scheduling as separate host
+    qualifications.
 12. Run the multi-agent gate. Share only an exact host-injected binding; require
      distinct session/run admissions under colliding local generators, explicit
      Candidate and foreign-principal isolation, peer-independent teardown, and
@@ -460,7 +473,8 @@ for the query-profile contract, CJK gate, and its limits. See
 [Durable Memory Semantic Evaluation](DURABLE_MEMORY_SEMANTIC_EVAL.md) for the
 typed hybrid serving, current-revision verification, and cross-language gate.
 See [Durable Memory Semantic Refresh](DURABLE_MEMORY_SEMANTIC_REFRESH.md) for
-complete snapshot rebuild, drift cleanup, and refresh-receipt semantics.
+complete snapshot rebuild, drift cleanup, shared-index revision CAS, and
+refresh-receipt semantics.
 See
 [Durable Memory Multi-Agent Evaluation](DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
 explicit sharing and context-identity semantics. See
@@ -482,6 +496,7 @@ cargo test -p a3s-code-core --test durable_memory_multilingual_eval -- --nocaptu
 cargo test -p a3s-code-core --test durable_memory_semantic
 cargo test -p a3s-code-core --test durable_memory_semantic_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh
+cargo test -p a3s-code-core --test durable_memory_semantic_refresh_cas
 cargo test -p a3s-code-core --test durable_memory_semantic_refresh_failure
 cargo test -p a3s-code-core --test durable_memory_multi_agent_eval -- --nocapture
 cargo test -p a3s-code-core --test durable_memory_restart_endurance_eval -- --nocapture

@@ -35,6 +35,7 @@ use a3s_memory::repository::{
     MemoryNamespace, MemoryNode, MemoryNodeDraft, MemoryOperation, MemoryRepository,
     MemoryRepositoryError, MemoryStatus, MAX_IDENTIFIER_BYTES,
 };
+use a3s_memory::vector::VectorMutationConsistency;
 use a3s_memory::{MemoryItem, MemoryType};
 use chrono::{DateTime, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -213,6 +214,21 @@ impl DurableMemorySession {
         &self,
         cancellation: CancellationToken,
     ) -> Result<DurableMemorySemanticRefreshReceipt, DurableMemorySemanticError> {
+        self.refresh_semantic_recall_requiring(
+            VectorMutationConsistency::PartitionAtomic,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Rebuild semantic recall while requiring at least the selected vector
+    /// mutation ordering. An unsupported requirement fails before repository
+    /// snapshot or embedding work begins.
+    pub async fn refresh_semantic_recall_requiring(
+        &self,
+        required_consistency: VectorMutationConsistency,
+        cancellation: CancellationToken,
+    ) -> Result<DurableMemorySemanticRefreshReceipt, DurableMemorySemanticError> {
         let semantic = self.semantic_recall.as_ref().ok_or_else(|| {
             DurableMemorySemanticError::InvalidConfiguration {
                 field: "semanticRecall",
@@ -220,7 +236,12 @@ impl DurableMemorySession {
             }
         })?;
         semantic
-            .refresh_repository_namespace(self.repository.as_ref(), &self.namespace, cancellation)
+            .refresh_repository_namespace(
+                self.repository.as_ref(),
+                &self.namespace,
+                required_consistency,
+                cancellation,
+            )
             .await
     }
 

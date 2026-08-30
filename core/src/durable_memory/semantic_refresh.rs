@@ -6,7 +6,7 @@ use a3s_memory::repository::{
     MemoryNamespace, MemoryRepository, MemorySnapshotRequest, MemoryStatus, MAX_SNAPSHOT_BYTES,
     MAX_SNAPSHOT_NODES,
 };
-use a3s_memory::vector::VectorIndexStatus;
+use a3s_memory::vector::{VectorIndexStatus, VectorMutationConsistency};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
@@ -25,6 +25,7 @@ pub struct DurableMemorySemanticRefreshReceipt {
     semantic_binding_schema: String,
     serving_generation_digest: String,
     active_node_count: usize,
+    mutation_consistency: VectorMutationConsistency,
     index_status: VectorIndexStatus,
 }
 
@@ -57,6 +58,10 @@ impl DurableMemorySemanticRefreshReceipt {
         self.active_node_count
     }
 
+    pub fn mutation_consistency(&self) -> VectorMutationConsistency {
+        self.mutation_consistency
+    }
+
     pub fn index_status(&self) -> &VectorIndexStatus {
         &self.index_status
     }
@@ -67,6 +72,7 @@ impl DurableMemorySemanticRecall {
         &self,
         repository: &dyn MemoryRepository,
         namespace: &MemoryNamespace,
+        required_consistency: VectorMutationConsistency,
         cancellation: CancellationToken,
     ) -> Result<DurableMemorySemanticRefreshReceipt, DurableMemorySemanticError> {
         if cancellation.is_cancelled() {
@@ -79,6 +85,7 @@ impl DurableMemorySemanticRecall {
                 return Err(crate::embedding::EmbeddingError::Cancelled.into());
             }
         };
+        let publication = self.begin_index_publication(required_consistency)?;
         let request = MemorySnapshotRequest::new(
             namespace.clone(),
             self.refresh_node_limit()?.min(MAX_SNAPSHOT_NODES),
@@ -98,25 +105,32 @@ impl DurableMemorySemanticRecall {
         let active_node_count = before.nodes().len();
 
         let index_status = self
-            .replace_namespace_locked(namespace, before.into_nodes(), cancellation)
+            .replace_namespace_locked(namespace, before.into_nodes(), cancellation, publication)
             .await?;
+        let cleanup_publication = publication.after_publication(index_status.revision);
 
         // Publication is the commit point. Finish source verification even if
         // the caller cancels after the atomic index replacement completed.
         let after = match repository.snapshot_namespace(request.clone()).await {
             Ok(after) => after,
             Err(error) => {
-                self.invalidate_namespace(namespace).await?;
+                self.invalidate_namespace(namespace, cleanup_publication)
+                    .await?;
                 return Err(error.into());
             }
         };
         if let Err(error) = after.verify(&request) {
-            self.invalidate_namespace(namespace).await?;
+            self.invalidate_namespace(namespace, cleanup_publication)
+                .await?;
             return Err(error.into());
         }
         if after.digest() != source_snapshot_digest {
-            self.invalidate_namespace(namespace).await?;
+            self.invalidate_namespace(namespace, cleanup_publication)
+                .await?;
             return Err(DurableMemorySemanticError::RepositoryChangedDuringRefresh);
+        }
+        if self.index_status().revision != index_status.revision {
+            return Err(DurableMemorySemanticError::IndexRevisionChanged);
         }
 
         Ok(DurableMemorySemanticRefreshReceipt {
@@ -127,6 +141,7 @@ impl DurableMemorySemanticRecall {
             semantic_binding_schema: DURABLE_MEMORY_SEMANTIC_BINDING_SCHEMA_V1.to_string(),
             serving_generation_digest: self.serving_generation_digest().to_string(),
             active_node_count,
+            mutation_consistency: publication.consistency(),
             index_status,
         })
     }

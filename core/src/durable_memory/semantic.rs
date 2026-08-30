@@ -6,7 +6,10 @@ use crate::embedding::{
     EmbeddingError, EmbeddingExecutor, EmbeddingExecutorConfig, EmbeddingInput, EmbeddingProvider,
 };
 use a3s_memory::repository::{MemoryNamespace, MemoryNode, MemoryRepository, MemoryStatus};
-use a3s_memory::vector::{VectorIndex, VectorIndexStatus, VectorRecord, VectorSearchRequest};
+use a3s_memory::vector::{
+    VectorIndex, VectorIndexStatus, VectorMutationConsistency, VectorRecord, VectorRevision,
+    VectorSearchRequest,
+};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -34,6 +37,25 @@ pub struct DurableMemorySemanticRecall {
     executor: EmbeddingExecutor,
     index: Arc<dyn VectorIndex>,
     refresh_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SemanticIndexPublication {
+    consistency: VectorMutationConsistency,
+    expected_revision: Option<VectorRevision>,
+}
+
+impl SemanticIndexPublication {
+    pub(super) fn consistency(self) -> VectorMutationConsistency {
+        self.consistency
+    }
+
+    pub(super) fn after_publication(self, revision: VectorRevision) -> Self {
+        Self {
+            consistency: self.consistency,
+            expected_revision: self.expected_revision.map(|_| revision),
+        }
+    }
 }
 
 impl std::fmt::Debug for DurableMemorySemanticRecall {
@@ -112,15 +134,64 @@ impl DurableMemorySemanticRecall {
         self.executor.config().max_request_text_bytes
     }
 
+    pub(super) fn begin_index_publication(
+        &self,
+        required_consistency: VectorMutationConsistency,
+    ) -> Result<SemanticIndexPublication, DurableMemorySemanticError> {
+        let consistency = self.index.mutation_consistency();
+        let sufficient = match required_consistency {
+            VectorMutationConsistency::PartitionAtomic => matches!(
+                consistency,
+                VectorMutationConsistency::PartitionAtomic
+                    | VectorMutationConsistency::IndexRevisionCas
+            ),
+            VectorMutationConsistency::IndexRevisionCas => {
+                consistency == VectorMutationConsistency::IndexRevisionCas
+            }
+            _ => false,
+        };
+        if !sufficient {
+            return Err(
+                DurableMemorySemanticError::MutationConsistencyInsufficient {
+                    required: required_consistency,
+                    actual: consistency,
+                },
+            );
+        }
+        let expected_revision = match consistency {
+            VectorMutationConsistency::PartitionAtomic => None,
+            VectorMutationConsistency::IndexRevisionCas => Some(self.index.status().revision),
+            _ => {
+                return Err(invalid(
+                    "vectorIndex.mutationConsistency",
+                    "is unsupported by this Code generation",
+                ));
+            }
+        };
+        Ok(SemanticIndexPublication {
+            consistency,
+            expected_revision,
+        })
+    }
+
     pub(super) async fn invalidate_namespace(
         &self,
         namespace: &MemoryNamespace,
+        publication: SemanticIndexPublication,
     ) -> Result<VectorIndexStatus, DurableMemorySemanticError> {
         let partition = semantic_partition_id(namespace, &self.serving_generation_digest);
-        self.index
-            .remove_partition(&partition)
-            .await
-            .map_err(Into::into)
+        match publication.expected_revision {
+            Some(expected_revision) => self
+                .index
+                .remove_partition_if_revision(&partition, expected_revision)
+                .await
+                .map_err(Into::into),
+            None => self
+                .index
+                .remove_partition(&partition)
+                .await
+                .map_err(Into::into),
+        }
     }
 
     /// Atomically replace one exact namespace partition with current Active nodes.
@@ -138,7 +209,9 @@ impl DurableMemorySemanticRecall {
                 return Err(EmbeddingError::Cancelled.into());
             }
         };
-        self.replace_namespace_locked(namespace, nodes, cancellation)
+        let publication =
+            self.begin_index_publication(VectorMutationConsistency::PartitionAtomic)?;
+        self.replace_namespace_locked(namespace, nodes, cancellation, publication)
             .await
     }
 
@@ -147,6 +220,7 @@ impl DurableMemorySemanticRecall {
         namespace: &MemoryNamespace,
         nodes: Vec<MemoryNode>,
         cancellation: CancellationToken,
+        publication: SemanticIndexPublication,
     ) -> Result<VectorIndexStatus, DurableMemorySemanticError> {
         check_cancellation(&cancellation)?;
         let mut node_ids = HashSet::with_capacity(nodes.len());
@@ -201,10 +275,8 @@ impl DurableMemorySemanticRecall {
         let partition = semantic_partition_id(namespace, &self.serving_generation_digest);
         if nodes.is_empty() {
             return self
-                .index
-                .replace_partition(&partition, Vec::new())
-                .await
-                .map_err(Into::into);
+                .publish_partition(&partition, Vec::new(), publication)
+                .await;
         }
         let mut prepared = Vec::with_capacity(nodes.len());
         let mut inputs = Vec::with_capacity(nodes.len());
@@ -230,10 +302,28 @@ impl DurableMemorySemanticRecall {
                 },
             )
             .collect();
-        self.index
-            .replace_partition(&partition, records)
+        self.publish_partition(&partition, records, publication)
             .await
-            .map_err(Into::into)
+    }
+
+    async fn publish_partition(
+        &self,
+        partition: &str,
+        records: Vec<VectorRecord>,
+        publication: SemanticIndexPublication,
+    ) -> Result<VectorIndexStatus, DurableMemorySemanticError> {
+        match publication.expected_revision {
+            Some(expected_revision) => self
+                .index
+                .replace_partition_if_revision(partition, expected_revision, records)
+                .await
+                .map_err(Into::into),
+            None => self
+                .index
+                .replace_partition(partition, records)
+                .await
+                .map_err(Into::into),
+        }
     }
 
     pub(super) async fn query_verified(

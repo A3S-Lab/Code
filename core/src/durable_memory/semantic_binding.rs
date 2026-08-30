@@ -1,7 +1,8 @@
 use crate::embedding::{EmbeddingError, EmbeddingExecutorConfig, EmbeddingProviderDescriptor};
 use a3s_memory::repository::{MemoryRepositoryError, MAX_QUERY_LIMIT};
 use a3s_memory::vector::{
-    VectorIndexDescriptor, VectorIndexError, VectorMetric, VectorNormalization,
+    VectorIndexDescriptor, VectorIndexError, VectorMetric, VectorMutationConsistency,
+    VectorNormalization,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -223,6 +224,13 @@ pub enum DurableMemorySemanticError {
     IndexRevisionChanged,
     #[error("durable-memory repository changed during semantic index refresh")]
     RepositoryChangedDuringRefresh,
+    #[error(
+        "durable-memory semantic refresh requires {required:?} vector mutation consistency, but the backend provides {actual:?}"
+    )]
+    MutationConsistencyInsufficient {
+        required: VectorMutationConsistency,
+        actual: VectorMutationConsistency,
+    },
 }
 
 impl DurableMemorySemanticError {
@@ -235,6 +243,9 @@ impl DurableMemorySemanticError {
             Self::IndexRevisionChanged => "semantic index revision changed",
             Self::RepositoryChangedDuringRefresh => {
                 "semantic repository changed during index refresh"
+            }
+            Self::MutationConsistencyInsufficient { .. } => {
+                "semantic vector mutation consistency is insufficient"
             }
         }
     }

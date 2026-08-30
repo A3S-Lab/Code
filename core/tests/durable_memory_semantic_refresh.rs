@@ -10,7 +10,10 @@ use a3s_memory::repository::{
     InMemoryRepository, MemoryChangeSet, MemoryNamespace, MemoryOperation, MemoryRepository,
     MemoryStatus, RevisionMode, MEMORY_NAMESPACE_SNAPSHOT_PROFILE_V1,
 };
-use a3s_memory::vector::{InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor};
+use a3s_memory::vector::{
+    InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor, VectorIndexError,
+    VectorMutationConsistency, VectorRevision,
+};
 use async_trait::async_trait;
 use refresh_support::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -58,7 +61,10 @@ async fn repository_refresh_publishes_one_complete_active_snapshot_and_receipt()
     );
 
     let receipt = session
-        .refresh_semantic_recall(CancellationToken::new())
+        .refresh_semantic_recall_requiring(
+            VectorMutationConsistency::IndexRevisionCas,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -74,6 +80,10 @@ async fn repository_refresh_publishes_one_complete_active_snapshot_and_receipt()
     assert!(receipt.source_snapshot_bytes() > 0);
     assert!(receipt.serving_generation_digest().starts_with("sha256:"));
     assert_eq!(receipt.active_node_count(), 1);
+    assert_eq!(
+        receipt.mutation_consistency(),
+        VectorMutationConsistency::IndexRevisionCas
+    );
     assert_eq!(receipt.index_status().record_count, 1);
     let preview = session.preview_recall(ALPHA_QUERY).await.unwrap();
     assert_eq!(preview.hits.len(), 1);
@@ -379,4 +389,97 @@ async fn cloned_sessions_serialize_refresh_publication_and_drift_cleanup() {
     let current = session.preview_recall(GAMMA_QUERY).await.unwrap();
     assert_eq!(current.hits.len(), 1);
     assert_eq!(current.hits[0].node_revision, 2);
+}
+
+#[tokio::test]
+async fn independent_sessions_cannot_overwrite_or_clean_up_a_newer_refresh() {
+    let namespace = namespace("independent-refresh");
+    let repository = Arc::new(InMemoryRepository::new());
+    create_node(
+        repository.as_ref(),
+        &namespace,
+        "create-alpha",
+        "alpha",
+        MemoryStatus::Active,
+        ALPHA,
+        1,
+    )
+    .await;
+    let first_started = Arc::new(Notify::new());
+    let release_first = Arc::new(Notify::new());
+    let index: Arc<dyn VectorIndex> =
+        Arc::new(InMemoryVectorIndex::new(VectorIndexDescriptor::new(2)).unwrap());
+    let delayed_session = session(
+        repository.clone(),
+        namespace.clone(),
+        semantic(
+            Arc::new(GatedProvider {
+                first_started: first_started.clone(),
+                release_first: release_first.clone(),
+                calls: AtomicUsize::new(0),
+            }),
+            EmbeddingExecutorConfig::default(),
+            index.clone(),
+        ),
+    );
+    let current_session = session(
+        repository.clone(),
+        namespace.clone(),
+        semantic(
+            Arc::new(FixtureProvider),
+            EmbeddingExecutorConfig::default(),
+            index,
+        ),
+    );
+
+    let delayed_task = tokio::spawn(async move {
+        delayed_session
+            .refresh_semantic_recall_requiring(
+                VectorMutationConsistency::IndexRevisionCas,
+                CancellationToken::new(),
+            )
+            .await
+    });
+    first_started.notified().await;
+    repository
+        .apply(MemoryChangeSet::new(
+            "independent-refresh-revision",
+            namespace,
+            time(2),
+            vec![MemoryOperation::Revise {
+                node_id: "alpha".into(),
+                expected_revision: 1,
+                content: GAMMA.into(),
+                mode: RevisionMode::Correction,
+                evidence: vec![evidence("independent-refresh-revision", 2)],
+                confidence: None,
+                importance: None,
+            }],
+        ))
+        .await
+        .unwrap();
+    let current = current_session
+        .refresh_semantic_recall_requiring(
+            VectorMutationConsistency::IndexRevisionCas,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    release_first.notify_one();
+
+    let error = delayed_task.await.unwrap().unwrap_err();
+    assert!(matches!(
+        error,
+        DurableMemorySemanticError::Vector(VectorIndexError::RevisionConflict {
+            expected,
+            actual,
+        }) if expected == VectorRevision::new(0) && actual == current.index_status().revision
+    ));
+    assert_eq!(
+        current_session.semantic_recall().unwrap().index_status(),
+        *current.index_status()
+    );
+    let preview = current_session.preview_recall(GAMMA_QUERY).await.unwrap();
+    assert_eq!(preview.hits.len(), 1);
+    assert_eq!(preview.hits[0].node_revision, 2);
 }

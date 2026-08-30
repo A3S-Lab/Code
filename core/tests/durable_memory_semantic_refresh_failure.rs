@@ -12,12 +12,129 @@ use a3s_memory::repository::{
     MemoryRepository, MemoryRepositoryError, MemorySnapshotRequest, MemoryStatus,
     MemoryUsageSummary, RevisionMode,
 };
-use a3s_memory::vector::{InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor};
+use a3s_memory::vector::{
+    InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor, VectorIndexStatus,
+    VectorMutationConsistency, VectorRecord, VectorResult, VectorSearchRequest, VectorSearchResult,
+};
 use async_trait::async_trait;
 use refresh_support::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+
+struct PartitionAtomicOnlyIndex {
+    inner: InMemoryVectorIndex,
+}
+
+#[async_trait]
+impl VectorIndex for PartitionAtomicOnlyIndex {
+    fn descriptor(&self) -> &VectorIndexDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn status(&self) -> VectorIndexStatus {
+        self.inner.status()
+    }
+
+    async fn replace_partition(
+        &self,
+        partition: &str,
+        records: Vec<VectorRecord>,
+    ) -> VectorResult<VectorIndexStatus> {
+        self.inner.replace_partition(partition, records).await
+    }
+
+    async fn remove_partition(&self, partition: &str) -> VectorResult<VectorIndexStatus> {
+        self.inner.remove_partition(partition).await
+    }
+
+    async fn search(&self, request: VectorSearchRequest) -> VectorResult<VectorSearchResult> {
+        self.inner.search(request).await
+    }
+
+    async fn clear(&self) -> VectorResult<VectorIndexStatus> {
+        self.inner.clear().await
+    }
+}
+
+#[tokio::test]
+async fn partition_atomic_custom_backend_keeps_the_process_local_refresh_contract() {
+    let namespace = namespace("partition-atomic");
+    let inner = Arc::new(InMemoryRepository::new());
+    create_node(
+        inner.as_ref(),
+        &namespace,
+        "create-alpha",
+        "alpha",
+        MemoryStatus::Active,
+        ALPHA,
+        1,
+    )
+    .await;
+    let repository = Arc::new(TamperingRepository {
+        inner,
+        tamper: AtomicBool::new(false),
+        snapshot_calls: AtomicUsize::new(0),
+    });
+    let index: Arc<dyn VectorIndex> = Arc::new(PartitionAtomicOnlyIndex {
+        inner: InMemoryVectorIndex::new(VectorIndexDescriptor::new(2)).unwrap(),
+    });
+    let session = DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace,
+        DurableMemoryRecallPolicy::try_new(4, 0.2).unwrap(),
+    )
+    .with_semantic_recall(semantic(
+        Arc::new(FixtureProvider),
+        EmbeddingExecutorConfig::default(),
+        index,
+    ))
+    .unwrap();
+
+    let error = session
+        .refresh_semantic_recall_requiring(
+            VectorMutationConsistency::IndexRevisionCas,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.redacted_message(),
+        "semantic vector mutation consistency is insufficient"
+    );
+    assert_eq!(
+        error,
+        DurableMemorySemanticError::MutationConsistencyInsufficient {
+            required: VectorMutationConsistency::IndexRevisionCas,
+            actual: VectorMutationConsistency::PartitionAtomic,
+        }
+    );
+    assert_eq!(
+        session.semantic_recall().unwrap().index_status(),
+        VectorIndexStatus::default()
+    );
+    assert_eq!(repository.snapshot_calls.load(Ordering::SeqCst), 0);
+
+    let receipt = session
+        .refresh_semantic_recall(CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        receipt.mutation_consistency(),
+        VectorMutationConsistency::PartitionAtomic
+    );
+    assert_eq!(repository.snapshot_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        session
+            .preview_recall(ALPHA_QUERY)
+            .await
+            .unwrap()
+            .hits
+            .len(),
+        1
+    );
+}
 
 #[tokio::test]
 async fn over_node_budget_snapshot_preserves_the_previous_partition() {
@@ -242,6 +359,7 @@ async fn embedding_failure_preserves_the_previous_complete_partition() {
 struct TamperingRepository {
     inner: Arc<InMemoryRepository>,
     tamper: AtomicBool,
+    snapshot_calls: AtomicUsize,
 }
 
 #[async_trait]
@@ -269,6 +387,7 @@ impl MemoryRepository for TamperingRepository {
         &self,
         request: MemorySnapshotRequest,
     ) -> Result<MemoryNamespaceSnapshot, MemoryRepositoryError> {
+        self.snapshot_calls.fetch_add(1, Ordering::SeqCst);
         let snapshot = self.inner.snapshot_namespace(request).await?;
         if !self.tamper.load(Ordering::SeqCst) {
             return Ok(snapshot);
@@ -315,6 +434,7 @@ async fn forged_snapshot_identity_is_rejected_before_partition_mutation() {
     let repository = Arc::new(TamperingRepository {
         inner,
         tamper: AtomicBool::new(false),
+        snapshot_calls: AtomicUsize::new(0),
     });
     let index: Arc<dyn VectorIndex> =
         Arc::new(InMemoryVectorIndex::new(VectorIndexDescriptor::new(2)).unwrap());

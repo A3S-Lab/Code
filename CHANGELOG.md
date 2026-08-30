@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   namespace snapshots. Node/byte budgets, backend-response recomputation,
   serialized publication, post-publication drift cleanup, and secret-free
   refresh receipts prevent partial or falsely current index generations.
+- Added revision-CAS semantic refresh for capable A3S Memory vector indexes.
+  A strict host requirement fails before snapshot or embedding work on weaker
+  backends; delayed independent publication and cleanup cannot replace or
+  remove a newer shared-index generation.
 
 ### Changed
 
@@ -34,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced A3S Memory to the exact dual-budget namespace-snapshot revision used
   by semantic refresh; built-in in-memory and file repositories share the same
   complete-view, digest-verification, overflow, and restart contract.
+- Advanced A3S Memory to the exact vector mutation-consistency revision. Custom
+  backends retain source compatibility and fail closed for conditional methods
+  until they implement atomic global-revision compare-and-swap.
 
 ### Fixed
 

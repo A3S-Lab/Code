@@ -310,12 +310,15 @@ The durable-memory program adds reusable, evidence-backed agent state without
 turning an extraction model or a storage backend into a truth authority. A3S
 Memory is the policy-free integrity kernel: it owns exact namespaces, atomic
 revision-checked changes, immutable history, typed evidence references, pure
-query, admission/use events, and caller-owned vector-index primitives. Code owns
+query, admission/use events, and caller-owned atomic/revision-CAS vector-index
+primitives. Code owns
 bounded turn extraction, redaction, candidate proposal, embedding execution,
 hybrid serving policy, exact candidate re-verification, final-context admission,
-and session-owned maintenance scheduling. The embedding host owns namespace
-selection, evidence retention, verification decisions, repository and semantic
-index reinjection, index refresh timing, and consolidation policy.
+verified conditional index publication, and session-owned maintenance
+scheduling. The embedding host owns namespace selection, evidence retention,
+verification decisions, repository and semantic index reinjection, index
+refresh timing, distributed lease/remote-backend policy, and consolidation
+policy.
 
 | Gate | State | Code-owned outcome | Exit criteria |
 | --- | --- | --- | --- |
@@ -329,7 +332,8 @@ index reinjection, index refresh timing, and consolidation policy.
 | `DM-ENDURE1` | Delivered | Binding schema 4 adds a Code-owned invocation incarnation and ordinary runs use non-replacing atomic reservation | Three complete process epochs resume four agents with reset process-local generators and one retained run; all 24 contexts remain distinct, a verified revision and history survive four file opens, and retained collisions fail before model use without overwriting history |
 | `DM-SEM1` | Delivered | Rust hosts can compose Code's bounded embedding executor with an A3S Memory `VectorIndex`, exact Active-revision verification, deterministic lexical/semantic RRF, cancellation, and lexical fallback | Binding schema 5 freezes authority, embedding revision and execution policy, vector descriptor, semantic policy, and fusion profile; a real-session fixture reaches cross-language semantic Recall@1 `1.00` with zero lexical positives and zero Candidate, foreign-namespace, or stale-vector hits |
 | `DM-REFRESH1` | Delivered | Explicit semantic refresh rebuilds one complete Active namespace from a verified dual-budget A3S Memory snapshot without adding a background task | Snapshot identity is recomputed before and after atomic publication; source drift requires partition invalidation and never returns a receipt, pre-publication failure preserves the prior partition, cloned sessions serialize cleanup, and a secret-free success receipt binds source bytes/digest, serving generation, node count, and vector revision |
-| `DM-PROD1` | In progress | Host qualification on representative long-horizon, real-provider semantic, larger multi-agent, repeated-restart, and production-drift distributions | The bounded deterministic semantic, restart, and single-live-generation refresh slices are delivered; retained reports must still qualify larger independently labeled corpora, longer consolidation/decay horizons, remote/cross-process fencing, real providers, scheduled refresh, latency, cost, failover, and drift without weakening namespace, evidence, history, admission, or lifecycle invariants |
+| `DM-CAS1` | Delivered | A CAS-capable shared vector index rejects delayed semantic publication and delayed drift cleanup from independently constructed runtimes | A3S Memory compares the expected global index revision at the same linearization point as partition mutation; Code captures the base revision before snapshot work, cleanup uses the published revision, strict callers reject weaker backends before I/O, and adversarial races preserve the newer partition |
+| `DM-PROD1` | In progress | Host qualification on representative long-horizon, real-provider semantic, larger multi-agent, repeated-restart, and production-drift distributions | The bounded deterministic semantic, restart, verified refresh, and shared-index revision-CAS slices are delivered; retained reports must still qualify larger independently labeled corpora, longer consolidation/decay horizons, a durable remote CAS backend and distributed lease policy, real providers, scheduled refresh, latency, cost, failover, and drift without weakening namespace, evidence, history, admission, or lifecycle invariants |
 
 The deterministic semantic gate proves serving mechanics and isolation, not
 real embedding-model quality or remote backend continuity. Production claims
