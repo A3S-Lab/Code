@@ -238,16 +238,11 @@ pub fn start_runtime(
     .unwrap()
 }
 
-async fn settle_workers() {
-    for _ in 0..32 {
-        tokio::task::yield_now().await;
-    }
-}
-
 pub async fn advance_until(runtime: &MemoryMaintenanceRuntime, successful_runs: u64) {
-    settle_workers().await;
-    tokio::time::advance(Duration::from_secs(1)).await;
-    for _ in 0..256 {
+    // Awaiting a timer lets Tokio poll the newly spawned worker and arm its
+    // interval before the paused clock advances.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for _ in 0..4096 {
         if runtime.health().jobs[0].successful_runs >= successful_runs {
             return;
         }
@@ -257,9 +252,8 @@ pub async fn advance_until(runtime: &MemoryMaintenanceRuntime, successful_runs: 
 }
 
 pub async fn advance_until_failure(runtime: &MemoryMaintenanceRuntime, failed_runs: u64) {
-    settle_workers().await;
-    tokio::time::advance(Duration::from_secs(1)).await;
-    for _ in 0..256 {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for _ in 0..4096 {
         if runtime.health().jobs[0].failed_runs >= failed_runs {
             return;
         }
