@@ -4,6 +4,18 @@ use crate::llm::structured::{ResponseFormat, StructuredDirective};
 use crate::llm::{ContentBlock, Message, TokenUsage, ToolDefinition, ToolResultContentField};
 use crate::workspace::WorkspaceServices;
 
+struct AllowAllTools;
+
+impl crate::permissions::PermissionChecker for AllowAllTools {
+    fn check(
+        &self,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+    ) -> crate::permissions::PermissionDecision {
+        crate::permissions::PermissionDecision::Allow
+    }
+}
+
 fn source(workspace: &std::path::Path) -> RunCapabilityEvidenceSource {
     let services = WorkspaceServices::local(workspace);
     RunCapabilityEvidenceSource::from_agent(&AgentConfig::default(), services, false, false)
@@ -20,7 +32,14 @@ fn source_with_profile(
         tool_presentation_profile: profile,
         ..AgentConfig::default()
     };
-    RunCapabilityEvidenceSource::from_agent(&config, services, false, false)
+    let permission_checker: std::sync::Arc<dyn crate::permissions::PermissionChecker> =
+        std::sync::Arc::new(AllowAllTools);
+    RunCapabilityEvidenceSource::from_agent_with_permission_checker(
+        &config,
+        services,
+        Some(&permission_checker),
+        false,
+    )
 }
 
 fn search_tool() -> ToolDefinition {
