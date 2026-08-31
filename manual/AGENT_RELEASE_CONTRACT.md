@@ -210,6 +210,16 @@ into a separately caller-authored generic Service template is insufficient: it
 would make the bytes immutable while allowing the release's execution semantics
 to drift.
 
+The final `a3s.code.agent-release.v1` document is also distinct from any
+build-input Asset manifest, even when a repository convention gives both files
+the relative name `.a3s/asset.acl` at different lifecycle stages. A build-input
+manifest, its digest, and the OCI coordinates cannot substitute for the final
+canonical release document or its identity. A catalog or controller claiming
+this contract must retain or retrieve the exact final canonical bytes as one
+immutable release-owned object, verify their identity and artifact binding, and
+inject those same bytes into the Runtime Service. Reconstructing a document that
+merely appears equivalent from caller-supplied Service fields is not conforming.
+
 The fixture publisher is invoked from the repository root:
 
 ```bash
