@@ -14,7 +14,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 binary_path=$(realpath -- "$1")
 output_directory=$2
 
-for command_name in curl docker jq realpath; do
+for command_name in cmp curl docker jq realpath sha256sum; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     printf 'required command is unavailable: %s\n' "$command_name" >&2
     exit 1
@@ -25,8 +25,13 @@ mkdir -p -- "$output_directory"
 output_directory=$(realpath -- "$output_directory")
 manifest_path=$output_directory/.a3s/asset.acl
 publication_path=$output_directory/publication.json
+builder_provenance_path=$output_directory/provenance/builder.json
 evidence_path=$output_directory/local-verification.json
-for output_path in "$manifest_path" "$publication_path" "$evidence_path"; do
+for output_path in \
+  "$manifest_path" \
+  "$publication_path" \
+  "$builder_provenance_path" \
+  "$evidence_path"; do
   if [ -e "$output_path" ]; then
     printf 'verification output already exists; refusing to overwrite it: %s\n' \
       "$output_path" >&2
@@ -93,6 +98,108 @@ exact_image_reference=$(jq -er '.exactImageReference' "$publication_path")
 artifact_digest=$(jq -er '.artifactDigest' "$publication_path")
 manifest_identity=$(jq -er '.manifestIdentity' "$publication_path")
 shutdown_grace_seconds=$(jq -er '.health.shutdownGraceSeconds' "$publication_path")
+builder_digest=$(jq -er '.provenance[] | select(.kind == "builder") | .digest' \
+  "$publication_path")
+builder_uri=$(jq -er '.provenance[] | select(.kind == "builder") | .uri' \
+  "$publication_path")
+source_digest=$(jq -er '.provenance[] | select(.kind == "source") | .digest' \
+  "$publication_path")
+source_uri=$(jq -er '.provenance[] | select(.kind == "source") | .uri' \
+  "$publication_path")
+
+jq -e '
+  .schema == "a3s.code.agent-release-publication.v1"
+  and (.provenance | type == "array" and length == 2)
+  and ([.provenance[].kind] | sort == ["builder", "source"])
+  and (all(.provenance[];
+    (keys | sort == ["digest", "kind", "uri"])
+    and (.digest | test("^sha256:[0-9a-f]{64}$"))))
+  and (.provenanceArtifacts | type == "array" and length == 1)
+  and (.provenanceArtifacts[0].kind == "builder")
+  and (.provenanceArtifacts[0].uri == "urn:a3s:builder:oci-buildkit-v1")
+  and (.provenanceArtifacts[0].mediaType
+    == "application/vnd.a3s.code.agent-release-builder-provenance.v1+json")
+  and (.provenanceArtifacts[0].path == "provenance/builder.json")
+' "$publication_path" >/dev/null
+if [ "$builder_uri" != 'urn:a3s:builder:oci-buildkit-v1' ] \
+  || [ "$source_uri" != 'urn:a3s:source:a3s-cli-binary' ] \
+  || [ "$(jq -er '.provenanceArtifacts[0].digest' "$publication_path")" \
+    != "$builder_digest" ]; then
+  printf 'publication provenance references are inconsistent\n' >&2
+  exit 1
+fi
+if [ ! -f "$builder_provenance_path" ]; then
+  printf 'publication omitted its retained builder provenance object\n' >&2
+  exit 1
+fi
+canonical_builder_path=$temporary_directory/canonical-builder-provenance.json
+jq -cS . "$builder_provenance_path" > "$canonical_builder_path"
+if ! cmp --silent -- "$builder_provenance_path" "$canonical_builder_path"; then
+  printf 'builder provenance object is not canonical JSON\n' >&2
+  exit 1
+fi
+retained_builder_digest=sha256:$(sha256sum -- "$builder_provenance_path" \
+  | awk '{print $1}')
+if [ "$retained_builder_digest" != "$builder_digest" ]; then
+  printf 'retained builder provenance digest does not match the manifest\n' >&2
+  exit 1
+fi
+binary_source_digest=sha256:$(sha256sum -- "$binary_path" | awk '{print $1}')
+if [ "$binary_source_digest" != "$source_digest" ]; then
+  printf 'source provenance does not match the supplied A3S binary\n' >&2
+  exit 1
+fi
+jq -e \
+  --arg artifactDigest "$artifact_digest" \
+  --arg artifactMediaType "$(jq -er '.artifactMediaType' "$publication_path")" \
+  --arg sourceDigest "$source_digest" \
+  '
+    (keys | sort
+      == ["artifact", "buildMetadata", "platform", "recipe", "schema", "source", "tools"])
+    and .schema == "a3s.code.agent-release-builder-provenance.v1"
+    and .platform == "linux/amd64"
+    and (.artifact | keys | sort == ["digest", "mediaType"])
+    and .artifact.digest == $artifactDigest
+    and .artifact.mediaType == $artifactMediaType
+    and (.source | keys | sort == ["digest", "path"])
+    and .source.path == "/usr/bin/a3s"
+    and .source.digest == $sourceDigest
+    and (.recipe | keys | sort == ["digest", "inputs"])
+    and (.recipe.digest | test("^sha256:[0-9a-f]{64}$"))
+    and (.recipe.inputs | type == "array" and length == 15)
+    and (all(.recipe.inputs[];
+      (keys | sort == ["digest", "path"])
+      and (.digest | test("^sha256:[0-9a-f]{64}$"))
+      and (.path | type == "string" and length > 0)
+      and (.path | startswith("/") | not)
+      and (.path | split("/") | all(. != "" and . != ".."))))
+    and (([.recipe.inputs[].path] | length)
+      == ([.recipe.inputs[].path] | unique | length))
+    and (.tools | keys | sort == ["buildx", "cargo", "jq", "rustc"])
+    and (all(.tools[]; type == "string" and length > 0))
+    and (.buildMetadata | type == "object")
+    and .buildMetadata["containerimage.digest"] == $artifactDigest
+  ' "$builder_provenance_path" >/dev/null
+recipe_inputs_path=$temporary_directory/recipe-inputs.json
+jq -cS '.recipe.inputs' "$builder_provenance_path" > "$recipe_inputs_path"
+retained_recipe_digest=sha256:$(sha256sum -- "$recipe_inputs_path" | awk '{print $1}')
+if [ "$retained_recipe_digest" \
+  != "$(jq -er '.recipe.digest' "$builder_provenance_path")" ]; then
+  printf 'builder provenance recipe digest is not self-consistent\n' >&2
+  exit 1
+fi
+manifest_file_identity=sha256:$(sha256sum -- "$manifest_path" | awk '{print $1}')
+if [ "$manifest_file_identity" != "$manifest_identity" ]; then
+  printf 'canonical manifest bytes do not match the declared release identity\n' >&2
+  exit 1
+fi
+case "$exact_image_reference" in
+  *@"$artifact_digest") ;;
+  *)
+    printf 'exact image reference does not bind the admitted artifact digest\n' >&2
+    exit 1
+    ;;
+esac
 
 docker pull "$exact_image_reference" >/dev/null
 image_metadata_path=$temporary_directory/image-metadata.json
@@ -107,6 +214,12 @@ docker run --rm --entrypoint /bin/sh "$exact_image_reference" -ec '
   test -f /app/config.acl
   test ! -e /app/.a3s/asset.acl
 '
+image_source_digest=sha256:$(docker run --rm --entrypoint /usr/bin/sha256sum \
+  "$exact_image_reference" /usr/bin/a3s | awk '{print $1}')
+if [ "$image_source_digest" != "$source_digest" ]; then
+  printf 'packaged A3S binary does not match source provenance\n' >&2
+  exit 1
+fi
 
 environment_secret=A3S_ENV_SECRET_$run_token
 file_secret=A3S_FILE_SECRET_$run_token
@@ -174,6 +287,7 @@ docker logs "$service_name" > "$logs_path" 2>&1
 for retained_path in \
   "$manifest_path" \
   "$publication_path" \
+  "$builder_provenance_path" \
   "$readiness_path" \
   "$liveness_path" \
   "$protocol_error_path" \
@@ -212,6 +326,7 @@ evidence_temporary=$temporary_directory/local-verification.json
 jq -n \
   --arg artifactDigest "$artifact_digest" \
   --arg manifestIdentity "$manifest_identity" \
+  --arg builderProvenanceDigest "$builder_digest" \
   --arg exactImageReference "$exact_image_reference" \
   --argjson readiness "$(jq -c . "$readiness_path")" \
   --argjson liveness "$(jq -c . "$liveness_path")" \
@@ -222,6 +337,7 @@ jq -n \
     runtime: "docker",
     artifactDigest: $artifactDigest,
     manifestIdentity: $manifestIdentity,
+    builderProvenanceDigest: $builderProvenanceDigest,
     exactImageReference: $exactImageReference,
     readiness: $readiness,
     liveness: $liveness,

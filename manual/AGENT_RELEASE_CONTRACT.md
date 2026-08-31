@@ -166,7 +166,11 @@ a deployable release. The surrounding
 directory is a minimal publication recipe: it packages an exact Linux A3S CLI
 binary without the final manifest, publishes one OCI image manifest, binds the
 resolved artifact and provenance through `AgentReleaseManifest::bind_publication`,
-and emits a final canonical ACL beside a secret-free publication record.
+and emits a final canonical ACL beside a secret-free publication record and a
+canonical builder provenance object. The object's exact bytes are retained at
+`provenance/builder.json`; their SHA-256 is the manifest's `builder` provenance
+digest, so the reference remains independently verifiable after temporary
+BuildKit state is removed.
 
 Its expected schema-aware identity is
 `sha256:d0f1bb153933320102b36703731096ea3030a949f9305a5f9837e7a4ba52e095`.
@@ -183,8 +187,10 @@ this order:
    without the final release manifest;
 2. build and publish the OCI graph once, then resolve its immutable manifest
    digest;
-3. generate and admit `.a3s/asset.acl` with that digest and exact provenance;
-4. inject the admitted manifest at the declared entrypoint path when creating
+3. retain each referenced provenance object and generate and admit
+   `.a3s/asset.acl` with its exact digest;
+4. verify the retained provenance bytes and inject the admitted manifest at the
+   declared entrypoint path when creating
    the Runtime Service; and
 5. retain evidence that the same digest was pulled, started, observed healthy,
    drained within its deadline, and removed without residual resources.
@@ -390,7 +396,11 @@ dotted-name grammar and must be unique. Each reference contains:
 - a lowercase SHA-256 digest in the same form as the artifact digest.
 
 The URI is a locator or subject name; the digest binds the immutable provenance
-object. Provenance blocks form a schema-declared unordered set.
+object. Producers must retain or publish the referenced object's exact bytes;
+an opaque digest whose input is discarded is not auditable provenance. The
+minimal fixture maps its builder URN and digest to the relative, canonical
+`provenance/builder.json` object in `publication.json`. Provenance blocks form a
+schema-declared unordered set.
 
 ## Admission budgets
 

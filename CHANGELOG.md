@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added post-build `AgentReleaseManifest::bind_publication` and a minimal
   BuildKit publication fixture. The fixture packages an exact Linux A3S CLI
   binary without its final manifest, pushes one OCI image manifest, binds the
-  resolved digest and provenance through `a3s-acl`, and locally verifies
+  resolved digest and provenance through `a3s-acl`, retains a canonical
+  digest-verifiable builder provenance object, and locally verifies
   digest-pinned health, value redaction, SIGTERM shutdown, and cleanup without
   claiming external Cloud Runtime certification.
 - Added public `AgentExecutionFailure` accounting for Rust callers. Provider,

@@ -45,10 +45,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "livenessPath": manifest.health().liveness_path(),
                 "shutdownGraceSeconds": manifest.health().shutdown_grace_seconds(),
             },
-            "provenanceKinds": manifest
+            "provenance": manifest
                 .provenance()
                 .iter()
-                .map(|reference| reference.kind())
+                .map(|reference| json!({
+                    "kind": reference.kind(),
+                    "uri": reference.uri(),
+                    "digest": reference.digest(),
+                }))
                 .collect::<Vec<_>>(),
         }))?
     );

@@ -1365,7 +1365,8 @@ Release admission validates metadata. It does **not** build or run an OCI
 artifact, implement health behavior, or own deployment lifecycle. The
 [minimal publication fixture](fixtures/agent-release-contract/README.md)
 packages the separate `a3s code harness` executable, publishes one OCI image
-manifest, generates the final ACL after digest resolution, and can verify the
+manifest, generates the final ACL after digest resolution, retains the exact
+canonical builder provenance object bound by that ACL, and can verify the
 digest-pinned lifecycle through local Docker. Read the
 [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) before integrating
 the v1 schema or claiming external Runtime certification.
