@@ -990,6 +990,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Removed the legacy 4,096-path preflight rejection from the local SRT
+  hard-link boundary. The existing entry and depth limits still bound
+  discovery, while file-backed macOS Seatbelt profiles can now retain and
+  probe every multi-link source path in large workspaces.
 - Preferred the semantic HTML `<main>` element before falling back to `<body>`
   in `web_fetch`, removing site navigation and footer chrome from ordinary
   evidence pages while preserving the existing bounded conversion and SSRF
