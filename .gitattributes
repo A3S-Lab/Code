@@ -9,3 +9,6 @@ sdk/go/event_protocol_v1.go text eol=lf
 
 # ACL fixtures with multiline mutation coverage must have stable source bytes.
 fixtures/agent-release-contract/.a3s/asset.acl text eol=lf
+fixtures/agent-release-contract/*.acl text eol=lf
+fixtures/agent-release-contract/Containerfile text eol=lf
+fixtures/agent-release-contract/scripts/*.sh text eol=lf

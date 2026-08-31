@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1.7
+
+FROM ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 65532 a3s \
+    && useradd --uid 65532 --gid 65532 --home-dir /workspace --no-create-home \
+        --shell /usr/sbin/nologin a3s \
+    && install --directory --owner=a3s --group=a3s /app /app/.a3s /workspace /run/secrets
+
+COPY --chmod=0755 a3s /usr/bin/a3s
+COPY --chown=65532:65532 config.acl /app/config.acl
+RUN /usr/bin/a3s --version >/dev/null
+
+USER 65532:65532
+RUN printf 'A3S Agent release workspace\n' > /workspace/.a3s-release-seed \
+    && git -C /workspace init --initial-branch=main \
+    && git -C /workspace config user.name 'A3S Release Fixture' \
+    && git -C /workspace config user.email 'release-fixture@a3s.invalid' \
+    && git -C /workspace add .a3s-release-seed \
+    && GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' \
+       GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' \
+       git -C /workspace commit --message 'Initialize Agent workspace'
+
+WORKDIR /workspace
+ENV A3S_CONFIG_FILE=/app/config.acl \
+    A3S_NON_INTERACTIVE=1 \
+    A3S_NO_PROGRESS=1
+STOPSIGNAL SIGTERM
+
+# The final manifest is deliberately absent. The runtime injects it only after
+# this image has an immutable OCI manifest digest.
+ENTRYPOINT ["/usr/bin/a3s", "code", "harness", "--manifest", "/app/.a3s/asset.acl"]

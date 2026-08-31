@@ -1355,12 +1355,21 @@ confirmation, or verification policy.
 `AgentReleaseManifest` admits the versioned `.a3s/asset.acl` contract, derives
 schema-aware canonical ACL and a SHA-256 identity, and verifies runtime
 compatibility before activation. Secret declarations are typed injection slots;
-values remain outside the release document.
+values remain outside the release document. After an OCI image is built,
+`bind_publication` replaces only its artifact digest and the exact declared
+provenance references, then re-admits the final canonical manifest. This avoids
+the impossible self-reference of embedding a manifest in the image whose digest
+that manifest declares.
 
 Release admission validates metadata. It does **not** build or run an OCI
-artifact, implement health behavior, or own deployment lifecycle. Read the
+artifact, implement health behavior, or own deployment lifecycle. The
+[minimal publication fixture](fixtures/agent-release-contract/README.md)
+packages the separate `a3s code harness` executable, publishes one OCI image
+manifest, generates the final ACL after digest resolution, retains the exact
+canonical builder provenance object bound by that ACL, and can verify the
+digest-pinned lifecycle through local Docker. Read the
 [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) before integrating
-the v1 schema.
+the v1 schema or claiming external Runtime certification.
 
 ## Explicit boundaries
 

@@ -1,0 +1,11 @@
+default_model = "openai/gpt-4.1-mini"
+
+providers "openai" {
+  api_key = env("PROVIDER_API_KEY")
+  base_url = "https://api.openai.com/v1"
+
+  models "gpt-4.1-mini" {
+    name = "GPT-4.1 mini"
+    tool_call = true
+  }
+}

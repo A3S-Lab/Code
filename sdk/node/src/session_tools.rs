@@ -3,6 +3,26 @@
 use super::session::Session;
 use super::*;
 
+pub(super) fn web_search_params_to_args(params: JsWebSearchParams) -> serde_json::Value {
+    let mut args = serde_json::json!({ "query": params.query });
+    if let Some(engines) = params.engines {
+        args["engines"] = serde_json::json!(engines);
+    }
+    if let Some(limit) = params.limit {
+        args["limit"] = serde_json::json!(limit);
+    }
+    if let Some(timeout) = params.timeout {
+        args["timeout"] = serde_json::json!(timeout);
+    }
+    if let Some(proxy) = params.proxy {
+        args["proxy"] = serde_json::json!(proxy);
+    }
+    if let Some(format) = params.format {
+        args["format"] = serde_json::json!(format);
+    }
+    args
+}
+
 #[napi]
 impl Session {
     /// Execute a tool by name, bypassing the LLM and treating the host as the
@@ -221,14 +241,7 @@ impl Session {
     #[napi]
     pub async fn web_search(&self, params: JsWebSearchParams) -> napi::Result<ToolResult> {
         let session = self.inner.clone();
-        let args = serde_json::json!({
-            "query": params.query,
-            "engines": params.engines,
-            "limit": params.limit,
-            "timeout": params.timeout,
-            "proxy": params.proxy,
-            "format": params.format,
-        });
+        let args = web_search_params_to_args(params);
         get_runtime()
             .spawn(async move {
                 session.tool("web_search", args).await.map(|r| ToolResult {

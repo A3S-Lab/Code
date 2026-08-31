@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added post-build `AgentReleaseManifest::bind_publication` and a minimal
+  BuildKit publication fixture. The fixture packages an exact Linux A3S CLI
+  binary without its final manifest, pushes one OCI image manifest, binds the
+  resolved digest and provenance through `a3s-acl`, retains a canonical
+  digest-verifiable builder provenance object, and locally verifies
+  digest-pinned health, value redaction, SIGTERM shutdown, and cleanup without
+  claiming external Cloud Runtime certification.
+- Added public `AgentExecutionFailure` accounting for Rust callers. Provider,
+  tool-round, and finalization errors retain the token usage and admitted Tool
+  call count completed before failure without converting the failed run into a
+  successful result.
 - Persisted `DurableMemoryBindingV1` identity and fail-closed resume checks for
   exact durable-memory namespace, mode, recall policy, and retrieval profile,
   plus a real file-repository restart integration gate.
@@ -107,6 +118,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Enforced the Bash command deadline at the Tool boundary for sandbox-backed
+  execution, including legacy or faulty Sandbox implementations that ignore
+  the request timeout.
+- Preserved partial Agent usage and Tool-call accounting through sequential and
+  parallel planning failures and failed trajectory summaries. Usage aggregation
+  now also retains cache-read/cache-write tokens and saturates on overflow.
+- Removed Tool definitions from model requests when neither permission nor
+  confirmation authority can admit any invocation.
+- Made Python BudgetGuard callback exceptions, malformed decisions, and bounded
+  callback timeouts deny governed work instead of failing open.
+- Omitted absent Node.js `webSearch` options from the Rust Tool request instead
+  of serializing schema-invalid `null` values.
 - Broke Tool registry, orchestrator, and Skill executor reference cycles so
   Session teardown releases durable-memory repository handles and file locks.
 

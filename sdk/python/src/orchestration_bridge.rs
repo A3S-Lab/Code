@@ -84,6 +84,38 @@ impl PythonPipelineStage {
 // Python BudgetGuard bridge
 // ============================================================================
 
+pub(super) const DEFAULT_BUDGET_GUARD_TIMEOUT_MS: u64 = 5_000;
+
+enum PyBudgetCheck {
+    Llm {
+        session_id: String,
+        estimated_prompt_tokens: usize,
+    },
+    Tool {
+        session_id: String,
+        tool_name: String,
+    },
+}
+
+impl PyBudgetCheck {
+    fn method_name(&self) -> &'static str {
+        match self {
+            Self::Llm { .. } => "check_before_llm",
+            Self::Tool { .. } => "check_before_tool",
+        }
+    }
+}
+
+fn budget_guard_deny(
+    resource: &str,
+    reason: impl Into<String>,
+) -> a3s_code_core::budget::BudgetDecision {
+    a3s_code_core::budget::BudgetDecision::Deny {
+        resource: resource.to_string(),
+        reason: reason.into(),
+    }
+}
+
 /// Bridges a Python BudgetGuard instance into the Rust async
 /// [`a3s_code_core::budget::BudgetGuard`] trait.
 ///
@@ -93,10 +125,10 @@ impl PythonPipelineStage {
 /// about — missing methods are treated as a permissive default
 /// (Allow / no-op).
 ///
-/// Calls into Python acquire the GIL via `Python::with_gil`, which
-/// blocks the tokio worker thread briefly. Acceptable here because
-/// `BudgetGuard` is called at most once per LLM turn / tool call,
-/// not on a hot path.
+/// Check callbacks run on Tokio's blocking pool and are bounded by a timeout.
+/// Exceptions, malformed decisions, join failures, and timeouts all fail closed
+/// with `BudgetDecision::Deny`; a broken policy callback must never disable its
+/// own enforcement. Recording remains observational and ignores failures.
 ///
 /// RE-ENTRANCY WARNING: do **not** call session/agent APIs (or any
 /// blocking Rust path) from inside a Python budget-guard callback. The
@@ -106,11 +138,74 @@ impl PythonPipelineStage {
 /// args, consult host-side counters, return a decision.
 pub(super) struct PyBudgetGuard {
     inner: pyo3::Py<pyo3::PyAny>,
+    timeout_ms: u64,
 }
 
 impl PyBudgetGuard {
-    pub(super) fn new(inner: pyo3::Py<pyo3::PyAny>) -> Self {
-        Self { inner }
+    pub(super) fn new(inner: pyo3::Py<pyo3::PyAny>, timeout_ms: u64) -> Self {
+        Self { inner, timeout_ms }
+    }
+
+    async fn check(&self, call: PyBudgetCheck) -> a3s_code_core::budget::BudgetDecision {
+        let method_name = call.method_name();
+        let timeout_ms = self.timeout_ms;
+        let inner = pyo3::Python::with_gil(|py| self.inner.clone_ref(py));
+        let task = tokio::task::spawn_blocking(move || {
+            pyo3::Python::with_gil(|py| {
+                let inner = inner.bind(py);
+                let method = match inner.getattr(method_name) {
+                    Ok(method) if !method.is_none() => method,
+                    Ok(_) => return a3s_code_core::budget::BudgetDecision::Allow,
+                    Err(error)
+                        if error.is_instance_of::<pyo3::exceptions::PyAttributeError>(py) =>
+                    {
+                        return a3s_code_core::budget::BudgetDecision::Allow;
+                    }
+                    Err(error) => {
+                        return budget_guard_deny(
+                            "budget_guard_callback",
+                            format!("Python BudgetGuard.{method_name} lookup failed: {error}"),
+                        );
+                    }
+                };
+
+                let result = match call {
+                    PyBudgetCheck::Llm {
+                        session_id,
+                        estimated_prompt_tokens,
+                    } => method.call1((session_id, estimated_prompt_tokens)),
+                    PyBudgetCheck::Tool {
+                        session_id,
+                        tool_name,
+                    } => method.call1((session_id, tool_name)),
+                };
+
+                match result {
+                    Ok(value) => parse_py_budget_decision(&value).unwrap_or_else(|error| {
+                        budget_guard_deny(
+                            "budget_guard_error",
+                            format!("invalid Python BudgetGuard.{method_name} return: {error}"),
+                        )
+                    }),
+                    Err(error) => budget_guard_deny(
+                        "budget_guard_callback",
+                        format!("Python BudgetGuard.{method_name} failed: {error}"),
+                    ),
+                }
+            })
+        });
+
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), task).await {
+            Ok(Ok(decision)) => decision,
+            Ok(Err(error)) => budget_guard_deny(
+                "budget_guard_unavailable",
+                format!("Python BudgetGuard.{method_name} worker failed: {error}"),
+            ),
+            Err(_) => budget_guard_deny(
+                "budget_guard_timeout",
+                format!("Python BudgetGuard.{method_name} did not respond within {timeout_ms}ms"),
+            ),
+        }
     }
 }
 
@@ -121,45 +216,58 @@ impl a3s_code_core::budget::BudgetGuard for PyBudgetGuard {
         session_id: &str,
         estimated_prompt_tokens: usize,
     ) -> a3s_code_core::budget::BudgetDecision {
-        pyo3::Python::with_gil(|py| {
-            let inner = self.inner.bind(py);
-            let method = match inner.getattr("check_before_llm") {
-                Ok(m) if !m.is_none() => m,
-                _ => return a3s_code_core::budget::BudgetDecision::Allow,
-            };
-            match method.call1((session_id, estimated_prompt_tokens)) {
-                Ok(val) => parse_py_budget_decision(&val),
-                Err(e) => {
-                    eprintln!(
-                        "[a3s-code] warning: Python BudgetGuard.check_before_llm raised: {e}; defaulting to Allow"
-                    );
-                    a3s_code_core::budget::BudgetDecision::Allow
-                }
-            }
+        self.check(PyBudgetCheck::Llm {
+            session_id: session_id.to_string(),
+            estimated_prompt_tokens,
         })
+        .await
     }
 
     async fn record_after_llm(&self, session_id: &str, usage: &a3s_code_core::llm::TokenUsage) {
-        pyo3::Python::with_gil(|py| {
-            let inner = self.inner.bind(py);
-            let method = match inner.getattr("record_after_llm") {
-                Ok(m) if !m.is_none() => m,
-                _ => return,
-            };
-            // Hand Python a dict so they don't have to construct a
-            // TokenUsage type on their side.
-            let usage_dict = pyo3::types::PyDict::new(py);
-            let _ = usage_dict.set_item("prompt_tokens", usage.prompt_tokens);
-            let _ = usage_dict.set_item("completion_tokens", usage.completion_tokens);
-            let _ = usage_dict.set_item("total_tokens", usage.total_tokens);
-            let _ = usage_dict.set_item("cache_read_tokens", usage.cache_read_tokens);
-            let _ = usage_dict.set_item("cache_write_tokens", usage.cache_write_tokens);
-            if let Err(e) = method.call1((session_id, usage_dict)) {
-                eprintln!(
-                    "[a3s-code] warning: Python BudgetGuard.record_after_llm raised: {e}; ignored"
-                );
-            }
-        })
+        let inner = pyo3::Python::with_gil(|py| self.inner.clone_ref(py));
+        let session_id = session_id.to_string();
+        let prompt_tokens = usage.prompt_tokens;
+        let completion_tokens = usage.completion_tokens;
+        let total_tokens = usage.total_tokens;
+        let cache_read_tokens = usage.cache_read_tokens;
+        let cache_write_tokens = usage.cache_write_tokens;
+        let task = tokio::task::spawn_blocking(move || {
+            pyo3::Python::with_gil(|py| -> PyResult<()> {
+                let inner = inner.bind(py);
+                let method = match inner.getattr("record_after_llm") {
+                    Ok(method) if !method.is_none() => method,
+                    Ok(_) => return Ok(()),
+                    Err(error)
+                        if error.is_instance_of::<pyo3::exceptions::PyAttributeError>(py) =>
+                    {
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                };
+                let usage_dict = pyo3::types::PyDict::new(py);
+                usage_dict.set_item("prompt_tokens", prompt_tokens)?;
+                usage_dict.set_item("completion_tokens", completion_tokens)?;
+                usage_dict.set_item("total_tokens", total_tokens)?;
+                usage_dict.set_item("cache_read_tokens", cache_read_tokens)?;
+                usage_dict.set_item("cache_write_tokens", cache_write_tokens)?;
+                method.call1((session_id, usage_dict))?;
+                Ok(())
+            })
+        });
+
+        match tokio::time::timeout(std::time::Duration::from_millis(self.timeout_ms), task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => eprintln!(
+                "[a3s-code] warning: Python BudgetGuard.record_after_llm failed: {error}; ignored"
+            ),
+            Ok(Err(error)) => eprintln!(
+                "[a3s-code] warning: Python BudgetGuard.record_after_llm worker failed: {error}; ignored"
+            ),
+            Err(_) => eprintln!(
+                "[a3s-code] warning: Python BudgetGuard.record_after_llm timed out after {}ms; ignored",
+                self.timeout_ms
+            ),
+        }
     }
 
     async fn check_before_tool(
@@ -167,22 +275,11 @@ impl a3s_code_core::budget::BudgetGuard for PyBudgetGuard {
         session_id: &str,
         tool_name: &str,
     ) -> a3s_code_core::budget::BudgetDecision {
-        pyo3::Python::with_gil(|py| {
-            let inner = self.inner.bind(py);
-            let method = match inner.getattr("check_before_tool") {
-                Ok(m) if !m.is_none() => m,
-                _ => return a3s_code_core::budget::BudgetDecision::Allow,
-            };
-            match method.call1((session_id, tool_name)) {
-                Ok(val) => parse_py_budget_decision(&val),
-                Err(e) => {
-                    eprintln!(
-                        "[a3s-code] warning: Python BudgetGuard.check_before_tool raised: {e}; defaulting to Allow"
-                    );
-                    a3s_code_core::budget::BudgetDecision::Allow
-                }
-            }
+        self.check(PyBudgetCheck::Tool {
+            session_id: session_id.to_string(),
+            tool_name: tool_name.to_string(),
         })
+        .await
     }
 }
 
@@ -197,72 +294,65 @@ impl a3s_code_core::budget::BudgetGuard for PyBudgetGuard {
 /// - `{"decision": "deny", "resource": str, "reason": str}`        → Deny
 fn parse_py_budget_decision(
     val: &pyo3::Bound<pyo3::PyAny>,
-) -> a3s_code_core::budget::BudgetDecision {
+) -> Result<a3s_code_core::budget::BudgetDecision, String> {
     use a3s_code_core::budget::BudgetDecision;
     use pyo3::types::PyDict;
 
     if val.is_none() {
-        return BudgetDecision::Allow;
+        return Ok(BudgetDecision::Allow);
     }
 
-    let Ok(dict) = val.downcast::<PyDict>() else {
-        return BudgetDecision::Allow;
+    let dict = val
+        .downcast::<PyDict>()
+        .map_err(|_| "expected None or a decision dict".to_string())?;
+    let required_string = |name: &str| -> Result<String, String> {
+        dict.get_item(name)
+            .map_err(|error| format!("could not read '{name}': {error}"))?
+            .ok_or_else(|| format!("missing required string '{name}'"))?
+            .extract::<String>()
+            .map_err(|error| format!("'{name}' must be a string: {error}"))
+    };
+    let required_number = |name: &str| -> Result<f64, String> {
+        let value = dict
+            .get_item(name)
+            .map_err(|error| format!("could not read '{name}': {error}"))?
+            .ok_or_else(|| format!("missing required number '{name}'"))?
+            .extract::<f64>()
+            .map_err(|error| format!("'{name}' must be a number: {error}"))?;
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(format!("'{name}' must be finite"))
+        }
     };
 
-    let decision = dict
-        .get_item("decision")
-        .ok()
-        .flatten()
-        .and_then(|v| v.extract::<String>().ok())
-        .unwrap_or_else(|| "allow".to_string());
+    let decision = required_string("decision")?;
 
     match decision.as_str() {
-        "deny" => {
-            let resource = dict
-                .get_item("resource")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract::<String>().ok())
-                .unwrap_or_else(|| "unspecified".to_string());
-            let reason = dict
-                .get_item("reason")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract::<String>().ok())
-                .unwrap_or_else(|| "denied by host".to_string());
-            BudgetDecision::Deny { resource, reason }
-        }
+        "allow" => Ok(BudgetDecision::Allow),
+        "deny" => Ok(BudgetDecision::Deny {
+            resource: required_string("resource")?,
+            reason: required_string("reason")?,
+        }),
         "soft" => {
-            let resource = dict
-                .get_item("resource")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract::<String>().ok())
-                .unwrap_or_else(|| "unspecified".to_string());
-            let consumed = dict
-                .get_item("consumed")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract::<f64>().ok())
-                .unwrap_or(0.0);
-            let limit = dict
-                .get_item("limit")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract::<f64>().ok())
-                .unwrap_or(0.0);
-            let message = dict
+            let message_value = dict
                 .get_item("message")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract::<String>().ok());
-            BudgetDecision::SoftLimit {
-                resource,
-                consumed,
-                limit,
+                .map_err(|error| format!("could not read 'message': {error}"))?;
+            let message = match message_value {
+                Some(value) if !value.is_none() => Some(
+                    value
+                        .extract::<String>()
+                        .map_err(|error| format!("'message' must be a string: {error}"))?,
+                ),
+                _ => None,
+            };
+            Ok(BudgetDecision::SoftLimit {
+                resource: required_string("resource")?,
+                consumed: required_number("consumed")?,
+                limit: required_number("limit")?,
                 message,
-            }
+            })
         }
-        _ => BudgetDecision::Allow,
+        _ => Err(format!("unknown budget decision '{decision}'")),
     }
 }

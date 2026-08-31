@@ -155,6 +155,110 @@ fn fixture_is_typed_canonical_and_digest_bound() {
 }
 
 #[test]
+fn publication_binding_changes_only_artifact_and_exact_provenance() {
+    let template = AgentReleaseManifest::parse(fixture()).expect("admitted publication template");
+    let published = template
+        .bind_publication(
+            format!("sha256:{}", "a".repeat(64)),
+            [
+                AgentReleaseProvenance::new(
+                    "source",
+                    "urn:a3s:source:a3s-cli-binary",
+                    format!("sha256:{}", "b".repeat(64)),
+                )
+                .unwrap(),
+                AgentReleaseProvenance::new(
+                    "builder",
+                    "urn:a3s:builder:oci-buildkit-v1",
+                    format!("sha256:{}", "c".repeat(64)),
+                )
+                .unwrap(),
+            ],
+        )
+        .expect("bind final publication identity");
+
+    assert_eq!(
+        template.artifact().digest(),
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    );
+    assert_eq!(
+        published.artifact().digest(),
+        format!("sha256:{}", "a".repeat(64))
+    );
+    assert_ne!(published.identity(), template.identity());
+    assert_eq!(published.contract(), template.contract());
+    assert_eq!(published.protocol(), template.protocol());
+    assert_eq!(published.entrypoint(), template.entrypoint());
+    assert_eq!(published.health(), template.health());
+    assert_eq!(published.storage(), template.storage());
+    assert_eq!(
+        published.required_capabilities(),
+        template.required_capabilities()
+    );
+    assert_eq!(published.required_secrets(), template.required_secrets());
+    assert_eq!(published.provenance()[0].kind(), "builder");
+    assert_eq!(
+        published.provenance()[0].uri(),
+        "urn:a3s:builder:oci-buildkit-v1"
+    );
+    assert_eq!(published.provenance()[1].kind(), "source");
+    assert_eq!(
+        published.provenance()[1].uri(),
+        "urn:a3s:source:a3s-cli-binary"
+    );
+    assert!(!published.canonical_acl().contains(&"1".repeat(64)));
+    assert!(!published.canonical_acl().contains(&"2".repeat(64)));
+    assert!(!published.canonical_acl().contains(&"4".repeat(64)));
+    assert_eq!(
+        AgentReleaseManifest::parse(published.canonical_acl())
+            .unwrap()
+            .identity(),
+        published.identity()
+    );
+}
+
+#[test]
+fn publication_binding_requires_the_exact_provenance_shape() {
+    let template = AgentReleaseManifest::parse(fixture()).unwrap();
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let source = AgentReleaseProvenance::new(
+        "source",
+        "urn:a3s:source:fixture",
+        format!("sha256:{}", "b".repeat(64)),
+    )
+    .unwrap();
+
+    let missing = template
+        .bind_publication(&digest, [source.clone()])
+        .expect_err("missing builder provenance must fail");
+    assert_eq!(missing.field(), Some(AgentReleaseField::ProvenanceKind));
+
+    let duplicate = template
+        .bind_publication(&digest, [source.clone(), source])
+        .expect_err("duplicate provenance must fail");
+    assert_eq!(
+        duplicate.code(),
+        "a3s.code.agent_release.duplicate_provenance"
+    );
+
+    let attacker = "https://example.com/source?secret=TOP_SECRET_VALUE";
+    let invalid =
+        AgentReleaseProvenance::new("source", attacker, format!("sha256:{}", "b".repeat(64)))
+            .expect_err("non-canonical provenance URI must fail");
+    assert_eq!(invalid.field(), Some(AgentReleaseField::ProvenanceUri));
+    assert!(!invalid.to_string().contains("TOP_SECRET_VALUE"));
+
+    let invalid_artifact = template
+        .bind_publication("sha256:TOP_SECRET_VALUE", [])
+        .expect_err("invalid artifact digest must fail");
+    assert_eq!(
+        invalid_artifact.field(),
+        Some(AgentReleaseField::ArtifactDigest)
+    );
+    assert!(!invalid_artifact.to_string().contains("TOP_SECRET_VALUE"));
+}
+
+#[test]
 fn identity_ignores_formatting_and_set_like_block_order_only() {
     let first = AgentReleaseManifest::parse(fixture()).unwrap();
     let equivalent = fixture()

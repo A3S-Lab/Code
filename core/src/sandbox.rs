@@ -152,7 +152,10 @@ pub trait BashSandbox: Send + Sync {
     /// Existing implementations inherit a compatibility adapter that delegates
     /// to [`Self::exec_command`]. Sandboxes that spawn a real process should
     /// override this method so timeout and output-stream semantics are not
-    /// silently lost.
+    /// silently lost. The built-in `bash` tool also enforces `timeout_ms` by
+    /// dropping this future at the deadline, so implementations must terminate
+    /// or otherwise contain child processes when their execution future is
+    /// cancelled.
     async fn exec(&self, request: SandboxCommandRequest) -> anyhow::Result<SandboxExecutionOutput> {
         self.exec_command(&request.command, &request.guest_workspace)
             .await

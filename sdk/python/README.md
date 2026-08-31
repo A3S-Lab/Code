@@ -115,6 +115,19 @@ cancellation. Use `governed_tool_async(name, args)` when the host coordinates a
 call that must still pass the session permission and confirmation gates.
 Synchronous callers can use `governed_tool(name, args)`.
 
+Python budget checks fail closed. If `check_before_llm` or
+`check_before_tool` raises, returns a malformed decision, or exceeds its
+deadline, the operation is denied. Missing check methods still mean “not
+handled” and default to allow. The default callback deadline is 5000 ms:
+
+```python
+options.budget_guard = guard
+options.budget_guard_timeout_ms = 2_000
+
+# Runtime replacement uses the same bounded, fail-closed contract.
+session.set_budget_guard(guard, timeout_ms=2_000)
+```
+
 ## Ephemeral Workspace Retrieval
 
 Semantic retrieval is opt-in and belongs to one session. Exact, glob, BM25,

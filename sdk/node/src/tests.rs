@@ -1050,3 +1050,41 @@ fn mcp_config_object_accepts_streamable_http_alias() {
         _ => panic!("expected streamable-http transport"),
     }
 }
+
+#[test]
+fn web_search_params_omit_absent_optional_fields() {
+    let args = session_tools::web_search_params_to_args(JsWebSearchParams {
+        query: "first principles".to_string(),
+        engines: None,
+        limit: None,
+        timeout: None,
+        proxy: None,
+        format: None,
+    });
+
+    assert_eq!(args, serde_json::json!({ "query": "first principles" }));
+}
+
+#[test]
+fn web_search_params_preserve_present_optional_fields() {
+    let args = session_tools::web_search_params_to_args(JsWebSearchParams {
+        query: "a3s code".to_string(),
+        engines: Some(vec!["wiki".to_string(), "bing".to_string()]),
+        limit: Some(5),
+        timeout: Some(20),
+        proxy: Some("http://127.0.0.1:8080".to_string()),
+        format: Some("json".to_string()),
+    });
+
+    assert_eq!(
+        args,
+        serde_json::json!({
+            "query": "a3s code",
+            "engines": ["wiki", "bing"],
+            "limit": 5,
+            "timeout": 20,
+            "proxy": "http://127.0.0.1:8080",
+            "format": "json",
+        })
+    );
+}

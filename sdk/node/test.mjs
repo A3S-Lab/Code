@@ -215,6 +215,22 @@ const patch = await session.patchFile('notes.txt', '@@ -1,2 +1,2 @@\n uno\n-two\
 assert.equal(patch.exitCode, 0, patch.output)
 assert.equal(fs.readFileSync(path.join(workspace, 'notes.txt'), 'utf8'), 'uno\ndos\n')
 
+const webSearchContract = await session.webSearch({
+  query: 'validate the Node wrapper argument contract',
+  engines: ['not-a-real-engine'],
+})
+assert.equal(webSearchContract.exitCode, 1, 'an unsupported engine must fail predictably')
+assert.equal(
+  /Invalid arguments|null is not of type/.test(webSearchContract.output),
+  false,
+  `webSearch must omit absent optional fields: ${webSearchContract.output}`,
+)
+assert.match(
+  webSearchContract.output,
+  /unsupported_engine|no usable search results|no valid engines/i,
+  'schema-valid arguments must reach engine selection',
+)
+
 const commands = session.listCommands()
 assert.equal(Array.isArray(commands), true, 'listCommands() should return an array')
 assert.equal(commands.some((cmd) => cmd.name === 'help'), true, 'built-in /help should be registered')

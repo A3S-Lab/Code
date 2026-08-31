@@ -126,6 +126,8 @@ impl RunCapabilityEvidenceSource {
         let mut presentation_source_tools = config.tools.clone();
         if let Some(permission_checker) = permission_checker {
             presentation_source_tools.retain(|tool| permission_checker.expose_to_model(&tool.name));
+        } else if !confirmation_manager_bound {
+            presentation_source_tools.clear();
         }
         Self {
             workspace_services,

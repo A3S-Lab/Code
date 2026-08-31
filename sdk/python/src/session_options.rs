@@ -141,7 +141,11 @@ pub(super) struct PySessionOptions {
     /// allows; ``{"decision":"soft","resource":...,"consumed":...,"limit":...,"message":...}``
     /// emits BudgetThresholdHit("soft"); ``{"decision":"deny","resource":...,"reason":...}``
     /// aborts the call with a ``Budget exhausted`` RuntimeError.
+    /// Callback exceptions, malformed decisions, and timeouts fail closed.
     pub(super) budget_guard: Option<pyo3::PyObject>,
+    /// Maximum time to wait for a Python BudgetGuard callback. Defaults to
+    /// 5000 milliseconds. A timed-out check is denied.
+    pub(super) budget_guard_timeout_ms: u64,
     /// Optional FIFO retention caps on the session's in-memory stores.
     /// Accepts a dict with optional integer keys:
     ///
@@ -233,6 +237,7 @@ impl Clone for PySessionOptions {
             budget_guard: pyo3::Python::with_gil(|py| {
                 self.budget_guard.as_ref().map(|o| o.clone_ref(py))
             }),
+            budget_guard_timeout_ms: self.budget_guard_timeout_ms,
             retention_limits: pyo3::Python::with_gil(|py| {
                 self.retention_limits.as_ref().map(|o| o.clone_ref(py))
             }),
@@ -304,6 +309,7 @@ impl PySessionOptions {
             host_env: None,
             auto_save: false,
             budget_guard: None,
+            budget_guard_timeout_ms: DEFAULT_BUDGET_GUARD_TIMEOUT_MS,
             retention_limits: None,
             trajectory_path: None,
             trajectory_mode: None,
@@ -979,6 +985,24 @@ impl PySessionOptions {
     #[setter]
     fn set_budget_guard(&mut self, value: Option<pyo3::PyObject>) {
         self.budget_guard = value;
+    }
+
+    /// Maximum time in milliseconds to wait for a Python BudgetGuard callback.
+    /// Check callbacks fail closed when this deadline expires.
+    #[getter]
+    fn get_budget_guard_timeout_ms(&self) -> u64 {
+        self.budget_guard_timeout_ms
+    }
+
+    #[setter]
+    fn set_budget_guard_timeout_ms(&mut self, value: u64) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "budget_guard_timeout_ms must be greater than zero",
+            ));
+        }
+        self.budget_guard_timeout_ms = value;
+        Ok(())
     }
 
     /// Optional FIFO retention config as a dict with ``unbounded`` and any subset of:

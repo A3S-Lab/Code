@@ -332,7 +332,7 @@ fn build_rust_session_options_inner(
     }
     if let Some(guard) = so.budget_guard {
         let wrapped: std::sync::Arc<dyn a3s_code_core::budget::BudgetGuard> =
-            std::sync::Arc::new(PyBudgetGuard::new(guard));
+            std::sync::Arc::new(PyBudgetGuard::new(guard, so.budget_guard_timeout_ms));
         o = o.with_budget_guard(wrapped);
     }
     if let Some(retention) = so.retention_limits {

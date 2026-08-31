@@ -146,7 +146,7 @@ pub mod verification;
 pub mod workspace;
 
 // Re-export key types at crate root for ergonomic usage
-pub use agent::{AgentEvent, AgentResult};
+pub use agent::{AgentEvent, AgentExecutionFailure, AgentResult};
 pub use agent_api::{
     Agent, AgentRunSpawn, AgentSession, ProjectedFlowHandle, ProjectedUiHandle, ReadFileOptions,
     SessionBuilder, SessionOptions, ToolCallResult,

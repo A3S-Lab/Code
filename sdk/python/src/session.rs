@@ -1016,14 +1016,20 @@ impl PySession {
     /// The guard object may define ``check_before_llm(session_id, estimated_tokens)``,
     /// ``record_after_llm(session_id, usage_dict)``, and
     /// ``check_before_tool(session_id, tool_name)``. Missing methods behave as
-    /// Allow / no-op. Pass ``None`` to clear the runtime override.
-    #[pyo3(signature = (guard=None))]
-    fn set_budget_guard(&self, guard: Option<pyo3::PyObject>) -> PyResult<()> {
+    /// Allow / no-op. Exceptions, malformed decisions, and timeouts fail closed.
+    /// Pass ``None`` to clear the runtime override.
+    #[pyo3(signature = (guard=None, timeout_ms=DEFAULT_BUDGET_GUARD_TIMEOUT_MS))]
+    fn set_budget_guard(&self, guard: Option<pyo3::PyObject>, timeout_ms: u64) -> PyResult<()> {
         let Some(guard) = guard else {
             return self.inner.set_budget_guard(None).map_err(py_code_error);
         };
+        if timeout_ms == 0 {
+            return Err(PyValueError::new_err(
+                "timeout_ms must be greater than zero",
+            ));
+        }
         self.inner
-            .set_budget_guard(Some(Arc::new(PyBudgetGuard::new(guard))))
+            .set_budget_guard(Some(Arc::new(PyBudgetGuard::new(guard, timeout_ms))))
             .map_err(py_code_error)
     }
 

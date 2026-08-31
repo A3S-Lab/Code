@@ -84,7 +84,7 @@ fencing.
 
 The protocol field `agent_release_identity` is the immutable OCI digest from
 `AgentReleaseManifest::artifact().digest()`. It identifies the executable
-release already pinned by Cloud and Runtime. It is intentionally distinct from
+release that a conforming controller must pin in Runtime. It is intentionally distinct from
 `AgentReleaseManifest::identity()`, which identifies the complete canonical ACL
 admission document, including health, storage, capability, secret-slot, and
 provenance declarations. A native Harness validates both by admitting the
@@ -114,6 +114,27 @@ bind the manifest grace period to a process supervisor, or certify a deployment
 as a Runtime Service. The `a3s code` executable and Runtime integration own
 those process and transport pieces.
 
+## Native release process
+
+The native version-one process is `a3s code harness`. It admits the release
+manifest and verifies the exact Harness protocol and capability surface,
+verifies every declared external-secret injection slot, initializes the Agent,
+and only then binds the manifest-declared HTTP port. Protocol and capability
+failures retain their stable Agent release codes in structured CLI output and
+cannot leave a listener behind.
+
+Once active, the process publishes the declared readiness and liveness paths
+and the three Code-owned protocol endpoints. Readiness becomes false before
+drain. `SIGINT` and `SIGTERM` drain the listener and close Harness sessions
+within `health.shutdown_grace_seconds`; exceeding that deadline is a terminal
+process failure. Health and protocol-error documents contain neither secret
+values nor release identity.
+
+The executable adapter closes the Code-to-process boundary, but it is not OCI
+publication or Runtime Service certification. Those require the exact packaged
+binary, external manifest injection, registry digest, provenance, Runtime
+generation, and retained provider evidence described below.
+
 ## Current serve lifecycle building block
 
 With the `serve` feature, `serve::spawn_agent_dir_daemon` provides an observable
@@ -136,16 +157,92 @@ prove Runtime Service deployment. The declared `health.shutdown_grace_seconds`
 also remains distinct from the daemon's library default until a release-aware
 supervisor owns that mapping.
 
-The repository fixture at
+The checked-in template at
 [`fixtures/agent-release-contract/.a3s/asset.acl`](../fixtures/agent-release-contract/.a3s/asset.acl)
 is a parser and identity contract fixture. Its repeated hexadecimal digests are
-test values, not published OCI or provenance digests, so the fixture is not a
-deployable release.
+test values, not published OCI or provenance digests, so that file alone is not
+a deployable release. The surrounding
+[`agent-release-contract`](../fixtures/agent-release-contract/README.md)
+directory is a minimal publication recipe: it packages an exact Linux A3S CLI
+binary without the final manifest, publishes one OCI image manifest, binds the
+resolved artifact and provenance through `AgentReleaseManifest::bind_publication`,
+and emits a final canonical ACL beside a secret-free publication record and a
+canonical builder provenance object. The object's exact bytes are retained at
+`provenance/builder.json`; their SHA-256 is the manifest's `builder` provenance
+digest, so the reference remains independently verifiable after temporary
+BuildKit state is removed.
 
 Its expected schema-aware identity is
 `sha256:d0f1bb153933320102b36703731096ea3030a949f9305a5f9837e7a4ba52e095`.
 Cross-repository parser tests may use that value to detect canonicalization
 drift, but must not treat it as an artifact digest or deployment certification.
+
+## Publication and certification order
+
+The final manifest cannot be an input to the OCI image whose digest it declares:
+that would create a cryptographic self-reference. A conforming producer must use
+this order:
+
+1. package the exact `a3s code harness` executable and immutable runtime files,
+   without the final release manifest;
+2. build and publish the OCI graph once, then resolve its immutable manifest
+   digest;
+3. retain each referenced provenance object and generate and admit
+   `.a3s/asset.acl` with its exact digest;
+4. verify the retained provenance bytes and inject the admitted manifest at the
+   declared entrypoint path when creating
+   the Runtime Service; and
+5. retain evidence that the same digest was pulled, started, observed healthy,
+   drained within its deadline, and removed without residual resources.
+
+Certification must additionally prove that external secret values are absent
+from the manifest, OCI metadata, process logs, health documents, structured
+errors, and retained public evidence. A local parser fixture, mutable image tag,
+locally reconstructed digest, mocked HTTP server, or successful compatibility
+check is insufficient. Until one retained external-provider run supplies this
+evidence, the generated release remains uncertified for that provider even when
+its local Docker lifecycle passes.
+
+The controller must treat the final manifest as the source of truth for the
+entrypoint, port, readiness/liveness paths, shutdown deadline, writable-storage
+profile, and named external-secret targets. Injecting only the artifact digest
+into a separately caller-authored generic Service template is insufficient: it
+would make the bytes immutable while allowing the release's execution semantics
+to drift.
+
+The final `a3s.code.agent-release.v1` document is also distinct from any
+build-input Asset manifest, even when a repository convention gives both files
+the relative name `.a3s/asset.acl` at different lifecycle stages. A build-input
+manifest, its digest, and the OCI coordinates cannot substitute for the final
+canonical release document or its identity. A catalog or controller claiming
+this contract must retain or retrieve the exact final canonical bytes as one
+immutable release-owned object, verify their identity and artifact binding, and
+inject those same bytes into the Runtime Service. Reconstructing a document that
+merely appears equivalent from caller-supplied Service fields is not conforming.
+
+The fixture publisher is invoked from the repository root:
+
+```bash
+bash fixtures/agent-release-contract/scripts/publish-release.sh \
+  /path/to/linux-amd64/a3s \
+  registry.example.com/a3s/code-agent:8.0.3 \
+  ./release-output
+```
+
+Its local verifier uses an ephemeral registry, pulls the exact digest, confirms
+that the final manifest is absent from image metadata/filesystem, injects both
+declared external-secret forms, checks health and value-redacting errors, sends
+`SIGTERM`, and verifies exit and cleanup:
+
+```bash
+bash fixtures/agent-release-contract/scripts/verify-local-release.sh \
+  /path/to/linux-amd64/a3s \
+  ./release-output
+```
+
+This local gate is stronger than a parser or mocked HTTP test, but it is not a
+retained registry publication, Cloud Runtime Service run, or real-provider
+certification.
 
 ## File and schema
 
@@ -229,11 +326,11 @@ implementation.
 Path segments may contain ASCII letters, digits, `-`, `.`, `_`, or `~`.
 Empty, `.` and `..` segments are rejected.
 
-These fields are declarations consumed by a future headless runtime and its
-controller. Admission does not make either endpoint observable. A conforming
-runtime must keep readiness false until it can accept work, report liveness
-without exposing release secrets, stop accepting new work during shutdown, and
-reach a terminal state within the declared grace period.
+These fields are declarations consumed by the native Harness process and its
+controller. Admission alone does not make either endpoint observable. A
+conforming runtime must keep readiness false until it can accept work, report
+liveness without exposing release secrets, stop accepting new work during
+shutdown, and reach a terminal state within the declared grace period.
 
 ### Writable storage boundaries
 
@@ -309,7 +406,11 @@ dotted-name grammar and must be unique. Each reference contains:
 - a lowercase SHA-256 digest in the same form as the artifact digest.
 
 The URI is a locator or subject name; the digest binds the immutable provenance
-object. Provenance blocks form a schema-declared unordered set.
+object. Producers must retain or publish the referenced object's exact bytes;
+an opaque digest whose input is discarded is not auditable provenance. The
+minimal fixture maps its builder URN and digest to the relative, canonical
+`provenance/builder.json` object in `publication.json`. Provenance blocks form a
+schema-declared unordered set.
 
 ## Admission budgets
 

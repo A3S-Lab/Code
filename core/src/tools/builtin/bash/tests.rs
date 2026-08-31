@@ -17,6 +17,21 @@ struct MockSandbox {
     exit_code: i32,
 }
 
+struct HangingSandbox;
+
+#[async_trait]
+impl BashSandbox for HangingSandbox {
+    async fn exec_command(
+        &self,
+        _command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<SandboxOutput> {
+        std::future::pending().await
+    }
+
+    async fn shutdown(&self) {}
+}
+
 #[async_trait]
 impl BashSandbox for MockSandbox {
     async fn exec_command(
@@ -281,6 +296,37 @@ async fn sandbox_timeout_uses_the_sandbox_result_and_metadata() {
     assert_eq!(metadata["sandboxed"], true);
     assert_eq!(metadata["timeout_ms"], 1_500);
     assert_eq!(metadata["output"]["timed_out"], true);
+}
+
+#[tokio::test(start_paused = true)]
+async fn sandbox_execution_is_bounded_when_the_backend_ignores_the_timeout() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf()).with_sandbox(Arc::new(HangingSandbox));
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(MIN_TIMEOUT_MS + 100),
+        tool.execute(
+            &serde_json::json!({"command": "hang forever", "timeout": MIN_TIMEOUT_MS}),
+            &ctx,
+        ),
+    )
+    .await
+    .expect("the bash tool must enforce its own sandbox deadline")
+    .unwrap();
+
+    assert!(!result.success);
+    assert!(result.content.contains("timed out after 1000ms"));
+    assert!(matches!(
+        result.error_kind,
+        Some(ToolErrorKind::Timeout {
+            ref op,
+            duration_ms: MIN_TIMEOUT_MS
+        }) if op == "bash"
+    ));
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["sandboxed"], true);
+    assert_eq!(metadata["timeout_ms"], MIN_TIMEOUT_MS);
 }
 
 #[tokio::test]

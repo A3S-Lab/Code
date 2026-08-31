@@ -185,6 +185,11 @@ impl AgentLoop {
         let mut visible_source = self.config.tools.clone();
         if let Some(permission_checker) = &self.config.permission_checker {
             visible_source.retain(|tool| permission_checker.expose_to_model(&tool.name));
+        } else if self.config.confirmation_manager.is_none() {
+            // Without either authority every invocation resolves to Ask and is
+            // then denied by the safety gate. Do not advertise capabilities the
+            // runtime can prove are impossible to execute.
+            visible_source.clear();
         }
         self.config
             .tool_presentation_profile
