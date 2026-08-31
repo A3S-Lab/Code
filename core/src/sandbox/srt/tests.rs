@@ -207,6 +207,56 @@ async fn adapter_denies_every_preexisting_workspace_hardlink_alias() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn adapter_accepts_more_than_the_legacy_hardlink_profile_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let outside = root.path().join("outside-secret");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(&outside, "outside-secret").unwrap();
+
+    for index in 0..=4_096 {
+        std::fs::hard_link(&outside, workspace.join(format!("alias-{index:04}.txt"))).unwrap();
+    }
+
+    let capture = root.path().join("captured-settings.json");
+    let (_binary_dir, binary) = fake_srt(&capture);
+    let sandbox = SrtBashSandbox::new(binary, &workspace).unwrap();
+
+    assert_eq!(sandbox.workspace_hardlink_paths.len(), 4_097);
+    let scratch = tempfile::tempdir().unwrap();
+    let settings = sandbox.settings(scratch.path()).unwrap();
+    for boundary in ["denyRead", "denyWrite"] {
+        let paths = settings["filesystem"][boundary].as_array().unwrap();
+        assert!(paths
+            .iter()
+            .any(|path| path == &json!(workspace.join("alias-0000.txt"))));
+        assert!(paths
+            .iter()
+            .any(|path| path == &json!(workspace.join("alias-4096.txt"))));
+    }
+}
+
+#[test]
+fn workspace_scan_retains_more_than_the_legacy_hardlink_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let outside = root.path().join("outside");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+
+    for index in 0..=4_096 {
+        let source = outside.join(format!("source-{index:04}.txt"));
+        std::fs::write(&source, "outside-secret").unwrap();
+        std::fs::hard_link(&source, workspace.join(format!("alias-{index:04}.txt"))).unwrap();
+    }
+
+    let hardlinks = workspace_hardlink_paths(&workspace).unwrap();
+
+    assert_eq!(hardlinks.len(), 4_097);
+}
+
 #[test]
 fn workspace_scan_treats_a_concurrently_removed_entry_as_absent() {
     let workspace = tempfile::tempdir().unwrap();
@@ -623,7 +673,7 @@ async fn real_srt_probe_handles_a_large_hardlink_profile_without_e2big() {
     std::fs::create_dir_all(&workspace).unwrap();
     let outside = root.path().join("outside-secret");
     std::fs::write(&outside, "outside-secret").unwrap();
-    for index in 0..1_024 {
+    for index in 0..=4_096 {
         std::fs::hard_link(
             &outside,
             workspace.join(format!(
