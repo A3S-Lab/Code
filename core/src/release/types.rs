@@ -1,4 +1,7 @@
-use super::validation::{unique_capabilities, validate_dotted_name, validate_protocol};
+use super::validation::{
+    unique_capabilities, validate_digest, validate_dotted_name, validate_protocol,
+    validate_provenance_uri,
+};
 use super::{AgentReleaseError, AgentReleaseField, MAX_CAPABILITY_LEVEL};
 
 /// Immutable artifact metadata covered by the Agent release identity.
@@ -216,6 +219,21 @@ pub struct AgentReleaseProvenance {
 }
 
 impl AgentReleaseProvenance {
+    /// Construct one value-redacting provenance reference for publication.
+    pub fn new(
+        kind: impl Into<String>,
+        uri: impl Into<String>,
+        digest: impl Into<String>,
+    ) -> Result<Self, AgentReleaseError> {
+        let kind = kind.into();
+        let uri = uri.into();
+        let digest = digest.into();
+        validate_dotted_name(&kind, AgentReleaseField::ProvenanceKind)?;
+        validate_provenance_uri(&uri)?;
+        validate_digest(&digest, AgentReleaseField::ProvenanceDigest)?;
+        Ok(Self { kind, uri, digest })
+    }
+
     pub fn kind(&self) -> &str {
         &self.kind
     }

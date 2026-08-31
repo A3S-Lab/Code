@@ -221,12 +221,9 @@ pub(crate) fn parse_provenance(block: &Block) -> Result<AgentReleaseProvenance, 
         .ok_or(AgentReleaseError::InvalidField(
             AgentReleaseField::ProvenanceKind,
         ))?;
-    validate_dotted_name(&kind, AgentReleaseField::ProvenanceKind)?;
     let uri = required_string(block, "uri", AgentReleaseField::ProvenanceUri)?;
-    validate_provenance_uri(&uri)?;
     let digest = required_string(block, "digest", AgentReleaseField::ProvenanceDigest)?;
-    validate_digest(&digest, AgentReleaseField::ProvenanceDigest)?;
-    Ok(AgentReleaseProvenance { kind, uri, digest })
+    AgentReleaseProvenance::new(kind, uri, digest)
 }
 
 pub(crate) fn unique_capabilities(
@@ -342,7 +339,10 @@ fn required_integer(
     }
 }
 
-fn validate_digest(digest: &str, field: AgentReleaseField) -> Result<(), AgentReleaseError> {
+pub(crate) fn validate_digest(
+    digest: &str,
+    field: AgentReleaseField,
+) -> Result<(), AgentReleaseError> {
     let valid = digest.strip_prefix("sha256:").is_some_and(|value| {
         value.len() == 64
             && value
@@ -415,7 +415,7 @@ fn validate_secret_path(path: &str) -> Result<(), AgentReleaseError> {
     }
 }
 
-fn validate_provenance_uri(uri: &str) -> Result<(), AgentReleaseError> {
+pub(crate) fn validate_provenance_uri(uri: &str) -> Result<(), AgentReleaseError> {
     let parsed = Url::parse(uri)
         .map_err(|_| AgentReleaseError::InvalidField(AgentReleaseField::ProvenanceUri))?;
     let scheme_valid = match parsed.scheme() {

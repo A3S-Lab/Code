@@ -49,3 +49,6 @@ logs/
 
 # Git Worktrees
 .worktrees/
+
+# Generated Agent release publication artifacts
+/fixtures/agent-release-contract/out/

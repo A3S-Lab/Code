@@ -7,15 +7,16 @@ use super::types::{
 use super::validation::{
     parse_artifact, parse_capability, parse_entrypoint, parse_health, parse_provenance,
     parse_secret, parse_storage, required_block, required_string, unique_capabilities,
-    unique_provenance, unique_secrets, validate_protocol,
+    unique_provenance, unique_secrets, validate_digest, validate_protocol,
 };
 use super::{
     AgentReleaseError, AgentReleaseField, AGENT_RELEASE_CONTRACT_V1, AGENT_RELEASE_LIMITS,
 };
 use a3s_acl::{
     canonical_bytes_with_schema, canonical_digest_with_schema, parse_with_limits,
-    validate_document_with_limits,
+    validate_document_with_limits, Value,
 };
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -192,6 +193,78 @@ impl AgentReleaseManifest {
     /// Schema-aware canonical ACL bytes as UTF-8 with one final newline.
     pub fn canonical_acl(&self) -> &str {
         &self.canonical_acl
+    }
+
+    /// Bind a built OCI manifest and exact provenance to this admitted template.
+    ///
+    /// Publication happens after the artifact is built, so the final manifest
+    /// cannot be embedded in the artifact whose digest it declares. This method
+    /// changes only the artifact digest and the URI/digest pair for every
+    /// already-declared provenance kind, then re-admits and canonicalizes the
+    /// resulting document. Missing, duplicate, or additional provenance kinds
+    /// fail without reflecting their values in the error.
+    pub fn bind_publication(
+        &self,
+        artifact_digest: impl Into<String>,
+        provenance: impl IntoIterator<Item = AgentReleaseProvenance>,
+    ) -> Result<Self, AgentReleaseError> {
+        let artifact_digest = artifact_digest.into();
+        validate_digest(&artifact_digest, AgentReleaseField::ArtifactDigest)?;
+        let provenance = unique_provenance(provenance)?
+            .into_iter()
+            .map(|reference| (reference.kind.clone(), reference))
+            .collect::<BTreeMap<_, _>>();
+        if provenance.len() != self.provenance.len()
+            || self
+                .provenance
+                .iter()
+                .any(|reference| !provenance.contains_key(reference.kind()))
+        {
+            return Err(AgentReleaseError::InvalidField(
+                AgentReleaseField::ProvenanceKind,
+            ));
+        }
+
+        let mut document = parse_with_limits(&self.canonical_acl, AGENT_RELEASE_LIMITS)?;
+        let root = document
+            .blocks
+            .iter_mut()
+            .find(|block| block.name == "agent_release")
+            .ok_or(AgentReleaseError::InvalidField(AgentReleaseField::Contract))?;
+        let artifact = root
+            .blocks
+            .iter_mut()
+            .find(|block| block.name == "artifact")
+            .ok_or(AgentReleaseError::InvalidField(
+                AgentReleaseField::ArtifactDigest,
+            ))?;
+        artifact
+            .attributes
+            .insert("digest".into(), Value::String(artifact_digest));
+
+        for block in root
+            .blocks
+            .iter_mut()
+            .filter(|block| block.name == "provenance")
+        {
+            let kind = block.labels.first().ok_or(AgentReleaseError::InvalidField(
+                AgentReleaseField::ProvenanceKind,
+            ))?;
+            let reference = provenance.get(kind).ok_or(AgentReleaseError::InvalidField(
+                AgentReleaseField::ProvenanceKind,
+            ))?;
+            block
+                .attributes
+                .insert("uri".into(), Value::String(reference.uri.clone()));
+            block
+                .attributes
+                .insert("digest".into(), Value::String(reference.digest.clone()));
+        }
+
+        let canonical =
+            String::from_utf8(canonical_bytes_with_schema(&document, &release_schema())?)
+                .map_err(|_| AgentReleaseError::CanonicalEncoding)?;
+        Self::parse(&canonical)
     }
 
     /// Fail before activation unless protocol and every required capability match.
