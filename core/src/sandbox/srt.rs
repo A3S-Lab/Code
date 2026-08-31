@@ -20,7 +20,6 @@ use tokio::process::Command;
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_WORKSPACE_SCAN_ENTRIES: usize = 1_000_000;
 const MAX_WORKSPACE_SCAN_DEPTH: usize = 64;
-const MAX_WORKSPACE_HARDLINK_DENIES: usize = 4_096;
 /// npm package accepted by the verified SRT constructor.
 pub const SRT_NPM_PACKAGE_NAME: &str = "@anthropic-ai/sandbox-runtime";
 /// Exact SRT version provisioned by the current A3S CLI managed-runtime path.
@@ -943,6 +942,9 @@ fn workspace_nested_env_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
 }
 
 pub(crate) fn workspace_hardlink_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
+    // Keep every discovered source-tree alias. The workspace entry/depth
+    // limits above bound this scan; a smaller path-count limit incorrectly
+    // rejects file-backed macOS Seatbelt profiles before SRT can probe them.
     let mut pending = vec![(workspace.to_path_buf(), 0usize)];
     let mut scanned = 0usize;
     let mut hardlinks = Vec::new();
@@ -983,11 +985,6 @@ pub(crate) fn workspace_hardlink_paths(workspace: &Path) -> Result<Vec<PathBuf>>
             }
             if metadata.is_file() && hard_link_count(&path, &metadata) > 1 {
                 hardlinks.push(path);
-                if hardlinks.len() > MAX_WORKSPACE_HARDLINK_DENIES {
-                    bail!(
-                        "SRT workspace contains more than {MAX_WORKSPACE_HARDLINK_DENIES} multi-link files"
-                    );
-                }
             }
         }
     }

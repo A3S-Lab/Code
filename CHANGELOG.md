@@ -132,6 +132,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of serializing schema-invalid `null` values.
 - Broke Tool registry, orchestrator, and Skill executor reference cycles so
   Session teardown releases durable-memory repository handles and file locks.
+## [8.0.4] - 2026-08-31
+
+### Fixed
+
+- Removed the legacy 4,096-path preflight rejection from the local SRT
+  hard-link boundary. Workspace entry and depth limits continue to bound
+  discovery, while file-backed macOS Seatbelt profiles can retain every
+  multi-link source path in large workspaces.
 
 ## [8.0.3] - 2026-08-28
 
