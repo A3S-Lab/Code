@@ -1,5 +1,5 @@
 use super::{AgentEvent, AgentLoop};
-use crate::agent::AgentResult;
+use crate::agent::{AgentExecutionFailure, AgentResult};
 use crate::llm::{Message, TokenUsage};
 use crate::planning::{ExecutionPlan, Task, TaskStatus};
 use crate::prompts::AgentStyle;
@@ -41,6 +41,27 @@ struct DelegatedParallelChildResult {
     success: bool,
     output: Option<String>,
     data: Option<Value>,
+}
+
+fn accumulate_result_accounting(
+    total_usage: &mut TokenUsage,
+    tool_calls_count: &mut usize,
+    result: &AgentResult,
+) {
+    total_usage.accumulate(&result.usage);
+    *tool_calls_count = (*tool_calls_count).saturating_add(result.tool_calls_count);
+}
+
+fn accumulate_failure_accounting(
+    total_usage: &mut TokenUsage,
+    tool_calls_count: &mut usize,
+    error: &anyhow::Error,
+) {
+    let Some(failure) = error.downcast_ref::<AgentExecutionFailure>() else {
+        return;
+    };
+    total_usage.accumulate(failure.usage());
+    *tool_calls_count = (*tool_calls_count).saturating_add(failure.tool_calls_count());
 }
 
 impl AgentLoop {
@@ -397,10 +418,11 @@ impl AgentLoop {
                     {
                         Ok(result) => {
                             current_history = result.messages.clone();
-                            total_usage.prompt_tokens += result.usage.prompt_tokens;
-                            total_usage.completion_tokens += result.usage.completion_tokens;
-                            total_usage.total_tokens += result.usage.total_tokens;
-                            tool_calls_count += result.tool_calls_count;
+                            accumulate_result_accounting(
+                                &mut total_usage,
+                                &mut tool_calls_count,
+                                &result,
+                            );
                             if cancel_token.is_cancelled() {
                                 plan.mark_status(&step.id, TaskStatus::Cancelled);
                                 self.emit_task_updated(&event_tx, &task_session_id, &plan)
@@ -433,6 +455,11 @@ impl AgentLoop {
                             }
                         }
                         Err(e) => {
+                            accumulate_failure_accounting(
+                                &mut total_usage,
+                                &mut tool_calls_count,
+                                &e,
+                            );
                             if cancel_token.is_cancelled() {
                                 plan.mark_status(&step.id, TaskStatus::Cancelled);
                                 self.emit_task_updated(&event_tx, &task_session_id, &plan)
@@ -669,10 +696,11 @@ impl AgentLoop {
                         match outcome.output {
                             Ok(step_result) => match step_result {
                                 Ok(result) => {
-                                    total_usage.prompt_tokens += result.usage.prompt_tokens;
-                                    total_usage.completion_tokens += result.usage.completion_tokens;
-                                    total_usage.total_tokens += result.usage.total_tokens;
-                                    tool_calls_count += result.tool_calls_count;
+                                    accumulate_result_accounting(
+                                        &mut total_usage,
+                                        &mut tool_calls_count,
+                                        &result,
+                                    );
                                     plan.mark_status(&step_id, TaskStatus::Completed);
                                     self.emit_task_updated(&event_tx, &task_session_id, &plan)
                                         .await;
@@ -699,6 +727,11 @@ impl AgentLoop {
                                     }
                                 }
                                 Err(e) => {
+                                    accumulate_failure_accounting(
+                                        &mut total_usage,
+                                        &mut tool_calls_count,
+                                        &e,
+                                    );
                                     tracing::error!("Plan step '{}' failed: {}", step_id, e);
                                     plan.mark_status(&step_id, TaskStatus::Failed);
                                     self.emit_task_updated(&event_tx, &task_session_id, &plan)

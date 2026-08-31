@@ -782,6 +782,56 @@ pub struct AgentResult {
     pub verification_reports: Vec<crate::verification::VerificationReport>,
 }
 
+/// An execution error paired with the usage and tool-call accounting that was
+/// completed before the failure.
+///
+/// Agent execution still returns an error: this type only prevents already
+/// incurred work from disappearing when a provider call, tool round, or
+/// capability boundary fails. Rust callers can downcast the returned
+/// `anyhow::Error` to this type when they need the partial accounting.
+#[derive(Debug)]
+pub struct AgentExecutionFailure {
+    source: anyhow::Error,
+    usage: TokenUsage,
+    tool_calls_count: usize,
+}
+
+impl AgentExecutionFailure {
+    pub(crate) fn new(source: anyhow::Error, usage: TokenUsage, tool_calls_count: usize) -> Self {
+        Self {
+            source,
+            usage,
+            tool_calls_count,
+        }
+    }
+
+    /// Usage reported by provider calls that completed before the failure.
+    pub fn usage(&self) -> &TokenUsage {
+        &self.usage
+    }
+
+    /// Tool calls admitted before the failure, including failed tool calls.
+    pub fn tool_calls_count(&self) -> usize {
+        self.tool_calls_count
+    }
+
+    pub(crate) fn add_tool_calls(&mut self, count: usize) {
+        self.tool_calls_count = self.tool_calls_count.saturating_add(count);
+    }
+}
+
+impl std::fmt::Display for AgentExecutionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(f)
+    }
+}
+
+impl std::error::Error for AgentExecutionFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 impl AgentResult {
     pub fn verification_summary(&self) -> crate::verification::VerificationSummary {
         crate::verification::VerificationSummary::from_reports(&self.verification_reports)

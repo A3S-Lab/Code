@@ -18,9 +18,9 @@ struct TurnEffectProbeTool {
     log: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
-struct AllowTurnEffectProbe;
+struct AllowAllTools;
 
-impl crate::permissions::PermissionChecker for AllowTurnEffectProbe {
+impl crate::permissions::PermissionChecker for AllowAllTools {
     fn check(
         &self,
         _tool_name: &str,
@@ -132,7 +132,7 @@ async fn agent_tool_effect_is_owned_and_closed_by_its_real_turn_scope() {
         tools: executor.definitions(),
         planning_mode: crate::prompts::PlanningMode::Disabled,
         continuation_enabled: false,
-        permission_checker: Some(Arc::new(AllowTurnEffectProbe)),
+        permission_checker: Some(Arc::new(AllowAllTools)),
         ..AgentConfig::default()
     };
     let agent = AgentLoop::new(client, executor, test_tool_context(), config)
@@ -198,7 +198,7 @@ async fn pre_analysis_owns_an_orchestration_turn_before_the_agent_turn() {
         tools: executor.definitions(),
         planning_mode: crate::prompts::PlanningMode::Auto,
         continuation_enabled: false,
-        permission_checker: Some(Arc::new(AllowTurnEffectProbe)),
+        permission_checker: Some(Arc::new(AllowAllTools)),
         ..AgentConfig::default()
     };
     let agent = AgentLoop::new(client, executor, test_tool_context(), config)
@@ -902,6 +902,248 @@ fn model_tool_definition(name: &str) -> ToolDefinition {
 }
 
 #[tokio::test]
+async fn failed_plan_step_preserves_usage_and_tool_calls_completed_before_the_error() {
+    use crate::planning::{Complexity, ExecutionPlan, Task};
+
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::tool_call_response(
+        "tool-before-failure",
+        "bash",
+        serde_json::json!({"command": "echo accounted"}),
+    )]));
+    let agent = AgentLoop::new(
+        mock_client,
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig {
+            circuit_breaker_threshold: 1,
+            continuation_enabled: false,
+            ..AgentConfig::default()
+        },
+    );
+    let mut plan = ExecutionPlan::new("Preserve partial accounting", Complexity::Simple);
+    plan.add_step(Task::new(
+        "step-1",
+        "Execute one tool, then observe provider failure",
+    ));
+
+    let result = agent
+        .execute_plan(
+            &[],
+            &plan,
+            Some("partial-accounting-plan"),
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.usage.prompt_tokens, 10);
+    assert_eq!(result.usage.completion_tokens, 5);
+    assert_eq!(result.usage.total_tokens, 15);
+    assert_eq!(result.tool_calls_count, 1);
+}
+
+#[tokio::test]
+async fn failed_non_planning_run_exposes_and_records_partial_accounting() {
+    let temp = tempfile::tempdir().unwrap();
+    let trajectory_path = temp.path().join("trajectory.jsonl");
+    let recorder = crate::rl_trajectory::RlTrajectoryRecorder::from_config(Some(
+        crate::rl_trajectory::RlTrajectoryConfig::new(&trajectory_path),
+    ))
+    .unwrap();
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::tool_call_response(
+        "tool-before-failure",
+        "unregistered_test_tool",
+        serde_json::json!({}),
+    )]));
+    let agent = AgentLoop::new(
+        mock_client,
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig {
+            planning_mode: PlanningMode::Disabled,
+            circuit_breaker_threshold: 1,
+            continuation_enabled: false,
+            rl_trajectory_recorder: recorder,
+            ..AgentConfig::default()
+        },
+    );
+
+    let error = agent
+        .execute(&[], "Exercise partial accounting", None)
+        .await
+        .unwrap_err();
+    let failure = error
+        .downcast_ref::<AgentExecutionFailure>()
+        .expect("execution errors after completed work must carry partial accounting");
+    assert_eq!(failure.usage().prompt_tokens, 10);
+    assert_eq!(failure.usage().completion_tokens, 5);
+    assert_eq!(failure.usage().total_tokens, 15);
+    assert_eq!(failure.tool_calls_count(), 1);
+
+    let records = std::fs::read_to_string(trajectory_path).unwrap();
+    let execution_end = records
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|record| record["event_type"] == "execution_end")
+        .expect("failed execution must emit an execution_end record");
+    assert_eq!(execution_end["payload"]["success"], false);
+    assert_eq!(execution_end["payload"]["usage"]["prompt_tokens"], 10);
+    assert_eq!(execution_end["payload"]["usage"]["completion_tokens"], 5);
+    assert_eq!(execution_end["payload"]["usage"]["total_tokens"], 15);
+    assert_eq!(execution_end["payload"]["tool_calls_count"], 1);
+}
+
+#[test]
+fn agent_execution_failure_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<AgentExecutionFailure>();
+}
+
+#[tokio::test]
+async fn fatal_tool_round_error_carries_usage_and_the_failed_tool_call() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::tool_call_response(
+        "malformed-tool",
+        "bash",
+        serde_json::json!({"__parse_error": "invalid JSON"}),
+    )]));
+    let agent = AgentLoop::new(
+        mock_client,
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig {
+            planning_mode: PlanningMode::Disabled,
+            max_parse_retries: 0,
+            continuation_enabled: false,
+            ..AgentConfig::default()
+        },
+    );
+
+    let error = agent
+        .execute(&[], "Trigger a malformed tool round", None)
+        .await
+        .unwrap_err();
+    let failure = error.downcast_ref::<AgentExecutionFailure>().unwrap();
+
+    assert_eq!(failure.usage().total_tokens, 15);
+    assert_eq!(failure.tool_calls_count(), 1);
+}
+
+#[tokio::test]
+async fn force_finalization_error_carries_all_completed_provider_usage() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response(
+            "ordinary-tool",
+            "unregistered_test_tool",
+            serde_json::json!({}),
+        ),
+        MockLlmClient::tool_call_response(
+            "forbidden-finalization-tool",
+            "unregistered_test_tool",
+            serde_json::json!({}),
+        ),
+    ]));
+    let agent = AgentLoop::new(
+        mock_client,
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig {
+            planning_mode: PlanningMode::Disabled,
+            max_tool_rounds: 1,
+            continuation_enabled: false,
+            ..AgentConfig::default()
+        },
+    );
+
+    let error = agent
+        .execute(&[], "Exhaust the tool budget", None)
+        .await
+        .unwrap_err();
+    let failure = error.downcast_ref::<AgentExecutionFailure>().unwrap();
+
+    assert_eq!(failure.usage().prompt_tokens, 20);
+    assert_eq!(failure.usage().completion_tokens, 10);
+    assert_eq!(failure.usage().total_tokens, 30);
+    assert_eq!(failure.tool_calls_count(), 1);
+}
+
+#[tokio::test]
+async fn missing_permission_and_confirmation_authority_hides_tools_from_llm_request() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+        "No tool authority is configured.",
+    )]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let config = AgentConfig {
+        tools: vec![
+            model_tool_definition("read"),
+            model_tool_definition("bash"),
+            model_tool_definition("web_search"),
+        ],
+        permission_checker: None,
+        confirmation_manager: None,
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        continuation_enabled: false,
+        ..Default::default()
+    };
+
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        test_tool_context(),
+        config,
+    );
+    agent
+        .execute(&[], "Inspect the repository.", None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *mock_client.request_tools.lock().unwrap(),
+        vec![Vec::<String>::new()]
+    );
+}
+
+#[tokio::test]
+async fn confirmation_authority_keeps_tools_visible_without_permission_checker() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+        "Confirmation authority is available.",
+    )]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let config = AgentConfig {
+        tools: vec![model_tool_definition("read"), model_tool_definition("bash")],
+        permission_checker: None,
+        confirmation_manager: Some(Arc::new(crate::hitl::AutoApproveConfirmation)),
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        continuation_enabled: false,
+        ..Default::default()
+    };
+
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        test_tool_context(),
+        config,
+    );
+    agent
+        .execute(&[], "Inspect the repository.", None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *mock_client.request_tools.lock().unwrap(),
+        vec![vec!["bash".to_string(), "read".to_string()]]
+    );
+}
+
+#[tokio::test]
 async fn permission_checker_hides_tools_from_llm_request() {
     use crate::permissions::{PermissionChecker, PermissionDecision};
 
@@ -1022,6 +1264,7 @@ async fn requested_tools_for_profile(
             model_tool_definition("read"),
             model_tool_definition("program"),
         ],
+        permission_checker: Some(Arc::new(AllowAllTools)),
         tool_presentation_profile: profile,
         planning_mode: PlanningMode::Disabled,
         prompt_slots: SystemPromptSlots {

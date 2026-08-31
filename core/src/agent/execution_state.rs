@@ -127,9 +127,7 @@ impl ExecutionLoopState {
     }
 
     pub(super) fn record_usage(&mut self, usage: &TokenUsage) {
-        self.total_usage.prompt_tokens += usage.prompt_tokens;
-        self.total_usage.completion_tokens += usage.completion_tokens;
-        self.total_usage.total_tokens += usage.total_tokens;
+        self.total_usage.accumulate(usage);
     }
 
     pub(super) fn record_tool_call(&mut self) {
@@ -287,6 +285,14 @@ impl ExecutionLoopState {
         }
     }
 
+    pub(super) fn finish_failed(self, error: anyhow::Error) -> anyhow::Error {
+        anyhow::Error::new(super::AgentExecutionFailure::new(
+            error,
+            self.total_usage,
+            self.tool_calls_count,
+        ))
+    }
+
     /// Build a result from a turn that was cancelled mid-generation. Keeps the
     /// conversation accumulated so far (the user's message above all) so the next
     /// turn remembers it. Appends a short assistant marker when the log would
@@ -357,6 +363,31 @@ mod tests {
         assert_eq!(result.messages.len(), 2);
         assert_eq!(result.messages[1].role.as_str(), "assistant");
         assert_eq!(result.messages[1].text(), "partial answer");
+    }
+
+    #[test]
+    fn usage_accumulation_keeps_cache_tokens_and_saturates() {
+        let mut state = ExecutionLoopState::new(&[]);
+        state.record_usage(&TokenUsage {
+            prompt_tokens: usize::MAX,
+            completion_tokens: 2,
+            total_tokens: usize::MAX,
+            cache_read_tokens: Some(3),
+            cache_write_tokens: None,
+        });
+        state.record_usage(&TokenUsage {
+            prompt_tokens: 1,
+            completion_tokens: 4,
+            total_tokens: 1,
+            cache_read_tokens: Some(5),
+            cache_write_tokens: Some(7),
+        });
+
+        assert_eq!(state.total_usage.prompt_tokens, usize::MAX);
+        assert_eq!(state.total_usage.completion_tokens, 6);
+        assert_eq!(state.total_usage.total_tokens, usize::MAX);
+        assert_eq!(state.total_usage.cache_read_tokens, Some(8));
+        assert_eq!(state.total_usage.cache_write_tokens, Some(7));
     }
 
     #[test]

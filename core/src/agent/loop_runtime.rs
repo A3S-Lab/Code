@@ -91,7 +91,7 @@ impl AgentLoop {
         );
 
         let prompt_before_hooks = effective_prompt;
-        let turn_context = self
+        let turn_context = match self
             .prepare_turn_context(
                 &effective_system_prompt,
                 effective_prompt,
@@ -99,7 +99,11 @@ impl AgentLoop {
                 session_id,
                 &event_tx,
             )
-            .await?;
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => return Err(state.finish_failed(error)),
+        };
         let effective_prompt = turn_context.effective_prompt.as_str();
         let augmented_system = turn_context.augmented_system;
 
@@ -135,11 +139,15 @@ impl AgentLoop {
                 state.messages.push(Message::user(TOOL_BUDGET_FINALIZATION));
             }
             let turn = state.next_turn();
-            let capability_turn = self
+            let capability_turn = match self
                 .capability_runtime
                 .as_ref()
                 .map(|runtime| runtime.begin_turn(turn))
-                .transpose()?;
+                .transpose()
+            {
+                Ok(turn) => turn,
+                Err(error) => return Err(state.finish_failed(error.into())),
+            };
             let scoped_cancellation = capability_turn
                 .as_ref()
                 .map(crate::capability::AgentCapabilityTurn::cancellation)
@@ -174,7 +182,9 @@ impl AgentLoop {
                 // whole turn is dropped and the agent "forgets" what was just asked
                 // when the user continues.
                 Err(_) if scoped_cancellation.is_cancelled() => {
-                    close_capability_turn(capability_turn.as_ref()).await?;
+                    if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
+                        return Err(state.finish_failed(error));
+                    }
                     return Ok(state.finish_interrupted());
                 }
                 Err(error) => {
@@ -185,7 +195,7 @@ impl AgentLoop {
                             "Capability Turn close also failed after provider failure"
                         );
                     }
-                    return Err(error);
+                    return Err(state.finish_failed(error));
                 }
             };
             debug_assert_eq!(llm_turn.turn, turn);
@@ -198,8 +208,13 @@ impl AgentLoop {
                     self.config.max_tool_rounds
                 );
                 self.emit_error(&event_tx, error.clone()).await;
-                close_capability_turn(capability_turn.as_ref()).await?;
-                anyhow::bail!(error);
+                if let Err(close_error) = close_capability_turn(capability_turn.as_ref()).await {
+                    tracing::warn!(
+                        error = %close_error,
+                        "Capability Turn close also failed after finalization violation"
+                    );
+                }
+                return Err(state.finish_failed(anyhow::anyhow!(error)));
             }
 
             if tool_calls.is_empty() {
@@ -219,11 +234,15 @@ impl AgentLoop {
                     .await
                 {
                     CompletionFlow::Continue => {
-                        close_capability_turn(capability_turn.as_ref()).await?;
+                        if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
+                            return Err(state.finish_failed(error));
+                        }
                         continue;
                     }
                     CompletionFlow::Finished(final_text) => {
-                        close_capability_turn(capability_turn.as_ref()).await?;
+                        if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
+                            return Err(state.finish_failed(error));
+                        }
                         return Ok(state.finish(final_text));
                     }
                 }
@@ -243,7 +262,9 @@ impl AgentLoop {
                 // Same as above: a cancelled tool round commits its partial
                 // history rather than being dropped.
                 if scoped_cancellation.is_cancelled() {
-                    close_capability_turn(capability_turn.as_ref()).await?;
+                    if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
+                        return Err(state.finish_failed(error));
+                    }
                     return Ok(state.finish_interrupted());
                 }
                 if let Err(close_error) = close_capability_turn(capability_turn.as_ref()).await {
@@ -252,10 +273,12 @@ impl AgentLoop {
                         "Capability Turn close also failed after Tool failure"
                     );
                 }
-                return Err(e);
+                return Err(state.finish_failed(e));
             }
 
-            close_capability_turn(capability_turn.as_ref()).await?;
+            if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
+                return Err(state.finish_failed(error));
+            }
             // Quiescent boundary: all tools and capability-owned effects have
             // settled, and `state.messages` is consistent. The runtime sink
             // drains every preceding event before acknowledging persistence.

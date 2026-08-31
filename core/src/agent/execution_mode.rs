@@ -1,4 +1,4 @@
-use super::{AgentEvent, AgentLoop, AgentResult, InvocationContext};
+use super::{AgentEvent, AgentExecutionFailure, AgentLoop, AgentResult, InvocationContext};
 use crate::hooks::ErrorType;
 use crate::llm::Message;
 use crate::planning::{LlmPlanner, PreAnalysis};
@@ -117,7 +117,7 @@ impl AgentLoop {
             }
         }
 
-        let mut result = if route.use_planning {
+        let result = if route.use_planning {
             agent
                 .execute_with_planning(
                     history,
@@ -141,9 +141,28 @@ impl AgentLoop {
                 )
                 .await
         };
-        if let Ok(result) = &mut result {
-            result.tool_calls_count += auto_tool_calls_count;
-        }
+        let result = match result {
+            Ok(mut result) => {
+                result.tool_calls_count = result
+                    .tool_calls_count
+                    .saturating_add(auto_tool_calls_count);
+                Ok(result)
+            }
+            Err(mut error) => {
+                if auto_tool_calls_count > 0 {
+                    if let Some(failure) = error.downcast_mut::<AgentExecutionFailure>() {
+                        failure.add_tool_calls(auto_tool_calls_count);
+                    } else {
+                        error = anyhow::Error::new(AgentExecutionFailure::new(
+                            error,
+                            crate::llm::TokenUsage::default(),
+                            auto_tool_calls_count,
+                        ));
+                    }
+                }
+                Err(error)
+            }
+        };
 
         agent.record_execution_result(session_id, &result).await;
         result
@@ -275,23 +294,35 @@ impl AgentLoop {
                 .await;
             }
             Err(e) => {
+                let failure = e.downcast_ref::<AgentExecutionFailure>();
                 tracing::warn!(
                     error = %e,
+                    a3s.agent.tool_calls_count = failure
+                        .map(AgentExecutionFailure::tool_calls_count)
+                        .unwrap_or_default(),
+                    a3s.llm.total_tokens = failure
+                        .map(|failure| failure.usage().total_tokens)
+                        .unwrap_or_default(),
                     "a3s.agent.execute failed"
                 );
                 self.config.rl_trajectory_recorder.record_execution_end(
                     session_id.unwrap_or(""),
                     false,
                     None,
-                    None,
-                    None,
+                    failure.map(AgentExecutionFailure::usage),
+                    failure.map(AgentExecutionFailure::tool_calls_count),
                     Some(&e.to_string()),
                 );
                 self.fire_on_error(
                     session_id.unwrap_or(""),
                     ErrorType::Other,
                     &e.to_string(),
-                    serde_json::json!({"phase": "execute"}),
+                    serde_json::json!({
+                        "phase": "execute",
+                        "usage": failure.map(AgentExecutionFailure::usage),
+                        "tool_calls_count": failure
+                            .map(AgentExecutionFailure::tool_calls_count),
+                    }),
                 )
                 .await;
             }

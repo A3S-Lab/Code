@@ -422,6 +422,30 @@ pub struct TokenUsage {
     pub cache_write_tokens: Option<usize>,
 }
 
+impl TokenUsage {
+    pub(crate) fn accumulate(&mut self, usage: &Self) {
+        self.prompt_tokens = self.prompt_tokens.saturating_add(usage.prompt_tokens);
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(usage.completion_tokens);
+        self.total_tokens = self.total_tokens.saturating_add(usage.total_tokens);
+        self.cache_read_tokens =
+            accumulate_optional_usage(self.cache_read_tokens, usage.cache_read_tokens);
+        self.cache_write_tokens =
+            accumulate_optional_usage(self.cache_write_tokens, usage.cache_write_tokens);
+    }
+}
+
+fn accumulate_optional_usage(left: Option<usize>, right: Option<usize>) -> Option<usize> {
+    match (left, right) {
+        (None, None) => None,
+        (left, right) => Some(
+            left.unwrap_or_default()
+                .saturating_add(right.unwrap_or_default()),
+        ),
+    }
+}
+
 /// Token-level log probability emitted by an OpenAI-compatible backend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenLogProb {
