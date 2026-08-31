@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.0.4] - 2026-08-31
+
+### Changed
+
+- Updated the bundled Core release to 8.0.4. The public Python API is
+  unchanged.
+
 ## [8.0.3] - 2026-08-28
 
 ### Changed
