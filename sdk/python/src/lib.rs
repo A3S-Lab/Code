@@ -415,6 +415,7 @@ use hook_bridge::{py_parse_hook_event_type, PythonCallbackHandler};
 mod orchestration_bridge;
 use orchestration_bridge::{
     py_to_json_value, py_to_step_spec, step_outcome_to_py, PyBudgetGuard, PythonPipelineStage,
+    DEFAULT_BUDGET_GUARD_TIMEOUT_MS,
 };
 
 /// Convert a Python dict (`{max_runs_retained: int, ...}`) into a
