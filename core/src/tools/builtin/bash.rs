@@ -237,16 +237,48 @@ impl Tool for BashTool {
         // session permission layer authorizes the exact invocation.
         if !require_escalated {
             if let Some(ref sandbox) = ctx.sandbox {
-                let result = sandbox
-                    .exec(crate::sandbox::SandboxCommandRequest {
-                        command: command.to_string(),
-                        guest_workspace: "/workspace".to_string(),
-                        timeout_ms,
-                        output_observer: output_observer.clone(),
-                        env: ctx.command_env.clone(),
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Sandbox bash execution failed: {}", e))?;
+                let execution = sandbox.exec(crate::sandbox::SandboxCommandRequest {
+                    command: command.to_string(),
+                    guest_workspace: "/workspace".to_string(),
+                    timeout_ms,
+                    output_observer: output_observer.clone(),
+                    env: ctx.command_env.clone(),
+                });
+                let result = match tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    execution,
+                )
+                .await
+                {
+                    Ok(result) => result
+                        .map_err(|e| anyhow::anyhow!("Sandbox bash execution failed: {}", e))?,
+                    Err(_) => {
+                        let capture_summary = *event_observer.summary.lock().unwrap();
+                        let capture_metadata = capture_summary.map(|summary| {
+                            serde_json::json!({
+                                "total_bytes": summary.total_bytes,
+                                "captured_bytes": summary.captured_bytes,
+                                "truncated": summary.truncated,
+                                "timed_out": true,
+                            })
+                        });
+                        let mut timed_out = ToolOutput::error(format!(
+                            "[Command timed out after {}ms]",
+                            timeout_ms
+                        ));
+                        timed_out.metadata = Some(serde_json::json!({
+                            "exit_code": null,
+                            "timeout_ms": timeout_ms,
+                            "sandboxed": true,
+                            "output": capture_metadata,
+                        }));
+                        timed_out.error_kind = Some(ToolErrorKind::Timeout {
+                            op: "bash".to_string(),
+                            duration_ms: timeout_ms,
+                        });
+                        return Ok(timed_out);
+                    }
+                };
 
                 // Combine stdout and stderr the same way the local path does.
                 let mut output = result.stdout;
