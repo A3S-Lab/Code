@@ -699,11 +699,11 @@ error prose.
 Hosts can attach a `BashSandbox`. The A3S-owned, fail-closed
 `sandbox::native::NativeBashSandbox`, backed by the independent
 [`a3s-sandbox`](https://github.com/A3S-Lab/Sandbox) crate, limits writes to the
-active workspace and
-private run scratch space, protects agent control metadata, blocks common
-credential reads, scrubs ambient secrets, and denies command network access,
-local binding, and Unix sockets. It uses Seatbelt on macOS, user/mount/network
-namespaces plus seccomp on Linux, and AppContainer plus a Job Object on Windows.
+active workspace and private run scratch space, protects agent control metadata,
+blocks common credential reads, scrubs ambient secrets, and denies command
+network access, local binding, and Unix sockets. It uses Seatbelt on macOS,
+user/mount/PID/IPC/UTS namespaces plus seccomp on Linux, and AppContainer plus a
+Job Object on Windows.
 No Node.js or npm sandbox runtime is involved, and an unavailable native
 boundary never falls back to an unsandboxed host runner.
 Governed Bash execution on a local workspace also fails closed when a host has

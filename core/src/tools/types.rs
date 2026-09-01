@@ -226,7 +226,8 @@ pub struct ToolContext {
     search_retry_budget: a3s_search::RetryBudget,
     /// Session-scoped identical-request flights shared by cloned tool contexts.
     search_request_coalescer: a3s_search::SearchCoalescer,
-    /// Optional sandbox for routing `bash` tool execution through A3S Box.
+    /// Optional sandbox for routing `bash` tool execution through the configured
+    /// process-isolation boundary.
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
     /// Optional command environment overrides for subprocess-based tools.
     pub command_env: Option<Arc<HashMap<String, String>>>,

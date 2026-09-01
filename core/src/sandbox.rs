@@ -3,8 +3,9 @@
 //! When a [`BashSandbox`] is provided via
 //! [`ToolContext::with_sandbox`](crate::tools::ToolContext::with_sandbox), the
 //! `bash` built-in tool routes commands through that sandbox instead of
-//! `std::process::Command`. The workspace directory is mounted read-write
-//! at `/workspace` inside the sandbox.
+//! `std::process::Command`. The A3S native backend keeps the canonical host
+//! workspace path while enforcing the platform isolation boundary around the
+//! child process.
 //!
 //! [`native::NativeBashSandbox`] is the A3S-owned fail-closed implementation
 //! used by the CLI. Hosts can still supply another implementation through the
@@ -93,8 +94,9 @@ pub trait BashSandbox: Send + Sync {
     /// Execute a shell command inside the sandbox.
     ///
     /// * `command` — the shell command string (passed as `bash -c <command>`).
-    /// * `guest_workspace` — the guest path where the workspace is mounted
-    ///   (e.g., `"/workspace"`).
+    /// * `guest_workspace` — the workspace path expected by a custom guest
+    ///   backend (for example, `"/workspace"`). The A3S native backend uses its
+    ///   canonical host workspace instead.
     async fn exec_command(
         &self,
         command: &str,

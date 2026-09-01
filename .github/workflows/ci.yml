@@ -39,8 +39,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install Linux build and sandbox prerequisites
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler bubblewrap
+          if sysctl -N kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if sysctl -N kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
 
       - name: Verify capability architecture and evidence
         run: |

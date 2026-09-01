@@ -183,7 +183,7 @@ dependencies = [
 [[package]]
 name = "a3s-sandbox"
 version = "0.1.0"
-source = "git+https://github.com/A3S-Lab/Sandbox.git?rev=1c97b8435e8692c2a7233d92bd172790bebbd235#1c97b8435e8692c2a7233d92bd172790bebbd235"
+source = "git+https://github.com/A3S-Lab/Sandbox.git?rev=52ce66212cbdf7e83ba97e127f618720eec07355#52ce66212cbdf7e83ba97e127f618720eec07355"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5915,7 +5915,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
