@@ -121,10 +121,11 @@ mod tests {
         assert_eq!(sandbox.backend(), NATIVE_SANDBOX_BACKEND);
         sandbox.probe().await.unwrap();
 
-        let output = sandbox
-            .exec_command("printf adapter-ready", "/workspace")
-            .await
-            .unwrap();
+        #[cfg(not(windows))]
+        let command = "printf adapter-ready";
+        #[cfg(windows)]
+        let command = "[Console]::Out.Write('adapter-ready')";
+        let output = sandbox.exec_command(command, "/workspace").await.unwrap();
         assert_eq!(output.stdout, "adapter-ready");
         assert_eq!(output.exit_code, 0);
     }
