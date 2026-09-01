@@ -84,6 +84,7 @@ jobs:
           source .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install 'maturin>=1,<2' pytest
+          python sdk/python/scripts/clean_native_artifacts.py
           maturin develop --locked --manifest-path sdk/python/Cargo.toml
           python -m pytest -q sdk/python/tests sdk/python/test_confirmation_inheritance.py
           python sdk/python/tests/test_budget_guard.py
