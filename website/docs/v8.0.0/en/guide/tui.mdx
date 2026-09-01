@@ -450,19 +450,16 @@ parameters and defaults are documented under
 
 ### Local process sandbox
 
-Before terminal takeover, the TUI reuses a verified user-wide managed SRT
-installation or the exact support tree carried by an official CLI archive. The
-release tree is accepted only after its package graph, file types, size bounds,
-and complete normalized digest match the CLI. It requires Node.js 20.11 or
-newer, performs the Core capability handshake, and does not select a global
-`srt` installation.
+Before terminal takeover, the TUI initializes and probes the A3S-owned
+`a3s-sandbox` Rust backend through `NativeBashSandbox`. Seatbelt, Bubblewrap
+namespaces plus seccomp, or AppContainer plus a Job Object is selected by the
+host platform. The backend is linked into the CLI and does not require Node.js,
+npm, a support payload, or a global runtime installation.
 
 There is no silent host fallback. Offline mode and
-`A3S_NO_AUTO_INSTALL=1` may use verified state or the release payload without
-mutation. Source and Cargo installs without that payload may use a fixed npm
-development bootstrap only when automatic first-use setup is allowed. If no
+`A3S_NO_AUTO_INSTALL=1` still leaves the native backend untouched. If no
 verified boundary is available, Default asks before running an exact Bash
-invocation on the host and Auto denies Bash. With the managed runtime, routine
+invocation on the host and Auto denies Bash. With the native backend, routine
 commands inherit an OS-enforced boundary that:
 
 - denies outbound networking, local listeners, and Unix sockets;

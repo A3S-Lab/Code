@@ -29,22 +29,20 @@ approval. It does not, by itself, confine a process. Hosts that expose model
 Bash should attach a concrete `BashSandbox`; otherwise an approved command runs
 through the host workspace runner.
 
-The Code TUI uses an SRT-backed local process sandbox from a verified user-wide
-installation or the support tree shipped in the CLI release. It checks the
-exact package graph, registry lock, file types, size bounds, complete normalized
-tree digest, Node.js 20.11-or-newer executable, and Core capability handshake.
-Official archives, Homebrew, and standalone self-update preserve that payload.
-Source and Cargo installs may use a fixed npm development bootstrap with
-lifecycle scripts disabled. A global `srt` installation is neither required
-nor selected.
+The Code TUI uses the A3S-owned `a3s-sandbox` Rust library through its
+`NativeBashSandbox` adapter. It selects the native boundary for the host
+platform—Seatbelt on macOS, Bubblewrap namespaces plus seccomp on Linux, and
+AppContainer plus a kill-on-close Job Object on Windows—and probes that
+boundary before enabling Bash. No Node.js, npm package, or global runtime
+installation is required or selected.
 
-Package verification is necessary but not sufficient for readiness. macOS
-requires `sandbox-exec` and `ripgrep`; Linux requires `bubblewrap`, `socat`,
-`ripgrep`, and permitted unprivileged user namespaces. Homebrew declares those
-dependencies, while direct-archive users provide them. Windows requires its
-one-time elevated machine sandbox setup. The TUI runs a bounded command through
-the actual OS boundary before attaching it. Failure leaves the sandbox absent,
-so Default can request one exact host invocation and Auto denies Bash.
+Capability probing is necessary before readiness. macOS requires the system
+`/usr/bin/sandbox-exec`; Linux requires `/usr/bin/bwrap` and permitted
+unprivileged user namespaces; Windows uses PowerShell 7 from the system
+Program Files directory and the native AppContainer APIs. The TUI runs a
+bounded command through the actual OS boundary before attaching it. Failure
+leaves the sandbox absent, so Default can request one exact host invocation and
+Auto denies Bash.
 
 The adapter fails closed and never silently retries on the host. It denies
 network egress, local binding, and Unix sockets; limits writes to the workspace
@@ -63,8 +61,8 @@ credential inode. Read-only Git diff regenerates output only for allowed
 changed paths, option-like revisions cannot become Git flags, and displayed
 remotes omit embedded HTTP credentials and query tokens.
 
-The release gate exercises the exact generated support tree on macOS and Linux.
-It proves normal workspace writes and offline toolchain commands remain usable,
+The release gate exercises the native backend on macOS, Linux, and Windows. It
+proves normal workspace writes and offline toolchain commands remain usable,
 while outside and symlink writes, protected metadata mutations, credential
 reads, network egress, local listeners, and Unix sockets remain blocked.
 
@@ -155,14 +153,12 @@ tool-owned escalation, confirmation availability, and finally execution.
 Terminal policies always use `TimeoutAction::Reject`; Core's generic
 `AutoApprove` option is not accepted by the TUI.
 
-Treat the current SRT integration as a local enforcement provider, not as the
-stack-wide execution contract. A3S Code owns agent policy and its
-`BashSandbox` interface. A3S Runtime owns durable, provider-neutral Task and
-Service lifecycle and placement. A3S Box owns OCI and stronger isolation. A
-release-owned support payload keeps those boundaries and leaves the existing
-capability/version handshake and Core contract unchanged. A3S Observer and A3S
-Sentry can add execution evidence and adaptive runtime enforcement as defense
-in depth; they do not replace the deterministic per-process sandbox boundary.
+Treat the native sandbox as a local enforcement provider, not as the stack-wide
+execution contract. A3S Code owns agent policy and its `BashSandbox` interface.
+A3S Runtime owns durable, provider-neutral Task and Service lifecycle and
+placement. A3S Box owns OCI and stronger isolation. A3S Observer and A3S Sentry
+can add execution evidence and adaptive runtime enforcement as defense in
+depth; they do not replace the deterministic per-process sandbox boundary.
 
 ## Secure Downloads
 
