@@ -55,6 +55,20 @@ The Intel macOS 12 wheel does not include the optional local ONNX embedding
 adapter. Use model-free retrieval or an explicitly authorized remote
 embedding provider on that platform.
 
+### Development build
+
+Clean generated native extensions before an editable development build. This
+prevents an older interpreter-specific extension from taking precedence over a
+new stable-ABI extension in the same package directory:
+
+```bash
+python sdk/python/scripts/clean_native_artifacts.py
+maturin develop --locked --manifest-path sdk/python/Cargo.toml
+```
+
+The package fails closed with an actionable import error if multiple `_native`
+extensions are present, instead of silently loading a stale binary.
+
 ## Quick Start
 
 ```python

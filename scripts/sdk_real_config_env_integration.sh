@@ -162,7 +162,9 @@ try:
 except Exception as exc:
     raise SystemExit(
         "Python SDK import failed. Build/install it first, e.g. "
-        "`cd sdk/python && maturin develop`, then rerun this script.\n"
+        "run `python sdk/python/scripts/clean_native_artifacts.py` and "
+        "`maturin develop --locked --manifest-path sdk/python/Cargo.toml`, "
+        "then rerun this script.\n"
         f"Import error: {exc}"
     )
 
@@ -176,7 +178,9 @@ if missing:
     raise SystemExit(
         "Python SDK import resolved to a build that is missing current API "
         f"{', '.join(missing)}. Build/install the workspace SDK first, e.g. "
-        "`cd sdk/python && maturin develop`, then rerun this script.\n"
+        "run `python sdk/python/scripts/clean_native_artifacts.py` and "
+        "`maturin develop --locked --manifest-path sdk/python/Cargo.toml`, "
+        "then rerun this script.\n"
         f"Imported from: {location}"
     )
 PY

@@ -1,5 +1,10 @@
 """A3S Code Python SDK."""
 
+from ._native_artifacts import ensure_unambiguous_native_extension as _ensure_native
+
+_ensure_native()
+del _ensure_native
+
 from ._native import *
 from .event_protocol_v1 import (
     AGENT_EVENT_TYPES_V1,
