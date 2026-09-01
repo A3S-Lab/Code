@@ -382,13 +382,22 @@ pub struct ConditionalHook {
 ## 6.1 Sandboxing
 
 ```rust
-// 2.0 exposes sandboxing through a concrete BashSandbox handle.
-// Host applications provide the implementation and attach it with
-// SessionOptions::with_sandbox_handle(...).
-pub trait BashSandbox {
-    async fn run(&self, command: &str, cwd: &Path) -> Result<SandboxOutput>;
-}
+use a3s_code_core::sandbox::native::NativeBashSandbox;
+use a3s_code_core::SessionOptions;
+use std::sync::Arc;
+
+let sandbox = Arc::new(NativeBashSandbox::new("/path/to/workspace")?);
+sandbox.probe().await?;
+let options = SessionOptions::new().with_sandbox_handle(sandbox);
 ```
+
+`NativeBashSandbox` adapts the independent
+[`a3s-sandbox`](https://github.com/A3S-Lab/Sandbox) crate. It uses Seatbelt on
+macOS, namespaces plus seccomp on Linux, and AppContainer plus a Job Object on
+Windows. Governed Bash requests on local workspaces fail closed when no sandbox
+is attached; only an explicitly authorized `require_escalated` request may use
+the host runner. Trusted direct Tool calls and non-local workspace runners keep
+their explicit host-owned contracts.
 
 # Chapter 7: Performance Optimization
 

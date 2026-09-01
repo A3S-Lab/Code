@@ -7,6 +7,23 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+const TEST_ESCALATION_JUSTIFICATION: &str =
+    "This test explicitly exercises the approved host command runner.";
+
+fn escalated_args(command: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({
+        "command": command.into(),
+        "sandbox_permissions": "require_escalated",
+        "justification": TEST_ESCALATION_JUSTIFICATION,
+    })
+}
+
+fn escalated_args_with_timeout(command: impl Into<String>, timeout: u64) -> serde_json::Value {
+    let mut args = escalated_args(command);
+    args["timeout"] = serde_json::json!(timeout);
+    args
+}
+
 // ------------------------------------------------------------------
 // Mock sandbox for testing the delegation path
 // ------------------------------------------------------------------
@@ -211,6 +228,29 @@ async fn escalated_execution_requires_a_justification() {
 }
 
 #[tokio::test]
+async fn default_execution_fails_closed_without_a_sandbox() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("must-not-exist");
+    let ctx = ToolContext::new(temp.path().to_path_buf()).with_run_governance(None, None);
+
+    let result = tool
+        .execute(
+            &serde_json::json!({"command": "printf escaped > must-not-exist"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    assert!(result.content.contains("requires a configured sandbox"));
+    assert!(!marker.exists());
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["sandbox_available"], false);
+    assert_eq!(metadata["sandboxed"], false);
+}
+
+#[tokio::test]
 #[cfg(not(windows))]
 async fn escalated_execution_skips_the_configured_sandbox() {
     let tool = BashTool;
@@ -376,7 +416,7 @@ async fn test_bash_echo() {
     let ctx = ToolContext::new(temp.path().to_path_buf());
 
     let result = tool
-        .execute(&serde_json::json!({"command": "echo hello"}), &ctx)
+        .execute(&escalated_args("echo hello"), &ctx)
         .await
         .unwrap();
 
@@ -393,10 +433,7 @@ async fn test_bash_tiny_timeout_is_clamped() {
 
     let result = tool
         .execute(
-            &serde_json::json!({
-                "command": "sleep 0.05; printf done",
-                "timeout": 1
-            }),
+            &escalated_args_with_timeout("sleep 0.05; printf done", 1),
             &ctx,
         )
         .await
@@ -422,9 +459,7 @@ async fn test_dropping_bash_execution_kills_shell_before_later_side_effects() {
 
     let execution = tokio::spawn(async move {
         tool.execute(
-            &serde_json::json!({
-                "command": "printf started > started; (sleep 1; printf leaked > leaked) & wait"
-            }),
+            &escalated_args("printf started > started; (sleep 1; printf leaked > leaked) & wait"),
             &ctx,
         )
         .await
@@ -456,12 +491,7 @@ async fn test_bash_bounds_long_single_line_and_reports_exact_capture_metadata() 
     let ctx = ToolContext::new(temp.path().to_path_buf());
 
     let result = tool
-        .execute(
-            &serde_json::json!({
-                "command": "printf '%*s' 120000 '' | tr ' ' x"
-            }),
-            &ctx,
-        )
+        .execute(&escalated_args("printf '%*s' 120000 '' | tr ' ' x"), &ctx)
         .await
         .unwrap();
 
@@ -484,7 +514,7 @@ async fn test_bash_head_compat_shim() {
     let ctx = ToolContext::new(temp.path().to_path_buf());
 
     let result = tool
-        .execute(&serde_json::json!({"command": "1..5 | head -2"}), &ctx)
+        .execute(&escalated_args("1..5 | head -2"), &ctx)
         .await
         .unwrap();
 
@@ -531,9 +561,7 @@ async fn test_bash_json_normalizer_repairs_unquoted_object_literal() {
 
     let result = tool
             .execute(
-                &serde_json::json!({
-                    "command": "Write-Output (__a3s_normalize_json_like '{image:nginx:alpine,name:mock-nginx,port_map:[18080:80],start:true}')"
-                }),
+                &escalated_args("Write-Output (__a3s_normalize_json_like '{image:nginx:alpine,name:mock-nginx,port_map:[18080:80],start:true}')"),
                 &ctx,
             )
             .await
@@ -556,9 +584,7 @@ async fn test_bash_json_normalizer_preserves_valid_json() {
 
     let result = tool
             .execute(
-                &serde_json::json!({
-                    "command": r#"Write-Output (__a3s_normalize_json_like '{"image":"nginx:alpine","name":"mock-nginx","port_map":["18080:80"],"start":true}')"#
-                }),
+                &escalated_args(r#"Write-Output (__a3s_normalize_json_like '{"image":"nginx:alpine","name":"mock-nginx","port_map":["18080:80"],"start":true}')"#),
                 &ctx,
             )
             .await
@@ -621,10 +647,7 @@ async fn test_bash_curl_json_literal_is_normalized_end_to_end() {
     assert!(parse_simple_windows_http_command(&command).is_some());
 
     let result = tool
-        .execute(
-            &serde_json::json!({ "command": command, "timeout": 15_000 }),
-            &ctx,
-        )
+        .execute(&escalated_args_with_timeout(command, 15_000), &ctx)
         .await
         .unwrap();
 
@@ -651,10 +674,7 @@ async fn test_bash_inherits_command_env() {
     #[cfg(not(windows))]
     let command = "printf '%s' \"$A3S_TEST_ENV\"";
 
-    let result = tool
-        .execute(&serde_json::json!({ "command": command }), &ctx)
-        .await
-        .unwrap();
+    let result = tool.execute(&escalated_args(command), &ctx).await.unwrap();
 
     assert!(result.success);
     assert_eq!(result.content.trim_end(), "visible");
@@ -667,10 +687,7 @@ async fn test_bash_exit_code() {
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
 
-    let result = tool
-        .execute(&serde_json::json!({"command": "exit 1"}), &ctx)
-        .await
-        .unwrap();
+    let result = tool.execute(&escalated_args("exit 1"), &ctx).await.unwrap();
 
     assert!(!result.success);
     assert_eq!(
@@ -689,10 +706,7 @@ async fn test_bash_exit_code() {
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
 
-    let result = tool
-        .execute(&serde_json::json!({"command": "exit 1"}), &ctx)
-        .await
-        .unwrap();
+    let result = tool.execute(&escalated_args("exit 1"), &ctx).await.unwrap();
 
     assert!(!result.success);
     assert_eq!(
@@ -777,10 +791,7 @@ async fn test_bash_workspace_dir() {
     let tool = BashTool;
     let ctx = ToolContext::new(temp.path().to_path_buf());
 
-    let result = tool
-        .execute(&serde_json::json!({"command": "pwd"}), &ctx)
-        .await
-        .unwrap();
+    let result = tool.execute(&escalated_args("pwd"), &ctx).await.unwrap();
 
     assert!(result.success);
     let canonical = temp.path().canonicalize().unwrap();
@@ -799,7 +810,7 @@ async fn test_bash_workspace_dir() {
 
     let result = tool
         .execute(
-            &serde_json::json!({"command": "Get-Location | Select-Object -ExpandProperty Path"}),
+            &escalated_args("Get-Location | Select-Object -ExpandProperty Path"),
             &ctx,
         )
         .await

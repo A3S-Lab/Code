@@ -166,7 +166,7 @@ impl Tool for BashTool {
                     "type": "string",
                     "enum": ["use_default", "require_escalated"],
                     "default": "use_default",
-                    "description": "Execution boundary. Omit or use 'use_default' for the configured workspace sandbox. Use 'require_escalated' only after a sandbox denial when host execution is necessary; interactive hosts must authorize that request."
+                    "description": "Execution boundary. Omit or use 'use_default' for the configured workspace sandbox; this fails closed when no sandbox is installed. Use 'require_escalated' only after a sandbox denial when host execution is necessary; interactive hosts must authorize that request."
                 },
                 "justification": {
                     "type": "string",
@@ -235,6 +235,23 @@ impl Tool for BashTool {
         // The normal path uses the configured workspace sandbox. An explicit
         // escalation is intentionally routed to the host runner only after the
         // session permission layer authorizes the exact invocation.
+        if !require_escalated
+            && ctx.sandbox.is_none()
+            && ctx.workspace_services.local_root().is_some()
+            && ctx.has_run_governance()
+        {
+            let message = "default bash execution requires a configured sandbox; refusing to execute the command on the host";
+            let mut denied = ToolOutput::error(message);
+            denied.metadata = Some(serde_json::json!({
+                "exit_code": null,
+                "sandboxed": false,
+                "sandbox_available": false,
+            }));
+            denied.error_kind = Some(ToolErrorKind::Unsupported {
+                message: message.to_string(),
+            });
+            return Ok(denied);
+        }
         if !require_escalated {
             if let Some(ref sandbox) = ctx.sandbox {
                 let execution = sandbox.exec(crate::sandbox::SandboxCommandRequest {

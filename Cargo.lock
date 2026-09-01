@@ -27,6 +27,7 @@ dependencies = [
  "a3s-flow",
  "a3s-lane",
  "a3s-memory",
+ "a3s-sandbox",
  "a3s-search",
  "anyhow",
  "async-stream",
@@ -176,6 +177,24 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "a3s-sandbox"
+version = "0.1.0"
+source = "git+https://github.com/A3S-Lab/Sandbox.git?rev=1c97b8435e8692c2a7233d92bd172790bebbd235#1c97b8435e8692c2a7233d92bd172790bebbd235"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.21.7",
+ "dirs 5.0.1",
+ "libc",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 

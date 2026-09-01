@@ -20,7 +20,7 @@ use super::{
     WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceTextRange,
     WorkspaceTextReader, WorkspaceWriteOutcome,
 };
-use crate::sandbox::srt::hard_link_count_for_open_file;
+use crate::sandbox::native::hard_link_count_for_open_file;
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use std::io::Read as _;

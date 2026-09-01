@@ -5,7 +5,7 @@
 //! [`LocalWorkspaceAccessPolicy::CredentialBoundary`] therefore need the same
 //! credential and hard-link rules at the workspace backend itself.
 
-use crate::sandbox::srt::{
+use crate::sandbox::native::{
     hard_link_count, sensitive_paths, should_skip_workspace_scan_directory,
     workspace_hardlink_paths, workspace_sensitive_paths,
 };

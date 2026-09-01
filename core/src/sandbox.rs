@@ -6,9 +6,9 @@
 //! `std::process::Command`. The workspace directory is mounted read-write
 //! at `/workspace` inside the sandbox.
 //!
-//! The concrete sandbox implementation is supplied by the host application
-//! (e.g., SafeClaw can provide an A3S Box–backed implementation after the
-//! user installs `a3s-box`). This crate defines only the trait contract.
+//! [`native::NativeBashSandbox`] is the A3S-owned fail-closed implementation
+//! used by the CLI. Hosts can still supply another implementation through the
+//! trait contract when they own an equivalent isolation boundary.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -16,57 +16,11 @@ use std::sync::Arc;
 
 use crate::workspace::CommandOutputObserver;
 
-pub mod srt;
+pub mod native;
 
-/// Workspace-relative directories whose contents can change the agent,
-/// repository, editor, or tool control plane.
-///
-/// Ordinary sandboxed commands and quiet workspace file mutations must not
-/// write these paths. An interactive host may expose an explicit, auditable
-/// escalation path instead.
-pub const PROTECTED_WORKSPACE_DIRECTORIES: &[&str] = &[
-    ".git", ".a3s", ".agents", ".codex", ".claude", ".vscode", ".idea",
-];
-
-/// Workspace-relative files that can change command discovery or repository
-/// behavior even though they are not contained in a protected directory.
-pub const PROTECTED_WORKSPACE_FILES: &[&str] = &[
-    ".gitmodules",
-    ".mcp.json",
-    ".ripgreprc",
-    ".bashrc",
-    ".bash_profile",
-    ".zshrc",
-    ".zprofile",
-    ".profile",
-];
-
-/// Return whether a workspace-relative path targets protected control
-/// metadata.
-///
-/// Both separators are recognized so policy decisions are stable before a
-/// platform-specific workspace resolver consumes the path. Boundary traversal
-/// is handled separately by the workspace guardrail and is never treated as a
-/// protected-path approval request.
-pub fn is_protected_workspace_path(path: &str) -> bool {
-    let normalized = path.replace('\\', "/");
-    let mut components = normalized
-        .split('/')
-        .filter(|component| !component.is_empty() && *component != ".");
-    let Some(first) = components.next() else {
-        return false;
-    };
-    if first == ".." || components.clone().any(|component| component == "..") {
-        return false;
-    }
-
-    PROTECTED_WORKSPACE_DIRECTORIES
-        .iter()
-        .any(|protected| first.eq_ignore_ascii_case(protected))
-        || PROTECTED_WORKSPACE_FILES
-            .iter()
-            .any(|protected| first.eq_ignore_ascii_case(protected))
-}
+pub use a3s_sandbox::{
+    is_protected_workspace_path, PROTECTED_WORKSPACE_DIRECTORIES, PROTECTED_WORKSPACE_FILES,
+};
 
 /// Output from running a command inside a sandbox.
 pub struct SandboxOutput {

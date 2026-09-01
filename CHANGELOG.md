@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the A3S-owned `NativeBashSandbox`, backed by the independent
+  `a3s-sandbox` crate, with direct macOS Seatbelt, Linux bubblewrap
+  namespace/seccomp, and Windows AppContainer/Job Object backends.
+  Every backend denies network and Unix-socket creation, bounds process trees
+  and output, protects workspace control metadata and credentials, and fails
+  closed when its operating-system boundary is unavailable.
+
 - Added post-build `AgentReleaseManifest::bind_publication` and a minimal
   BuildKit publication fixture. The fixture packages an exact Linux A3S CLI
   binary without its final manifest, pushes one OCI image manifest, binds the
@@ -118,6 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Made governed Bash execution on local workspaces fail closed when no sandbox
+  is installed. Only an explicitly authorized `require_escalated` request can
+  reach the local host command runner; trusted direct Tool calls and non-local
+  workspace runners retain their explicit contracts.
 - Enforced the Bash command deadline at the Tool boundary for sandbox-backed
   execution, including legacy or faulty Sandbox implementations that ignore
   the request timeout.
@@ -135,6 +146,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made Python SDK imports fail closed when multiple generated `_native`
   extensions could select a stale interpreter-specific binary, and added a
   deterministic cleanup command before editable SDK builds.
+
+### Removed
+
+- Removed the Anthropic sandbox-runtime adapter, npm identity/version checks,
+  Node.js launcher integration, and all SRT-specific tests and public exports.
 
 ## [8.0.4] - 2026-08-31
 

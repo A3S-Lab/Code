@@ -65,7 +65,11 @@ impl VerificationRuntime {
         let mut checks = Vec::with_capacity(commands.len());
 
         for command in commands {
-            let mut args = serde_json::json!({ "command": command.command });
+            let mut args = serde_json::json!({
+                "command": command.command,
+                "sandbox_permissions": "require_escalated",
+                "justification": "Host-controlled verification command",
+            });
             if let Some(timeout_ms) = command.timeout_ms {
                 args["timeout"] = serde_json::json!(timeout_ms);
             }

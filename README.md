@@ -696,11 +696,20 @@ error prose.
 
 ### Sandbox and credential boundaries
 
-Hosts can attach a `BashSandbox`. The fail-closed local `SrtBashSandbox` limits
-writes to the active workspace and private run scratch space, protects agent
-control metadata, blocks common credential reads, scrubs ambient secrets, and
-denies command network access, local binding, and Unix sockets. It never falls
-back to an unsandboxed host runner if its configured runtime fails.
+Hosts can attach a `BashSandbox`. The A3S-owned, fail-closed
+`sandbox::native::NativeBashSandbox`, backed by the independent
+[`a3s-sandbox`](https://github.com/A3S-Lab/Sandbox) crate, limits writes to the
+active workspace and
+private run scratch space, protects agent control metadata, blocks common
+credential reads, scrubs ambient secrets, and denies command network access,
+local binding, and Unix sockets. It uses Seatbelt on macOS, user/mount/network
+namespaces plus seccomp on Linux, and AppContainer plus a Job Object on Windows.
+No Node.js or npm sandbox runtime is involved, and an unavailable native
+boundary never falls back to an unsandboxed host runner.
+Governed Bash execution on a local workspace also fails closed when a host has
+not installed a sandbox; only an explicitly authorized `require_escalated`
+invocation may use the host command runner. Trusted direct Tool calls and
+non-local workspace runners retain their explicit host-owned contracts.
 
 Shell isolation does not automatically govern in-process file tools. Local
 hosts should explicitly select `LocalWorkspaceAccessPolicy::CredentialBoundary`
