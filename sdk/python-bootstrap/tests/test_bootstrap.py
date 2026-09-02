@@ -13,8 +13,10 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock as mock
 import zipfile
@@ -71,6 +73,12 @@ class WheelFilenameTests(unittest.TestCase):
         self.assertEqual(
             self._filename_for("linux", "x86_64", 12),
             "a3s_code-3.2.1-cp312-cp312-manylinux_2_28_x86_64.whl",
+        )
+
+    def test_linux_arm64_cp312(self):
+        self.assertEqual(
+            self._filename_for("linux", "aarch64", 12),
+            "a3s_code-3.2.1-cp312-cp312-manylinux_2_28_aarch64.whl",
         )
 
     def test_macos_arm64_cp311(self):
@@ -140,6 +148,12 @@ class WheelFilenameTests(unittest.TestCase):
             "a3s_code-3.2.1-cp313-cp313-win_amd64.whl",
         )
 
+    def test_windows_arm64_cp313(self):
+        self.assertEqual(
+            self._filename_for("win32", "ARM64", 13),
+            "a3s_code-3.2.1-cp313-cp313-win_arm64.whl",
+        )
+
     def test_unsupported_platform_raises(self):
         with self.assertRaises(_bootstrap.BootstrapError) as cm:
             self._filename_for("freebsd", "x86_64", 12)
@@ -193,6 +207,56 @@ class CacheDirTests(unittest.TestCase):
             ),
         )
 
+
+class InstallLockTests(unittest.TestCase):
+    def test_lock_releases_for_another_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            with _bootstrap._install_lock(cache):
+                self.assertTrue((cache / ".install.lock").is_file())
+            # A normal close must release the advisory lock, not merely leave
+            # an apparently reusable lock file behind.
+            with _bootstrap._install_lock(cache, timeout_s=0.2):
+                self.assertTrue((cache / ".install.lock").is_file())
+
+    def test_lock_serializes_independent_processes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            ready = Path(tmp) / "ready"
+            module_path = str(_BOOTSTRAP_PATH)
+            child_code = """
+import importlib.util
+import pathlib
+import sys
+import time
+
+module_path, cache_path, ready_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location('_bootstrap_child', module_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with module._install_lock(pathlib.Path(cache_path)):
+    pathlib.Path(ready_path).write_text('ready', encoding='utf-8')
+    time.sleep(0.35)
+"""
+            child = subprocess.Popen(
+                [sys.executable, "-c", child_code, module_path, str(cache), str(ready)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "child did not acquire install lock")
+                started = time.monotonic()
+                with _bootstrap._install_lock(cache, timeout_s=2):
+                    waited = time.monotonic() - started
+                self.assertGreaterEqual(waited, 0.25)
+            finally:
+                stdout, stderr = child.communicate(timeout=5)
+                if child.returncode != 0:
+                    self.fail(f"lock child failed: {stdout}\n{stderr}")
 
 class ExtractNativeTests(unittest.TestCase):
     def test_extracts_native_extension(self):

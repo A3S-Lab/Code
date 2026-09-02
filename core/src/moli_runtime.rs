@@ -69,7 +69,7 @@ pub fn moli_runtime_info(config: Option<&HeadlessConfig>) -> MoliRuntimeInfo {
         .filter(|path| is_executable(path))
         .or_else(|| explicit_environment_executable().ok().flatten())
         .or_else(|| packaged.clone())
-        .or_else(|| a3s_search::detect_moli())
+        .or_else(a3s_search::detect_moli)
         .or_else(|| {
             let target = target.as_deref()?;
             let root = cache_root(config).ok()?;
@@ -229,18 +229,18 @@ async fn ensure_moli_from(
         .or_else(|| std::env::var(RELEASE_BASE_ENV).ok())
         .unwrap_or_else(|| format!("{MOLI_REPOSITORY_URL}/releases/download/v{version}"));
     validate_release_base_url(&base_url, allow_insecure_test_url)?;
-    install_downloaded(
-        &cache_root,
-        &binary_path,
-        &receipt_path,
-        &version,
+    install_downloaded(InstallRequest {
+        cache_root: &cache_root,
+        binary_path: &binary_path,
+        receipt_path: &receipt_path,
+        version: &version,
         target,
-        &expected_sha256,
+        expected_archive_sha256: &expected_sha256,
         asset,
-        &base_url,
+        base_url: &base_url,
         deadline,
         allow_insecure_test_url,
-    )
+    })
     .await
 }
 
@@ -558,18 +558,32 @@ async fn acquire_install_lock(root: &Path, deadline: Instant) -> Result<std::fs:
     }
 }
 
-async fn install_downloaded(
-    cache_root: &Path,
-    binary_path: &Path,
-    receipt_path: &Path,
-    version: &str,
-    target: &str,
-    expected_archive_sha256: &str,
+struct InstallRequest<'a> {
+    cache_root: &'a Path,
+    binary_path: &'a Path,
+    receipt_path: &'a Path,
+    version: &'a str,
+    target: &'a str,
+    expected_archive_sha256: &'a str,
     asset: ManifestAsset,
-    base_url: &str,
+    base_url: &'a str,
     deadline: Instant,
     allow_insecure_test_url: bool,
-) -> Result<PathBuf> {
+}
+
+async fn install_downloaded(request: InstallRequest<'_>) -> Result<PathBuf> {
+    let InstallRequest {
+        cache_root,
+        binary_path,
+        receipt_path,
+        version,
+        target,
+        expected_archive_sha256,
+        asset,
+        base_url,
+        deadline,
+        allow_insecure_test_url,
+    } = request;
     let Some(parent) = binary_path.parent() else {
         bail!("Moli cache binary path has no parent");
     };

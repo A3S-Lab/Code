@@ -1,0 +1,351 @@
+---
+title: '验证'
+description: '用验证命令和报告证明一个回合已完成，而不是轻信模型的声明'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 验证
+
+运行时将"完成"视为必须被**证明**的事实，而不仅仅是被声明的结果。当模型说某个任务已完成时，这句话本身毫无价值。验证把声明转化为证据：你声明一组*必须*成功的命令，运行时执行它们，结果会携带一份你可以检视、据以拦截或呈现给用户的报告。
+
+验证是会话级的。Rust 核心运行每条命令，记录其退出状态和输出，并将每份报告汇总为一份随回合结果一同返回的摘要。
+
+产品界面可以先展示交付摘要，再列出支持结论的命令输出和文件级改动。
+
+## 运行验证命令
+
+一条验证命令就是一个小而具名的检查：一个 `id`、一个 `kind`、一段可读的 `description`，以及要运行的 `command`。当某个失败应被视为硬失败而非警告时，将该检查标记为 `required`。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::verification::VerificationCommand;
+
+let commands = vec![
+    VerificationCommand::required(
+        "build",
+        "build",
+        "项目可以编译",
+        "cargo build --all-features",
+    )
+    .with_timeout_ms(120_000),
+    VerificationCommand::required(
+        "tests",
+        "test",
+        "单元测试通过",
+        "cargo test",
+    ),
+];
+let report = session
+    .verify_commands("release-readiness", &commands)
+    .await?;
+println!("{report:#?}");
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+const report = await session.verifyCommands('release-readiness', [
+  {
+    id: 'build',
+    kind: 'build',
+    description: 'Project compiles',
+    command: 'cargo build --all-features',
+    required: true,
+    timeoutMs: 120000,
+  },
+  {
+    id: 'tests',
+    kind: 'test',
+    description: 'Unit tests pass',
+    command: 'cargo test',
+    required: true,
+  },
+]);
+
+console.log(report);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+report = session.verify_commands('release-readiness', [
+    {
+        "id": "build",
+        "kind": "build",
+        "description": "Project compiles",
+        "command": "cargo build --all-features",
+        "required": True,
+        "timeout_ms": 120000,
+    },
+    {
+        "id": "tests",
+        "kind": "test",
+        "description": "Unit tests pass",
+        "command": "cargo test",
+        "required": True,
+    },
+])
+
+print(report)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+report, err := session.VerifyCommands(ctx, "release-readiness", []code.VerificationCommand{
+	{
+		ID:          "build",
+		Kind:        "build",
+		Description: "项目可以编译",
+		Command:     "cargo build --all-features",
+		Required:    true,
+		TimeoutMS:   code.Ptr(uint64(120000)),
+	},
+	{
+		ID:          "tests",
+		Kind:        "test",
+		Description: "单元测试通过",
+		Command:     "cargo test",
+		Required:    true,
+	},
+})
+if err != nil {
+	return err
+}
+fmt.Println(report)
+```
+
+</Tab>
+</Tabs>
+
+`subject`（此处为 `release-readiness`）为这一批检查命名，使同一会话内的多次验证在报告中保持彼此独立。
+
+## 读取回合结束后的摘要
+
+每个回合的 `send()` 结果同样携带只读的验证字段，因此你无需单独发起一次验证调用即可据结果拦截。用这些字段判断该回合是否真正完成了它所声称的工作。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+let result = session.send("应用修复并运行检查", None).await?;
+let summary = result.verification_summary();
+
+println!("{:?}", summary.status);
+println!("{}", summary.pending_required_check_count);
+println!("{}", summary.failed_check_count);
+println!("{}", summary.report_count);
+println!("{}", result.verification_summary_text());
+
+if summary.failed_check_count > 0 {
+    return Err(a3s_code_core::CodeError::Session(
+        "当前回合声称已完成，但验证失败".to_string(),
+    ));
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+const result = await session.send('Apply the fix and run the checks');
+
+console.log(result.verificationStatus);
+console.log(result.pendingVerificationCount);
+console.log(result.failedVerificationCount);
+console.log(result.verificationReportCount);
+console.log(result.verificationSummaryText);
+
+if (result.failedVerificationCount > 0) {
+  throw new Error('Turn reported done but verification failed');
+}
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+result = session.send('Apply the fix and run the checks')
+
+print(result.verification_status)
+print(result.pending_verification_count)
+print(result.failed_verification_count)
+print(result.verification_report_count)
+print(result.verification_summary_text)
+
+if result.failed_verification_count > 0:
+    raise RuntimeError('Turn reported done but verification failed')
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Run(ctx, "应用修复并运行检查")
+if err != nil {
+	return err
+}
+
+summary := result.VerificationSummary
+fmt.Println(summary.Status)
+fmt.Println(summary.PendingRequiredCheckCount)
+fmt.Println(summary.FailedCheckCount)
+fmt.Println(summary.ReportCount)
+fmt.Println(result.VerificationSummaryText)
+
+if summary.FailedCheckCount > 0 {
+	return errors.New("回合声称完成，但验证失败")
+}
+```
+
+</Tab>
+</Tabs>
+
+## 检视报告与摘要
+
+除了逐回合的字段之外，会话还暴露完整的报告集合、一份结构化摘要、可用的预设，以及一份可读的概要。该概要是向人展示某回合*为何*通过或失败的最快方式。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+let reports = session.verification_reports();
+let summary = session.verification_summary();
+let presets = session.verification_presets();
+let text = session.verification_summary_text();
+
+println!(
+    "{} 份报告，状态 {:?}，{} 个预设",
+    reports.len(),
+    summary.status,
+    presets.len()
+);
+println!("{text}");
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { formatVerificationSummary } from '@a3s-lab/code';
+
+const reports = session.verificationReports();
+const summary = session.verificationSummary();
+const presets = session.verificationPresets();
+
+// 会话辅助方法和独立格式化函数都能生成可读文本。
+console.log(session.verificationSummaryText());
+console.log(formatVerificationSummary(summary));
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+reports = session.verification_reports()
+summary = session.verification_summary()
+presets = session.verification_presets()
+
+# 会话辅助方法返回可直接打印的可读摘要。
+print(session.verification_summary_text())
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+reports, err := session.VerificationReports(ctx)
+if err != nil {
+	return err
+}
+summary, err := session.VerificationSummary(ctx)
+if err != nil {
+	return err
+}
+presets, err := session.VerificationPresets(ctx)
+if err != nil {
+	return err
+}
+text, err := session.VerificationSummaryText(ctx)
+if err != nil {
+	return err
+}
+
+fmt.Println(len(reports), summary.Status, len(presets))
+fmt.Println(text)
+```
+
+</Tab>
+</Tabs>
+
+`verificationPresets()` 返回根据 workspace 文件推断出的检查模板，例如
+`Cargo.toml`、`package.json`、`pyproject.toml` 和 `go.mod`。请把它们当作起点：
+在用来拦截发布或用户可见自动化之前，应审查命令、超时和 required 标记是否适合该项目。
+
+## A3S Code 自身如何完成资格认证
+
+回合验证回答的是一次智能体任务是否产生了它所声称的结果。仓库资格认证回答的是另一
+个问题，即每项公开的 A3S Code 能力是否仍然在 Core、各语言 SDK、资源上限和受支持的
+部署面上满足合同。仅有一次绿色编译无法回答这个问题。
+
+仓库把证据分成四类：
+
+| 证据类别             | 能证明什么                                                                         | 不能证明什么                            |
+| -------------------- | ---------------------------------------------------------------------------------- | --------------------------------------- |
+| 确定性正确性         | 用固定 Oracle 检查启用条件、成功行为、非法输入、权限、取消、生命周期、顺序和清理   | 真实 Provider、浏览器或对象存储是否可用 |
+| 确定性资源门禁       | 限定调用、重试、记录、字节、队列、候选项、工具轮次与留存状态                       | 每台机器上的绝对耗时                    |
+| Release 性能资格认证 | 对稳定本地工作记录 Release Build 的 p50、p95、最大值、资源计量、负载参数和机器信息 | 远程模型或公共搜索服务的延迟            |
+| 外部资格认证         | 在已记录条件下验证指定真实模型、浏览器、Collector 或存储服务的兼容性               | Hermetic 可复现性或普遍性能结论         |
+
+能力台账把 README 宣称的 26 个产品领域逐项连接到可执行证据，并明确显示任何尚未解决
+的缺口。能力地图发生变化而台账没有同步时，CI 会直接失败。Node.js 和 Python 门禁会先
+构建并加载 Native Module，再通过公开 Wrapper 执行测试；仅通过 Rust `cargo check`
+不算 SDK Runtime 证据。Go 会通过带版本的 Bridge 并使用 Race Detector 运行。
+
+性能检查会区分工作放大和耗时。普通 CI 拦截 Provider Request、Vector Byte、Scratch
+Space、Retry 与关闭后留存等确定性上限。专用 Release Profile 工作流会预热并重复采样，
+输出 Machine-readable JSON，并将其作为 CI Artifact 保留。依赖网络的 DeepSeek 与浏览器
+耗时会单独报告，因为把这些时间混入本地执行后，就无法区分 Code Regression 与 Provider
+或网络波动。
+
+### 最新受控资格认证
+
+2026-08-18 的 Release Profile 在四个逻辑 CPU 的 x86-64 Linux Runner 上运行，六份报告
+全部通过：
+
+| Profile             | 固定负载                                     |                        实测 p95 |             目标 |
+| ------------------- | -------------------------------------------- | ------------------------------: | ---------------: |
+| Agent 收敛          | 四个完成、Guard 与恢复 Case                  |                        4/4 Case |         4/4 Case |
+| Workspace Retrieval | 25,000 × 384 Exact / Deterministic Hybrid    |              15.590 / 38.506 ms |    ≤ 30 / 100 ms |
+| Flow / State Graph  | 1,000 Step Projection / 11,008 Record Replay |            130.067 / 125.526 ms |    均 ≤ 2,000 ms |
+| Code Intelligence   | 5,000 File；Cold / Warm Workspace Symbol     | Cold 754.397 ms / Warm 0.519 ms | ≤ 5,000 / 250 ms |
+| Context / Memory    | 25,000 Context Input / 2,500 Memory          |              136.740 / 0.123 ms |   ≤ 500 / 250 ms |
+| File Persistence    | 1,272,624 Byte 同步 Save / Load              |              338.887 / 1.028 ms | ≤ 1,000 / 500 ms |
+
+Provider Request Amplification、Vector 与 Rerank Byte、RSS Delta、Serialized Graph Byte、
+Process Cleanup、无累积覆盖写入与删除清理等资源门禁也全部通过。配套 Hermetic CI 完成了
+MinIO Roundtrip、受控 HTTPS 上的生产 Chrome/CDP 与 Google Parser 路径，以及本地
+OpenTelemetry Collector 对指定 Service/Span 的精确接收。
+
+[性能资格认证记录](https://github.com/A3S-Lab/Code/blob/main/manual/PERFORMANCE_QUALIFICATION.md)
+包含 p50/p95/Max、精确包含规则、机器信息、资源计数、Workflow 链接与 Artifact SHA-256
+Digest。这些数据是锁定 Profile 的回归上限，不是所有硬件或远程服务的 SLA。
+
+当前证据台账、缺口关闭情况、外部边界、资格认证命令和完成规则见
+[能力验证与性能合同](https://github.com/A3S-Lab/Code/blob/main/manual/CAPABILITY_VERIFICATION.md)。
+只要台账中仍有未解决的 Code-owned Gap，就不能声称仓库级目标已经完成。
+
+## 为何重要
+
+没有验证，一次智能体运行止于模型的一面之词。有了验证，运行止于可观测的证据：编译通过的构建、跑通的测试套件、保持沉默的代码检查器。摘要文本提供审计轨迹；结果上的计数让你能在自动化中以失败为默认（fail closed）。
+
+## 相关
+
+- [遥测](/guide/telemetry) —— 将追踪事件和验证报告作为运行时证据进行检视。
+- [限制](/guide/limits) —— 在验证运行之前限定一个回合能完成多少工作量。

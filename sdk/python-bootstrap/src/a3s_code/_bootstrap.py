@@ -6,7 +6,9 @@ wheel for the current platform, downloads it from the project's GitHub
 Releases, verifies the wheel's sha256 against the
 release manifest, extracts the compiled `_native` extension into a
 per-user cache, and registers it explicitly as `a3s_code._native` because it
-lives outside the installed package directory.
+lives outside the installed package directory. A cross-process advisory lock
+keeps the first download and sidecar extraction single-flight for applications
+sharing that cache.
 
 Override the cache location via `A3S_CODE_CACHE_DIR`. Override the
 release source via `A3S_CODE_RELEASES_BASE_URL` (default points at the
@@ -16,6 +18,7 @@ GitHub Releases page for `A3S-Lab/Code`). Skip the integrity check via
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -24,11 +27,13 @@ import platform
 import stat
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 # Version is the bootstrap's own version, which equals the matching native
 # wheel version on GH Releases. Bumped by the release workflow.
@@ -41,6 +46,8 @@ _MIN_PYTHON = (3, 10)
 _MAX_WHEEL_BYTES = 512 * 1024 * 1024
 _MAX_MEMBER_BYTES = 256 * 1024 * 1024
 _ABI3_PYTHON_TAG = "cp310-abi3"
+_INSTALL_LOCK_TIMEOUT_S = _REQUEST_TIMEOUT_S + 30
+_INSTALL_LOCK_POLL_S = 0.05
 _LOAD_LOCK = threading.Lock()
 _LOADED = False
 
@@ -56,6 +63,91 @@ class BootstrapHttpError(BootstrapError):
         self.url = url
         self.status_code = status_code
         super().__init__(f"GET {url} failed: HTTP {status_code}")
+
+
+def _lock_contention(error: OSError) -> bool:
+    """Return whether an advisory-lock failure means another process owns it."""
+
+    # POSIX flock reports EACCES/EAGAIN. Windows msvcrt.locking commonly uses
+    # errno 13 (permission denied) for the same contention condition.
+    return isinstance(error, BlockingIOError) or getattr(error, "errno", None) in {
+        errno.EAGAIN,
+        errno.EACCES,  # Windows sharing violation uses the same value
+        35,  # EAGAIN on macOS
+        36,  # EAGAIN on some BSDs
+    }
+
+
+@contextmanager
+def _install_lock(
+    cache_dir: Path, timeout_s: float = _INSTALL_LOCK_TIMEOUT_S
+) -> Iterator[None]:
+    """Acquire a cross-process lock for native wheel and Moli extraction.
+
+    The lock is advisory and released by the operating system if a bootstrap
+    process exits unexpectedly. Keeping it in the same platform/version cache
+    means independent Python applications perform one download and one atomic
+    extraction, while the in-process ``_LOAD_LOCK`` still protects module
+    registration.
+    """
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = cache_dir / ".install.lock"
+    try:
+        handle = lock_path.open("a+b")
+    except OSError as exc:
+        raise BootstrapError(f"could not open bootstrap install lock {lock_path}: {exc}") from exc
+
+    locked = False
+    try:
+        # Windows locking operates on a byte range and requires at least one
+        # byte in the file. The write is harmless on POSIX and races are safe.
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except OSError as exc:
+                if not _lock_contention(exc):
+                    raise BootstrapError(
+                        f"could not acquire bootstrap install lock {lock_path}: {exc}"
+                    ) from exc
+                if time.monotonic() >= deadline:
+                    raise BootstrapError(
+                        f"timed out waiting for bootstrap install lock {lock_path}"
+                    ) from exc
+                time.sleep(_INSTALL_LOCK_POLL_S)
+        yield
+    finally:
+        if locked:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                # Closing the descriptor also releases the advisory lock. Do
+                # not hide the caller's extraction/import exception here.
+                pass
+        handle.close()
 
 
 def _base_url() -> str:
@@ -98,13 +190,17 @@ def _platform_tag() -> str:
     elif sys_plat == "linux":
         if machine in ("x86_64", "amd64"):
             return "manylinux_2_28_x86_64"
+        if machine in ("arm64", "aarch64"):
+            return "manylinux_2_28_aarch64"
     elif sys_plat == "win32":
         if machine in ("amd64", "x86_64"):
             return "win_amd64"
+        if machine in ("arm64", "aarch64"):
+            return "win_arm64"
     raise BootstrapError(
         f"a3s-code: no native wheel published for {sys_plat}/{machine}. "
         "Supported platforms: macOS arm64 (11+), macOS Intel (12+), "
-        "Linux x86_64 (glibc 2.28+), Windows x86_64."
+        "Linux x86_64/arm64 (glibc 2.28+), Windows x86_64/arm64."
     )
 
 
@@ -384,24 +480,33 @@ def ensure_native_loaded(version: str = __version__) -> Path:
 
         native = _find_cached_native(cache)
         if native is None:
-            wheel_name, wheel_bytes = _download_wheel(version)
-            url = _release_url(wheel_name, version)
-            sys.stderr.write(
-                f"a3s-code: fetching native wheel {wheel_name} "
-                f"from {url} (first import only)...\n"
-            )
+            # Re-check after taking the process lock: another independent
+            # Python application may have completed the download while this
+            # process was starting. This keeps both the extension and bundled
+            # Moli sidecar single-flight across processes.
+            with _install_lock(cache):
+                native = _find_cached_native(cache)
+                if native is None:
+                    wheel_name, wheel_bytes = _download_wheel(version)
+                    url = _release_url(wheel_name, version)
+                    sys.stderr.write(
+                        f"a3s-code: fetching native wheel {wheel_name} "
+                        f"from {url} (first import only)...\n"
+                    )
 
-            if os.environ.get("A3S_CODE_SKIP_HASH_CHECK") != "1":
-                expected = _expected_sha256(wheel_name, version)
-                if expected is not None:
-                    actual = hashlib.sha256(wheel_bytes).hexdigest()
-                    if actual != expected:
-                        raise BootstrapError(
-                            f"sha256 mismatch for {wheel_name}: "
-                            f"expected {expected}, got {actual}"
-                        )
+                    if os.environ.get("A3S_CODE_SKIP_HASH_CHECK") != "1":
+                        expected = _expected_sha256(wheel_name, version)
+                        if expected is not None:
+                            actual = hashlib.sha256(wheel_bytes).hexdigest()
+                            if actual != expected:
+                                raise BootstrapError(
+                                    f"sha256 mismatch for {wheel_name}: "
+                                    f"expected {expected}, got {actual}"
+                                )
 
-            native = _extract_native(wheel_bytes, cache)
+                    native = _extract_native(wheel_bytes, cache)
+                else:
+                    _configure_cached_moli(cache)
         else:
             _configure_cached_moli(cache)
 

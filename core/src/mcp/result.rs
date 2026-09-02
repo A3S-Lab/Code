@@ -453,7 +453,7 @@ fn model_image_mime_type(media_type: &str) -> bool {
 
 /// Convert MCP tool result to a compact text representation.
 ///
-/// Runtime tool execution uses [`project_tool_result`] so image bytes and
+/// Runtime tool execution uses `project_tool_result` so image bytes and
 /// structured data are retained. This helper remains for diagnostics and
 /// compatibility callers that explicitly need text only.
 pub fn tool_result_to_string(result: &CallToolResult) -> String {

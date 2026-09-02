@@ -20,12 +20,24 @@ jobs:
             target: x86_64-unknown-linux-gnu
             executable: a3s-code-go-bridge
             suffix: ""
+          - host: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            executable: a3s-code-go-bridge
+            suffix: ""
           - host: macos-15-intel
             target: x86_64-apple-darwin
             executable: a3s-code-go-bridge
             suffix: ""
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            executable: a3s-code-go-bridge
+            suffix: ""
           - host: windows-latest
             target: x86_64-pc-windows-msvc
+            executable: a3s-code-go-bridge.exe
+            suffix: .exe
+          - host: windows-11-arm
+            target: aarch64-pc-windows-msvc
             executable: a3s-code-go-bridge.exe
             suffix: .exe
     runs-on: ${{ matrix.settings.host }}

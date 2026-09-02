@@ -34,6 +34,11 @@ jobs:
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: 2_28
+          - host: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            manylinux: 2_28
+          - host: windows-11-arm
+            target: aarch64-pc-windows-msvc
           - host: windows-latest
             target: x86_64-pc-windows-msvc
 
@@ -50,12 +55,11 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: |
-            3.10
-            3.11
-            3.12
-            3.13
-            3.14
+          # The extension is built against the oldest supported CPython and
+          # uses the stable cp310-abi3 ABI. One interpreter is sufficient for
+          # the release wheel; the bootstrap's compatibility matrix is tested
+          # separately in sdk/python-bootstrap/tests.
+          python-version: "3.10"
 
       - name: Install Rust
         # Pinned: brotli 8.0.3 (transitive via optional SDK features) fails
@@ -68,9 +72,9 @@ jobs:
       - name: Install protobuf compiler
         shell: bash
         run: |
-          if [ "${{ matrix.settings.host }}" = "ubuntu-latest" ]; then
+          if [[ "${{ matrix.settings.host }}" == ubuntu-* ]]; then
             sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          elif [ "${{ matrix.settings.host }}" = "windows-latest" ]; then
+          elif [[ "${{ matrix.settings.host }}" == windows-* ]]; then
             choco install protoc -y
           else
             brew install protobuf

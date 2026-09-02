@@ -29,6 +29,20 @@ const currentPageMarkers = new Map([
       'has_distinct_non_streaming_transport',
       'maxConcurrentGenerations',
       'recover_dynamic_workflow_step_output',
+      'v3.1.0',
+      'Moli',
+      'auto_download_moli',
+      'MOLI_UNAVAILABLE',
+    ],
+  ],
+  [
+    'api/index.mdx',
+    [
+      'a3s-code/sdk-capabilities/v1',
+      'Moli',
+      'aarch64-unknown-linux-gnu',
+      'aarch64-pc-windows-msvc',
+      'a3s-search',
     ],
   ],
 ]);

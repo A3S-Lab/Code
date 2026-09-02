@@ -13,78 +13,6 @@ let nativeBinding = null
 let localFileExisted = false
 let loadError = null
 
-// a3s-code: bundled Moli runtime bridge
-// Resolve the release-bundled Moli sidecar before any Agent/session can invoke
-// web_search. The native runtime manager still validates the executable and
-// falls back to its shared cache, while this bridge makes npm tarballs and
-// platform packages completely self-contained. An operator-supplied override
-// always wins and is never replaced.
-function configureBundledMoli() {
-  if (process.env.A3S_CODE_MOLI_EXECUTABLE) return
-
-  const executable = platform === 'win32' ? 'moli.exe' : 'moli'
-  const candidates = [
-    join(__dirname, executable),
-    join(__dirname, 'moli', executable),
-    join(__dirname, 'resources', executable),
-    join(__dirname, 'resources', 'moli', executable),
-  ]
-
-  const optionalPackage = (() => {
-    if (platform === 'darwin') {
-      return arch === 'arm64'
-        ? '@a3s-lab/code-darwin-arm64'
-        : arch === 'x64'
-          ? '@a3s-lab/code-darwin-x64'
-          : null
-    }
-    if (platform === 'win32') {
-      return arch === 'arm64'
-        ? '@a3s-lab/code-win32-arm64-msvc'
-        : arch === 'x64'
-          ? '@a3s-lab/code-win32-x64-msvc'
-          : null
-    }
-    if (platform === 'linux') {
-      const libc = isMusl() ? 'musl' : 'gnu'
-      return arch === 'arm64'
-        ? `@a3s-lab/code-linux-arm64-${libc}`
-        : arch === 'x64'
-          ? `@a3s-lab/code-linux-x64-${libc}`
-          : null
-    }
-    return null
-  })()
-  if (optionalPackage) {
-    try {
-      const nativeFile = require.resolve(optionalPackage)
-      const packageDir = require('path').dirname(nativeFile)
-      candidates.push(
-        join(packageDir, executable),
-        join(packageDir, 'moli', executable),
-        join(packageDir, 'resources', 'moli', executable),
-      )
-    } catch (_) {
-      // The local addon path may be used instead of an optional package.
-    }
-  }
-
-  for (const candidate of candidates) {
-    try {
-      if (existsSync(candidate)) {
-        const stat = require('fs').statSync(candidate)
-        if (stat.isFile()) {
-          process.env.A3S_CODE_MOLI_EXECUTABLE = candidate
-          process.env.A3S_CODE_MOLI_DIR = require('path').dirname(candidate)
-          return
-        }
-      }
-    } catch (_) {
-      // Continue through the deterministic candidate list.
-    }
-  }
-}
-
 function isMusl() {
   // For Node 10
   if (!process.report || typeof process.report.getReport !== 'function') {
@@ -382,11 +310,10 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-configureBundledMoli()
-
-const { StateGraphRuntime, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, ToolPresentationMode, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, builtinSkills, sdkCapabilities, sdkCapabilitiesSchema, moliRuntimeInfo, ensureMoli, moliDefaultVersion } = nativeBinding
+const { StateGraphRuntime, strictReplay, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, ToolPresentationMode, BrowserBackend, moliRuntimeInfo, ensureMoli, moliDefaultVersion, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
 
 module.exports.StateGraphRuntime = StateGraphRuntime
+module.exports.strictReplay = strictReplay
 module.exports.EventStream = EventStream
 module.exports.FileMemoryStore = FileMemoryStore
 module.exports.FileSessionStore = FileSessionStore
@@ -396,6 +323,9 @@ module.exports.LocalWorkspaceBackend = LocalWorkspaceBackend
 module.exports.S3WorkspaceBackend = S3WorkspaceBackend
 module.exports.ToolPresentationMode = ToolPresentationMode
 module.exports.BrowserBackend = BrowserBackend
+module.exports.moliRuntimeInfo = moliRuntimeInfo
+module.exports.ensureMoli = ensureMoli
+module.exports.moliDefaultVersion = moliDefaultVersion
 module.exports.Session = Session
 module.exports.LineWorkspaceChunkingStrategy = LineWorkspaceChunkingStrategy
 module.exports.FixedWindowWorkspaceChunkingStrategy = FixedWindowWorkspaceChunkingStrategy
@@ -405,12 +335,79 @@ module.exports.CallbackEmbeddingProvider = CallbackEmbeddingProvider
 module.exports.DeterministicWorkspaceReranker = DeterministicWorkspaceReranker
 module.exports.Agent = Agent
 module.exports.ServeHandle = ServeHandle
-module.exports.sdkCapabilities = sdkCapabilities
-module.exports.sdkCapabilitiesSchema = sdkCapabilitiesSchema
-module.exports.moliRuntimeInfo = moliRuntimeInfo
-module.exports.ensureMoli = ensureMoli
-module.exports.moliDefaultVersion = moliDefaultVersion
-module.exports.strictReplay = strictReplay
+
+// a3s-code: bundled Moli runtime bridge
+function a3sConfigureBundledMoli() {
+  if (process.env.A3S_CODE_MOLI_EXECUTABLE) return
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const executable = process.platform === 'win32' ? 'moli.exe' : 'moli'
+  const candidates = [
+    path.join(__dirname, executable),
+    path.join(__dirname, 'moli', executable),
+    path.join(__dirname, 'resources', executable),
+    path.join(__dirname, 'resources', 'moli', executable),
+  ]
+  const isMusl = () => {
+    if (process.platform !== 'linux') return false
+    if (process.report && typeof process.report.getReport === 'function') {
+      try {
+        return !process.report.getReport().header.glibcVersionRuntime
+      } catch (_) {
+        // Fall through to the ldd probe.
+      }
+    }
+    try {
+      const lddPath = require('node:child_process')
+        .execFileSync('which', ['ldd'], { encoding: 'utf8' })
+        .trim()
+      return Boolean(lddPath && fs.readFileSync(lddPath, 'utf8').includes('musl'))
+    } catch (_) {
+      return true
+    }
+  }
+  let optionalPackage = null
+  if (process.platform === 'darwin') {
+    optionalPackage = arch === 'arm64'
+      ? '@a3s-lab/code-darwin-arm64'
+      : arch === 'x64' ? '@a3s-lab/code-darwin-x64' : null
+  } else if (process.platform === 'win32') {
+    optionalPackage = arch === 'arm64'
+      ? '@a3s-lab/code-win32-arm64-msvc'
+      : arch === 'x64' ? '@a3s-lab/code-win32-x64-msvc' : null
+  } else if (process.platform === 'linux') {
+    const libc = isMusl() ? 'musl' : 'gnu'
+    optionalPackage = arch === 'arm64'
+      ? `@a3s-lab/code-linux-arm64-${libc}`
+      : arch === 'x64' ? `@a3s-lab/code-linux-x64-${libc}` : null
+  }
+  if (optionalPackage) {
+    try {
+      const nativeFile = require.resolve(optionalPackage)
+      const packageDir = path.dirname(nativeFile)
+      candidates.push(
+        path.join(packageDir, executable),
+        path.join(packageDir, 'moli', executable),
+        path.join(packageDir, 'resources', 'moli', executable),
+      )
+    } catch (_) {
+      // A local addon or shared-cache executable may still be available.
+    }
+  }
+  for (const candidate of candidates) {
+    try {
+      if (fs.statSync(candidate).isFile()) {
+        process.env.A3S_CODE_MOLI_EXECUTABLE = candidate
+        process.env.A3S_CODE_MOLI_DIR = path.dirname(candidate)
+        return
+      }
+    } catch (_) {
+      // Continue through the deterministic candidate list.
+    }
+  }
+}
+a3sConfigureBundledMoli()
+
 
 // a3s-code: EventStream async iterator bridge
 // napi-rs exposes the async `next()` method but does not install the symbol
@@ -499,7 +496,6 @@ wrapA3sCodeErrors(Session && Session.prototype, [
   'registerHook', 'unregisterHook', 'registerCommand',
   'ensureRecoveryCapabilityBinding', 'drainCapabilityCleanup',
 ])
-
 wrapA3sCodeErrors(StateGraphRuntime, ['restore'])
 wrapA3sCodeErrors(StateGraphRuntime && StateGraphRuntime.prototype, [
   'proposePatch', 'runGoal', 'emitCustom', 'emitJson', 'checkExternal',
@@ -516,4 +512,6 @@ if (typeof module.exports.strictReplay === 'function') {
 module.exports.formatVerificationSummary = formatVerificationSummary
 module.exports.agentEventTypesV1 = agentEventTypesV1
 module.exports.eventEnvelopeV1Version = eventEnvelopeV1Version
+module.exports.sdkCapabilities = sdkCapabilities
+module.exports.sdkCapabilitiesSchema = sdkCapabilitiesSchema
 module.exports.builtinSkills = builtinSkills

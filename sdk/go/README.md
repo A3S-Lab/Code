@@ -19,9 +19,12 @@ go get github.com/A3S-Lab/Code/sdk/go/v8
 
 Download the `a3s-code-go-bridge` asset for the same A3S Code release from
 [GitHub Releases](https://github.com/A3S-Lab/Code/releases). Verify it against
-`a3s-code-go-bridge-SHA256SUMS`. Release assets currently cover x86-64 Linux,
-macOS, and Windows; build the bridge from source for other architectures.
-Then either put it on `PATH` or set:
+`a3s-code-go-bridge-SHA256SUMS`. v8.1.0 publishes standalone bridge binaries and
+Moli-containing bundles for Linux, macOS, and Windows on both x86_64 and arm64
+GNU/MSVC targets. The bundle is the convenient self-contained option; the
+standalone binary can still use the shared Moli cache. Build from source for a
+target not listed in the release matrix. Then either put the bridge on `PATH`
+or set:
 
 ```bash
 export A3S_CODE_GO_BRIDGE=/opt/a3s/bin/a3s-code-go-bridge
@@ -34,6 +37,28 @@ $env:A3S_CODE_GO_BRIDGE = 'C:\a3s\a3s-code-go-bridge.exe'
 The Go module and bridge must come from the same release. `Create` performs a
 protocol, event-protocol, and full operation-capability handshake before it
 creates an Agent.
+
+`SDKCapabilities` returns the same ordered product inventory as the Rust,
+Node.js, and Python SDKs. `MoliRuntimeInfo` is read-only; `EnsureMoli` verifies
+the packaged/shared runtime and downloads the pinned Moli release only when
+automatic provisioning is enabled. The cache is per-user and protected by a
+cross-process lock, so multiple Go programs do not install duplicate browsers.
+
+```go
+capabilities, err := code.SDKCapabilities(ctx)
+if err != nil {
+	return err
+}
+status, err := code.MoliRuntimeInfo(ctx, code.NewMoliHeadlessConfig())
+if err != nil {
+	return err
+}
+executable, err := code.EnsureMoli(ctx, code.NewMoliHeadlessConfig())
+if err != nil {
+	return err
+}
+fmt.Println(code.SDKCapabilitiesSchema(), len(capabilities), status.Version, executable)
+```
 
 To build the bridge from a source checkout:
 

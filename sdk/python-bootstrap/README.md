@@ -7,17 +7,23 @@ platform from the project's
 the wheel's sha256 against the release manifest, extracts the compiled
 extension into a per-user cache, and exposes the normal `a3s_code` API.
 
-The v8.0.3 release uses one CPython 3.10 stable-ABI (`cp310-abi3`) wheel per
+The v8.1.0 release uses one CPython 3.10 stable-ABI (`cp310-abi3`) wheel per
 platform. That wheel is installable by CPython 3.10, 3.11, 3.12, 3.13, and
-3.14. The published `v8.0.2` assets predate this workflow and still use exact
-CPython 3.10–3.13 wheel names; upgrade the bootstrap to v8.0.3 for Python
-3.14. The loader falls back to the exact per-minor names used by older
-releases, so upgrading the bootstrap does not invalidate an older release
-asset.
+3.14. Supported native targets are macOS arm64/x86_64, Linux glibc 2.28+
+arm64/x86_64, and Windows arm64/x86_64. Every supported wheel contains its
+target Moli sidecar and provenance record. Linux musl is intentionally omitted
+because upstream Moli publishes no musl asset; use a system/explicit browser
+or another backend there. The loader still falls back to exact per-minor names
+when reading older release manifests.
 
 Subsequent imports use the cached extension. Cache lives under a
 platform-specific directory, `~/.cache/a3s-code/<version>/<platform-tag>/`
 (or `$A3S_CODE_CACHE_DIR/<version>/<platform-tag>/` when overridden).
+The extracted Moli executable is placed in the same version/target cache and
+is selected through `A3S_CODE_MOLI_EXECUTABLE`; atomic extraction and the
+bootstrap's cross-process installer lock make concurrent first imports
+single-flight. Rust, Node.js, and Go use the Core-managed Moli cache when they
+are not using a package-local sidecar.
 
 ## Why
 
@@ -31,8 +37,8 @@ through PyPI.
 
 - macOS arm64 (Apple Silicon, macOS 11+)
 - macOS x86_64 (Intel, macOS 12+)
-- Linux x86_64 (glibc 2.28+)
-- Windows x86_64
+- Linux x86_64 and arm64 (glibc 2.28+)
+- Windows x86_64 and arm64
 
 CPython 3.10, 3.11, 3.12, 3.13, and 3.14.
 
@@ -52,6 +58,9 @@ python3.14 -m pip install a3s-code
 | `A3S_CODE_CACHE_DIR` | Cache root (defaults to `$XDG_CACHE_HOME/a3s-code` or `~/.cache/a3s-code`) |
 | `A3S_CODE_RELEASES_BASE_URL` | Override the release base URL — useful for air-gapped mirrors |
 | `A3S_CODE_SKIP_HASH_CHECK` | `1` skips sha256 verification (do not use in production) |
+| `A3S_CODE_MOLI_EXECUTABLE` | Explicit verified Moli executable; skips package discovery |
+| `A3S_CODE_MOLI_CACHE_DIR` | Core-managed shared Moli cache root (the bootstrap uses its version/target cache for a bundled sidecar) |
+| `A3S_CODE_MOLI_RELEASE_BASE_URL` | HTTPS mirror for the pinned Moli release |
 
 ## Manual install
 

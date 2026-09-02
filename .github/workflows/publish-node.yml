@@ -27,9 +27,9 @@ jobs:
             zig: true
           - host: windows-latest
             target: x86_64-pc-windows-msvc
-          - host: windows-latest
+          - host: windows-11-arm
             target: aarch64-pc-windows-msvc
-            zig: true
+            zig: false
 
     name: Build ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
@@ -59,7 +59,7 @@ jobs:
         run: |
           if [[ "${{ matrix.settings.host }}" == ubuntu-* ]]; then
             sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          elif [ "${{ matrix.settings.host }}" = "windows-latest" ]; then
+          elif [[ "${{ matrix.settings.host }}" == windows-* ]]; then
             choco install protoc -y
           else
             brew install protobuf

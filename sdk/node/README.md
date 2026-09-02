@@ -9,8 +9,18 @@ npm install @a3s-lab/code
 ```
 
 Release builds publish prebuilt native bindings for Apple Silicon and Intel
-macOS. The Intel binding is built with a macOS 12 deployment target and runs
-on macOS 12 or later.
+macOS, Linux x86_64/arm64 (glibc and musl), and Windows x86_64/arm64. Every
+platform package carries the matching Moli sidecar when upstream publishes an
+asset; musl packages include an explicit `MOLI_UNAVAILABLE` marker because the
+Moli release has no musl build. The Intel binding is built with a macOS 12
+deployment target and runs on macOS 12 or later.
+
+The v8.1.0 package pins `a3s-search` v3.1.0 and selects Moli as the default
+JavaScript-capable search backend. `sdkCapabilities()` returns the complete
+product capability inventory, while `moliRuntimeInfo()` and `ensureMoli()`
+expose read-only diagnostics and verified shared-cache provisioning. Multiple
+Code processes reuse the same per-user installation; set
+`autoDownloadMoli: false` in `HeadlessConfig` for strict offline operation.
 
 ## Quick Start
 
@@ -29,6 +39,31 @@ async function main() {
 
 main().catch(console.error)
 ```
+
+## Capability discovery and Moli
+
+```js
+const {
+  sdkCapabilities,
+  sdkCapabilitiesSchema,
+  moliRuntimeInfo,
+  ensureMoli,
+} = require('@a3s-lab/code')
+
+async function inspectRuntime() {
+  const capabilities = sdkCapabilities()
+  const runtime = moliRuntimeInfo({ backend: 'moli', autoDownloadMoli: true })
+  const executable = await ensureMoli({ backend: 'moli' })
+  console.log(sdkCapabilitiesSchema(), capabilities.length, runtime.version, executable)
+}
+
+inspectRuntime().catch(console.error)
+```
+
+The runtime checks an explicit executable, a package sidecar, the verified
+shared cache, and a system installation before downloading the pinned Moli
+release over HTTPS. The installer uses a cross-process lock and atomic
+replacement, so concurrent applications do not install duplicate browsers.
 
 ## Async Lifecycle APIs
 

@@ -36,11 +36,20 @@ from the first release produced with the Intel build matrix.
 For an Intel Mac on macOS 12 or later, replace the platform suffix with
 `macosx_12_0_x86_64`.
 
-The v8.0.3 release publishes one CPython 3.10 stable-ABI (`cp310-abi3`) wheel
-per platform. It supports CPython 3.10–3.14, including Apple Silicon
-(macOS 11+) and Intel (`x86_64`, macOS 12+). The older `v8.0.2` assets remain
-exact CPython 3.10–3.13 wheels; use v8.0.3 for Python 3.14. The bootstrap
-keeps exact per-minor wheels as a compatibility fallback for older releases.
+The v8.1.0 release publishes one CPython 3.10 stable-ABI (`cp310-abi3`) wheel
+per supported platform. It supports CPython 3.10–3.14 on Apple Silicon
+(macOS 11+), Intel (`x86_64`, macOS 12+), Linux glibc 2.28+ (`x86_64` and
+`aarch64`), and Windows (`x86_64` and `arm64`). Each native wheel includes
+the target Moli sidecar and provenance record. The bootstrap extracts the
+sidecar into the verified per-user cache; concurrent processes share the same
+installation. Linux musl is not bundled because upstream Moli has no musl
+asset; provide an explicit/system browser or select another backend there.
+
+The release pins `a3s-search` v3.1.0 and uses Moli for JavaScript-capable
+`web_search` by default. `sdk_capabilities()` exposes the complete product
+capability inventory, and `moli_runtime_info()` / `ensure_moli_async()` expose
+runtime diagnostics and provisioning without requiring callers to manage a
+browser process.
 
 If the selected interpreter has no pip, initialize it first and keep the
 interpreter consistent for all commands:
@@ -79,6 +88,29 @@ session = agent.session("/my-project")
 
 result = session.send({"prompt": "What files handle authentication?"})
 print(result.text)
+```
+
+Discover the product surface and provision the shared Moli runtime from the
+same SDK:
+
+```python
+import asyncio
+
+from a3s_code import (
+    ensure_moli_async,
+    moli_runtime_info,
+    sdk_capabilities,
+    sdk_capabilities_schema,
+)
+
+async def main():
+    capabilities = sdk_capabilities()
+    runtime = moli_runtime_info()
+    executable = await ensure_moli_async()
+    print(sdk_capabilities_schema(), len(capabilities), runtime["version"], executable)
+
+
+asyncio.run(main())
 ```
 
 ## Async Lifecycle APIs

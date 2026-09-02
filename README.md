@@ -146,8 +146,11 @@ background service share the same execution semantics without sharing a UI.
 
 ## Capability map
 
-The Core crate enables lazy Chrome/Chromium-backed search by default. Minimal
-embeddings can use `default-features = false`; cloud backends, serving, and
+The Core crate enables lazy Moli-backed search by default through
+`a3s-search` v3.1.0. Moli is resolved from a packaged sidecar, the verified
+per-user cache, or a pinned HTTPS download and is shared by all local Code
+processes. Minimal embeddings can use `default-features = false`; Chrome and
+Lightpanda remain explicit backends, while cloud backends, serving, and
 telemetry remain opt-in.
 
 | Area                    | What is available                                                                                                                                                                                                                       | Activation                                                                                                                                                                |
@@ -169,7 +172,8 @@ telemetry remain opt-in.
 | State graph             | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow 0.11 lifecycle projection including cancellation, terminal outcomes, progress, and child operations                          | Explicit application use                                                                                                                                                  |
 | Agent release contract  | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks                                                                                                                                    | Baseline admission API                                                                                                                                                    |
 | Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, atomically observed bounded `EventEnvelopeV1` pages, per-conversation detached Git worktrees, and immutable `/v1/agent/changes` patches                   | `AgentProtocolHarness` multiplexes ordinary Code sessions and `AgentProtocolHost` executes through each `AgentSession`; the `a3s code` process supplies service transport |
-| Headless web search     | Lazy Chrome/Chromium-backed Google/Baidu engines and managed browser lifecycle APIs; Lightpanda remains configurable                                                                                                                    | Default Cargo feature `headless-search`; disable with `default-features = false`                                                                                          |
+| Headless web search     | `a3s-search` v3.1.0 with lazy Moli-backed Google/Baidu/Bing/Brave engines, shared-cache lifecycle, and typed diagnostics; Chrome/Chromium and Lightpanda remain configurable                                                                 | Default Cargo feature `headless-search`; disable with `default-features = false`                                                                                          |
+| SDK capability contract | Ordered product capability inventory, schema discovery, Moli diagnostics/provisioning, and state-graph APIs are exposed by Rust, Node.js, Python, and Go                                                                                 | Call each SDK's capability discovery function before optional integrations                                                                                                 |
 | S3 workspace            | S3-compatible object backend                                                                                                                                                                                                            | Cargo feature `s3`                                                                                                                                                        |
 | Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown                                                                                                                          | Cargo feature `serve`                                                                                                                                                     |
 | OpenTelemetry           | OTLP export in addition to baseline `tracing`                                                                                                                                                                                           | Cargo feature `telemetry`                                                                                                                                                 |
@@ -1085,10 +1089,12 @@ python -m pip install a3s-code
 go get github.com/A3S-Lab/Code/sdk/go/v8
 ```
 
-The Python release workflow in v8.0.3 uses the stable `cp310-abi3` interface,
-with Apple Silicon targeting macOS 11+ and Intel targeting macOS 12+. One
-wheel therefore covers CPython 3.10–3.14. Older v8.0.2 assets remain exact
-CPython 3.10–3.13 wheels; upgrade to v8.0.3 for Python 3.14.
+The Python release workflow in v8.1.0 uses the stable `cp310-abi3` interface,
+with Apple Silicon targeting macOS 11+, Intel targeting macOS 12+, and glibc
+2.28+ Linux targets for both x86_64 and arm64. Windows x86_64 and arm64 wheels
+are also published. Each native wheel carries the matching Moli sidecar, while
+the pure-Python bootstrap extracts it into the shared verified cache; one wheel
+therefore covers CPython 3.10–3.14 on each target.
 
 If `python3.14 -m pip` reports `No module named pip`, repair that interpreter
 before installing the SDK, then install into the same interpreter:
@@ -1106,10 +1112,13 @@ embedding provider instead.
 
 The native SDK crates explicitly enable the Core `headless-search`, `s3`, and
 `serve` features to preserve their complete product surface. Direct Rust
-embedders receive the lazy Chrome/Chromium search tier by default and can omit
-the browser dependency stack with `default-features = false`. The pure-Go
-package uses the matching `a3s-code-go-bridge` release asset and requires no
-CGO. Node.js, Python, and Go hosts can inject typed asynchronous embedding
+embedders receive the lazy Moli search tier by default and can omit the browser
+dependency stack with `default-features = false`. The pure-Go package uses the
+matching `a3s-code-go-bridge` release asset and requires no CGO; bridge bundles
+for each supported GNU/macOS/Windows target include the matching Moli sidecar.
+All official SDKs expose the same ordered `sdk-capabilities` inventory, event
+protocol, state-graph operations, and Moli diagnostics/provisioning APIs. Use
+that contract to negotiate optional features. Node.js, Python, and Go hosts can inject typed asynchronous embedding
 providers for session-owned, Memory-authoritative semantic and hybrid workspace
 retrieval; the internal Vec migration shadow remains unselectable and never
 serves results. Provider cancellation follows query and session lifecycle, and
@@ -1448,7 +1457,7 @@ go -C sdk/go test ./...
 cargo run --release -p a3s-code-core --example workspace_retrieval_benchmark
 ```
 
-The capability checker keeps all 20 advertised product areas connected to the
+The capability checker keeps all 26 advertised product areas connected to the
 evidence ledger. Dedicated CI jobs build and load the Node.js and Python native
 modules before running their host-language contracts; a successful Rust
 `cargo check` alone is not counted as SDK runtime evidence.

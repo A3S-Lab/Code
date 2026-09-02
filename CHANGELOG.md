@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concurrent Code processes reuse one verified runtime instead of repeatedly
   downloading or installing it. Native Node.js, Python, and Go distributions
   carry the matching Moli sidecar and provenance metadata.
+- Updated the publishable `a3s-memory` baseline to `0.1.4`, matching the
+  revision-fenced repository and vector APIs used by Code's durable-memory and
+  workspace-retrieval paths.
 
 - Added the A3S-owned `NativeBashSandbox`, backed by the independent
   `a3s-sandbox` crate, with direct macOS Seatbelt, Linux bubblewrap

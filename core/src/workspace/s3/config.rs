@@ -51,13 +51,14 @@ pub struct S3BackendConfig {
     /// `true` for MinIO / RustFS / most non-AWS endpoints, `false` for AWS S3.
     pub force_path_style: bool,
     /// Per-operation request timeout. Defaults to 30 seconds. Independent of
-    /// the workspace-level `operation_timeout` set on [`super::WorkspaceServices`];
+    /// the workspace-level `operation_timeout` set on
+    /// [`crate::workspace::WorkspaceServices`];
     /// whichever fires first wins.
     pub request_timeout: Option<Duration>,
     /// Maximum bytes that may be returned by a single
     /// [`crate::workspace::WorkspaceFileSystem::read_text`]
     /// call. Enforced before the response body is consumed by inspecting the
-    /// `Content-Length` reported by S3. Defaults to [`DEFAULT_MAX_READ_BYTES`]
+    /// `Content-Length` reported by S3. Defaults to `DEFAULT_MAX_READ_BYTES`
     /// when `None`.
     pub max_read_bytes: Option<u64>,
     /// Enables the `grep` / `glob` built-in tools against this S3 backend.
@@ -70,16 +71,16 @@ pub struct S3BackendConfig {
     /// [`Self::max_objects_scanned`] and [`Self::max_grep_bytes_per_object`].
     pub search_enabled: bool,
     /// Upper bound on objects considered during a single search. `None`
-    /// applies [`DEFAULT_MAX_OBJECTS_SCANNED`]. Ignored when
+    /// applies `DEFAULT_MAX_OBJECTS_SCANNED`. Ignored when
     /// `search_enabled` is `false`.
     pub max_objects_scanned: Option<usize>,
     /// Per-object size ceiling for `grep` body downloads. Objects larger than
     /// this are skipped (debug-traced) rather than fetched. `None` applies
-    /// [`DEFAULT_MAX_GREP_BYTES_PER_OBJECT`]. Ignored when `search_enabled` is
+    /// `DEFAULT_MAX_GREP_BYTES_PER_OBJECT`. Ignored when `search_enabled` is
     /// `false`.
     pub max_grep_bytes_per_object: Option<u64>,
     /// Number of concurrent object downloads during `grep`. `None` applies
-    /// [`DEFAULT_SEARCH_CONCURRENCY`]. Ignored when `search_enabled` is
+    /// `DEFAULT_SEARCH_CONCURRENCY`. Ignored when `search_enabled` is
     /// `false`.
     pub search_concurrency: Option<usize>,
 }
@@ -135,7 +136,7 @@ impl S3BackendConfig {
     }
 
     /// Override the per-read size ceiling. `0` is rejected at backend
-    /// construction time as a configuration mistake. See [`DEFAULT_MAX_READ_BYTES`].
+    /// construction time as a configuration mistake. See `DEFAULT_MAX_READ_BYTES`.
     pub fn max_read_bytes(mut self, bytes: u64) -> Self {
         self.max_read_bytes = Some(bytes);
         self
@@ -149,7 +150,7 @@ impl S3BackendConfig {
     }
 
     /// Override the upper bound on objects considered per search. See
-    /// [`DEFAULT_MAX_OBJECTS_SCANNED`]. `0` is treated as the default at
+    /// `DEFAULT_MAX_OBJECTS_SCANNED`. `0` is treated as the default at
     /// backend construction.
     pub fn max_objects_scanned(mut self, n: usize) -> Self {
         self.max_objects_scanned = Some(n);
@@ -157,14 +158,14 @@ impl S3BackendConfig {
     }
 
     /// Override the per-object body-size ceiling for `grep`. See
-    /// [`DEFAULT_MAX_GREP_BYTES_PER_OBJECT`]. `0` is treated as the default.
+    /// `DEFAULT_MAX_GREP_BYTES_PER_OBJECT`. `0` is treated as the default.
     pub fn max_grep_bytes_per_object(mut self, bytes: u64) -> Self {
         self.max_grep_bytes_per_object = Some(bytes);
         self
     }
 
     /// Override the per-search download concurrency. See
-    /// [`DEFAULT_SEARCH_CONCURRENCY`]. `0` resets to the default at backend
+    /// `DEFAULT_SEARCH_CONCURRENCY`. `0` resets to the default at backend
     /// construction.
     pub fn search_concurrency(mut self, n: usize) -> Self {
         self.search_concurrency = Some(n);

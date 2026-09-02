@@ -22,7 +22,7 @@
 //! # Memory bounds
 //!
 //! [`S3WorkspaceBackend::read_text`] enforces a `max_read_bytes` ceiling
-//! (default [`DEFAULT_MAX_READ_BYTES`]) by inspecting `Content-Length` on the
+//! (default `DEFAULT_MAX_READ_BYTES`) by inspecting `Content-Length` on the
 //! `GetObject` response before consuming the body. Oversized objects are
 //! rejected with a clear error and never buffered into memory. Override the
 //! limit via [`S3BackendConfig::max_read_bytes`] when reading larger text
@@ -150,7 +150,7 @@ impl S3WorkspaceBackend {
     }
 
     /// Override the per-read size ceiling. Passing `0` falls back to
-    /// [`DEFAULT_MAX_READ_BYTES`] — a zero ceiling would make every read
+    /// `DEFAULT_MAX_READ_BYTES` — a zero ceiling would make every read
     /// fail and is treated as a configuration mistake.
     pub fn with_max_read_bytes(mut self, bytes: u64) -> Self {
         self.max_read_bytes = if bytes == 0 {
