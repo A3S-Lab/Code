@@ -85,6 +85,14 @@ publishing the fastest sample as an SLA.
 | Flow and State Graph | Replay preserved 1,001 objects and 1,000 relations. Serialized events occupied 9,657,128 bytes against a 64 MiB ceiling.                                                                                                                                                                        |
 | Persistence          | Twenty-three generations overwrote one logical session without file accumulation. Memory and file stores both returned one session, preserved snapshot identity and byte shape, and left zero files and zero bytes after delete.                                                                |
 
+The change-scoped 2026-09-02 workspace-retrieval schema-v4 run additionally
+qualified the A3S Vec differential shadow: both 25,000-record hybrid arms
+matched 120/120 Memory queries with zero mismatch/failure, reported 54,500,008
+Vec accounted bytes, and released both engines on close. Exact, RRF-only, and
+deterministic hybrid p95 were 6.7343, 50.7850, and 49.7348 ms. This is not an
+RSS, disk, or Vec-serving-authority claim; see the
+[migration contract](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+
 ## Hermetic integration results
 
 | Boundary        | Controlled evidence                                                                                                                                                                                                                                                     | Result |

@@ -173,6 +173,24 @@ amplification and zero non-text inputs.
 The host additionally matches Core's one logical/physical/lower-bound batch
 against an independent embedding-server request count for each 39-chunk session.
 
+### VEC-SHADOW1 differential qualification
+
+The 2026-09-02 schema-v4 release run adds a Code-owned A3S Vec shadow without
+changing the Memory serving oracle or embedding amplification. Both the
+RRF-only and deterministic-rerank sessions retained exactly 25,000 Vec records,
+reported 54,500,008 accounted Vec bytes, reached revision 196 after 196
+successful mutations, compared all 120 measured queries, and recorded 120
+matches with zero mismatch, query failure, or mutation failure. Close returned
+both Memory and Vec record/byte observations to zero.
+
+Exact, RRF-only hybrid, and deterministic hybrid p95 were 6.7343, 50.7850, and
+49.7348 ms respectively, below the unchanged 30/100/100 ms gates. These values
+are a change-scoped local run and do not rewrite the historical qualification
+runs above. Vec `accounted_bytes` is a deterministic engine estimate, not an
+RSS or temporary-disk claim. The complete authority, mapping, failure, and
+promotion contract is in
+[Workspace Retrieval A3S Vec Migration](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+
 ### CODE-R2 deterministic rerank qualification
 
 The version-2 benchmark runs two separately constructed sessions over the same

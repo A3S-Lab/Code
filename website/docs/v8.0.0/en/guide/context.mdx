@@ -110,13 +110,16 @@ responsibility.
 
 ### Asynchronous vector projection lifecycle
 
-This is a session-owned, exact in-memory vector index, not a durable or shared
-vector database. Session construction returns before corpus embedding finishes.
-The background indexer reads admitted text, publishes immutable per-file
-partitions atomically, and reconciles later source revisions without
-re-embedding unchanged files. Reopening a session builds a new projection;
-closing it cancels outstanding provider work and must return vector records and
-accounted bytes to zero.
+The serving authority is a session-owned, exact A3S Memory vector index, not a
+durable or shared vector database. The developer migration also creates a
+session-local A3S Vec collection below an operating-system temporary directory.
+It receives the same already-admitted vectors and never serves hits. Session
+construction returns before corpus embedding finishes. The background indexer
+reads admitted text, publishes immutable per-file partitions atomically, and
+reconciles later source revisions without re-embedding unchanged files.
+Reopening a session builds new projections; closing it cancels outstanding
+provider work and must return Memory and Vec records and accounted bytes to
+zero.
 
 ```text
 session construction -> return immediately
@@ -140,9 +143,25 @@ interrupts the wait.
 | `degraded` | Valid partitions remain; bounded failures are reported  | Lexical paths continue and semantic results expose partial status |
 | `closed`   | Indexing is cancelled and vectors are released          | Recreate a session before using semantic retrieval again          |
 
+### A3S Vec differential shadow
+
+`active_vector_engine` identifies A3S Memory as the result authority.
+`vec_shadow` reports only its phase, revision, record/accounted-byte estimates,
+mutation outcomes, and compared/matching/mismatched/failed query counters.
+Node.js uses `activeVectorEngine` and `vecShadow`; Python uses snake_case; Go
+uses `ActiveVectorEngine` and `VecShadow`.
+
+Memory and Vec execute under one publication gate. Code compares IDs,
+partitions, f32 score bits, searched-record counts, and truncation, then returns
+the Memory result unchanged. A Vec failure or mismatch degrades only the shadow
+and is a promotion blocker, not permission to serve Vec output. The SDKs expose
+no primitive backend-name selector. Temporary collections are deleted on
+normal close; process-crash residue remains subject to the host operating
+system's temporary-directory policy.
+
 ### Ranking
 
-One immutable chunk catalog backs incremental BM25, optional exact in-memory
+One immutable chunk catalog backs incremental BM25, Memory-authoritative exact
 vectors, stable source anchors, and exact-literal or Code Intelligence
 candidates. Hybrid mode combines independent one-based ranks with
 reciprocal-rank fusion (`k = 60`) instead of mixing incomparable raw scores.

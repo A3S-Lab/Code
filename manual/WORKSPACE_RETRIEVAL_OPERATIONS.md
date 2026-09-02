@@ -122,6 +122,9 @@ Expose and retain aggregate, non-sensitive fields only:
   chunk count;
 - catalog, source, and vector revisions;
 - queue depth, vector record count, and accounted vector bytes;
+- active vector engine plus Vec shadow phase, revision, records, accounted
+  bytes, initialization/mutation outcomes, and compared/matching/mismatched/
+  failed query counters;
 - document inputs, physical provider requests, the batch-limit lower bound,
   flush reasons, amplification, and time to first ready publication;
 - semantic/hybrid channel status, rerank mode/version, truncation, fallback
@@ -129,11 +132,14 @@ Expose and retain aggregate, non-sensitive fields only:
 - provider/model/revision identity without URL, headers, environment-variable
   names, credentials, source text, vectors, prompts, or snippets.
 
-Alert on a degraded phase, failed files above zero, coverage that stops
+Alert on a degraded retrieval or Vec shadow phase, failed files above zero,
+any Vec mismatch or failed query, a Vec record-count divergence after ready,
+coverage that stops
 advancing, source revision advancing without a later vector revision, request
 amplification above 1.10x, non-text input above zero, a rerank fallback spike,
-or nonzero vectors after close. Raw source and vector data must never be added
-to telemetry to diagnose these conditions.
+or nonzero Memory or Vec records/bytes after close. A shadow alert does not
+authorize serving its result. Raw source and vector data must never be added to
+telemetry to diagnose these conditions.
 
 ## State-based response
 
@@ -148,6 +154,11 @@ to telemetry to diagnose these conditions.
 A query must never render a stale or deleted chunk after the corresponding
 workspace revision is observed. During replacement it may see the previous or
 new immutable partition, never a partially written partition.
+
+The retrieval phase and Vec shadow phase are independent. `ready` retrieval
+with a `degraded` shadow means Memory remains eligible to serve while the Vec
+differential evidence is unqualified. `active_vector_engine` must remain
+`a3s_memory`; any other value is a release-blocking compatibility violation.
 
 ## Rollback
 
@@ -169,6 +180,13 @@ be disabled. If the Embedding Provider, admission boundary, revision fencing,
 memory accounting, or cleanup invariant regresses, disable the complete
 retrieval runtime.
 
+If only the internal Vec shadow regresses, Memory still owns every serving
+result. Roll back the deployed Code binary to a revision before `9b75767` and
+recreate affected sessions; the temporary shadow carries no durable data to
+migrate. This gate deliberately exposes no backend-name selector or separate
+shadow toggle. Use the configuration rollback above if shadow latency or
+resource use is unacceptable before the binary rollback is available.
+
 ## Release procedure
 
 Run these checks from the Code repository, not the monorepo root:
@@ -184,7 +202,7 @@ cargo test --locked -p a3s-code-core --lib `
   agent_api::retrieval_qa_tests::repeated_source_generations_replace_vectors_without_accumulation `
   -- --ignored --exact --test-threads=1
 
-# Local release latency, memory, batching, quality, and cleanup gates.
+# Local release latency, Memory/Vec parity, batching, quality, and cleanup gates.
 cargo run --release -p a3s-code-core --example workspace_retrieval_benchmark
 ```
 

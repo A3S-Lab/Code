@@ -255,7 +255,8 @@ and remaining limits resume without repeating completed lines.
 and `query`: use `grep` for regular-expression content search, `glob` for path
 discovery, and `bm25` for native lexical relevance ranking. When the host
 explicitly enables Workspace Retrieval, the same schema also advertises
-`semantic` for exact cosine ranking over the session-owned in-memory index and
+`semantic` for exact cosine ranking over the session-owned, Memory-authoritative
+index and
 `hybrid` for reciprocal-rank fusion across exact, lexical, symbol, and semantic
 evidence. Disabled sessions omit those two modes. The shared `path` field
 scopes all modes; `include` filters candidate files for grep, BM25, semantic,

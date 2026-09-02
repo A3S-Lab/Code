@@ -148,8 +148,10 @@ Semantic retrieval is opt-in and belongs to one session. Exact, glob, BM25,
 Code Intelligence, and RRF need no embedding or reranking model. Dense semantic
 mode requires an embedding callback, but the callback can run a small model
 locally on CPU; no remote API or GPU is required. A3S Code owns chunking,
-bounded in-memory vectors, hybrid ranking, source-digest verification, and
-shutdown. Nothing is persisted to a vector database.
+Memory-authoritative bounded vectors, hybrid ranking, source-digest
+verification, and shutdown. During the A3S Vec migration preview it mirrors the
+same admitted vectors into a temporary session-local shadow, compares results,
+and still serves only Memory. Nothing is persisted to a vector database.
 
 ```python
 from a3s_code import (
@@ -214,6 +216,11 @@ the session cancels the active embedding coroutine. The exported
 `WorkspaceRetrievalStatus["batching"]` reports logical document batches,
 physical provider requests, limit flush reasons, the theoretical request lower
 bound, and time to first ready file for the current catalog generation.
+`WorkspaceRetrievalStatus["active_vector_engine"]` remains `"a3s_memory"`.
+`["vec_shadow"]` contains only bounded lifecycle, resource, mutation, and
+parity counters; it cannot change returned hits. Closing requires zero shadow
+records and accounted bytes. The SDK exposes no primitive backend selector;
+see the [migration contract](../../manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 The reranker argument is optional; omit it to preserve RRF-only. Its typed
 fields bound candidates, sampled feature bytes, fingerprints, and checked
