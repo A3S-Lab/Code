@@ -11,7 +11,8 @@ snapshots, and provider-local recovery.
 A3S Cloud owns Agent releases, conversations, executions, provider bindings,
 grants, approvals, checkpoint/fork business lineage, audit, placement,
 deployment, and product availability. A3S Runtime owns generic Task/Service
-lifecycle. Box and OCI Runtime own execution and isolation. Gateway owns public
+lifecycle. A3S Sandbox owns the local command-process boundary; Box and OCI
+Runtime own stronger workload execution and isolation. Gateway owns public
 request traffic and inference request accounting.
 
 The [cross-repository Agent Runtime platform roadmap](https://github.com/A3S-Lab/a3s/blob/main/docs/agent-runtime-platform-roadmap.md)
@@ -25,6 +26,11 @@ checkpoint authority.
   context, events, artifacts, and atomic `SessionSnapshotV1` are available.
 - `AgentProtocolHarness` and `AgentProtocolHost` expose release/session/run,
   cancellation, checkpoint recovery, receipts, and bounded event pages.
+- The independent A3S Sandbox crate is the default local command boundary for
+  Code sessions on macOS, Linux, and Windows. Its native policy and lifecycle
+  are linked through `NativeBashSandbox`; Bash, workflows, Skills, and delegated
+  runs inherit one handle, while remote workspace services keep their own
+  command-runner contract.
 - Harness event pages now bind run state, logical observation time, and the
   retained event window from one atomic RunStore generation. Restored runs
   keep that run-local logical time monotonic across new events, cancellation,
