@@ -1011,8 +1011,13 @@ mod tests {
     #[test]
     fn traversal_member_is_not_accepted() {
         assert!(validate_member_name(Path::new("../../moli")).is_err());
+        let valid_member = if cfg!(windows) {
+            Path::new("moli-v1/moli.exe")
+        } else {
+            Path::new("moli-v1/moli")
+        };
         assert_eq!(
-            validate_member_name(Path::new("moli-v1/moli")).unwrap(),
+            validate_member_name(valid_member).unwrap(),
             Some(manifest::executable_name())
         );
     }
