@@ -53,10 +53,13 @@ returns the same session ID and closes the previous object.
 
 ## Ephemeral Workspace Retrieval
 
-Inject an asynchronous embedding callback to build a session-owned, in-memory
-index without a vector database. The callback receives bounded batches and an
-`AbortSignal`; pass the signal to the provider HTTP request so session close,
-query cancellation, and deadlines stop source-code egress promptly.
+Inject an asynchronous embedding callback to build a session-owned,
+Memory-authoritative index without a vector database service. During the A3S
+Vec migration preview, Code also mirrors the same admitted vectors into a
+temporary session-local shadow and compares it without serving its results.
+The callback receives bounded batches and an `AbortSignal`; pass the signal to
+the provider HTTP request so session close, query cancellation, and deadlines
+stop source-code egress promptly.
 
 ```js
 const {
@@ -119,6 +122,13 @@ Every status snapshot exposes `batching` counters for logical document batches,
 physical provider requests, limit flush reasons, the theoretical request lower
 bound, and time to first ready file. These counters reset for each catalog
 generation and exclude non-text inputs by construction.
+
+`activeVectorEngine` remains `a3s_memory`. `vecShadow` exposes only bounded
+phase, revision, resource, mutation, and parity counters. A degraded shadow or
+mismatch never substitutes Vec hits for the Memory result. After close,
+`vecShadow.recordCount` and `vecShadow.accountedBytes` must both be zero. The
+SDK intentionally exposes no primitive backend selector; see the
+[migration contract](../../manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 The reranker is optional: omit the second constructor argument to preserve
 RRF-only. Its typed fields bound candidates, sampled feature bytes,

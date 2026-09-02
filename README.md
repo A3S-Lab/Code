@@ -155,7 +155,7 @@ telemetry remain opt-in.
 | Agent runtime           | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, and replay                                                                                                                                 | Baseline                                                                                                                                                                  |
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
-| Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, optional host-injected embeddings, exact in-memory vectors, hybrid RRF, optional deterministic CPU reranking, readiness metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
+| Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, Memory-authoritative exact vectors, a session-local A3S Vec differential shadow, hybrid RRF, optional deterministic CPU reranking, readiness/parity metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
 | Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, host-persisted safe refresh checkpoints, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
@@ -548,10 +548,16 @@ typed bounded retries, and rejects partial, duplicate, unknown, dimension-
 mismatched, non-finite, non-normalized, or descriptor-drifted responses. Input
 text and vector values are redacted from Code-owned `Debug` output and errors.
 `SessionOptions::with_workspace_retrieval(WorkspaceRetrievalOptions::new(...))`
-binds that contract to a session. The resulting vector index is an exact,
-session-owned in-memory projection: it is neither durable nor shared across
-sessions, and recreating a session rebuilds it from admitted source. Code
-reuses the admitted chunk catalog,
+binds that contract to a session. A3S Memory remains the exact, session-owned
+serving projection. During the migration preview, Code mirrors the same
+already-admitted `VectorRecord` values into a session-local A3S Vec collection
+under an operating-system temporary directory. It does not embed twice, and
+Vec hits never serve a query: Code compares their IDs, partitions, scores,
+searched-record count, and truncation flag against the Memory result while
+returning Memory unchanged. A Vec initialization, mutation, query, or parity
+failure degrades only the shadow. Neither projection is durable or shared
+across sessions, and recreating a session rebuilds both from admitted source.
+Code reuses the admitted chunk catalog,
 starts indexing without delaying `session_async`, coalesces chunks from the
 same catalog generation across files up to the configured input, text-byte,
 and expected-vector-byte limits, and publishes completed files as atomic A3S
@@ -567,6 +573,10 @@ remains asynchronous.
 
 `AgentSession::workspace_retrieval_status` reports building, ready, degraded,
 or closed state, revisions, coverage, queue depth, failures, and vector memory.
+`active_vector_engine` identifies A3S Memory as the result authority, while
+`vec_shadow` reports the temporary Vec collection phase, revision, records,
+accounted bytes, mutation outcomes, compared/matching/mismatched queries, and
+query failures without source, vector, path, or query values.
 Its `batching` object adds current-generation document inputs and bytes, logical
 batches, physical provider requests including retries, the three-limit request
 lower bound, flush reasons, time to first file-atomic publication, and the
@@ -1100,9 +1110,11 @@ embedders receive the lazy Chrome/Chromium search tier by default and can omit
 the browser dependency stack with `default-features = false`. The pure-Go
 package uses the matching `a3s-code-go-bridge` release asset and requires no
 CGO. Node.js, Python, and Go hosts can inject typed asynchronous embedding
-providers for session-owned in-memory semantic and hybrid workspace retrieval;
-provider cancellation follows query and session lifecycle, and no SDK requires
-a vector database. Remote embedding admits only conservative source paths,
+providers for session-owned, Memory-authoritative semantic and hybrid workspace
+retrieval; the internal Vec migration shadow remains unselectable and never
+serves results. Provider cancellation follows query and session lifecycle, and
+no SDK requires a vector database service. Remote embedding admits only
+conservative source paths,
 rejects hard-linked aliases, and revalidates logical and resolved paths at read
 time before source can leave the workspace boundary. Returned snippets are
 reread and digest-checked against current authoritative source. See the
@@ -1414,6 +1426,7 @@ the v1 schema or claiming external Runtime certification.
 | [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md)                               | Paired task/rerank ablations, built-in chunk matrix, cross-SDK real-model parity, custom negative control, non-text boundary, metrics, and batching follow-up |
 | [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md)                                               | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan                                                                   |
 | [Workspace Retrieval Operations](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)                                           | Production SLOs, telemetry, state response, generation gates, and configuration-only rollback                                                                 |
+| [Workspace Retrieval Vec Migration](manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md)                                    | Memory authority, Vec shadow mapping, parity/resource evidence, failure isolation, promotion gates, and rollback                                               |
 | [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md)                                                            | Filesystem-first tool and agent definitions                                                                                                                   |
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md)                                                           | Admission schema, identity, compatibility, and security boundary                                                                                              |
 | [Changelog](CHANGELOG.md)                                                                                            | Release history and migration-relevant changes                                                                                                                |
@@ -1440,8 +1453,10 @@ evidence ledger. Dedicated CI jobs build and load the Node.js and Python native
 modules before running their host-language contracts; a successful Rust
 `cargo check` alone is not counted as SDK runtime evidence.
 
-The retrieval benchmark emits JSON and fails when the locked 25,000 x 384
-exact-vector or hybrid p95 budgets are exceeded. See the
+The retrieval benchmark emits schema-v4 JSON and fails when the locked
+25,000 x 384 exact-vector or hybrid p95 budgets are exceeded, either Vec
+shadow arm compares fewer than all 120 queries, any comparison differs or
+fails, or either vector engine retains records after close. See the
 [qualification report](manual/WORKSPACE_RETRIEVAL_QA.md) for the reference
 profile, inclusion rules, and measured results.
 

@@ -241,6 +241,13 @@ deterministic in-process adapter does not qualify real-model quality, provider
 network or billing, an operating-system process restart, remote CAS/leases, or
 remote failover; those remain `DM-PROD1` host evidence.
 
+The workspace-retrieval benchmark report schema 4 also gates the
+Memory-authoritative [A3S Vec migration shadow](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+Each 25,000-record hybrid arm must expose `a3s_memory` as the active engine,
+compare all 120 queries, report zero Vec mismatch/failure, and release both
+Memory and Vec records and accounted bytes on close. This is differential
+evidence only; it does not qualify Vec as a serving authority.
+
 ## Runtime surface ledger
 
 | Surface            | Required runtime evidence                                                                                                                                                                                                 | Cross-platform evidence                                                                         | Current gate             |
