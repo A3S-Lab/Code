@@ -23,6 +23,9 @@ mod semantic_runtime;
 mod semantic_status;
 mod semantic_types;
 mod types;
+mod vec_shadow;
+mod vec_shadow_document;
+mod vec_shadow_store;
 mod verification;
 
 pub use catalog::{ChunkCatalogSnapshot, WorkspaceChunkCatalog};
@@ -45,7 +48,8 @@ pub use semantic_types::{
     WorkspaceEmbeddingBatchMetrics, WorkspaceRetrievalError, WorkspaceRetrievalOptions,
     WorkspaceRetrievalPhase, WorkspaceRetrievalResult, WorkspaceRetrievalStatus,
     WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
-    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult,
+    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult, WorkspaceVecShadowPhase,
+    WorkspaceVecShadowStatus, WorkspaceVectorEngine,
 };
 pub use types::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunk, WorkspaceChunkId, WorkspaceIndexError,

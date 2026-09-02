@@ -19,11 +19,17 @@ mod adversarial;
 #[test]
 fn additive_batching_metrics_preserve_status_json_compatibility() {
     let mut legacy = serde_json::to_value(WorkspaceRetrievalStatus::disabled()).unwrap();
-    legacy.as_object_mut().unwrap().remove("batching");
+    let legacy = legacy.as_object_mut().unwrap();
+    legacy.remove("activeVectorEngine");
+    legacy.remove("vecShadow");
+    legacy.remove("batching");
 
-    let status: WorkspaceRetrievalStatus = serde_json::from_value(legacy).unwrap();
+    let status: WorkspaceRetrievalStatus =
+        serde_json::from_value(serde_json::Value::Object(legacy.clone())).unwrap();
 
     assert_eq!(status.batching, Default::default());
+    assert_eq!(status.active_vector_engine, None);
+    assert_eq!(status.vec_shadow, Default::default());
 }
 
 #[tokio::test]

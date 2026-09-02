@@ -1,11 +1,12 @@
 use super::semantic_batch::plan_semantic_batches;
 use super::semantic_runtime::{BuildState, CatalogPartition, ReadyPartition};
 use super::semantic_status::SemanticStatusCell;
+use super::vec_shadow::ShadowVectorIndex;
 use super::{
     ChunkCatalogSnapshot, WorkspaceChunkCatalog, WorkspaceRetrievalPhase, WorkspaceRetrievalStatus,
 };
 use crate::embedding::EmbeddingExecutor;
-use a3s_memory::vector::{InMemoryVectorIndex, VectorIndex, VectorRecord};
+use a3s_memory::vector::{VectorIndex, VectorRecord};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) struct ProjectionContext<'a> {
     pub(super) catalog: &'a WorkspaceChunkCatalog,
-    pub(super) index: &'a InMemoryVectorIndex,
+    pub(super) index: &'a ShadowVectorIndex,
     pub(super) executor: &'a EmbeddingExecutor,
     pub(super) status: &'a SemanticStatusCell,
     pub(super) snapshot: &'a ChunkCatalogSnapshot,
@@ -185,7 +186,7 @@ pub(super) async fn project_pending_partitions(
 }
 
 pub(super) async fn remove_stale_partition(
-    index: &InMemoryVectorIndex,
+    index: &ShadowVectorIndex,
     state: &mut BuildState,
     path: &str,
 ) -> bool {
@@ -221,7 +222,7 @@ pub(super) fn catalog_revision_matches(catalog: &WorkspaceChunkCatalog, revision
 pub(super) fn publish_progress(
     status: &SemanticStatusCell,
     snapshot: &ChunkCatalogSnapshot,
-    index: &InMemoryVectorIndex,
+    index: &ShadowVectorIndex,
     state: &BuildState,
     queue_depth: usize,
     semantic_failure: bool,
@@ -284,6 +285,8 @@ pub(super) fn publish_progress(
         total_failures: state.total_failures,
         vector_records: vector.record_count,
         vector_bytes: vector.byte_count,
+        active_vector_engine: Some(super::WorkspaceVectorEngine::A3sMemory),
+        vec_shadow: index.shadow_status(),
         batching: state.batching.clone(),
         model,
     });

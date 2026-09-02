@@ -144,6 +144,40 @@ impl From<a3s_code_core::WorkspaceEmbeddingBatchMetrics> for WorkspaceEmbeddingB
 
 #[napi(object)]
 #[derive(Clone)]
+pub struct WorkspaceVecShadowStatusObject {
+    pub phase: String,
+    pub revision: f64,
+    pub record_count: f64,
+    pub accounted_bytes: f64,
+    pub initialization_failures: f64,
+    pub successful_mutations: f64,
+    pub failed_mutations: f64,
+    pub compared_queries: f64,
+    pub matching_queries: f64,
+    pub mismatched_queries: f64,
+    pub failed_queries: f64,
+}
+
+impl From<a3s_code_core::WorkspaceVecShadowStatus> for WorkspaceVecShadowStatusObject {
+    fn from(status: a3s_code_core::WorkspaceVecShadowStatus) -> Self {
+        Self {
+            phase: format!("{:?}", status.phase).to_ascii_lowercase(),
+            revision: status.revision as f64,
+            record_count: status.record_count as f64,
+            accounted_bytes: status.accounted_bytes as f64,
+            initialization_failures: status.initialization_failures as f64,
+            successful_mutations: status.successful_mutations as f64,
+            failed_mutations: status.failed_mutations as f64,
+            compared_queries: status.compared_queries as f64,
+            matching_queries: status.matching_queries as f64,
+            mismatched_queries: status.mismatched_queries as f64,
+            failed_queries: status.failed_queries as f64,
+        }
+    }
+}
+
+#[napi(object)]
+#[derive(Clone)]
 pub struct WorkspaceRetrievalStatusObject {
     pub phase: String,
     pub catalog_revision: f64,
@@ -160,6 +194,8 @@ pub struct WorkspaceRetrievalStatusObject {
     pub total_failures: f64,
     pub vector_records: f64,
     pub vector_bytes: f64,
+    pub active_vector_engine: Option<String>,
+    pub vec_shadow: WorkspaceVecShadowStatusObject,
     pub batching: WorkspaceEmbeddingBatchMetricsObject,
     pub model: Option<EmbeddingProviderDescriptorObject>,
 }
@@ -182,6 +218,10 @@ impl From<WorkspaceRetrievalStatus> for WorkspaceRetrievalStatusObject {
             total_failures: status.total_failures as f64,
             vector_records: status.vector_records as f64,
             vector_bytes: status.vector_bytes as f64,
+            active_vector_engine: status.active_vector_engine.map(|engine| match engine {
+                WorkspaceVectorEngine::A3sMemory => "a3s_memory".to_owned(),
+            }),
+            vec_shadow: status.vec_shadow.into(),
             batching: status.batching.into(),
             model: status.model.map(|model| EmbeddingProviderDescriptorObject {
                 provider: model.provider,
@@ -401,5 +441,26 @@ mod tests {
         assert!(search_limit(Some(0)).is_err());
         assert!(search_limit(Some(26)).is_err());
         assert_eq!(search_limit(None).unwrap(), 10);
+    }
+
+    #[test]
+    fn vector_migration_status_maps_to_node_fields() {
+        let mut status = WorkspaceRetrievalStatus::disabled();
+        status.active_vector_engine = Some(WorkspaceVectorEngine::A3sMemory);
+        status.vec_shadow = a3s_code_core::WorkspaceVecShadowStatus {
+            phase: a3s_code_core::WorkspaceVecShadowPhase::Ready,
+            revision: 7,
+            record_count: 11,
+            accounted_bytes: 4_096,
+            compared_queries: 3,
+            matching_queries: 3,
+            ..Default::default()
+        };
+
+        let mapped: WorkspaceRetrievalStatusObject = status.into();
+        assert_eq!(mapped.active_vector_engine.as_deref(), Some("a3s_memory"));
+        assert_eq!(mapped.vec_shadow.phase, "ready");
+        assert_eq!(mapped.vec_shadow.record_count, 11.0);
+        assert_eq!(mapped.vec_shadow.matching_queries, 3.0);
     }
 }

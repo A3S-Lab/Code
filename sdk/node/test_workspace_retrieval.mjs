@@ -73,6 +73,10 @@ try {
   }
   assert.equal(status.phase, 'ready', JSON.stringify(status))
   assert.ok(status.indexedChunks > 0)
+  assert.equal(status.activeVectorEngine, 'a3s_memory')
+  assert.equal(status.vecShadow.phase, 'ready')
+  assert.equal(status.vecShadow.recordCount, status.vectorRecords)
+  assert.equal(status.vecShadow.failedMutations, 0)
   assert.ok(status.batching.documentInputs > 0)
   assert.ok(status.batching.documentTextBytes > 0)
   assert.ok(status.batching.batchLimitLowerBound > 0)
@@ -86,6 +90,9 @@ try {
   const semantic = await session.semanticSearch({ query: 'cleanup session resources', limit: 3 })
   assert.equal(semantic.hits[0].chunk.path, 'src/session_cleanup.rs')
   assert.equal(semantic.hits[0].chunk.digestVerified, true)
+  assert.equal(semantic.status.activeVectorEngine, 'a3s_memory')
+  assert.ok(semantic.status.vecShadow.comparedQueries >= 1)
+  assert.equal(semantic.status.vecShadow.mismatchedQueries, 0)
 
   const hybrid = await session.hybridSearch({ query: 'terminate_owned_tasks', limit: 3 })
   assert.equal(hybrid.hits[0].chunk.path, 'src/session_cleanup.rs')
@@ -234,7 +241,11 @@ while (!observedAbort && Date.now() < abortDeadline) {
   await new Promise((resolve) => setTimeout(resolve, 10))
 }
 assert.equal(observedAbort, true, 'session close must abort the active host provider request')
-assert.equal(slowSession.workspaceRetrievalStatus().phase, 'closed')
+const closedStatus = slowSession.workspaceRetrievalStatus()
+assert.equal(closedStatus.phase, 'closed')
+assert.equal(closedStatus.vecShadow.phase, 'closed')
+assert.equal(closedStatus.vecShadow.recordCount, 0)
+assert.equal(closedStatus.vecShadow.accountedBytes, 0)
 await agent.close()
 fs.rmSync(tmpRoot, { recursive: true, force: true })
 
