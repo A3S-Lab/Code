@@ -4,7 +4,7 @@ Status: developer shadow, 2026-09-02.
 
 This document defines the first A3S Code integration gate for A3S Vec. It is a
 differential migration, not a serving-backend switch. Code commit
-`9b75767a1747dfc56adb403161f4f68dbe77b85e` pins A3S Vec commit
+`4163d8e3a1a96bbae430dc987005acaa362efb30` pins A3S Vec commit
 `019fdb929a57dee1803691e6def60df3946d9561`.
 
 ## Authority contract
@@ -207,7 +207,7 @@ committed.
 
 A shadow-only regression does not require data migration because the Vec
 collection is session-local and temporary. Roll back the deployed Code binary
-to a revision before `9b75767`, then recreate affected sessions. There is no
+to a revision before `4163d8e`, then recreate affected sessions. There is no
 public primitive backend selector and no separate shadow configuration knob in
 this gate.
 

@@ -181,7 +181,7 @@ memory accounting, or cleanup invariant regresses, disable the complete
 retrieval runtime.
 
 If only the internal Vec shadow regresses, Memory still owns every serving
-result. Roll back the deployed Code binary to a revision before `9b75767` and
+result. Roll back the deployed Code binary to a revision before `4163d8e` and
 recreate affected sessions; the temporary shadow carries no durable data to
 migrate. This gate deliberately exposes no backend-name selector or separate
 shadow toggle. Use the configuration rollback above if shadow latency or
