@@ -175,7 +175,7 @@ dependencies = [
 [[package]]
 name = "a3s-sandbox"
 version = "0.1.0"
-source = "git+https://github.com/A3S-Lab/Sandbox.git?rev=28a43329a824d8da36e07bdbebf88ae8ffaa05df#28a43329a824d8da36e07bdbebf88ae8ffaa05df"
+source = "git+https://github.com/A3S-Lab/Sandbox.git?rev=09c46aaf18e4be2c881459fa71ece8a9d8c45283#09c46aaf18e4be2c881459fa71ece8a9d8c45283"
 dependencies = [
  "anyhow",
  "async-trait",
