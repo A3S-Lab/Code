@@ -12,6 +12,8 @@ EmbeddingNormalization = Literal["none", "unit"]
 WorkspaceRetrievalPhase = Literal[
     "disabled", "building", "ready", "degraded", "closed"
 ]
+WorkspaceVectorEngine = Literal["a3s_memory"]
+WorkspaceVecShadowPhase = Literal["disabled", "ready", "degraded", "closed"]
 WorkspaceRetrievalChannel = Literal["exact", "lexical", "structural", "semantic"]
 WorkspaceSemanticFallbackReason = Literal[
     "building",
@@ -122,6 +124,20 @@ class WorkspaceEmbeddingBatchMetrics(TypedDict):
     non_text_inputs: int
 
 
+class WorkspaceVecShadowStatus(TypedDict):
+    phase: WorkspaceVecShadowPhase
+    revision: int
+    record_count: int
+    accounted_bytes: int
+    initialization_failures: int
+    successful_mutations: int
+    failed_mutations: int
+    compared_queries: int
+    matching_queries: int
+    mismatched_queries: int
+    failed_queries: int
+
+
 class WorkspaceRetrievalStatus(TypedDict):
     phase: WorkspaceRetrievalPhase
     catalog_revision: int
@@ -138,6 +154,8 @@ class WorkspaceRetrievalStatus(TypedDict):
     total_failures: int
     vector_records: int
     vector_bytes: int
+    active_vector_engine: Optional[WorkspaceVectorEngine]
+    vec_shadow: WorkspaceVecShadowStatus
     batching: WorkspaceEmbeddingBatchMetrics
     model: Optional[EmbeddingProviderDescriptor]
 
@@ -235,6 +253,9 @@ __all__ = [
     "WorkspaceRetrievalPhase",
     "WorkspaceEmbeddingBatchMetrics",
     "WorkspaceRetrievalStatus",
+    "WorkspaceVecShadowPhase",
+    "WorkspaceVecShadowStatus",
+    "WorkspaceVectorEngine",
     "WorkspaceRerankFallbackReason",
     "WorkspaceRerankAlgorithm",
     "WorkspaceRerankMode",

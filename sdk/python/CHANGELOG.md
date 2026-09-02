@@ -19,6 +19,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
   digest pins, cache directory, and download timeout) while preserving the
   historical Chrome and Lightpanda enum values.
 
+### Added
+
+- Updated the bundled Core integration so local sessions use the A3S-owned
+  native command sandbox by default on macOS, Linux, and Windows. The boundary
+  is linked through Core rather than a Node.js or npm runtime; custom sandbox
+  handles remain explicit host overrides and remote workspace services retain
+  their own command runner.
+
 ## [8.0.4] - 2026-08-31
 
 ### Changed

@@ -189,6 +189,42 @@ pub enum WorkspaceRetrievalPhase {
     Closed,
 }
 
+/// Vector engine whose results are authoritative for workspace retrieval.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceVectorEngine {
+    A3sMemory,
+}
+
+/// Lifecycle state of the session-local A3S Vec migration shadow.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceVecShadowPhase {
+    #[default]
+    Disabled,
+    Ready,
+    Degraded,
+    Closed,
+}
+
+/// Non-sensitive differential evidence for the A3S Vec migration shadow.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceVecShadowStatus {
+    pub phase: WorkspaceVecShadowPhase,
+    pub revision: u64,
+    pub record_count: usize,
+    /// A3S Vec's deterministic authoritative-document and derived-index estimate.
+    pub accounted_bytes: usize,
+    pub initialization_failures: u64,
+    pub successful_mutations: u64,
+    pub failed_mutations: u64,
+    pub compared_queries: u64,
+    pub matching_queries: u64,
+    pub mismatched_queries: u64,
+    pub failed_queries: u64,
+}
+
 /// Machine-readable batching evidence for the current catalog generation.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -234,6 +270,11 @@ pub struct WorkspaceRetrievalStatus {
     pub total_failures: u64,
     pub vector_records: usize,
     pub vector_bytes: usize,
+    /// The engine that produced query results. The Vec shadow never changes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_vector_engine: Option<WorkspaceVectorEngine>,
+    #[serde(default)]
+    pub vec_shadow: WorkspaceVecShadowStatus,
     #[serde(default)]
     pub batching: WorkspaceEmbeddingBatchMetrics,
     pub model: Option<EmbeddingProviderDescriptor>,
@@ -347,6 +388,8 @@ impl WorkspaceRetrievalStatus {
             total_failures: 0,
             vector_records: 0,
             vector_bytes: 0,
+            active_vector_engine: None,
+            vec_shadow: WorkspaceVecShadowStatus::default(),
             batching: WorkspaceEmbeddingBatchMetrics::default(),
             model: None,
         }
@@ -355,6 +398,7 @@ impl WorkspaceRetrievalStatus {
     pub(crate) fn building(model: EmbeddingProviderDescriptor) -> Self {
         Self {
             phase: WorkspaceRetrievalPhase::Building,
+            active_vector_engine: Some(WorkspaceVectorEngine::A3sMemory),
             model: Some(model),
             ..Self::disabled()
         }

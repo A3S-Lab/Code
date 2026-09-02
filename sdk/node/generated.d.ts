@@ -946,6 +946,19 @@ export interface WorkspaceEmbeddingBatchMetricsObject {
   timeToFirstReadyMs?: number
   nonTextInputs: number
 }
+export interface WorkspaceVecShadowStatusObject {
+  phase: string
+  revision: number
+  recordCount: number
+  accountedBytes: number
+  initializationFailures: number
+  successfulMutations: number
+  failedMutations: number
+  comparedQueries: number
+  matchingQueries: number
+  mismatchedQueries: number
+  failedQueries: number
+}
 export interface WorkspaceRetrievalStatusObject {
   phase: string
   catalogRevision: number
@@ -962,6 +975,8 @@ export interface WorkspaceRetrievalStatusObject {
   totalFailures: number
   vectorRecords: number
   vectorBytes: number
+  activeVectorEngine?: string
+  vecShadow: WorkspaceVecShadowStatusObject
   batching: WorkspaceEmbeddingBatchMetricsObject
   model?: EmbeddingProviderDescriptorObject
 }

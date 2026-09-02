@@ -190,14 +190,35 @@ catalog and lexical paths stay available.
 `AgentSession::workspace_retrieval_status` exposes phase, catalog/source/vector
 revisions, eligible/catalog/indexed file and chunk counts, basis-point coverage,
 queue depth, current and cumulative failures, vector records/bytes, and the
-immutable model descriptor. Session close cancels active embedding, joins or
-aborts the single owned task within the configured deadline, clears and drops
-the vector index, and shuts down only local manifest/catalog work created by
-that session. Host-owned workspaces retain their external lifecycle. Regression
+immutable model descriptor. It also exposes A3S Memory as the active vector
+engine and a bounded `vec_shadow` observation containing only lifecycle,
+resource, mutation, and parity counters. Session close cancels active embedding,
+joins or aborts the single owned task within the configured deadline, clears
+and drops the Memory index, closes the session-local temporary Vec collection,
+and shuts down only local manifest/catalog work created by that session.
+Host-owned workspaces retain their external lifecycle. Regression
 tests cover partial readiness, update-during-embedding fencing, per-file
 degradation, build-after-start failure cleanup, default disablement, custom
 workspace rejection, synchronous rejection, idempotent close, and weak-reference
 vector cleanup.
+
+## VEC-SHADOW1 migration evidence
+
+Code commit `4163d8e` mirrors each already-validated Memory `VectorRecord`
+batch into A3S Vec commit `019fdb92` without a second provider call. Memory
+remains the only result oracle. Queries execute under one publication gate;
+Vec IDs, partitions, f32 score bits, searched-record counts, and truncation are
+compared, but the Memory result is returned unchanged. Any Vec initialization,
+mutation, query, resource, or comparison failure degrades only the shadow.
+
+The Vec collection is session-local and created below an operating-system
+temporary directory with manual durability. It is not a durable workspace
+index or shared service. The authoritative Memory `max_records` and `max_bytes`
+limits remain unchanged; Vec receives the record ceiling for documents, write
+batches, and query candidates and reports its separate `accounted_bytes`
+estimate. See [Workspace Retrieval A3S Vec Migration](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md)
+for the mapping, failure isolation, benchmark evidence, promotion gates, and
+binary rollback boundary.
 
 ## CODE-Q1 implementation evidence
 

@@ -23,6 +23,33 @@ const (
 	WorkspaceRetrievalClosed   WorkspaceRetrievalPhase = "closed"
 )
 
+type WorkspaceVectorEngine string
+
+const WorkspaceVectorEngineA3SMemory WorkspaceVectorEngine = "a3s_memory"
+
+type WorkspaceVecShadowPhase string
+
+const (
+	WorkspaceVecShadowDisabled WorkspaceVecShadowPhase = "disabled"
+	WorkspaceVecShadowReady    WorkspaceVecShadowPhase = "ready"
+	WorkspaceVecShadowDegraded WorkspaceVecShadowPhase = "degraded"
+	WorkspaceVecShadowClosed   WorkspaceVecShadowPhase = "closed"
+)
+
+type WorkspaceVecShadowStatus struct {
+	Phase                  WorkspaceVecShadowPhase `json:"phase"`
+	Revision               uint64                  `json:"revision"`
+	RecordCount            uint                    `json:"record_count"`
+	AccountedBytes         uint                    `json:"accounted_bytes"`
+	InitializationFailures uint64                  `json:"initialization_failures"`
+	SuccessfulMutations    uint64                  `json:"successful_mutations"`
+	FailedMutations        uint64                  `json:"failed_mutations"`
+	ComparedQueries        uint64                  `json:"compared_queries"`
+	MatchingQueries        uint64                  `json:"matching_queries"`
+	MismatchedQueries      uint64                  `json:"mismatched_queries"`
+	FailedQueries          uint64                  `json:"failed_queries"`
+}
+
 type WorkspaceEmbeddingBatchMetrics struct {
 	DocumentInputs            uint    `json:"document_inputs"`
 	DocumentTextBytes         uint    `json:"document_text_bytes"`
@@ -38,23 +65,25 @@ type WorkspaceEmbeddingBatchMetrics struct {
 }
 
 type WorkspaceRetrievalStatus struct {
-	Phase           WorkspaceRetrievalPhase        `json:"phase"`
-	CatalogRevision uint64                         `json:"catalog_revision"`
-	SourceRevision  uint64                         `json:"source_revision"`
-	VectorRevision  uint64                         `json:"vector_revision"`
-	EligibleFiles   uint                           `json:"eligible_files"`
-	CatalogFiles    uint                           `json:"catalog_files"`
-	CatalogChunks   uint                           `json:"catalog_chunks"`
-	IndexedFiles    uint                           `json:"indexed_files"`
-	IndexedChunks   uint                           `json:"indexed_chunks"`
-	CoverageBPS     uint16                         `json:"coverage_bps"`
-	QueueDepth      uint                           `json:"queue_depth"`
-	FailedFiles     uint                           `json:"failed_files"`
-	TotalFailures   uint64                         `json:"total_failures"`
-	VectorRecords   uint                           `json:"vector_records"`
-	VectorBytes     uint                           `json:"vector_bytes"`
-	Batching        WorkspaceEmbeddingBatchMetrics `json:"batching"`
-	Model           *EmbeddingProviderDescriptor   `json:"model"`
+	Phase              WorkspaceRetrievalPhase        `json:"phase"`
+	CatalogRevision    uint64                         `json:"catalog_revision"`
+	SourceRevision     uint64                         `json:"source_revision"`
+	VectorRevision     uint64                         `json:"vector_revision"`
+	EligibleFiles      uint                           `json:"eligible_files"`
+	CatalogFiles       uint                           `json:"catalog_files"`
+	CatalogChunks      uint                           `json:"catalog_chunks"`
+	IndexedFiles       uint                           `json:"indexed_files"`
+	IndexedChunks      uint                           `json:"indexed_chunks"`
+	CoverageBPS        uint16                         `json:"coverage_bps"`
+	QueueDepth         uint                           `json:"queue_depth"`
+	FailedFiles        uint                           `json:"failed_files"`
+	TotalFailures      uint64                         `json:"total_failures"`
+	VectorRecords      uint                           `json:"vector_records"`
+	VectorBytes        uint                           `json:"vector_bytes"`
+	ActiveVectorEngine *WorkspaceVectorEngine         `json:"active_vector_engine"`
+	VecShadow          WorkspaceVecShadowStatus       `json:"vec_shadow"`
+	Batching           WorkspaceEmbeddingBatchMetrics `json:"batching"`
+	Model              *EmbeddingProviderDescriptor   `json:"model"`
 }
 
 type WorkspaceChunk struct {

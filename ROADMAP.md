@@ -11,7 +11,8 @@ snapshots, and provider-local recovery.
 A3S Cloud owns Agent releases, conversations, executions, provider bindings,
 grants, approvals, checkpoint/fork business lineage, audit, placement,
 deployment, and product availability. A3S Runtime owns generic Task/Service
-lifecycle. Box and OCI Runtime own execution and isolation. Gateway owns public
+lifecycle. A3S Sandbox owns the local command-process boundary; Box and OCI
+Runtime own stronger workload execution and isolation. Gateway owns public
 request traffic and inference request accounting.
 
 The [cross-repository Agent Runtime platform roadmap](https://github.com/A3S-Lab/a3s/blob/main/docs/agent-runtime-platform-roadmap.md)
@@ -25,6 +26,11 @@ checkpoint authority.
   context, events, artifacts, and atomic `SessionSnapshotV1` are available.
 - `AgentProtocolHarness` and `AgentProtocolHost` expose release/session/run,
   cancellation, checkpoint recovery, receipts, and bounded event pages.
+- The independent A3S Sandbox crate is the default local command boundary for
+  Code sessions on macOS, Linux, and Windows. Its native policy and lifecycle
+  are linked through `NativeBashSandbox`; Bash, workflows, Skills, and delegated
+  runs inherit one handle, while remote workspace services keep their own
+  command-runner contract.
 - Harness event pages now bind run state, logical observation time, and the
   retained event window from one atomic RunStore generation. Restored runs
   keep that run-local logical time monotonic across new events, cancellation,
@@ -734,6 +740,7 @@ Current implementation status:
 | `CODE-C2` | Delivered | Rust Core adds compatible line, fixed UTF-8 window, recursive prioritized-separator, and host-injected custom range strategies; Code validates complete coverage and budgets, owns IDs/digests/lines, charges overlap memory, contains host failures, and wires explicit configuration into session-owned catalogs without allowing silent overrides of host-owned catalogs |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
 | `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `3293f572` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
+| `VEC-SHADOW1` | Delivered | Code `4163d8e` pins Vec `019fdb92`, keeps A3S Memory as the only result authority, mirrors each admitted vector batch once into a session-local temporary Vec collection, compares exact IDs/partitions/f32 scores and search accounting under one publication gate, exposes bounded cross-SDK diagnostics, and contains every shadow failure. The 25,000 x 384 release profile compares 120/120 queries in both hybrid arms with zero mismatch/failure and releases both engines on close |
 | `CODE-Q1` | Delivered | Structured semantic search through the unified `search` tool, bounded query embedding, immutable catalog/vector revision fencing, current-file digest and byte-range verification, coverage metadata, cancellation, and explicit fallback |
 | `CODE-H1` | Delivered | Exact literal, incremental BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
@@ -760,6 +767,8 @@ The paired real-model task and batching evidence is in
 [`manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md`](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md).
 The chunk strategy and rerank boundary is in
 [`manual/WORKSPACE_RETRIEVAL_CHUNKING.md`](manual/WORKSPACE_RETRIEVAL_CHUNKING.md).
+The A3S Vec differential rollout and promotion boundary is in
+[`manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md`](manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 | Gate | Owner | Depends on | Deliverable | Exit criteria |
 | --- | --- | --- | --- | --- |
@@ -769,6 +778,7 @@ The chunk strategy and rerank boundary is in
 | `CODE-C2` | Code workspace | `CODE-C1` | Typed built-in chunk strategies, validated Rust custom range port, overlap accounting, and session catalog configuration | UTF-8, gaps, progress, size/count, panic, ownership, deterministic-ID, and async session tests pass; the default line strategy is unchanged |
 | `CODE-E1` | Code model/session | `WSR-00` | Host-injected Embedding Provider contract, batching, cancellation, and typed errors | Deterministic fake provider proves dimensions, cancellation, retry bounds, and descriptor changes |
 | `CODE-S1` | Code session | `MEM-V1`, `CODE-C1`, `CODE-E1` | Asynchronous session retrieval runtime and vector partition lifecycle | Session creation does not wait; partial readiness works; close drops all owned tasks and memory |
+| `VEC-SHADOW1` | Code session | `CODE-S1`, A3S Vec resource limits | Memory-authoritative differential adapter with a session-local Vec shadow | Identical admitted records are mirrored without a second embedding call; all compared results match bit-for-bit; failures cannot alter serving results; status is non-sensitive; both engines release on close |
 | `CODE-Q1` | Code tools | `CODE-S1` | Structured semantic search, verified snippets, status/coverage metadata, and fallback | No stale/deleted hit is rendered and existing search modes have no behavior regression |
 | `CODE-H1` | Code tools/intelligence | `CODE-Q1` | Exact, BM25, symbol, and semantic candidate fusion | Hybrid meets locked quality gates and preserves identifier precision |
 | `SDK-R1` | Code SDKs | `CODE-S1`, `CODE-Q1` | Rust/Node/Python/Go typed options, status DTOs, lifecycle parity, and examples | SDK alignment checks and language-specific integration tests pass |
@@ -927,6 +937,12 @@ physical batches against a 391-request lower bound, with 1.0x amplification,
 9-10 ms time to first file-atomic publication, and all latency, memory, scratch,
 quality, and cleanup gates passing.
 
+The schema-v4 `VEC-SHADOW1` follow-up keeps Memory authoritative and adds Vec
+differential evidence to both hybrid arms. Each arm retained 25,000 Vec records,
+compared and matched all 120 queries with zero failure, and released both
+engines on close. Exact, RRF-only, and deterministic p95 were 6.7343, 50.7850,
+and 49.7348 ms, so the existing latency gates remain green.
+
 Knowledge-compiler integration is not part of `CODE-B2`. It starts with a
 separate cross-project ADR and fixture for the typed artifact/provenance handoff;
 only then may Code add an explicit host-injected artifact provider.
@@ -1024,6 +1040,13 @@ index is session-ephemeral.
 design. Delivered `HOST-LCPU1` adds the qualified CLI-local CPU route; it does
 not block model-free search, require a new default, or move inference and
 model-artifact ownership into Code Core or A3S Memory.
+
+Delivered `VEC-SHADOW1` is migration evidence, not a backend promotion. A3S
+Memory remains the only engine allowed to affect hits, scores, fallbacks, or
+errors. Promoting Vec requires a separate compatibility decision after the
+external macOS 12 Intel gate, sustained zero-mismatch evidence, resource and
+latency review, and an explicit rollback design. Removing the Memory path is
+out of scope for this gate.
 
 ### 6.12 WSR non-goals
 

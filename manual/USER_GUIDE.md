@@ -149,13 +149,16 @@ Use `read.files` for a bounded ordered batch when paths are already known.
 Preview mechanical edits with `dry_run: true`, then apply the same edit with
 `expected_replacements` and an independent `max_replacements` when appropriate.
 
-## 5. Enable asynchronous in-memory workspace retrieval
+## 5. Enable asynchronous workspace retrieval
 
 Dense retrieval is an explicit host capability. It is not a durable vector
 database and it is not enabled by the selected chat model. The host supplies a
 typed embedding provider; A3S Code owns text admission, chunking, batching,
-response validation, exact in-memory vector partitions, hybrid ranking,
-current-source verification, accounting, and cleanup.
+response validation, Memory-authoritative exact vector partitions, hybrid
+ranking, current-source verification, accounting, and cleanup. The internal
+A3S Vec developer shadow mirrors the same admitted vectors into temporary
+session-local storage for comparison only; it cannot serve results and has no
+SDK backend selector.
 
 ```js
 import {
@@ -218,16 +221,21 @@ publish atomically, so queries may use partial coverage while building. Closing
 the session cancels provider work, joins the indexer within a deadline, and
 releases all accounted vector records and bytes.
 
+`activeVectorEngine` remains `a3s_memory`. `vecShadow` reports the internal
+migration shadow phase, records, accounted bytes, and parity counters. A
+degraded shadow never changes returned hits, and close requires both its record
+and byte observations to be zero.
+
 Only manifest-admitted UTF-8 text enters chunking and embeddings. Generated,
 oversized, credential-bearing, `.a3s` control, and non-text files are excluded.
 Before returning a hit, Code rereads the source and verifies its full-file
 digest and exact chunk range. Stale, deleted, unreadable, or superseded chunks
 are not exposed.
 
-The built-in index is an exact, bounded `InMemoryVectorIndex`. Recreating a
-session rebuilds its projection; sessions do not share it. If persistence or a
-shared vector service is required, the embedding host owns that separate
-system and must preserve Code's source-verification boundary.
+The serving index is an exact, bounded `InMemoryVectorIndex`. Recreating a
+session rebuilds it and the temporary Vec shadow; sessions do not share either.
+If persistence or a shared vector service is required, the embedding host owns
+that separate system and must preserve Code's source-verification boundary.
 
 For `a3s` CLI sessions, enable retrieval only from a trusted user ACL or a file
 selected explicitly with `--config`. An automatically discovered workspace

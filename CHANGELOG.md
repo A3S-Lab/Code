@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   custom handles remain explicit overrides and non-local workspace backends
   retain their own command runners.
 
+- Added a Code-owned A3S Vec migration shadow for semantic workspace
+  retrieval. A3S Memory remains the only serving authority; the same admitted
+  vectors are mirrored once into a session-local, temporary Vec collection and
+  query results are compared bit-for-bit behind a shared publication gate.
+  Rust, Node.js, Python, and Go expose the active engine plus bounded,
+  non-sensitive shadow lifecycle, resource, mutation, and parity counters.
 - Added post-build `AgentReleaseManifest::bind_publication` and a minimal
   BuildKit publication fixture. The fixture packages an exact Linux A3S CLI
   binary without its final manifest, pushes one OCI image manifest, binds the
