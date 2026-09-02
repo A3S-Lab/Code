@@ -780,7 +780,10 @@ fn extract_binary(archive_path: &Path, destination: &Path, format: &str) -> Resu
         other => bail!("unsupported Moli archive format `{other}`"),
     }
     set_executable(destination)?;
-    std::fs::File::open(destination)
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(destination)
         .with_context(|| format!("open extracted Moli {}", destination.display()))?
         .sync_all()
         .context("sync extracted Moli binary")?;
@@ -1010,7 +1013,7 @@ mod tests {
         assert!(validate_member_name(Path::new("../../moli")).is_err());
         assert_eq!(
             validate_member_name(Path::new("moli-v1/moli")).unwrap(),
-            Some("moli")
+            Some(manifest::executable_name())
         );
     }
 
