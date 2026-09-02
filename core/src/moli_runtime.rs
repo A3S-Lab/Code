@@ -892,6 +892,8 @@ fn set_executable(path: &Path) -> Result<()> {
         permissions.set_mode(0o755);
         std::fs::set_permissions(path, permissions)?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -915,7 +917,7 @@ mod tests {
     }
 
     fn fixture_archive() -> (Vec<u8>, &'static str) {
-        let mut bytes = Vec::new();
+        let mut bytes: Vec<u8> = Vec::new();
         #[cfg(not(windows))]
         {
             let encoder = flate2::write::GzEncoder::new(&mut bytes, flate2::Compression::fast());
