@@ -25,11 +25,14 @@ just present two buttons.
 ## Enforced Execution Boundary
 
 Permission policy decides whether an operation is allowed, denied, or needs
-approval. It does not, by itself, confine a process. Hosts that expose model
-Bash should attach a concrete `BashSandbox`; otherwise an approved command runs
-through the host workspace runner.
+approval. It does not, by itself, confine a process. Every local A3S Code
+session binds a concrete native `BashSandbox` before capability construction.
+The same handle reaches direct tools, model-governed tools, workflows, Skills,
+and delegated runs. Hosts use `SessionOptions::with_sandbox_handle` only to
+replace this default with an equivalent boundary; non-local workspace backends
+retain their explicit command-runner contract.
 
-The Code TUI uses the A3S-owned `a3s-sandbox` Rust library through its
+Core and the Code TUI use the A3S-owned `a3s-sandbox` Rust library through its
 `NativeBashSandbox` adapter. It selects the native boundary for the host
 platform—Seatbelt on macOS, Bubblewrap namespaces plus seccomp on Linux, and
 AppContainer plus a kill-on-close Job Object on Windows—and probes that
@@ -40,9 +43,11 @@ Capability probing is necessary before readiness. macOS requires the system
 `/usr/bin/sandbox-exec`; Linux requires `/usr/bin/bwrap` and permitted
 unprivileged user namespaces; Windows uses PowerShell 7 from the system
 Program Files directory and the native AppContainer APIs. The TUI runs a
-bounded command through the actual OS boundary before attaching it. Failure
-leaves the sandbox absent, so Default can request one exact host invocation and
-Auto denies Bash.
+bounded command through the actual OS boundary before enabling its deferred
+handle. Failure marks that handle unavailable, so Default can request one exact
+escalated host invocation and Auto denies Bash. Embedded Core sessions also
+fail closed: initialization failure installs an error-only handle instead of
+falling back to the local workspace runner.
 
 The adapter fails closed and never silently retries on the host. It denies
 network egress, local binding, and Unix sockets; limits writes to the workspace

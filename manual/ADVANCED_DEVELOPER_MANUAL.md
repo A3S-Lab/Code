@@ -382,22 +382,20 @@ pub struct ConditionalHook {
 ## 6.1 Sandboxing
 
 ```rust
-use a3s_code_core::sandbox::native::NativeBashSandbox;
-use a3s_code_core::SessionOptions;
-use std::sync::Arc;
-
-let sandbox = Arc::new(NativeBashSandbox::new("/path/to/workspace")?);
-sandbox.probe().await?;
-let options = SessionOptions::new().with_sandbox_handle(sandbox);
+let session = agent.session_async("/path/to/workspace", None).await?;
+let output = session.bash("printf sandboxed").await?;
 ```
 
 `NativeBashSandbox` adapts the independent
 [`a3s-sandbox`](https://github.com/A3S-Lab/Sandbox) crate. It uses Seatbelt on
 macOS, namespaces plus seccomp on Linux, and AppContainer plus a Job Object on
-Windows. Governed Bash requests on local workspaces fail closed when no sandbox
-is attached; only an explicitly authorized `require_escalated` request may use
-the host runner. Trusted direct Tool calls and non-local workspace runners keep
-their explicit host-owned contracts.
+Windows. A local session installs it automatically before registering tools and
+delegated workers. Initialization failure installs an error-only handle, so no
+direct or governed Bash request falls back to the host runner. A host can use
+`SessionOptions::with_sandbox_handle(...)` to replace the default with another
+equivalent isolation boundary. Non-local workspace runners keep their explicit
+host-owned contracts, and only an explicitly authorized `require_escalated`
+request may use the local host runner.
 
 # Chapter 7: Performance Optimization
 

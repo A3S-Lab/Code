@@ -696,20 +696,22 @@ error prose.
 
 ### Sandbox and credential boundaries
 
-Hosts can attach a `BashSandbox`. The A3S-owned, fail-closed
-`sandbox::native::NativeBashSandbox`, backed by the independent
-[`a3s-sandbox`](https://github.com/A3S-Lab/Sandbox) crate, limits writes to the
-active workspace and private run scratch space, protects agent control metadata,
-blocks common credential reads, scrubs ambient secrets, and denies command
-network access, local binding, and Unix sockets. It uses Seatbelt on macOS,
-user/mount/PID/IPC/UTS namespaces plus seccomp on Linux, and AppContainer plus a
-Job Object on Windows.
+Local sessions automatically attach the A3S-owned, fail-closed
+`sandbox::native::NativeBashSandbox`. Backed by the independent
+[`a3s-sandbox`](https://github.com/A3S-Lab/Sandbox) crate, it limits writes to
+the active workspace and private run scratch space, protects agent control
+metadata, blocks common credential reads, scrubs ambient secrets, and denies
+command network access, local binding, and Unix sockets. It uses Seatbelt on
+macOS, user/mount/PID/IPC/UTS namespaces plus seccomp on Linux, and AppContainer
+plus a Job Object on Windows.
 No Node.js or npm sandbox runtime is involved, and an unavailable native
-boundary never falls back to an unsandboxed host runner.
-Governed Bash execution on a local workspace also fails closed when a host has
-not installed a sandbox; only an explicitly authorized `require_escalated`
-invocation may use the host command runner. Trusted direct Tool calls and
-non-local workspace runners retain their explicit host-owned contracts.
+boundary is represented by an error-only sandbox handle and never falls back to
+an unsandboxed host runner. Top-level tools, workflows, and delegated child runs
+inherit the same handle. Hosts use `SessionOptions::with_sandbox_handle` only to
+replace the default with another equivalent isolation boundary. Non-local
+workspace runners retain their explicit host-owned contracts, and only an
+explicitly authorized `require_escalated` invocation may use the local host
+command runner.
 
 Shell isolation does not automatically govern in-process file tools. Local
 hosts should explicitly select `LocalWorkspaceAccessPolicy::CredentialBoundary`

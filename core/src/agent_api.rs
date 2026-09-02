@@ -75,6 +75,7 @@ mod session_persistence;
 mod session_queue;
 mod session_runs;
 mod session_runtime;
+mod session_sandbox;
 mod session_save;
 mod session_verification;
 mod session_view;
@@ -358,11 +359,12 @@ pub struct SessionOptions {
     /// research sessions where repeating a read/search with the same arguments
     /// is wasteful but should not make the whole run brittle.
     pub duplicate_tool_call_threshold: Option<u32>,
-    /// Optional concrete sandbox implementation.
+    /// Optional custom sandbox implementation.
     ///
-    /// When set, `bash` tool commands are routed through this sandbox instead
-    /// of `std::process::Command`. The host application constructs and owns
-    /// the implementation (e.g., an A3S Box–backed handle).
+    /// Local sessions install the A3S native sandbox by default. When set, this
+    /// handle replaces that default for `bash` tool commands. The host
+    /// application constructs and owns the custom implementation (for example,
+    /// an A3S Box-backed handle).
     pub sandbox_handle: Option<Arc<dyn crate::sandbox::BashSandbox>>,
     /// Optional host-provided workspace backend.
     ///

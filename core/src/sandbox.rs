@@ -1,15 +1,16 @@
 //! Sandbox integration for bash tool execution.
 //!
-//! When a [`BashSandbox`] is provided via
-//! [`ToolContext::with_sandbox`](crate::tools::ToolContext::with_sandbox), the
-//! `bash` built-in tool routes commands through that sandbox instead of
+//! Local A3S Code sessions install a [`BashSandbox`] automatically, and the
+//! `bash` built-in tool routes commands through it instead of
 //! `std::process::Command`. The A3S native backend keeps the canonical host
 //! workspace path while enforcing the platform isolation boundary around the
 //! child process.
 //!
 //! [`native::NativeBashSandbox`] is the A3S-owned fail-closed implementation
-//! used by the CLI. Hosts can still supply another implementation through the
-//! trait contract when they own an equivalent isolation boundary.
+//! used by default throughout A3S Code. Hosts can still supply another
+//! implementation through the trait contract when they own an equivalent
+//! isolation boundary. Non-local workspace backends retain their explicit
+//! command-runner contract.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -86,9 +87,9 @@ impl From<SandboxOutput> for SandboxExecutionOutput {
 
 /// Abstraction over sandbox bash execution used by the `bash` built-in tool.
 ///
-/// Implement this trait to provide a custom sandbox backend. The host
-/// application constructs the implementation and passes it to the session
-/// via [`ToolContext::with_sandbox`](crate::tools::ToolContext::with_sandbox).
+/// Implement this trait to replace the native sandbox with a custom backend.
+/// The host application constructs the implementation and passes it to the
+/// session via [`crate::SessionOptions::with_sandbox_handle`].
 #[async_trait]
 pub trait BashSandbox: Send + Sync {
     /// Execute a shell command inside the sandbox.

@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Every backend denies network and Unix-socket creation, bounds process trees
   and output, protects workspace control metadata and credentials, and fails
   closed when its operating-system boundary is unavailable.
+  Local Code sessions install it by default before capability construction, so
+  built-in Bash, workflows, and delegated child runs share the same boundary;
+  custom handles remain explicit overrides and non-local workspace backends
+  retain their own command runners.
 
 - Added post-build `AgentReleaseManifest::bind_publication` and a minimal
   BuildKit publication fixture. The fixture packages an exact Linux A3S CLI

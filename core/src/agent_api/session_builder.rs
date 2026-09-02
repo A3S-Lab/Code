@@ -19,6 +19,7 @@ use super::session_config::{resolve_auto_delegation_config, ResolvedSessionConfi
 use super::session_runtime::{
     build_session_runtime, build_session_runtime_sync, SessionRuntime, SessionRuntimeInput,
 };
+use super::session_sandbox::install_default_local_sandbox;
 
 pub(super) fn prepare_session_options(agent: &Agent, opts: SessionOptions) -> SessionOptions {
     let mut opts = opts;
@@ -46,9 +47,10 @@ pub(super) fn prepare_session_options(agent: &Agent, opts: SessionOptions) -> Se
 pub(super) async fn build_agent_session(
     agent: &Agent,
     workspace: String,
-    resolved: ResolvedSessionConfig,
+    mut resolved: ResolvedSessionConfig,
 ) -> Result<AgentSession> {
     let canonical = safe_canonicalize(Path::new(&workspace));
+    install_default_local_sandbox(&canonical, &mut resolved.options);
     let session_cancel = tokio_util::sync::CancellationToken::new();
     let capabilities =
         build_resolved_capabilities(agent, &canonical, &resolved, session_cancel.clone())?;
@@ -96,9 +98,10 @@ async fn cleanup_unfinished_capabilities(
 pub(super) fn build_agent_session_sync(
     agent: &Agent,
     workspace: String,
-    resolved: ResolvedSessionConfig,
+    mut resolved: ResolvedSessionConfig,
 ) -> Result<AgentSession> {
     let canonical = safe_canonicalize(Path::new(&workspace));
+    install_default_local_sandbox(&canonical, &mut resolved.options);
     let session_cancel = tokio_util::sync::CancellationToken::new();
     let capabilities =
         build_resolved_capabilities(agent, &canonical, &resolved, session_cancel.clone())?;

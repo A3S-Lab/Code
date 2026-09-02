@@ -52,9 +52,9 @@ impl AgentSession {
 
     /// Execute a bash command in the workspace.
     ///
-    /// When a sandbox handle is configured via
-    /// [`SessionOptions::with_sandbox_handle()`], the command is routed through
-    /// that sandbox.
+    /// Local sessions route the command through the built-in A3S native
+    /// sandbox. A host can replace it via
+    /// [`SessionOptions::with_sandbox_handle()`].
     pub async fn bash(&self, command: &str) -> Result<String> {
         DirectToolRuntime::from_session(self).bash(command).await
     }

@@ -582,11 +582,12 @@ impl SessionOptions {
             .with_circuit_breaker(3)
     }
 
-    /// Provide a concrete [`BashSandbox`] implementation for this session.
+    /// Override the default native [`BashSandbox`] for this session.
     ///
-    /// When set, `bash` tool commands are routed through the given sandbox
-    /// instead of `std::process::Command`. The host application is responsible
-    /// for constructing and lifecycle-managing the sandbox.
+    /// Local sessions automatically bind the A3S native sandbox. Use this
+    /// option only when the host owns another equivalent isolation boundary.
+    /// The host remains responsible for constructing and lifecycle-managing a
+    /// custom sandbox.
     ///
     /// [`BashSandbox`]: crate::sandbox::BashSandbox
     pub fn with_sandbox_handle(mut self, handle: Arc<dyn crate::sandbox::BashSandbox>) -> Self {

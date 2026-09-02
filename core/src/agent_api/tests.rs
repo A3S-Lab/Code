@@ -1158,6 +1158,28 @@ async fn concurrent_session_direct_generations_share_provider_admission() {
 }
 
 #[tokio::test]
+async fn test_local_session_installs_native_sandbox_by_default() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session_async(
+            workspace.path().display().to_string(),
+            Some(SessionOptions::new().with_memory(Arc::new(a3s_memory::InMemoryStore::new()))),
+        )
+        .await
+        .unwrap();
+
+    assert!(session.tool_context.sandbox.is_some());
+
+    #[cfg(not(windows))]
+    let command = "printf core-default-sandbox";
+    #[cfg(windows)]
+    let command = "[Console]::Out.Write('core-default-sandbox')";
+    let output = session.bash(command).await.unwrap();
+    assert_eq!(output, "core-default-sandbox");
+}
+
+#[tokio::test]
 async fn test_session_uses_workspace_backend_for_direct_tools() {
     let fs = Arc::new(TestWorkspaceFs::default());
     fs.insert("app.txt", "hello from backend\n");
@@ -1183,6 +1205,8 @@ async fn test_session_uses_workspace_backend_for_direct_tools() {
         )
         .await
         .unwrap();
+
+    assert!(session.tool_context.sandbox.is_none());
 
     let tool_names = session.tool_names();
     assert!(tool_names.contains(&"read".to_string()));
