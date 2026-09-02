@@ -150,7 +150,10 @@ jobs:
         run: cargo clippy --workspace --lib --bins -- -D warnings
 
       - name: Library tests
-        run: cargo test --workspace --lib
+        # a3s-sandbox's AppContainer backend temporarily reserves DOS drive
+        # mappings and mutates host ACLs. Keep the test process serial so
+        # unrelated Code tests cannot race those process-global resources.
+        run: cargo test --workspace --lib -- --test-threads=1
 
       - uses: actions/setup-go@v6
         with:
