@@ -546,7 +546,12 @@ async fn acquire_install_lock(root: &Path, deadline: Instant) -> Result<std::fs:
         }
         match file.try_lock_exclusive() {
             Ok(()) => return Ok(file),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            // `fs2` exposes the platform's native contention error.  Unix
+            // normally maps it to `WouldBlock`, while Windows reports
+            // `ERROR_LOCK_VIOLATION` as `PermissionDenied`; compare the
+            // canonical fs2 error as well so waiters never fail spuriously
+            // on Windows when another Code process owns the lock.
+            Err(error) if is_lock_contended(&error) => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 tokio::time::sleep(LOCK_POLL.min(remaining)).await;
             }
@@ -556,6 +561,15 @@ async fn acquire_install_lock(root: &Path, deadline: Instant) -> Result<std::fs:
             }
         }
     }
+}
+
+fn is_lock_contended(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    fs2::lock_contended_error()
+        .raw_os_error()
+        .is_some_and(|code| error.raw_os_error() == Some(code))
 }
 
 struct InstallRequest<'a> {
@@ -1020,6 +1034,17 @@ mod tests {
             validate_member_name(valid_member).unwrap(),
             Some(manifest::executable_name())
         );
+    }
+
+    #[test]
+    fn lock_contention_recognizes_platform_error() {
+        assert!(is_lock_contended(&fs2::lock_contended_error()));
+        assert!(is_lock_contended(&std::io::Error::from(
+            std::io::ErrorKind::WouldBlock
+        )));
+        assert!(!is_lock_contended(&std::io::Error::other(
+            "unrelated installation error"
+        )));
     }
 
     #[tokio::test]
