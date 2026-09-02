@@ -32,6 +32,13 @@ pub(super) struct AsyncAgentCreateCall {
     pub(super) config_source: Option<String>,
 }
 
+/// One-shot typed CodeConfig constructor executed by asyncio's default
+/// executor.
+#[pyclass]
+pub(super) struct AsyncAgentCreateConfigCall {
+    pub(super) config: Option<a3s_code_core::CodeConfig>,
+}
+
 #[pymethods]
 impl AsyncAgentCreateCall {
     fn __call__(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -41,6 +48,26 @@ impl AsyncAgentCreateCall {
             .ok_or_else(|| PyRuntimeError::new_err("async agent creation already consumed"))?;
         let agent = py
             .allow_threads(move || get_runtime().block_on(RustAgent::new(config_source)))
+            .map_err(py_code_error)?;
+        Ok(Py::new(
+            py,
+            PyAgent {
+                inner: Arc::new(agent),
+            },
+        )?
+        .into_any())
+    }
+}
+
+#[pymethods]
+impl AsyncAgentCreateConfigCall {
+    fn __call__(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let config = self
+            .config
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("async typed agent creation already consumed"))?;
+        let agent = py
+            .allow_threads(move || get_runtime().block_on(RustAgent::from_config(config)))
             .map_err(py_code_error)?;
         Ok(Py::new(
             py,

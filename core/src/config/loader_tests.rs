@@ -118,6 +118,11 @@ search {
     backend = "lightpanda"
     max_tabs = 6
     browser_path = "/opt/lightpanda"
+    auto_download_moli = false
+    moli_version = "1.1.1"
+    moli_sha256 = "56deed4634b9c77641ce31f3802b9bb3f32c6d7f28073f73901540429a29864b"
+    moli_cache_dir = "/var/cache/a3s-code/moli"
+    moli_download_timeout_secs = 45
     launch_args = ["--disable-gpu"]
     proxy_url = "http://127.0.0.1:7890"
   }
@@ -240,6 +245,21 @@ mcp_servers "filesystem" {
         search.headless.as_ref().map(|headless| headless.backend),
         Some(BrowserBackend::Lightpanda)
     );
+    let headless = search.headless.as_ref().expect("headless config");
+    assert!(!headless.auto_download_moli);
+    assert_eq!(headless.moli_version.as_deref(), Some("1.1.1"));
+    assert_eq!(
+        headless.moli_sha256.as_deref(),
+        Some("56deed4634b9c77641ce31f3802b9bb3f32c6d7f28073f73901540429a29864b")
+    );
+    assert_eq!(
+        headless
+            .moli_cache_dir
+            .as_ref()
+            .map(|path| path.to_string_lossy()),
+        Some("/var/cache/a3s-code/moli".into())
+    );
+    assert_eq!(headless.moli_download_timeout_secs, 45);
     assert_eq!(
         search
             .engines

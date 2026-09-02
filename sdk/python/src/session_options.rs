@@ -1,4 +1,5 @@
 use super::*;
+use super::search_config::PySearchConfig;
 
 /// Per-session configuration options.
 ///
@@ -13,6 +14,8 @@ pub(super) struct PySessionOptions {
     pub(super) agent_dirs: Vec<String>,
     pub(super) worker_agents: Vec<PyWorkerAgentSpec>,
     pub(super) queue_config: Option<PySessionQueueConfig>,
+    /// Per-session web-search and headless-browser configuration.
+    pub(super) search_config: Option<PySearchConfig>,
     pub(super) permission_policy: Option<PyPermissionPolicy>,
     pub(super) confirmation_policy: Option<PyConfirmationPolicy>,
     pub(super) auto_compact: bool,
@@ -180,6 +183,7 @@ impl Clone for PySessionOptions {
             agent_dirs: self.agent_dirs.clone(),
             worker_agents: self.worker_agents.clone(),
             queue_config: self.queue_config.clone(),
+            search_config: self.search_config.clone(),
             permission_policy: self.permission_policy.clone(),
             confirmation_policy: self.confirmation_policy.clone(),
             auto_compact: self.auto_compact,
@@ -262,6 +266,7 @@ impl PySessionOptions {
             agent_dirs: vec![],
             worker_agents: vec![],
             queue_config: None,
+            search_config: None,
             permission_policy: None,
             confirmation_policy: None,
             auto_compact: false,
@@ -423,6 +428,17 @@ impl PySessionOptions {
     #[setter]
     fn set_queue_config(&mut self, value: Option<PySessionQueueConfig>) {
         self.queue_config = value;
+    }
+
+    /// Per-session web-search and headless-browser configuration.
+    #[getter]
+    fn get_search_config(&self) -> Option<PySearchConfig> {
+        self.search_config.clone()
+    }
+
+    #[setter]
+    fn set_search_config(&mut self, value: Option<PySearchConfig>) {
+        self.search_config = value;
     }
 
     /// Explicit permission policy for tool execution.
@@ -1095,10 +1111,11 @@ impl PySessionOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, max_context_tokens={:?}, artifact_store_limits={}, tool_result_transform_policy={}, tool_presentation_profile={}, memory_store={}, session_store={}, security_provider={}, workspace_backend={}, inline_skills={}, max_parallel_tasks={:?}, auto_parallel={:?})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, search_config={}, auto_compact={}, max_context_tokens={:?}, artifact_store_limits={}, tool_result_transform_policy={}, tool_presentation_profile={}, memory_store={}, session_store={}, security_provider={}, workspace_backend={}, inline_skills={}, max_parallel_tasks={:?}, auto_parallel={:?})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
+            if self.search_config.is_some() { "Some(...)" } else { "None" },
             self.auto_compact,
             self.max_context_tokens,
             if self.artifact_store_limits.is_some() { "Some(...)" } else { "None" },

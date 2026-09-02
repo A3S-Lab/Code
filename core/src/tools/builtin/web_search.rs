@@ -5,9 +5,11 @@ mod fallback;
 
 #[cfg(feature = "headless-search")]
 use crate::config::{BrowserBackend, HeadlessConfig};
+#[cfg(feature = "headless-search")]
+use crate::moli_runtime::ensure_moli;
 use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 #[cfg(feature = "headless-search")]
-use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider};
+use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider, PageRenderer};
 use a3s_search::proxy::ProxyConfig;
 use a3s_search::{
     EngineFailure, Metrics, MetricsSnapshot, RetrievalHealth, RetrievalRequirements, Search,
@@ -16,6 +18,8 @@ use a3s_search::{
 use anyhow::Result;
 use async_trait::async_trait;
 use regex::Regex;
+#[cfg(feature = "headless-search")]
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -29,10 +33,11 @@ const MAX_JSON_OUTPUT_BYTES: usize = crate::tools::MAX_OUTPUT_SIZE - JSON_OUTPUT
 
 #[cfg(feature = "headless-search")]
 const WEB_SEARCH_DESCRIPTION: &str =
-    "Search the web through a structurally gated cascade: headless Google/Baidu first, HTTP/RSS engines \
+    "Search the web through a structurally gated cascade: the bundled Moli headless browser (Google, Baidu, Bing, and Brave) first, HTTP/RSS engines \
      only when needed, and native APIs only when earlier tiers remain insufficient. \
      Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
      are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
+     Moli is discovered from the package or installed once in the shared A3S Code cache, then reused by all local Code processes. \
      Supports proxy configuration for conventional and headless search transports.";
 
 #[cfg(not(feature = "headless-search"))]
@@ -49,7 +54,9 @@ const ENGINE_CATALOG_DESCRIPTION: &str =
      defaults. Available: anysearch (anonymous or authenticated native provider), tavily (keyless \
      or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), \
      wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), \
-     g / google (Google, headless), baidu (Baidu, headless).";
+     g / google (Google, headless), baidu (Baidu, headless), bing_browser (Bing, headless), \
+     brave_browser (Brave, headless). The default headless backend is Moli; Chrome and \
+     Lightpanda remain explicit compatibility backends.";
 
 #[cfg(not(feature = "headless-search"))]
 const ENGINE_CATALOG_DESCRIPTION: &str =
@@ -74,7 +81,7 @@ impl WebSearchTool {
         Self
     }
 
-    /// Create an execution-scoped browser pool for headless engines.
+    /// Create an execution-scoped legacy BrowserPool for Chrome/Lightpanda.
     ///
     /// A persistent pool survives a cancelled tool future and can retain the
     /// Chrome process for the rest of the TUI session. Keeping the pool scoped
@@ -84,6 +91,11 @@ impl WebSearchTool {
     fn create_pool(config: &HeadlessConfig) -> Arc<BrowserPool> {
         let executable = config.browser_path.as_ref().map(std::path::PathBuf::from);
         let provider = match (config.backend, executable) {
+            // Moli is provisioned separately and never enters BrowserPool.
+            // Keep this defensive arm non-panicking for callers that construct
+            // a pool directly in diagnostics.
+            (BrowserBackend::Moli, Some(path)) => BrowserProvider::ChromeExecutable(path),
+            (BrowserBackend::Moli, None) => BrowserProvider::DiscoveredChrome,
             (BrowserBackend::Chrome, Some(path)) => BrowserProvider::ChromeExecutable(path),
             (BrowserBackend::Chrome, None) => BrowserProvider::DiscoveredChrome,
             (BrowserBackend::Lightpanda, Some(path)) => BrowserProvider::LightpandaExecutable(path),
@@ -155,12 +167,7 @@ impl Drop for BrowserPoolCleanup {
     }
 }
 
-#[cfg(feature = "headless-search")]
-fn managed_headless_config() -> Option<HeadlessConfig> {
-    managed_headless_config_from_statuses(&crate::search_runtime::browser_statuses())
-}
-
-#[cfg(feature = "headless-search")]
+#[cfg(all(feature = "headless-search", test))]
 fn managed_headless_config_from_statuses(
     statuses: &[crate::search_runtime::BrowserRuntimeStatus],
 ) -> Option<HeadlessConfig> {
@@ -186,7 +193,10 @@ fn effective_headless_config(
     configured: Option<&HeadlessConfig>,
     proxy_url: Option<&str>,
 ) -> Option<HeadlessConfig> {
-    let mut config = configured.cloned().or_else(managed_headless_config)?;
+    // Moli is the product default. Legacy managed Chrome/Lightpanda discovery
+    // is still available through an explicit backend in ACL; it must not
+    // silently replace the bundled/downloadable default.
+    let mut config = configured.cloned().unwrap_or_default();
     if let Some(proxy_url) = proxy_url {
         config.proxy_url = Some(proxy_url.to_string());
     }
@@ -429,6 +439,21 @@ struct SearchStageContext<'a> {
     proxy_url: Option<&'a str>,
     metrics: &'a Arc<Metrics>,
     deadline: Instant,
+    #[cfg(feature = "headless-search")]
+    moli: Option<std::result::Result<PathBuf, String>>,
+}
+
+#[cfg(feature = "headless-search")]
+async fn prepare_moli(config: &HeadlessConfig) -> std::result::Result<PathBuf, String> {
+    let timeout = Duration::from_secs(config.moli_download_timeout_secs.clamp(1, 600));
+    match tokio::time::timeout(timeout, ensure_moli(config, timeout)).await {
+        Ok(Ok(path)) => Ok(path),
+        Ok(Err(error)) => Err(sanitize_http_urls(&error.to_string())),
+        Err(_) => Err(format!(
+            "Moli provisioning exceeded its {} second budget",
+            timeout.as_secs()
+        )),
+    }
 }
 
 async fn execute_network_stage(
@@ -498,20 +523,25 @@ async fn execute_headless_stage(
         results.add_failure(EngineFailure::new(
             "Headless search tier",
             "headless_unavailable",
-            "no managed headless browser is available",
+            "no headless browser configuration is available",
         ));
         return results;
     };
 
+    if headless_config.backend.is_moli() {
+        return execute_moli_stage(context, shortcuts, &headless_config, remaining_tiers).await;
+    }
+
     let pool = WebSearchTool::create_pool(&headless_config);
     let mut cleanup = BrowserPoolCleanup::new(Some(Arc::clone(&pool)));
+    let renderer: Arc<dyn PageRenderer> = pool.clone();
     let mut search = tier_search(context.tool_context, Arc::clone(context.metrics));
     let retry_budget = context.tool_context.search_retry_budget();
     for shortcut in shortcuts {
         if !add_headless_engine(
             &mut search,
             shortcut,
-            &pool,
+            Arc::clone(&renderer),
             headless_config.backend,
             &retry_budget,
         ) {
@@ -532,6 +562,84 @@ async fn execute_headless_stage(
     )
     .await;
     cleanup.shutdown().await;
+    results
+}
+
+#[cfg(feature = "headless-search")]
+async fn execute_moli_stage(
+    context: &SearchStageContext<'_>,
+    shortcuts: &[String],
+    config: &HeadlessConfig,
+    remaining_tiers: usize,
+) -> SearchResults {
+    let mut results = SearchResults::new();
+    let executable = match context.moli.as_ref() {
+        Some(Ok(path)) => path.clone(),
+        Some(Err(error)) => {
+            results.add_failure(
+                EngineFailure::new("moli", "headless_unavailable", error.clone())
+                    .with_transient(true),
+            );
+            return results;
+        }
+        None => match prepare_moli(config).await {
+            Ok(path) => path,
+            Err(error) => {
+                results.add_failure(
+                    EngineFailure::new("moli", "headless_unavailable", error).with_transient(true),
+                );
+                return results;
+            }
+        },
+    };
+
+    let pool = Arc::new(a3s_search::MoliPool::new(a3s_search::MoliPoolConfig {
+        executable: Some(executable),
+        proxy_url: config.proxy_url.clone(),
+        max_tabs: config.max_tabs,
+        ..a3s_search::MoliPoolConfig::default()
+    }));
+    if let Err(error) = pool.warm_up() {
+        results.add_failure(
+            EngineFailure::new(
+                "moli",
+                "headless_unavailable",
+                format!("Moli runtime failed validation: {}", error.message),
+            )
+            .with_transient(true),
+        );
+        pool.shutdown();
+        return results;
+    }
+
+    let renderer: Arc<dyn PageRenderer> = pool.clone();
+    let mut search = tier_search(context.tool_context, Arc::clone(context.metrics));
+    let retry_budget = context.tool_context.search_retry_budget();
+    for shortcut in shortcuts {
+        if !add_headless_engine(
+            &mut search,
+            shortcut,
+            Arc::clone(&renderer),
+            BrowserBackend::Moli,
+            &retry_budget,
+        ) {
+            results.add_failure(EngineFailure::new(
+                shortcut,
+                "unsupported_engine",
+                "headless engine is not available",
+            ));
+        }
+    }
+    results = execute_search_stage(
+        search,
+        results,
+        context.query,
+        "Moli headless search tier",
+        context.deadline,
+        remaining_tiers,
+    )
+    .await;
+    pool.shutdown();
     results
 }
 
@@ -692,7 +800,10 @@ impl Tool for WebSearchTool {
             .min(60);
         let total_timeout = Duration::from_secs(timeout_secs.max(1));
         let search_started = Instant::now();
-        let search_deadline = search_started + total_timeout;
+        // Moli provisioning has an independent budget. The request deadline
+        // below is used only for validation and proxy discovery; retrieval
+        // receives a fresh `total_timeout` after provisioning completes.
+        let request_deadline = search_started + total_timeout;
 
         let output_format = args
             .get("format")
@@ -723,7 +834,7 @@ impl Tool for WebSearchTool {
             })
             .or_else(super::safe_http::explicit_web_proxy_from_env);
         if proxy_url.is_none() {
-            let remaining = search_deadline.saturating_duration_since(Instant::now());
+            let remaining = request_deadline.saturating_duration_since(Instant::now());
             if !remaining.is_zero() {
                 proxy_url = tokio::time::timeout(remaining, super::safe_http::system_web_proxy())
                     .await
@@ -753,6 +864,26 @@ impl Tool for WebSearchTool {
                 })));
         }
 
+        #[cfg(feature = "headless-search")]
+        let moli = if !tier_plan.headless.is_empty() {
+            effective_headless_config(
+                config.and_then(|config| config.headless.as_ref()),
+                proxy_url.as_deref(),
+            )
+            .filter(|headless| headless.backend.is_moli())
+            .map(|headless| async move { prepare_moli(&headless).await })
+        } else {
+            None
+        };
+        #[cfg(feature = "headless-search")]
+        let moli = match moli {
+            Some(future) => Some(future.await),
+            None => None,
+        };
+        // The provisioning budget is intentionally separate from the search
+        // timeout, so a first-use download does not starve all retrieval tiers.
+        let search_deadline = Instant::now() + total_timeout;
+
         let retrieval_requirements = RetrievalRequirements::for_limit(limit);
         let mut cascade = SearchCascade::new(SearchQuery::new(&query_str), retrieval_requirements);
         let stage_context = SearchStageContext {
@@ -761,6 +892,8 @@ impl Tool for WebSearchTool {
             proxy_url: proxy_url.as_deref(),
             metrics: &search_metrics,
             deadline: search_deadline,
+            #[cfg(feature = "headless-search")]
+            moli,
         };
 
         let active_tiers = automatic_tier_order()

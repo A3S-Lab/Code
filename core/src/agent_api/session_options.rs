@@ -21,6 +21,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("worker_agents", &self.worker_agents.len())
             .field("skill_dirs", &self.skill_dirs)
             .field("queue_config", &self.queue_config)
+            .field("search_config", &self.search_config)
             .field("security_provider", &self.security_provider.is_some())
             .field("llm_client", &self.llm_client.is_some())
             .field("context_providers", &self.context_providers.len())
@@ -131,6 +132,16 @@ impl SessionOptions {
 
     pub fn with_queue_config(mut self, config: SessionQueueConfig) -> Self {
         self.queue_config = Some(config);
+        self
+    }
+
+    /// Override the agent-level web-search configuration for this session.
+    ///
+    /// The configuration is value-typed and therefore safe to pass through
+    /// the Node, Python, and Go SDK boundaries. `None` keeps the agent/global
+    /// configuration unchanged.
+    pub fn with_search_config(mut self, config: crate::config::SearchConfig) -> Self {
+        self.search_config = Some(config);
         self
     }
 

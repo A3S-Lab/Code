@@ -1,4 +1,5 @@
 use super::*;
+use crate::search_config::SearchConfig;
 
 // ============================================================================
 
@@ -156,6 +157,10 @@ pub struct SessionOptions {
     ///
     /// Ordinary sessions are queue-free unless this is provided.
     pub queue_config: Option<SessionQueueConfig>,
+    /// Per-session web-search and headless-browser configuration.
+    ///
+    /// When omitted, the agent-level ACL search configuration is used.
+    pub search_config: Option<SearchConfig>,
     /// Explicit permission policy for tool execution.
     pub permission_policy: Option<PermissionPolicy>,
     /// Explicit planning mode: "auto", "enabled", or "disabled".
@@ -682,6 +687,9 @@ pub(super) fn js_session_options_to_rust(
     }
     if let Some(qc) = o.queue_config {
         opts = opts.with_queue_config(js_queue_config_to_rust(&qc)?);
+    }
+    if let Some(search) = o.search_config {
+        opts = opts.with_search_config(search.into());
     }
     if let Some(policy) = o.permission_policy {
         opts = opts.with_permission_policy(js_permission_policy_to_rust(policy)?);

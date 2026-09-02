@@ -26,6 +26,37 @@ impl PyAgent {
         })
     }
 
+    /// Create an Agent from a typed JSON-compatible `CodeConfig` mapping.
+    #[staticmethod]
+    fn create_from_config(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let config: a3s_code_core::CodeConfig = serde_json::from_str(&py_any_to_json(config)?)
+            .map_err(|error| PyValueError::new_err(format!("Invalid CodeConfig: {error}")))?;
+        let agent = py
+            .allow_threads(move || get_runtime().block_on(RustAgent::from_config(config)))
+            .map_err(py_code_error)?;
+        Ok(Self {
+            inner: Arc::new(agent),
+        })
+    }
+
+    /// Return an asyncio Future that creates an Agent from a typed config
+    /// without blocking the current event-loop task.
+    #[staticmethod]
+    fn create_from_config_async<'py>(
+        py: Python<'py>,
+        config: &Bound<'_, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let config: a3s_code_core::CodeConfig = serde_json::from_str(&py_any_to_json(config)?)
+            .map_err(|error| PyValueError::new_err(format!("Invalid CodeConfig: {error}")))?;
+        let callable = Bound::new(
+            py,
+            AsyncAgentCreateConfigCall {
+                config: Some(config),
+            },
+        )?;
+        run_in_asyncio_executor(py, callable.into_any())
+    }
+
     /// Return an asyncio Future that creates an Agent without blocking the
     /// current event-loop task.
     #[staticmethod]

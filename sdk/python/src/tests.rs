@@ -68,6 +68,66 @@ fn inline_skill_conversion_is_typed_and_rejects_invalid_input() {
     assert!(inline_skill_to_rust("live-review".to_string(), String::new(), "unknown",).is_err());
 }
 
+#[test]
+fn sdk_capability_inventory_is_projected_from_core_without_drift() {
+    let capabilities = py_sdk_capabilities();
+    assert!(capabilities.len() >= 20);
+    assert_eq!(
+        py_sdk_capabilities_schema(),
+        a3s_code_core::SDK_CAPABILITIES_SCHEMA_V1
+    );
+    assert!(capabilities.iter().any(|item| item.id == "web_search"));
+    assert!(capabilities.iter().any(|item| item.id == "moli_runtime"));
+    assert!(capabilities
+        .iter()
+        .all(|item| !item.operations.is_empty() && !item.description.is_empty()));
+}
+
+#[test]
+fn moli_diagnostics_are_projected_without_installing() {
+    pyo3::prepare_freethreaded_python();
+    Python::with_gil(|py| {
+        let info = py_moli_runtime_info(py, None).unwrap();
+        let info = info.bind(py).downcast::<PyDict>().unwrap();
+        assert_eq!(
+            info.get_item("schema")
+                .unwrap()
+                .unwrap()
+                .extract::<String>()
+                .unwrap(),
+            a3s_code_core::MOLI_RUNTIME_INFO_SCHEMA_V1
+        );
+        assert!(info.get_item("cache_dir").unwrap().is_some());
+    });
+}
+
+#[test]
+fn session_exposes_serializable_capability_and_tool_projection_views() {
+    let session = build_test_session();
+    pyo3::prepare_freethreaded_python();
+    Python::with_gil(|py| {
+        let stamp = session.capability_catalog_stamp(py).unwrap();
+        let stamp = stamp.bind(py).downcast::<PyDict>().unwrap();
+        assert!(stamp.get_item("generation").unwrap().is_some());
+        assert!(stamp.get_item("digest").unwrap().is_some());
+        let profile = session.tool_presentation_profile(py).unwrap();
+        let profile = profile.bind(py).downcast::<PyDict>().unwrap();
+        assert_eq!(
+            profile
+                .get_item("schema")
+                .unwrap()
+                .unwrap()
+                .extract::<String>()
+                .unwrap(),
+            "a3s.code.tool-presentation-profile.v1"
+        );
+        let definitions = session
+            .presented_tool_definitions(py, "inspect files")
+            .unwrap();
+        assert!(definitions.bind(py).downcast::<PyList>().is_ok());
+    });
+}
+
 fn sdk_test_config() -> a3s_code_core::CodeConfig {
     a3s_code_core::CodeConfig {
         default_model: Some("openai/gpt-4o".to_string()),
@@ -364,6 +424,61 @@ fn session_options_map_active_skill_tool_restriction_control() {
 
     let opts = build_rust_session_options(session_options).unwrap();
     assert_eq!(opts.enforce_active_skill_tool_restrictions, Some(true));
+}
+
+#[test]
+fn session_options_map_search_config() {
+    let mut options = PySessionOptions::new();
+    let mut search = PySearchConfig::new(
+        7,
+        Some(PySearchHealthConfig::new(2, 11)),
+        Some(PyHeadlessConfig::new(
+            Some(PyBrowserBackend::Moli),
+            None,
+            Some(2),
+            Some(false),
+            Some("1.1.1".to_string()),
+            Some("a".repeat(64)),
+            Some("/tmp/a3s-moli".to_string()),
+            Some(30),
+            Some(vec!["--headless".to_string()]),
+            None,
+        )),
+    );
+    search.set_engine(
+        "brave".to_string(),
+        PySearchEngineConfig::new(true, 2.0, Some(3)),
+    );
+    options.search_config = Some(search);
+
+    let core = build_rust_session_options(options).unwrap();
+    let search = core.search_config.expect("search config");
+    assert_eq!(search.timeout, 7);
+    assert_eq!(search.health.unwrap().max_failures, 2);
+    assert_eq!(search.engines["brave"].timeout, Some(3));
+    let headless = search.headless.unwrap();
+    assert_eq!(
+        headless.backend,
+        a3s_code_core::config::BrowserBackend::Moli
+    );
+    assert!(!headless.auto_download_moli);
+}
+
+#[test]
+fn search_config_defaults_match_core_when_optional_fields_are_omitted() {
+    let core = build_rust_session_options(PySessionOptions {
+        search_config: Some(PySearchConfig::new(20, None, Some(PyHeadlessConfig::new(
+            None, None, None, None, None, None, None, None, None, None,
+        )))),
+        ..PySessionOptions::new()
+    })
+    .unwrap();
+    let search = core.search_config.expect("search config");
+    assert_eq!(search.timeout, 20);
+    let headless = search.headless.expect("headless config");
+    assert_eq!(headless.backend, a3s_code_core::config::BrowserBackend::Moli);
+    assert_eq!(headless.max_tabs, 4);
+    assert!(headless.auto_download_moli);
 }
 
 #[test]

@@ -4510,6 +4510,26 @@ async fn test_agent_system_prompt_passed() {
 
     assert_eq!(result.text, "I am a coding assistant.");
     assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 1);
+    let systems = mock_client.request_systems.lock().unwrap();
+    let system = systems
+        .first()
+        .expect("the model must receive a system prompt");
+    for required in [
+        "## Operating Loop",
+        "## Workspace, Sandbox, and Permissions",
+        "`read`",
+        "`search`",
+        "`edit`",
+        "`bash`",
+        "`task`",
+        "`program`",
+        "`web_search`",
+    ] {
+        assert!(
+            system.contains(required),
+            "system prompt lost capability: {required}"
+        );
+    }
 }
 
 #[tokio::test]

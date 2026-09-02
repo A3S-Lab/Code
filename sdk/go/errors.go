@@ -35,6 +35,7 @@ const (
 	CodeInternal              ErrorCode = "INTERNAL_ERROR"
 	CodeUnsupportedOperation  ErrorCode = "UNSUPPORTED_OPERATION"
 	CodeWorkspaceRetrieval    ErrorCode = "WORKSPACE_RETRIEVAL_ERROR"
+	CodeStateGraphClosed      ErrorCode = "STATE_GRAPH_CLOSED"
 )
 
 const (
@@ -77,6 +78,7 @@ var (
 	ErrInternal              = &Error{Code: CodeInternal}
 	ErrUnsupportedOperation  = &Error{Code: CodeUnsupportedOperation}
 	ErrWorkspaceRetrieval    = &Error{Code: CodeWorkspaceRetrieval}
+	ErrStateGraphClosed      = &Error{Code: CodeStateGraphClosed}
 )
 
 var (

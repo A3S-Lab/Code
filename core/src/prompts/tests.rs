@@ -76,6 +76,64 @@ fn test_slots_default_builds_system_default() {
 }
 
 #[test]
+fn test_default_prompt_matches_current_runtime_contract() {
+    let built = SystemPromptSlots::default().build();
+    for required in [
+        "## Operating Loop",
+        "## Workspace, Sandbox, and Permissions",
+        "tools exposed in the current turn",
+        "configured A3S native workspace sandbox",
+        "sandbox_permissions=\"require_escalated\"",
+        "permissions, budgets, cancellation, or sandboxing",
+        "private chain-of-thought",
+        "high-impact mutations",
+        "If a required tool is not exposed",
+        "current role and task restrictions",
+        "checkout with `force`",
+    ] {
+        assert!(
+            built.contains(required),
+            "default prompt missing: {required}"
+        );
+    }
+
+    let lower = built.to_ascii_lowercase();
+    assert!(
+        !lower.contains("srt"),
+        "default prompt retains removed SRT wording"
+    );
+    assert!(
+        built.len() < 12_000,
+        "default prompt grew beyond its budget"
+    );
+}
+
+#[test]
+fn test_default_prompt_preserves_core_tool_routing_guidance() {
+    let prompt = SystemPromptSlots::default().build();
+    for capability in [
+        "`read`",
+        "`ls`",
+        "`search`",
+        "`edit`",
+        "`write`",
+        "`patch`",
+        "`bash`",
+        "`batch`",
+        "`program`",
+        "`task`",
+        "`git`",
+        "`web_search`",
+        "`web_fetch`",
+    ] {
+        assert!(
+            prompt.contains(capability),
+            "missing core capability: {capability}"
+        );
+    }
+}
+
+#[test]
 fn test_boundaries_injected_for_every_style() {
     for style in [
         AgentStyle::GeneralPurpose,
@@ -132,6 +190,12 @@ fn test_repository_tool_contract_is_injected_for_every_style() {
                 "style {style:?} missing repository-tool guidance: {expected}"
             );
         }
+        for capability in ["`read`", "`search`", "`edit`", "`bash`", "`task`"] {
+            assert!(
+                built.contains(capability),
+                "style {style:?} lost core capability guidance: {capability}"
+            );
+        }
     }
 }
 
@@ -172,6 +236,8 @@ fn test_slots_custom_role_replaces_default() {
     // Core sections still present
     assert!(built.contains("Core Behaviour"));
     assert!(built.contains("Tool Usage Strategy"));
+    assert!(built.contains("tools exposed in the current turn"));
+    assert!(built.contains("`read`"));
 }
 
 #[test]

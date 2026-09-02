@@ -21,8 +21,9 @@ pub struct SearchConfig {
     #[serde(default, rename = "engine")]
     pub engines: std::collections::HashMap<String, SearchEngineConfig>,
 
-    /// Headless browser configuration for JS-rendered engines (google and baidu).
-    /// When enabled, an existing system or explicitly managed runtime is discovered.
+    /// Headless browser configuration for JS-rendered engines (Google, Baidu,
+    /// Bing, and Brave). When omitted, Moli is provisioned lazily from the
+    /// bundled sidecar or the shared per-user cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headless: Option<HeadlessConfig>,
 }
@@ -31,15 +32,21 @@ pub struct SearchConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BrowserBackend {
-    /// Chrome/Chromium headless browser and the cross-platform default.
+    /// Moli's standalone, JavaScript-capable headless browser and the default.
     #[default]
+    Moli,
+    /// Chrome/Chromium headless browser for explicit compatibility use.
+    #[serde(alias = "chromium")]
     Chrome,
     /// Explicit Lightpanda backend (native Linux/macOS; WSL2 on Windows).
     Lightpanda,
 }
 
-/// Headless browser configuration for JS-rendered engines.
-/// Uses a3s-search's browser pool, backed by Chrome/Chromium or Lightpanda.
+/// Headless browser configuration for JS-rendered search engines.
+///
+/// Moli is the default backend. When it is selected and no executable is
+/// configured or packaged, A3S Code downloads the pinned, digest-verified
+/// runtime into the user cache on first use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeadlessConfig {
@@ -51,7 +58,8 @@ pub struct HeadlessConfig {
     #[serde(default = "default_headless_max_tabs")]
     pub max_tabs: usize,
 
-    /// Path to the browser executable. If None, an existing runtime is discovered.
+    /// Path to the browser executable. If None, Moli is discovered/downloaded
+    /// or an explicit Chrome/Lightpanda runtime is discovered.
     #[serde(
         default,
         alias = "chromePath",
@@ -61,6 +69,31 @@ pub struct HeadlessConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub browser_path: Option<String>,
+
+    /// Download Moli automatically when the selected backend is Moli and no
+    /// usable executable is already available.
+    #[serde(default = "default_auto_download_moli")]
+    pub auto_download_moli: bool,
+
+    /// Optional pinned Moli release version. Defaults to the version bundled
+    /// by this A3S Code release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moli_version: Option<String>,
+
+    /// Optional SHA-256 digest for the pinned Moli archive. Supplying a version
+    /// without its digest is rejected by the runtime manager.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moli_sha256: Option<String>,
+
+    /// Optional cache directory for the managed Moli runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moli_cache_dir: Option<PathBuf>,
+
+    /// Maximum time in seconds spent provisioning a missing Moli runtime.
+    /// This budget is separate from the per-request web-search timeout so a
+    /// first-use download does not make the default search path unusable.
+    #[serde(default = "default_moli_download_timeout_secs")]
+    pub moli_download_timeout_secs: u64,
 
     /// Additional browser launch arguments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -72,6 +105,10 @@ pub struct HeadlessConfig {
 }
 
 impl BrowserBackend {
+    pub fn is_moli(self) -> bool {
+        matches!(self, Self::Moli)
+    }
+
     pub fn is_lightpanda(self) -> bool {
         matches!(self, Self::Lightpanda)
     }
@@ -80,9 +117,14 @@ impl BrowserBackend {
 impl Default for HeadlessConfig {
     fn default() -> Self {
         Self {
-            backend: BrowserBackend::Chrome,
+            backend: BrowserBackend::Moli,
             max_tabs: 4,
             browser_path: None,
+            auto_download_moli: true,
+            moli_version: None,
+            moli_sha256: None,
+            moli_cache_dir: None,
+            moli_download_timeout_secs: default_moli_download_timeout_secs(),
             launch_args: Vec::new(),
             proxy_url: None,
         }
@@ -190,6 +232,14 @@ pub(crate) fn default_search_timeout() -> u64 {
 
 pub(crate) fn default_headless_max_tabs() -> usize {
     4
+}
+
+fn default_auto_download_moli() -> bool {
+    true
+}
+
+pub(crate) fn default_moli_download_timeout_secs() -> u64 {
+    120
 }
 
 fn default_max_failures() -> u32 {

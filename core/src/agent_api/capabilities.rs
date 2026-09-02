@@ -78,7 +78,11 @@ pub(super) fn build_session_capabilities(
     };
     tool_executor.set_trace_sink(Arc::new(trace_sink.clone()));
 
-    if let Some(ref search_config) = input.code_config.search {
+    if let Some(ref search_config) = input.opts.search_config {
+        tool_executor
+            .registry()
+            .set_search_config(search_config.clone());
+    } else if let Some(ref search_config) = input.code_config.search {
         tool_executor
             .registry()
             .set_search_config(search_config.clone());

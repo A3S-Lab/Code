@@ -197,6 +197,14 @@ pub struct SessionOptions {
     /// When set, enables priority-based tool scheduling with parallel execution
     /// of read-only (Query-lane) tools, DLQ, metrics, and external task handling.
     pub queue_config: Option<SessionQueueConfig>,
+    /// Optional per-session web-search configuration.
+    ///
+    /// When set, this value overrides the agent-level `CodeConfig.search`
+    /// configuration for every built-in search/download/web-fetch tool in the
+    /// session. Keeping the value on `SessionOptions` makes the complete
+    /// search surface available to language SDKs without requiring callers to
+    /// rewrite an ACL file.
+    pub search_config: Option<crate::config::SearchConfig>,
     /// Optional security provider for taint tracking and output sanitization
     pub security_provider: Option<Arc<dyn crate::security::SecurityProvider>>,
     /// Optional host-supplied LLM client.

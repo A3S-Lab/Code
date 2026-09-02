@@ -9,6 +9,7 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWebSearchParams>()?;
     m.add_class::<PyEventStream>()?;
     m.add_class::<PySkillInfo>()?;
+    m.add_class::<PySdkCapability>()?;
     m.add_class::<PyFileMemoryStore>()?;
     m.add_class::<PyFileSessionStore>()?;
     m.add_class::<PyMemorySessionStore>()?;
@@ -44,5 +45,10 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(agent_event_types_v1, m)?)?;
     m.add_function(wrap_pyfunction!(event_envelope_v1_version, m)?)?;
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
+    m.add_function(wrap_pyfunction!(py_sdk_capabilities, m)?)?;
+    m.add_function(wrap_pyfunction!(py_sdk_capabilities_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(py_moli_runtime_info, m)?)?;
+    m.add_function(wrap_pyfunction!(py_ensure_moli, m)?)?;
+    m.add_function(wrap_pyfunction!(py_moli_default_version, m)?)?;
     Ok(())
 }

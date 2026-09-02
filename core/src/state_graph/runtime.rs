@@ -4,6 +4,7 @@ use super::{
     GraphDiff, GraphEvent, GraphEventRecord, GraphObject, GraphPatch, GraphRelation,
     PatchOperation, ReplayError, StateGraph, GRAPH_EVENT_SCHEMA_VERSION,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use thiserror::Error;
@@ -48,7 +49,7 @@ pub enum ExternalProjectionOutcome {
     Duplicate,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExternalEvent {
     pub source: String,
     pub stream_id: String,

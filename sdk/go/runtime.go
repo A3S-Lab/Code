@@ -151,7 +151,15 @@ func NewLocalRuntime(ctx context.Context, options ...LocalRuntimeOption) (*Local
 	}
 
 	command := exec.Command(binary, config.arguments...)
-	command.Env = mergeEnvironment(os.Environ(), config.environment)
+	environment := make([]string, 0, len(config.environment)+1)
+	if bundled := adjacentMoliExecutable(binary); bundled != "" {
+		// Preserve an explicit caller override; otherwise a bridge distributed
+		// with the self-contained Go bundle points the child Code runtime at its
+		// sibling Moli executable before the first web_search call.
+		environment = append(environment, "A3S_CODE_MOLI_EXECUTABLE="+bundled)
+	}
+	environment = append(environment, config.environment...)
+	command.Env = mergeEnvironment(os.Environ(), environment)
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return nil, sdkError(op, CodeRuntime, "cannot open bridge stdin", err)
@@ -683,6 +691,28 @@ func resolveBridgeBinary(configured string) (string, error) {
 		return "", fmt.Errorf("bridge binary %q is not installed: %w", candidate, err)
 	}
 	return resolved, nil
+}
+
+func adjacentMoliExecutable(binary string) string {
+	if strings.TrimSpace(os.Getenv("A3S_CODE_MOLI_EXECUTABLE")) != "" {
+		return ""
+	}
+	directory := filepath.Dir(binary)
+	name := "moli"
+	if goruntime.GOOS == "windows" {
+		name = "moli.exe"
+	}
+	for _, candidate := range []string{
+		filepath.Join(directory, name),
+		filepath.Join(directory, "moli", name),
+		filepath.Join(directory, "resources", "moli", name),
+	} {
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func mergeEnvironment(base, overrides []string) []string {

@@ -122,13 +122,89 @@ func NewAgent(ctx context.Context, configSource string, options ...AgentOption) 
 	return Create(ctx, configSource, options...)
 }
 
+// CreateFromConfigJSON initializes an Agent from a serialized CodeConfig.
+// Hosts that already maintain typed configuration can marshal it once and use
+// this path without creating an intermediate ACL file.
+func CreateFromConfigJSON(ctx context.Context, configJSON string, options ...AgentOption) (*Agent, error) {
+	const op = "agent_create_config"
+	if ctx == nil {
+		return nil, invalid(op, "context cannot be nil")
+	}
+	if strings.TrimSpace(configJSON) == "" {
+		return nil, invalid(op, "config JSON cannot be empty")
+	}
+	config := agentConfig{}
+	for _, option := range options {
+		if option != nil {
+			option.applyAgent(&config)
+		}
+	}
+	ownsRuntime := false
+	runtime := config.runtime
+	if runtime == nil {
+		local, err := NewLocalRuntime(ctx, config.localRuntimeOptions...)
+		if err != nil {
+			return nil, err
+		}
+		runtime = local
+		ownsRuntime = true
+	}
+	capabilities, err := handshake(ctx, runtime)
+	if err != nil {
+		if ownsRuntime {
+			_ = runtime.Close()
+		}
+		return nil, err
+	}
+	var created struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := runtime.Request(ctx, op, map[string]any{"config_json": configJSON}, &created); err != nil {
+		if ownsRuntime {
+			_ = runtime.Close()
+		}
+		return nil, err
+	}
+	if created.AgentID == "" {
+		if ownsRuntime {
+			_ = runtime.Close()
+		}
+		return nil, sdkError(op, CodeProtocol, "bridge returned an empty agent id", nil)
+	}
+	return &Agent{runtime: runtime, ownsRuntime: ownsRuntime, id: created.AgentID, capabilities: capabilities}, nil
+}
+
 func (agent *Agent) Capabilities() Capabilities {
 	if agent == nil {
 		return Capabilities{}
 	}
 	value := agent.capabilities
 	value.Operations = append([]string(nil), value.Operations...)
+	value.ProductCapabilities = cloneProductCapabilities(value.ProductCapabilities)
 	return value
+}
+
+// ProductCapabilities returns the stable product-level capability inventory
+// advertised by the connected Core bridge. It is useful for feature
+// discovery; callers should still handle a capability operation's typed
+// runtime error because host policy may disable it.
+func (agent *Agent) ProductCapabilities() []ProductCapability {
+	if agent == nil {
+		return nil
+	}
+	return cloneProductCapabilities(agent.capabilities.ProductCapabilities)
+}
+
+func cloneProductCapabilities(input []ProductCapability) []ProductCapability {
+	if input == nil {
+		return nil
+	}
+	output := make([]ProductCapability, len(input))
+	for index, capability := range input {
+		output[index] = capability
+		output[index].Operations = append([]string(nil), capability.Operations...)
+	}
+	return output
 }
 
 func SupportedOperations() []string {
@@ -590,6 +666,24 @@ func handshake(ctx context.Context, runtime Runtime) (Capabilities, error) {
 			),
 			nil,
 		)
+	}
+	if capabilities.Schema != "" && capabilities.Schema != "a3s-code/sdk-capabilities/v1" {
+		return Capabilities{}, sdkError(
+			op,
+			CodeProtocol,
+			"runtime capability schema is unsupported: "+capabilities.Schema,
+			nil,
+		)
+	}
+	seenCapabilityIDs := make(map[string]struct{}, len(capabilities.ProductCapabilities))
+	for _, capability := range capabilities.ProductCapabilities {
+		if capability.ID == "" {
+			return Capabilities{}, sdkError(op, CodeProtocol, "runtime capability inventory contains an empty id", nil)
+		}
+		if _, duplicate := seenCapabilityIDs[capability.ID]; duplicate {
+			return Capabilities{}, sdkError(op, CodeProtocol, "runtime capability inventory contains duplicate id "+capability.ID, nil)
+		}
+		seenCapabilityIDs[capability.ID] = struct{}{}
 	}
 
 	available := make(map[string]struct{}, len(capabilities.Operations))

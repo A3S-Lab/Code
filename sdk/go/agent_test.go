@@ -101,6 +101,45 @@ func TestDefaultSecurityProviderUsesTypedSessionOption(t *testing.T) {
 	}
 }
 
+func TestMoliDiagnosticsAndEnsureUseTypedBridgeOperations(t *testing.T) {
+	version := "1.1.1"
+	executable := "/cache/moli"
+	runtime := &fakeRuntime{
+		request: func(_ context.Context, operation string, params map[string]any) (any, error) {
+			switch operation {
+			case "moli_runtime_info":
+				if params["config"] == nil {
+					t.Fatalf("Moli diagnostics must forward an explicit config")
+				}
+				return MoliRuntimeStatus{
+					Schema:       "a3s-code/moli-runtime-info/v1",
+					Version:      version,
+					Executable:   &executable,
+					AutoDownload: true,
+				}, nil
+			case "moli_ensure":
+				return map[string]any{"path": executable}, nil
+			default:
+				t.Fatalf("unexpected operation %q", operation)
+				return nil, nil
+			}
+		},
+	}
+	agent := &Agent{runtime: runtime, id: "agent-1"}
+	config := NewMoliHeadlessConfig()
+	info, err := agent.MoliRuntimeInfo(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Version != version || info.Executable == nil || *info.Executable != executable {
+		t.Fatalf("unexpected Moli diagnostics: %#v", info)
+	}
+	path, err := agent.EnsureMoli(context.Background(), config)
+	if err != nil || path != executable {
+		t.Fatalf("EnsureMoli = %q, %v", path, err)
+	}
+}
+
 func TestToolPresentationProfileUsesTypedSessionOption(t *testing.T) {
 	encoded, err := json.Marshal(SessionOptions{
 		ToolPresentationProfile: NewToolPresentationProfile(ToolPresentationCode),
@@ -261,6 +300,40 @@ func TestCreateFailsClosedOnCapabilityDrift(t *testing.T) {
 				t.Fatalf("mutation happened before handshake: %v", runtime.operations())
 			}
 		})
+	}
+}
+
+func TestProductCapabilityInventoryIsAvailableFromHandshake(t *testing.T) {
+	capability := ProductCapability{
+		ID:          "web_search",
+		Category:    "web",
+		Description: "search",
+		Operations:  []string{"session.web_search"},
+		HostOwned:   true,
+	}
+	runtime := &fakeRuntime{capabilities: &Capabilities{
+		ProtocolVersion:      bridge.ProtocolVersion,
+		EventProtocolVersion: bridge.EventProtocolVersion,
+		Operations:           SupportedOperations(),
+		Schema:               "a3s-code/sdk-capabilities/v1",
+		ProductCapabilities:  []ProductCapability{capability},
+	}, request: func(_ context.Context, operation string, _ map[string]any) (any, error) {
+		if operation == "agent_create" {
+			return map[string]any{"agent_id": "agent-1"}, nil
+		}
+		return nil, nil
+	}}
+	agent, err := Create(context.Background(), "inline acl", WithRuntime(runtime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := agent.ProductCapabilities()
+	if len(got) != 1 || got[0].ID != capability.ID || got[0].Operations[0] != "session.web_search" {
+		t.Fatalf("product capabilities = %#v", got)
+	}
+	got[0].Operations[0] = "mutated"
+	if agent.ProductCapabilities()[0].Operations[0] != "session.web_search" {
+		t.Fatal("ProductCapabilities must return a defensive copy")
 	}
 }
 

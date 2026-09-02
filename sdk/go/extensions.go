@@ -211,3 +211,92 @@ func (session *Session) MCPStatus(
 func (session *Session) MCPs(ctx context.Context) (map[string]MCPServerStatus, error) {
 	return session.MCPStatus(ctx)
 }
+
+// CapabilityCatalogStamp returns the exact generation and digest visible to
+// newly admitted runs.
+func (session *Session) CapabilityCatalogStamp(ctx context.Context) (*CapabilityCatalogStamp, error) {
+	const op = "session_capability_catalog_stamp"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	var result CapabilityCatalogStamp
+	if err := session.runtime.Request(ctx, op, session.params(), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ToolPresentationProfile returns the typed profile used for model-facing
+// definitions in this session.
+func (session *Session) ToolPresentationProfile(ctx context.Context) (*ToolPresentationProfile, error) {
+	const op = "session_tool_presentation_profile"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	var result ToolPresentationProfile
+	if err := session.runtime.Request(ctx, op, session.params(), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// PresentedToolDefinitions previews the model-facing definition projection
+// for a prompt without granting execution authority.
+func (session *Session) PresentedToolDefinitions(ctx context.Context, prompt string) ([]ToolDefinition, error) {
+	const op = "session_presented_tool_definitions"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return nil, invalid(op, "prompt cannot be empty")
+	}
+	params := session.params()
+	params["prompt"] = prompt
+	var result []ToolDefinition
+	if err := session.runtime.Request(ctx, op, params, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// CurrentCognitivePackageBinding returns the exact secret-free Knowledge
+// binding, when the host has installed one.
+func (session *Session) CurrentCognitivePackageBinding(ctx context.Context) (*CognitivePackageBindingV1, error) {
+	const op = "session_current_cognitive_package_binding"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	var result *CognitivePackageBindingV1
+	if err := session.runtime.Request(ctx, op, session.params(), &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// EnsureRecoveryCapabilityBinding validates an exact persisted catalog
+// binding before a host starts recovery.
+func (session *Session) EnsureRecoveryCapabilityBinding(ctx context.Context, binding any) error {
+	const op = "session_ensure_recovery_capability_binding"
+	if err := validateSession(session, ctx, op); err != nil {
+		return err
+	}
+	if binding == nil {
+		return invalid(op, "binding cannot be nil")
+	}
+	params := session.params()
+	params["binding"] = binding
+	return session.runtime.Request(ctx, op, params, nil)
+}
+
+// DrainCapabilityCleanup settles retired host capability effects.
+func (session *Session) DrainCapabilityCleanup(ctx context.Context) (*CapabilityCleanupReport, error) {
+	const op = "session_drain_capability_cleanup"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	var result CapabilityCleanupReport
+	if err := session.runtime.Request(ctx, op, session.params(), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

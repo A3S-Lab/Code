@@ -1,8 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::llm::anthropic::*;
     use crate::llm::http::normalize_base_url;
-    use crate::llm::openai::*;
     use crate::llm::*;
     use tokio_util::sync::CancellationToken;
 

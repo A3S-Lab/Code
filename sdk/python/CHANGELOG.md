@@ -4,6 +4,21 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.1.0] - 2026-09-02
+
+### Added
+
+- Integrated `a3s-search` v3.1.0 with the Moli headless search backend.
+- Python wheels include the matching, verified Moli sidecar. The runtime uses
+  one per-user shared cache and a cross-process lock when a wheel is not
+  available locally.
+
+### Changed
+
+- Added typed Moli provisioning options (`auto_download_moli`, version and
+  digest pins, cache directory, and download timeout) while preserving the
+  historical Chrome and Lightpanda enum values.
+
 ## [8.0.4] - 2026-08-31
 
 ### Changed

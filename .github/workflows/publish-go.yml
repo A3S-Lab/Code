@@ -64,13 +64,23 @@ jobs:
           SOURCE="target/${{ matrix.settings.target }}/release/${{ matrix.settings.executable }}"
           ASSET="a3s-code-go-bridge-v${VERSION}-${{ matrix.settings.target }}${{ matrix.settings.suffix }}"
           mkdir -p dist
+          # Keep the standalone bridge asset for existing Go consumers.
           cp "$SOURCE" "dist/$ASSET"
+          mkdir -p dist/bundle/moli
+          cp "$SOURCE" "dist/bundle/${{ matrix.settings.executable }}"
+          bash scripts/package_moli.sh \
+            "${{ matrix.settings.target }}" dist/bundle/moli
+          BUNDLE_ASSET="${ASSET%.exe}.tar.gz"
+          tar -czf "dist/$BUNDLE_ASSET" -C dist/bundle .
+          rm -rf -- dist/bundle
           (
             cd dist
             if command -v sha256sum >/dev/null 2>&1; then
               sha256sum "$ASSET" > "$ASSET.sha256"
+              sha256sum "$BUNDLE_ASSET" > "$BUNDLE_ASSET.sha256"
             else
               shasum -a 256 "$ASSET" > "$ASSET.sha256"
+              shasum -a 256 "$BUNDLE_ASSET" > "$BUNDLE_ASSET.sha256"
             fi
           )
 

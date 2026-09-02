@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "8.0.4"
+version = "8.1.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -24,7 +24,9 @@ required-features = ["durable-memory-sqlite"]
 a3s-common = "0.1.1"
 a3s-memory = { version = "0.1.3", git = "https://github.com/A3S-Lab/Memory.git", rev = "df5a811e65a44e045a7e631455699d075877651e" }
 a3s-lane = "0.5"
-a3s-search = { version = "3.0.9", git = "https://github.com/A3S-Lab/Search.git", rev = "2b7ec07d9a1b99758a3e8c950c6d4b6ca5b51fa9", default-features = false }
+# Pin the Search release so the browser-engine and Moli adapter APIs cannot
+# drift underneath the Code runtime manager.
+a3s-search = { version = "=3.1.0", git = "https://github.com/A3S-Lab/Search.git", rev = "c30e3dd04de8f2874113cda435439d6938bd3eb6", default-features = false }
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false }
 a3s-sandbox = { version = "=0.1.0", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "09c46aaf18e4be2c881459fa71ece8a9d8c45283" }
 
@@ -140,11 +142,12 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 default = ["headless-search"]
 # Enable the locally durable SQLite vector index for semantic-memory hosts.
 durable-memory-sqlite = ["a3s-memory/sqlite"]
-# Enable browser-backed Google and Baidu search plus managed browser lifecycle
-# APIs. Chrome/Chromium is the runtime default; Lightpanda remains selectable
-# through configuration. HTTP/RSS and native API search remain available when
-# default features are disabled.
-headless-search = ["a3s-search/lightpanda"]
+# Enable browser-backed search plus managed browser lifecycle
+# APIs. Moli is the runtime default and is downloaded on first headless use when
+# no packaged or user-provided executable is available; Chrome/Chromium and
+# Lightpanda remain selectable through configuration. HTTP/RSS and native API
+# search remain available when default features are disabled.
+headless-search = ["a3s-search/moli", "a3s-search/lightpanda"]
 # Enable OpenTelemetry OTLP export for traces and metrics.
 # When active, `TelemetryConfig::init()` sets up OTLP exporter + tracing subscriber.
 telemetry = [

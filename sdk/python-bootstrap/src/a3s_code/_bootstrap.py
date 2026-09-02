@@ -21,6 +21,7 @@ import io
 import json
 import os
 import platform
+import stat
 import sys
 import threading
 import urllib.error
@@ -31,12 +32,14 @@ from typing import Optional
 
 # Version is the bootstrap's own version, which equals the matching native
 # wheel version on GH Releases. Bumped by the release workflow.
-__version__ = "8.0.4"
+__version__ = "8.1.0"
 
 _DEFAULT_BASE_URL = "https://github.com/A3S-Lab/Code/releases/download"
 _REQUEST_TIMEOUT_S = 120
 _USER_AGENT = f"a3s-code-bootstrap/{__version__}"
 _MIN_PYTHON = (3, 10)
+_MAX_WHEEL_BYTES = 512 * 1024 * 1024
+_MAX_MEMBER_BYTES = 256 * 1024 * 1024
 _ABI3_PYTHON_TAG = "cp310-abi3"
 _LOAD_LOCK = threading.Lock()
 _LOADED = False
@@ -207,24 +210,117 @@ def _download_wheel(version: str) -> tuple[str, bytes]:
     )
 
 
-def _extract_native(wheel_bytes: bytes, target_dir: Path) -> Path:
-    """Extract the compiled `_native.*` extension from `wheel_bytes` into
-    `target_dir`. Returns the path to the extracted file.
+def _safe_wheel_member(name: str) -> tuple[str, ...]:
+    """Validate and split a wheel member before reading it.
+
+    Wheels are ZIP files supplied by a remote release.  Do not allow an
+    archive entry to escape the cache through absolute paths, parent
+    components, or Windows separators (which are accepted by some extraction
+    tools even on POSIX).
     """
+    if not name or "\\" in name or name.startswith("/"):
+        raise BootstrapError(f"downloaded wheel contains an unsafe member path: {name!r}")
+    parts = tuple(part for part in name.split("/") if part)
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise BootstrapError(f"downloaded wheel contains an unsafe member path: {name!r}")
+    return parts
+
+
+def _write_wheel_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, destination: Path) -> None:
+    """Write one regular, bounded wheel member atomically."""
+    mode = (info.external_attr >> 16) & 0o170000
+    if mode == stat.S_IFLNK:
+        raise BootstrapError(f"downloaded wheel contains a symlink member: {info.filename!r}")
+    if info.is_dir() or info.file_size > _MAX_MEMBER_BYTES:
+        raise BootstrapError(f"downloaded wheel member is too large or not a file: {info.filename!r}")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.part-{os.getpid()}-{threading.get_ident()}")
+    try:
+        with zf.open(info) as source, temporary.open("xb") as target:
+            remaining = _MAX_MEMBER_BYTES + 1
+            while remaining:
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                target.write(chunk)
+                remaining -= len(chunk)
+            if remaining == 0:
+                raise BootstrapError(f"downloaded wheel member is too large: {info.filename!r}")
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, destination)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _configure_cached_moli(cache_dir: Path) -> None:
+    """Expose a wheel-bundled Moli executable to the Rust core.
+
+    The bootstrap package and the native wheel are separate distributions.
+    Without copying this sidecar into the bootstrap cache, a normal
+    ``pip install a3s-code`` would silently discard the bundled browser and
+    force every process to download it again.  An operator-supplied override
+    always wins.
+    """
+    if os.environ.get("A3S_CODE_MOLI_EXECUTABLE"):
+        return
+    executable = "moli.exe" if os.name == "nt" else "moli"
+    candidate = cache_dir / "moli" / executable
+    try:
+        if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+            os.environ["A3S_CODE_MOLI_EXECUTABLE"] = str(candidate)
+            os.environ.setdefault("A3S_CODE_MOLI_DIR", str(candidate.parent))
+    except OSError:
+        return
+
+
+def _extract_native(wheel_bytes: bytes, target_dir: Path) -> Path:
+    """Extract the native extension and bundled Moli sidecar.
+
+    Returns the path to the extracted extension.  The sidecar is placed under
+    ``target_dir/moli`` and is selected by :func:`_configure_cached_moli`.
+    """
+    if len(wheel_bytes) > _MAX_WHEEL_BYTES:
+        raise BootstrapError("downloaded wheel exceeds the bootstrap size limit")
     target_dir.mkdir(parents=True, exist_ok=True)
+    native_path: Optional[Path] = None
+    moli_path: Optional[Path] = None
     with zipfile.ZipFile(io.BytesIO(wheel_bytes)) as zf:
-        for name in zf.namelist():
-            base = Path(name).name
-            # match _native.<abi>.{so,pyd,dylib}
+        for info in zf.infolist():
+            parts = _safe_wheel_member(info.filename)
+            base = parts[-1]
+            # Match _native.<abi>.{so,pyd,dylib}; ignore metadata files.
             if base.startswith("_native.") and not base.endswith(".dist-info"):
-                out_path = target_dir / base
-                with zf.open(name) as src, out_path.open("wb") as dst:
-                    dst.write(src.read())
-                return out_path
-    raise BootstrapError(
-        "downloaded wheel did not contain a _native extension; "
-        "the release artifact appears to be corrupt"
-    )
+                if native_path is not None:
+                    raise BootstrapError("downloaded wheel contains multiple native extensions")
+                native_path = target_dir / base
+                _write_wheel_member(zf, info, native_path)
+                continue
+
+            # Maturin places the packaged browser under a3s_code/moli/. Keep
+            # the match strict so an unrelated file named `moli` is not run.
+            if base in {"moli", "moli.exe"} and len(parts) >= 3 and parts[-3:-1] == ("a3s_code", "moli"):
+                if moli_path is not None:
+                    raise BootstrapError("downloaded wheel contains multiple Moli executables")
+                moli_path = target_dir / "moli" / base
+                _write_wheel_member(zf, info, moli_path)
+
+    if native_path is None:
+        raise BootstrapError(
+            "downloaded wheel did not contain a _native extension; "
+            "the release artifact appears to be corrupt"
+        )
+    if moli_path is not None and os.name != "nt":
+        try:
+            moli_path.chmod(0o755)
+        except OSError as exc:
+            raise BootstrapError(f"could not mark bundled Moli executable: {exc}") from exc
+    _configure_cached_moli(target_dir)
+    return native_path
 
 
 def _find_cached_native(cache_dir: Path) -> Optional[Path]:
@@ -306,6 +402,8 @@ def ensure_native_loaded(version: str = __version__) -> Path:
                         )
 
             native = _extract_native(wheel_bytes, cache)
+        else:
+            _configure_cached_moli(cache)
 
         _register_native(native)
         _LOADED = True

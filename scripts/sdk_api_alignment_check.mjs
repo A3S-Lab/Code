@@ -63,14 +63,6 @@ const INTENTIONAL_SESSION_OMISSIONS = new Map([
     'Returns a non-clone renderer-host handle that owns exact Code and Use leases; SDKs do not publish UI generations or own renderer policy.',
   ],
   [
-    'capability_catalog_stamp',
-    'Rust-host capability projection metadata; SDKs do not own capability generation publication.',
-  ],
-  [
-    'ensure_recovery_capability_binding',
-    'Rust-host validation for an exact persisted capability generation and authority ceiling; SDKs cannot reconstruct scoped generations.',
-  ],
-  [
     'bootstrap_recovery_capability_batch',
     'Requires Rust capability adapters, an exact historical generation, and a Tokio cancellation token; SDK-safe recovery providers need typed callback adapters.',
   ],
@@ -78,22 +70,11 @@ const INTENTIONAL_SESSION_OMISSIONS = new Map([
     'apply_capability_batch',
     'Requires Rust capability adapters and a Tokio cancellation token; SDK-safe providers need typed callback adapters.',
   ],
-  [
-    'drain_capability_cleanup',
-    'Rust-host lifecycle cleanup for capability generations that SDKs cannot publish.',
-  ],
-  [
-    'tool_presentation_profile',
-    'SDKs configure the typed profile through SessionOptions; no runtime getter contract is exposed.',
-  ],
-  [
-    'presented_tool_definitions',
-    'Rust diagnostic projection returns core ToolDefinition values; SDKs expose the configured profile and run evidence instead.',
-  ],
 ]);
 
 const AGENT_ALIASES = new Map([
   ['new', 'create'],
+  ['from_config', 'create_from_config'],
   ['session_async', 'session'],
   ['resume_session_async', 'resume_session'],
   ['session_for_agent_async', 'session_for_agent'],
@@ -130,7 +111,6 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
     'budget_guard',
     'Node cannot carry JS functions in value-typed SessionOptions; SDKs expose set_budget_guard/setBudgetGuard.',
   ],
-  ['host_env', 'Rust HostEnv ID/Clock pair; no SDK-safe deterministic replay provider yet.'],
   ['sandbox_handle', 'Rust BashSandbox trait object; no SDK-safe sandbox provider yet.'],
   ['mcp_manager', 'Rust McpManager handle; SDKs expose add_mcp/remove_mcp runtime APIs.'],
   ['hook_executor', 'Rust HookExecutor trait object; SDKs expose register_hook instead.'],
@@ -489,10 +469,52 @@ const node = readRustModule('sdk/node/src/lib.rs', 'sdk/node/src');
 const nodeTypes = read('sdk/node/generated.d.ts');
 const python = readRustModule('sdk/python/src/lib.rs', 'sdk/python/src');
 const eventProtocol = read('core/src/event_protocol.rs');
+const sdkCapabilitySource = read('core/src/sdk_capabilities.rs');
 const nodeEventTypes = read('sdk/node/event-protocol-v1.d.ts');
 const pythonEventTypes = read('sdk/python/python/a3s_code/event_protocol_v1.py');
 const go = readGoModule('sdk/go');
 const goEventTypes = read('sdk/go/event_protocol_v1.go');
+const moliManifest = JSON.parse(read('core/resources/moli-runtime-manifest.json'));
+
+const sdkCapabilityIds = [
+  ...sdkCapabilitySource.matchAll(/^\s*id:\s*"([a-z0-9_]+)"/gm),
+].map(([, id]) => id);
+assert.ok(sdkCapabilityIds.length >= 20, 'core SDK capability inventory is unexpectedly small');
+assert.equal(
+  new Set(sdkCapabilityIds).size,
+  sdkCapabilityIds.length,
+  'core SDK capability IDs must be unique',
+);
+assert.match(node, /fn\s+sdk_capabilities\s*\(/, 'Node must expose the Core SDK capability inventory');
+assert.match(node, /fn\s+sdk_capabilities_schema\s*\(/, 'Node must expose the SDK capability schema');
+assert.match(nodeTypes, /interface SdkCapability\s*\{/, 'Node types must declare SdkCapability');
+assert.match(nodeTypes, /sdkCapabilities\(\): Array<SdkCapability>/, 'Node types must declare sdkCapabilities');
+assert.match(python, /fn\s+py_sdk_capabilities\s*\(/, 'Python must expose the Core SDK capability inventory');
+assert.match(python, /fn\s+py_sdk_capabilities_schema\s*\(/, 'Python must expose the SDK capability schema');
+assert.match(go, /ProductCapabilities\s+\[\]ProductCapability/, 'Go must expose product capabilities');
+assert.match(go, /ProductCapability\s+struct/, 'Go must declare ProductCapability');
+assert.match(go, /func\s+SDKCapabilities\s*\(/, 'Go must expose standalone SDK capability discovery');
+assert.match(go, /func\s+SDKCapabilitiesSchema\s*\(/, 'Go must expose the SDK capability schema');
+assert.match(go, /type\s+MoliRuntimeStatus\s+struct/, 'Go must declare Moli runtime diagnostics');
+assert.match(go, /func\s+MoliRuntimeInfo\s*\(/, 'Go must expose Moli runtime diagnostics');
+assert.match(go, /func\s+EnsureMoli\s*\(/, 'Go must expose Moli provisioning');
+assert.match(
+  go,
+  new RegExp(`DefaultMoliVersion\\s*=\\s*"${moliManifest.version}"`),
+  'Go Moli version must match the Core runtime manifest',
+);
+assert.match(go, /type\s+StateGraphRuntime\s+struct/, 'Go must expose the state graph runtime');
+assert.match(node, /fn\s+moli_runtime_info\s*\(/, 'Node must expose Moli runtime diagnostics');
+assert.match(node, /fn\s+ensure_moli\s*\(/, 'Node must expose Moli provisioning');
+assert.match(nodeTypes, /declare class StateGraphRuntime\s*\{/, 'Node must declare StateGraphRuntime');
+assert.match(nodeTypes, /emitJson\(eventJson: string\): string/, 'Node StateGraphRuntime must expose generic event emission');
+assert.match(nodeTypes, /checkExternal\(eventJson: string\): string \| null/, 'Node StateGraphRuntime must expose external event validation');
+assert.match(nodeTypes, /projectExternal\(eventJson: string, patchJson: string\): string/, 'Node StateGraphRuntime must expose external projection');
+assert.match(python, /PyStateGraphRuntime/, 'Python must expose StateGraphRuntime');
+assert.match(python, /fn\s+emit_json\s*\(/, 'Python StateGraphRuntime must expose generic event emission');
+assert.match(python, /fn\s+check_external\s*\(/, 'Python StateGraphRuntime must expose external event validation');
+assert.match(python, /fn\s+project_external\s*\(/, 'Python StateGraphRuntime must expose external projection');
+assert.match(python, /py_moli_runtime_info/, 'Python must expose Moli runtime diagnostics');
 
 const coreAgent = rustPublicMethods(extractImpl(core, 'Agent'));
 const coreSession = rustPublicMethods(extractImpl(core, 'AgentSession'));
@@ -608,11 +630,18 @@ assertContainsAll('Go Session', goSession, [
   'MCPStatus',
   'RegisterAgentDir',
   'SkillNames',
+  'CapabilityCatalogStamp',
+  'ToolPresentationProfile',
+  'PresentedToolDefinitions',
+  'CurrentCognitivePackageBinding',
+  'EnsureRecoveryCapabilityBinding',
+  'DrainCapabilityCleanup',
 ]);
 assertContainsAll('Go SessionOptions', goSessionOptions, [
   'Model',
   'AgentDirs',
   'SkillDirs',
+  'SearchConfig',
   'FileMemoryDir',
   'FileSessionStoreDir',
   'SecurityProvider',
@@ -633,6 +662,21 @@ assertContainsAll('Go SessionOptions', goSessionOptions, [
   'MaxToolRounds',
   'MaxParallelTasks',
   'PromptSlots',
+]);
+assertContainsAll('Go StateGraphRuntime', goMethods(go, 'StateGraphRuntime'), [
+  'BranchID',
+  'Version',
+  'Info',
+  'ProposePatch',
+  'RunGoal',
+  'EmitCustom',
+  'Graph',
+  'Events',
+  'ForkAt',
+  'Diff',
+  'CheckExternal',
+  'ProjectExternal',
+  'Close',
 ]);
 assert.match(
   go,
@@ -670,6 +714,13 @@ assert.ok(
   nodeEventTypes.includes("AgentEventTypeV1 = KnownAgentEventTypeV1 | (string & {})"),
   'Node event types must remain open for future wire values',
 );
+for (const id of sdkCapabilityIds) {
+  assert.match(
+    sdkCapabilitySource,
+    new RegExp(`id: "${id}"`),
+    `core SDK capability inventory lost ${id}`,
+  );
+}
 assert.ok(
   pythonEventTypes.includes('AgentEventTypeV1 = str'),
   'Python event types must remain open for future wire values',
@@ -726,6 +777,7 @@ console.log(
     `core Session required=${expectedSession.length}`,
     `core SessionOptions required=${expectedSessionOptions.length}`,
     `event protocol types=${eventCatalog.length}`,
+    `product capabilities=${sdkCapabilityIds.length}`,
     `intentional omissions=${
       INTENTIONAL_AGENT_OMISSIONS.size
       + INTENTIONAL_SESSION_OMISSIONS.size

@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "8.0.4"
+version = "8.1.0"
 dependencies = [
  "a3s-acl 0.3.0",
  "a3s-common",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-py"
-version = "8.0.4"
+version = "8.1.0"
 dependencies = [
  "a3s-code-core",
  "anyhow",
@@ -192,8 +192,8 @@ dependencies = [
 
 [[package]]
 name = "a3s-search"
-version = "3.0.9"
-source = "git+https://github.com/A3S-Lab/Search.git?rev=2b7ec07d9a1b99758a3e8c950c6d4b6ca5b51fa9#2b7ec07d9a1b99758a3e8c950c6d4b6ca5b51fa9"
+version = "3.1.0"
+source = "git+https://github.com/A3S-Lab/Search.git?rev=c30e3dd04de8f2874113cda435439d6938bd3eb6#c30e3dd04de8f2874113cda435439d6938bd3eb6"
 dependencies = [
  "a3s-acl 0.2.1",
  "a3s-updater",
@@ -2597,7 +2597,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tokio",
  "tower-service",
  "tracing",
@@ -3818,7 +3818,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.40",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3855,7 +3855,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tracing",
  "windows-sys 0.60.2",
 ]

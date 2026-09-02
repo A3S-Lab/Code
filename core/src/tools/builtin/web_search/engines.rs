@@ -8,8 +8,8 @@ use a3s_search::engines::{
 use a3s_search::providers::BuiltinProvider;
 #[cfg(feature = "headless-search")]
 use a3s_search::{
-    a3s_use_browser::BrowserPool,
-    engines::{Baidu, Google},
+    a3s_use_browser::PageRenderer,
+    engines::{Baidu, BingBrowser, BraveBrowser, Google},
     BrowserFetcher, RetryBudget, WaitStrategy,
 };
 use a3s_search::{EngineFailure, HtmlEngine, HttpFetcher, Search, SearchError};
@@ -47,6 +47,8 @@ pub(super) fn canonical_engine_shortcut(shortcut: &str) -> &str {
         "wikipedia" => "wiki",
         "google" => "g",
         "so360" => "360",
+        "bingbrowser" => "bing_browser",
+        "bravebrowser" => "brave_browser",
         shortcut => shortcut,
     }
 }
@@ -59,7 +61,7 @@ pub(super) fn engine_tier(shortcut: &str) -> Option<EngineTier> {
     match shortcut {
         "ddg" | "brave" | "bing" | "wiki" | "sogou" | "360" | "bing_cn" => Some(EngineTier::Http),
         #[cfg(feature = "headless-search")]
-        "g" | "baidu" => Some(EngineTier::Headless),
+        "g" | "baidu" | "bing_browser" | "brave_browser" => Some(EngineTier::Headless),
         _ => None,
     }
 }
@@ -155,28 +157,42 @@ pub(super) fn default_engine_selection(
     }
 }
 
-/// Add a headless engine using BrowserPool.
+/// Add a headless engine using the renderer supplied by the host.
 #[cfg(feature = "headless-search")]
 pub(super) fn add_headless_engine(
     search: &mut Search,
     shortcut: &str,
-    pool: &Arc<BrowserPool>,
+    renderer: Arc<dyn PageRenderer>,
     backend: BrowserBackend,
     retry_budget: &RetryBudget,
 ) -> bool {
     match canonical_engine_shortcut(shortcut) {
         "g" => {
-            let fetcher = BrowserFetcher::new(Arc::clone(pool))
+            let fetcher = BrowserFetcher::from_renderer(Arc::clone(&renderer))
                 .with_retry_budget(retry_budget.clone())
                 .with_wait(headless_wait_strategy(backend, "div.g"));
             search.add_engine(Google::new(Arc::new(fetcher)));
             true
         }
         "baidu" => {
-            let fetcher = BrowserFetcher::new(Arc::clone(pool))
+            let fetcher = BrowserFetcher::from_renderer(Arc::clone(&renderer))
                 .with_retry_budget(retry_budget.clone())
                 .with_wait(headless_wait_strategy(backend, "div.c-container"));
             search.add_engine(Baidu::new(Arc::new(fetcher)));
+            true
+        }
+        "bing_browser" => {
+            let fetcher = BrowserFetcher::from_renderer(Arc::clone(&renderer))
+                .with_retry_budget(retry_budget.clone())
+                .with_wait(headless_wait_strategy(backend, "li.b_algo"));
+            search.add_engine(BingBrowser::new(Arc::new(fetcher)));
+            true
+        }
+        "brave_browser" => {
+            let fetcher = BrowserFetcher::from_renderer(Arc::clone(&renderer))
+                .with_retry_budget(retry_budget.clone())
+                .with_wait(headless_wait_strategy(backend, "div.snippet"));
+            search.add_engine(BraveBrowser::new(Arc::new(fetcher)));
             true
         }
         _ => false,
@@ -185,7 +201,7 @@ pub(super) fn add_headless_engine(
 
 #[cfg(feature = "headless-search")]
 fn headless_wait_strategy(backend: BrowserBackend, selector: &str) -> WaitStrategy {
-    if backend.is_lightpanda() {
+    if backend.is_lightpanda() || backend.is_moli() {
         WaitStrategy::Load
     } else {
         WaitStrategy::Selector {

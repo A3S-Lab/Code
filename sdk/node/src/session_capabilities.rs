@@ -288,6 +288,66 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
+    /// Return the exact live capability catalog generation and digest.
+    #[napi]
+    pub fn capability_catalog_stamp(&self) -> napi::Result<serde_json::Value> {
+        let stamp = self.inner.capability_catalog_stamp();
+        Ok(serde_json::json!({
+            "generation": stamp.generation().get(),
+            "digest": stamp.digest().to_string(),
+        }))
+    }
+
+    /// Return the typed model-facing Tool presentation profile for this session.
+    #[napi]
+    pub fn tool_presentation_profile(&self) -> napi::Result<serde_json::Value> {
+        serde_json::to_value(self.inner.tool_presentation_profile())
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Preview the model-facing Tool definitions for a prompt.
+    #[napi]
+    pub fn presented_tool_definitions(&self, prompt: String) -> napi::Result<serde_json::Value> {
+        serde_json::to_value(self.inner.presented_tool_definitions(&prompt).map_err(|e| {
+            napi::Error::from_reason(format!("Tool presentation error: {e}"))
+        })?)
+        .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return the exact cognitive package binding, when one is installed.
+    #[napi]
+    pub fn current_cognitive_package_binding(&self) -> napi::Result<serde_json::Value> {
+        serde_json::to_value(self.inner.current_cognitive_package_binding())
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Validate an exact persisted capability binding before recovery.
+    #[napi]
+    pub fn ensure_recovery_capability_binding(
+        &self,
+        binding: serde_json::Value,
+    ) -> napi::Result<()> {
+        let binding = serde_json::from_value(binding)
+            .map_err(|e| napi::Error::from_reason(format!("Invalid capability binding: {e}")))?;
+        self.inner
+            .ensure_recovery_capability_binding(&binding)
+            .map_err(|e| napi::Error::from_reason(format!("Recovery binding error: {e}")))
+    }
+
+    /// Drain retired host capability effects and return the cleanup report.
+    #[napi]
+    pub async fn drain_capability_cleanup(&self) -> napi::Result<serde_json::Value> {
+        let report = self.inner.drain_capability_cleanup().await;
+        Ok(serde_json::json!({
+            "rollbackBatches": report.rollback_batches,
+            "retiredBatches": report.retired_batches,
+            "effectsClosed": report.effects_closed,
+            "effectsFailed": report.effects_failed,
+            "effectsTimedOut": report.effects_timed_out,
+            "clean": report.is_clean(),
+        }))
+    }
+
     /// Return a stored tool artifact by URI, or null if it is not retained.
     #[napi]
     pub fn get_artifact(&self, artifact_uri: String) -> napi::Result<serde_json::Value> {

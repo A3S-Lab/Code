@@ -5,6 +5,8 @@
 //! Streaming requests emit zero or more `event` envelopes followed by exactly
 //! one `response` envelope.
 
+#![recursion_limit = "256"]
+
 use a3s_code_core::serve::{spawn_agent_dir_daemon, ServeDaemonHandle};
 use a3s_code_core::{
     execute_steps_parallel_resumable, run_event_envelope_v1, Agent, AgentResult, AgentSession,
@@ -15,7 +17,9 @@ use base64::Engine as _;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -29,7 +33,24 @@ pub const BRIDGE_PROTOCOL_VERSION: u16 = 2;
 
 pub const BRIDGE_OPERATIONS: &[&str] = &[
     "sdk_capabilities",
+    "moli_runtime_info",
+    "moli_ensure",
+    "state_graph_create",
+    "state_graph_check_external",
+    "state_graph_project_external",
+    "state_graph_strict_replay",
+    "state_graph_restore",
+    "state_graph_info",
+    "state_graph_propose_patch",
+    "state_graph_run_goal",
+    "state_graph_emit_custom",
+    "state_graph_graph",
+    "state_graph_events",
+    "state_graph_fork",
+    "state_graph_diff",
+    "state_graph_close",
     "agent_create",
+    "agent_create_config",
     "agent_refresh_mcp_tools",
     "agent_task_scheduler_stats",
     "agent_replace_session",
@@ -69,6 +90,12 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_save",
     "session_tool_names",
     "session_tool_definitions",
+    "session_capability_catalog_stamp",
+    "session_tool_presentation_profile",
+    "session_presented_tool_definitions",
+    "session_current_cognitive_package_binding",
+    "session_ensure_recovery_capability_binding",
+    "session_drain_capability_cleanup",
     "session_trace_events",
     "session_get_artifact",
     "session_read_file",
@@ -279,6 +306,18 @@ impl From<TaskSchedulerError> for BridgeFailure {
     }
 }
 
+impl From<a3s_code_core::GraphRuntimeError> for BridgeFailure {
+    fn from(error: a3s_code_core::GraphRuntimeError) -> Self {
+        Self::new("STATE_GRAPH_ERROR", error.to_string())
+    }
+}
+
+impl From<a3s_code_core::ReplayError> for BridgeFailure {
+    fn from(error: a3s_code_core::ReplayError) -> Self {
+        Self::new("STATE_GRAPH_REPLAY_ERROR", error.to_string())
+    }
+}
+
 fn serve_failure(handle: &ServeDaemonHandle, error: CodeError) -> BridgeFailure {
     BridgeFailure::new(
         handle.failure_code().unwrap_or(error.code()),
@@ -301,6 +340,7 @@ pub struct BridgeState {
     next_handle: AtomicU64,
     agents: RwLock<HashMap<String, Arc<Agent>>>,
     sessions: RwLock<HashMap<String, SessionEntry>>,
+    graphs: RwLock<HashMap<String, Arc<StdMutex<a3s_code_core::GraphRuntime>>>>,
     serve_handles: RwLock<HashMap<String, ServeDaemonHandle>>,
     callbacks: RwLock<Option<Arc<CallbackClient>>>,
 }
@@ -311,6 +351,7 @@ impl Default for BridgeState {
             next_handle: AtomicU64::new(1),
             agents: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
+            graphs: RwLock::new(HashMap::new()),
             serve_handles: RwLock::new(HashMap::new()),
             callbacks: RwLock::new(None),
         }
@@ -379,7 +420,37 @@ impl BridgeState {
             .ok_or_else(|| BridgeFailure::new("NOT_FOUND", format!("session {id:?} was not found")))
     }
 
-    async fn dispatch(&self, request: &BridgeRequest) -> Result<Value, BridgeFailure> {
+    async fn graph(
+        &self,
+        id: &str,
+    ) -> Result<Arc<StdMutex<a3s_code_core::GraphRuntime>>, BridgeFailure> {
+        self.graphs
+            .read()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or_else(|| BridgeFailure::new("NOT_FOUND", format!("graph {id:?} was not found")))
+    }
+
+    fn lock_graph<'a>(
+        graph: &'a StdMutex<a3s_code_core::GraphRuntime>,
+    ) -> Result<StdMutexGuard<'a, a3s_code_core::GraphRuntime>, BridgeFailure> {
+        graph
+            .lock()
+            .map_err(|_| BridgeFailure::new("RUNTIME_ERROR", "state graph lock poisoned"))
+    }
+
+    // Keep the large operation router behind a boxed future. Besides reducing
+    // the stack frame of the long-lived bridge task, this prevents adding a
+    // new SDK capability from overflowing small Tokio test/runtime stacks.
+    fn dispatch<'a>(
+        &'a self,
+        request: &'a BridgeRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, BridgeFailure>> + Send + 'a>> {
+        Box::pin(async move { self.dispatch_inner(request).await })
+    }
+
+    async fn dispatch_inner(&self, request: &BridgeRequest) -> Result<Value, BridgeFailure> {
         if request.protocol_version != BRIDGE_PROTOCOL_VERSION {
             return Err(BridgeFailure::new(
                 "PROTOCOL_ERROR",
@@ -401,7 +472,194 @@ impl BridgeState {
                 "protocol_version": BRIDGE_PROTOCOL_VERSION,
                 "operations": BRIDGE_OPERATIONS,
                 "event_protocol_version": a3s_code_core::EVENT_ENVELOPE_V1_VERSION,
+                "schema": a3s_code_core::SDK_CAPABILITIES_SCHEMA_V1,
+                "capabilities": a3s_code_core::sdk_capabilities(),
             })),
+            "moli_runtime_info" => {
+                let config =
+                    optional::<a3s_code_core::config::HeadlessConfig>(&request.params, "config")?;
+                encode(a3s_code_core::moli_runtime_info(config.as_ref()))
+            }
+            "moli_ensure" => {
+                let config =
+                    optional::<a3s_code_core::config::HeadlessConfig>(&request.params, "config")?
+                        .unwrap_or_default();
+                let timeout_secs = optional::<u64>(&request.params, "timeout_secs")?
+                    .unwrap_or(config.moli_download_timeout_secs);
+                let path = a3s_code_core::ensure_moli(
+                    &config,
+                    std::time::Duration::from_secs(timeout_secs),
+                )
+                .await
+                .map_err(|error| {
+                    BridgeFailure::new("MOLI_PROVISIONING_FAILED", error.to_string())
+                })?;
+                Ok(json!({ "path": path }))
+            }
+            "state_graph_create" => {
+                let correlation_id = optional::<String>(&request.params, "correlation_id")?;
+                let max_events = optional::<usize>(&request.params, "max_events")?;
+                let max_behavior_depth = optional::<usize>(&request.params, "max_behavior_depth")?;
+                let limits = match (max_events, max_behavior_depth) {
+                    (Some(max_events), Some(max_behavior_depth)) => a3s_code_core::RuntimeLimits {
+                        max_events,
+                        max_behavior_depth,
+                    },
+                    (Some(max_events), None) => a3s_code_core::RuntimeLimits {
+                        max_events,
+                        ..Default::default()
+                    },
+                    (None, Some(max_behavior_depth)) => a3s_code_core::RuntimeLimits {
+                        max_behavior_depth,
+                        ..Default::default()
+                    },
+                    (None, None) => a3s_code_core::RuntimeLimits::default(),
+                };
+                let runtime = a3s_code_core::GraphRuntime::with_limits(limits);
+                let runtime =
+                    if let Some(value) = correlation_id.filter(|value| !value.trim().is_empty()) {
+                        runtime.with_correlation_id(value)
+                    } else {
+                        runtime
+                    };
+                let graph_id = self.handle("graph");
+                self.graphs
+                    .write()
+                    .await
+                    .insert(graph_id.clone(), Arc::new(StdMutex::new(runtime)));
+                Ok(json!({ "graph_handle": graph_id }))
+            }
+            "state_graph_check_external" => {
+                let graph_id: String = required(&request.params, "graph_handle")?;
+                let event: a3s_code_core::ExternalEvent = required(&request.params, "event")?;
+                let graph = self.graph(&graph_id).await?;
+                let outcome = Self::lock_graph(&graph)?.check_external(&event)?;
+                Ok(json!({
+                    "outcome": outcome.map(|value| match value {
+                        a3s_code_core::ExternalProjectionOutcome::Applied => "applied",
+                        a3s_code_core::ExternalProjectionOutcome::Duplicate => "duplicate",
+                    })
+                }))
+            }
+            "state_graph_project_external" => {
+                let graph_id: String = required(&request.params, "graph_handle")?;
+                let event: a3s_code_core::ExternalEvent = required(&request.params, "event")?;
+                let patch: a3s_code_core::GraphPatch = required(&request.params, "patch")?;
+                let graph = self.graph(&graph_id).await?;
+                let outcome = Self::lock_graph(&graph)?.project_external(event, patch)?;
+                Ok(json!({
+                    "outcome": match outcome {
+                        a3s_code_core::ExternalProjectionOutcome::Applied => "applied",
+                        a3s_code_core::ExternalProjectionOutcome::Duplicate => "duplicate",
+                    }
+                }))
+            }
+            "state_graph_strict_replay" => {
+                let events = graph_events(&request.params)?;
+                let graph = a3s_code_core::GraphRuntime::strict_replay(&events)?;
+                encode(graph)
+            }
+            "state_graph_restore" => {
+                let events = graph_events(&request.params)?;
+                let runtime = a3s_code_core::GraphRuntime::restore(events)
+                    .map_err(|error| BridgeFailure::new("INVALID_REQUEST", error.to_string()))?;
+                let graph_id = self.handle("graph");
+                self.graphs
+                    .write()
+                    .await
+                    .insert(graph_id.clone(), Arc::new(StdMutex::new(runtime)));
+                Ok(json!({ "graph_handle": graph_id }))
+            }
+            "state_graph_info" => {
+                let graph_id: String = required(&request.params, "graph_handle")?;
+                let graph = self.graph(&graph_id).await?;
+                let guard = Self::lock_graph(&graph)?;
+                Ok(json!({
+                    "branch_id": guard.branch_id(),
+                    "version": guard.graph().version(),
+                    "event_count": guard.events().len(),
+                }))
+            }
+            "state_graph_propose_patch" => {
+                let graph_id: String = required(&request.params, "graph_handle")?;
+                let patch: a3s_code_core::GraphPatch = required(&request.params, "patch")?;
+                let causation_id = optional::<String>(&request.params, "causation_id")?;
+                let graph = self.graph(&graph_id).await?;
+                let applied = Self::lock_graph(&graph)?.propose_patch(patch, causation_id)?;
+                Ok(json!({ "applied": applied }))
+            }
+            "state_graph_run_goal" => {
+                let graph_id: String = required(&request.params, "graph_handle")?;
+                let goal: String = required(&request.params, "goal")?;
+                if goal.trim().is_empty() {
+                    return Err(BridgeFailure::new(
+                        "INVALID_REQUEST",
+                        "goal cannot be empty",
+                    ));
+                }
+                let graph = self.graph(&graph_id).await?;
+                let event = Self::lock_graph(&graph)?.run_goal(goal)?;
+                encode(event)
+            }
+            "state_graph_emit_custom" => {
+                let graph_id: String = required(&request.params, "graph_handle")?;
+                let name: String = required(&request.params, "name")?;
+                if name.trim().is_empty() {
+                    return Err(BridgeFailure::new(
+                        "INVALID_REQUEST",
+                        "event name cannot be empty",
+                    ));
+                }
+                let payload = request
+                    .params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let graph = self.graph(&graph_id).await?;
+                let event = Self::lock_graph(&graph)?
+                    .emit(a3s_code_core::GraphEvent::Custom { name, payload })?;
+                encode(event)
+            }
+            "state_graph_graph" => {
+                let graph_id: String = required(&request.params, "graph_handle")?;
+                let graph = self.graph(&graph_id).await?;
+                let guard = Self::lock_graph(&graph)?;
+                encode(guard.graph())
+            }
+            "state_graph_events" => {
+                let graph_id: String = required(&request.params, "graph_handle")?;
+                let graph = self.graph(&graph_id).await?;
+                let guard = Self::lock_graph(&graph)?;
+                encode(guard.events())
+            }
+            "state_graph_fork" => {
+                let graph_id: String = required(&request.params, "graph_handle")?;
+                let sequence_exclusive: u64 = required(&request.params, "sequence_exclusive")?;
+                let graph = self.graph(&graph_id).await?;
+                let fork = Self::lock_graph(&graph)?.fork_at(sequence_exclusive)?;
+                let fork_id = self.handle("graph");
+                self.graphs
+                    .write()
+                    .await
+                    .insert(fork_id.clone(), Arc::new(StdMutex::new(fork)));
+                Ok(json!({ "graph_handle": fork_id }))
+            }
+            "state_graph_diff" => {
+                let left_id: String = required(&request.params, "left_graph_handle")?;
+                let right_id: String = required(&request.params, "right_graph_handle")?;
+                let left = self.graph(&left_id).await?;
+                let right = self.graph(&right_id).await?;
+                let left_guard = Self::lock_graph(&left)?;
+                let left_state = left_guard.graph().clone();
+                drop(left_guard);
+                let right_guard = Self::lock_graph(&right)?;
+                encode(left_state.diff(right_guard.graph()))
+            }
+            "state_graph_close" => {
+                let graph_id: String = required(&request.params, "graph_handle")?;
+                let closed = self.graphs.write().await.remove(&graph_id).is_some();
+                Ok(json!({ "closed": closed }))
+            }
             "callback_response" => {
                 let callback_id: u64 = required(&request.params, "callback_id")?;
                 let result = request.params.get("result").cloned();
@@ -415,6 +673,15 @@ impl BridgeState {
             "agent_create" => {
                 let config_source: String = required(&request.params, "config_source")?;
                 let agent = Arc::new(Agent::create(config_source).await?);
+                let agent_id = self.handle("agent");
+                self.agents.write().await.insert(agent_id.clone(), agent);
+                Ok(json!({ "agent_id": agent_id }))
+            }
+            "agent_create_config" => {
+                let config_json: String = required(&request.params, "config_json")?;
+                let config: a3s_code_core::CodeConfig = serde_json::from_str(&config_json)
+                    .map_err(|error| BridgeFailure::new("INVALID_CONFIG", error.to_string()))?;
+                let agent = Arc::new(Agent::from_config(config).await?);
                 let agent_id = self.handle("agent");
                 self.agents.write().await.insert(agent_id.clone(), agent);
                 Ok(json!({ "agent_id": agent_id }))
@@ -773,6 +1040,65 @@ impl BridgeState {
                     .await?
                     .tool_definitions();
                 encode(definitions)
+            }
+            "session_capability_catalog_stamp" => {
+                let stamp = self
+                    .request_session(&request.params)
+                    .await?
+                    .capability_catalog_stamp();
+                Ok(json!({
+                    "generation": stamp.generation().get(),
+                    "digest": stamp.digest().to_string(),
+                }))
+            }
+            "session_tool_presentation_profile" => {
+                let session = self.request_session(&request.params).await?;
+                let profile = session.tool_presentation_profile();
+                encode(profile)
+            }
+            "session_presented_tool_definitions" => {
+                let prompt: String = required(&request.params, "prompt")?;
+                let definitions = self
+                    .request_session(&request.params)
+                    .await?
+                    .presented_tool_definitions(&prompt)
+                    .map_err(|error| {
+                        BridgeFailure::new("TOOL_PRESENTATION_ERROR", error.to_string())
+                    })?;
+                encode(definitions)
+            }
+            "session_current_cognitive_package_binding" => {
+                let binding = self
+                    .request_session(&request.params)
+                    .await?
+                    .current_cognitive_package_binding();
+                encode(binding)
+            }
+            "session_ensure_recovery_capability_binding" => {
+                let binding: a3s_code_core::capability::RunCapabilityBindingV1 =
+                    required(&request.params, "binding")?;
+                self.request_session(&request.params)
+                    .await?
+                    .ensure_recovery_capability_binding(&binding)
+                    .map_err(|error| {
+                        BridgeFailure::new("RECOVERY_BINDING_ERROR", error.to_string())
+                    })?;
+                Ok(json!({ "valid": true }))
+            }
+            "session_drain_capability_cleanup" => {
+                let report = self
+                    .request_session(&request.params)
+                    .await?
+                    .drain_capability_cleanup()
+                    .await;
+                Ok(json!({
+                    "rollback_batches": report.rollback_batches,
+                    "retired_batches": report.retired_batches,
+                    "effects_closed": report.effects_closed,
+                    "effects_failed": report.effects_failed,
+                    "effects_timed_out": report.effects_timed_out,
+                    "clean": report.is_clean(),
+                }))
             }
             "session_trace_events" => {
                 let events = self.request_session(&request.params).await?.trace_events();
@@ -1546,6 +1872,7 @@ impl BridgeState {
         for agent in agents {
             agent.close().await;
         }
+        self.graphs.write().await.clear();
         *self.callbacks.write().await = None;
     }
 }
@@ -2519,6 +2846,7 @@ struct BridgeSessionOptions {
     skill_dirs: Vec<String>,
     worker_agents: Vec<BridgeWorkerAgentSpec>,
     queue_config: Option<BridgeSessionQueueConfig>,
+    search_config: Option<a3s_code_core::config::SearchConfig>,
     permission_policy: Option<a3s_code_core::permissions::PermissionPolicy>,
     confirmation_policy: Option<BridgeConfirmationPolicy>,
     enforce_active_skill_tool_restrictions: Option<bool>,
@@ -2625,6 +2953,9 @@ impl BridgeSessionOptions {
         }
         if let Some(value) = self.queue_config {
             options = options.with_queue_config(value.into_core()?);
+        }
+        if let Some(value) = self.search_config {
+            options = options.with_search_config(value);
         }
         if let Some(value) = self.permission_policy {
             options = options.with_permission_policy(value);
@@ -2861,6 +3192,21 @@ fn required<T: DeserializeOwned>(params: &Value, key: &str) -> Result<T, BridgeF
     })
 }
 
+fn graph_events(params: &Value) -> Result<Vec<a3s_code_core::GraphEventRecord>, BridgeFailure> {
+    if let Some(value) = params.get("events_json") {
+        let encoded: String = serde_json::from_value(value.clone()).map_err(|error| {
+            BridgeFailure::new(
+                "INVALID_REQUEST",
+                format!("invalid field `events_json`: {error}"),
+            )
+        })?;
+        return serde_json::from_str(&encoded).map_err(|error| {
+            BridgeFailure::new("INVALID_REQUEST", format!("invalid graph events: {error}"))
+        });
+    }
+    required(params, "events")
+}
+
 fn optional<T: DeserializeOwned>(params: &Value, key: &str) -> Result<Option<T>, BridgeFailure> {
     match params.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -3062,6 +3408,104 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), BRIDGE_OPERATIONS.len());
+    }
+
+    #[tokio::test]
+    async fn state_graph_operations_round_trip_through_bridge() {
+        let state = BridgeState::new();
+        let created = dispatch_boxed(
+            &state,
+            &request(
+                "state_graph_create",
+                json!({ "correlation_id": "go-graph-test" }),
+            ),
+        )
+        .await
+        .unwrap();
+        let graph_handle = created["graph_handle"].as_str().unwrap().to_owned();
+
+        let applied = dispatch_boxed(
+            &state,
+            &request(
+                "state_graph_propose_patch",
+                json!({
+                    "graph_handle": graph_handle,
+                    "patch": {
+                        "expected_graph_version": 0,
+                        "operations": [{
+                            "op": "add_object",
+                            "id": "task-1",
+                            "object_type": "task",
+                            "data": { "status": "open" }
+                        }]
+                    }
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(applied["applied"], true);
+
+        let info = dispatch_boxed(
+            &state,
+            &request("state_graph_info", json!({ "graph_handle": graph_handle })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(info["version"], 1);
+        assert!(info["event_count"].as_u64().unwrap() >= 3);
+
+        let events = dispatch_boxed(
+            &state,
+            &request(
+                "state_graph_events",
+                json!({ "graph_handle": graph_handle }),
+            ),
+        )
+        .await
+        .unwrap();
+        let restored = dispatch_boxed(
+            &state,
+            &request("state_graph_restore", json!({ "events": events })),
+        )
+        .await
+        .unwrap();
+        let restored_handle = restored["graph_handle"].as_str().unwrap();
+        let diff = dispatch_boxed(
+            &state,
+            &request(
+                "state_graph_diff",
+                json!({
+                    "left_graph_handle": graph_handle,
+                    "right_graph_handle": restored_handle
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(diff["objects_added"].as_array().unwrap().is_empty());
+        assert!(diff["objects_changed"].as_array().unwrap().is_empty());
+
+        let fork = dispatch_boxed(
+            &state,
+            &request(
+                "state_graph_fork",
+                json!({ "graph_handle": graph_handle, "sequence_exclusive": 3 }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(!fork["graph_handle"].as_str().unwrap().is_empty());
+
+        assert_eq!(
+            dispatch_boxed(
+                &state,
+                &request("state_graph_close", json!({ "graph_handle": graph_handle }),),
+            )
+            .await
+            .unwrap()["closed"],
+            true
+        );
     }
 
     #[tokio::test]
@@ -3458,6 +3902,23 @@ mod tests {
             "thinking_budget": 2_048,
             "max_tool_rounds": 8,
             "max_parallel_tasks": 3,
+            "search_config": {
+                "timeout": 7,
+                "health": {"maxFailures": 2, "suspendSeconds": 11},
+                "engine": {
+                    "brave": {"enabled": true, "weight": 2.0, "timeout": 3}
+                },
+                "headless": {
+                    "backend": "moli",
+                    "maxTabs": 2,
+                    "autoDownloadMoli": false,
+                    "moliVersion": "1.1.1",
+                    "moliSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "moliCacheDir": "/tmp/a3s-moli",
+                    "moliDownloadTimeoutSecs": 30,
+                    "launchArgs": ["--headless"]
+                }
+            },
             "manual_delegation_enabled": false,
             "auto_parallel_delegation": true,
             "llm_logprobs": true,
@@ -3507,6 +3968,16 @@ mod tests {
         assert_eq!(options.thinking_budget, Some(2_048));
         assert_eq!(options.max_tool_rounds, Some(8));
         assert_eq!(options.max_parallel_tasks, Some(3));
+        let search = options.search_config.expect("search config");
+        assert_eq!(search.timeout, 7);
+        assert_eq!(search.health.expect("health").max_failures, 2);
+        assert_eq!(search.engines["brave"].timeout, Some(3));
+        let headless = search.headless.expect("headless");
+        assert_eq!(
+            headless.backend,
+            a3s_code_core::config::BrowserBackend::Moli
+        );
+        assert!(!headless.auto_download_moli);
         assert_eq!(options.manual_delegation_enabled, Some(false));
         assert_eq!(options.auto_parallel_delegation, Some(true));
         assert_eq!(options.llm_logprobs, Some(true));

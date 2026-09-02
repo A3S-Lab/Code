@@ -1,0 +1,37 @@
+{
+  "schema": "a3s-code/moli-runtime-manifest/v1",
+  "repository": "https://github.com/lexmount/moli",
+  "version": "1.1.1",
+  "assets": {
+    "aarch64-apple-darwin": {
+      "archive": "moli-aarch64-apple-darwin.tar.gz",
+      "format": "tar.gz",
+      "sha256": "56deed4634b9c77641ce31f3802b9bb3f32c6d7f28073f73901540429a29864b"
+    },
+    "x86_64-apple-darwin": {
+      "archive": "moli-x86_64-apple-darwin.tar.gz",
+      "format": "tar.gz",
+      "sha256": "bb4f80d6a2786909457a66675ec5cd2118038afaaedeac0d90f9911427d38f56"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "archive": "moli-aarch64-unknown-linux-gnu.tar.gz",
+      "format": "tar.gz",
+      "sha256": "549484765476b8dd3fd93ebf59a089e4424425a961c14874974a88bba6d8b5b4"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "archive": "moli-x86_64-unknown-linux-gnu.tar.gz",
+      "format": "tar.gz",
+      "sha256": "7b3eb9cbbf2cc8bd5ea9ef4a5bdb24cee2df35d26da621216a8b69c2aff3ebaa"
+    },
+    "aarch64-pc-windows-msvc": {
+      "archive": "moli-aarch64-pc-windows-msvc.zip",
+      "format": "zip",
+      "sha256": "1f3031a2ad668bc0b235f543b0559be70dd7649ff6ec36f45a44eedd9a43ece7"
+    },
+    "x86_64-pc-windows-msvc": {
+      "archive": "moli-x86_64-pc-windows-msvc.zip",
+      "format": "zip",
+      "sha256": "ab87af41cca72531bfc08cff068a8bcf3c9f0f53f15dcdd153e1da547191c87c"
+    }
+  }
+}

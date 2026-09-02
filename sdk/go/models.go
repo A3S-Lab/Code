@@ -10,6 +10,35 @@ type Capabilities struct {
 	ProtocolVersion      int      `json:"protocol_version"`
 	EventProtocolVersion int      `json:"event_protocol_version"`
 	Operations           []string `json:"operations"`
+	// Schema and ProductCapabilities are the cross-SDK product capability
+	// inventory projected by Rust Core. Operations remains the low-level bridge
+	// transport contract for compatibility and diagnostics.
+	Schema              string              `json:"schema,omitempty"`
+	ProductCapabilities []ProductCapability `json:"capabilities,omitempty"`
+}
+
+// ProductCapability is a stable, discoverable Core capability descriptor.
+// HostOwned describes ownership of policy/credentials/lifecycle, not whether
+// the operation is available through this SDK.
+type ProductCapability struct {
+	ID          string   `json:"id"`
+	Category    string   `json:"category"`
+	Description string   `json:"description"`
+	Operations  []string `json:"operations"`
+	HostOwned   bool     `json:"host_owned"`
+}
+
+// MoliRuntimeStatus is the secret-free result of a Moli runtime discovery
+// request. A nil Executable means that the runtime has not been installed (or
+// is not discoverable) yet; callers can call EnsureMoli to provision it.
+type MoliRuntimeStatus struct {
+	Schema       string  `json:"schema"`
+	Version      string  `json:"version"`
+	Target       *string `json:"target"`
+	Executable   *string `json:"executable"`
+	Packaged     bool    `json:"packaged"`
+	CacheDir     *string `json:"cache_dir"`
+	AutoDownload bool    `json:"auto_download"`
 }
 
 type PlanningMode string
@@ -74,6 +103,61 @@ func NewDefaultSecurityProvider() *DefaultSecurityProvider {
 	return &DefaultSecurityProvider{}
 }
 
+// BrowserBackend selects the browser used for JavaScript-rendered search
+// engines. Moli is the default in A3S Code 8.1.0.
+type BrowserBackend string
+
+const (
+	BrowserBackendMoli       BrowserBackend = "moli"
+	BrowserBackendChrome     BrowserBackend = "chrome"
+	BrowserBackendLightpanda BrowserBackend = "lightpanda"
+)
+
+// SearchEngineConfig controls one a3s-search engine.
+type SearchEngineConfig struct {
+	Enabled *bool    `json:"enabled,omitempty"`
+	Weight  *float64 `json:"weight,omitempty"`
+	Timeout *uint64  `json:"timeout,omitempty"`
+}
+
+// SearchHealthConfig controls temporary engine suspension after failures.
+type SearchHealthConfig struct {
+	MaxFailures    *uint32 `json:"maxFailures,omitempty"`
+	SuspendSeconds *uint64 `json:"suspendSeconds,omitempty"`
+}
+
+// HeadlessConfig controls the JavaScript-capable browser used by web_search.
+// Moli is provisioned from the package sidecar or a shared per-user cache;
+// multiple Code processes reuse the same verified installation.
+type HeadlessConfig struct {
+	Backend                 BrowserBackend `json:"backend,omitempty"`
+	MaxTabs                 *uint          `json:"maxTabs,omitempty"`
+	BrowserPath             string         `json:"browserPath,omitempty"`
+	AutoDownloadMoli        *bool          `json:"autoDownloadMoli,omitempty"`
+	MoliVersion             string         `json:"moliVersion,omitempty"`
+	MoliSHA256              string         `json:"moliSha256,omitempty"`
+	MoliCacheDir            string         `json:"moliCacheDir,omitempty"`
+	MoliDownloadTimeoutSecs *uint64        `json:"moliDownloadTimeoutSecs,omitempty"`
+	LaunchArgs              []string       `json:"launchArgs,omitempty"`
+	ProxyURL                string         `json:"proxyUrl,omitempty"`
+}
+
+// SearchConfig is the value-shaped per-session a3s-search configuration.
+// The Engines field is encoded as the core wire key "engine" for compatibility
+// with ACL and the Rust configuration type.
+type SearchConfig struct {
+	Timeout  *uint64                       `json:"timeout,omitempty"`
+	Health   *SearchHealthConfig           `json:"health,omitempty"`
+	Engines  map[string]SearchEngineConfig `json:"engine,omitempty"`
+	Headless *HeadlessConfig               `json:"headless,omitempty"`
+}
+
+// NewMoliHeadlessConfig returns an explicit configuration using the bundled
+// or shared-cache Moli runtime.
+func NewMoliHeadlessConfig() *HeadlessConfig {
+	return &HeadlessConfig{Backend: BrowserBackendMoli}
+}
+
 // SessionOptions contains the same value-shaped session configuration exposed
 // by the Rust, TypeScript, and Python SDKs.
 type SessionOptions struct {
@@ -84,6 +168,7 @@ type SessionOptions struct {
 	SkillDirs                          []string            `json:"skill_dirs,omitempty"`
 	WorkerAgents                       []WorkerAgentSpec   `json:"worker_agents,omitempty"`
 	QueueConfig                        *SessionQueueConfig `json:"queue_config,omitempty"`
+	SearchConfig                       *SearchConfig       `json:"search_config,omitempty"`
 	PermissionPolicy                   *PermissionPolicy   `json:"permission_policy,omitempty"`
 	ConfirmationPolicy                 *ConfirmationPolicy `json:"confirmation_policy,omitempty"`
 	EnforceActiveSkillToolRestrictions *bool               `json:"enforce_active_skill_tool_restrictions,omitempty"`
@@ -213,6 +298,23 @@ type ToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// CapabilityCatalogStamp identifies the exact live Core capability generation.
+type CapabilityCatalogStamp struct {
+	Generation uint64 `json:"generation"`
+	Digest     string `json:"digest"`
+}
+
+// CapabilityCleanupReport is the bounded result of retiring host capability
+// effects.
+type CapabilityCleanupReport struct {
+	RollbackBatches uint `json:"rollback_batches"`
+	RetiredBatches  uint `json:"retired_batches"`
+	EffectsClosed   uint `json:"effects_closed"`
+	EffectsFailed   uint `json:"effects_failed"`
+	EffectsTimedOut uint `json:"effects_timed_out"`
+	Clean           bool `json:"clean"`
 }
 
 type ToolArtifact struct {

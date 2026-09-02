@@ -104,6 +104,8 @@ pub mod llm;
 pub mod loop_checkpoint;
 pub mod mcp;
 pub mod memory;
+#[cfg(feature = "headless-search")]
+pub mod moli_runtime;
 pub mod orchestration;
 pub(crate) mod ordered_parallel;
 pub mod permissions;
@@ -118,6 +120,7 @@ pub mod rl_trajectory;
 pub mod run;
 pub(crate) mod safety_gate;
 pub mod sandbox;
+pub mod sdk_capabilities;
 #[cfg(feature = "headless-search")]
 pub mod search_runtime;
 pub mod security;
@@ -246,6 +249,11 @@ pub use llm::{
     Message, ModelGenerationAdmission, ModelGenerationAdmissionError, ModelGenerationConcurrency,
     ModelGenerationPermit, OpenAiClient, TokenUsage,
 };
+#[cfg(feature = "headless-search")]
+pub use moli_runtime::{
+    default_moli_version, ensure_moli, moli_runtime_info, packaged_moli, MoliRuntimeInfo,
+    MOLI_RUNTIME_INFO_SCHEMA_V1,
+};
 pub use orchestration::{
     execute_loop, execute_pipeline, execute_steps_parallel, execute_steps_parallel_resumable,
     AgentExecutor, AgentStepSpec, BudgetSnapshot, LoopDecision, PipelineStage, StepOutcome,
@@ -257,6 +265,9 @@ pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecord
 pub use run::{
     ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunReservation,
     RunSnapshot, RunStatus, RunWorkspaceChangeSet, RunWorkspaceChangeSetError,
+};
+pub use sdk_capabilities::{
+    sdk_capabilities, sdk_capabilities_schema, SdkCapability, SDK_CAPABILITIES_SCHEMA_V1,
 };
 pub use session_checkpoint::{
     SessionCheckpointDescriptorV1, SessionCheckpointError, SessionCheckpointExportSink,

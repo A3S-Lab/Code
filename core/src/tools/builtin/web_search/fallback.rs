@@ -8,7 +8,7 @@ use std::time::Duration;
 
 const DEFAULT_HTTP_TIER: [&str; 4] = ["ddg", "brave", "bing", "wiki"];
 #[cfg(feature = "headless-search")]
-const DEFAULT_HEADLESS_TIER: [&str; 2] = ["g", "baidu"];
+const DEFAULT_HEADLESS_TIER: [&str; 4] = ["g", "baidu", "brave_browser", "bing_browser"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct EngineTierPlan {

@@ -83,6 +83,13 @@ jobs:
         shell: bash
         run: echo "MACOSX_DEPLOYMENT_TARGET=12.0" >> "$GITHUB_ENV"
 
+      - name: Stage bundled Moli runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/package_moli.sh \
+            "${{ matrix.settings.target }}" sdk/python/python/a3s_code/moli
+
       # Build native wheels - these go to GitHub Releases ONLY
       - name: Build wheels
         uses: PyO3/maturin-action@v1

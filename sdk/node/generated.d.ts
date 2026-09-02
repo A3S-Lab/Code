@@ -390,6 +390,8 @@ export interface SessionOptions {
    * Ordinary sessions are queue-free unless this is provided.
    */
   queueConfig?: SessionQueueConfig
+  /** Per-session web-search and headless-browser configuration. */
+  searchConfig?: SearchConfig
   /** Explicit permission policy for tool execution. */
   permissionPolicy?: PermissionPolicy
   /**
@@ -726,8 +728,10 @@ export interface QueueStats {
 }
 /** Configuration for a search engine. */
 export interface SearchEngineConfig {
-  enabled: boolean
-  weight: number
+  /** Omit to use Core's default (`true`). */
+  enabled?: boolean
+  /** Omit to use Core's default (`1.0`). */
+  weight?: number
   timeout?: number
 }
 /** Browser backend for headless search. */
@@ -735,26 +739,37 @@ export const enum BrowserBackend {
   /** Chrome/Chromium headless. */
   Chrome = 0,
   /** Lightpanda headless browser (native Linux/macOS; WSL2 on Windows hosts). */
-  Lightpanda = 1
+  Lightpanda = 1,
+  /** Moli standalone JavaScript-capable headless browser (the default). */
+  Moli = 2
 }
 /** Headless browser configuration. */
 export interface HeadlessConfig {
-  backend: BrowserBackend
+  /** Omit to select the release-default Moli backend. */
+  backend?: BrowserBackend
   browserPath?: string
   maxTabs?: number
+  autoDownloadMoli?: boolean
+  moliVersion?: string
+  moliSha256?: string
+  moliCacheDir?: string
+  moliDownloadTimeoutSecs?: number
   launchArgs?: Array<string>
   proxyUrl?: string
 }
 /** Health monitor configuration for search engines. */
 export interface SearchHealthConfig {
-  maxFailures: number
-  suspendSeconds: number
+  /** Omit to use Core's default (`3`). */
+  maxFailures?: number
+  /** Omit to use Core's default (`60`). */
+  suspendSeconds?: number
 }
 /** Search engine configuration (a3s-search integration). */
 export interface SearchConfig {
-  timeout: number
+  /** Omit to use Core's default (`20` seconds). */
+  timeout?: number
   health?: SearchHealthConfig
-  engines: Record<string, SearchEngineConfig>
+  engines?: Record<string, SearchEngineConfig>
   headless?: HeadlessConfig
 }
 /** A single message in conversation history. */
@@ -1168,6 +1183,29 @@ export interface SkillInfo {
   /** Skill kind: "instruction", "tool", or "agent". */
   kind: string
 }
+/** A product capability exposed by Core and this SDK. */
+export interface SdkCapability {
+  /** Stable snake-case capability identifier. */
+  id: string
+  /** Broad capability area. */
+  category: string
+  /** Human-readable contract summary. */
+  description: string
+  /** Canonical Core operation names. */
+  operations: Array<string>
+  /** Whether the host owns external policy, credentials, or lifecycle. */
+  hostOwned: boolean
+}
+/** Secret-free diagnostics for the Core-managed Moli runtime. */
+export interface MoliRuntimeInfo {
+  schema: string
+  version: string
+  target?: string
+  executable?: string
+  packaged: boolean
+  cacheDir?: string
+  autoDownload: boolean
+}
 /**
  * Return the compatibility built-in skill list.
  *
@@ -1175,15 +1213,36 @@ export interface SkillInfo {
  * list unless embedded skills are reintroduced in a future release.
  */
 export declare function builtinSkills(): Array<SkillInfo>
+/** Return the complete Core capability inventory exposed by this binding. */
+export declare function sdkCapabilities(): Array<SdkCapability>
+/** Return the stable schema identifier for the capability inventory. */
+export declare function sdkCapabilitiesSchema(): string
+/** Return Moli resolution diagnostics without downloading anything. */
+export declare function moliRuntimeInfo(config?: HeadlessConfig): MoliRuntimeInfo
+/** Ensure a verified Moli executable is available and return its path. */
+export declare function ensureMoli(config?: HeadlessConfig): Promise<string>
+/** Return the pinned Moli release used by this Code build. */
+export declare function moliDefaultVersion(): string
+export interface StateGraphOptions {
+  /** Maximum number of records retained by the runtime. */
+  maxEvents?: number | undefined
+  /** Maximum reactive behavior recursion depth. */
+  maxBehaviorDepth?: number | undefined
+}
+/** Strictly replay an event log without creating a mutable runtime. */
+export declare function strictReplay(eventsJson: string): string
 export type JsStateGraphRuntime = StateGraphRuntime
 export declare class StateGraphRuntime {
-  constructor(correlationId?: string | undefined | null)
+  constructor(correlationId?: string | undefined | null, options?: StateGraphOptions)
   static restore(eventsJson: string): JsStateGraphRuntime
   get branchId(): string
   get version(): number
   proposePatch(patchJson: string): boolean
   runGoal(goal: string): string
   emitCustom(name: string, payloadJson: string): string
+  emitJson(eventJson: string): string
+  checkExternal(eventJson: string): string | null
+  projectExternal(eventJson: string, patchJson: string): string
   graphJson(): string
   eventsJson(): string
   forkAt(sequenceExclusive: number): StateGraphRuntime
@@ -1921,6 +1980,18 @@ export declare class Session {
   toolNames(): Array<string>
   /** Return full model-visible tool definitions currently registered on this session. */
   toolDefinitions(): any
+  /** Return the exact live capability catalog generation and digest. */
+  capabilityCatalogStamp(): any
+  /** Return the typed model-facing Tool presentation profile. */
+  toolPresentationProfile(): any
+  /** Preview the model-facing definitions for a prompt. */
+  presentedToolDefinitions(prompt: string): any
+  /** Return the exact cognitive package binding, or null when absent. */
+  currentCognitivePackageBinding(): any
+  /** Validate a persisted capability binding before recovery. */
+  ensureRecoveryCapabilityBinding(binding: any): void
+  /** Drain retired host capability effects. */
+  drainCapabilityCleanup(): Promise<any>
   /** Return a stored tool artifact by URI, or null if it is not retained. */
   getArtifact(artifactUri: string): any
 }
@@ -1994,6 +2065,8 @@ export declare class Agent {
    * @param configSource - Path to a config file (.acl), or inline config string
    */
   static create(configSource: string): Promise<Agent>
+  /** Create an Agent from a typed JSON CodeConfig object. */
+  static createFromConfig(config: any): Promise<Agent>
   /**
    * Re-fetch tool definitions from all connected global MCP servers and
    * update the agent-level cache.

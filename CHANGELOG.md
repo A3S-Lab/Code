@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.1.0] - 2026-09-02
+
 ### Added
+
+- Integrated `a3s-search` v3.1.0 and its Moli-backed headless engines for
+  Google, Baidu, Bing, and Brave. A3S Code now resolves a packaged Moli
+  sidecar first, then a digest-verified per-user shared cache, and downloads
+  the pinned v1.1.1 runtime only when needed.
+- Added atomic Moli installation receipts and a cross-process install lock so
+  concurrent Code processes reuse one verified runtime instead of repeatedly
+  downloading or installing it. Native Node.js, Python, and Go distributions
+  carry the matching Moli sidecar and provenance metadata.
 
 - Added the A3S-owned `NativeBashSandbox`, backed by the independent
   `a3s-sandbox` crate, with direct macOS Seatbelt, Linux bubblewrap
@@ -98,6 +109,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Made Moli the default headless search backend while retaining explicit
+  Chrome/Chromium and Lightpanda compatibility backends. Search provisioning
+  has its own bounded budget, request-level proxy propagation, and typed
+  fail-closed diagnostics.
+
+- Hardened the default A3S Code system prompt and shared repository-tool
+  contract with an evidence-driven operating loop, current-turn schema
+  guidance, native sandbox and permission boundaries, guarded mutations, and
+  explicit completion evidence. Added regressions that keep core tool routing
+  and model-delivered capabilities intact.
 - Pinned A3S Memory to the CJK lexical-query and vector-index releases. Existing
   schema 1-3 snapshots remain readable but cannot silently resume under current
   retrieval or admission identities. New lexical bindings use schema `4`;

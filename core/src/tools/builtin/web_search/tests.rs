@@ -35,8 +35,9 @@ async fn dropped_cleanup_guard_schedules_background_shutdown() {
 
 #[cfg(feature = "headless-search")]
 #[test]
-fn default_headless_backend_is_cross_platform_chrome() {
-    assert_eq!(HeadlessConfig::default().backend, BrowserBackend::Chrome);
+fn default_headless_backend_is_bundled_moli() {
+    assert_eq!(HeadlessConfig::default().backend, BrowserBackend::Moli);
+    assert!(HeadlessConfig::default().auto_download_moli);
 }
 
 #[cfg(feature = "headless-search")]
@@ -51,7 +52,7 @@ fn request_proxy_is_applied_to_the_headless_tier() {
         effective_headless_config(Some(&configured), Some("socks5://request.example:1080"))
             .expect("configured headless runtime");
 
-    assert_eq!(effective.backend, BrowserBackend::Chrome);
+    assert_eq!(effective.backend, BrowserBackend::Moli);
     assert_eq!(
         effective.proxy_url.as_deref(),
         Some("socks5://request.example:1080")
@@ -252,7 +253,10 @@ fn automatic_tier_plan_is_stable_and_deduplicated() {
     assert_eq!(plan.api, ["anysearch"]);
     assert_eq!(plan.http, ["ddg", "brave", "bing", "wiki"]);
     #[cfg(feature = "headless-search")]
-    assert_eq!(plan.headless, ["g", "baidu"]);
+    assert_eq!(
+        plan.headless,
+        ["g", "baidu", "brave_browser", "bing_browser"]
+    );
     #[cfg(not(feature = "headless-search"))]
     assert!(plan.headless.is_empty());
 }
@@ -291,7 +295,10 @@ fn tier_plan_normalizes_aliases_and_respects_disabled_configuration() {
     assert_eq!(automatic.api, ["anysearch"]);
     assert_eq!(automatic.http, ["brave", "bing"]);
     #[cfg(feature = "headless-search")]
-    assert_eq!(automatic.headless, ["g", "baidu"]);
+    assert_eq!(
+        automatic.headless,
+        ["g", "baidu", "brave_browser", "bing_browser"]
+    );
     #[cfg(not(feature = "headless-search"))]
     assert!(automatic.headless.is_empty());
 
@@ -801,6 +808,14 @@ fn test_web_search_schema_is_canonical() {
     assert!(params["properties"]["engines"]["description"]
         .as_str()
         .is_some_and(|description| description.contains("Google, headless")));
+    #[cfg(feature = "headless-search")]
+    assert!(params["properties"]["engines"]["description"]
+        .as_str()
+        .is_some_and(|description| {
+            description.contains("bing_browser")
+                && description.contains("brave_browser")
+                && description.contains("Moli")
+        }));
     #[cfg(not(feature = "headless-search"))]
     assert!(params["properties"]["engines"]["description"]
         .as_str()
@@ -874,7 +889,7 @@ fn test_add_headless_engine_valid() {
     assert!(add_headless_engine(
         &mut search,
         "google",
-        &pool,
+        pool.clone(),
         BrowserBackend::Chrome,
         &retry_budget,
     ));
@@ -883,7 +898,7 @@ fn test_add_headless_engine_valid() {
     assert!(add_headless_engine(
         &mut search,
         "baidu",
-        &pool,
+        pool.clone(),
         BrowserBackend::Chrome,
         &retry_budget,
     ));
@@ -892,7 +907,7 @@ fn test_add_headless_engine_valid() {
     assert!(!add_headless_engine(
         &mut search,
         "bing_cn",
-        &pool,
+        pool.clone(),
         BrowserBackend::Chrome,
         &retry_budget,
     ));
@@ -910,7 +925,7 @@ fn test_add_headless_engine_aliases() {
     assert!(add_headless_engine(
         &mut search,
         "g",
-        &pool,
+        pool.clone(),
         BrowserBackend::Chrome,
         &retry_budget,
     ));
@@ -928,14 +943,14 @@ fn test_add_headless_engine_unknown() {
     assert!(!add_headless_engine(
         &mut search,
         "ddg",
-        &pool,
+        pool.clone(),
         BrowserBackend::Chrome,
         &retry_budget,
     ));
     assert!(!add_headless_engine(
         &mut search,
         "nonexistent",
-        &pool,
+        pool.clone(),
         BrowserBackend::Chrome,
         &retry_budget,
     ));

@@ -22,7 +22,7 @@ pub(super) struct PySearchEngineConfig {
 impl PySearchEngineConfig {
     #[new]
     #[pyo3(signature = (enabled=true, weight=1.0, timeout=None))]
-    fn new(enabled: bool, weight: f64, timeout: Option<u64>) -> Self {
+    pub(super) fn new(enabled: bool, weight: f64, timeout: Option<u64>) -> Self {
         Self {
             enabled,
             weight,
@@ -62,7 +62,7 @@ pub(super) struct PySearchHealthConfig {
 impl PySearchHealthConfig {
     #[new]
     #[pyo3(signature = (max_failures=3, suspend_seconds=60))]
-    fn new(max_failures: u32, suspend_seconds: u64) -> Self {
+    pub(super) fn new(max_failures: u32, suspend_seconds: u64) -> Self {
         Self {
             max_failures,
             suspend_seconds,
@@ -94,11 +94,17 @@ pub(super) enum PyBrowserBackend {
     Chrome,
     /// Lightpanda headless browser (native Linux/macOS; WSL2 on Windows hosts).
     Lightpanda,
+    /// Moli standalone JavaScript-capable headless browser (the default).
+    ///
+    /// Keep this variant after the historical values so the Python integer
+    /// representation of Chrome (0) and Lightpanda (1) remains compatible.
+    Moli,
 }
 
 impl From<PyBrowserBackend> for RustBrowserBackend {
     fn from(backend: PyBrowserBackend) -> Self {
         match backend {
+            PyBrowserBackend::Moli => RustBrowserBackend::Moli,
             PyBrowserBackend::Chrome => RustBrowserBackend::Chrome,
             PyBrowserBackend::Lightpanda => RustBrowserBackend::Lightpanda,
         }
@@ -116,6 +122,16 @@ pub(super) struct PyHeadlessConfig {
     #[pyo3(get, set)]
     max_tabs: Option<usize>,
     #[pyo3(get, set)]
+    auto_download_moli: Option<bool>,
+    #[pyo3(get, set)]
+    moli_version: Option<String>,
+    #[pyo3(get, set)]
+    moli_sha256: Option<String>,
+    #[pyo3(get, set)]
+    moli_cache_dir: Option<String>,
+    #[pyo3(get, set)]
+    moli_download_timeout_secs: Option<u64>,
+    #[pyo3(get, set)]
     launch_args: Option<Vec<String>>,
     #[pyo3(get, set)]
     proxy_url: Option<String>,
@@ -124,18 +140,28 @@ pub(super) struct PyHeadlessConfig {
 #[pymethods]
 impl PyHeadlessConfig {
     #[new]
-    #[pyo3(signature = (backend, browser_path=None, max_tabs=None, launch_args=None, proxy_url=None))]
-    fn new(
-        backend: PyBrowserBackend,
+    #[pyo3(signature = (backend=None, browser_path=None, max_tabs=None, auto_download_moli=None, moli_version=None, moli_sha256=None, moli_cache_dir=None, moli_download_timeout_secs=None, launch_args=None, proxy_url=None))]
+    pub(super) fn new(
+        backend: Option<PyBrowserBackend>,
         browser_path: Option<String>,
         max_tabs: Option<usize>,
+        auto_download_moli: Option<bool>,
+        moli_version: Option<String>,
+        moli_sha256: Option<String>,
+        moli_cache_dir: Option<String>,
+        moli_download_timeout_secs: Option<u64>,
         launch_args: Option<Vec<String>>,
         proxy_url: Option<String>,
     ) -> Self {
         Self {
-            backend,
+            backend: backend.unwrap_or(PyBrowserBackend::Moli),
             browser_path,
             max_tabs,
+            auto_download_moli,
+            moli_version,
+            moli_sha256,
+            moli_cache_dir,
+            moli_download_timeout_secs,
             launch_args,
             proxy_url,
         }
@@ -143,8 +169,10 @@ impl PyHeadlessConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "HeadlessConfig(backend={:?}, browser_path={:?}, max_tabs={:?}, launch_args={:?}, proxy_url={:?})",
-            self.backend, self.browser_path, self.max_tabs, self.launch_args, self.proxy_url
+            "HeadlessConfig(backend={:?}, browser_path={:?}, max_tabs={:?}, auto_download_moli={:?}, moli_version={:?}, moli_sha256={:?}, moli_cache_dir={:?}, moli_download_timeout_secs={:?}, launch_args={:?}, proxy_url={:?})",
+            self.backend, self.browser_path, self.max_tabs, self.auto_download_moli,
+            self.moli_version, self.moli_sha256, self.moli_cache_dir,
+            self.moli_download_timeout_secs, self.launch_args, self.proxy_url
         )
     }
 }
@@ -155,6 +183,11 @@ impl From<PyHeadlessConfig> for RustHeadlessConfig {
             backend: config.backend.into(),
             browser_path: config.browser_path,
             max_tabs: config.max_tabs.unwrap_or(4),
+            auto_download_moli: config.auto_download_moli.unwrap_or(true),
+            moli_version: config.moli_version,
+            moli_sha256: config.moli_sha256,
+            moli_cache_dir: config.moli_cache_dir.map(std::path::PathBuf::from),
+            moli_download_timeout_secs: config.moli_download_timeout_secs.unwrap_or(120),
             launch_args: config.launch_args.unwrap_or_default(),
             proxy_url: config.proxy_url,
         }
@@ -177,8 +210,8 @@ pub(super) struct PySearchConfig {
 #[pymethods]
 impl PySearchConfig {
     #[new]
-    #[pyo3(signature = (timeout=10, health=None, headless=None))]
-    fn new(
+    #[pyo3(signature = (timeout=20, health=None, headless=None))]
+    pub(super) fn new(
         timeout: u64,
         health: Option<PySearchHealthConfig>,
         headless: Option<PyHeadlessConfig>,
@@ -192,7 +225,7 @@ impl PySearchConfig {
     }
 
     /// Set engine configuration.
-    fn set_engine(&mut self, name: String, config: PySearchEngineConfig) {
+    pub(super) fn set_engine(&mut self, name: String, config: PySearchEngineConfig) {
         self.engines.insert(name, config);
     }
 

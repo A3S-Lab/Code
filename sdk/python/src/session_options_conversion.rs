@@ -91,6 +91,9 @@ fn build_rust_session_options_inner(
     if let Some(qc) = so.queue_config {
         o = o.with_queue_config(qc.inner);
     }
+    if let Some(search) = so.search_config {
+        o = o.with_search_config(search.into());
+    }
     if let Some(policy) = so.permission_policy {
         o = o.with_permission_policy(py_permission_policy_to_rust(policy)?);
     }

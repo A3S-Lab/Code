@@ -1,6 +1,7 @@
 //! Node Agent lifecycle binding.
 
 use super::*;
+use a3s_code_core::config::CodeConfig as RustCodeConfig;
 
 // ============================================================================
 // Agent
@@ -28,6 +29,25 @@ impl Agent {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
 
+        Ok(Self {
+            inner: Arc::new(agent),
+        })
+    }
+
+    /// Create an Agent from the typed JSON representation of `CodeConfig`.
+    ///
+    /// This is the SDK counterpart to Rust's `Agent::from_config` factory and
+    /// avoids forcing a host that already has a validated object to write an
+    /// intermediate ACL file.
+    #[napi(factory, js_name = "createFromConfig")]
+    pub async fn create_from_config(config: serde_json::Value) -> napi::Result<Self> {
+        let config: RustCodeConfig = serde_json::from_value(config)
+            .map_err(|error| napi::Error::from_reason(format!("Invalid CodeConfig: {error}")))?;
+        let agent = get_runtime()
+            .spawn(async move { RustAgent::from_config(config).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(node_code_error)?;
         Ok(Self {
             inner: Arc::new(agent),
         })

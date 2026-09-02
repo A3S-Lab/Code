@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "a3s-code"
-version = "8.0.4"
+version = "8.1.0"
 description = "A3S Code - Native Python bindings for the coding-agent runtime"
 readme = "README.md"
 license = {text = "MIT"}
@@ -26,3 +26,6 @@ classifiers = [
 python-source = "python"
 features = ["extension-module"]
 module-name = "a3s_code._native"
+include = [
+    { path = "python/a3s_code/moli/**", format = "wheel" },
+]

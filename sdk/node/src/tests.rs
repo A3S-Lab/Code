@@ -1,4 +1,5 @@
 use super::*;
+use super::search_config::{BrowserBackend, HeadlessConfig, SearchConfig, SearchEngineConfig, SearchHealthConfig};
 
 #[test]
 fn agent_run_spawn_object_preserves_snapshot_and_replay_state() {
@@ -43,6 +44,41 @@ fn inline_skill_conversion_is_typed_and_rejects_invalid_input() {
         content: String::new(),
     })
     .is_err());
+}
+
+#[test]
+fn sdk_capability_inventory_is_projected_from_core_without_drift() {
+    let capabilities = sdk_capabilities();
+    assert!(capabilities.len() >= 20);
+    assert_eq!(sdk_capabilities_schema(), a3s_code_core::SDK_CAPABILITIES_SCHEMA_V1);
+    assert!(capabilities.iter().any(|item| item.id == "web_search"));
+    assert!(capabilities.iter().any(|item| item.id == "moli_runtime"));
+    assert!(capabilities
+        .iter()
+        .all(|item| !item.operations.is_empty() && !item.description.is_empty()));
+}
+
+#[test]
+fn moli_diagnostics_are_projected_without_installing() {
+    let info = crate::moli_runtime::moli_runtime_info(None);
+    assert_eq!(info.schema, a3s_code_core::MOLI_RUNTIME_INFO_SCHEMA_V1);
+    assert_eq!(info.version, a3s_code_core::default_moli_version());
+    assert!(info.cache_dir.as_deref().is_some_and(|path| !path.is_empty()));
+    assert!(info.auto_download);
+}
+
+#[test]
+fn session_exposes_serializable_capability_and_tool_projection_views() {
+    let session = build_test_session();
+    let stamp = session.capability_catalog_stamp().unwrap();
+    assert!(stamp.get("generation").and_then(serde_json::Value::as_u64).is_some());
+    assert!(stamp.get("digest").and_then(serde_json::Value::as_str).is_some());
+    let profile = session.tool_presentation_profile().unwrap();
+    assert_eq!(profile["schema"], "a3s.code.tool-presentation-profile.v1");
+    let definitions = session
+        .presented_tool_definitions("inspect files".to_string())
+        .unwrap();
+    assert!(definitions.is_array());
 }
 
 #[test]
@@ -229,6 +265,81 @@ fn task_priority_maps_to_rust_session_options() {
         ..Default::default()
     }));
     assert!(invalid.is_err());
+}
+
+#[test]
+fn search_config_maps_to_rust_session_options() {
+    let opts = js_session_options_to_rust(Some(SessionOptions {
+        search_config: Some(SearchConfig {
+            timeout: Some(7),
+            health: Some(SearchHealthConfig {
+                max_failures: Some(2),
+                suspend_seconds: Some(11),
+            }),
+            engines: Some(std::collections::HashMap::from([(
+                "brave".to_string(),
+                SearchEngineConfig {
+                    enabled: Some(true),
+                    weight: Some(2.0),
+                    timeout: Some(3),
+                },
+            )])),
+            headless: Some(HeadlessConfig {
+                backend: Some(BrowserBackend::Moli),
+                browser_path: None,
+                max_tabs: Some(2),
+                auto_download_moli: Some(false),
+                moli_version: Some("1.1.1".to_string()),
+                moli_sha256: Some("a".repeat(64)),
+                moli_cache_dir: Some("/tmp/a3s-moli".to_string()),
+                moli_download_timeout_secs: Some(30),
+                launch_args: Some(vec!["--headless".to_string()]),
+                proxy_url: None,
+            }),
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+
+    let search = opts.search_config.expect("search config");
+    assert_eq!(search.timeout, 7);
+    assert_eq!(search.health.unwrap().max_failures, 2);
+    assert_eq!(search.engines["brave"].timeout, Some(3));
+    let headless = search.headless.unwrap();
+    assert_eq!(
+        headless.backend,
+        a3s_code_core::config::BrowserBackend::Moli
+    );
+    assert!(!headless.auto_download_moli);
+    assert_eq!(headless.moli_download_timeout_secs, 30);
+}
+
+#[test]
+fn search_config_omitted_fields_use_core_defaults() {
+    let opts = js_session_options_to_rust(Some(SessionOptions {
+        search_config: Some(SearchConfig {
+            timeout: None,
+            health: None,
+            engines: None,
+            headless: Some(HeadlessConfig {
+                backend: None,
+                browser_path: None,
+                max_tabs: None,
+                auto_download_moli: None,
+                moli_version: None,
+                moli_sha256: None,
+                moli_cache_dir: None,
+                moli_download_timeout_secs: None,
+                launch_args: None,
+                proxy_url: None,
+            }),
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+    let search = opts.search_config.expect("search config");
+    assert_eq!(search.timeout, 20);
+    assert_eq!(search.headless.unwrap().backend, a3s_code_core::config::BrowserBackend::Moli);
 }
 
 #[test]

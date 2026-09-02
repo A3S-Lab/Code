@@ -32,12 +32,16 @@ _bootstrap = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_bootstrap)
 
 
-def _make_wheel(native_blob: bytes = b"fake-extension-blob") -> bytes:
-    """Build a minimal in-memory wheel containing _native.something.so."""
+def _make_wheel(
+    native_blob: bytes = b"fake-extension-blob", *, include_moli: bool = False
+) -> bytes:
+    """Build a minimal in-memory wheel containing a native extension."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("a3s_code/__init__.py", "from ._native import *\n")
         zf.writestr("a3s_code/_native.cpython-312-x86_64-linux-gnu.so", native_blob)
+        if include_moli:
+            zf.writestr("a3s_code/moli/moli", b"#!/bin/sh\nexit 0\n")
         zf.writestr("a3s_code-3.2.1.dist-info/METADATA", "Metadata-Version: 2.1\n")
         zf.writestr("a3s_code-3.2.1.dist-info/WHEEL", "Wheel-Version: 1.0\n")
     return buf.getvalue()
@@ -199,6 +203,27 @@ class ExtractNativeTests(unittest.TestCase):
             self.assertTrue(out.exists())
             self.assertTrue(out.name.startswith("_native."))
             self.assertEqual(out.read_bytes(), b"native-bytes")
+
+    def test_extracts_and_configures_bundled_moli_sidecar(self):
+        wheel_bytes = _make_wheel(include_moli=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "a3s_code"
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("A3S_CODE_MOLI_EXECUTABLE", None)
+                _bootstrap._extract_native(wheel_bytes, target)
+                moli = target / "moli" / "moli"
+                self.assertTrue(moli.is_file())
+                self.assertEqual(os.environ.get("A3S_CODE_MOLI_EXECUTABLE"), str(moli))
+                self.assertTrue(os.access(moli, os.X_OK))
+
+    def test_rejects_unsafe_wheel_member(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("../escape", b"bad")
+            zf.writestr("a3s_code/_native.so", b"native")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(_bootstrap.BootstrapError):
+                _bootstrap._extract_native(buf.getvalue(), Path(tmp) / "pkg")
 
     def test_wheel_without_native_raises(self):
         buf = io.BytesIO()

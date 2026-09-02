@@ -1,4 +1,7 @@
-use a3s_code_core::{GraphEvent, GraphEventRecord, GraphPatch, GraphRuntime};
+use a3s_code_core::{
+    ExternalEvent, ExternalProjectionOutcome, GraphEvent, GraphEventRecord, GraphPatch,
+    GraphRuntime, RuntimeLimits,
+};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use std::sync::Mutex;
@@ -11,11 +14,38 @@ pub struct PyStateGraphRuntime {
 #[pymethods]
 impl PyStateGraphRuntime {
     #[new]
-    #[pyo3(signature = (correlation_id=None))]
-    fn new(correlation_id: Option<String>) -> Self {
-        let runtime = correlation_id
-            .map(|id| GraphRuntime::new().with_correlation_id(id))
-            .unwrap_or_default();
+    #[pyo3(signature = (correlation_id=None, max_events=None, max_behavior_depth=None))]
+    fn new(
+        correlation_id: Option<String>,
+        max_events: Option<usize>,
+        max_behavior_depth: Option<usize>,
+    ) -> Self {
+        let limits = RuntimeLimits {
+            max_events: max_events.unwrap_or_default(),
+            max_behavior_depth: max_behavior_depth.unwrap_or_default(),
+        };
+        let limits = if max_events.is_none() && max_behavior_depth.is_none() {
+            RuntimeLimits::default()
+        } else {
+            RuntimeLimits {
+                max_events: if max_events.is_some() {
+                    limits.max_events
+                } else {
+                    RuntimeLimits::default().max_events
+                },
+                max_behavior_depth: if max_behavior_depth.is_some() {
+                    limits.max_behavior_depth
+                } else {
+                    RuntimeLimits::default().max_behavior_depth
+                },
+            }
+        };
+        let runtime = GraphRuntime::with_limits(limits);
+        let runtime = if let Some(id) = correlation_id.filter(|id| !id.trim().is_empty()) {
+            runtime.with_correlation_id(id)
+        } else {
+            runtime
+        };
         Self {
             inner: Mutex::new(runtime),
         }
@@ -48,6 +78,59 @@ impl PyStateGraphRuntime {
         self.lock()?
             .propose_patch(patch, None)
             .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+    }
+
+    /// Emit any versioned Core graph event. This keeps the SDK open to all
+    /// current and future event variants while `emit_custom` remains a
+    /// convenient typed shortcut.
+    fn emit_json(&self, event_json: &str) -> PyResult<String> {
+        let event: GraphEvent = serde_json::from_str(event_json)
+            .map_err(|error| PyValueError::new_err(format!("invalid graph event: {error}")))?;
+        let record = self
+            .lock()?
+            .emit(event)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        encode(&record, "graph event")
+    }
+
+    /// Validate a host-owned ordered event without mutating the graph.
+    fn check_external(&self, event_json: &str) -> PyResult<Option<String>> {
+        let event: ExternalEvent = serde_json::from_str(event_json)
+            .map_err(|error| PyValueError::new_err(format!("invalid external event: {error}")))?;
+        let outcome = self
+            .lock()?
+            .check_external(&event)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        Ok(outcome.map(|value| match value {
+            ExternalProjectionOutcome::Applied => "applied".to_string(),
+            ExternalProjectionOutcome::Duplicate => "duplicate".to_string(),
+        }))
+    }
+
+    /// Atomically project a host event and its graph patch.
+    fn project_external(&self, event_json: &str, patch_json: &str) -> PyResult<String> {
+        let event: ExternalEvent = serde_json::from_str(event_json)
+            .map_err(|error| PyValueError::new_err(format!("invalid external event: {error}")))?;
+        let patch: GraphPatch = serde_json::from_str(patch_json)
+            .map_err(|error| PyValueError::new_err(format!("invalid graph patch: {error}")))?;
+        let outcome = self
+            .lock()?
+            .project_external(event, patch)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        Ok(match outcome {
+            ExternalProjectionOutcome::Applied => "applied".to_string(),
+            ExternalProjectionOutcome::Duplicate => "duplicate".to_string(),
+        })
+    }
+
+    /// Strictly replay an event log without creating a mutable runtime.
+    #[staticmethod]
+    fn strict_replay(events_json: &str) -> PyResult<String> {
+        let events: Vec<GraphEventRecord> = serde_json::from_str(events_json)
+            .map_err(|error| PyValueError::new_err(format!("invalid graph events: {error}")))?;
+        let graph = GraphRuntime::strict_replay(&events)
+            .map_err(|error| PyValueError::new_err(format!("invalid graph event log: {error}")))?;
+        encode(&graph, "state graph")
     }
 
     fn run_goal(&self, goal: String) -> PyResult<String> {
@@ -114,7 +197,7 @@ mod tests {
 
     #[test]
     fn wrapper_patches_forks_diffs_and_restores() {
-        let runtime = PyStateGraphRuntime::new(Some("trace".into()));
+        let runtime = PyStateGraphRuntime::new(Some("trace".into()), None, None);
         assert!(runtime.propose_patch(ADD_TASK).unwrap());
         assert_eq!(runtime.version().unwrap(), 1);
         let restored = PyStateGraphRuntime::restore(&runtime.events_json().unwrap()).unwrap();
@@ -123,5 +206,17 @@ mod tests {
         let diff: serde_json::Value =
             serde_json::from_str(&fork.diff_json(&restored).unwrap()).unwrap();
         assert!(diff.is_object());
+    }
+
+    #[test]
+    fn wrapper_projects_external_events_and_strict_replays() {
+        let runtime = PyStateGraphRuntime::new(None, None, None);
+        let event = r#"{"source":"queue","stream_id":"orders","sequence":1,"event_id":"e1","name":"order.created","payload":{"id":"o1"}}"#;
+        assert_eq!(runtime.check_external(event).unwrap(), None);
+        assert_eq!(runtime.project_external(event, ADD_TASK).unwrap(), "applied");
+        assert_eq!(runtime.check_external(event).unwrap(), Some("duplicate".into()));
+        let graph: serde_json::Value =
+            serde_json::from_str(&PyStateGraphRuntime::strict_replay(&runtime.events_json().unwrap()).unwrap()).unwrap();
+        assert_eq!(graph["version"], 1);
     }
 }

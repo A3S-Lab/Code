@@ -308,6 +308,11 @@ mod tests {
             &defs(&[
                 "read",
                 "write",
+                "edit",
+                "patch",
+                "bash",
+                "search",
+                "ls",
                 "code_symbols",
                 "code_navigation",
                 "code_diagnostics",
@@ -328,6 +333,12 @@ mod tests {
         let names: Vec<_> = selected.iter().map(|t| t.name.as_str()).collect();
 
         assert!(names.contains(&"read"));
+        assert!(names.contains(&"write"));
+        assert!(names.contains(&"edit"));
+        assert!(names.contains(&"patch"));
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"search"));
+        assert!(names.contains(&"ls"));
         assert!(names.contains(&"code_symbols"));
         assert!(names.contains(&"code_navigation"));
         assert!(names.contains(&"code_diagnostics"));

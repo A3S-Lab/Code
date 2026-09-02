@@ -74,6 +74,7 @@ async fn test_web_search_with_baidu_headless_engine() {
         browser_path: None,
         launch_args: Vec::new(),
         proxy_url: None,
+        ..HeadlessConfig::default()
     };
 
     let context = make_context(Some(headless_config));
@@ -106,6 +107,70 @@ async fn test_web_search_with_baidu_headless_engine() {
 }
 
 #[tokio::test]
+async fn test_moli_backend_fails_closed_without_download_or_executable() {
+    let executor = ToolExecutor::new("/tmp".to_string());
+    let context = make_context(Some(HeadlessConfig {
+        backend: BrowserBackend::Moli,
+        browser_path: Some("/definitely/missing/a3s-code-moli".to_string()),
+        auto_download_moli: false,
+        ..HeadlessConfig::default()
+    }));
+
+    let output = executor
+        .execute_with_context(
+            "web_search",
+            &serde_json::json!({
+                "query": "moli deterministic unavailable fixture",
+                "engines": ["google"],
+                "timeout": 2,
+                "format": "json"
+            }),
+            &context,
+        )
+        .await
+        .expect("tool dispatch should return a typed result");
+
+    assert_ne!(output.exit_code, 0);
+    let metadata = output.metadata.expect("failure metadata");
+    assert_eq!(metadata["status"], "failed");
+    assert!(metadata["engine_failures"]
+        .as_array()
+        .expect("engine failure list")
+        .iter()
+        .any(|failure| failure["kind"] == "headless_unavailable"));
+}
+
+#[tokio::test]
+#[ignore = "requires the release-bundled Moli executable and external search access"]
+async fn test_moli_headless_search_actual() {
+    let executor = ToolExecutor::new("/tmp".to_string());
+    let context = make_context(Some(HeadlessConfig {
+        backend: BrowserBackend::Moli,
+        max_tabs: 2,
+        moli_download_timeout_secs: 180,
+        ..HeadlessConfig::default()
+    }));
+
+    let output = executor
+        .execute_with_context(
+            "web_search",
+            &serde_json::json!({
+                "query": "Rust programming language",
+                "engines": ["google"],
+                "limit": 3,
+                "timeout": 20,
+                "format": "json"
+            }),
+            &context,
+        )
+        .await
+        .expect("Moli search should dispatch");
+
+    assert_eq!(output.exit_code, 0, "{}", output.output);
+    assert!(output.output.contains("results"), "{}", output.output);
+}
+
+#[tokio::test]
 #[ignore] // Requires a browser to be installed
 async fn test_baidu_headless_search_actual() {
     let executor = ToolExecutor::new("/tmp".to_string());
@@ -116,6 +181,7 @@ async fn test_baidu_headless_search_actual() {
         browser_path: None,
         launch_args: Vec::new(),
         proxy_url: None,
+        ..HeadlessConfig::default()
     };
 
     let context = make_context(Some(headless_config));
@@ -153,6 +219,7 @@ async fn test_google_headless_search_actual() {
         browser_path: None,
         launch_args: Vec::new(),
         proxy_url: None,
+        ..HeadlessConfig::default()
     };
 
     let context = make_context(Some(headless_config));
@@ -205,6 +272,7 @@ async fn test_google_headless_search_controlled_local_cdp() {
             format!("--a3s-headless-fixture={marker}"),
         ],
         proxy_url: None,
+        ..HeadlessConfig::default()
     };
     let context = make_context(Some(headless_config));
     let executor = ToolExecutor::new("/tmp".to_string());

@@ -27,6 +27,7 @@ test('release manifest binds every platform package to the exact SDK version', (
     '@a3s-lab/code-linux-arm64-musl': RELEASE_VERSION,
     '@a3s-lab/code-linux-x64-gnu': RELEASE_VERSION,
     '@a3s-lab/code-linux-x64-musl': RELEASE_VERSION,
+    '@a3s-lab/code-win32-arm64-msvc': RELEASE_VERSION,
     '@a3s-lab/code-win32-x64-msvc': RELEASE_VERSION,
   })
   assert.deepEqual(Object.keys(prepared.optionalDependencies), PLATFORM_PACKAGE_NAMES)

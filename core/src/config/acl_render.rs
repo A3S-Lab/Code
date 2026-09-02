@@ -547,13 +547,21 @@ fn render_search(config: &CodeConfig, document: &Document) -> Option<Block> {
                 [
                     (
                         "backend",
-                        string(if headless.backend.is_lightpanda() {
-                            "lightpanda"
-                        } else {
-                            "chrome"
+                        string(match headless.backend {
+                            super::BrowserBackend::Moli => "moli",
+                            super::BrowserBackend::Chrome => "chrome",
+                            super::BrowserBackend::Lightpanda => "lightpanda",
                         }),
                     ),
                     ("max_tabs", number(headless.max_tabs)),
+                    (
+                        "auto_download_moli",
+                        Value::Bool(headless.auto_download_moli),
+                    ),
+                    (
+                        "moli_download_timeout_secs",
+                        number(headless.moli_download_timeout_secs),
+                    ),
                     ("launch_args", string_list(&headless.launch_args)),
                 ],
             );
@@ -568,6 +576,27 @@ fn render_search(config: &CodeConfig, document: &Document) -> Option<Block> {
                 &["proxy_url"],
                 "proxy_url",
                 headless.proxy_url.as_deref().map(string),
+            );
+            set_attr(
+                &mut headless_block,
+                &["moli_version"],
+                "moli_version",
+                headless.moli_version.as_deref().map(string),
+            );
+            set_attr(
+                &mut headless_block,
+                &["moli_sha256"],
+                "moli_sha256",
+                headless.moli_sha256.as_deref().map(string),
+            );
+            set_attr(
+                &mut headless_block,
+                &["moli_cache_dir"],
+                "moli_cache_dir",
+                headless
+                    .moli_cache_dir
+                    .as_ref()
+                    .map(|path| string(&path.to_string_lossy())),
             );
             headless_block
         }),

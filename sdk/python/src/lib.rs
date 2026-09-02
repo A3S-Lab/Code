@@ -65,7 +65,7 @@ use a3s_code_core::{
     AgentResult as RustAgentResult, AgentRunSpawn as RustAgentRunSpawn,
     AgentSession as RustAgentSession, EventProtocolError as RustEventProtocolError,
     PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions, AGENT_EVENT_TYPES_V1,
-    EVENT_ENVELOPE_V1_VERSION,
+    EVENT_ENVELOPE_V1_VERSION, SdkCapability as RustSdkCapability,
 };
 use pyo3::exceptions::{
     PyRuntimeError, PyStopAsyncIteration, PyStopIteration, PyTypeError, PyValueError,
@@ -376,6 +376,9 @@ mod async_bridge;
 mod search_config;
 use async_bridge::*;
 use search_config::*;
+
+mod moli_runtime;
+use moli_runtime::{py_ensure_moli, py_moli_default_version, py_moli_runtime_info};
 
 mod serve_handle;
 use serve_handle::PyServeHandle;
@@ -933,6 +936,45 @@ struct PySkillInfo {
     kind: String,
 }
 
+// ============================================================================
+// SDK capability inventory
+// ============================================================================
+
+/// One product capability exposed through the Python SDK.
+#[pyclass(name = "SdkCapability")]
+#[derive(Clone)]
+struct PySdkCapability {
+    #[pyo3(get)]
+    id: String,
+    #[pyo3(get)]
+    category: String,
+    #[pyo3(get)]
+    description: String,
+    #[pyo3(get)]
+    operations: Vec<String>,
+    #[pyo3(get)]
+    host_owned: bool,
+}
+
+impl From<RustSdkCapability> for PySdkCapability {
+    fn from(value: RustSdkCapability) -> Self {
+        Self {
+            id: value.id,
+            category: value.category,
+            description: value.description,
+            operations: value.operations,
+            host_owned: value.host_owned,
+        }
+    }
+}
+
+#[pymethods]
+impl PySdkCapability {
+    fn __repr__(&self) -> String {
+        format!("SdkCapability(id='{}', category='{}')", self.id, self.category)
+    }
+}
+
 #[pymethods]
 impl PySkillInfo {
     fn __repr__(&self) -> String {
@@ -977,6 +1019,21 @@ fn py_builtin_skills() -> Vec<PySkillInfo> {
             },
         })
         .collect()
+}
+
+/// Return the complete Core capability inventory exposed by this binding.
+#[pyfunction(name = "sdk_capabilities")]
+fn py_sdk_capabilities() -> Vec<PySdkCapability> {
+    a3s_code_core::sdk_capabilities()
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+/// Return the stable schema identifier for the capability inventory.
+#[pyfunction(name = "sdk_capabilities_schema")]
+fn py_sdk_capabilities_schema() -> String {
+    a3s_code_core::sdk_capabilities_schema().to_owned()
 }
 
 #[cfg(test)]

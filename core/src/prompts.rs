@@ -489,7 +489,7 @@ impl SystemPromptSlots {
         let core = if let Some(ref role) = self.role {
             if style == AgentStyle::GeneralPurpose {
                 let custom_role = format!(
-                    "{}. You operate in an agentic loop: inspect, act with tools, observe results, and continue until the user's request is genuinely complete.",
+                    "{} Working inside the user's workspace, use the tools exposed in the current turn to inspect, change, and verify the requested work; continue until the user's request is genuinely complete.",
                     role.trim_end_matches('.')
                 );
                 base_prompt.replace(&default_role_line, &custom_role)

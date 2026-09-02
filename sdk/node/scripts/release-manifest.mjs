@@ -15,6 +15,7 @@ export const PLATFORM_PACKAGE_NAMES = Object.freeze([
   '@a3s-lab/code-linux-arm64-musl',
   '@a3s-lab/code-linux-x64-gnu',
   '@a3s-lab/code-linux-x64-musl',
+  '@a3s-lab/code-win32-arm64-msvc',
   '@a3s-lab/code-win32-x64-msvc',
 ])
 

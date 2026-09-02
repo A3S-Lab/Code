@@ -20,6 +20,25 @@ implementations continue to evolve.
 
 ## API Layers
 
+### 0. Capability Discovery (all official SDKs)
+
+Every release exposes the Core product inventory before an application creates
+an Agent. Use `sdk_capabilities()` and `sdk_capabilities_schema()` in Rust,
+`sdkCapabilities()` / `sdkCapabilitiesSchema()` in Node.js,
+`sdk_capabilities()` / `sdk_capabilities_schema()` in Python, or
+`SDKCapabilities(ctx)` / `SDKCapabilitiesSchema()` in Go. The inventory is
+generated once by Core and projected verbatim; it is the authoritative list of
+product capabilities, event/protocol contracts, and host-owned boundaries.
+
+The inventory is deliberately separate from the low-level Rust trait-object
+surface. A Rust host may inject an in-process `LlmClient`, `MemoryStore`,
+`BashSandbox`, or `Tool`; those are extension points with process-local
+lifetime and cannot be represented safely as portable SDK values. The
+corresponding product capabilities remain available through typed options,
+callbacks, MCP, filesystem AgentDirs, or the built-in providers. Bindings must
+return a typed configuration/unavailable error when a requested host resource
+is not supplied; they must never silently discard it.
+
 ### 1. Agent Factory
 
 `Agent` owns configuration and creates sessions.

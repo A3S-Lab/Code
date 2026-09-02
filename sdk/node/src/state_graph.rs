@@ -1,4 +1,7 @@
-use a3s_code_core::{GraphEvent, GraphEventRecord, GraphPatch, GraphRuntime};
+use a3s_code_core::{
+    ExternalEvent, ExternalProjectionOutcome, GraphEvent, GraphEventRecord, GraphPatch,
+    GraphRuntime, RuntimeLimits,
+};
 use napi::bindgen_prelude::*;
 use std::sync::Mutex;
 
@@ -9,11 +12,32 @@ pub struct JsStateGraphRuntime {
 
 #[napi]
 impl JsStateGraphRuntime {
-    #[napi(constructor, catch_unwind)]
-    pub fn new(correlation_id: Option<String>) -> Self {
-        let runtime = correlation_id
-            .map(|id| GraphRuntime::new().with_correlation_id(id))
-            .unwrap_or_default();
+    #[napi(
+        constructor,
+        catch_unwind,
+        ts_args_type = "correlationId?: string | null, options?: StateGraphOptions"
+    )]
+    pub fn new(
+        correlation_id: Option<String>,
+        options: Option<StateGraphOptions>,
+    ) -> Self {
+        let options = options.unwrap_or_default();
+        let limits = RuntimeLimits {
+            max_events: options
+                .max_events
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or_else(|| RuntimeLimits::default().max_events),
+            max_behavior_depth: options
+                .max_behavior_depth
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or_else(|| RuntimeLimits::default().max_behavior_depth),
+        };
+        let runtime = GraphRuntime::with_limits(limits);
+        let runtime = if let Some(id) = correlation_id.filter(|id| !id.trim().is_empty()) {
+            runtime.with_correlation_id(id)
+        } else {
+            runtime
+        };
         Self {
             inner: Mutex::new(runtime),
         }
@@ -48,6 +72,51 @@ impl JsStateGraphRuntime {
         self.lock()?
             .propose_patch(patch, None)
             .map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Emit any versioned Core graph event. `emitCustom` remains the compact
+    /// helper for callers that only need a named JSON payload.
+    #[napi(catch_unwind)]
+    pub fn emit_json(&self, event_json: String) -> Result<String> {
+        let event: GraphEvent = serde_json::from_str(&event_json)
+            .map_err(|error| Error::from_reason(format!("invalid graph event: {error}")))?;
+        let record = self
+            .lock()?
+            .emit(event)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        encode(&record, "graph event")
+    }
+
+    /// Validate a host-owned ordered event without mutating the graph.
+    #[napi(catch_unwind)]
+    pub fn check_external(&self, event_json: String) -> Result<Option<String>> {
+        let event: ExternalEvent = serde_json::from_str(&event_json)
+            .map_err(|error| Error::from_reason(format!("invalid external event: {error}")))?;
+        let outcome = self
+            .lock()?
+            .check_external(&event)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        Ok(outcome.map(|value| match value {
+            ExternalProjectionOutcome::Applied => "applied".to_string(),
+            ExternalProjectionOutcome::Duplicate => "duplicate".to_string(),
+        }))
+    }
+
+    /// Atomically project a host event and its graph patch.
+    #[napi(catch_unwind)]
+    pub fn project_external(&self, event_json: String, patch_json: String) -> Result<String> {
+        let event: ExternalEvent = serde_json::from_str(&event_json)
+            .map_err(|error| Error::from_reason(format!("invalid external event: {error}")))?;
+        let patch: GraphPatch = serde_json::from_str(&patch_json)
+            .map_err(|error| Error::from_reason(format!("invalid graph patch: {error}")))?;
+        let outcome = self
+            .lock()?
+            .project_external(event, patch)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        Ok(match outcome {
+            ExternalProjectionOutcome::Applied => "applied".to_string(),
+            ExternalProjectionOutcome::Duplicate => "duplicate".to_string(),
+        })
     }
 
     #[napi(catch_unwind)]
@@ -101,6 +170,25 @@ impl JsStateGraphRuntime {
     }
 }
 
+/// Strictly replay an event log without creating a mutable runtime.
+#[napi(js_name = "strictReplay", catch_unwind)]
+pub fn strict_replay(events_json: String) -> Result<String> {
+    let events: Vec<GraphEventRecord> = serde_json::from_str(&events_json)
+        .map_err(|error| Error::from_reason(format!("invalid graph events: {error}")))?;
+    let graph = GraphRuntime::strict_replay(&events)
+        .map_err(|error| Error::from_reason(format!("invalid graph event log: {error}")))?;
+    encode(&graph, "state graph")
+}
+
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct StateGraphOptions {
+    /// Maximum number of records retained by the runtime.
+    pub max_events: Option<i64>,
+    /// Maximum reactive behavior recursion depth.
+    pub max_behavior_depth: Option<i64>,
+}
+
 impl JsStateGraphRuntime {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, GraphRuntime>> {
         self.inner
@@ -122,7 +210,7 @@ mod tests {
 
     #[test]
     fn wrapper_patches_forks_diffs_and_restores() {
-        let runtime = JsStateGraphRuntime::new(Some("trace".into()));
+        let runtime = JsStateGraphRuntime::new(Some("trace".into()), None);
         assert!(runtime.propose_patch(ADD_TASK.into()).unwrap());
         assert_eq!(runtime.version().unwrap(), 1);
         let events = runtime.events_json().unwrap();
@@ -135,5 +223,21 @@ mod tests {
                 .as_object()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn wrapper_projects_external_events_and_strict_replays() {
+        let runtime = JsStateGraphRuntime::new(None, None);
+        let event = r#"{"source":"queue","stream_id":"orders","sequence":1,"event_id":"e1","name":"order.created","payload":{"id":"o1"}}"#;
+        assert_eq!(runtime.check_external(event.into()).unwrap(), None);
+        let outcome = runtime
+            .project_external(event.into(), ADD_TASK.into())
+            .unwrap();
+        assert_eq!(outcome, "applied");
+        assert_eq!(runtime.check_external(event.into()).unwrap(), Some("duplicate".into()));
+        let events = runtime.events_json().unwrap();
+        let graph = strict_replay(events).unwrap();
+        let graph: serde_json::Value = serde_json::from_str(&graph).unwrap();
+        assert_eq!(graph["version"], 1);
     }
 }

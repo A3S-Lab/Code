@@ -123,7 +123,9 @@ fn build_tool_context(
 ) -> ToolContext {
     let mut tool_context = tool_executor.registry().context();
     tool_context = tool_context.with_session_id(session_id);
-    if let Some(ref search_config) = code_config.search {
+    if let Some(ref search_config) = opts.search_config {
+        tool_context = tool_context.with_search_config(search_config.clone());
+    } else if let Some(ref search_config) = code_config.search {
         tool_context = tool_context.with_search_config(search_config.clone());
     }
     tool_context = tool_context.with_agent_event_tx(agent_event_tx);

@@ -1,5 +1,42 @@
 """A3S Code Python SDK."""
 
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+
+def _configure_bundled_moli() -> None:
+    """Point the native core at the wheel's verified Moli sidecar.
+
+    The Rust runtime manager remains the source of truth for validation and
+    shared-cache locking. This small bridge only supplies the package-local
+    path early enough that every Python process uses its bundled browser and
+    never starts a second installation.
+    """
+
+    if os.environ.get("A3S_CODE_MOLI_EXECUTABLE"):
+        return
+    executable_name = "moli.exe" if os.name == "nt" else "moli"
+    package_dir = Path(__file__).resolve().parent
+    for candidate in (
+        package_dir / executable_name,
+        package_dir / "moli" / executable_name,
+        package_dir / "resources" / "moli" / executable_name,
+    ):
+        try:
+            if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+                os.environ["A3S_CODE_MOLI_EXECUTABLE"] = str(candidate)
+                os.environ.setdefault("A3S_CODE_MOLI_DIR", str(candidate.parent))
+                return
+        except OSError:
+            continue
+
+
+_configure_bundled_moli()
+del _configure_bundled_moli
+
 from ._native_artifacts import ensure_unambiguous_native_extension as _ensure_native
 
 _ensure_native()
@@ -48,3 +85,11 @@ from .workspace_retrieval import (
     WorkspaceSemanticSearchHit,
     WorkspaceSemanticSearchResult,
 )
+
+
+async def ensure_moli_async(config: Any | None = None) -> str:
+    """Ensure the verified Moli runtime without blocking the asyncio loop."""
+
+    import asyncio
+
+    return await asyncio.to_thread(ensure_moli, config)
