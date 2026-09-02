@@ -11,7 +11,7 @@ use a3s_code_core::{
     WorkspaceHybridSearchResult as RustHybridSearchResult, WorkspaceRerankFallbackReason,
     WorkspaceRerankMode, WorkspaceRerankStatus, WorkspaceRetrievalStatus,
     WorkspaceSemanticSearchHit, WorkspaceSemanticSearchRequest as RustSemanticSearchRequest,
-    WorkspaceSemanticSearchResult as RustSemanticSearchResult,
+    WorkspaceSemanticSearchResult as RustSemanticSearchResult, WorkspaceVectorEngine,
 };
 use async_trait::async_trait;
 use napi::bindgen_prelude::Promise;

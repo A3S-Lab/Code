@@ -3,13 +3,14 @@ use super::semantic_projection::{
     project_pending_partitions, publish_progress, remove_stale_partition, ProjectionContext,
 };
 use super::semantic_status::SemanticStatusCell;
+use super::vec_shadow::ShadowVectorIndex;
 use super::{
     ChunkCatalogSnapshot, WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceEmbeddingBatchMetrics,
     WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalResult,
     WorkspaceRetrievalStatus,
 };
 use crate::embedding::EmbeddingExecutor;
-use a3s_memory::vector::{InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor};
+use a3s_memory::vector::{VectorIndex, VectorIndexDescriptor};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -25,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 pub struct WorkspaceRetrievalRuntime {
     pub(super) catalog: Arc<WorkspaceChunkCatalog>,
     pub(super) executor: EmbeddingExecutor,
-    index: Mutex<Option<Arc<InMemoryVectorIndex>>>,
+    index: Mutex<Option<Arc<ShadowVectorIndex>>>,
     status: Arc<SemanticStatusCell>,
     lifetime: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
@@ -58,10 +59,10 @@ impl WorkspaceRetrievalRuntime {
         let descriptor = VectorIndexDescriptor::new(executor.descriptor().dimension)
             .with_max_records(limits.max_records)
             .with_max_bytes(limits.max_bytes);
-        let index = Arc::new(InMemoryVectorIndex::new(descriptor)?);
-        let status = Arc::new(SemanticStatusCell::new(WorkspaceRetrievalStatus::building(
-            executor.descriptor().clone(),
-        )));
+        let index = Arc::new(ShadowVectorIndex::new(descriptor)?);
+        let mut initial_status = WorkspaceRetrievalStatus::building(executor.descriptor().clone());
+        initial_status.vec_shadow = index.shadow_status();
+        let status = Arc::new(SemanticStatusCell::new(initial_status));
         let lifetime = parent_lifetime.child_token();
         let runtime = Arc::new(Self {
             catalog: Arc::clone(&catalog),
@@ -82,12 +83,18 @@ impl WorkspaceRetrievalRuntime {
         Ok(runtime)
     }
 
-    /// Return a lock-free observation of current partial readiness.
+    /// Return a bounded observation of current partial readiness and shadow parity.
     pub fn status(&self) -> WorkspaceRetrievalStatus {
-        self.status.load()
+        let mut status = self.status.load();
+        if status.phase != WorkspaceRetrievalPhase::Closed {
+            if let Some(index) = self.index() {
+                status.vec_shadow = index.shadow_status();
+            }
+        }
+        status
     }
 
-    pub(super) fn index(&self) -> Option<Arc<InMemoryVectorIndex>> {
+    pub(super) fn index(&self) -> Option<Arc<ShadowVectorIndex>> {
         lock_unpoisoned(&self.index).clone()
     }
 
@@ -110,7 +117,8 @@ impl WorkspaceRetrievalRuntime {
     }
 
     /// Cancel indexing, join its owned task within the configured deadline,
-    /// and release the in-memory vector index. This operation is idempotent.
+    /// and release both authoritative and migration-shadow vector state. This
+    /// operation is idempotent.
     pub async fn close(&self) {
         let _close = self.close_gate.lock().await;
         self.lifetime.cancel();
@@ -128,8 +136,13 @@ impl WorkspaceRetrievalRuntime {
                 );
             }
         }
-        lock_unpoisoned(&self.index).take();
-        publish_closed(&self.status);
+        let index = lock_unpoisoned(&self.index).take();
+        if let Some(index) = index {
+            index.close().await;
+            publish_closed(&self.status, index.shadow_status());
+        } else {
+            publish_closed(&self.status, self.status.load().vec_shadow);
+        }
     }
 }
 
@@ -208,7 +221,7 @@ impl BuildState {
 
 async fn run_semantic_updates(
     catalog: Arc<WorkspaceChunkCatalog>,
-    index: Arc<InMemoryVectorIndex>,
+    index: Arc<ShadowVectorIndex>,
     executor: EmbeddingExecutor,
     status: Arc<SemanticStatusCell>,
     lifetime: CancellationToken,
@@ -279,12 +292,12 @@ async fn run_semantic_updates(
     if let Err(error) = index.clear().await {
         tracing::warn!(%error, "failed to clear workspace semantic index during shutdown");
     }
-    publish_closed(&status);
+    publish_closed(&status, index.shadow_status());
 }
 
 async fn reconcile_semantic_snapshot(
     catalog: &WorkspaceChunkCatalog,
-    index: &InMemoryVectorIndex,
+    index: &ShadowVectorIndex,
     executor: &EmbeddingExecutor,
     status: &SemanticStatusCell,
     state: &mut BuildState,
@@ -369,7 +382,7 @@ async fn reconcile_semantic_snapshot(
 }
 
 async fn invalidate_stale_partitions(
-    index: &InMemoryVectorIndex,
+    index: &ShadowVectorIndex,
     state: &mut BuildState,
     current: &BTreeMap<String, CatalogPartition>,
 ) {
@@ -415,7 +428,7 @@ fn catalog_partitions(snapshot: &ChunkCatalogSnapshot) -> BTreeMap<String, Catal
     partitions
 }
 
-fn publish_closed(status: &SemanticStatusCell) {
+fn publish_closed(status: &SemanticStatusCell, mut vec_shadow: super::WorkspaceVecShadowStatus) {
     let mut closed = status.load();
     closed.phase = WorkspaceRetrievalPhase::Closed;
     closed.queue_depth = 0;
@@ -424,6 +437,11 @@ fn publish_closed(status: &SemanticStatusCell) {
     closed.coverage_bps = 0;
     closed.vector_records = 0;
     closed.vector_bytes = 0;
+    vec_shadow.phase = super::WorkspaceVecShadowPhase::Closed;
+    vec_shadow.revision = 0;
+    vec_shadow.record_count = 0;
+    vec_shadow.accounted_bytes = 0;
+    closed.vec_shadow = vec_shadow;
     status.publish(closed);
 }
 

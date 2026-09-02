@@ -1,6 +1,7 @@
 use super::super::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkCatalog, WorkspaceRetrievalOptions,
     WorkspaceRetrievalPhase, WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus,
+    WorkspaceVecShadowPhase, WorkspaceVectorEngine,
 };
 use crate::embedding::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingProvider, EmbeddingProviderDescriptor,
@@ -54,7 +55,18 @@ async fn builds_file_partitions_asynchronously_and_exposes_partial_readiness() {
     assert_eq!(ready.indexed_chunks, 2);
     assert_eq!(ready.coverage_bps, 10_000);
     assert_eq!(ready.vector_records, 2);
+    assert_eq!(
+        ready.active_vector_engine,
+        Some(WorkspaceVectorEngine::A3sMemory)
+    );
+    assert_eq!(ready.vec_shadow.phase, WorkspaceVecShadowPhase::Ready);
+    assert_eq!(ready.vec_shadow.record_count, 2);
+    assert_eq!(ready.vec_shadow.failed_mutations, 0);
     runtime.close().await;
+    assert_eq!(
+        runtime.status().vec_shadow.phase,
+        WorkspaceVecShadowPhase::Closed
+    );
 }
 
 #[tokio::test]

@@ -79,6 +79,9 @@ declare const _fixedChunking: FixedWindowWorkspaceChunkingStrategy
 declare const _recursiveChunking: RecursiveWorkspaceChunkingStrategy
 declare const _retrievalOptions: WorkspaceRetrievalOptions
 declare const _retrievalStatus: WorkspaceRetrievalStatusObject
+const _activeVectorEngine: string | undefined = _retrievalStatus.activeVectorEngine
+const _vecShadowPhase: string = _retrievalStatus.vecShadow.phase
+const _vecShadowComparedQueries: number = _retrievalStatus.vecShadow.comparedQueries
 declare const _semanticResult: WorkspaceSemanticSearchResultObject
 declare const _hybridResult: WorkspaceHybridSearchResultObject
 declare const _rerankStatus: WorkspaceRerankStatusObject

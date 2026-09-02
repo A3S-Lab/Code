@@ -67,6 +67,22 @@ pub(super) fn status_json(status: &WorkspaceRetrievalStatus) -> serde_json::Valu
         "total_failures": status.total_failures,
         "vector_records": status.vector_records,
         "vector_bytes": status.vector_bytes,
+        "active_vector_engine": status.active_vector_engine.map(|engine| match engine {
+            a3s_code_core::WorkspaceVectorEngine::A3sMemory => "a3s_memory",
+        }),
+        "vec_shadow": {
+            "phase": format!("{:?}", status.vec_shadow.phase).to_ascii_lowercase(),
+            "revision": status.vec_shadow.revision,
+            "record_count": status.vec_shadow.record_count,
+            "accounted_bytes": status.vec_shadow.accounted_bytes,
+            "initialization_failures": status.vec_shadow.initialization_failures,
+            "successful_mutations": status.vec_shadow.successful_mutations,
+            "failed_mutations": status.vec_shadow.failed_mutations,
+            "compared_queries": status.vec_shadow.compared_queries,
+            "matching_queries": status.vec_shadow.matching_queries,
+            "mismatched_queries": status.vec_shadow.mismatched_queries,
+            "failed_queries": status.vec_shadow.failed_queries,
+        },
         "batching": {
             "document_inputs": status.batching.document_inputs,
             "document_text_bytes": status.batching.document_text_bytes,
@@ -165,4 +181,31 @@ fn rerank_json(status: &a3s_code_core::WorkspaceRerankStatus) -> serde_json::Val
 
 pub(super) fn retrieval_error(error: a3s_code_core::WorkspaceRetrievalError) -> PyErr {
     py_error_with_code("WORKSPACE_RETRIEVAL_ERROR", error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vector_migration_status_uses_python_snake_case_fields() {
+        let mut status = WorkspaceRetrievalStatus::disabled();
+        status.active_vector_engine = Some(a3s_code_core::WorkspaceVectorEngine::A3sMemory);
+        status.vec_shadow = a3s_code_core::WorkspaceVecShadowStatus {
+            phase: a3s_code_core::WorkspaceVecShadowPhase::Ready,
+            revision: 7,
+            record_count: 11,
+            accounted_bytes: 4_096,
+            compared_queries: 3,
+            matching_queries: 3,
+            ..Default::default()
+        };
+
+        let value = status_json(&status);
+        assert_eq!(value["active_vector_engine"], "a3s_memory");
+        assert_eq!(value["vec_shadow"]["phase"], "ready");
+        assert_eq!(value["vec_shadow"]["record_count"], 11);
+        assert_eq!(value["vec_shadow"]["matching_queries"], 3);
+        assert!(value.get("activeVectorEngine").is_none());
+    }
 }

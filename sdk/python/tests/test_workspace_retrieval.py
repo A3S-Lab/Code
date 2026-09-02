@@ -124,6 +124,13 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 status = await asyncio.wait_for(wait_until_ready(), timeout=10)
                 assert status["phase"] == "ready", status
                 assert status["indexed_chunks"] > 0
+                assert status["active_vector_engine"] == "a3s_memory"
+                assert status["vec_shadow"]["phase"] == "ready"
+                assert (
+                    status["vec_shadow"]["record_count"]
+                    == status["vector_records"]
+                )
+                assert status["vec_shadow"]["failed_mutations"] == 0
                 batching = status["batching"]
                 assert batching["document_inputs"] > 0
                 assert batching["document_text_bytes"] > 0
@@ -143,6 +150,9 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 )
                 assert semantic["hits"][0]["chunk"]["path"] == "src/session_cleanup.rs"
                 assert semantic["hits"][0]["chunk"]["digest_verified"] is True
+                assert semantic["status"]["active_vector_engine"] == "a3s_memory"
+                assert semantic["status"]["vec_shadow"]["compared_queries"] >= 1
+                assert semantic["status"]["vec_shadow"]["mismatched_queries"] == 0
 
                 hybrid = cast(
                     WorkspaceHybridSearchResult,
@@ -347,6 +357,9 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 slow_session.workspace_retrieval_status(),
             )
             assert closed["phase"] == "closed"
+            assert closed["vec_shadow"]["phase"] == "closed"
+            assert closed["vec_shadow"]["record_count"] == 0
+            assert closed["vec_shadow"]["accounted_bytes"] == 0
             await agent.close_async()
 
     asyncio.run(scenario())

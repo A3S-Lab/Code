@@ -331,7 +331,8 @@ pub use workspace::{
     WorkspaceRetrievalResult, WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus, WorkspaceSearch,
     WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
     WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult, WorkspaceServices,
-    WorkspaceServicesBuilder, WorkspaceTextRange, WorkspaceTextReader, WorkspaceVersionConflict,
+    WorkspaceServicesBuilder, WorkspaceTextRange, WorkspaceTextReader, WorkspaceVecShadowPhase,
+    WorkspaceVecShadowStatus, WorkspaceVectorEngine, WorkspaceVersionConflict,
     WorkspaceWriteOutcome,
 };
 #[cfg(feature = "s3")]

@@ -11,7 +11,8 @@ use a3s_code_core::embedding::{
 use a3s_code_core::{
     Agent, CodeConfig, SessionOptions, WorkspaceHybridSearchRequest, WorkspaceRerankMode,
     WorkspaceRerankOptions, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
-    WorkspaceSemanticIndexLimits,
+    WorkspaceSemanticIndexLimits, WorkspaceVecShadowPhase, WorkspaceVecShadowStatus,
+    WorkspaceVectorEngine,
 };
 use a3s_memory::vector::{
     InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor, VectorRecord, VectorSearchRequest,
@@ -69,8 +70,8 @@ async fn main() -> Result<()> {
         && hybrid.max_accounted_scratch_bytes <= RERANK_SCRATCH_BUDGET_BYTES
         && hybrid.rerank_fallbacks == 0;
     let report = json!({
-        "schemaVersion": 3,
-        "profile": "workspace-retrieval-v2",
+        "schemaVersion": 4,
+        "profile": "workspace-retrieval-v3",
         "build": "release",
         "machine": {
             "os": std::env::consts::OS,
@@ -219,6 +220,21 @@ fn hybrid_json(measurement: &HybridMeasurement, passed: bool) -> serde_json::Val
         "timeToFirstReadyMs": measurement.time_to_first_ready_ms,
         "nonTextInputs": measurement.non_text_inputs,
         "queryEmbeddingInputs": measurement.query_embedding_inputs,
+        "activeVectorEngine": measurement.active_vector_engine,
+        "vecShadow": {
+            "phase": measurement.vec_shadow.phase,
+            "revision": measurement.vec_shadow.revision,
+            "recordCount": measurement.vec_shadow.record_count,
+            "accountedBytes": measurement.vec_shadow.accounted_bytes,
+            "successfulMutations": measurement.vec_shadow.successful_mutations,
+            "comparedQueries": measurement.vec_shadow.compared_queries,
+            "matchingQueries": measurement.vec_shadow.matching_queries,
+            "initializationFailures": measurement.vec_shadow.initialization_failures,
+            "failedMutations": measurement.vec_shadow.failed_mutations,
+            "mismatchedQueries": measurement.vec_shadow.mismatched_queries,
+            "failedQueries": measurement.vec_shadow.failed_queries,
+            "passed": measurement.migration_passed(),
+        },
         "providerNetworkIncluded": false,
         "authoritativeSourceReads": "included from the warm OS cache",
         "budgetP95Ms": HYBRID_P95_BUDGET_MS,
@@ -326,12 +342,29 @@ async fn benchmark_hybrid_search(
             WARMUP_SAMPLES + MEASURED_SAMPLES
         );
     }
+    let migration = session.workspace_retrieval_status();
+    let expected_queries = (WARMUP_SAMPLES + MEASURED_SAMPLES) as u64;
+    if migration.active_vector_engine != Some(WorkspaceVectorEngine::A3sMemory)
+        || migration.vec_shadow.phase != WorkspaceVecShadowPhase::Ready
+        || migration.vec_shadow.record_count != RECORD_COUNT
+        || migration.vec_shadow.compared_queries != expected_queries
+        || migration.vec_shadow.matching_queries != expected_queries
+        || migration.vec_shadow.initialization_failures != 0
+        || migration.vec_shadow.failed_mutations != 0
+        || migration.vec_shadow.mismatched_queries != 0
+        || migration.vec_shadow.failed_queries != 0
+    {
+        bail!("A3S Vec migration shadow failed the Memory-oracle qualification: {migration:?}");
+    }
     let vector_bytes = status.vector_bytes;
     session.close().await;
     let closed = session.workspace_retrieval_status();
     if closed.phase != WorkspaceRetrievalPhase::Closed
         || closed.vector_records != 0
         || closed.vector_bytes != 0
+        || closed.vec_shadow.phase != WorkspaceVecShadowPhase::Closed
+        || closed.vec_shadow.record_count != 0
+        || closed.vec_shadow.accounted_bytes != 0
     {
         bail!("session retained semantic vector state after close");
     }
@@ -351,6 +384,8 @@ async fn benchmark_hybrid_search(
         time_to_first_ready_ms: status.batching.time_to_first_ready_ms,
         non_text_inputs: status.batching.non_text_inputs,
         query_embedding_inputs,
+        active_vector_engine: migration.active_vector_engine,
+        vec_shadow: migration.vec_shadow,
         max_input_candidates: rerank_observation.input_candidates.load(Ordering::Acquire),
         max_evaluated_candidates: rerank_observation
             .evaluated_candidates
@@ -574,6 +609,8 @@ struct HybridMeasurement {
     time_to_first_ready_ms: Option<u64>,
     non_text_inputs: usize,
     query_embedding_inputs: usize,
+    active_vector_engine: Option<WorkspaceVectorEngine>,
+    vec_shadow: WorkspaceVecShadowStatus,
     max_input_candidates: usize,
     max_evaluated_candidates: usize,
     max_feature_bytes: usize,
@@ -589,5 +626,20 @@ impl HybridMeasurement {
             && self.document_embedding_requests == self.document_batches
             && self.non_text_inputs == 0
             && self.time_to_first_ready_ms.is_some()
+            && self.migration_passed()
+    }
+
+    fn migration_passed(&self) -> bool {
+        let expected_queries = (WARMUP_SAMPLES + MEASURED_SAMPLES) as u64;
+        self.active_vector_engine == Some(WorkspaceVectorEngine::A3sMemory)
+            && self.vec_shadow.phase == WorkspaceVecShadowPhase::Ready
+            && self.vec_shadow.record_count == RECORD_COUNT
+            && self.vec_shadow.successful_mutations > 0
+            && self.vec_shadow.compared_queries == expected_queries
+            && self.vec_shadow.matching_queries == expected_queries
+            && self.vec_shadow.initialization_failures == 0
+            && self.vec_shadow.failed_mutations == 0
+            && self.vec_shadow.mismatched_queries == 0
+            && self.vec_shadow.failed_queries == 0
     }
 }

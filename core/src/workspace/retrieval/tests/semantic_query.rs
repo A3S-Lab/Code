@@ -1,7 +1,7 @@
 use super::super::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkCatalog, WorkspaceRetrievalOptions,
     WorkspaceRetrievalPhase, WorkspaceRetrievalRuntime, WorkspaceSemanticFallbackReason,
-    WorkspaceSemanticSearchRequest,
+    WorkspaceSemanticSearchRequest, WorkspaceVecShadowPhase,
 };
 use crate::embedding::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingProvider, EmbeddingProviderDescriptor,
@@ -39,6 +39,12 @@ async fn semantic_query_ranks_filters_and_verifies_current_source() {
     assert!(result.hits[0].chunk.text.contains("temporary session"));
     assert_eq!(result.fallback, None);
     assert_eq!(result.status.phase, WorkspaceRetrievalPhase::Ready);
+    assert_eq!(
+        result.status.vec_shadow.phase,
+        WorkspaceVecShadowPhase::Ready
+    );
+    assert_eq!(result.status.vec_shadow.compared_queries, 1);
+    assert_eq!(result.status.vec_shadow.matching_queries, 1);
     assert_eq!(fixture.files.read_paths(), vec!["src/cache.rs"]);
     fixture.runtime.close().await;
 }
