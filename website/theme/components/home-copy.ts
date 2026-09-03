@@ -4,7 +4,7 @@ export const copy = {
     titleLead: '把 A3S Code',
     titleAccent: '接进现有产品',
     subtitle:
-      'A3S Code 7 提供受治理的 Agent 会话、异步工作区检索、模型边界证据、事件流和任务恢复。可以直接运行 a3s code，也可以通过 Rust、Node.js、Python 或 Go SDK 嵌入现有应用。',
+      'A3S Code 8 提供受治理的 Agent 会话、异步工作区检索、Moli 无头搜索、模型边界证据、事件流和任务恢复。可以直接运行 a3s code，也可以通过 Rust、Node.js、Python 或 Go SDK 嵌入现有应用。',
     docs: '开始使用',
     github: '查看 GitHub',
     copy: '复制',
@@ -116,7 +116,7 @@ export const copy = {
     titleLead: 'Add A3S Code',
     titleAccent: 'to an existing product',
     subtitle:
-      'A3S Code 7 provides governed agent sessions, asynchronous workspace retrieval, model-bound evidence, event streaming, and task recovery. Run a3s code directly or embed the Rust, Node.js, Python, or Go SDK.',
+      'A3S Code 8 provides governed agent sessions, asynchronous workspace retrieval, Moli-powered headless search, model-bound evidence, event streaming, and task recovery. Run a3s code directly or embed the Rust, Node.js, Python, or Go SDK.',
     docs: 'Get started',
     github: 'View on GitHub',
     copy: 'Copy',
