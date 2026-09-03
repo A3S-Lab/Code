@@ -46,14 +46,15 @@ main().catch(console.error)
 const {
   sdkCapabilities,
   sdkCapabilitiesSchema,
+  BrowserBackend,
   moliRuntimeInfo,
   ensureMoli,
 } = require('@a3s-lab/code')
 
 async function inspectRuntime() {
   const capabilities = sdkCapabilities()
-  const runtime = moliRuntimeInfo({ backend: 'moli', autoDownloadMoli: true })
-  const executable = await ensureMoli({ backend: 'moli' })
+  const runtime = moliRuntimeInfo({ backend: BrowserBackend.Moli, autoDownloadMoli: true })
+  const executable = await ensureMoli({ backend: BrowserBackend.Moli })
   console.log(sdkCapabilitiesSchema(), capabilities.length, runtime.version, executable)
 }
 

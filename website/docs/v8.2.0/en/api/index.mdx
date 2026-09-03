@@ -297,10 +297,13 @@ println!("{} {:?} {}", status.version, status.executable, executable.display());
 <Tab label="Node.js">
 
 ```ts
-import { ensureMoli, moliRuntimeInfo } from '@a3s-lab/code';
+import { BrowserBackend, ensureMoli, moliRuntimeInfo } from '@a3s-lab/code';
 
-const status = moliRuntimeInfo({ backend: 'moli', autoDownloadMoli: true });
-const executable = await ensureMoli({ backend: 'moli' });
+const status = moliRuntimeInfo({
+  backend: BrowserBackend.Moli,
+  autoDownloadMoli: true,
+});
+const executable = await ensureMoli({ backend: BrowserBackend.Moli });
 console.log(status.version, executable);
 ```
 
