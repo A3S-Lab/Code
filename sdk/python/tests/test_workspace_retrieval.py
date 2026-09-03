@@ -20,6 +20,7 @@ from a3s_code import (
     SessionOptions,
     WorkspaceHybridSearchResult,
     WorkspaceRetrievalOptions,
+    WorkspaceVectorEngineOption,
     WorkspaceRetrievalStatus,
     WorkspaceSemanticSearchResult,
 )
@@ -178,6 +179,45 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 assert provider_calls >= 2
             finally:
                 await session.close_async()
+
+            vec_options = SessionOptions()
+            vec_options.workspace_retrieval = WorkspaceRetrievalOptions(
+                provider, vector_engine=WorkspaceVectorEngineOption.A3sVec
+            )
+            vec_session = await agent.session_async(str(workspace), vec_options)
+            try:
+                vec_status = cast(
+                    WorkspaceRetrievalStatus,
+                    vec_session.workspace_retrieval_status(),
+                )
+                while vec_status["phase"] == "building":
+                    await asyncio.sleep(0.02)
+                    vec_status = cast(
+                        WorkspaceRetrievalStatus,
+                        vec_session.workspace_retrieval_status(),
+                    )
+                assert vec_status["phase"] == "ready", vec_status
+                assert vec_status["active_vector_engine"] == "a3s_vec"
+                assert vec_status["indexed_chunks"] > 0
+                assert vec_status["vec_shadow"]["phase"] == "ready"
+                assert (
+                    vec_status["vec_shadow"]["record_count"]
+                    == vec_status["vector_records"]
+                )
+                vec_semantic = cast(
+                    WorkspaceSemanticSearchResult,
+                    await vec_session.semantic_search_async(
+                        {"query": "cleanup session resources", "limit": 3}
+                    ),
+                )
+                assert vec_semantic["hits"][0]["chunk"]["path"] == (
+                    "src/session_cleanup.rs"
+                )
+                assert vec_semantic["status"]["active_vector_engine"] == "a3s_vec"
+                assert vec_semantic["status"]["vec_shadow"]["compared_queries"] >= 1
+                assert vec_semantic["status"]["vec_shadow"]["mismatched_queries"] == 0
+            finally:
+                await vec_session.close_async()
 
             line_chunking = LineWorkspaceChunkingStrategy()
             assert repr(line_chunking) == "LineWorkspaceChunkingStrategy()"

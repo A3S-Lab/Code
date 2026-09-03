@@ -4,10 +4,11 @@
 
 This runbook turns Workspace Retrieval qualification into an operational
 decision. The capability is suitable for retrieval-dependent generation when
-the gates below pass, but it remains explicit, session-bound, memory-resident,
-and default-off. It does not create a durable workspace index, replace exact or
-BM25 search, parse non-text assets, or change the compatible line-chunking and
-RRF-only defaults.
+the gates below pass, but it remains explicit, session-bound, ephemeral, and
+default-off. `A3sMemory` is the compatibility serving default; a trusted host
+may select the gated `A3sVec` preview through the typed engine option. Neither
+mode creates a durable workspace index, replaces exact or BM25 search, parses
+non-text assets, or changes the compatible line-chunking and RRF-only defaults.
 
 The service boundary is:
 
@@ -156,9 +157,10 @@ workspace revision is observed. During replacement it may see the previous or
 new immutable partition, never a partially written partition.
 
 The retrieval phase and Vec shadow phase are independent. `ready` retrieval
-with a `degraded` shadow means Memory remains eligible to serve while the Vec
-differential evidence is unqualified. `active_vector_engine` must remain
-`a3s_memory`; any other value is a release-blocking compatibility violation.
+with a `degraded` shadow means the selected primary remains eligible to serve
+while differential evidence is unqualified. `active_vector_engine` must equal
+the requested typed engine; `a3s_memory` is expected when the option is omitted.
+There is no automatic switch to the shadow after a primary failure.
 
 ## Rollback
 
@@ -180,12 +182,12 @@ be disabled. If the Embedding Provider, admission boundary, revision fencing,
 memory accounting, or cleanup invariant regresses, disable the complete
 retrieval runtime.
 
-If only the internal Vec shadow regresses, Memory still owns every serving
-result. Roll back the deployed Code binary to a revision before `4163d8e` and
-recreate affected sessions; the temporary shadow carries no durable data to
-migrate. This gate deliberately exposes no backend-name selector or separate
-shadow toggle. Use the configuration rollback above if shadow latency or
-resource use is unacceptable before the binary rollback is available.
+If the Vec shadow regresses in Memory-default mode, Memory still owns every
+serving result. If the Vec-primary preview regresses, recreate sessions with
+the typed `A3sMemory` compatibility default (or disable retrieval); the
+temporary collection carries no durable data to migrate. Roll back the deployed
+Code binary to a known-good revision if required. The option boundary rejects
+raw backend-name strings and never performs an implicit primary/shadow switch.
 
 ## Release procedure
 

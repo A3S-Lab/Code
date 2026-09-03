@@ -417,6 +417,32 @@ The program preserves the existing search surfaces:
   contents. Code verifies returned snippets against the current workspace
   revision before exposing them.
 
+#### A3S Vec lexical cutover (2026-09-03)
+
+The catalog-backed and no-catalog BM25 routes now share one Code-owned adapter
+to A3S Vec FTS (`whitespace` tokenizer). The frozen relevance fixture and the
+catalog lifecycle suite remain green, and metadata identifies the engine as
+`a3s_vec_fts`. This closes the duplicate Code-local lexical scorer portion of
+the migration. Semantic vector authority is still a separate developer-shadow
+decision: the Memory path, differential checks, platform qualification, RSS/
+disk measurements, and rollback evidence remain in place until that gate is
+closed.
+
+The semantic runtime now consumes a Code-owned `WorkspaceVectorIndex` contract
+(`708a85e3ac070640ca5fb8173d0b06e6070152e7`; Vec dependency refresh
+`13585ccd`; revision-CAS implementation
+`b5540a869e742ce7a98348f27997970619a754b6`). The legacy
+`a3s-memory::VectorIndex` trait is imported only by the explicit compatibility
+adapter; Vec-primary and Memory-primary selection, publication, and
+differential logic share that boundary. Code CI and the release-profile
+qualification for this contract are recorded in runs
+[`33773373773`](https://github.com/A3S-Lab/Code/actions/runs/33773373773) and
+[`33773373522`](https://github.com/A3S-Lab/Code/actions/runs/33773373522).
+The Vec implementation now also provides real global revision-CAS with one
+logical revision per partition publication, including stale-writer and
+concurrent-writer tests.
+This is an architecture step, not the semantic removal/promotion decision.
+
 ### 6.2 First-principles decisions
 
 1. A normal coding workspace is small enough for exact vector scanning. A
@@ -451,8 +477,8 @@ The program preserves the existing search surfaces:
 12. RRF and overlap-aware reranking consume Code-specific ranges, identifier
     tiers, and channel evidence, so they belong in Code rather than the generic
     A3S Memory vector kernel. A neural reranker is host-injected and default-off.
-13. The model-free CPU path is the product baseline: exact, glob, incremental
-    BM25, Code Intelligence, RRF, and deterministic MMR remain useful without an
+13. The model-free CPU path is the product baseline: exact, glob, A3S Vec FTS/BM25,
+    Code Intelligence, RRF, and deterministic MMR remain useful without an
     Embedding Provider. Dense semantic mode is an optional enhancement and must
     degrade to those paths when its provider is absent or unhealthy.
 14. A local CPU embedding runtime is a host adapter behind `EmbeddingProvider`,
@@ -472,8 +498,8 @@ WorkspaceFileSystem ── admitted reads ─> WorkspaceRetrievalRuntime
                        Shared ChunkCatalog          EmbeddingProvider (local CPU or remote)
                               │                             │
                     ┌─────────┴─────────┐                   v
-                    v                   v          InMemoryVectorIndex
-              LexicalIndex       source evidence       (a3s-memory)
+                     v                   v          InMemoryVectorIndex
+               A3S Vec FTS         source evidence       (a3s-memory)
                     │                   │                   │
 query ─> exact/symbol/lexical/semantic candidate generation ┘
                     │
@@ -504,10 +530,10 @@ server and must produce equivalent fallback chunks when it is unavailable.
 | Subproject | Owns | Must not own |
 | --- | --- | --- |
 | `a3s-memory` | Public `VectorIndex` contract, vector/result types, exact in-memory implementation, dynamic dimensions, atomic partition replacement/removal, immutable query snapshots, deterministic ordering, and memory budgets | Workspaces, files, code chunking, embedding clients, model configuration, session lifecycle, hybrid/rerank policy, or prompt context |
-| `a3s-code-core/workspace` | Text admission, typed/custom chunk strategies, shared `ChunkCatalog`, lexical index, manifest reconciliation, path/revision metadata, and structured `WorkspaceRetrieval` provider contract | Non-text parsing, provider credentials, host UI, or durable cross-session cache policy |
+| `a3s-code-core/workspace` | Text admission, typed/custom chunk strategies, shared `ChunkCatalog`, A3S Vec FTS lexical projection, manifest reconciliation, path/revision metadata, and structured `WorkspaceRetrieval` provider contract | Non-text parsing, provider credentials, host UI, or durable cross-session cache policy |
 | `a3s-code-core/embedding` | Host-injected `EmbeddingProvider` contract, provider descriptor, batching, cancellation, bounded retry, and normalized embedding errors | Vector storage or workspace traversal |
 | `a3s-code-core/session` | `WorkspaceRetrievalRuntime`, asynchronous construction, prioritization, query-time promotion, cancellation, close/replace/resume behavior, and session isolation | Process-global mutable indexes or hidden persistence |
-| `a3s-code-core/tools` | `semantic`/`hybrid` search modes, RRF fusion, bounded overlap-aware reranking, path filters, source anchors, coverage/status metadata, and lexical fallback | A second chunker or direct filesystem traversal outside `WorkspaceServices` |
+| `a3s-code-core/tools` | `semantic`/`hybrid` search modes, A3S Vec FTS lexical fallback, RRF fusion, bounded overlap-aware reranking, path filters, source anchors, and coverage/status metadata | A second chunker or direct filesystem traversal outside `WorkspaceServices` |
 | Code SDKs | Typed retrieval/chunking options, typed Embedding Provider injection, status/result DTOs, and lifecycle parity across Rust, Node, Python, and Go | Primitive strategy/backend names or SDK-specific ranking behavior |
 | CLI/TUI and other hosts | ACL wiring, opt-in controls, readiness/degraded presentation, diagnostics, provider-secret handling, and optional local CPU provider adapters/model-artifact admission | Reimplementing indexing, placing model runtimes in Core/Memory, or making a host-specific search protocol |
 | Tests, benchmarks, and docs | Shared relevance fixtures, adversarial lifecycle tests, performance baselines, examples, and operator guidance | Production-only correctness assumptions that cannot be tested deterministically |
@@ -570,7 +596,7 @@ core/src/workspace/retrieval/
 ├── chunk.rs               # deterministic bounded chunking
 ├── chunking_strategy.rs   # built-in and host range splitters
 ├── catalog.rs             # shared immutable chunk snapshots
-├── lexical.rs             # indexed BM25/postings
+├── lexical.rs             # A3S Vec FTS/BM25 projection
 ├── semantic_runtime.rs    # embedding queue and vector partitions
 ├── hybrid_rank.rs         # RRF and deterministic diversity
 └── rerank.rs              # bounded deterministic second-stage reranker
@@ -580,11 +606,12 @@ The manifest owns the preceding text/non-text decision in
 `core/src/workspace/manifest/file_kind.rs`. The chunker never receives a
 non-text asset.
 
-The current native BM25 path selects candidates, reads files, creates 80-line
-chunks, and scores them for every query. WSR first moves chunk ownership into
-the catalog, then replaces query-time corpus construction with an incremental
-lexical index. The model-facing BM25 behavior and source anchors remain
-compatible during that migration.
+The compatibility BM25 path selects candidates, reads files, and creates
+bounded 80-line chunks. Both the incremental catalog and the no-catalog
+fallback now hand their normalized token stream to the same temporary A3S Vec
+FTS projection; Code retains only candidate policy, source verification, and
+rendering. The model-facing BM25 result shape and source anchors remain
+compatible during the semantic vector migration.
 
 The existing default session path currently constructs plain local workspace
 services without a manifest. When WSR is enabled for a local session, session
@@ -736,13 +763,13 @@ Current implementation status:
 | --- | --- | --- |
 | `WSR-00` | Delivered | Versioned relevance and lifecycle fixtures, native BM25 CI baseline, reference sizing profile, locked budgets, and adversarial trust-boundary review |
 | `MEM-V1` | Delivered | A3S Memory `main` commit `3293f572` adds the public exact ephemeral vector kernel, streamlines the contiguous exact-scan hot path, and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, benchmark, Clippy, and rustdoc gates |
-| `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, per-file BM25 postings, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read BM25 path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
+| `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, A3S Vec FTS/BM25 postings, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read catalog path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
 | `CODE-C2` | Delivered | Rust Core adds compatible line, fixed UTF-8 window, recursive prioritized-separator, and host-injected custom range strategies; Code validates complete coverage and budgets, owns IDs/digests/lines, charges overlap memory, contains host failures, and wires explicit configuration into session-owned catalogs without allowing silent overrides of host-owned catalogs |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
 | `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `3293f572` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
-| `VEC-SHADOW1` | Delivered | Code `4163d8e` pins Vec `019fdb92`, keeps A3S Memory as the only result authority, mirrors each admitted vector batch once into a session-local temporary Vec collection, compares exact IDs/partitions/f32 scores and search accounting under one publication gate, exposes bounded cross-SDK diagnostics, and contains every shadow failure. The 25,000 x 384 release profile compares 120/120 queries in both hybrid arms with zero mismatch/failure and releases both engines on close |
+| `VEC-SHADOW1` | Delivered | Code's workspace-retrieval shadow pins the validated Vec `13585ccd`, keeps A3S Memory as the only result authority, mirrors each admitted vector batch once into a session-local temporary Vec collection, compares exact IDs/partitions/f32 scores and search accounting under one publication gate, exposes bounded cross-SDK diagnostics, and contains every shadow failure. The 25,000 x 384 release profile compares 120/120 queries in both hybrid arms with zero mismatch/failure and releases both engines on close |
 | `CODE-Q1` | Delivered | Structured semantic search through the unified `search` tool, bounded query embedding, immutable catalog/vector revision fencing, current-file digest and byte-range verification, coverage metadata, cancellation, and explicit fallback |
-| `CODE-H1` | Delivered | Exact literal, incremental BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
+| `CODE-H1` | Delivered | Exact literal, A3S Vec FTS/BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
 | `SDK-C2` | Delivered | Node, Python, and Go expose typed line/fixed/recursive strategy objects and recursive separator lists while omission preserves line chunking. A shared Core-owned fixture locks identical byte ranges and invalid windows; primitive names are rejected, Go validates before callback registration, the bridge revalidates typed one-of blocks, and arbitrary custom splitters remain on the Rust host boundary. Native Node/Python and real Go-to-Rust multi-chunk integration gates pass |
 | `SDK-R2` | Delivered | Node, Python, and Go expose typed deterministic-reranker objects while omission preserves RRF-only. SDK/Core defaults and hard bounds align, primitive algorithm names are not accepted, invalid settings fail before provider calls or Go callback registration, result DTOs report versioned evidence, and native Node/Python plus real Go-to-Rust bridge integration gates pass |
@@ -774,7 +801,7 @@ The A3S Vec differential rollout and promotion boundary is in
 | --- | --- | --- | --- | --- |
 | `WSR-00` | Code core/tests | None | Versioned retrieval fixture corpus, current BM25 baseline, sizing data, threat model, and locked quality/latency budgets | Baseline is reproducible in CI and separates identifier, paraphrase, CJK, and lifecycle cases |
 | `MEM-V1` | A3S Memory | `WSR-00` contract draft | Public vector types/trait and `InMemoryVectorIndex` | Contract, oracle, concurrency, invalid-input, budget, and cleanup tests pass without SQLite features |
-| `CODE-C1` | Code workspace | `WSR-00` | Shared chunk catalog, eligibility policy, deterministic chunker, lexical postings, and manifest reconciliation | Unchanged files are not reread; create/change/delete/rename and lag recovery are deterministic |
+| `CODE-C1` | Code workspace | `WSR-00` | Shared chunk catalog, eligibility policy, deterministic chunker, A3S Vec FTS lexical postings, and manifest reconciliation | Unchanged files are not reread; create/change/delete/rename and lag recovery are deterministic |
 | `CODE-C2` | Code workspace | `CODE-C1` | Typed built-in chunk strategies, validated Rust custom range port, overlap accounting, and session catalog configuration | UTF-8, gaps, progress, size/count, panic, ownership, deterministic-ID, and async session tests pass; the default line strategy is unchanged |
 | `CODE-E1` | Code model/session | `WSR-00` | Host-injected Embedding Provider contract, batching, cancellation, and typed errors | Deterministic fake provider proves dimensions, cancellation, retry bounds, and descriptor changes |
 | `CODE-S1` | Code session | `MEM-V1`, `CODE-C1`, `CODE-E1` | Asynchronous session retrieval runtime and vector partition lifecycle | Session creation does not wait; partial readiness works; close drops all owned tasks and memory |

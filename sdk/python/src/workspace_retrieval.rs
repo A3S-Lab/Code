@@ -29,6 +29,27 @@ const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 30_000;
 const MAX_PROVIDER_TIMEOUT_MS: u64 = 300_000;
 const MAX_SEARCH_LIMIT: usize = 25;
 
+/// Typed authority selection for the gated workspace retrieval preview.
+///
+/// The integer representation is an implementation detail of the native
+/// binding; callers should use the named variants.  Omitting the option keeps
+/// the A3S Memory compatibility default.
+#[pyclass(name = "WorkspaceVectorEngineOption", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum PyWorkspaceVectorEngineOption {
+    A3sMemory,
+    A3sVec,
+}
+
+impl From<PyWorkspaceVectorEngineOption> for a3s_code_core::WorkspaceVectorEngine {
+    fn from(value: PyWorkspaceVectorEngineOption) -> Self {
+        match value {
+            PyWorkspaceVectorEngineOption::A3sMemory => Self::A3sMemory,
+            PyWorkspaceVectorEngineOption::A3sVec => Self::A3sVec,
+        }
+    }
+}
+
 struct PythonEmbeddingProvider {
     descriptor: EmbeddingProviderDescriptor,
     callback: PyObject,
@@ -271,6 +292,8 @@ pub(super) struct PyWorkspaceRetrievalOptions {
     #[pyo3(get, set)]
     pub(super) shutdown_timeout_ms: u64,
     #[pyo3(get, set)]
+    pub(super) vector_engine: PyWorkspaceVectorEngineOption,
+    #[pyo3(get, set)]
     pub(super) reranker: Option<PyDeterministicWorkspaceReranker>,
     pub(super) chunking_strategy: Option<a3s_code_core::WorkspaceChunkingStrategy>,
 }
@@ -278,18 +301,20 @@ pub(super) struct PyWorkspaceRetrievalOptions {
 #[pymethods]
 impl PyWorkspaceRetrievalOptions {
     #[new]
-    #[pyo3(signature = (provider, reranker=None, chunking_strategy=None))]
+    #[pyo3(signature = (provider, reranker=None, chunking_strategy=None, vector_engine=None))]
     fn new(
         py: Python<'_>,
         provider: PyRef<'_, PyCallbackEmbeddingProvider>,
         reranker: Option<PyRef<'_, PyDeterministicWorkspaceReranker>>,
         chunking_strategy: Option<PyObject>,
+        vector_engine: Option<PyWorkspaceVectorEngineOption>,
     ) -> PyResult<Self> {
         Ok(Self {
             provider: provider.clone(),
             max_records: 100_000,
             max_bytes: 128 * 1024 * 1024,
             shutdown_timeout_ms: 5_000,
+            vector_engine: vector_engine.unwrap_or(PyWorkspaceVectorEngineOption::A3sMemory),
             reranker: reranker.map(|reranker| reranker.clone()),
             chunking_strategy: python_chunking_strategy_to_core(py, chunking_strategy)?,
         })
@@ -297,10 +322,11 @@ impl PyWorkspaceRetrievalOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "WorkspaceRetrievalOptions(max_records={}, max_bytes={}, shutdown_timeout_ms={}, reranker={}, chunking_strategy={:?})",
+            "WorkspaceRetrievalOptions(max_records={}, max_bytes={}, shutdown_timeout_ms={}, vector_engine={:?}, reranker={}, chunking_strategy={:?})",
             self.max_records,
             self.max_bytes,
             self.shutdown_timeout_ms,
+            self.vector_engine,
             if self.reranker.is_some() {
                 "deterministic"
             } else {
@@ -362,6 +388,7 @@ pub(super) fn retrieval_options_to_core(
             shutdown_timeout: Duration::from_millis(options.shutdown_timeout_ms),
         },
     );
+    retrieval = retrieval.with_vector_engine(options.vector_engine.into());
     if let Some(reranker) = reranker {
         retrieval = retrieval.with_rerank_options(reranker);
     }

@@ -231,6 +231,34 @@ fn incremental_lexical_search_preserves_bm25_identifier_and_cjk_behavior() {
 }
 
 #[test]
+fn lexical_search_maps_vec_hits_after_ignoring_empty_chunks() {
+    let catalog = WorkspaceChunkCatalog::new(
+        ChunkingConfig {
+            max_lines: 1,
+            max_bytes: 128,
+            max_chunks_per_file: 8,
+        },
+        ChunkCatalogLimits::default(),
+    )
+    .unwrap();
+    let path = WorkspacePath::from_normalized("src/empty-prefix.rs");
+    catalog
+        .replace_file(&path, Some("rust"), 1, "   \nneedle appears here\n")
+        .unwrap();
+
+    let result = catalog
+        .snapshot()
+        .unwrap()
+        .lexical_search(&LexicalSearchRequest::new("needle"))
+        .unwrap();
+
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].chunk.path.as_ref(), "src/empty-prefix.rs");
+    assert_eq!(result.hits[0].chunk.start_line, 2);
+    assert!(result.hits[0].chunk.text.contains("needle"));
+}
+
+#[test]
 fn incremental_lexical_index_matches_the_locked_native_bm25_fixture() {
     let fixture: RelevanceFixture = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

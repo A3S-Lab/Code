@@ -93,6 +93,21 @@ deterministic hybrid p95 were 6.7343, 50.7850, and 49.7348 ms. This is not an
 RSS, disk, or Vec-serving-authority claim; see the
 [migration contract](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
+The 2026-09-03 change-scoped rerun exercised the typed Vec-primary preview on
+the same Windows x86-64 host. The default Memory and explicit Vec paths both
+passed the existing 30/100/100 ms p95 budgets and the 120-query differential
+gate:
+
+| Serving engine | Exact p95 | Hybrid RRF p95 | Deterministic p95 | Differential result |
+| --- | ---: | ---: | ---: | --- |
+| `a3s_memory` (default) | 7.5379 ms | 49.0593 ms | 48.7440 ms | 120/120, zero failures |
+| `a3s_vec` (typed preview) | 7.4195 ms | 47.4571 ms | 48.7821 ms | 120/120, zero failures |
+
+The Vec-primary run retained 25,000 records per hybrid arm and reported
+54,500,008 logical Vec-accounted bytes per arm; close released all records and
+bytes. These are same-host directional measurements, not RSS, disk, recovery,
+or macOS 12 Intel qualification.
+
 ## Hermetic integration results
 
 | Boundary        | Controlled evidence                                                                                                                                                                                                                                                     | Result |
@@ -137,8 +152,10 @@ gh run watch <run-id> --repo A3S-Lab/Code --exit-status
 gh run download <run-id> --repo A3S-Lab/Code
 ```
 
-The current workflow requires exactly seven JSON files and rejects any report
+The current workflow requires exactly eight JSON files (including the
+Vec-primary workspace-retrieval report) and rejects any report
 whose top-level `passed` value is not `true`. The authoritative run above
-contains all seven, including `DM-QUAL1`. The capability ledger explains how
+contains all eight, including the Vec-primary workspace report and `DM-QUAL1`.
+The capability ledger explains how
 these profiles combine with deterministic correctness, SDK runtime, and
 external qualification evidence.

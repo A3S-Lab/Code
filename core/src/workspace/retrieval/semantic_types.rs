@@ -1,10 +1,10 @@
+use super::vector_contract::VectorIndexError;
 use crate::embedding::{
     EmbeddingError, EmbeddingExecutorConfig, EmbeddingProvider, EmbeddingProviderDescriptor,
 };
 use crate::workspace::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkingStrategy, WorkspaceRerankOptions,
 };
-use a3s_memory::vector::VectorIndexError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
@@ -21,7 +21,8 @@ const MAX_SEMANTIC_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct WorkspaceSemanticIndexLimits {
     /// Maximum vectors retained across all ready file partitions.
     pub max_records: usize,
-    /// Maximum bytes accounted by A3S Memory for vectors and record metadata.
+    /// Maximum bytes accounted by the selected vector engine for vectors and
+    /// record metadata.
     pub max_bytes: usize,
     /// Maximum cooperative wait when a session closes the indexing task.
     pub shutdown_timeout: Duration,
@@ -63,13 +64,15 @@ impl WorkspaceSemanticIndexLimits {
 
 /// Typed, host-owned semantic retrieval configuration for one session.
 ///
-/// A provider object is injected directly. The vector implementation remains
-/// an internal detail, so callers cannot select a backend by string.
+/// A provider object is injected directly. The vector implementation can be
+/// selected only through [`WorkspaceVectorEngine`], never by a backend-name
+/// string.
 #[derive(Clone)]
 pub struct WorkspaceRetrievalOptions {
     pub(crate) provider: Arc<dyn EmbeddingProvider>,
     pub(crate) embedding: EmbeddingExecutorConfig,
     pub(crate) index_limits: WorkspaceSemanticIndexLimits,
+    pub(crate) vector_engine: WorkspaceVectorEngine,
     pub(crate) chunking_strategy: Option<WorkspaceChunkingStrategy>,
     pub(crate) chunking: Option<ChunkingConfig>,
     pub(crate) catalog_limits: Option<ChunkCatalogLimits>,
@@ -84,6 +87,7 @@ impl WorkspaceRetrievalOptions {
             provider,
             embedding: EmbeddingExecutorConfig::default(),
             index_limits: WorkspaceSemanticIndexLimits::default(),
+            vector_engine: WorkspaceVectorEngine::A3sMemory,
             chunking_strategy: None,
             chunking: None,
             catalog_limits: None,
@@ -101,6 +105,18 @@ impl WorkspaceRetrievalOptions {
     /// Override vector memory, record, and close-time limits.
     pub fn with_index_limits(mut self, limits: WorkspaceSemanticIndexLimits) -> Self {
         self.index_limits = limits;
+        self
+    }
+
+    /// Select the workspace vector authority for this session.
+    ///
+    /// `A3sMemory` remains the compatibility default. `A3sVec` enables the
+    /// bounded Vec-primary path and keeps a Memory shadow for differential
+    /// evidence and rollback review. Hosts should promote it only after the
+    /// cross-platform and migration gates recorded in the release runbook are
+    /// green.
+    pub fn with_vector_engine(mut self, engine: WorkspaceVectorEngine) -> Self {
+        self.vector_engine = engine;
         self
     }
 
@@ -166,6 +182,7 @@ impl fmt::Debug for WorkspaceRetrievalOptions {
             .field("provider", &"<host-injected>")
             .field("embedding", &self.embedding)
             .field("index_limits", &self.index_limits)
+            .field("vector_engine", &self.vector_engine)
             .field("chunking_strategy", &self.chunking_strategy)
             .field("chunking", &self.chunking)
             .field("catalog_limits", &self.catalog_limits)
@@ -190,10 +207,12 @@ pub enum WorkspaceRetrievalPhase {
 }
 
 /// Vector engine whose results are authoritative for workspace retrieval.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceVectorEngine {
+    #[default]
     A3sMemory,
+    A3sVec,
 }
 
 /// Lifecycle state of the session-local A3S Vec migration shadow.

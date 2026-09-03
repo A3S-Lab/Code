@@ -114,9 +114,10 @@ than Go source.
 ## Ephemeral workspace retrieval
 
 Inject a context-aware embedding provider to build a bounded, session-owned,
-Memory-authoritative index without CGO or a vector database service. During
-the A3S Vec migration preview, Code mirrors the same admitted vectors into a
-temporary session-local shadow and compares it without serving its results.
+ephemeral index without CGO or a vector database service. `A3sMemory` is the
+compatibility serving default. The gated A3S Vec migration preview can be
+selected with the typed `WorkspaceVectorEngineA3SVec`; the other engine is
+retained as a differential shadow and is never an implicit fallback.
 The host owns network access and credentials; A3S Code owns chunking,
 validation, indexing, hybrid ranking, source verification, and cleanup.
 
@@ -174,6 +175,8 @@ if err != nil {
 retrieval.ChunkingStrategy = chunking
 retrieval.MaxRecords = 100_000
 retrieval.MaxBytes = 128 * 1024 * 1024
+// Developer qualification only; omission keeps the Memory compatibility path.
+// retrieval.VectorEngine = code.WorkspaceVectorEngineA3SVec
 
 session, err := agent.Session(ctx, "/my-project", &code.SessionOptions{
 	WorkspaceRetrieval: retrieval,
@@ -201,11 +204,12 @@ retry categories without copying remote response bodies into diagnostics.
 `WorkspaceRetrievalStatus.Batching` reports logical document batches, physical
 provider requests, limit flush reasons, the theoretical request lower bound,
 and time to first ready file for the current catalog generation.
-`WorkspaceRetrievalStatus.ActiveVectorEngine` remains
-`WorkspaceVectorEngineA3SMemory`. `VecShadow` exposes only bounded lifecycle,
-resource, mutation, and parity counters; it cannot change returned hits.
-Closing requires zero shadow records and accounted bytes. The SDK exposes no
-primitive backend selector; see the
+`WorkspaceRetrievalStatus.ActiveVectorEngine` is
+`WorkspaceVectorEngineA3SMemory` when the option is omitted, or
+`WorkspaceVectorEngineA3SVec` for the typed preview. `VecShadow` exposes only
+bounded lifecycle, resource, mutation, and parity counters; it cannot change
+returned hits. Closing requires zero shadow records and accounted bytes. Raw
+backend-name selectors are rejected; see the
 [migration contract](../../manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 `Reranker` is a sealed typed option. Leave it `nil` to preserve RRF-only, or

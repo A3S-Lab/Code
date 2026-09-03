@@ -89,9 +89,10 @@ returns the same session ID and closes the previous object.
 ## Ephemeral Workspace Retrieval
 
 Inject an asynchronous embedding callback to build a session-owned,
-Memory-authoritative index without a vector database service. During the A3S
-Vec migration preview, Code also mirrors the same admitted vectors into a
-temporary session-local shadow and compares it without serving its results.
+ephemeral index without a vector database service. `A3sMemory` is the
+compatibility serving default. The gated A3S Vec migration preview can be
+selected with the typed `WorkspaceVectorEngineOption.A3sVec`; the other engine
+is retained as a differential shadow and never becomes an implicit fallback.
 The callback receives bounded batches and an `AbortSignal`; pass the signal to
 the provider HTTP request so session close, query cancellation, and deadlines
 stop source-code egress promptly.
@@ -102,6 +103,7 @@ const {
   DeterministicWorkspaceReranker,
   RecursiveWorkspaceChunkingStrategy,
   WorkspaceRetrievalOptions,
+  WorkspaceVectorEngineOption,
 } = require('@a3s-lab/code')
 
 const provider = new CallbackEmbeddingProvider(
@@ -138,6 +140,9 @@ const retrieval = new WorkspaceRetrievalOptions(provider, reranker, chunking)
 retrieval.maxRecords = 100_000
 retrieval.maxBytes = 128 * 1024 * 1024
 
+// Developer qualification only; omission keeps the Memory compatibility path.
+// retrieval.vectorEngine = WorkspaceVectorEngineOption.A3sVec
+
 const session = await agent.sessionAsync('/my-project', {
   workspaceRetrieval: retrieval,
 })
@@ -158,11 +163,13 @@ physical provider requests, limit flush reasons, the theoretical request lower
 bound, and time to first ready file. These counters reset for each catalog
 generation and exclude non-text inputs by construction.
 
-`activeVectorEngine` remains `a3s_memory`. `vecShadow` exposes only bounded
-phase, revision, resource, mutation, and parity counters. A degraded shadow or
-mismatch never substitutes Vec hits for the Memory result. After close,
+`activeVectorEngine` is `a3s_memory` by default or `a3s_vec` when the typed
+preview is selected. `vecShadow` exposes only bounded phase, revision,
+resource, mutation, and parity counters. A degraded shadow or mismatch never
+substitutes its hits for the selected primary result. After close,
 `vecShadow.recordCount` and `vecShadow.accountedBytes` must both be zero. The
-SDK intentionally exposes no primitive backend selector; see the
+SDK exposes only the typed engine enum; raw backend-name selectors are not
+accepted. See the
 [migration contract](../../manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 The reranker is optional: omit the second constructor argument to preserve

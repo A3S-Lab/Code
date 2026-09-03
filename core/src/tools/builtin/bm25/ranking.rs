@@ -1,6 +1,4 @@
-pub(super) use crate::workspace::retrieval::lexical::{
-    query_terms, score_documents, tokenize, Bm25Document, B, K1,
-};
+pub(super) use crate::workspace::retrieval::lexical::{query_terms, tokenize, VecLexicalIndex};
 
 #[cfg(test)]
 mod tests {
@@ -46,26 +44,35 @@ mod tests {
     }
 
     #[test]
-    fn bm25_prefers_documents_covering_more_query_terms() {
-        let documents = [
-            Bm25Document::from_text("cache cache cache"),
-            Bm25Document::from_text("cache invalidation policy"),
-        ];
-        let scores = score_documents(&query_terms("cache invalidation", 16), &documents);
+    fn vec_fts_prefers_documents_covering_more_query_terms() {
+        let index = VecLexicalIndex::build([
+            ("short", "cache cache cache"),
+            ("broad", "cache invalidation policy"),
+        ])
+        .expect("Vec FTS index must build");
+        let hits = index
+            .search(&query_terms("cache invalidation", 16), 2)
+            .expect("Vec FTS query must succeed");
 
-        assert!(scores[1] > scores[0], "scores: {scores:?}");
+        assert_eq!(hits[0].0, 1, "hits: {hits:?}");
+        assert!(hits[0].1 > hits[1].1, "hits: {hits:?}");
     }
 
     #[test]
-    fn bm25_applies_document_length_normalization() {
-        let documents = [
-            Bm25Document::from_text("needle compact"),
-            Bm25Document::from_text(
+    fn vec_fts_applies_document_length_normalization() {
+        let index = VecLexicalIndex::build([
+            ("compact", "needle compact"),
+            (
+                "long",
                 "needle filler filler filler filler filler filler filler filler filler",
             ),
-        ];
-        let scores = score_documents(&query_terms("needle", 16), &documents);
+        ])
+        .expect("Vec FTS index must build");
+        let hits = index
+            .search(&query_terms("needle", 16), 2)
+            .expect("Vec FTS query must succeed");
 
-        assert!(scores[0] > scores[1], "scores: {scores:?}");
+        assert_eq!(hits[0].0, 0, "hits: {hits:?}");
+        assert!(hits[0].1 > hits[1].1, "hits: {hits:?}");
     }
 }

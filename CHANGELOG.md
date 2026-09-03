@@ -32,6 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complete, partial, blocked, and unverified outcomes.
 - Added `run_control` to the product capability inventory so all four SDKs can
   discover the new control-plane surface without version parsing.
+- Routed both manifest-backed and bounded no-catalog workspace BM25 searches
+  through one session-local A3S Vec FTS projection (`whitespace` tokenizer),
+  removing the duplicate Code-local postings/scoring implementation while
+  preserving the locked result and source-rendering contract. Semantic vector
+  authority remains behind the typed migration preview until its platform,
+  resource, recovery, and rollback gates are closed.
+- Isolated the compatibility `a3s-memory` vector trait behind a single
+  workspace adapter; semantic retrieval now consumes the Code-owned vector
+  contract and cannot accidentally couple new runtime code to Memory methods.
+- Added revision-CAS to the temporary Vec workspace adapter. Delayed and
+  concurrent partition writers are checked at one Code-owned logical revision,
+  with stale mutations rejected before Vec storage is touched.
 
 ### Fixed
 

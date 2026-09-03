@@ -1,5 +1,5 @@
 use super::vec_shadow_store::{VecShadowFailure, VecShadowResult};
-use a3s_memory::vector::VectorRecord;
+use super::vector_contract::VectorRecord;
 use a3s_vec::Doc;
 use sha2::{Digest, Sha256};
 

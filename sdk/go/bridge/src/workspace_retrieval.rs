@@ -31,6 +31,8 @@ pub(super) struct BridgeWorkspaceRetrievalOptions {
     dimension: usize,
     #[serde(default)]
     normalization: BridgeEmbeddingNormalization,
+    #[serde(default)]
+    vector_engine: BridgeWorkspaceVectorEngine,
     #[serde(default = "default_provider_timeout_ms")]
     provider_timeout_ms: u64,
     #[serde(default = "default_max_records")]
@@ -49,6 +51,14 @@ enum BridgeEmbeddingNormalization {
     #[default]
     None,
     Unit,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BridgeWorkspaceVectorEngine {
+    #[default]
+    A3sMemory,
+    A3sVec,
 }
 
 impl BridgeWorkspaceRetrievalOptions {
@@ -104,6 +114,12 @@ impl BridgeWorkspaceRetrievalOptions {
                 max_bytes: self.max_bytes,
                 shutdown_timeout: Duration::from_millis(self.shutdown_timeout_ms),
             });
+        retrieval = retrieval.with_vector_engine(match self.vector_engine {
+            BridgeWorkspaceVectorEngine::A3sMemory => {
+                a3s_code_core::WorkspaceVectorEngine::A3sMemory
+            }
+            BridgeWorkspaceVectorEngine::A3sVec => a3s_code_core::WorkspaceVectorEngine::A3sVec,
+        });
         if let Some(reranker) = reranker {
             retrieval = retrieval.with_rerank_options(reranker);
         }
@@ -292,6 +308,7 @@ pub(super) fn status_value(status: &WorkspaceRetrievalStatus) -> Value {
         "vector_bytes": status.vector_bytes,
         "active_vector_engine": status.active_vector_engine.map(|engine| match engine {
             a3s_code_core::WorkspaceVectorEngine::A3sMemory => "a3s_memory",
+            a3s_code_core::WorkspaceVectorEngine::A3sVec => "a3s_vec",
         }),
         "vec_shadow": {
             "phase": format!("{:?}", status.vec_shadow.phase).to_ascii_lowercase(),
@@ -494,5 +511,14 @@ mod tests {
         assert_eq!(value["vec_shadow"]["record_count"], 11);
         assert_eq!(value["vec_shadow"]["matching_queries"], 3);
         assert!(value.get("activeVectorEngine").is_none());
+    }
+
+    #[test]
+    fn vec_primary_status_uses_the_stable_engine_literal() {
+        let mut status = WorkspaceRetrievalStatus::disabled();
+        status.active_vector_engine = Some(a3s_code_core::WorkspaceVectorEngine::A3sVec);
+
+        let value = status_value(&status);
+        assert_eq!(value["active_vector_engine"], "a3s_vec");
     }
 }

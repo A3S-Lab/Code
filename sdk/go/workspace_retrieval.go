@@ -99,10 +99,12 @@ type EmbeddingProvider interface {
 	Embed(context.Context, EmbeddingBatchRequest) (EmbeddingBatchResponse, error)
 }
 
-// WorkspaceRetrievalOptions enables a bounded, session-owned in-memory index.
-// Construct it with NewWorkspaceRetrievalOptions rather than naming a backend.
+// WorkspaceRetrievalOptions enables a bounded, session-owned vector index.
+// Memory remains the compatibility default; set VectorEngine to the typed
+// A3S Vec value only for the gated opt-in path.
 type WorkspaceRetrievalOptions struct {
 	Provider         EmbeddingProvider
+	VectorEngine     WorkspaceVectorEngine
 	Reranker         WorkspaceReranker
 	ChunkingStrategy WorkspaceChunkingStrategy
 	ProviderTimeout  time.Duration
@@ -114,6 +116,7 @@ type WorkspaceRetrievalOptions struct {
 func NewWorkspaceRetrievalOptions(provider EmbeddingProvider) *WorkspaceRetrievalOptions {
 	return &WorkspaceRetrievalOptions{
 		Provider:        provider,
+		VectorEngine:    WorkspaceVectorEngineA3SMemory,
 		ProviderTimeout: defaultEmbeddingProviderTimeout,
 		MaxRecords:      defaultRetrievalMaxRecords,
 		MaxBytes:        defaultRetrievalMaxBytes,
@@ -133,6 +136,7 @@ type workspaceRetrievalWireOptions struct {
 	Revision              string                              `json:"revision,omitempty"`
 	Dimension             uint                                `json:"dimension"`
 	Normalization         EmbeddingNormalization              `json:"normalization"`
+	VectorEngine          WorkspaceVectorEngine              `json:"vector_engine"`
 	ProviderTimeout       uint64                              `json:"provider_timeout_ms"`
 	MaxRecords            uint                                `json:"max_records"`
 	MaxBytes              uint                                `json:"max_bytes"`
@@ -188,6 +192,13 @@ func prepareWorkspaceRetrievalOptions(
 	maxBytes := retrieval.MaxBytes
 	if maxBytes == 0 {
 		maxBytes = defaultRetrievalMaxBytes
+	}
+	vectorEngine := retrieval.VectorEngine
+	if vectorEngine == "" {
+		vectorEngine = WorkspaceVectorEngineA3SMemory
+	}
+	if vectorEngine != WorkspaceVectorEngineA3SMemory && vectorEngine != WorkspaceVectorEngineA3SVec {
+		return nil, "", invalid("workspace_retrieval", "vector engine must be a supported typed value")
 	}
 	if providerTimeout < time.Millisecond || providerTimeout > maxEmbeddingProviderTimeout {
 		return nil, "", invalid(
@@ -263,6 +274,7 @@ func prepareWorkspaceRetrievalOptions(
 		Revision:              descriptor.Revision,
 		Dimension:             descriptor.Dimension,
 		Normalization:         descriptor.Normalization,
+		VectorEngine:          vectorEngine,
 		ProviderTimeout:       uint64(providerTimeout / time.Millisecond),
 		MaxRecords:            maxRecords,
 		MaxBytes:              maxBytes,

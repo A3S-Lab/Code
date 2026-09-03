@@ -1,10 +1,10 @@
-//! Native BM25 workspace search.
+//! A3S Vec FTS/BM25 workspace search.
 
 mod ranking;
 #[cfg(test)]
 mod tests;
 
-use self::ranking::{query_terms, score_documents, tokenize, Bm25Document, B, K1};
+use self::ranking::{query_terms, tokenize, VecLexicalIndex};
 use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::workspace::{
@@ -52,7 +52,6 @@ struct ChunkSource {
 #[derive(Debug, Default)]
 struct ScanOutcome {
     sources: Vec<ChunkSource>,
-    documents: Vec<Bm25Document>,
     read_files: usize,
     failed_reads: usize,
     oversized_files: usize,
@@ -74,7 +73,7 @@ impl Tool for Bm25Tool {
     }
 
     fn description(&self) -> &str {
-        "Rank workspace text chunks with native BM25 lexical relevance. Use for multi-term or natural-language repository searches; use grep for exact strings and regular expressions."
+        "Rank workspace text chunks with A3S Vec FTS/BM25 lexical relevance. Use for multi-term or natural-language repository searches; use grep for exact strings and regular expressions."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -202,7 +201,7 @@ impl Tool for Bm25Tool {
         }
 
         let scan = scan_candidates(candidates.paths.clone(), ctx).await;
-        if scan.documents.is_empty() {
+        if scan.sources.is_empty() {
             if scan.read_files == 0 && scan.failed_reads > 0 {
                 return Ok(ToolOutput::error(format!(
                     "BM25 could not read any of the {} candidate file(s)",
@@ -213,10 +212,19 @@ impl Tool for Bm25Tool {
             return Ok(no_matches_output(query, &terms, &candidates, &scan));
         }
 
-        let scores = score_documents(&terms, &scan.documents);
-        let mut ranked = scores
+        let lexical = match build_scan_index(&scan) {
+            Ok(index) => index,
+            Err(error) => {
+                return Ok(
+                    ToolOutput::error(format!("BM25 lexical index failed: {error}"))
+                        .with_metadata(search_metadata(&terms, &candidates, &scan)),
+                )
+            }
+        };
+        let mut ranked = lexical
+            .search(&terms, scan.sources.len())
+            .map_err(|error| anyhow::anyhow!("A3S Vec FTS query failed: {error}"))?
             .into_iter()
-            .enumerate()
             .filter(|(_, score)| score.is_finite() && *score > 0.0)
             .collect::<Vec<_>>();
         ranked.sort_by(|(left_index, left_score), (right_index, right_score)| {
@@ -272,7 +280,7 @@ impl Tool for Bm25Tool {
             "\n\n{} result(s); {} file(s) read; {} chunk(s) scored",
             rendered.len(),
             scan.read_files,
-            scan.documents.len()
+            scan.sources.len()
         ));
         if candidates.backend_truncated || candidates.candidate_truncated || scan.truncated {
             content.push_str("\nWarning: search limits truncated the candidate corpus.");
@@ -398,8 +406,8 @@ fn incremental_search_metadata(
         "algorithm": "bm25",
         "mode": "incremental_catalog",
         "parameters": {
-            "k1": K1,
-            "b": B,
+            "engine": "a3s_vec_fts",
+            "tokenizer": "whitespace",
             "chunk_lines": CHUNK_LINES,
         },
         "query_terms": result.query_terms,
@@ -561,8 +569,8 @@ async fn scan_candidates(paths: Vec<WorkspacePath>, ctx: &ToolContext) -> ScanOu
             .take(MAX_CHUNKS_PER_FILE)
             .enumerate()
         {
-            let document = Bm25Document::from_text(&chunk_lines.join("\n"));
-            if document.length == 0 {
+            let text = chunk_lines.join("\n");
+            if tokenize(&text).is_empty() {
                 continue;
             }
             outcome.sources.push(ChunkSource {
@@ -570,10 +578,18 @@ async fn scan_candidates(paths: Vec<WorkspacePath>, ctx: &ToolContext) -> ScanOu
                 start_line: chunk_index * CHUNK_LINES,
                 lines: chunk_lines.to_vec(),
             });
-            outcome.documents.push(document);
         }
     }
     outcome
+}
+
+fn build_scan_index(scan: &ScanOutcome) -> Result<VecLexicalIndex, a3s_vec::Error> {
+    VecLexicalIndex::build(
+        scan.sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| (format!("scan-{index}"), source.lines.join("\n"))),
+    )
 }
 
 fn render_result(
@@ -648,8 +664,8 @@ fn search_metadata(
     serde_json::json!({
         "algorithm": "bm25",
         "parameters": {
-            "k1": K1,
-            "b": B,
+            "engine": "a3s_vec_fts",
+            "tokenizer": "whitespace",
             "chunk_lines": CHUNK_LINES,
         },
         "query_terms": terms,
@@ -665,7 +681,7 @@ fn search_metadata(
             "failed_reads": scan.failed_reads,
             "oversized_files": scan.oversized_files,
             "scanned_bytes": scan.scanned_bytes,
-            "scored_chunks": scan.documents.len(),
+            "scored_chunks": scan.sources.len(),
             "truncated": scan.truncated,
         },
     })

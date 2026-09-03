@@ -4,13 +4,13 @@ use super::semantic_projection::{
 };
 use super::semantic_status::SemanticStatusCell;
 use super::vec_shadow::ShadowVectorIndex;
+use super::vector_contract::{VectorIndexDescriptor, WorkspaceVectorIndex};
 use super::{
     ChunkCatalogSnapshot, WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceEmbeddingBatchMetrics,
     WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalResult,
     WorkspaceRetrievalStatus,
 };
 use crate::embedding::EmbeddingExecutor;
-use a3s_memory::vector::{VectorIndex, VectorIndexDescriptor};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -59,8 +59,12 @@ impl WorkspaceRetrievalRuntime {
         let descriptor = VectorIndexDescriptor::new(executor.descriptor().dimension)
             .with_max_records(limits.max_records)
             .with_max_bytes(limits.max_bytes);
-        let index = Arc::new(ShadowVectorIndex::new(descriptor)?);
+        let index = Arc::new(ShadowVectorIndex::new_with_engine(
+            descriptor,
+            options.vector_engine,
+        )?);
         let mut initial_status = WorkspaceRetrievalStatus::building(executor.descriptor().clone());
+        initial_status.active_vector_engine = Some(index.active_engine());
         initial_status.vec_shadow = index.shadow_status();
         let status = Arc::new(SemanticStatusCell::new(initial_status));
         let lifetime = parent_lifetime.child_token();

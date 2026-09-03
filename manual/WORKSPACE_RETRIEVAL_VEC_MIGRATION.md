@@ -1,19 +1,30 @@
 # Workspace Retrieval A3S Vec Migration
 
-Status: developer shadow, 2026-09-02.
+Status: lexical engine cutover delivered; semantic Vec-primary remains a gated
+developer preview, 2026-09-03.
 
-This document defines the first A3S Code integration gate for A3S Vec. It is a
-differential migration, not a serving-backend switch. Code commit
-`4163d8e3a1a96bbae430dc987005acaa362efb30` pins A3S Vec commit
-`019fdb929a57dee1803691e6def60df3946d9561`.
+This document defines the A3S Code integration gates for A3S Vec. Semantic
+vector migration is still differential evidence, not a stable serving-backend
+promotion. Code commit `788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced
+the gated Vec-primary authority slice; the current dependency-validation pin is
+Code `708a85e3ac070640ca5fb8173d0b06e6070152e7` with A3S Vec commit
+`13585ccd3f956f6cb7d669b2ee6acc7096fca03d`.
+
+Workspace retrieval consumes a Code-owned `WorkspaceVectorIndex` contract. The
+legacy Memory trait is bound only inside the compatibility adapter, so new
+semantic runtime code cannot grow direct dependency-owned method calls. The
+adapter remains available for the compatibility default and rollback evidence
+until the semantic promotion decision is complete.
 
 ## Authority contract
 
-A3S Memory remains the only authoritative vector engine for semantic and
-hybrid workspace retrieval. Its result determines hits, ordering, scores,
-searched-record counts, truncation, fallbacks, and errors. The Vec shadow may
-collect evidence and degrade its own status, but it cannot change any of those
-serving decisions.
+`A3sMemory` is the compatibility default. A trusted host may explicitly select
+the gated `A3sVec` preview through the typed `WorkspaceVectorEngine` option.
+Exactly one selected engine is authoritative for each session: its result
+determines hits, ordering, scores, searched-record counts, truncation,
+fallbacks, and errors. The other engine is a differential shadow; it may
+collect evidence and degrade its own status, but it cannot change serving
+decisions or silently fail over.
 
 One admitted embedding response follows this path:
 
@@ -25,14 +36,15 @@ Embedding Provider
 Code publication gate
         |----------------------|
         v                      v
-A3S Memory authority    A3S Vec shadow
+selected authority       differential shadow
+(Memory or Vec)          (the other engine)
         |                      |
-        | query result         | differential result
+        | serving result       | comparison evidence
         |----------------------|
                    |
                    v
         compare, record counters,
-        return Memory result unchanged
+        return selected result unchanged
 ```
 
 Code does not call the Embedding Provider a second time. It clones the same
@@ -40,10 +52,29 @@ already-admitted records only after the provider response has passed the
 existing dimension, finiteness, normalization, identity, byte, generation,
 and cancellation checks.
 
+## Lexical authority
+
+The workspace lexical path now has one implementation: A3S Vec FTS with the
+`whitespace` tokenizer over Code's normalized identifier/CJK token stream. The
+incremental per-file catalog and the bounded scanner used when a custom backend
+cannot provide a manifest catalog both construct temporary, manual-durability
+Vec collections. Code still owns candidate-file policy, chunk boundaries, path
+filters, source reads, and result rendering; it no longer computes BM25
+postings or scores locally. The collection is discarded with the query or
+catalog generation and is never a durable SQLite/`sqlite-vec` workspace index.
+
+The public result shape remains `algorithm: "bm25"` for compatibility. Metadata
+identifies `engine: "a3s_vec_fts"` and `tokenizer: "whitespace"`, so operators
+can distinguish the engine without relying on a primitive backend selector.
+The locked nine-query fixture, identifier/CJK cases, glob/path limits, and both
+catalog and query-time paths must remain equal to the frozen baseline.
+
 ## Session and storage ownership
 
-Each retrieval-enabled session owns one Memory index and, when initialization
-succeeds, one Vec collection. The collection is created below an
+Each retrieval-enabled session owns one selected primary index and one
+differential shadow when initialization succeeds. The Memory-default mode owns
+a Memory primary plus a Vec collection; the gated Vec-primary mode owns a Vec
+collection plus a Memory shadow. The Vec collection is created below an
 operating-system temporary directory with manual durability. It is not shared,
 checkpointed, reopened, or exposed as a vector-database service. Closing the
 session clears and closes the collection before releasing the temporary
@@ -92,26 +123,35 @@ One Code-owned asynchronous read/write gate spans both engines:
   and close acquire the write side;
 - search acquires the read side, runs Memory and Vec concurrently, then records
   the comparison;
-- Memory mutates first and remains authoritative;
+- the selected primary mutates first and remains authoritative;
+- Memory-default sessions mirror into Vec; Vec-primary sessions mirror into
+  Memory;
 - Vec replacement fetches the previous partition, deletes it, inserts the new
   documents, and attempts rollback if insertion fails;
+- The Vec adapter exposes the same global revision-CAS contract as the Memory
+  implementation. Its temporary collection may use multiple physical writes
+  for a replacement, but the Code-owned adapter publishes one logical revision
+  and rejects a stale writer before touching the collection;
 - synchronous Vec work runs in Tokio's blocking pool. The owned operation guard
   moves into that blocking operation so cancelling an async waiter cannot let
   close or a later mutation overtake work that is still executing.
 
 Vec initialization, mutation, query, worker, filesystem, filter, unsupported
 label, rollback, or write-rejection failures increment only bounded counters
-and set `vec_shadow.phase = degraded`. Logs contain a static failure code, not
-the path, query, vector, document, or backend error body. A mismatch also
-degrades the shadow and returns the Memory result unchanged.
+and set `vec_shadow.phase = degraded`. In Vec-primary mode, a primary failure is
+returned to the caller and never silently replaced by Memory; in Memory-default
+mode, a Vec shadow failure leaves the Memory result available. Logs contain a
+static failure code, not the path, query, vector, document, or backend error
+body. A mismatch degrades the shadow and leaves the selected primary result
+unchanged.
 
 ## Resource contract
 
-Memory's `max_records` and `max_bytes` remain the authoritative admission
-limits. Vec receives `max_records` as its maximum documents, query candidates,
-and write-batch documents. Memory's byte limit is not reinterpreted as a Vec
-storage limit because the engines use different layouts. Vec instead reports
-its deterministic `accounted_bytes` estimate for review.
+`max_records` and `max_bytes` are applied to the selected primary and its
+shadow descriptor. Vec additionally enforces the same ceilings as collection
+document, query-candidate, write-batch, and accounted-byte limits. Its storage
+layout is different from Memory's, so `accounted_bytes` is a Vec logical
+estimate and is not expected to equal Memory's `byte_count`.
 
 `accounted_bytes` is not process RSS, committed virtual memory, or temporary
 directory size. Promotion requires separate RSS, disk, and latency
@@ -122,8 +162,9 @@ limit or permit additional serving records.
 
 `WorkspaceRetrievalStatus` adds two backward-compatible fields:
 
-- `active_vector_engine` / `activeVectorEngine` is `a3s_memory` for an enabled
-  runtime and absent for a disabled runtime;
+- `active_vector_engine` / `activeVectorEngine` is `a3s_memory` by default or
+  `a3s_vec` for an explicitly selected preview, and absent for a disabled
+  runtime;
 - `vec_shadow` / `vecShadow` reports `phase`, `revision`, `record_count`,
   `accounted_bytes`, initialization and mutation outcomes, and compared,
   matching, mismatched, and failed query counts.
@@ -134,19 +175,26 @@ Rust uses `active_vector_engine` and `vec_shadow`. Node.js uses
 `VecShadow` while its bridge JSON remains snake_case. Legacy serialized Rust
 status without these fields loads with no active engine and a disabled shadow.
 
+The selector is typed at every supported boundary: Rust uses
+`WorkspaceVectorEngine::A3sMemory`/`A3sVec`, Node uses
+`WorkspaceVectorEngineOption.A3sMemory`/`A3sVec`, Python uses the native
+`WorkspaceVectorEngineOption` enum, and Go uses
+`WorkspaceVectorEngineA3SMemory`/`WorkspaceVectorEngineA3SVec`. Raw backend
+name strings are rejected by the native option paths.
+
 Required operator invariants are:
 
-- `active_vector_engine == a3s_memory` for every enabled session;
+- `active_vector_engine` equals the requested typed engine;
 - `matching_queries == compared_queries`;
 - `mismatched_queries == 0` and `failed_queries == 0` before promotion;
 - `record_count == vector_records` after a ready generation when no shadow
-  failure has occurred;
+  failure has occurred (the count describes the selected primary in Vec mode);
 - both authoritative and shadow record/byte counts are zero after close.
 
 ## Qualification evidence
 
-The 2026-09-02 Windows x86-64 qualification used release benchmark report
-schema 4 and profile `workspace-retrieval-v3`:
+The earlier 2026-09-02 Windows x86-64 qualification used release benchmark
+report schema 4 and profile `workspace-retrieval-v3`:
 
 | Gate | Result | Limit |
 | --- | ---: | ---: |
@@ -159,28 +207,89 @@ schema 4 and profile `workspace-retrieval-v3`:
 | Vec comparisons per hybrid arm | 120/120 matching | zero mismatch/failure |
 | Closed authoritative and shadow state | zero records and bytes | required |
 
-Additional local gates passed:
+The 2026-09-03 local revision-bound rerun rebuilt the release benchmark against
+Vec `13585ccd3f956f6cb7d669b2ee6acc7096fca03d` and Code
+`708a85e3ac070640ca5fb8173d0b06e6070152e7` on the reference Windows x86-64
+host (20 logical CPUs; 25,000 records, 384 dimensions, top-20, 100 measured
+queries, 20 warmups). The revision-bound local profile reports:
 
-- four focused Vec adapter tests, including 384-dimensional bit-exact scores,
-  partition filters, replacement, removal, clear, and close;
-- the 64-generation replacement soak;
-- the complete serial Core suite with 2,990 library tests plus offline
-  integration and doc tests, with no failure;
-- workspace all-target check and strict Clippy;
-- strict Node.js and Python Clippy, Go bridge tests, SDK mapping tests, and real
-  Windows native Node.js/Python workspace-retrieval lifecycle tests.
+| Gate | Result | Limit |
+| --- | ---: | ---: |
+| Exact p95 (Memory / Vec-primary) | 7.1010 / 9.4502 ms | <= 30 ms |
+| Hybrid RRF-only p95 (Memory / Vec-primary) | 67.9456 / 85.1365 ms | <= 100 ms |
+| Hybrid deterministic-rerank p95 (Memory / Vec-primary) | 63.9634 / 82.0097 ms | <= 100 ms |
+| Deterministic reranker p95 delta (Memory / Vec-primary) | 0.0000 / 0.0000 ms | <= 10 ms positive addition |
+| Vec records per hybrid arm | 25,000 | exactly 25,000 |
+| Vec accounted bytes per hybrid arm | 54,500,008 | reported, not an RSS claim |
+| Vec revision / successful mutations | 196 / 196 | no failed mutation |
+| Vec comparisons per hybrid arm | 120/120 matching | zero mismatch/failure |
+| Closed authoritative and shadow state | zero records and bytes | required |
 
-A3S Vec CI run
-[`33517845653`](https://github.com/A3S-Lab/Vec/actions/runs/33517845653)
+Both hybrid arms compared 120/120 queries with zero mismatches, failed
+queries, initialization failures, or failed mutations. The Memory-primary and
+Vec-primary workspace-build measurements were 3,359.14 ms and 3,880.98 ms;
+the Vec-primary logical vector accounting was 54,500,008 bytes versus
+40,177,548 bytes for Memory-primary. These values are process/run observations,
+not SLOs. `accounted_bytes` remains a logical Vec estimate; it is not process
+RSS, committed virtual memory, or temporary-directory size. The hosted
+revision-bound refresh is recorded below; neither hosted nor local numbers
+replace the actual macOS 12 Intel runtime gate.
+
+Additional local gates for the current dependency pin passed:
+
+- locked Core compilation;
+- all three `workspace_retrieval` library-filter tests;
+- all ten `vec_shadow` library-filter tests;
+- all six enabled `vec_primary` library-filter tests (the long-running soak is
+  explicitly ignored in the local filter and runs in hosted qualification);
+- repository-wide Rust formatting; and
+- both release profiles shown above, including 120/120 differential matches in
+  each hybrid arm and complete resource release.
+
+The revision-bound A3S Vec CI run
+[`33772179017`](https://github.com/A3S-Lab/Vec/actions/runs/33772179017)
 passed MSRV 1.75, Linux x86-64/ARM64, Windows x86-64, macOS ARM64/Intel hosted,
 format, lint, docs, feature, and fuzz jobs. Actual macOS 12 Intel hardware or an
 equivalent external runner remains a release gate; the hosted Intel job is not
 claimed as that evidence.
 
-The repository-wide strict rustdoc command is currently blocked by pre-existing
-private or broken links in `core/src/mcp/result.rs` and `core/src/workspace/s3`.
-The new Vec modules produce no rustdoc diagnostic. This baseline issue must be
-closed separately rather than hidden in the migration change.
+The Code validation workflows for the current architecture pin are recorded in
+the complete CI matrix
+[`33773373773`](https://github.com/A3S-Lab/Code/actions/runs/33773373773) and the
+successful release-profile qualification
+[`33773373522`](https://github.com/A3S-Lab/Code/actions/runs/33773373522).
+
+The latest hosted release-profile artifact ran on Linux x86-64 (4 logical
+CPUs, 25,000 records, 384 dimensions, top-20, 100 measured queries and 20
+warmups). Memory-primary reported exact p95 9.7993 ms, hybrid RRF-only p95
+55.6142 ms, and deterministic-rerank p95 58.2083 ms. The explicit Vec-primary
+preview reported exact p95 9.6626 ms, hybrid RRF-only p95 58.6252 ms, and
+deterministic-rerank p95 56.6000 ms. Both profiles matched 120/120
+comparisons with zero mismatches, failed queries, failed mutations, or
+initialization failures and closed with zero records and bytes. Vec-primary
+workspace construction was 2,284.8 ms versus 2,212.2 ms for Memory-primary,
+and its logical vector bytes were 54,500,008 versus 40,177,548; these are
+directional logical measurements, not process RSS or a cross-platform SLO.
+
+The full Code workspace strict rustdoc command (`cargo doc --locked
+--workspace --all-features --no-deps` with `RUSTDOCFLAGS=-D warnings`) passed on
+the current candidate. This includes the migration adapter and its public SDK
+facades; no rustdoc diagnostic is suppressed for the Vec integration.
+
+For historical context, an earlier local run used the explicit Vec-primary
+selector on a Windows x86-64 host (25,000 records, 384 dimensions, top-20,
+100 measured queries, 20 warmups). Those values are retained as local
+directional measurements, not as the current hosted qualification:
+
+| Engine | Exact p95 | Hybrid RRF p95 | Deterministic p95 | Vec comparisons |
+| --- | ---: | ---: | ---: | ---: |
+| `a3s_memory` default | 7.5379 ms | 49.0593 ms | 48.7440 ms | 120/120 |
+| `a3s_vec` preview | 7.4195 ms | 47.4571 ms | 48.7821 ms | 120/120 |
+
+Both runs reported zero mismatches, failed queries, failed mutations, and
+initialization failures, and both closed with zero records and bytes. The
+Vec-primary run's logical accounted bytes were 54,500,008 per hybrid arm.
+The benchmark does not measure process RSS, crash recovery, or macOS 12 Intel.
 
 ## Promotion gates
 
@@ -199,17 +308,20 @@ following:
 7. an independent oracle retained during any canary serving phase;
 8. an explicit decision about whether and when the Memory path may be removed.
 
-This gate satisfies none of those decisions implicitly. The Memory path must
-remain present and authoritative until the later promotion is reviewed and
+The typed selector design and the lexical engine cutover are implemented, but
+this gate does not satisfy the remaining platform, RSS, recovery, semantic
+vector-removal, or release decisions implicitly. The Memory path must remain
+present and the default until the later semantic promotion is reviewed and
 committed.
 
 ## Rollback
 
 A shadow-only regression does not require data migration because the Vec
-collection is session-local and temporary. Roll back the deployed Code binary
-to a revision before `4163d8e`, then recreate affected sessions. There is no
-public primitive backend selector and no separate shadow configuration knob in
-this gate.
+collection is session-local and temporary. Recreate affected sessions with the
+typed `WorkspaceVectorEngine::A3sMemory` compatibility default (or disable
+workspace retrieval) and roll back the deployed Code binary if needed. There is
+no public primitive backend selector and no automatic fallback from a selected
+primary to its shadow.
 
 If the regression affects the complete semantic runtime or creates unacceptable
 latency before a binary rollback is available, use the existing trusted host

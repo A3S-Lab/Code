@@ -47,3 +47,9 @@ jobs:
           cargo test --locked -p a3s-code-core --lib
           agent_api::retrieval_qa_tests::repeated_source_generations_replace_vectors_without_accumulation
           -- --ignored --exact --test-threads=1
+
+      - name: Run bounded Vec-primary retrieval churn
+        run: >-
+          cargo test --locked -p a3s-code-core --lib
+          agent_api::retrieval_qa_tests::repeated_source_generations_replace_vec_primary_without_accumulation
+          -- --ignored --exact --test-threads=1

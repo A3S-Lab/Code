@@ -154,17 +154,18 @@ Preview mechanical edits with `dry_run: true`, then apply the same edit with
 Dense retrieval is an explicit host capability. It is not a durable vector
 database and it is not enabled by the selected chat model. The host supplies a
 typed embedding provider; A3S Code owns text admission, chunking, batching,
-response validation, Memory-authoritative exact vector partitions, hybrid
-ranking, current-source verification, accounting, and cleanup. The internal
-A3S Vec developer shadow mirrors the same admitted vectors into temporary
-session-local storage for comparison only; it cannot serve results and has no
-SDK backend selector.
+response validation, bounded vector authority, hybrid ranking, current-source
+verification, accounting, and cleanup. `A3sMemory` is the compatibility
+default. A trusted developer can select the gated A3S Vec authority through
+the typed engine option; the other engine remains a differential shadow and
+never becomes an implicit fallback.
 
 ```js
 import {
   CallbackEmbeddingProvider,
   RecursiveWorkspaceChunkingStrategy,
   WorkspaceRetrievalOptions,
+  WorkspaceVectorEngineOption,
 } from "@a3s-lab/code";
 
 const provider = new CallbackEmbeddingProvider(
@@ -200,6 +201,8 @@ const retrieval = new WorkspaceRetrievalOptions(
 );
 retrieval.maxRecords = 100_000;
 retrieval.maxBytes = 128 * 1024 * 1024;
+// Developer qualification only; omission keeps the Memory compatibility path.
+// retrieval.vectorEngine = WorkspaceVectorEngineOption.A3sVec;
 
 const session = await agent.sessionAsync("/repo", {
   workspaceRetrieval: retrieval,
@@ -221,10 +224,10 @@ publish atomically, so queries may use partial coverage while building. Closing
 the session cancels provider work, joins the indexer within a deadline, and
 releases all accounted vector records and bytes.
 
-`activeVectorEngine` remains `a3s_memory`. `vecShadow` reports the internal
-migration shadow phase, records, accounted bytes, and parity counters. A
-degraded shadow never changes returned hits, and close requires both its record
-and byte observations to be zero.
+`activeVectorEngine` is `a3s_memory` by default or `a3s_vec` for the typed
+preview. `vecShadow` reports the internal migration shadow phase, records,
+accounted bytes, and parity counters. A degraded shadow never changes returned
+hits, and close requires both its record and byte observations to be zero.
 
 Only manifest-admitted UTF-8 text enters chunking and embeddings. Generated,
 oversized, credential-bearing, `.a3s` control, and non-text files are excluded.
@@ -232,8 +235,10 @@ Before returning a hit, Code rereads the source and verifies its full-file
 digest and exact chunk range. Stale, deleted, unreadable, or superseded chunks
 are not exposed.
 
-The serving index is an exact, bounded `InMemoryVectorIndex`. Recreating a
-session rebuilds it and the temporary Vec shadow; sessions do not share either.
+The default serving index is an exact, bounded `InMemoryVectorIndex`. The typed
+preview can serve through a temporary A3S Vec collection while retaining a
+Memory differential shadow. Recreating a session rebuilds both session-local
+engines; sessions do not share either.
 If persistence or a shared vector service is required, the embedding host owns
 that separate system and must preserve Code's source-verification boundary.
 

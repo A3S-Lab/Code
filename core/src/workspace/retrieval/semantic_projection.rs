@@ -2,11 +2,11 @@ use super::semantic_batch::plan_semantic_batches;
 use super::semantic_runtime::{BuildState, CatalogPartition, ReadyPartition};
 use super::semantic_status::SemanticStatusCell;
 use super::vec_shadow::ShadowVectorIndex;
+use super::vector_contract::{VectorRecord, WorkspaceVectorIndex};
 use super::{
     ChunkCatalogSnapshot, WorkspaceChunkCatalog, WorkspaceRetrievalPhase, WorkspaceRetrievalStatus,
 };
 use crate::embedding::EmbeddingExecutor;
-use a3s_memory::vector::{VectorIndex, VectorRecord};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -285,7 +285,7 @@ pub(super) fn publish_progress(
         total_failures: state.total_failures,
         vector_records: vector.record_count,
         vector_bytes: vector.byte_count,
-        active_vector_engine: Some(super::WorkspaceVectorEngine::A3sMemory),
+        active_vector_engine: Some(index.active_engine()),
         vec_shadow: index.shadow_status(),
         batching: state.batching.clone(),
         model,

@@ -420,7 +420,7 @@ impl CatalogFile {
             chunking_strategy,
         )?;
         let chunks: Arc<[Arc<WorkspaceChunk>]> = Arc::from(chunked.chunks);
-        let lexical = Arc::new(LexicalPartition::build(Arc::clone(&chunks)));
+        let lexical = Arc::new(LexicalPartition::build(Arc::clone(&chunks))?);
         let estimated_index_bytes = lexical
             .estimated_bytes()
             .saturating_add(

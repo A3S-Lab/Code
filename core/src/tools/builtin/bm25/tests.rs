@@ -62,6 +62,8 @@ async fn ranks_multi_term_chunks_and_returns_source_metadata() {
     assert!(result.content.contains("session cache invalidation policy"));
     let metadata = result.metadata.unwrap();
     assert_eq!(metadata["algorithm"], "bm25");
+    assert_eq!(metadata["parameters"]["engine"], "a3s_vec_fts");
+    assert_eq!(metadata["parameters"]["tokenizer"], "whitespace");
     assert_eq!(metadata["results"][0]["path"], "src/session.rs");
     assert!(metadata["results"][0]["score"].as_f64().unwrap() > 0.0);
     assert_eq!(metadata["source_anchors"][0], "src/session.rs");
@@ -166,6 +168,7 @@ async fn manifest_backed_bm25_uses_the_incremental_catalog_without_query_reads()
     assert!(result.success, "{}", result.content);
     let metadata = result.metadata.unwrap();
     assert_eq!(metadata["mode"], "incremental_catalog");
+    assert_eq!(metadata["parameters"]["engine"], "a3s_vec_fts");
     assert_eq!(metadata["scan"]["read_files"], 0);
     assert_eq!(metadata["results"][0]["path"], "src/cache.rs");
 }

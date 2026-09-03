@@ -66,7 +66,8 @@ func TestWorkspaceRetrievalProviderLifecycle(t *testing.T) {
 			}
 			retrieval, ok := wire["workspace_retrieval"].(workspaceRetrievalWireOptions)
 			if !ok || retrieval.HandlerID == "" || retrieval.Dimension != 4 ||
-				retrieval.DeterministicReranker != nil {
+				retrieval.DeterministicReranker != nil ||
+				retrieval.VectorEngine != WorkspaceVectorEngineA3SMemory {
 				t.Fatalf("retrieval wire options = %#v", wire["workspace_retrieval"])
 			}
 			runtime.mu.Lock()
@@ -127,6 +128,39 @@ func TestWorkspaceRetrievalProviderLifecycle(t *testing.T) {
 	}
 	if err := agent.Close(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceRetrievalVecEngineIsTypedAndWired(t *testing.T) {
+	provider := &fixtureEmbeddingProvider{
+		embed: func(
+			_ context.Context,
+			request EmbeddingBatchRequest,
+		) (EmbeddingBatchResponse, error) {
+			return EmbeddingBatchResponse{Vectors: []EmbeddingVector{{
+				ID: request.Inputs[0].ID, Values: []float32{1, 0, 0, 0},
+			}}}, nil
+		},
+	}
+	runtime := &fakeRuntime{}
+	options := &SessionOptions{
+		WorkspaceRetrieval: NewWorkspaceRetrievalOptions(provider),
+	}
+	options.WorkspaceRetrieval.VectorEngine = WorkspaceVectorEngineA3SVec
+	prepared, callbackID, err := prepareWorkspaceRetrievalOptions(runtime, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.unregisterCallback(callbackID)
+	wire := prepared.(map[string]any)["workspace_retrieval"].(workspaceRetrievalWireOptions)
+	if wire.VectorEngine != WorkspaceVectorEngineA3SVec {
+		t.Fatalf("vector engine wire = %q", wire.VectorEngine)
+	}
+
+	options.WorkspaceRetrieval.VectorEngine = WorkspaceVectorEngine("unsupported")
+	_, invalidCallbackID, err := prepareWorkspaceRetrievalOptions(runtime, options)
+	if err == nil || invalidCallbackID != "" {
+		t.Fatalf("unsupported vector engine = callback %q, error %v", invalidCallbackID, err)
 	}
 }
 

@@ -220,6 +220,7 @@ impl From<WorkspaceRetrievalStatus> for WorkspaceRetrievalStatusObject {
             vector_bytes: status.vector_bytes as f64,
             active_vector_engine: status.active_vector_engine.map(|engine| match engine {
                 WorkspaceVectorEngine::A3sMemory => "a3s_memory".to_owned(),
+                WorkspaceVectorEngine::A3sVec => "a3s_vec".to_owned(),
             }),
             vec_shadow: status.vec_shadow.into(),
             batching: status.batching.into(),
@@ -462,5 +463,14 @@ mod tests {
         assert_eq!(mapped.vec_shadow.phase, "ready");
         assert_eq!(mapped.vec_shadow.record_count, 11.0);
         assert_eq!(mapped.vec_shadow.matching_queries, 3.0);
+    }
+
+    #[test]
+    fn vec_primary_status_maps_to_the_stable_engine_literal() {
+        let mut status = WorkspaceRetrievalStatus::disabled();
+        status.active_vector_engine = Some(WorkspaceVectorEngine::A3sVec);
+
+        let mapped: WorkspaceRetrievalStatusObject = status.into();
+        assert_eq!(mapped.active_vector_engine.as_deref(), Some("a3s_vec"));
     }
 }

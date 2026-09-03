@@ -109,6 +109,41 @@ try {
   await session.closeAsync()
 }
 
+const vecRetrieval = new mod.WorkspaceRetrievalOptions(
+  provider,
+  null,
+  null,
+  mod.WorkspaceVectorEngineOption.A3sVec,
+)
+vecRetrieval.maxRecords = 100
+vecRetrieval.maxBytes = 1024 * 1024
+const vecSession = await agent.sessionAsync(workspace, {
+  workspaceRetrieval: vecRetrieval,
+})
+try {
+  const deadline = Date.now() + 10_000
+  let status = vecSession.workspaceRetrievalStatus()
+  while (status.phase === 'building' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    status = vecSession.workspaceRetrievalStatus()
+  }
+  assert.equal(status.phase, 'ready', JSON.stringify(status))
+  assert.equal(status.activeVectorEngine, 'a3s_vec')
+  assert.ok(status.indexedChunks > 0)
+  assert.equal(status.vecShadow.phase, 'ready')
+  assert.equal(status.vecShadow.recordCount, status.vectorRecords)
+  const semantic = await vecSession.semanticSearch({
+    query: 'cleanup session resources',
+    limit: 3,
+  })
+  assert.equal(semantic.hits[0].chunk.path, 'src/session_cleanup.rs')
+  assert.equal(semantic.status.activeVectorEngine, 'a3s_vec')
+  assert.ok(semantic.status.vecShadow.comparedQueries >= 1)
+  assert.equal(semantic.status.vecShadow.mismatchedQueries, 0)
+} finally {
+  await vecSession.closeAsync()
+}
+
 const lineChunking = new mod.LineWorkspaceChunkingStrategy()
 assert.ok(lineChunking instanceof mod.LineWorkspaceChunkingStrategy)
 const fixedCase = chunkingFixture.cases.find((value) => value.name === 'fixed_window')

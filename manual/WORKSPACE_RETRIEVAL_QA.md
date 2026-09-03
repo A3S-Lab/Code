@@ -98,7 +98,7 @@ also avoids reopening a mutable path to obtain link-count evidence.
 The locked fixture contains nine queries spanning exact terms, identifiers,
 CJK, and paraphrases.
 
-| Metric | Native BM25 | Hybrid | Gate |
+| Metric | A3S Vec FTS/BM25 | Hybrid | Gate |
 | --- | ---: | ---: | --- |
 | Recall@10 | 0.6667 | 1.0000 | Hybrid at least 0.85 and at least +0.15 |
 | Mean reciprocal rank | 0.6667 | 1.0000 | Improve without identifier regression |
@@ -108,7 +108,7 @@ CJK, and paraphrases.
 
 The gate is implemented by
 `locked_hybrid_fixture_meets_quality_and_identifier_gates`; it exercises the
-real catalog, native BM25, semantic partition, RRF, diversity, and current-file
+real catalog, A3S Vec FTS/BM25, semantic partition, RRF, diversity, and current-file
 verification paths.
 
 ## Performance results
@@ -190,6 +190,18 @@ runs above. Vec `accounted_bytes` is a deterministic engine estimate, not an
 RSS or temporary-disk claim. The complete authority, mapping, failure, and
 promotion contract is in
 [Workspace Retrieval A3S Vec Migration](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+
+### VEC-PRIMARY1 gated authority qualification
+
+The same Code candidate also supports an explicit, typed `A3sVec` serving
+authority for developer qualification. `A3sMemory` remains the default and is
+kept as the differential oracle when Vec is selected; no automatic fallback is
+performed. On the same Windows x86-64 host and schema-v4 workload, the
+Vec-primary run reported exact/hybrid/deterministic p95 values of
+7.4195/47.4571/48.7821 ms, 25,000 records per arm, 120/120 matching queries,
+zero shadow failures, and zero records/bytes after close. These numbers are
+directional local evidence only: they do not close the Intel macOS 12, RSS,
+crash-recovery, or P7 duplicate-backend removal gates.
 
 ### CODE-R2 deterministic rerank qualification
 

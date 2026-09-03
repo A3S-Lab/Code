@@ -25,7 +25,10 @@ const (
 
 type WorkspaceVectorEngine string
 
-const WorkspaceVectorEngineA3SMemory WorkspaceVectorEngine = "a3s_memory"
+const (
+	WorkspaceVectorEngineA3SMemory WorkspaceVectorEngine = "a3s_memory"
+	WorkspaceVectorEngineA3SVec    WorkspaceVectorEngine = "a3s_vec"
+)
 
 type WorkspaceVecShadowPhase string
 

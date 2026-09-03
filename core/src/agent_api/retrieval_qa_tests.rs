@@ -6,7 +6,7 @@ use crate::embedding::{
 use crate::store::{MemorySessionStore, SessionStore};
 use crate::workspace::{
     WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalStatus,
-    WorkspaceSemanticSearchRequest,
+    WorkspaceSemanticSearchRequest, WorkspaceVectorEngine,
 };
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -275,19 +275,106 @@ async fn repeated_source_generations_replace_vectors_without_accumulation() {
     assert_eq!(closed.vector_bytes, 0);
 }
 
+#[tokio::test]
+#[ignore = "bounded Vec-primary workspace retrieval soak; run in the portability workflow"]
+async fn repeated_source_generations_replace_vec_primary_without_accumulation() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
+    const GENERATIONS: usize = 64;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let source = workspace.path().join("generation.rs");
+    write_generation(&source, 0);
+    let provider = Arc::new(RecordingProvider::new());
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+    let session = retrieval_session_with_engine(
+        &agent,
+        workspace.path(),
+        Arc::clone(&provider),
+        WorkspaceVectorEngine::A3sVec,
+    )
+    .await;
+    wait_for_ready_files(&session, 1).await;
+    let initial = session.workspace_retrieval_status();
+    assert_eq!(
+        initial.active_vector_engine,
+        Some(WorkspaceVectorEngine::A3sVec)
+    );
+    assert_eq!(initial.vector_records, 1);
+    assert_eq!(initial.vec_shadow.record_count, 1);
+    let stable_vector_bytes = initial.vector_bytes;
+    let mut source_revision = initial.source_revision;
+    let mut vector_revision = initial.vector_revision;
+
+    for generation in 1..=GENERATIONS {
+        write_generation(&source, generation);
+        let ready = wait_for_new_ready_generation(&session, source_revision, vector_revision).await;
+        assert_eq!(ready.eligible_files, 1);
+        assert_eq!(ready.indexed_files, 1);
+        assert_eq!(ready.indexed_chunks, 1);
+        assert_eq!(ready.failed_files, 0);
+        assert_eq!(ready.vector_records, 1);
+        assert_eq!(ready.vector_bytes, stable_vector_bytes);
+        assert_eq!(ready.vec_shadow.record_count, 1);
+        assert_eq!(ready.batching.document_inputs, 1);
+        assert_eq!(ready.batching.document_provider_requests, 1);
+        assert_eq!(ready.batching.batch_limit_lower_bound, 1);
+
+        let search = session
+            .semantic_search(WorkspaceSemanticSearchRequest::new("current generation"))
+            .await
+            .unwrap();
+        assert_eq!(search.hits.len(), 1);
+        assert!(search.hits[0]
+            .chunk
+            .text
+            .contains(&format!("GENERATION_{generation:03}")));
+        assert_eq!(
+            search.status.active_vector_engine,
+            Some(WorkspaceVectorEngine::A3sVec)
+        );
+        assert_eq!(search.status.vec_shadow.mismatched_queries, 0);
+        source_revision = ready.source_revision;
+        vector_revision = ready.vector_revision;
+    }
+
+    assert_eq!(provider.document_texts().len(), GENERATIONS + 1);
+    let before_close = session.workspace_retrieval_status();
+    assert_eq!(before_close.vec_shadow.mismatched_queries, 0);
+    assert_eq!(before_close.vec_shadow.failed_queries, 0);
+    assert_eq!(before_close.vec_shadow.failed_mutations, 0);
+    session.close().await;
+    let closed = session.workspace_retrieval_status();
+    assert_eq!(closed.phase, WorkspaceRetrievalPhase::Closed);
+    assert_eq!(closed.vector_records, 0);
+    assert_eq!(closed.vector_bytes, 0);
+    assert_eq!(closed.vec_shadow.record_count, 0);
+    assert_eq!(closed.vec_shadow.accounted_bytes, 0);
+}
+
 async fn retrieval_session(
     agent: &Agent,
     workspace: &std::path::Path,
     provider: Arc<RecordingProvider>,
 ) -> AgentSession {
+    retrieval_session_with_engine(agent, workspace, provider, WorkspaceVectorEngine::A3sMemory)
+        .await
+}
+
+async fn retrieval_session_with_engine(
+    agent: &Agent,
+    workspace: &std::path::Path,
+    provider: Arc<RecordingProvider>,
+    vector_engine: WorkspaceVectorEngine,
+) -> AgentSession {
     let provider: Arc<dyn EmbeddingProvider> = provider;
     agent
         .session_async(
             workspace.to_string_lossy(),
-            Some(
-                SessionOptions::new()
-                    .with_workspace_retrieval(WorkspaceRetrievalOptions::new(provider)),
-            ),
+            Some(SessionOptions::new().with_workspace_retrieval(
+                WorkspaceRetrievalOptions::new(provider).with_vector_engine(vector_engine),
+            )),
         )
         .await
         .unwrap()

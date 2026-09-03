@@ -39,6 +39,7 @@ const MAX_VECTOR_BYTES: usize = 128 * 1024 * 1024;
 const MAX_COMBINED_BYTES: usize = 256 * 1024 * 1024;
 const CHUNKS_PER_FILE: usize = 128;
 const LINES_PER_CHUNK: usize = 80;
+const VECTOR_ENGINE_ENV: &str = "A3S_WORKSPACE_VECTOR_ENGINE";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -47,14 +48,17 @@ async fn main() -> Result<()> {
     }
 
     let exact = benchmark_exact_vector_search().await?;
+    let vector_engine = configured_vector_engine()?;
     let hybrid_rrf = benchmark_hybrid_search(
         WorkspaceRerankOptions::default(),
         "workspace-retrieval-qualification-rrf",
+        vector_engine,
     )
     .await?;
     let hybrid = benchmark_hybrid_search(
         WorkspaceRerankOptions::deterministic(),
         "workspace-retrieval-qualification-rerank",
+        vector_engine,
     )
     .await?;
     let exact_passed = exact.latency.p95_ms <= EXACT_P95_BUDGET_MS;
@@ -73,6 +77,7 @@ async fn main() -> Result<()> {
         "schemaVersion": 4,
         "profile": "workspace-retrieval-v3",
         "build": "release",
+        "vectorEngine": vector_engine,
         "machine": {
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
@@ -115,6 +120,7 @@ async fn main() -> Result<()> {
             "passed": rerank_passed,
         },
         "hybrid": {
+            "vectorEngine": hybrid.vector_engine,
             "p50Ms": hybrid.latency.p50_ms,
             "p95Ms": hybrid.latency.p95_ms,
             "maxMs": hybrid.latency.max_ms,
@@ -204,6 +210,7 @@ async fn benchmark_exact_vector_search() -> Result<ExactMeasurement> {
 
 fn hybrid_json(measurement: &HybridMeasurement, passed: bool) -> serde_json::Value {
     json!({
+        "vectorEngine": measurement.vector_engine,
         "p50Ms": measurement.latency.p50_ms,
         "p95Ms": measurement.latency.p95_ms,
         "maxMs": measurement.latency.max_ms,
@@ -245,6 +252,7 @@ fn hybrid_json(measurement: &HybridMeasurement, passed: bool) -> serde_json::Val
 async fn benchmark_hybrid_search(
     rerank: WorkspaceRerankOptions,
     session_id: &str,
+    vector_engine: WorkspaceVectorEngine,
 ) -> Result<HybridMeasurement> {
     let workspace = tempfile::tempdir()?;
     let source_bytes = write_workspace(workspace.path())?;
@@ -256,6 +264,7 @@ async fn benchmark_hybrid_search(
             max_bytes: MAX_VECTOR_BYTES,
             shutdown_timeout: Duration::from_secs(5),
         })
+        .with_vector_engine(vector_engine)
         .with_rerank_options(rerank);
     let config = benchmark_code_config()?;
     let agent = Agent::from_config(config).await?;
@@ -344,7 +353,7 @@ async fn benchmark_hybrid_search(
     }
     let migration = session.workspace_retrieval_status();
     let expected_queries = (WARMUP_SAMPLES + MEASURED_SAMPLES) as u64;
-    if migration.active_vector_engine != Some(WorkspaceVectorEngine::A3sMemory)
+    if migration.active_vector_engine != Some(vector_engine)
         || migration.vec_shadow.phase != WorkspaceVecShadowPhase::Ready
         || migration.vec_shadow.record_count != RECORD_COUNT
         || migration.vec_shadow.compared_queries != expected_queries
@@ -384,6 +393,7 @@ async fn benchmark_hybrid_search(
         time_to_first_ready_ms: status.batching.time_to_first_ready_ms,
         non_text_inputs: status.batching.non_text_inputs,
         query_embedding_inputs,
+        vector_engine,
         active_vector_engine: migration.active_vector_engine,
         vec_shadow: migration.vec_shadow,
         max_input_candidates: rerank_observation.input_candidates.load(Ordering::Acquire),
@@ -510,6 +520,19 @@ fn elapsed_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
 }
 
+fn configured_vector_engine() -> Result<WorkspaceVectorEngine> {
+    match std::env::var(VECTOR_ENGINE_ENV).as_deref() {
+        Ok("a3s_memory") | Err(std::env::VarError::NotPresent) => {
+            Ok(WorkspaceVectorEngine::A3sMemory)
+        }
+        Ok("a3s_vec") => Ok(WorkspaceVectorEngine::A3sVec),
+        Ok(value) => bail!("{VECTOR_ENGINE_ENV} must be 'a3s_memory' or 'a3s_vec', got '{value}'"),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("{VECTOR_ENGINE_ENV} must contain valid UTF-8")
+        }
+    }
+}
+
 struct BenchmarkProvider {
     descriptor: EmbeddingProviderDescriptor,
     document_inputs: AtomicUsize,
@@ -609,6 +632,7 @@ struct HybridMeasurement {
     time_to_first_ready_ms: Option<u64>,
     non_text_inputs: usize,
     query_embedding_inputs: usize,
+    vector_engine: WorkspaceVectorEngine,
     active_vector_engine: Option<WorkspaceVectorEngine>,
     vec_shadow: WorkspaceVecShadowStatus,
     max_input_candidates: usize,
@@ -631,7 +655,7 @@ impl HybridMeasurement {
 
     fn migration_passed(&self) -> bool {
         let expected_queries = (WARMUP_SAMPLES + MEASURED_SAMPLES) as u64;
-        self.active_vector_engine == Some(WorkspaceVectorEngine::A3sMemory)
+        self.active_vector_engine == Some(self.vector_engine)
             && self.vec_shadow.phase == WorkspaceVecShadowPhase::Ready
             && self.vec_shadow.record_count == RECORD_COUNT
             && self.vec_shadow.successful_mutations > 0

@@ -1,5 +1,14 @@
 use super::*;
 
+/// Typed authority selection for the gated workspace retrieval preview.
+#[napi(string_enum = "snake_case")]
+pub enum WorkspaceVectorEngineOption {
+    #[napi(value = "a3s_memory")]
+    A3sMemory,
+    #[napi(value = "a3s_vec")]
+    A3sVec,
+}
+
 #[napi(object)]
 #[derive(Clone, Default)]
 pub struct WorkspaceRetrievalOptionsObject {
@@ -8,6 +17,8 @@ pub struct WorkspaceRetrievalOptionsObject {
     pub max_records: Option<f64>,
     pub max_bytes: Option<f64>,
     pub shutdown_timeout_ms: Option<f64>,
+    /// Typed vector authority; omission preserves the Memory compatibility default.
+    pub vector_engine: Option<WorkspaceVectorEngineOption>,
     /// Opaque validated reranker snapshot; empty preserves RRF-only.
     pub reranker_instance_id: String,
     /// Opaque validated chunking snapshot; empty preserves line chunking.
@@ -48,6 +59,7 @@ pub struct WorkspaceRetrievalOptions {
     max_records: f64,
     max_bytes: f64,
     shutdown_timeout_ms: f64,
+    vector_engine: WorkspaceVectorEngineOption,
     reranker_instance_id: String,
     _reranker: Option<Arc<NodeDeterministicRerankerConfiguration>>,
     chunking_strategy_instance_id: String,
@@ -59,12 +71,13 @@ pub struct WorkspaceRetrievalOptions {
 impl WorkspaceRetrievalOptions {
     #[napi(
         constructor,
-        ts_args_type = "provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null, chunkingStrategy?: LineWorkspaceChunkingStrategy | FixedWindowWorkspaceChunkingStrategy | RecursiveWorkspaceChunkingStrategy | null"
+        ts_args_type = "provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null, chunkingStrategy?: LineWorkspaceChunkingStrategy | FixedWindowWorkspaceChunkingStrategy | RecursiveWorkspaceChunkingStrategy | null, vectorEngine?: WorkspaceVectorEngineOption | null"
     )]
     pub fn new(
         provider: napi::bindgen_prelude::ClassInstance<CallbackEmbeddingProvider>,
         reranker: Option<napi::bindgen_prelude::ClassInstance<DeterministicWorkspaceReranker>>,
         chunking_strategy: Option<WorkspaceChunkingStrategyInput>,
+        vector_engine: Option<WorkspaceVectorEngineOption>,
     ) -> napi::Result<Self> {
         let (reranker_instance_id, reranker) = match reranker.as_ref() {
             Some(reranker) => {
@@ -85,6 +98,7 @@ impl WorkspaceRetrievalOptions {
             max_records: 100_000.0,
             max_bytes: (128 * 1024 * 1024) as f64,
             shutdown_timeout_ms: 5_000.0,
+            vector_engine: vector_engine.unwrap_or(WorkspaceVectorEngineOption::A3sMemory),
             reranker_instance_id,
             _reranker: reranker,
             chunking_strategy_instance_id,
@@ -127,6 +141,16 @@ impl WorkspaceRetrievalOptions {
     #[napi(setter)]
     pub fn set_shutdown_timeout_ms(&mut self, value: f64) {
         self.shutdown_timeout_ms = value;
+    }
+
+    #[napi(getter)]
+    pub fn vector_engine(&self) -> WorkspaceVectorEngineOption {
+        self.vector_engine
+    }
+
+    #[napi(setter)]
+    pub fn set_vector_engine(&mut self, value: WorkspaceVectorEngineOption) {
+        self.vector_engine = value;
     }
 
     /// Return the opaque reranker snapshot used by structural conversion.
@@ -185,6 +209,13 @@ pub(crate) fn js_workspace_retrieval_to_rust(
         max_records,
         max_bytes,
         shutdown_timeout: Duration::from_millis(shutdown_timeout_ms as u64),
+    });
+    retrieval = retrieval.with_vector_engine(match options
+        .vector_engine
+        .unwrap_or(WorkspaceVectorEngineOption::A3sMemory)
+    {
+        WorkspaceVectorEngineOption::A3sMemory => a3s_code_core::WorkspaceVectorEngine::A3sMemory,
+        WorkspaceVectorEngineOption::A3sVec => a3s_code_core::WorkspaceVectorEngine::A3sVec,
     });
     if let Some(reranker) = reranker {
         retrieval = retrieval.with_rerank_options(reranker);
