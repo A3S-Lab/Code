@@ -56,6 +56,7 @@ enabled its required resource.
 | `filesystem_agent_server` | `serveAgentDir` / `serve_agent_dir` / `ServeAgentDir` | Daemon lifecycle and schedule policy |
 | `opentelemetry` | Core telemetry configuration and trace inspection | Collector endpoint and export policy |
 | `conversation` | `send`, `run`, `stream`, attachments, history, cancel | User identity and interaction policy |
+| `run_control` | `steer`, `interrupt`, `runControlSnapshot` / `run_control_snapshot` | Host approval, run identity, and lifecycle policy |
 | `workspace_tools` | File, shell, glob, grep, and Git helpers | Workspace boundary and authorization |
 | `run_observability` | Run snapshots, pages, active tools, child tasks, traces | Evidence retention policy |
 | `governance` | Confirmations, permissions, hooks, budgets, verification | Host authorization and trust decisions |

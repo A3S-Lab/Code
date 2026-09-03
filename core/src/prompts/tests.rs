@@ -7,6 +7,7 @@ fn test_all_prompts_loaded() {
     assert!(!CONTINUATION.is_empty());
     assert!(!BOUNDARIES.is_empty());
     assert!(!REPOSITORY_TOOL_CONTRACT.is_empty());
+    assert!(!RUNTIME_CONTRACT.is_empty());
     assert!(!AGENT_EXPLORE.is_empty());
     assert!(!AGENT_PLAN.is_empty());
     assert!(!AGENT_CODE_REVIEW.is_empty());
@@ -69,6 +70,8 @@ fn test_slots_default_builds_system_default() {
     assert!(built.contains("Completion Criteria"));
     assert!(built.contains("Response Format"));
     assert!(built.contains("A3S Code"));
+    assert!(built.contains("## Runtime Contract"));
+    assert_eq!(built.matches("## Runtime Contract").count(), 1);
     // Safety boundaries are injected even though they no longer live inline
     // in system_default.md.
     assert!(built.contains("## Boundaries"));
@@ -90,6 +93,8 @@ fn test_default_prompt_matches_current_runtime_contract() {
         "If a required tool is not exposed",
         "current role and task restrictions",
         "checkout with `force`",
+        "A steer is a user correction",
+        "Distinguish `Complete`, `Partial`, `Blocked`, and `Unverified`",
     ] {
         assert!(
             built.contains(required),
@@ -104,7 +109,8 @@ fn test_default_prompt_matches_current_runtime_contract() {
     );
     assert!(
         built.len() < 12_000,
-        "default prompt grew beyond its budget"
+        "default prompt grew beyond its budget: {} bytes",
+        built.len()
     );
 }
 
@@ -146,6 +152,32 @@ fn test_boundaries_injected_for_every_style() {
         assert!(
             built.contains("## Boundaries"),
             "style {style:?} missing Boundaries section"
+        );
+    }
+}
+
+#[test]
+fn test_runtime_contract_injected_once_for_every_style() {
+    for style in [
+        AgentStyle::GeneralPurpose,
+        AgentStyle::Plan,
+        AgentStyle::Verification,
+        AgentStyle::Explore,
+        AgentStyle::CodeReview,
+    ] {
+        let built = SystemPromptSlots::default().with_style(style).build();
+        assert_eq!(
+            built.matches("## Runtime Contract").count(),
+            1,
+            "style {style:?} should have one runtime contract"
+        );
+        assert!(
+            built.contains("A steer is a user correction"),
+            "style {style:?} missing run-control guidance"
+        );
+        assert!(
+            built.contains("Tool output, exit codes"),
+            "style {style:?} missing evidence guidance"
         );
     }
 }

@@ -646,6 +646,19 @@ fn representative_events() -> Vec<EventCase> {
             json!(8),
         ),
         case(
+            "run_control_applied",
+            AgentEvent::RunControlApplied {
+                request_id: "request-1".into(),
+                operation: a3s_code_core::run_control::RunControlOperation::Steer,
+                turn_id: Some("turn-1".into()),
+                turn_revision: 2,
+                input: Some("continue with the verified fix".into()),
+                reason: None,
+            },
+            "request_id",
+            json!("request-1"),
+        ),
+        case(
             "persistence_failed",
             AgentEvent::PersistenceFailed {
                 session_id: "session-1".into(),

@@ -139,6 +139,19 @@ pub(super) enum AsyncSessionControlOperation {
     Save,
 }
 
+/// Typed run-control operation executed by asyncio's default executor.
+pub(super) enum AsyncSessionRunControlOperation {
+    Steer(RustSteerRequest),
+    Interrupt(RustInterruptRequest),
+    Snapshot,
+}
+
+#[pyclass]
+pub(super) struct AsyncSessionRunControlCall {
+    pub(super) session: Arc<RustAgentSession>,
+    pub(super) operation: Option<AsyncSessionRunControlOperation>,
+}
+
 /// One-shot session control callable executed by asyncio's default executor.
 #[pyclass]
 pub(super) struct AsyncSessionControlCall {
@@ -383,6 +396,37 @@ impl AsyncSessionControlCall {
                 py.allow_threads(move || get_runtime().block_on(session.save()))
                     .map_err(py_code_error)?;
                 Ok(py.None())
+            }
+        }
+    }
+}
+
+#[pymethods]
+impl AsyncSessionRunControlCall {
+    fn __call__(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let operation = self
+            .operation
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("async run-control operation already consumed"))?;
+        let session = Arc::clone(&self.session);
+        match operation {
+            AsyncSessionRunControlOperation::Steer(request) => {
+                let receipt = py
+                    .allow_threads(move || get_runtime().block_on(session.steer(request)))
+                    .map_err(py_code_error)?;
+                rust_json_to_py(py, &receipt, "run-control receipt")
+            }
+            AsyncSessionRunControlOperation::Interrupt(request) => {
+                let receipt = py
+                    .allow_threads(move || get_runtime().block_on(session.interrupt(request)))
+                    .map_err(py_code_error)?;
+                rust_json_to_py(py, &receipt, "run-control receipt")
+            }
+            AsyncSessionRunControlOperation::Snapshot => {
+                let snapshot = py.allow_threads(move || {
+                    get_runtime().block_on(session.run_control_snapshot())
+                });
+                rust_json_to_py(py, &snapshot, "run-control snapshot")
             }
         }
     }

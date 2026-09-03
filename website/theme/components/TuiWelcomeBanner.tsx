@@ -72,7 +72,7 @@ export function TuiWelcomeBanner({
         <TuiWordmark />
       </div>
       <p className="a3s-tui-meta">
-        <span>a3s-code v8.1.0</span>
+        <span>a3s-code v8.2.0</span>
         <i>·</i>
         <span>openai/gpt-5</span>
         <i>·</i>

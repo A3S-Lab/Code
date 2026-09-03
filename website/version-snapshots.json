@@ -1,6 +1,13 @@
 {
-  "current": "v8.1.0",
+  "current": "v8.2.0",
   "archives": [
+    {
+      "version": "v8.1.0",
+      "sourceTag": "v8.1.0",
+      "sourceTree": "d9c2050b3ca60c70c1146620d24da82b4907191a",
+      "files": 128,
+      "sha256": "e990a59aa5f912887bcaf64a1cb4b428e1b9ee8b098dd642bac1be38f1a20057"
+    },
     {
       "version": "v8.0.0",
       "sourceTag": "v8.0.0",

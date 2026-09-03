@@ -53,6 +53,7 @@ export type KnownAgentEventTypeV1 =
   | 'goal_progress'
   | 'goal_achieved'
   | 'context_compacted'
+  | 'run_control_applied'
   | 'persistence_failed'
   | 'budget_threshold_hit'
   | 'passivation_requested'

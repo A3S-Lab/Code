@@ -1,5 +1,11 @@
 use super::*;
 
+fn optional_u64(value: Option<f64>, field_name: &str) -> napi::Result<Option<u64>> {
+    value
+        .map(|value| js_optional_usize(Some(value), field_name, 0).map(|value| value as u64))
+        .transpose()
+}
+
 /// Workspace-bound session. All LLM and tool operations happen here.
 #[napi]
 pub struct Session {
@@ -558,6 +564,80 @@ impl Session {
             .spawn(async move { session.cancel_run(&run_id).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
+    }
+
+    /// Append a user direction to the active run at its next safe point.
+    ///
+    /// The request is idempotent by `requestId` and can be guarded by the
+    /// turn/revision returned from `runControlSnapshot()`. It never starts a
+    /// second run or mutates the transcript outside the execution loop.
+    #[napi]
+    pub async fn steer(
+        &self,
+        input: String,
+        options: Option<SteerOptions>,
+    ) -> napi::Result<serde_json::Value> {
+        let mut request = RustSteerRequest::new(input);
+        if let Some(options) = options {
+            request.request_id = options.request_id;
+            request.run_id = options.run_id;
+            request.expected_turn_id = options.expected_turn_id;
+            request.expected_turn_revision = optional_u64(
+                options.expected_turn_revision,
+                "expectedTurnRevision",
+            )?;
+            request.deadline_ms = optional_u64(options.deadline_ms, "deadlineMs")?;
+        }
+        let session = self.inner.clone();
+        let receipt = get_runtime()
+            .spawn(async move { session.steer(request).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(node_code_error)?;
+        serde_json::to_value(receipt)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Cooperatively interrupt the active run after the current provider/tool
+    /// boundary. `force` is advisory and never bypasses cleanup or approvals.
+    #[napi]
+    pub async fn interrupt(
+        &self,
+        options: Option<InterruptOptions>,
+    ) -> napi::Result<serde_json::Value> {
+        let options = options.unwrap_or_default();
+        let mut request = RustInterruptRequest::new();
+        request.reason = options.reason;
+        request.force = options.force.unwrap_or(false);
+        request.request_id = options.request_id;
+        request.run_id = options.run_id;
+        request.expected_turn_id = options.expected_turn_id;
+        request.expected_turn_revision = optional_u64(
+            options.expected_turn_revision,
+            "expectedTurnRevision",
+        )?;
+        request.deadline_ms = optional_u64(options.deadline_ms, "deadlineMs")?;
+        let session = self.inner.clone();
+        let receipt = get_runtime()
+            .spawn(async move { session.interrupt(request).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(node_code_error)?;
+        serde_json::to_value(receipt)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return the active run-control snapshot, or `null` when the session is
+    /// idle. The snapshot is safe to use as an optimistic-concurrency token.
+    #[napi(js_name = "runControlSnapshot")]
+    pub async fn run_control_snapshot(&self) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let snapshot = get_runtime()
+            .spawn(async move { session.run_control_snapshot().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(snapshot)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
     // ========================================================================

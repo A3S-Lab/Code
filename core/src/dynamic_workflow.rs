@@ -192,7 +192,10 @@ impl DynamicWorkflowRuntime {
 
         let result = self
             .invoker
-            .invoke(context.nested_tool_invocation(PROGRAM_TOOL, args), context)
+            .invoke(
+                crate::tools::ToolInvocation::runtime_internal(PROGRAM_TOOL, args),
+                context,
+            )
             .await;
         if result.exit_code != 0 {
             return Err(a3s_flow::FlowError::Runtime(result.output));

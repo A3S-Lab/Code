@@ -18,6 +18,53 @@ impl<'a> RunControl<'a> {
         RunControlState::from_session(self.session).cancel().await
     }
 
+    pub(super) async fn steer(
+        &self,
+        request: crate::run_control::SteerRequest,
+    ) -> crate::error::Result<crate::run_control::RunControlReceipt> {
+        let state = RunControlState::from_session(self.session);
+        let Some(control) = state.current_run_control().await else {
+            return Err(crate::error::CodeError::RunControl(
+                crate::run_control::RunControlError::NoActiveRun,
+            ));
+        };
+        let run_id = control.snapshot_run_id();
+        let request = request.into_protocol(self.session.session_id(), &run_id);
+        control
+            .submit_with_hooks(request, self.session.config.host_env.now_ms())
+            .await
+            .map_err(crate::error::CodeError::from)
+    }
+
+    pub(super) async fn interrupt(
+        &self,
+        request: crate::run_control::InterruptRequest,
+    ) -> crate::error::Result<crate::run_control::RunControlReceipt> {
+        let state = RunControlState::from_session(self.session);
+        let Some(control) = state.current_run_control().await else {
+            return Err(crate::error::CodeError::RunControl(
+                crate::run_control::RunControlError::NoActiveRun,
+            ));
+        };
+        let run_id = control.snapshot_run_id();
+        let request = request.into_protocol(self.session.session_id(), &run_id);
+        control
+            .submit_with_hooks(request, self.session.config.host_env.now_ms())
+            .await
+            .map_err(crate::error::CodeError::from)
+    }
+
+    pub(super) async fn run_control_snapshot(
+        &self,
+    ) -> Option<crate::run_control::RunControlSnapshot> {
+        let control = RunControlState::from_session(self.session)
+            .current_run_control()
+            .await?;
+        Some(control.snapshot().await)
+    }
+}
+
+impl<'a> RunControl<'a> {
     pub(super) async fn cancel_run(&self, run_id: &str) -> bool {
         RunControlState::from_session(self.session)
             .cancel_run(run_id)

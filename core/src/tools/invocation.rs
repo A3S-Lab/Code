@@ -26,6 +26,14 @@ pub(crate) enum InvocationOrigin {
     Agent,
     /// A tool call emitted by an orchestrator such as `batch` or `program`.
     Nested,
+    /// A private implementation step owned by a built-in runtime.
+    ///
+    /// The enclosing public tool has already crossed the permission boundary,
+    /// so this origin skips a duplicate permission/HITL decision for the
+    /// implementation tool itself. Pre-tool hooks, request evidence, budgets,
+    /// cancellation, recursion guards, and every tool called by that
+    /// implementation remain governed normally.
+    RuntimeInternal,
     /// An explicit control-plane call made through `AgentSession::tool` or a
     /// typed direct-tool helper.
     HostDirect(HostDirectPolicy),
@@ -41,7 +49,10 @@ pub(crate) enum InvocationOrigin {
 
 impl InvocationOrigin {
     pub(crate) fn is_nested(self) -> bool {
-        matches!(self, Self::Nested | Self::HostDirectNested(_))
+        matches!(
+            self,
+            Self::Nested | Self::RuntimeInternal | Self::HostDirectNested(_)
+        )
     }
 }
 
@@ -78,6 +89,17 @@ impl ToolInvocation {
             name,
             args,
             origin: InvocationOrigin::Nested,
+            recent_tools: Vec::new(),
+        }
+    }
+
+    pub(crate) fn runtime_internal(name: impl Into<String>, args: Value) -> Self {
+        let name = name.into();
+        Self {
+            id: format!("runtime-internal-{name}-{}", uuid::Uuid::new_v4()),
+            name,
+            args,
+            origin: InvocationOrigin::RuntimeInternal,
             recent_tools: Vec::new(),
         }
     }

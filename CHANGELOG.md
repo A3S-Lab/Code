@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.2.0] - 2026-09-04
+
+### Added
+
+- Added typed safe-point run control. Rust, Node.js, Python, and Go hosts can
+  steer an active run or interrupt it with idempotent request receipts,
+  optimistic turn guards, deadlines, durable `run_control_applied` evidence,
+  and an active-run snapshot.
+- Added gating `pre_run_control` and observational `post_run_control` hooks.
+  Accepted, applied, settled, and rejected transitions retain one request and
+  sequence identity across retries and SDK boundaries.
+- Added live-provider qualification for model-selected tools, Hook rewrites,
+  long-horizon coding, built-in and automatic SubAgents, Skills, PTC,
+  replayable dynamic workflows, and live steer/interrupt behavior. The release
+  matrix exercises every model declared by the repository test ACL.
+
+### Changed
+
+- Reworked the default system prompt into a compact operating loop plus a
+  shared runtime contract. Runtime tool schemas, host policy, sandbox,
+  approvals, budgets, cancellation, and newer user steering remain
+  authoritative; completion claims require current evidence and distinguish
+  complete, partial, blocked, and unverified outcomes.
+- Added `run_control` to the product capability inventory so all four SDKs can
+  discover the new control-plane surface without version parsing.
+
+### Fixed
+
+- Prevented a model-authorized `dynamic_workflow` from requiring a second
+  permission grant for its private `program` implementation step. Hooks,
+  request evidence, budgets, cancellation, recursion checks, and every actual
+  tool invoked by the script remain governed.
+- Made QuickJS `ctx.readFile()` return the selected file text rather than the
+  model-facing line-numbered rendering. `ctx.read()` deliberately retains its
+  anchors and continuation footer for callers that need raw Tool evidence.
+- Kept the first terminal Run state monotonic so cleanup or cancellation races
+  cannot replace an already recorded completion or failure.
+
 ## [8.1.0] - 2026-09-02
 
 ### Added

@@ -155,6 +155,121 @@ func TestSessionHostSelectedRunSpawnsUseStableOperations(t *testing.T) {
 	}
 }
 
+func TestRunControlUsesStableOperations(t *testing.T) {
+	requestID := "request-1"
+	runID := "run-1"
+	turnID := "turn-1"
+	revision := uint64(3)
+	deadline := uint64(5000)
+	runtime := &fakeRuntime{
+		request: func(
+			_ context.Context,
+			operation string,
+			params map[string]any,
+		) (any, error) {
+			switch operation {
+			case "session_steer":
+				if params["input"] != "prioritize tests" ||
+					params["request_id"] != requestID ||
+					params["run_id"] != runID ||
+					params["expected_turn_id"] != turnID ||
+					params["expected_turn_revision"] != revision ||
+					params["deadline_ms"] != deadline {
+					t.Fatalf("unexpected steer params: %#v", params)
+				}
+				return RunControlReceipt{
+					RequestID: requestID,
+					SessionID: "session-id",
+					RunID:     runID,
+					Operation: "steer",
+					State:     "accepted",
+				}, nil
+			case "session_run_control_snapshot":
+				return &RunControlSnapshot{
+					SessionID:    "session-id",
+					RunID:        runID,
+					Active:       true,
+					TurnID:       &turnID,
+					TurnRevision: revision,
+				}, nil
+			case "session_interrupt":
+				if params["reason"] != "user stopped" ||
+					params["force"] != true ||
+					params["request_id"] != "request-2" ||
+					params["run_id"] != runID ||
+					params["expected_turn_id"] != turnID ||
+					params["expected_turn_revision"] != revision ||
+					params["deadline_ms"] != deadline {
+					t.Fatalf("unexpected interrupt params: %#v", params)
+				}
+				return RunControlReceipt{
+					RequestID: "request-2",
+					SessionID: "session-id",
+					RunID:     runID,
+					Operation: "interrupt",
+					State:     "accepted",
+				}, nil
+			default:
+				t.Fatalf("unexpected operation %q", operation)
+				return nil, nil
+			}
+		},
+	}
+	session := testSession(runtime)
+	ctx := context.Background()
+
+	steerReceipt, err := session.Steer(ctx, "prioritize tests", &SteerOptions{
+		RequestID:            &requestID,
+		RunID:                &runID,
+		ExpectedTurnID:       &turnID,
+		ExpectedTurnRevision: &revision,
+		DeadlineMS:           &deadline,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steerReceipt.Operation != "steer" || steerReceipt.State != "accepted" {
+		t.Fatalf("steer receipt = %#v", steerReceipt)
+	}
+
+	snapshot, err := session.RunControlSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot == nil || !snapshot.Active || snapshot.RunID != runID || snapshot.TurnID == nil || *snapshot.TurnID != turnID {
+		t.Fatalf("run-control snapshot = %#v", snapshot)
+	}
+
+	interruptRequestID := "request-2"
+	reason := "user stopped"
+	interruptReceipt, err := session.Interrupt(ctx, &InterruptOptions{
+		Reason:               &reason,
+		Force:                true,
+		RequestID:            &interruptRequestID,
+		RunID:                &runID,
+		ExpectedTurnID:       &turnID,
+		ExpectedTurnRevision: &revision,
+		DeadlineMS:           &deadline,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if interruptReceipt.Operation != "interrupt" || interruptReceipt.State != "accepted" {
+		t.Fatalf("interrupt receipt = %#v", interruptReceipt)
+	}
+
+	want := []string{"session_steer", "session_run_control_snapshot", "session_interrupt"}
+	got := runtime.operations()
+	if len(got) != len(want) {
+		t.Fatalf("operations = %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("operations = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestDirectToolConveniencesUseStableOperations(t *testing.T) {
 	runtime := &fakeRuntime{
 		request: func(

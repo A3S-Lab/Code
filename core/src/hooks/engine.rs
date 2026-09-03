@@ -439,6 +439,7 @@ impl HookEngine {
                 | HookEvent::PreCompact(_)
                 | HookEvent::PrePrompt(_)
                 | HookEvent::PrePlanning(_)
+                | HookEvent::PreRunControl(_)
         )
     }
 

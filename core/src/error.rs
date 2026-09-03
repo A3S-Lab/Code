@@ -115,6 +115,11 @@ pub enum CodeError {
     #[error("Run '{run_id}' is already bound to different immutable input")]
     RunIdentityConflict { run_id: String },
 
+    /// A typed steer/interrupt request could not be accepted by the active
+    /// run-control inbox.
+    #[error("Run control error: {0}")]
+    RunControl(#[from] crate::run_control::RunControlError),
+
     /// A host-supplied [`BudgetGuard`](crate::budget::BudgetGuard) denied
     /// the operation. The session is not closed — callers can re-try
     /// after the host has re-allocated budget.
@@ -178,6 +183,7 @@ impl CodeError {
             Self::TaskAdmissionCancelled { .. } => "TASK_ADMISSION_CANCELLED",
             Self::TaskSchedulerClosed => "TASK_SCHEDULER_CLOSED",
             Self::RunIdentityConflict { .. } => "RUN_IDENTITY_CONFLICT",
+            Self::RunControl(error) => error.code(),
             Self::BudgetExhausted { .. } => "BUDGET_EXHAUSTED",
             Self::Security(_) => "SECURITY_ERROR",
             Self::Context(_) => "CONTEXT_ERROR",

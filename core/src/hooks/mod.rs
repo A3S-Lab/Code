@@ -51,10 +51,10 @@ pub use events::{
     IntentDetectionEvent, OnConfirmationEvent, OnErrorEvent, OnRateLimitEvent, OnSuccessEvent,
     PermissionRequestEvent, PlanningStrategy, PostCompactEvent, PostContextPerceptionEvent,
     PostMemoryRecallEvent, PostPlanningEvent, PostReasoningEvent, PostResponseEvent,
-    PostToolUseEvent, PreCompactEvent, PreContextPerceptionEvent, PreMemoryRecallEvent,
-    PrePlanningEvent, PrePromptEvent, PreReasoningEvent, PreToolUseEvent, RateLimitType,
-    ReasoningType, SessionEndEvent, SessionStartEvent, SkillLoadEvent, SkillUnloadEvent,
-    TokenUsageInfo, ToolCallInfo, ToolResultData,
+    PostRunControlEvent, PostToolUseEvent, PreCompactEvent, PreContextPerceptionEvent,
+    PreMemoryRecallEvent, PrePlanningEvent, PrePromptEvent, PreReasoningEvent, PreRunControlEvent,
+    PreToolUseEvent, RateLimitType, ReasoningType, SessionEndEvent, SessionStartEvent,
+    SkillLoadEvent, SkillUnloadEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
 };
 pub use matcher::HookMatcher;
 

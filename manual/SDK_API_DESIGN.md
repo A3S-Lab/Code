@@ -92,6 +92,9 @@ send(prompt | { prompt, history?, attachments? }, history?)
 run(prompt | { prompt, history?, attachments? }, history?)
 stream(prompt | { prompt, history?, attachments? }, history?)
 history()
+steer(input, options?)
+interrupt(options?)
+run_control_snapshot()
 close()/cancel()
 ```
 
@@ -110,6 +113,13 @@ Rules:
 - Session closure is a gateway-wide terminal state. Conversation calls, direct
   tools (including event-streaming tool calls), child execution, and live
   capability mutation must return `SessionClosed` before starting new work.
+- `steer` appends a correction to the active run at the next runtime safe point;
+  `interrupt` cooperatively stops new work and settles the current operation.
+  Both return an idempotent receipt with the target run, operation, turn
+  revision, and `accepted`/`applied`/`settled`/`rejected` state. Optional expected turn
+  fields reject stale UI actions, and retries with the same request id are
+  safe. Neither operation grants permissions, changes the model, or bypasses
+  host hooks, budgets, sandbox, or cancellation policy.
 - Immediate local capability changes (dynamic tools, workers/agents, hooks,
   slash commands, and runtime budget guards) share a close admission gate.
   Async lane/MCP mutation uses the async extension gate. Each mutation either

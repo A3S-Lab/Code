@@ -104,13 +104,15 @@ pub(super) fn parse_hook_event_type(event_type: &str) -> napi::Result<RustHookEv
         "on_rate_limit" => Ok(RustHookEventType::OnRateLimit),
         "on_confirmation" => Ok(RustHookEventType::OnConfirmation),
         "intent_detection" => Ok(RustHookEventType::IntentDetection),
+        "pre_run_control" => Ok(RustHookEventType::PreRunControl),
+        "post_run_control" => Ok(RustHookEventType::PostRunControl),
         _ => Err(napi::Error::from_reason(format!(
             "Invalid hook event type: '{}'. Expected one of: pre_tool_use, post_tool_use, \
              generate_start, generate_end, session_start, session_end, skill_load, \
              skill_unload, pre_prompt, post_response, on_error, pre_context_perception, \
              post_context_perception, on_success, pre_memory_recall, post_memory_recall, \
              pre_planning, post_planning, pre_reasoning, post_reasoning, on_rate_limit, \
-             on_confirmation, intent_detection",
+             on_confirmation, intent_detection, pre_run_control, post_run_control",
             event_type
         ))),
     }

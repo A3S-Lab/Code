@@ -423,6 +423,25 @@ second SDK event taxonomy. The Harness regression suite validates snapshot
 digests after persistence and requires replayed evidence to equal the original
 events exactly.
 
+## Interactive run-control evidence
+
+Safe-point steering and interruption use a typed, bounded per-Run inbox. The
+host receives a versioned idempotent receipt containing immutable Session and
+Run identities, the operation, sequence, turn revision, timestamps, state, and
+machine-readable rejection or settlement detail. Optional expected-turn fields
+and deadlines fail closed before enqueueing, so a stale client cannot redirect
+or cancel a newer Run.
+
+When the execution loop consumes a request, it emits `run_control_applied`
+through the same live, persisted, paged, and replayable `EventEnvelopeV1`
+contract used by other runtime evidence. Pre-control Hooks can deny or request
+a bounded retry; post-control Hooks observe the resulting receipt. Steering is
+inserted into the existing transcript only at a provider/tool boundary, while
+interruption follows the normal cancellation, supervised-child settlement,
+checkpoint, and terminal-event path. The deterministic runtime contract and
+real-provider tests require that no post-interrupt Tool effect leaks after the
+receipt is applied.
+
 ## Operator guidance
 
 - Retain the event protocol version, call sequence, capability digest, input

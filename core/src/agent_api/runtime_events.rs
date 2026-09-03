@@ -587,6 +587,8 @@ pub(super) struct RunCleanupState {
     active_tools: ActiveToolMap,
     current_run_id: Arc<tokio::sync::Mutex<Option<String>>>,
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
+    active_run_control: Arc<tokio::sync::Mutex<Option<Arc<crate::run_control::RunControlInbox>>>>,
+    host_env: Arc<crate::host_env::HostEnv>,
 }
 
 impl RunCleanupState {
@@ -596,6 +598,8 @@ impl RunCleanupState {
             active_tools: Arc::clone(&session.active_tools),
             current_run_id: Arc::clone(&session.current_run_id),
             cancel_token: Arc::clone(&session.cancel_token),
+            active_run_control: Arc::clone(&session.active_run_control),
+            host_env: Arc::clone(&session.config.host_env),
         }
     }
 
@@ -637,6 +641,11 @@ impl RunCleanupState {
         let mut current = self.current_run_id.lock().await;
         if current.as_deref() == Some(self.run_id.as_str()) {
             *current = None;
+            drop(current);
+            let control = self.active_run_control.lock().await.take();
+            if let Some(control) = control {
+                control.close(self.host_env.now_ms()).await;
+            }
         }
     }
 }

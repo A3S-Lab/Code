@@ -65,8 +65,18 @@ impl ScopedToolInvoker {
             InvocationOrigin::HostDirect(policy) | InvocationOrigin::HostDirectNested(policy) => {
                 Some(policy)
             }
-            InvocationOrigin::Nested | InvocationOrigin::Agent => None,
+            InvocationOrigin::Nested
+            | InvocationOrigin::RuntimeInternal
+            | InvocationOrigin::Agent => None,
         };
+        if invocation.origin == InvocationOrigin::RuntimeInternal {
+            return Ok(match pre_tool_denial {
+                Some(feedback) => feedback.into_gate_decision(&invocation.name),
+                None => ToolGateDecision::Execute {
+                    reason: ToolGateApproval::RuntimeInternal,
+                },
+            });
+        }
         if matches!(
             host_direct_policy,
             Some(HostDirectPolicy::TrustedControlPlane)
@@ -100,6 +110,10 @@ impl ScopedToolInvoker {
         let origin = match invocation.origin {
             InvocationOrigin::Agent => ToolRequestOriginV1::Agent,
             InvocationOrigin::Nested => ToolRequestOriginV1::Nested,
+            // Runtime internals are represented as nested in the public event
+            // protocol: they have a parent tool and no independent host/model
+            // authority surface.
+            InvocationOrigin::RuntimeInternal => ToolRequestOriginV1::Nested,
             InvocationOrigin::HostDirect(HostDirectPolicy::TrustedControlPlane) => {
                 ToolRequestOriginV1::HostDirectTrusted
             }

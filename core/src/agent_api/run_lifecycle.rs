@@ -68,6 +68,8 @@ pub(super) struct RunControlState {
     run_store: Arc<crate::run::InMemoryRunStore>,
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
     current_run_id: Arc<tokio::sync::Mutex<Option<String>>>,
+    active_run_control: Arc<tokio::sync::Mutex<Option<Arc<crate::run_control::RunControlInbox>>>>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
     hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
     host_env: Arc<crate::host_env::HostEnv>,
 }
@@ -79,9 +81,68 @@ impl RunControlState {
             run_store: Arc::clone(&session.run_store),
             cancel_token: Arc::clone(&session.cancel_token),
             current_run_id: Arc::clone(&session.current_run_id),
+            active_run_control: Arc::clone(&session.active_run_control),
+            closed: Arc::clone(&session.closed),
             hook_executor: session.hook_executor.clone(),
             host_env: Arc::clone(&session.config.host_env),
         }
+    }
+
+    pub(super) async fn attach_run_control(
+        &self,
+        run_id: &str,
+        control: Arc<crate::run_control::RunControlInbox>,
+    ) {
+        // Admission and session close are separate async paths. Recheck the
+        // atomic close bit while holding the active-control slot so a runtime
+        // created concurrently with `SessionCloseHandle::close` cannot become
+        // controllable after the close boundary.
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            control.close(self.host_env.now_ms()).await;
+            return;
+        }
+        // Never await while holding the slot mutex. A stale stream can still
+        // be finishing its cleanup, and waiting here would otherwise block
+        // the public control facade from observing the new run.
+        let previous = {
+            let mut slot = self.active_run_control.lock().await;
+            if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+                None
+            } else if slot
+                .as_ref()
+                .is_some_and(|current| current.snapshot_run_id() != run_id)
+            {
+                slot.take()
+            } else {
+                *slot = Some(control.clone());
+                return;
+            }
+        };
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            if let Some(previous) = previous {
+                previous.deactivate(self.host_env.now_ms()).await;
+            }
+            control.close(self.host_env.now_ms()).await;
+            return;
+        }
+        if let Some(previous) = previous {
+            previous.deactivate(self.host_env.now_ms()).await;
+        }
+        let mut slot = self.active_run_control.lock().await;
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            drop(slot);
+            control.close(self.host_env.now_ms()).await;
+        } else {
+            *slot = Some(control);
+        }
+    }
+
+    pub(super) async fn current_run_control(
+        &self,
+    ) -> Option<Arc<crate::run_control::RunControlInbox>> {
+        let run_id = self.current_run_id.lock().await.clone()?;
+        let control = self.active_run_control.lock().await.clone()?;
+        (control.snapshot_run_id() == run_id).then_some(control)
     }
 
     #[cfg(test)]
@@ -425,6 +486,8 @@ mod tests {
             run_store: Arc::new(crate::run::InMemoryRunStore::new()),
             cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
             current_run_id: Arc::new(tokio::sync::Mutex::new(None)),
+            active_run_control: Arc::new(tokio::sync::Mutex::new(None)),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hook_executor: None,
             host_env: Arc::new(crate::host_env::HostEnv::system()),
         }

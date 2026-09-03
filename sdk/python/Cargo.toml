@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-py"
-version = "8.1.0"
+version = "8.2.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -12,7 +12,7 @@ name = "a3s_code"
 crate-type = ["cdylib"]
 
 [dependencies]
-a3s-code-core = { version = "8.1.0", path = "../../core", features = ["headless-search", "s3", "serve"] }
+a3s-code-core = { version = "8.2.0", path = "../../core", features = ["headless-search", "s3", "serve"] }
 pyo3 = { version = "0.23", features = ["multiple-pymethods"] }
 tokio = { version = "1.35", features = ["full"] }
 tokio-util = "0.7"

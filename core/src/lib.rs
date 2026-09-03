@@ -118,6 +118,7 @@ pub mod retention;
 pub(crate) mod retry;
 pub mod rl_trajectory;
 pub mod run;
+pub mod run_control;
 pub(crate) mod safety_gate;
 pub mod sandbox;
 pub mod sdk_capabilities;
@@ -265,6 +266,13 @@ pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecord
 pub use run::{
     ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunReservation,
     RunSnapshot, RunStatus, RunWorkspaceChangeSet, RunWorkspaceChangeSetError,
+};
+pub use run_control::{
+    InterruptRequest, RunControlCommand, RunControlError, RunControlErrorInfo, RunControlOperation,
+    RunControlReceipt, RunControlReceiptState, RunControlRequest, RunControlSnapshot, SteerRequest,
+    RUN_CONTROL_MAX_ID_BYTES, RUN_CONTROL_MAX_INPUT_BYTES, RUN_CONTROL_MAX_QUEUE,
+    RUN_CONTROL_MAX_REASON_BYTES, RUN_CONTROL_MAX_SEEN_REQUESTS, RUN_CONTROL_RECEIPT_SCHEMA_V1,
+    RUN_CONTROL_REQUEST_SCHEMA_V1,
 };
 pub use sdk_capabilities::{
     sdk_capabilities, sdk_capabilities_schema, SdkCapability, SDK_CAPABILITIES_SCHEMA_V1,

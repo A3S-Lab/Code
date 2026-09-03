@@ -207,6 +207,13 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
         host_owned: false,
     },
     CapabilitySpec {
+        id: "run_control",
+        category: "runtime",
+        description: "Steer or cooperatively interrupt an active run with idempotent receipts and optimistic turn guards.",
+        operations: &["session.steer", "session.interrupt", "session.run_control_snapshot"],
+        host_owned: true,
+    },
+    CapabilitySpec {
         id: "workspace_tools",
         category: "workspace",
         description: "Read, write, list, edit, patch, shell, glob, and grep through the governed workspace boundary.",
@@ -279,6 +286,7 @@ mod tests {
             "moli_runtime",
             "persistence",
             "governance",
+            "run_control",
         ];
         for id in required {
             assert!(ids.contains(&id), "missing capability {id}");

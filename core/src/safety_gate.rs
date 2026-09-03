@@ -13,6 +13,7 @@ pub(crate) enum ToolGateApproval {
     PermissionAllow,
     ConfirmationNotRequired,
     HostDirectTrusted,
+    RuntimeInternal,
 }
 
 impl ToolGateApproval {
@@ -21,6 +22,7 @@ impl ToolGateApproval {
             ToolGateApproval::PermissionAllow => "permission_allow",
             ToolGateApproval::ConfirmationNotRequired => "confirmation_not_required",
             ToolGateApproval::HostDirectTrusted => "host_direct_trusted",
+            ToolGateApproval::RuntimeInternal => "runtime_internal",
         }
     }
 }

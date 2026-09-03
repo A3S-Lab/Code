@@ -68,6 +68,21 @@ const session = agent.session(workspace, {
   workspaceBackend: new LocalWorkspaceBackend(workspace),
 });
 
+const idleRunControl = await step('runControlSnapshot idle', () =>
+  session.runControlSnapshot(),
+);
+assert.equal(idleRunControl, null, 'idle sessions should have no run-control snapshot');
+await assert.rejects(
+  () => session.steer('idle control should fail'),
+  (error) => /NO_ACTIVE_RUN|no active run/i.test(String(error)),
+  'steer() must reject when there is no active run',
+);
+await assert.rejects(
+  () => session.interrupt({ reason: 'idle control should fail' }),
+  (error) => /NO_ACTIVE_RUN|no active run/i.test(String(error)),
+  'interrupt() must reject when there is no active run',
+);
+
 const toolNames = await step('toolNames', () => session.toolNames());
 assert.ok(toolNames.includes('program'), 'program tool should be registered');
 assert.ok(toolNames.includes('task'), 'task tool should be registered');

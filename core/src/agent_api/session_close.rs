@@ -38,11 +38,17 @@ pub(crate) struct SessionCloseHandle {
     /// Session-level parent token. All in-flight run/subagent tokens are
     /// `child_token()` of this.
     pub(crate) session_cancel: CancellationToken,
+    /// Host clock used for deterministic receipt/checkpoint timestamps.
+    pub(crate) host_env: Arc<crate::host_env::HostEnv>,
     /// Per-run cancel-token slot (currently active run's token, if any).
     /// Populated by the run lifecycle.
     pub(crate) cancel_token: Arc<Mutex<Option<CancellationToken>>>,
     /// Current run id (matches `cancel_token` when set).
     pub(crate) current_run_id: Arc<Mutex<Option<String>>>,
+    /// Active run-control inbox. Closing the session must close this gate at
+    /// the same admission boundary as the session cancellation token so a
+    /// caller cannot enqueue controls into a run that is already terminating.
+    pub(crate) active_run_control: Arc<Mutex<Option<Arc<crate::run_control::RunControlInbox>>>>,
     pub(crate) run_store: Arc<InMemoryRunStore>,
     pub(crate) subagent_tasks: Arc<InMemorySubagentTaskTracker>,
     pub(crate) confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
@@ -133,6 +139,13 @@ impl SessionCloseHandle {
         // cancellation await so close cannot race with a new queued command.
         if let Some(queue) = &self.command_queue {
             queue.shutdown().await;
+        }
+
+        // Close the run-control gate before firing parent cancellation. This
+        // makes post-close steer/interrupt requests fail deterministically and
+        // settles any accepted-but-not-yet-applied controls exactly once.
+        if let Some(control) = self.active_run_control.lock().await.take() {
+            control.close(self.host_env.now_ms()).await;
         }
 
         // 2. Stop periodic memory mutation before draining the final accepted

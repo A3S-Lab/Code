@@ -539,6 +539,9 @@ pub struct AgentSession {
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
     /// ID of the run currently attached to the active cancellation token.
     current_run_id: Arc<tokio::sync::Mutex<Option<String>>>,
+    /// Per-run cooperative control inbox. A session is single-flight, so one
+    /// slot is sufficient; child runs own their own session slot.
+    active_run_control: Arc<tokio::sync::Mutex<Option<Arc<crate::run_control::RunControlInbox>>>>,
     /// In-memory run snapshots and event replay buffer for this session.
     run_store: Arc<crate::run::InMemoryRunStore>,
     /// Materialized view of delegated subagent task lifecycle, populated from runtime events.

@@ -64,6 +64,7 @@ pub(crate) struct InvocationContext {
     agent_event_tx: Option<broadcast::Sender<AgentEvent>>,
     agent_event_barrier: Option<AgentEventBarrier>,
     governance: InvocationGovernance,
+    run_control: Option<Arc<crate::run_control::RunControlInbox>>,
     model_evidence: Option<ModelEvidenceState>,
     memory_context_sequence: Arc<AtomicU64>,
 }
@@ -103,6 +104,7 @@ impl std::fmt::Debug for InvocationContext {
                 "has_confirmation_manager",
                 &self.governance.confirmation_manager.is_some(),
             )
+            .field("has_run_control", &self.run_control.is_some())
             .field("has_model_evidence", &self.model_evidence.is_some())
             .finish()
     }
@@ -129,6 +131,7 @@ impl InvocationContext {
             agent_event_tx: None,
             agent_event_barrier: None,
             governance,
+            run_control: None,
             model_evidence: None,
             memory_context_sequence: Arc::new(AtomicU64::new(0)),
         }
@@ -155,6 +158,15 @@ impl InvocationContext {
     ) -> Self {
         self.agent_event_tx = Some(tx);
         self.agent_event_barrier = Some(barrier);
+        self
+    }
+
+    /// Bind the cooperative control inbox owned by this run.
+    pub(crate) fn with_run_control(
+        mut self,
+        control: Arc<crate::run_control::RunControlInbox>,
+    ) -> Self {
+        self.run_control = Some(control);
         self
     }
 
@@ -185,6 +197,10 @@ impl InvocationContext {
 
     pub(crate) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
+    }
+
+    pub(crate) fn run_control(&self) -> Option<Arc<crate::run_control::RunControlInbox>> {
+        self.run_control.clone()
     }
 
     pub(crate) fn event_tx(&self) -> &Option<mpsc::Sender<AgentEvent>> {

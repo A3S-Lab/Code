@@ -106,4 +106,11 @@ impl AgentLoop {
     ) -> Option<&crate::capability::RunCapabilityBindingV1> {
         self.checkpoint_capability_binding.as_ref()
     }
+
+    /// Return the immutable Hook executor captured by this loop's Run
+    /// projection. Run-control requests must use this executor rather than a
+    /// mutable Session-level reference so policy cannot change mid-run.
+    pub(crate) fn hook_executor(&self) -> Option<Arc<dyn crate::hooks::HookExecutor>> {
+        self.config.hook_engine.clone()
+    }
 }

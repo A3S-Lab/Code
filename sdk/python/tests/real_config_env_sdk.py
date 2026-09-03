@@ -51,6 +51,29 @@ opts.workspace_backend = LocalWorkspaceBackend(workspace)
 print(f"[python-sdk-real] workspace={workspace}", flush=True)
 session = agent.session(workspace, opts)
 
+idle_run_control = step("run_control_snapshot idle", session.run_control_snapshot)
+assert idle_run_control is None
+
+
+def expect_no_active_run(name, call):
+    def invoke():
+        try:
+            call()
+        except Exception as exc:  # noqa: BLE001 - verify the public error contract.
+            message = str(exc)
+            assert "NO_ACTIVE_RUN" in message or "no active run" in message.lower(), message
+        else:
+            raise AssertionError("expected NO_ACTIVE_RUN")
+
+    step(name, invoke)
+
+
+expect_no_active_run("steer idle", lambda: session.steer("idle control should fail"))
+expect_no_active_run(
+    "interrupt idle",
+    lambda: session.interrupt({"reason": "idle control should fail"}),
+)
+
 tool_names = step("tool_names", session.tool_names)
 assert "program" in tool_names
 assert "task" in tool_names

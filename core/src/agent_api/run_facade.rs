@@ -1,6 +1,41 @@
 use super::*;
 
 impl AgentSession {
+    /// Submit a user direction to the active run. The request is applied by
+    /// the execution loop at its next safe point and never starts a second
+    /// conversation operation.
+    pub async fn steer(
+        &self,
+        request: crate::run_control::SteerRequest,
+    ) -> crate::error::Result<crate::run_control::RunControlReceipt> {
+        if self.is_closed() {
+            return Err(crate::error::CodeError::SessionClosed {
+                session_id: self.session_id.clone(),
+            });
+        }
+        RunControl::from_session(self).steer(request).await
+    }
+
+    /// Cooperatively interrupt the active run. Cleanup, checkpoint and
+    /// single-flight settlement still happen through the normal lifecycle.
+    pub async fn interrupt(
+        &self,
+        request: crate::run_control::InterruptRequest,
+    ) -> crate::error::Result<crate::run_control::RunControlReceipt> {
+        if self.is_closed() {
+            return Err(crate::error::CodeError::SessionClosed {
+                session_id: self.session_id.clone(),
+            });
+        }
+        RunControl::from_session(self).interrupt(request).await
+    }
+
+    /// Return the optimistic-concurrency state of the active run's control
+    /// inbox, if a run is currently executing.
+    pub async fn run_control_snapshot(&self) -> Option<crate::run_control::RunControlSnapshot> {
+        RunControl::from_session(self).run_control_snapshot().await
+    }
+
     /// Cancel a specific run only if it is still the active run.
     ///
     /// This is useful for SDK callers that hold a previously observed run ID:

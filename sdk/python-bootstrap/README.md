@@ -7,7 +7,7 @@ platform from the project's
 the wheel's sha256 against the release manifest, extracts the compiled
 extension into a per-user cache, and exposes the normal `a3s_code` API.
 
-The v8.1.0 release uses one CPython 3.10 stable-ABI (`cp310-abi3`) wheel per
+The v8.2.0 release uses one CPython 3.10 stable-ABI (`cp310-abi3`) wheel per
 platform. That wheel is installable by CPython 3.10, 3.11, 3.12, 3.13, and
 3.14. Supported native targets are macOS arm64/x86_64, Linux glibc 2.28+
 arm64/x86_64, and Windows arm64/x86_64. Every supported wheel contains its

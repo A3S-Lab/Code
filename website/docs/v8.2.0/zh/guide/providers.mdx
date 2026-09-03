@@ -1,0 +1,120 @@
+---
+title: '模型服务提供商配置'
+description: 'ACL 模型服务提供商配置与环境变量注入'
+---
+
+# 模型服务提供商配置
+
+A3S Code 从 ACL 读取运行时配置。配置源可以是 `.acl` 文件路径，也可以是
+内联 ACL 字符串。JSON 和旧 HCL 配置不属于当前配置面。
+
+## 基本结构
+
+```acl
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    name = "Human readable model name"
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+
+storage_backend = "file"
+sessions_dir = ".a3s/sessions"
+```
+
+`apiKey` 与 `api_key` 都可用，`baseUrl` 与 `base_url` 都可用。仓库里只提交模板
+和非敏感默认值；真实 API Key、私有端点和账号相关模型名应放在环境变量或密钥管理系统中。
+
+## 服务提供商类型
+
+内置工厂覆盖三条路径：
+
+| 服务提供商名称               | 客户端路径          | 说明                                           |
+| ---------------------------- | ------------------- | ---------------------------------------------- |
+| `anthropic` / `claude`       | Anthropic 客户端    | 使用配置中的模型标识和可选服务提供商基础 URL。 |
+| `openai` / `gpt`             | OpenAI 兼容客户端   | 用于兼容 OpenAI Chat Completions 的端点。      |
+| `glm` / `zhipu` / `bigmodel` | 智谱兼容客户端      | 密钥和基础 URL 仍应从环境变量注入。            |
+| 其它服务提供商名称           | OpenAI 兼容兜底路径 | 适合私有或自托管的 OpenAI 兼容服务。           |
+
+运行时不硬编码模型名。`default_model` 和每个会话的 `model` 都是
+`provider/model-id` 形式的标识符，必须能匹配你在服务提供商配置块里声明的模型。
+
+## 委派控制
+
+```acl
+agent_dirs = ["./.a3s/agents"]
+
+auto_delegation {
+  enabled                 = true
+  auto_parallel           = false
+  allow_manual_delegation = true
+  min_confidence          = 0.72
+  max_tasks               = 4
+}
+```
+
+`max_parallel_tasks` 限制有边界的同级任务扇出。`auto_delegation.enabled`
+开启自动子智能体委派。顶层 `auto_parallel = false` 会覆盖
+`auto_delegation.auto_parallel`，只关闭自动并行子智能体扇出；手动 `task` 扇出仍可用。
+设置 `allow_manual_delegation = false` 时，模型可见的 `task` 与隐藏的
+`parallel_task` 兼容别名都不会注册。
+
+## 存储
+
+```acl
+storage_backend = "memory"
+storage_backend = "file"
+sessions_dir = ".a3s/sessions"
+```
+
+短测试使用内存；通过 ACL 加载的可恢复本地会话使用
+`storage_backend = "file"` 和 `sessions_dir`。`storage_url` 会被解析为自定义
+存储元数据，但它本身不会创建文件型会话存储。SDK 宿主也可以直接传
+`sessionStore: new FileSessionStore(...)` /
+`opts.session_store = FileSessionStore(...)`。
+
+## 私有服务提供商检查
+
+真实服务提供商的冒烟测试应通过 `A3S_CONFIG_FILE` 指向本地且被 Git 忽略的 ACL 文件。
+不要把 provider 值复制进命令、日志、文档、PR 或已提交 fixture。
+
+```bash
+A3S_CONFIG_FILE=/path/to/local/config.acl \
+  scripts/real_config_env_integration.sh
+```
+
+SDK 对齐由单独的真实 provider 检查脚本覆盖：
+
+```bash
+A3S_CONFIG_FILE=/path/to/local/config.acl \
+  scripts/sdk_real_config_env_integration.sh
+```
+
+这两个 Wrapper 只会重写 `providers "openai"` Block 中的凭据。若配置使用
+`providers "deepseek"` 等原生 OpenAI-compatible Provider Name，应让专项 Runner
+直接加载 ACL，不要经过 Wrapper：
+
+```bash
+A3S_CONFIG_FILE=/absolute/path/to/.a3s/config.acl \
+  cargo test -p a3s-code-core --test test_deepseek_adversarial_e2e -- \
+  --ignored --test-threads=1 --nocapture
+```
+
+完整的 Node.js、Python 与 Go DeepSeek Retrieval Matrix 使用
+`A3S_REAL_EVAL_ROOT=/absolute/path/to/a3s`；各平台命令与 Gate 见
+[Cross-SDK Evaluation Contract](https://github.com/A3S-Lab/Code/blob/main/sdk/evaluation/README.md#real-deepseek-matrix)。
+
+包含 Secret 的原始 Provider Evidence 应留在发布记录或 CI Artifact，不写入公开文档。
+只有不包含 Endpoint、Header、环境变量名、Credential、Prompt 或源文本的聚合脱敏指标
+才可发布。完整本地 API 表面见 [API Contract](/guide/api-contract)。

@@ -19,15 +19,36 @@ fn repo_config_path() -> PathBuf {
         })
 }
 
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires real provider credentials and network access"]
-async fn auto_delegation_triggers_unified_task_fanout_with_real_provider() {
+async fn configured_agent_and_model() -> (Agent, String) {
     let config_path = repo_config_path();
     let config = CodeConfig::from_file(&config_path)
         .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
-    let agent = Agent::from_config(config)
-        .await
-        .expect("agent from real config");
+    let model = std::env::var("A3S_TEST_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| config.default_model.clone())
+        .expect("real config must declare default_model");
+    let (provider, model_id) = model
+        .split_once('/')
+        .expect("selected model must use provider/model syntax");
+    assert!(
+        config.llm_config(provider, model_id).is_some(),
+        "selected model {model} is not declared in {}",
+        config_path.display()
+    );
+    eprintln!("[subagents-real] model={model}");
+    (
+        Agent::from_config(config)
+            .await
+            .expect("agent from real config"),
+        model,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires real provider credentials and network access"]
+async fn auto_delegation_triggers_unified_task_fanout_with_real_provider() {
+    let (agent, model) = configured_agent_and_model().await;
 
     let workspace = tempfile::tempdir().expect("temp workspace");
     std::fs::write(
@@ -44,9 +65,15 @@ async fn auto_delegation_triggers_unified_task_fanout_with_real_provider() {
     };
 
     let opts = SessionOptions::new()
+        .with_model(model)
         .with_planning(false)
         .with_max_tool_rounds(8)
         .with_max_parallel_tasks(4)
+        // The test explicitly authorizes the model-selected delegation call;
+        // production sessions should keep their normal HITL policy.
+        .with_confirmation_manager(std::sync::Arc::new(
+            a3s_code_core::hitl::AutoApproveConfirmation,
+        ))
         .with_auto_delegation(auto);
 
     let session = agent
@@ -101,12 +128,7 @@ async fn auto_delegation_triggers_unified_task_fanout_with_real_provider() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires real provider credentials and network access"]
 async fn builtin_subagents_execute_with_real_provider() {
-    let config_path = repo_config_path();
-    let config = CodeConfig::from_file(&config_path)
-        .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
-    let agent = Agent::from_config(config)
-        .await
-        .expect("agent from real config");
+    let (agent, model) = configured_agent_and_model().await;
 
     let workspace = tempfile::tempdir().expect("temp workspace");
     std::fs::write(
@@ -116,7 +138,10 @@ async fn builtin_subagents_execute_with_real_provider() {
     .expect("write smoke file");
 
     let session = agent
-        .session_async(workspace.path().display().to_string(), None)
+        .session_async(
+            workspace.path().display().to_string(),
+            Some(SessionOptions::new().with_model(model)),
+        )
         .await
         .expect("session");
 

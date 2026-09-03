@@ -1,0 +1,593 @@
+---
+title: 'Sessions'
+description: 'Creating, streaming, resuming, and saving workspace-bound sessions'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Sessions
+
+`Agent` owns configuration and provider state. `Session` binds that agent to one workspace and one conversation lifecycle.
+
+This is where UI integration usually begins: subscribe to `AgentEvent` values
+from the session and map them to progress, tool calls, confirmations, and results.
+
+```ts title=session.ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+// !focus(1:7)
+const session = agent.session('/repo', {
+  model: 'provider/model-id',
+  planningMode: 'enabled',
+  goalTracking: true,
+  autoDelegation: { enabled: true, maxTasks: 4 },
+  autoParallel: false,
+});
+```
+
+## Rust Construction
+
+Rust session construction is async-first because default memory, file-backed
+stores, queues, trajectory recording, and MCP discovery can require I/O:
+
+```rust
+let session = agent
+    .session_builder("/repo")
+    .options(options)
+    .build()
+    .await?;
+```
+
+`session_async`, `resume_session_async`, `session_for_agent_async`, and
+`session_for_worker_async` are direct async alternatives. Node and Python keep
+their existing factory names and delegate to this async construction kernel
+inside the native binding.
+
+The synchronous Rust `Agent::session` factory is a strict compatibility path.
+It accepts explicitly pre-initialized resources and never starts or blocks an
+async runtime. A default/file memory store, file session store, queue,
+trajectory recorder, or any host MCP manager supplied in `SessionOptions`
+returns `CodeError::AsyncSessionBuildRequired`; session-option MCP capability
+discovery is always async. Use the builder instead of catching that error and
+silently changing backends. The sync path can only inherit agent-global MCP
+tools already cached during agent initialization.
+
+`planningMode` is explicit: use `'auto'` for the default structured pre-analysis
+path, `'enabled'` to force planning, and `'disabled'` to turn planning off for
+latency-sensitive calls. The legacy boolean `planning` option remains available
+for compatibility.
+
+Planning emits run-scoped state. Hosts can render that state as a TaskList and
+update each item as the runtime records progress instead of trying to infer
+progress from text tokens.
+
+## Single-Flight Operations
+
+A session admits only one transcript-affecting operation at a time. `send`,
+`stream`, their attachment variants, slash commands, and `resumeRun` share the
+same fail-fast admission gate. An overlapping call returns
+`CodeError::SessionBusy` before reading history or dispatching a command; it is
+not queued behind the active operation.
+
+Wait for the active result, consume the stream to completion, or cancel it
+before starting another conversation operation. The runtime retains a stream's
+lease until its producer has actually stopped, even if the public stream handle
+is dropped or aborted. Direct host tool helpers do not mutate the transcript and
+do not claim this lease.
+
+Node and Python stream iterators wait for that lifecycle cleanup at the terminal
+boundary. Once a fully consumed iterator reports completion, an immediate next
+conversation operation will not inherit a stale busy state from that stream.
+
+## Send
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+let result = session
+    .send(
+        "Review this repository and list release blockers",
+        None,
+    )
+    .await?;
+
+println!("{}", result.text);
+println!("{}", result.usage.total_tokens);
+println!("{:?}", result.verification_summary().status);
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+const result = await session.send(
+  'Review this repository and list release blockers',
+);
+
+console.log(result.text);
+console.log(result.totalTokens);
+console.log(result.verificationStatus);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+result = session.send(
+    "Review this repository and list release blockers",
+)
+
+print(result.text)
+print(result.total_tokens)
+print(result.verification_status)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+result, err := session.Run(
+	ctx,
+	"Review this repository and list release blockers",
+)
+if err != nil {
+	return err
+}
+
+fmt.Println(result.Text)
+fmt.Println(result.Usage.TotalTokens)
+fmt.Println(result.VerificationSummary.Status)
+```
+
+</Tab>
+</Tabs>
+
+## Stream
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{AgentEvent, CodeError};
+
+let (mut events, lifecycle) = session
+    .stream("Run the focused tests and explain failures", None)
+    .await?;
+
+while let Some(event) = events.recv().await {
+    match event {
+        AgentEvent::TextDelta { text } => print!("{text}"),
+        AgentEvent::ToolStart { name, .. } => println!("\ntool: {name}"),
+        AgentEvent::End { .. } => break,
+        AgentEvent::Error { message } => return Err(CodeError::Llm(message)),
+        _ => {}
+    }
+}
+lifecycle
+    .await
+    .map_err(|error| CodeError::Internal(error.into()))??;
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+const stream = await session.stream(
+  'Run the focused tests and explain failures',
+);
+
+while (true) {
+  const { value: event, done } = await stream.next();
+  if (done) break;
+  if (!event) continue;
+
+  if (event.text) process.stdout.write(event.text);
+  if (event.toolName) console.log('tool:', event.toolName);
+}
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+for event in session.stream("Run the focused tests and explain failures"):
+    if event.type == "text_delta" and event.text:
+        print(event.text, end="", flush=True)
+    elif event.type == "tool_start":
+        print(f"\ntool: {event.tool_name or 'unknown'}")
+    elif event.type == "error":
+        raise RuntimeError(event.error or "stream error")
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+stream, err := session.Stream(
+	ctx,
+	"Run the focused tests and explain failures",
+	nil,
+)
+if err != nil {
+	return err
+}
+
+for event := range stream.Events {
+	if event.Type != code.EventTextDelta {
+		continue
+	}
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if err := event.DecodePayload(&payload); err != nil {
+		return err
+	}
+	fmt.Print(payload.Text)
+}
+if err := <-stream.Done; err != nil {
+	return err
+}
+```
+
+</Tab>
+</Tabs>
+
+Every SDK event is an `EventEnvelopeV1` projection with `version === 1`, an open
+`type` string, complete `payload`, and optional `metadata`. Convenience fields
+such as `text` and `toolName` are derived from that envelope. Keep a default
+branch and retain the payload for future event types.
+
+## Steer and Interrupt an Active Run
+
+Run control changes an operation already in progress; it does not start a
+second transcript turn. `steer` queues a newer user direction for the next
+safe point. `interrupt` cancels current provider and Tool work cooperatively,
+then lets supervised cleanup settle before the Run becomes `cancelled`.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{InterruptRequest, SteerRequest};
+
+let state = session.run_control_snapshot().await;
+let receipt = session
+    .steer(SteerRequest::new("Prioritize the failing test"))
+    .await?;
+println!("{:?}", receipt.state);
+
+session
+    .interrupt(InterruptRequest::new().with_reason("User stopped the run"))
+    .await?;
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+const state = await session.runControlSnapshot();
+const receipt = await session.steer('Prioritize the failing test', {
+  runId: state?.runId,
+  expectedTurnId: state?.turnId,
+  expectedTurnRevision: state?.turnRevision,
+});
+console.log(receipt.state);
+
+await session.interrupt({ reason: 'User stopped the run' });
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+state = await session.run_control_snapshot_async()
+options = {}
+if state:
+    options["run_id"] = state["run_id"]
+    if state.get("turn_id") is not None:
+        options["expected_turn_id"] = state["turn_id"]
+    options["expected_turn_revision"] = state["turn_revision"]
+receipt = await session.steer_async(
+    "Prioritize the failing test",
+    options,
+)
+print(receipt["state"])
+
+await session.interrupt_async({"reason": "User stopped the run"})
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+state, err := session.RunControlSnapshot(ctx)
+if err != nil {
+	return err
+}
+options := &code.SteerOptions{}
+if state != nil {
+	options.RunID = &state.RunID
+	options.ExpectedTurnID = state.TurnID
+	options.ExpectedTurnRevision = &state.TurnRevision
+}
+receipt, err := session.Steer(ctx, "Prioritize the failing test", options)
+if err != nil {
+	return err
+}
+fmt.Println(receipt.State)
+_, err = session.Interrupt(ctx, &code.InterruptOptions{})
+```
+
+</Tab>
+</Tabs>
+
+Requests are idempotent when a caller reuses the same request ID with the same
+payload. Optional Run and expected-Turn fields make stale UI actions fail
+closed. Accepted control is not yet applied control: observe
+`run_control_applied` or inspect persisted Run events when the distinction
+matters. Neither operation changes the selected model, permissions, sandbox,
+budgets, or approval policy.
+
+## Side Questions
+
+The SDK does not expose a dedicated ephemeral-question helper. Snapshot the
+current history and pass it explicitly to `send` or `stream`. Explicit history
+is used for that call only; it does not append the answer back into the session
+history.
+
+```ts
+const snapshot = session.history();
+const answer = await session.send(
+  'What files has this session already inspected?',
+  snapshot,
+);
+
+console.log(answer.text);
+console.log(session.history().length === snapshot.length);
+```
+
+## Resume
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+let session = agent
+    .resume_session_async(
+        "release-review",
+        SessionOptions::new().with_file_session_store("./.a3s/sessions"),
+    )
+    .await?;
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, FileSessionStore } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.resumeSession('release-review', {
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+});
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import FileSessionStore, SessionOptions
+
+opts = SessionOptions()
+opts.session_store = FileSessionStore("./.a3s/sessions")
+session = agent.resume_session("release-review", opts)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+options := &code.SessionOptions{
+	FileSessionStoreDir: ".a3s/sessions",
+}
+session, err := agent.ResumeSession(ctx, "release-review", options)
+```
+
+</Tab>
+</Tabs>
+
+Set `autoSave: true` or call `await session.save()` when using a session store.
+This resumes a saved session snapshot; interrupted run checkpoints use
+`session.resumeRun(runId)` instead. Go uses `Save`, `ResumeSession`, and
+`ResumeRun(ctx, runID)` for the same two persistence levels.
+See [Persistence](/guide/persistence).
+
+## Lifecycle and Close
+
+`session.close()` is a full graceful stop. The first call flips the session
+into the **closed** state — further `send`/`stream` calls fast-fail with
+`CodeError::SessionClosed` instead of starting a new run — then cancels the
+active run, every in-flight delegated subagent task, and all pending
+human-in-the-loop confirmations. Subsequent calls are no-ops and never panic.
+Check the closed state with `session.isClosed()` (Node) / `session.is_closed()`
+(Python) / `session.IsClosed(ctx)` (Go).
+
+```ts
+session.close();
+if (session.isClosed()) {
+  // send/stream now reject with CodeError::SessionClosed
+}
+```
+
+```python
+session.close()
+if session.is_closed():
+    # send/stream now reject with CodeError::SessionClosed
+    pass
+```
+
+```go
+if err := session.Close(ctx); err != nil {
+	return err
+}
+closed, err := session.IsClosed(ctx)
+```
+
+### Cancellation token
+
+Every run derives its per-operation cancellation token from a single
+session-level parent via `child_token()`, so `close()` cascades to all
+in-flight work in one shot. Embedders that need the raw token — for example to
+wire it into a host-side `select!` or to abort the session without the
+run-store and hook side effects of `close()` — can clone it through
+`AgentSession::session_cancel_token()`.
+
+### Agent-side registry
+
+The owning `Agent` tracks its live sessions by `Weak` reference (pruned
+lazily) so a control plane can drive lifecycle without holding a session
+handle:
+
+- `Agent::list_sessions()` returns the live session IDs (sorted, stable).
+- `Agent::close_session(id)` closes one session by ID — the same cleanup as
+  `AgentSession::close()`, invoked out-of-band.
+- `Agent::close()` closes every live session and tears down agent-owned
+  background resources (it also disconnects the global MCP connections).
+  After it returns, new `session` / `resumeSession` calls fail fast with
+  `CodeError::SessionClosed`.
+- `Agent::is_closed()` reports whether the agent itself has been closed.
+
+```ts
+const ids = await agent.listSessions();
+await agent.closeSession(ids[0]);
+await agent.close(); // closes all remaining sessions + global MCP
+console.log(agent.isClosed());
+```
+
+```python
+ids = agent.list_sessions()
+agent.close_session(ids[0])
+agent.close()  # closes all remaining sessions + global MCP
+print(agent.is_closed())
+```
+
+```go
+ids, err := agent.ListSessions(ctx)
+if err == nil && len(ids) > 0 {
+	_, err = agent.CloseSession(ctx, ids[0])
+}
+err = agent.Close(ctx)
+```
+
+See CHANGELOG `[3.3.0]` — "Session / Agent lifecycle control".
+
+## Host Identity Labels
+
+`SessionOptions` carries four opaque identity fields that the host can attach
+at session creation. The framework only transports them — it never interprets
+or enforces them. They are propagated into `SessionData`, hooks, and traces,
+and restored on resume, so the host can drive multi-tenant aggregation,
+billing, and distributed tracing:
+
+| Node (camelCase)  | Python (snake_case) | Go                | Meaning                                                       |
+| ----------------- | ------------------- | ----------------- | ------------------------------------------------------------- |
+| `tenantId`        | `tenant_id`         | `TenantID`        | Multi-tenant label                                            |
+| `principal`       | `principal`         | `Principal`       | User / service that triggered the session                     |
+| `agentTemplateId` | `agent_template_id` | `AgentTemplateID` | Agent template / definition the session was instantiated from |
+| `correlationId`   | `correlation_id`    | `CorrelationID`   | Distributed-trace correlation id                              |
+
+```ts
+const session = agent.session('/repo', {
+  tenantId: 'tenant-example',
+  principal: 'principal-example',
+  agentTemplateId: 'agent-template-example',
+  correlationId: 'trace-example',
+});
+```
+
+```python
+opts = SessionOptions()
+opts.tenant_id = 'tenant-example'
+opts.principal = 'principal-example'
+opts.agent_template_id = 'agent-template-example'
+opts.correlation_id = 'trace-example'
+session = agent.session('/repo', opts)
+print(session.tenant_id, session.principal)
+```
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	TenantID:       "tenant-example",
+	Principal:      "principal-example",
+	AgentTemplateID: "agent-template-example",
+	CorrelationID:  "trace-example",
+})
+```
+
+See CHANGELOG `[3.3.0]` — "Host-provided identity labels".
+
+## Run Replay
+
+Each `send()` or `stream()` creates a run record. Applications can inspect those
+records for UI state, audit, replay, cancellation, and tests:
+
+```ts
+const runs = await session.runs();
+const latest = runs.at(-1);
+
+if (latest) {
+  console.log(await session.runSnapshot(latest.id));
+  console.log(await session.runEvents(latest.id));
+}
+```
+
+```go
+runs, err := session.Runs(ctx)
+if err == nil && len(runs) > 0 {
+	latest := runs[len(runs)-1]
+	snapshot, snapshotErr := session.RunSnapshot(ctx, latest.ID)
+	events, eventsErr := session.RunEvents(ctx, latest.ID)
+	_, _, _ = snapshot, snapshotErr, eventsErr
+	_ = events
+}
+```
+
+`currentRun()` is for the operation that is current at the time of the call.
+During an active `send()` or `stream()`, pass its `id` to `cancelRun(id)` to
+request cancellation. When idle, `currentRun()` may return `null` or a retained run
+snapshot depending on the preceding control flow, so use `runs()` for completed
+history and inspect `status` before treating a snapshot as cancellable:
+
+```ts
+const current = await session.currentRun();
+if (current?.id && current.status === 'running') {
+  await session.cancelRun(current.id);
+}
+```
+
+## Agent Definitions
+
+`sessionForAgent()` applies a named agent definition from built-in agents, `.a3s/agents`, or configured `agentDirs`.
+
+```ts
+const session = agent.sessionForAgent('/repo', 'explore', ['./agents'], {
+  planningMode: 'auto',
+});
+```
+
+```go
+session, err := agent.SessionForAgent(
+	ctx,
+	"/repo",
+	"explore",
+	[]string{"./agents"},
+	&code.SessionOptions{PlanningMode: code.PlanningAuto},
+)
+```
+
+For disposable value-defined workers, use `SessionForWorker`; both methods
+return the regular Go `Session` API.

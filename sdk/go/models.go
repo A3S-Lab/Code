@@ -104,7 +104,7 @@ func NewDefaultSecurityProvider() *DefaultSecurityProvider {
 }
 
 // BrowserBackend selects the browser used for JavaScript-rendered search
-// engines. Moli is the default in A3S Code 8.1.0.
+// engines. Moli has been the default since A3S Code 8.1.0.
 type BrowserBackend string
 
 const (
