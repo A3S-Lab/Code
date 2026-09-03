@@ -429,15 +429,15 @@ disk measurements, and rollback evidence remain in place until that gate is
 closed.
 
 The semantic runtime now consumes a Code-owned `WorkspaceVectorIndex` contract
-(`d833ce3efa59fc1682d4c70819212a1ea905b8af`; Vec dependency refresh
+(`32a70cd7926fbdf3210fd0ee822b4f718cbee108`; Vec dependency refresh
 `7e3b083e`; revision-CAS implementation
 `b5540a869e742ce7a98348f27997970619a754b6`). The legacy
 `a3s-memory::VectorIndex` trait is imported only by the explicit compatibility
 adapter; Vec-primary and Memory-primary selection, publication, and
 differential logic share that boundary. Code CI and the release-profile
 qualification for this contract passed in runs
-[`33759848635`](https://github.com/A3S-Lab/Code/actions/runs/33759848635) and
-[`33759848329`](https://github.com/A3S-Lab/Code/actions/runs/33759848329).
+[`33763816993`](https://github.com/A3S-Lab/Code/actions/runs/33763816993) and
+[`33763816547`](https://github.com/A3S-Lab/Code/actions/runs/33763816547).
 The Vec implementation now also provides real global revision-CAS with one
 logical revision per partition publication, including stale-writer and
 concurrent-writer tests.
