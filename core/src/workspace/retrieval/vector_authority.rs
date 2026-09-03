@@ -71,6 +71,38 @@ impl VecPrimaryVectorIndex {
         Ok(status_from_snapshot(snapshot))
     }
 
+    async fn replace_partition_if_revision(
+        &self,
+        partition: &str,
+        expected_revision: VectorRevision,
+        records: Vec<VectorRecord>,
+    ) -> VectorResult<VectorIndexStatus> {
+        let partition = validate_partition(partition)?.to_owned();
+        validate_records(&self.descriptor, &partition, &records)?;
+        let snapshot = self
+            .store
+            .replace_partition_if_revision(partition, expected_revision.value(), records)
+            .await
+            .map_err(vector_error_from_shadow_failure)?;
+        self.update_snapshot(snapshot);
+        Ok(status_from_snapshot(snapshot))
+    }
+
+    async fn remove_partition_if_revision(
+        &self,
+        partition: &str,
+        expected_revision: VectorRevision,
+    ) -> VectorResult<VectorIndexStatus> {
+        let partition = validate_partition(partition)?.to_owned();
+        let snapshot = self
+            .store
+            .remove_partition_if_revision(partition, expected_revision.value())
+            .await
+            .map_err(vector_error_from_shadow_failure)?;
+        self.update_snapshot(snapshot);
+        Ok(status_from_snapshot(snapshot))
+    }
+
     async fn search(&self, request: VectorSearchRequest) -> VectorResult<VectorSearchResult> {
         validate_search_request(&self.descriptor, &request)?;
         let result = self
@@ -327,7 +359,7 @@ impl WorkspaceVectorIndex for PrimaryVectorIndex {
     fn mutation_consistency(&self) -> VectorMutationConsistency {
         match self {
             Self::Memory(index) => index.mutation_consistency(),
-            Self::Vec(_) => VectorMutationConsistency::PartitionAtomic,
+            Self::Vec(_) => VectorMutationConsistency::IndexRevisionCas,
         }
     }
 
@@ -354,7 +386,11 @@ impl WorkspaceVectorIndex for PrimaryVectorIndex {
                     .replace_partition_if_revision(partition, expected_revision, records)
                     .await
             }
-            Self::Vec(_) => Err(VectorIndexError::ConditionalMutationUnsupported),
+            Self::Vec(index) => {
+                index
+                    .replace_partition_if_revision(partition, expected_revision, records)
+                    .await
+            }
         }
     }
 
@@ -376,7 +412,11 @@ impl WorkspaceVectorIndex for PrimaryVectorIndex {
                     .remove_partition_if_revision(partition, expected_revision)
                     .await
             }
-            Self::Vec(_) => Err(VectorIndexError::ConditionalMutationUnsupported),
+            Self::Vec(index) => {
+                index
+                    .remove_partition_if_revision(partition, expected_revision)
+                    .await
+            }
         }
     }
 
@@ -434,10 +474,18 @@ pub(super) fn snapshot_from_status(status: VectorIndexStatus) -> VecShadowSnapsh
 }
 
 pub(super) fn vector_error_from_shadow_failure(failure: VecShadowFailure) -> VectorIndexError {
-    VectorIndexError::StorageFailed(format!(
-        "A3S Vec workspace operation failed: {}",
-        failure.code()
-    ))
+    match failure {
+        VecShadowFailure::RevisionConflict { expected, actual } => {
+            VectorIndexError::RevisionConflict {
+                expected: VectorRevision::new(expected),
+                actual: VectorRevision::new(actual),
+            }
+        }
+        failure => VectorIndexError::StorageFailed(format!(
+            "A3S Vec workspace operation failed: {}",
+            failure.code()
+        )),
+    }
 }
 
 fn lock_unpoisoned<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

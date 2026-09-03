@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Isolated the compatibility `a3s-memory` vector trait behind a single
   workspace adapter; semantic retrieval now consumes the Code-owned vector
   contract and cannot accidentally couple new runtime code to Memory methods.
+- Added revision-CAS to the temporary Vec workspace adapter. Delayed and
+  concurrent partition writers are checked at one Code-owned logical revision,
+  with stale mutations rejected before Vec storage is touched.
 
 ## [8.1.0] - 2026-09-02
 

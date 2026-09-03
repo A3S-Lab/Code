@@ -128,6 +128,10 @@ One Code-owned asynchronous read/write gate spans both engines:
   Memory;
 - Vec replacement fetches the previous partition, deletes it, inserts the new
   documents, and attempts rollback if insertion fails;
+- The Vec adapter exposes the same global revision-CAS contract as the Memory
+  implementation. Its temporary collection may use multiple physical writes
+  for a replacement, but the Code-owned adapter publishes one logical revision
+  and rejects a stale writer before touching the collection;
 - synchronous Vec work runs in Tokio's blocking pool. The owned operation guard
   moves into that blocking operation so cancelling an async waiter cannot let
   close or a later mutation overtake work that is still executing.

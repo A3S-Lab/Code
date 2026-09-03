@@ -19,9 +19,9 @@ pub(super) use a3s_memory::vector::{
 /// Implementations publish complete partition generations atomically.  The
 /// selected implementation is authoritative for one session; any other
 /// implementation is used only as a differential shadow.
-// The contract intentionally mirrors the complete lifecycle surface even
-// though some observation/CAS methods are currently exercised only by the
-// compatibility tests and future migration callers.
+// The contract intentionally mirrors the complete lifecycle surface so the
+// migration can preserve revision-fenced publication while swapping the
+// compatibility implementation for Vec.
 #[allow(dead_code)]
 #[async_trait::async_trait]
 pub(super) trait WorkspaceVectorIndex: Send + Sync {

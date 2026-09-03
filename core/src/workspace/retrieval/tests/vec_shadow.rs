@@ -244,7 +244,7 @@ async fn vec_primary_close_releases_memory_shadow_without_a_prior_clear() {
 }
 
 #[tokio::test]
-async fn vec_primary_advertises_partition_atomic_mutations_without_fake_cas() {
+async fn vec_primary_supports_revision_cas_and_rejects_stale_writers() {
     let index = ShadowVectorIndex::new_with_engine(
         VectorIndexDescriptor::new(2),
         WorkspaceVectorEngine::A3sVec,
@@ -252,20 +252,119 @@ async fn vec_primary_advertises_partition_atomic_mutations_without_fake_cas() {
     .unwrap();
     assert_eq!(
         index.mutation_consistency(),
-        VectorMutationConsistency::PartitionAtomic
+        VectorMutationConsistency::IndexRevisionCas
     );
 
-    let error = index
+    let first = index
         .replace_partition_if_revision(
             "src/lib.rs",
             VectorRevision::new(0),
             vec![VectorRecord::new("record", vec![1.0, 0.0])],
         )
         .await
-        .expect_err("Vec must not claim unsupported global revision CAS");
-    assert_eq!(error, VectorIndexError::ConditionalMutationUnsupported);
-    assert_eq!(index.status().record_count, 0);
+        .expect("the initial revision-CAS write must succeed");
+    assert_eq!(first.revision, VectorRevision::new(1));
+
+    let error = index
+        .replace_partition_if_revision(
+            "src/lib.rs",
+            VectorRevision::new(0),
+            vec![VectorRecord::new("stale", vec![0.0, 1.0])],
+        )
+        .await
+        .expect_err("a stale Vec writer must be rejected");
+    assert_eq!(
+        error,
+        VectorIndexError::RevisionConflict {
+            expected: VectorRevision::new(0),
+            actual: VectorRevision::new(1),
+        }
+    );
+    assert_eq!(index.status().record_count, 1);
+    let result = index
+        .search(VectorSearchRequest::new(vec![1.0, 0.0], 1))
+        .await
+        .expect("the committed record remains searchable");
+    assert_eq!(result.hits[0].id, "record");
+    let removed = index
+        .remove_partition_if_revision("src/lib.rs", VectorRevision::new(1))
+        .await
+        .expect("the current revision may remove the partition");
+    assert_eq!(removed.revision, VectorRevision::new(2));
+    let stale_remove = index
+        .remove_partition_if_revision("src/lib.rs", VectorRevision::new(1))
+        .await
+        .expect_err("a stale removal must be rejected even for an absent partition");
+    assert_eq!(
+        stale_remove,
+        VectorIndexError::RevisionConflict {
+            expected: VectorRevision::new(1),
+            actual: VectorRevision::new(2),
+        }
+    );
     assert_eq!(index.shadow_status().phase, WorkspaceVecShadowPhase::Ready);
+}
+
+#[tokio::test]
+async fn vec_primary_revision_cas_serializes_concurrent_writers() {
+    use std::sync::Arc;
+
+    let index = Arc::new(
+        ShadowVectorIndex::new_with_engine(
+            VectorIndexDescriptor::new(2),
+            WorkspaceVectorEngine::A3sVec,
+        )
+        .unwrap(),
+    );
+    let first = index
+        .replace_partition_if_revision(
+            "src/concurrent.rs",
+            VectorRevision::new(0),
+            vec![VectorRecord::new("initial", vec![1.0, 0.0])],
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.revision, VectorRevision::new(1));
+
+    let left = Arc::clone(&index);
+    let right = Arc::clone(&index);
+    let (left, right) = tokio::join!(
+        async move {
+            left.replace_partition_if_revision(
+                "src/concurrent.rs",
+                VectorRevision::new(1),
+                vec![VectorRecord::new("left", vec![1.0, 0.0])],
+            )
+            .await
+        },
+        async move {
+            right
+                .replace_partition_if_revision(
+                    "src/concurrent.rs",
+                    VectorRevision::new(1),
+                    vec![VectorRecord::new("right", vec![0.0, 1.0])],
+                )
+                .await
+        }
+    );
+    assert!(left.is_ok() ^ right.is_ok());
+    let conflict = left
+        .as_ref()
+        .err()
+        .or_else(|| right.as_ref().err())
+        .expect("one concurrent writer must observe a revision conflict");
+    assert!(matches!(
+        conflict,
+        VectorIndexError::RevisionConflict { .. }
+    ));
+
+    let result = index
+        .search(VectorSearchRequest::new(vec![1.0, 0.0], 1))
+        .await
+        .unwrap();
+    assert!(matches!(result.hits[0].id.as_str(), "left" | "right"));
+    assert_eq!(result.status.revision, VectorRevision::new(2));
+    index.close().await;
 }
 
 #[tokio::test]

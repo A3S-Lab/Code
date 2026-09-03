@@ -436,6 +436,9 @@ differential logic share that boundary. Code CI and the release-profile
 qualification for this contract passed in runs
 [`33742847131`](https://github.com/A3S-Lab/Code/actions/runs/33742847131) and
 [`33742847140`](https://github.com/A3S-Lab/Code/actions/runs/33742847140).
+The Vec implementation now also provides real global revision-CAS with one
+logical revision per partition publication, including stale-writer and
+concurrent-writer tests.
 This is an architecture step, not the semantic removal/promotion decision.
 
 ### 6.2 First-principles decisions

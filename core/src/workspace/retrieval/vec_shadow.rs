@@ -158,7 +158,8 @@ impl VecShadowDiagnostics {
 /// Code-owned migration adapter for the workspace vector authority.
 ///
 /// The compatibility default keeps A3S Memory as the serving primary and
-/// mirrors every admitted mutation/query into Vec. An explicit `A3sVec`
+/// mirrors every admitted mutation/query into Vec. Both engines expose
+/// revision-CAS for delayed partition writers. An explicit `A3sVec`
 /// selection reverses that direction while retaining a Memory differential
 /// shadow. Both modes share one publication gate; a shadow mismatch degrades
 /// the evidence without changing the selected serving result.
@@ -408,7 +409,11 @@ impl WorkspaceVectorIndex for ShadowVectorIndex {
         {
             Ok(status) => status,
             Err(error) => {
-                if !matches!(&error, VectorIndexError::ConditionalMutationUnsupported) {
+                if !matches!(
+                    &error,
+                    VectorIndexError::ConditionalMutationUnsupported
+                        | VectorIndexError::RevisionConflict { .. }
+                ) {
                     self.diagnostics
                         .primary_mutation_failed("replace_partition_if_revision");
                 }
@@ -461,7 +466,11 @@ impl WorkspaceVectorIndex for ShadowVectorIndex {
         {
             Ok(status) => status,
             Err(error) => {
-                if !matches!(&error, VectorIndexError::ConditionalMutationUnsupported) {
+                if !matches!(
+                    &error,
+                    VectorIndexError::ConditionalMutationUnsupported
+                        | VectorIndexError::RevisionConflict { .. }
+                ) {
                     self.diagnostics
                         .primary_mutation_failed("remove_partition_if_revision");
                 }

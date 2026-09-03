@@ -18,6 +18,7 @@ pub(super) enum VecShadowFailure {
     FileSystem,
     FilterBudget,
     InvalidContract,
+    RevisionConflict { expected: u64, actual: u64 },
     Rollback,
     Unavailable,
     UnsupportedLabels,
@@ -33,6 +34,7 @@ impl VecShadowFailure {
             Self::FileSystem => "file_system",
             Self::FilterBudget => "filter_budget",
             Self::InvalidContract => "invalid_contract",
+            Self::RevisionConflict { .. } => "revision_conflict",
             Self::Rollback => "rollback",
             Self::Unavailable => "unavailable",
             Self::UnsupportedLabels => "unsupported_labels",
@@ -88,6 +90,10 @@ struct VecShadowState {
     collection: Option<Collection>,
     temp_dir: Option<TempDir>,
     partitions: BTreeMap<String, Vec<String>>,
+    /// Logical revision of the adapter contract. A partition replacement may
+    /// require multiple physical Vec mutations (delete then insert), but it
+    /// publishes exactly one revision to callers.
+    revision: u64,
 }
 
 #[derive(Debug)]
@@ -152,7 +158,7 @@ impl VecShadowStore {
             .to_str()
             .ok_or(VecShadowFailure::FileSystem)?;
         let collection = Collection::create(collection_path, &schema, Some(&options))?;
-        let snapshot = snapshot(&collection, 0)?;
+        let snapshot = snapshot(&collection, 0, 0)?;
         Ok((
             Self {
                 inner: Arc::new(VecShadowInner {
@@ -161,6 +167,7 @@ impl VecShadowStore {
                         collection: Some(collection),
                         temp_dir: Some(temp_dir),
                         partitions: BTreeMap::new(),
+                        revision: 0,
                     }),
                     operation_gate: Arc::new(tokio::sync::RwLock::new(())),
                 }),
@@ -183,11 +190,35 @@ impl VecShadowStore {
         .await
     }
 
+    pub(super) async fn replace_partition_if_revision(
+        &self,
+        partition: String,
+        expected_revision: u64,
+        records: Vec<VectorRecord>,
+    ) -> VecShadowResult<VecShadowSnapshot> {
+        let inner = Arc::clone(&self.inner);
+        let operation = Arc::clone(&inner.operation_gate).write_owned().await;
+        run_blocking(move || {
+            let _operation = operation;
+            replace_partition_if_revision(&inner, partition, expected_revision, records)
+        })
+        .await
+    }
+
     pub(super) async fn remove_partition(
         &self,
         partition: String,
     ) -> VecShadowResult<VecShadowSnapshot> {
         self.replace_partition(partition, Vec::new()).await
+    }
+
+    pub(super) async fn remove_partition_if_revision(
+        &self,
+        partition: String,
+        expected_revision: u64,
+    ) -> VecShadowResult<VecShadowSnapshot> {
+        self.replace_partition_if_revision(partition, expected_revision, Vec::new())
+            .await
     }
 
     pub(super) async fn clear(&self) -> VecShadowResult<VecShadowSnapshot> {
@@ -229,6 +260,24 @@ fn replace_partition(
     partition: String,
     records: Vec<VectorRecord>,
 ) -> VecShadowResult<VecShadowSnapshot> {
+    replace_partition_checked(inner, partition, None, records)
+}
+
+fn replace_partition_if_revision(
+    inner: &VecShadowInner,
+    partition: String,
+    expected_revision: u64,
+    records: Vec<VectorRecord>,
+) -> VecShadowResult<VecShadowSnapshot> {
+    replace_partition_checked(inner, partition, Some(expected_revision), records)
+}
+
+fn replace_partition_checked(
+    inner: &VecShadowInner,
+    partition: String,
+    expected_revision: Option<u64>,
+    records: Vec<VectorRecord>,
+) -> VecShadowResult<VecShadowSnapshot> {
     let (new_keys, new_docs) = prepare_documents(&partition, records, inner.dimension)?;
     let mut state = lock_unpoisoned(&inner.state);
     let collection = state
@@ -236,11 +285,29 @@ fn replace_partition(
         .as_ref()
         .cloned()
         .ok_or(VecShadowFailure::Closed)?;
+    let actual_revision = state.revision;
+    if let Some(expected_revision) = expected_revision {
+        if actual_revision != expected_revision {
+            return Err(VecShadowFailure::RevisionConflict {
+                expected: expected_revision,
+                actual: actual_revision,
+            });
+        }
+    }
     let old_keys = state
         .partitions
         .get(&partition)
         .cloned()
         .unwrap_or_default();
+    let changed = !(new_keys.is_empty() && old_keys.is_empty());
+    let next_revision = if changed {
+        state
+            .revision
+            .checked_add(1)
+            .ok_or(VecShadowFailure::InvalidContract)?
+    } else {
+        state.revision
+    };
     let old_docs = fetch_documents(&collection, &old_keys)?;
 
     delete_keys(&collection, &old_keys)?;
@@ -256,7 +323,8 @@ fn replace_partition(
     } else {
         state.partitions.insert(partition, new_keys);
     }
-    snapshot(&collection, state.partitions.len())
+    state.revision = next_revision;
+    snapshot(&collection, state.partitions.len(), next_revision)
 }
 
 fn clear(inner: &VecShadowInner) -> VecShadowResult<VecShadowSnapshot> {
@@ -272,9 +340,18 @@ fn clear(inner: &VecShadowInner) -> VecShadowResult<VecShadowSnapshot> {
         .flatten()
         .cloned()
         .collect::<Vec<_>>();
+    let next_revision = if keys.is_empty() {
+        state.revision
+    } else {
+        state
+            .revision
+            .checked_add(1)
+            .ok_or(VecShadowFailure::InvalidContract)?
+    };
     delete_keys(&collection, &keys)?;
     state.partitions.clear();
-    snapshot(&collection, 0)
+    state.revision = next_revision;
+    snapshot(&collection, 0, next_revision)
 }
 
 fn search(
@@ -334,7 +411,8 @@ fn search(
             })
         })
         .collect::<VecShadowResult<Vec<_>>>()?;
-    let snapshot = snapshot(&collection, state_partition_count(&inner.state))?;
+    let (partition_count, revision) = state_partition_metadata(&inner.state);
+    let snapshot = snapshot(&collection, partition_count, revision)?;
     Ok(VecShadowSearchResult {
         truncated: searched_records > hits.len(),
         hits,
@@ -343,8 +421,9 @@ fn search(
     })
 }
 
-fn state_partition_count(state: &Mutex<VecShadowState>) -> usize {
-    lock_unpoisoned(state).partitions.len()
+fn state_partition_metadata(state: &Mutex<VecShadowState>) -> (usize, u64) {
+    let state = lock_unpoisoned(state);
+    (state.partitions.len(), state.revision)
 }
 
 fn close(inner: &VecShadowInner) -> VecShadowResult<()> {
@@ -419,10 +498,14 @@ fn checked_write(result: WriteResult) -> VecShadowResult<()> {
     }
 }
 
-fn snapshot(collection: &Collection, partition_count: usize) -> VecShadowResult<VecShadowSnapshot> {
+fn snapshot(
+    collection: &Collection,
+    partition_count: usize,
+    revision: u64,
+) -> VecShadowResult<VecShadowSnapshot> {
     let stats = collection.stats()?;
     Ok(VecShadowSnapshot {
-        revision: stats.revision,
+        revision,
         partition_count,
         record_count: usize::try_from(stats.doc_count).unwrap_or(usize::MAX),
         accounted_bytes: usize::try_from(stats.accounted_bytes).unwrap_or(usize::MAX),
