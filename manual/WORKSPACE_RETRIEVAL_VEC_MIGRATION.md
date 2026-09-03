@@ -7,7 +7,7 @@ This document defines the A3S Code integration gates for A3S Vec. Semantic
 vector migration is still differential evidence, not a stable serving-backend
 promotion. Code commit `788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced
 the gated Vec-primary authority slice; the current validation pin is Code
-`aee2521905de9bc65296a4911e373f6d541edab8` with A3S Vec commit
+`b5540a869e742ce7a98348f27997970619a754b6` with A3S Vec commit
 `41283f6315906a2737b5a8e8612ac876a8dc9c04`.
 
 Workspace retrieval consumes a Code-owned `WorkspaceVectorIndex` contract. The
@@ -255,9 +255,9 @@ claimed as that evidence.
 
 The Code validation workflows for the current architecture pin also passed:
 the complete CI matrix is recorded in
-[`33742847131`](https://github.com/A3S-Lab/Code/actions/runs/33742847131), and
+[`33746458356`](https://github.com/A3S-Lab/Code/actions/runs/33746458356), and
 the release-profile qualification is recorded in
-[`33742847140`](https://github.com/A3S-Lab/Code/actions/runs/33742847140).
+[`33746458015`](https://github.com/A3S-Lab/Code/actions/runs/33746458015).
 
 The latest hosted release-profile artifact ran on Linux x86-64 (4 logical
 CPUs, 25,000 records, 384 dimensions, top-20, 100 measured queries and 20
