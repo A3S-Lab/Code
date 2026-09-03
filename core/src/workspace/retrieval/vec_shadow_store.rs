@@ -2,7 +2,7 @@ use super::vec_shadow_document::{
     normalize_unit, partition_filter, prepare_documents, EMBEDDING_FIELD, PARTITION_FIELD,
     PARTITION_KEY_FIELD, RECORD_ID_FIELD,
 };
-use a3s_memory::vector::{VectorIndexDescriptor, VectorRecord, VectorSearchRequest};
+use super::vector_contract::{VectorIndexDescriptor, VectorRecord, VectorSearchRequest};
 use a3s_vec::{
     Collection, CollectionOptions, CollectionResourceLimits, CollectionSchema, DataType, Doc,
     Durability, ErrorCode, FieldSchema, SearchQuery, WriteResult,

@@ -428,6 +428,12 @@ decision: the Memory path, differential checks, platform qualification, RSS/
 disk measurements, and rollback evidence remain in place until that gate is
 closed.
 
+The semantic runtime now consumes a Code-owned `WorkspaceVectorIndex` contract.
+The legacy `a3s-memory::VectorIndex` trait is imported only by the explicit
+compatibility adapter; Vec-primary and Memory-primary selection, publication,
+and differential logic share that boundary. This is an architecture step, not
+the semantic removal/promotion decision.
+
 ### 6.2 First-principles decisions
 
 1. A normal coding workspace is small enough for exact vector scanning. A

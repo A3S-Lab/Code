@@ -2,11 +2,11 @@ use super::semantic_batch::plan_semantic_batches;
 use super::semantic_runtime::{BuildState, CatalogPartition, ReadyPartition};
 use super::semantic_status::SemanticStatusCell;
 use super::vec_shadow::ShadowVectorIndex;
+use super::vector_contract::{VectorRecord, WorkspaceVectorIndex};
 use super::{
     ChunkCatalogSnapshot, WorkspaceChunkCatalog, WorkspaceRetrievalPhase, WorkspaceRetrievalStatus,
 };
 use crate::embedding::EmbeddingExecutor;
-use a3s_memory::vector::{VectorIndex, VectorRecord};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

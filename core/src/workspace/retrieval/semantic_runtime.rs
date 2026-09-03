@@ -4,13 +4,13 @@ use super::semantic_projection::{
 };
 use super::semantic_status::SemanticStatusCell;
 use super::vec_shadow::ShadowVectorIndex;
+use super::vector_contract::{VectorIndexDescriptor, WorkspaceVectorIndex};
 use super::{
     ChunkCatalogSnapshot, WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceEmbeddingBatchMetrics,
     WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalResult,
     WorkspaceRetrievalStatus,
 };
 use crate::embedding::EmbeddingExecutor;
-use a3s_memory::vector::{VectorIndex, VectorIndexDescriptor};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;

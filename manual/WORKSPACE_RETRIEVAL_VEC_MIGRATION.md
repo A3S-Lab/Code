@@ -9,6 +9,12 @@ promotion. Code commit `788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced
 the gated Vec-primary authority slice; the current validation pin is A3S Vec commit
 `41283f6315906a2737b5a8e8612ac876a8dc9c04`.
 
+Workspace retrieval consumes a Code-owned `WorkspaceVectorIndex` contract. The
+legacy Memory trait is bound only inside the compatibility adapter, so new
+semantic runtime code cannot grow direct dependency-owned method calls. The
+adapter remains available for the compatibility default and rollback evidence
+until the semantic promotion decision is complete.
+
 ## Authority contract
 
 `A3sMemory` is the compatibility default. A trusted host may explicitly select

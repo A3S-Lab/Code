@@ -1,3 +1,4 @@
+use super::vector_contract::{VectorSearchRequest, WorkspaceVectorIndex};
 use super::{
     retain_verified, WorkspaceChunk, WorkspaceRetrievalError, WorkspaceRetrievalPhase,
     WorkspaceRetrievalRuntime, WorkspaceSemanticFallbackReason, WorkspaceSemanticSearchHit,
@@ -5,7 +6,6 @@ use super::{
 };
 use crate::embedding::EmbeddingInput;
 use crate::workspace::WorkspaceFileSystem;
-use a3s_memory::vector::{VectorIndex, VectorSearchRequest};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,10 +1,10 @@
+use super::vector_contract::VectorIndexError;
 use crate::embedding::{
     EmbeddingError, EmbeddingExecutorConfig, EmbeddingProvider, EmbeddingProviderDescriptor,
 };
 use crate::workspace::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkingStrategy, WorkspaceRerankOptions,
 };
-use a3s_memory::vector::VectorIndexError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;

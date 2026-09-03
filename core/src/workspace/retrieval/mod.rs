@@ -13,6 +13,7 @@ mod hybrid_query;
 mod hybrid_rank;
 mod hybrid_types;
 pub(crate) mod lexical;
+mod memory_vector_adapter;
 mod reconcile;
 mod rerank;
 mod runtime;
@@ -27,6 +28,7 @@ mod vec_shadow;
 mod vec_shadow_document;
 mod vec_shadow_store;
 mod vector_authority;
+mod vector_contract;
 mod verification;
 
 pub use catalog::{ChunkCatalogSnapshot, WorkspaceChunkCatalog};

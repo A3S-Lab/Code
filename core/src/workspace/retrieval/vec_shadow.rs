@@ -1,15 +1,16 @@
+use super::memory_vector_adapter::MemoryVectorIndexAdapter;
 use super::vec_shadow_store::{
     VecShadowFailure, VecShadowSearchResult, VecShadowSnapshot, VecShadowStore,
 };
 use super::vector_authority::{
     search_results_equal, snapshot_from_status, PrimaryVectorIndex, VecPrimaryVectorIndex,
 };
-use super::{WorkspaceVecShadowPhase, WorkspaceVecShadowStatus, WorkspaceVectorEngine};
-use a3s_memory::vector::{
-    InMemoryVectorIndex, VectorIndex, VectorIndexChangeToken, VectorIndexDescriptor,
-    VectorIndexError, VectorIndexObservation, VectorIndexStatus, VectorMutationConsistency,
-    VectorRecord, VectorResult, VectorRevision, VectorSearchRequest, VectorSearchResult,
+use super::vector_contract::{
+    VectorIndexChangeToken, VectorIndexDescriptor, VectorIndexError, VectorIndexObservation,
+    VectorIndexStatus, VectorMutationConsistency, VectorRecord, VectorResult, VectorRevision,
+    VectorSearchRequest, VectorSearchResult, WorkspaceVectorIndex,
 };
+use super::{WorkspaceVecShadowPhase, WorkspaceVecShadowStatus, WorkspaceVectorEngine};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -163,7 +164,7 @@ impl VecShadowDiagnostics {
 /// the evidence without changing the selected serving result.
 pub(super) struct ShadowVectorIndex {
     primary: PrimaryVectorIndex,
-    memory_shadow: Option<InMemoryVectorIndex>,
+    memory_shadow: Option<MemoryVectorIndexAdapter>,
     vec_shadow: Option<VecShadowStore>,
     diagnostics: Arc<VecShadowDiagnostics>,
     publication_gate: tokio::sync::RwLock<()>,
@@ -179,7 +180,7 @@ impl ShadowVectorIndex {
         let (primary, memory_shadow, vec_shadow) = match active_engine {
             WorkspaceVectorEngine::A3sMemory => {
                 let primary =
-                    PrimaryVectorIndex::Memory(InMemoryVectorIndex::new(descriptor.clone())?);
+                    PrimaryVectorIndex::Memory(MemoryVectorIndexAdapter::new(descriptor.clone())?);
                 let vec_shadow = match VecShadowStore::create(&descriptor) {
                     Ok((shadow, snapshot)) => {
                         diagnostics.ready(snapshot);
@@ -196,7 +197,7 @@ impl ShadowVectorIndex {
                 let primary =
                     PrimaryVectorIndex::Vec(VecPrimaryVectorIndex::new(descriptor.clone())?);
                 diagnostics.ready(snapshot_from_status(primary.status()));
-                let memory_shadow = Some(InMemoryVectorIndex::new(descriptor)?);
+                let memory_shadow = Some(MemoryVectorIndexAdapter::new(descriptor)?);
                 (primary, memory_shadow, None)
             }
         };
@@ -343,7 +344,7 @@ impl ShadowVectorIndex {
 }
 
 #[async_trait::async_trait]
-impl VectorIndex for ShadowVectorIndex {
+impl WorkspaceVectorIndex for ShadowVectorIndex {
     fn descriptor(&self) -> &VectorIndexDescriptor {
         self.primary.descriptor()
     }

@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserving the locked result and source-rendering contract. Semantic vector
   authority remains behind the typed migration preview until its platform,
   resource, recovery, and rollback gates are closed.
+- Isolated the compatibility `a3s-memory` vector trait behind a single
+  workspace adapter; semantic retrieval now consumes the Code-owned vector
+  contract and cannot accidentally couple new runtime code to Memory methods.
 
 ## [8.1.0] - 2026-09-02
 

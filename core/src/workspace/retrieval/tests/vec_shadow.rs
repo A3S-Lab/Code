@@ -1,11 +1,11 @@
 use super::super::vec_shadow::ShadowVectorIndex;
 use super::super::vec_shadow_store::VecShadowStore;
+use super::super::vector_contract::{
+    VectorIndexDescriptor, VectorIndexError, VectorMutationConsistency, VectorRecord,
+    VectorRevision, VectorSearchRequest, WorkspaceVectorIndex,
+};
 use super::super::WorkspaceVecShadowPhase;
 use super::super::WorkspaceVectorEngine;
-use a3s_memory::vector::{
-    VectorIndex, VectorIndexDescriptor, VectorIndexError, VectorMutationConsistency, VectorRecord,
-    VectorRevision, VectorSearchRequest,
-};
 
 #[tokio::test]
 async fn vec_shadow_matches_memory_ranking_and_partition_filters() {

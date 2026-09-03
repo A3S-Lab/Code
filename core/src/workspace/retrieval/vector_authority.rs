@@ -1,16 +1,18 @@
+use super::memory_vector_adapter::MemoryVectorIndexAdapter;
 use super::vec_shadow_store::{VecShadowFailure, VecShadowSnapshot, VecShadowStore};
-use a3s_memory::vector::{
-    InMemoryVectorIndex, VectorBudgetResource, VectorIndex, VectorIndexChangeToken,
-    VectorIndexDescriptor, VectorIndexError, VectorIndexObservation, VectorIndexStatus,
-    VectorMutationConsistency, VectorNormalization, VectorRecord, VectorResult, VectorRevision,
-    VectorSearchHit, VectorSearchRequest, VectorSearchResult,
+use super::vector_contract::{
+    VectorIndexChangeToken, VectorIndexDescriptor, VectorIndexError, VectorIndexObservation,
+    VectorIndexStatus, VectorMetric, VectorMutationConsistency, VectorNormalization, VectorRecord,
+    VectorResult, VectorRevision, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
+    WorkspaceVectorIndex,
 };
+use a3s_memory::vector::VectorBudgetResource;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 /// Primary backend used by the workspace migration adapter.
 pub(super) enum PrimaryVectorIndex {
-    Memory(InMemoryVectorIndex),
+    Memory(MemoryVectorIndexAdapter),
     Vec(VecPrimaryVectorIndex),
 }
 
@@ -131,7 +133,7 @@ fn validate_descriptor(descriptor: &VectorIndexDescriptor) -> VectorResult<()> {
             "max_bytes must be greater than zero".to_string(),
         ));
     }
-    if descriptor.metric != a3s_memory::vector::VectorMetric::Cosine
+    if descriptor.metric != VectorMetric::Cosine
         || descriptor.normalization != VectorNormalization::Unit
     {
         return Err(VectorIndexError::InvalidDescriptor(
@@ -286,29 +288,30 @@ fn validate_search_request(
     Ok(())
 }
 
-impl PrimaryVectorIndex {
-    pub(super) fn descriptor(&self) -> &VectorIndexDescriptor {
+#[async_trait::async_trait]
+impl WorkspaceVectorIndex for PrimaryVectorIndex {
+    fn descriptor(&self) -> &VectorIndexDescriptor {
         match self {
             Self::Memory(index) => index.descriptor(),
             Self::Vec(index) => &index.descriptor,
         }
     }
 
-    pub(super) fn status(&self) -> VectorIndexStatus {
+    fn status(&self) -> VectorIndexStatus {
         match self {
             Self::Memory(index) => index.status(),
             Self::Vec(index) => index.status(),
         }
     }
 
-    pub(super) fn change_token(&self) -> Option<VectorIndexChangeToken> {
+    fn change_token(&self) -> Option<VectorIndexChangeToken> {
         match self {
             Self::Memory(index) => index.change_token(),
             Self::Vec(_) => None,
         }
     }
 
-    pub(super) async fn observe(&self) -> VectorResult<VectorIndexObservation> {
+    async fn observe(&self) -> VectorResult<VectorIndexObservation> {
         match self {
             Self::Memory(index) => index.observe().await,
             Self::Vec(index) => {
@@ -322,14 +325,14 @@ impl PrimaryVectorIndex {
         }
     }
 
-    pub(super) fn mutation_consistency(&self) -> VectorMutationConsistency {
+    fn mutation_consistency(&self) -> VectorMutationConsistency {
         match self {
             Self::Memory(index) => index.mutation_consistency(),
             Self::Vec(_) => VectorMutationConsistency::PartitionAtomic,
         }
     }
 
-    pub(super) async fn replace_partition(
+    async fn replace_partition(
         &self,
         partition: &str,
         records: Vec<VectorRecord>,
@@ -340,7 +343,7 @@ impl PrimaryVectorIndex {
         }
     }
 
-    pub(super) async fn replace_partition_if_revision(
+    async fn replace_partition_if_revision(
         &self,
         partition: &str,
         expected_revision: VectorRevision,
@@ -356,17 +359,14 @@ impl PrimaryVectorIndex {
         }
     }
 
-    pub(super) async fn remove_partition(
-        &self,
-        partition: &str,
-    ) -> VectorResult<VectorIndexStatus> {
+    async fn remove_partition(&self, partition: &str) -> VectorResult<VectorIndexStatus> {
         match self {
             Self::Memory(index) => index.remove_partition(partition).await,
             Self::Vec(index) => index.remove_partition(partition).await,
         }
     }
 
-    pub(super) async fn remove_partition_if_revision(
+    async fn remove_partition_if_revision(
         &self,
         partition: &str,
         expected_revision: VectorRevision,
@@ -381,23 +381,22 @@ impl PrimaryVectorIndex {
         }
     }
 
-    pub(super) async fn search(
-        &self,
-        request: VectorSearchRequest,
-    ) -> VectorResult<VectorSearchResult> {
+    async fn search(&self, request: VectorSearchRequest) -> VectorResult<VectorSearchResult> {
         match self {
             Self::Memory(index) => index.search(request).await,
             Self::Vec(index) => index.search(request).await,
         }
     }
 
-    pub(super) async fn clear(&self) -> VectorResult<VectorIndexStatus> {
+    async fn clear(&self) -> VectorResult<VectorIndexStatus> {
         match self {
             Self::Memory(index) => index.clear().await,
             Self::Vec(index) => index.clear().await,
         }
     }
+}
 
+impl PrimaryVectorIndex {
     pub(super) async fn close(&self) -> VectorResult<()> {
         if let Self::Vec(index) = self {
             index.close().await?;
