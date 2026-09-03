@@ -23,7 +23,7 @@ required-features = ["durable-memory-sqlite"]
 # Internal crates
 a3s-common = "0.1.1"
 a3s-memory = { version = "0.1.4", git = "https://github.com/A3S-Lab/Memory.git", rev = "97a5e885d196be77dc1823ad86238e77d942ed73" }
-a3s-vec = { version = "0.1.0", git = "https://github.com/A3S-Lab/Vec.git", rev = "7e3b083e36ab5aeb300b2c45d6d59280971087da", default-features = false }
+a3s-vec = { version = "0.1.0", git = "https://github.com/A3S-Lab/Vec.git", rev = "13585ccd3f956f6cb7d669b2ee6acc7096fca03d", default-features = false }
 a3s-lane = "0.5"
 # Pin the Search release so the browser-engine and Moli adapter APIs cannot
 # drift underneath the Code runtime manager.
