@@ -8,7 +8,7 @@ vector migration is still differential evidence, not a stable serving-backend
 promotion. Code commit `788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced
 the gated Vec-primary authority slice; the current dependency-validation pin is
 Code `708a85e3ac070640ca5fb8173d0b06e6070152e7` with A3S Vec commit
-`13585ccd3f956f6cb7d669b2ee6acc7096fca03d`.
+`416140ec5f9bd6fc8030f9f17735c0b10d099c99` (`a3s-vec` 0.1.1).
 
 Workspace retrieval consumes a Code-owned `WorkspaceVectorIndex` contract. The
 legacy Memory trait is bound only inside the compatibility adapter, so new
@@ -207,8 +207,8 @@ report schema 4 and profile `workspace-retrieval-v3`:
 | Vec comparisons per hybrid arm | 120/120 matching | zero mismatch/failure |
 | Closed authoritative and shadow state | zero records and bytes | required |
 
-The 2026-09-03 local revision-bound rerun rebuilt the release benchmark against
-Vec `13585ccd3f956f6cb7d669b2ee6acc7096fca03d` and Code
+The 2026-09-03 local revision-bound rerun below is historical evidence for the
+previous Vec `13585ccd3f956f6cb7d669b2ee6acc7096fca03d` candidate and Code
 `708a85e3ac070640ca5fb8173d0b06e6070152e7` on the reference Windows x86-64
 host (20 logical CPUs; 25,000 records, 384 dimensions, top-20, 100 measured
 queries, 20 warmups). The revision-bound local profile reports:

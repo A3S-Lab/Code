@@ -207,7 +207,7 @@ vector cleanup.
 ## VEC-SHADOW1 migration evidence
 
 Code dependency commit `708a85e3` mirrors each already-validated Memory
-`VectorRecord` batch into the current A3S Vec validation pin `13585ccd` without
+`VectorRecord` batch into the current A3S Vec validation pin `416140ec` without
 a second provider call. Memory remains the only result oracle. Queries execute
 under one publication gate;
 Vec IDs, partitions, f32 score bits, searched-record counts, and truncation are
