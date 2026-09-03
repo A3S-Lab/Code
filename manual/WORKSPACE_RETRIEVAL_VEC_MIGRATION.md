@@ -209,10 +209,10 @@ matrix is recorded in
 the release-profile qualification is recorded in
 [`33712033140`](https://github.com/A3S-Lab/Code/actions/runs/33712033140).
 
-The repository-wide strict rustdoc command is currently blocked by pre-existing
-private or broken links in `core/src/mcp/result.rs` and `core/src/workspace/s3`.
-The new Vec modules produce no rustdoc diagnostic. This baseline issue must be
-closed separately rather than hidden in the migration change.
+The full Code workspace strict rustdoc command (`cargo doc --locked
+--workspace --all-features --no-deps` with `RUSTDOCFLAGS=-D warnings`) passed on
+the current candidate. This includes the migration adapter and its public SDK
+facades; no rustdoc diagnostic is suppressed for the Vec integration.
 
 ## Promotion gates
 
