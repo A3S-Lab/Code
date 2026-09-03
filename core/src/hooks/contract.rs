@@ -225,4 +225,52 @@ pub trait HookExecutor: Send + Sync + std::fmt::Debug + 'static {
     }
 
     async fn record_run_cancelled(&self, _run_id: &str, _session_id: &str, _reason: Option<&str>) {}
+
+    /// Gate a typed steer/interrupt request before it enters a Run's control
+    /// inbox.  Host executors can return `Block` or `Retry` without needing to
+    /// understand the internal loop implementation.
+    async fn before_run_control(
+        &self,
+        request: &crate::run_control::RunControlRequest,
+    ) -> HookOutcome {
+        self.fire_outcome(&HookEvent::PreRunControl(super::PreRunControlEvent {
+            session_id: request.session_id.clone().unwrap_or_default(),
+            run_id: request.run_id.clone(),
+            request_id: request.request_id.clone(),
+            operation: request.command.operation(),
+            command: request.command.clone(),
+            expected_turn_id: request.expected_turn_id.clone(),
+            expected_turn_revision: request.expected_turn_revision,
+            deadline_ms: request.deadline_ms,
+        }))
+        .await
+    }
+
+    /// Observe the durable acceptance/application receipt for a run-control
+    /// request. This is intentionally observational and must not mutate the
+    /// receipt after it has been returned to the caller.
+    async fn record_run_control(
+        &self,
+        request: &crate::run_control::RunControlRequest,
+        receipt: &crate::run_control::RunControlReceipt,
+    ) {
+        let event = HookEvent::PostRunControl(super::PostRunControlEvent {
+            session_id: receipt.session_id.clone(),
+            run_id: receipt.run_id.clone(),
+            request_id: receipt.request_id.clone(),
+            operation: receipt.operation,
+            state: receipt.state,
+            sequence: receipt.sequence,
+            turn_id: receipt.turn_id.clone(),
+            turn_revision: receipt.turn_revision,
+            accepted_at_ms: receipt.accepted_at_ms,
+            applied_at_ms: receipt.applied_at_ms,
+            error: receipt.error.clone(),
+        });
+        // A post event is observational. Use the request only to keep the
+        // method's contract explicit for custom executors; the receipt is the
+        // source of truth for all emitted fields.
+        let _ = request;
+        let _ = self.fire_outcome(&event).await;
+    }
 }

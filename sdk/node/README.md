@@ -15,7 +15,7 @@ asset; musl packages include an explicit `MOLI_UNAVAILABLE` marker because the
 Moli release has no musl build. The Intel binding is built with a macOS 12
 deployment target and runs on macOS 12 or later.
 
-The v8.1.0 package pins `a3s-search` v3.1.0 and selects Moli as the default
+Since v8.1.0, the package pins `a3s-search` v3.1.0 and selects Moli as the default
 JavaScript-capable search backend. `sdkCapabilities()` returns the complete
 product capability inventory, while `moliRuntimeInfo()` and `ensureMoli()`
 expose read-only diagnostics and verified shared-cache provisioning. Multiple
@@ -46,14 +46,15 @@ main().catch(console.error)
 const {
   sdkCapabilities,
   sdkCapabilitiesSchema,
+  BrowserBackend,
   moliRuntimeInfo,
   ensureMoli,
 } = require('@a3s-lab/code')
 
 async function inspectRuntime() {
   const capabilities = sdkCapabilities()
-  const runtime = moliRuntimeInfo({ backend: 'moli', autoDownloadMoli: true })
-  const executable = await ensureMoli({ backend: 'moli' })
+  const runtime = moliRuntimeInfo({ backend: BrowserBackend.Moli, autoDownloadMoli: true })
+  const executable = await ensureMoli({ backend: BrowserBackend.Moli })
   console.log(sdkCapabilitiesSchema(), capabilities.length, runtime.version, executable)
 }
 
@@ -302,6 +303,26 @@ Fully consuming `EventStream` is a lifecycle barrier: the terminal event and
 the following `{ done: true }` are not returned ahead of core cleanup, so an
 immediate next conversation operation is not rejected because the prior stream
 still owns admission.
+
+## Safe-point Run Control
+
+An active run can be corrected or stopped without starting a second turn:
+
+```js
+const state = await session.runControlSnapshot()
+const receipt = await session.steer('Prioritize the failing test', state ? {
+  runId: state.runId,
+  expectedTurnId: state.turnId ?? undefined,
+  expectedTurnRevision: state.turnRevision,
+} : undefined)
+console.log(receipt.state) // accepted, applied, or settled
+await session.interrupt({ reason: 'User stopped the run' })
+```
+
+`steer` is applied at the next runtime safe point; `interrupt` cooperatively
+stops new work and lets the current provider/tool boundary settle. Requests
+are idempotent by `requestId`, stale turn guards are rejected, and neither
+method changes permissions, model, sandbox, budget, or output contract.
 
 ## Streaming Event Protocol
 

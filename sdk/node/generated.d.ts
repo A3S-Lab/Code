@@ -33,6 +33,27 @@ export interface AgentRunSpawnObject {
   snapshot: any
   replayed: boolean
 }
+/** Optional optimistic-concurrency and idempotency fields for `Session.steer`. */
+export interface SteerOptions {
+  requestId?: string
+  runId?: string
+  expectedTurnId?: string
+  expectedTurnRevision?: number
+  deadlineMs?: number
+}
+/**
+ * Optional optimistic-concurrency and idempotency fields for
+ * `Session.interrupt`.
+ */
+export interface InterruptOptions {
+  reason?: string
+  force?: boolean
+  requestId?: string
+  runId?: string
+  expectedTurnId?: string
+  expectedTurnRevision?: number
+  deadlineMs?: number
+}
 export interface ToolResult {
   name: string
   output: string
@@ -1554,6 +1575,24 @@ export declare class Session {
   cancelSubagentTask(taskId: string): Promise<boolean>
   /** Cancel a specific run only if it is still the active run. */
   cancelRun(runId: string): Promise<boolean>
+  /**
+   * Append a user direction to the active run at its next safe point.
+   *
+   * The request is idempotent by `requestId` and can be guarded by the
+   * turn/revision returned from `runControlSnapshot()`. It never starts a
+   * second run or mutates the transcript outside the execution loop.
+   */
+  steer(input: string, options?: SteerOptions | undefined | null): Promise<any>
+  /**
+   * Cooperatively interrupt the active run after the current provider/tool
+   * boundary. `force` is advisory and never bypasses cleanup or approvals.
+   */
+  interrupt(options?: InterruptOptions | undefined | null): Promise<any>
+  /**
+   * Return the active run-control snapshot, or `null` when the session is
+   * idle. The snapshot is safe to use as an optimistic-concurrency token.
+   */
+  runControlSnapshot(): Promise<any>
   /**
    * Register a hook for lifecycle event interception.
    *

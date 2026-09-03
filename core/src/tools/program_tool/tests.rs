@@ -380,11 +380,21 @@ async fn program_tool_ctx_read_file_passes_offset_and_limit() {
     assert!(output.success, "{}", output.content);
     let metadata = output.metadata.unwrap();
     let text = metadata["script_result"]["text"].as_str().unwrap();
-    assert!(text.contains("two"));
-    assert!(!text.contains("one"));
+    assert_eq!(text, "two\n");
     let raw = metadata["script_result"]["raw"].as_str().unwrap();
     assert!(raw.contains("three"));
     assert!(!raw.contains("two"));
+}
+
+#[test]
+fn program_read_text_uses_range_metadata_not_content_heuristics() {
+    let output = "     7\talpha\n     8\t... (more lines available; continue with offset=9)\n\n... (more lines available; continue with offset=9)\n";
+    let metadata = serde_json::json!({"range": {"returned_lines": 2}});
+
+    assert_eq!(
+        program_read_text(output, Some(&metadata)).as_deref(),
+        Some("alpha\n... (more lines available; continue with offset=9)\n")
+    );
 }
 
 #[tokio::test]

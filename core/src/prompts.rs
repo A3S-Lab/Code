@@ -42,6 +42,14 @@ pub const BOUNDARIES: &str = include_str!("../prompts/common/boundaries.md");
 pub const REPOSITORY_TOOL_CONTRACT: &str =
     include_str!("../prompts/common/repository_tool_contract.md");
 
+/// Shared runtime contract for authority, scope, run control, evidence, and
+/// completion semantics.
+///
+/// This contract is appended to every assembled prompt.  It describes the
+/// model-facing boundary; enforcement remains in the host runtime and tool
+/// implementations.
+pub const RUNTIME_CONTRACT: &str = include_str!("../prompts/common/runtime_contract.md");
+
 // ============================================================================
 // Delegated Run Prompts
 // ============================================================================
@@ -403,6 +411,9 @@ impl AgentStyle {
 /// ```text
 /// [role]            ← Custom identity/role (e.g. "You are a Python expert")
 /// [CORE]            ← Always present: Core Behaviour + Tool Usage Strategy + Completion Criteria
+/// [runtime]         ← Host authority, scope, run-control, evidence contract
+/// [repository]      ← Canonical repository-tool schemas and usage rules
+/// [boundaries]      ← Injection, secret, and malicious-code boundaries
 /// [guidelines]      ← Custom coding rules / constraints
 /// [response_style]  ← Custom response format (replaces default Response Format section)
 /// [extra]           ← Freeform additional instructions
@@ -452,9 +463,9 @@ const DEFAULT_RESPONSE_FORMAT: &str =
 impl SystemPromptSlots {
     /// Build the final system prompt by assembling slots around the core prompt.
     ///
-    /// The core agentic behavior (Core Behaviour, Tool Usage Strategy, Completion
-    /// Criteria), shared repository-tool contract, and safety boundaries are always
-    /// preserved. Users can only customize the edges.
+    /// The core agentic behavior, runtime contract, shared repository-tool
+    /// contract, and safety boundaries are always preserved. Users can only
+    /// customize the edges.
     ///
     /// Note: This uses `AgentStyle::GeneralPurpose` as the base. Use
     /// `build_with_message()` to enable automatic intent-based style detection.
@@ -512,7 +523,11 @@ impl SystemPromptSlots {
 
         parts.push(core);
 
-        // 2b. Repository-tool contract — shared by every style so parameter and
+        // 2b. Runtime contract — shared by every style so authority, run
+        // control, and evidence semantics cannot drift between built-in agents.
+        parts.push(RUNTIME_CONTRACT.replace('\r', "").trim_end().to_string());
+
+        // 2c. Repository-tool contract — shared by every style so parameter and
         // pagination guidance cannot drift between built-in agents.
         parts.push(
             REPOSITORY_TOOL_CONTRACT
@@ -521,7 +536,7 @@ impl SystemPromptSlots {
                 .to_string(),
         );
 
-        // 2c. Safety boundaries — single source of truth, appended uniformly so
+        // 2d. Safety boundaries — single source of truth, appended uniformly so
         // every style and delegated subagent (which build through this path)
         // carries injection-hygiene, secret-handling, and malware-refusal rules.
         parts.push(BOUNDARIES.replace('\r', "").trim_end().to_string());

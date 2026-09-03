@@ -53,6 +53,7 @@ const (
 	EventGoalProgress           = "goal_progress"
 	EventGoalAchieved           = "goal_achieved"
 	EventContextCompacted       = "context_compacted"
+	EventRunControlApplied      = "run_control_applied"
 	EventPersistenceFailed      = "persistence_failed"
 	EventBudgetThresholdHit     = "budget_threshold_hit"
 	EventPassivationRequested   = "passivation_requested"
@@ -106,6 +107,7 @@ var agentEventTypesV1 = [...]string{
 	EventGoalProgress,
 	EventGoalAchieved,
 	EventContextCompacted,
+	EventRunControlApplied,
 	EventPersistenceFailed,
 	EventBudgetThresholdHit,
 	EventPassivationRequested,

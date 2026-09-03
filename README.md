@@ -155,7 +155,7 @@ telemetry remain opt-in.
 
 | Area                    | What is available                                                                                                                                                                                                                       | Activation                                                                                                                                                                |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agent runtime           | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, and replay                                                                                                                                 | Baseline                                                                                                                                                                  |
+| Agent runtime           | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, replay, and safe-point `steer`/`interrupt` run control                                                                                                                                          | Baseline                                                                                                                                                                  |
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, A3S Vec FTS/BM25 lexical ranking, Memory-authoritative exact vectors, a session-local A3S Vec differential shadow, hybrid RRF, optional deterministic CPU reranking, readiness/parity metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
@@ -167,6 +167,7 @@ telemetry remain opt-in.
 | MCP and Skills          | Isolated MCP transports plus filesystem, registry, inline, and live session Skills                                                                                                                                                      | Configuration or live registration                                                                                                                                        |
 | Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation                                                                                                                    | Manual tools independently configurable; automation opt-in                                                                                                                |
 | Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, and occupancy snapshots                                        | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()`                                                                      |
+| Safe-point run control  | Typed, idempotent `steer` and cooperative `interrupt` requests with immutable Run identity, optimistic turn guards, bounded receipts, lifecycle Hooks, and durable event evidence                                                                 | Host invokes the Session control surface; requests never create a concurrent transcript operation and never change model, permissions, sandbox, or budget                    |
 | Programmable workflows  | Bounded QuickJS `program` calls and replayable A3S Flow-backed dynamic workflows                                                                                                                                                        | `program` baseline; dynamic runtime explicitly registered                                                                                                                 |
 | Persistence             | Atomic snapshots, run events, traces, artifacts, verification, checkpoints, and optional RL trajectories                                                                                                                                | Configured store and host policy                                                                                                                                          |
 | State graph             | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow 0.11 lifecycle projection including cancellation, terminal outcomes, progress, and child operations                          | Explicit application use                                                                                                                                                  |
@@ -182,6 +183,12 @@ Availability never bypasses policy. Auto-save, automatic compaction, goals,
 automatic delegation, sandboxing, human approval, trajectory recording, and
 graph integration run only when a host configures them. Memory extraction is
 configurable and can be disabled.
+
+The default system prompt is assembled in layers: a compact agent loop, the
+runtime authority/run-control contract, the canonical repository-tool schema,
+and shared safety boundaries. The host runtime remains authoritative for every
+permission, approval, budget, cancellation, and sandbox decision; prompt text
+does not grant a capability that the current session has not exposed.
 
 ## Configure the runtime
 
@@ -1089,7 +1096,7 @@ python -m pip install a3s-code
 go get github.com/A3S-Lab/Code/sdk/go/v8
 ```
 
-The Python release workflow in v8.1.0 uses the stable `cp310-abi3` interface,
+The Python release workflow in v8.2.0 uses the stable `cp310-abi3` interface,
 with Apple Silicon targeting macOS 11+, Intel targeting macOS 12+, and glibc
 2.28+ Linux targets for both x86_64 and arm64. Windows x86_64 and arm64 wheels
 are also published. Each native wheel carries the matching Moli sidecar, while
@@ -1457,7 +1464,7 @@ go -C sdk/go test ./...
 cargo run --release -p a3s-code-core --example workspace_retrieval_benchmark
 ```
 
-The capability checker keeps all 26 advertised product areas connected to the
+The capability checker keeps all 27 advertised product areas connected to the
 evidence ledger. Dedicated CI jobs build and load the Node.js and Python native
 modules before running their host-language contracts; a successful Rust
 `cargo check` alone is not counted as SDK runtime evidence.

@@ -19,7 +19,7 @@ go get github.com/A3S-Lab/Code/sdk/go/v8
 
 Download the `a3s-code-go-bridge` asset for the same A3S Code release from
 [GitHub Releases](https://github.com/A3S-Lab/Code/releases). Verify it against
-`a3s-code-go-bridge-SHA256SUMS`. v8.1.0 publishes standalone bridge binaries and
+`a3s-code-go-bridge-SHA256SUMS`. v8.2.0 publishes standalone bridge binaries and
 Moli-containing bundles for Linux, macOS, and Windows on both x86_64 and arm64
 GNU/MSVC targets. The bundle is the convenient self-contained option; the
 standalone binary can still use the shared Moli cache. Build from source for a
@@ -374,6 +374,36 @@ if err := <-stream.Done; err != nil {
 Canceling the stream context also asks the Rust session to cancel its active
 run. Explicit `Cancel`, `CancelRun`, and `CancelAndSettle` methods are available
 for control-plane code.
+
+## Safe-point run control
+
+An active run can be corrected or stopped without starting a second turn:
+
+```go
+state, err := session.RunControlSnapshot(ctx)
+if err != nil {
+	return err
+}
+var options *code.SteerOptions
+if state != nil {
+	options = &code.SteerOptions{
+		RunID: &state.RunID,
+		ExpectedTurnID: state.TurnID,
+		ExpectedTurnRevision: &state.TurnRevision,
+	}
+}
+receipt, err := session.Steer(ctx, "Prioritize the failing test", options)
+if err != nil {
+	return err
+}
+fmt.Println(receipt.State) // accepted, applied, or settled
+_, err = session.Interrupt(ctx, &code.InterruptOptions{Reason: code.Ptr("user stopped the run")})
+```
+
+`Steer` applies at the next runtime safe point; `Interrupt` cooperatively
+stops new work and lets the current provider/tool boundary settle. Requests
+are idempotent by `RequestID`, stale turn guards are rejected, and neither
+method changes permissions, model, sandbox, budget, or output contract.
 
 ## Direct tools and observation
 

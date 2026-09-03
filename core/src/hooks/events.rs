@@ -68,6 +68,11 @@ pub enum HookEventType {
 
     /// Intent detection - detect user intent from prompt (blocking)
     IntentDetection,
+    /// Before a host steer/interrupt request is admitted to a Run.
+    PreRunControl,
+    /// After a host run-control request receives an accepted/applied/
+    /// settled/rejected receipt.
+    PostRunControl,
 }
 
 impl std::fmt::Display for HookEventType {
@@ -100,6 +105,8 @@ impl std::fmt::Display for HookEventType {
             HookEventType::OnRateLimit => write!(f, "on_rate_limit"),
             HookEventType::OnConfirmation => write!(f, "on_confirmation"),
             HookEventType::IntentDetection => write!(f, "intent_detection"),
+            HookEventType::PreRunControl => write!(f, "pre_run_control"),
+            HookEventType::PostRunControl => write!(f, "post_run_control"),
         }
     }
 }
@@ -545,6 +552,43 @@ pub struct IntentDetectionEvent {
     pub language_hint: Option<String>,
 }
 
+/// Run-control admission event. This is a gating hook: a Block/Retry/
+/// Escalate outcome prevents the request from entering the run inbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreRunControlEvent {
+    pub session_id: String,
+    pub run_id: String,
+    pub request_id: String,
+    pub operation: crate::run_control::RunControlOperation,
+    pub command: crate::run_control::RunControlCommand,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_turn_revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
+}
+
+/// Run-control receipt event. This is observational and is emitted for every
+/// durable state transition visible to the host.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostRunControlEvent {
+    pub session_id: String,
+    pub run_id: String,
+    pub request_id: String,
+    pub operation: crate::run_control::RunControlOperation,
+    pub state: crate::run_control::RunControlReceiptState,
+    pub sequence: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    pub turn_revision: u64,
+    pub accepted_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<crate::run_control::RunControlErrorInfo>,
+}
+
 /// Unified hook event enum
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", content = "payload")]
@@ -602,6 +646,10 @@ pub enum HookEvent {
     OnConfirmation(OnConfirmationEvent),
     #[serde(rename = "intent_detection")]
     IntentDetection(IntentDetectionEvent),
+    #[serde(rename = "pre_run_control")]
+    PreRunControl(PreRunControlEvent),
+    #[serde(rename = "post_run_control")]
+    PostRunControl(PostRunControlEvent),
 }
 
 impl HookEvent {
@@ -635,6 +683,8 @@ impl HookEvent {
             HookEvent::OnRateLimit(_) => HookEventType::OnRateLimit,
             HookEvent::OnConfirmation(_) => HookEventType::OnConfirmation,
             HookEvent::IntentDetection(_) => HookEventType::IntentDetection,
+            HookEvent::PreRunControl(_) => HookEventType::PreRunControl,
+            HookEvent::PostRunControl(_) => HookEventType::PostRunControl,
         }
     }
 
@@ -666,6 +716,8 @@ impl HookEvent {
             HookEvent::OnRateLimit(e) => &e.session_id,
             HookEvent::OnConfirmation(e) => &e.session_id,
             HookEvent::IntentDetection(e) => &e.session_id,
+            HookEvent::PreRunControl(e) => &e.session_id,
+            HookEvent::PostRunControl(e) => &e.session_id,
             // Skill events are global (not session-specific)
             HookEvent::SkillLoad(_) => "",
             HookEvent::SkillUnload(_) => "",

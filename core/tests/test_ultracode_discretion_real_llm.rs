@@ -49,18 +49,36 @@ fn repo_config_path() -> PathBuf {
         })
 }
 
-async fn real_agent() -> Agent {
+async fn real_agent() -> (Agent, String) {
     let config_path = repo_config_path();
     let config = CodeConfig::from_file(&config_path)
         .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
-    Agent::from_config(config)
-        .await
-        .expect("agent from real config")
+    let model = std::env::var("A3S_TEST_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| config.default_model.clone())
+        .expect("real config must declare default_model");
+    let (provider, model_id) = model
+        .split_once('/')
+        .expect("selected model must use provider/model syntax");
+    assert!(
+        config.llm_config(provider, model_id).is_some(),
+        "selected model {model} is not declared in {}",
+        config_path.display()
+    );
+    eprintln!("[ultracode-real] model={model}");
+    (
+        Agent::from_config(config)
+            .await
+            .expect("agent from real config"),
+        model,
+    )
 }
 
 /// The ultracode SessionOptions the cli now builds (planning is message-gated).
-fn ultracode_opts() -> SessionOptions {
+fn ultracode_opts(model: &str) -> SessionOptions {
     SessionOptions::new()
+        .with_model(model)
         // The production TUI supplies a confirmation provider for delegated
         // task calls.  Use the explicit test-only equivalent here so the
         // fan-out assertions exercise child execution rather than the
@@ -81,7 +99,7 @@ fn ultracode_opts() -> SessionOptions {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires real provider credentials and network access"]
 async fn ultracode_trivial_greeting_does_not_plan_or_fan_out() {
-    let agent = real_agent().await;
+    let (agent, model) = real_agent().await;
     let workspace = tempfile::tempdir().expect("temp workspace");
     // A non-trivial workspace so "exploration", if it happened, would be visible.
     std::fs::write(
@@ -95,7 +113,7 @@ async fn ultracode_trivial_greeting_does_not_plan_or_fan_out() {
     let session = agent
         .session_async(
             workspace.path().display().to_string(),
-            Some(ultracode_opts()),
+            Some(ultracode_opts(&model)),
         )
         .await
         .expect("session");
@@ -146,7 +164,7 @@ async fn ultracode_trivial_greeting_does_not_plan_or_fan_out() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires real provider credentials and network access"]
 async fn ultracode_parallel_task_still_fans_out() {
-    let agent = real_agent().await;
+    let (agent, model) = real_agent().await;
     let workspace = tempfile::tempdir().expect("temp workspace");
     std::fs::write(
         workspace.path().join("README.md"),
@@ -164,7 +182,7 @@ async fn ultracode_parallel_task_still_fans_out() {
     let session = agent
         .session_async(
             workspace.path().display().to_string(),
-            Some(ultracode_opts()),
+            Some(ultracode_opts(&model)),
         )
         .await
         .expect("session");
@@ -217,7 +235,7 @@ async fn ultracode_parallel_task_still_fans_out() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires real provider credentials and network access"]
 async fn ultracode_delegated_task_runs_and_completes() {
-    let agent = real_agent().await;
+    let (agent, model) = real_agent().await;
     let ws = tempfile::tempdir().unwrap();
     for (n, b) in [
         ("auth.rs", "// auth module\npub fn login() {}\n"),
@@ -227,7 +245,10 @@ async fn ultracode_delegated_task_runs_and_completes() {
         std::fs::write(ws.path().join(n), b).unwrap();
     }
     let session = agent
-        .session_async(ws.path().display().to_string(), Some(ultracode_opts()))
+        .session_async(
+            ws.path().display().to_string(),
+            Some(ultracode_opts(&model)),
+        )
         .await
         .unwrap();
     let prompt = "These three files are independent: auth.rs, billing.rs, search.rs. In parallel, \

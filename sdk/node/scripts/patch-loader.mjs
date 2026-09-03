@@ -176,6 +176,7 @@ wrapA3sCodeErrors(Session && Session.prototype, [
   'tool', 'governedTool', 'task', 'delegateTask', 'tasks', 'parallelTask', 'program',
   'readFile', 'writeFile', 'ls', 'editFile', 'patchFile', 'bash', 'glob', 'grep',
   'webSearch', 'git', 'gitCommand', 'confirmToolUse', 'verifyCommands',
+  'steer', 'interrupt', 'runControlSnapshot',
   'registerAgentDir', 'registerWorkerAgent', 'registerWorkerAgents',
   'registerDynamicWorkflowRuntime', 'unregisterDynamicTool',
   'registerHook', 'unregisterHook', 'registerCommand',

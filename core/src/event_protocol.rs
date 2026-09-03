@@ -94,6 +94,7 @@ define_agent_event_types_v1! {
     GoalProgress => GOAL_PROGRESS = "goal_progress",
     GoalAchieved => GOAL_ACHIEVED = "goal_achieved",
     ContextCompacted => CONTEXT_COMPACTED = "context_compacted",
+    RunControlApplied => RUN_CONTROL_APPLIED = "run_control_applied",
     PersistenceFailed => PERSISTENCE_FAILED = "persistence_failed",
     BudgetThresholdHit => BUDGET_THRESHOLD_HIT = "budget_threshold_hit",
     PassivationRequested => PASSIVATION_REQUESTED = "passivation_requested",

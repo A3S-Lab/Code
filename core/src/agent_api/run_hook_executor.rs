@@ -136,4 +136,55 @@ impl HookExecutor for RunHookExecutor {
                 .await;
         }
     }
+
+    async fn before_run_control(
+        &self,
+        request: &crate::run_control::RunControlRequest,
+    ) -> HookOutcome {
+        if let Some(external) = &self.external {
+            match external.before_run_control(request).await {
+                HookOutcome::Continue(_) => {}
+                terminal => return terminal,
+            }
+        }
+        // Evaluate the immutable projected compatibility registry at the same
+        // gating boundary. This keeps package policy and host policy
+        // composable without allowing a Session mutation to affect a live
+        // Run.
+        let event = HookEvent::PreRunControl(crate::hooks::PreRunControlEvent {
+            session_id: request.session_id.clone().unwrap_or_default(),
+            run_id: request.run_id.clone(),
+            request_id: request.request_id.clone(),
+            operation: request.command.operation(),
+            command: request.command.clone(),
+            expected_turn_id: request.expected_turn_id.clone(),
+            expected_turn_revision: request.expected_turn_revision,
+            deadline_ms: request.deadline_ms,
+        });
+        self.snapshot.fire_outcome(&event).await
+    }
+
+    async fn record_run_control(
+        &self,
+        request: &crate::run_control::RunControlRequest,
+        receipt: &crate::run_control::RunControlReceipt,
+    ) {
+        if let Some(external) = &self.external {
+            external.record_run_control(request, receipt).await;
+        }
+        let event = HookEvent::PostRunControl(crate::hooks::PostRunControlEvent {
+            session_id: receipt.session_id.clone(),
+            run_id: receipt.run_id.clone(),
+            request_id: receipt.request_id.clone(),
+            operation: receipt.operation,
+            state: receipt.state,
+            sequence: receipt.sequence,
+            turn_id: receipt.turn_id.clone(),
+            turn_revision: receipt.turn_revision,
+            accepted_at_ms: receipt.accepted_at_ms,
+            applied_at_ms: receipt.applied_at_ms,
+            error: receipt.error.clone(),
+        });
+        let _ = self.snapshot.fire_outcome(&event).await;
+    }
 }

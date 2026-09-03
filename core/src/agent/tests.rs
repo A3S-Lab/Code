@@ -5307,6 +5307,136 @@ async function run(ctx, inputs) {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn dynamic_workflow_internal_program_avoids_duplicate_permission_but_keeps_governance() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = Arc::new(ToolExecutor::new(dir.path().to_string_lossy().to_string()));
+        crate::dynamic_workflow::register_dynamic_workflow(executor.registry());
+        let hooks = Arc::new(RecordingToolHooks::default());
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            executor,
+            ToolContext::new(dir.path().to_path_buf()),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "program",
+                    decision: PermissionDecision::Deny,
+                })),
+                hook_engine: Some(hooks.clone()),
+                ..Default::default()
+            },
+        );
+        let (tx, mut rx) = mpsc::channel(32);
+        let result = agent
+            .invoke_model_tool(
+                crate::tools::ToolInvocation::agent(
+                    "dynamic-internal-program",
+                    "dynamic_workflow",
+                    serde_json::json!({
+                        "source": r#"
+async function run(_ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    return { type: "complete", output: { marker: "internal-program-ok" } };
+  }
+  return { type: "fail", error: "unexpected step" };
+}
+"#,
+                        "run_id": format!("internal-program-{}", uuid::Uuid::new_v4()),
+                        "allowed_tools": []
+                    }),
+                    Vec::new(),
+                ),
+                Some("dynamic-internal-program"),
+                &Some(tx),
+                &tokio_util::sync::CancellationToken::new(),
+                &agent.tool_context,
+            )
+            .await;
+
+        assert_eq!(result.exit_code, 0, "{}", result.output);
+        assert!(result.output.contains("internal-program-ok"));
+        let mut saw_program_start = false;
+        let mut denied_program = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::ToolExecutionStart { name, .. } if name == "program" => {
+                    saw_program_start = true;
+                }
+                AgentEvent::PermissionDenied { tool_name, .. } if tool_name == "program" => {
+                    denied_program = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_program_start,
+            "internal program execution must remain observable"
+        );
+        assert!(
+            !denied_program,
+            "implementation detail must not require a second permission"
+        );
+        let hook_events = hooks.events.lock().unwrap();
+        assert!(hook_events.iter().any(|event| matches!(
+            event,
+            HookEvent::PreToolUse(pre) if pre.tool == "program"
+        )));
+        assert!(hook_events.iter().any(|event| matches!(
+            event,
+            HookEvent::PostToolUse(post) if post.tool == "program" && post.result.success
+        )));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dynamic_workflow_internal_program_still_obeys_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = Arc::new(ToolExecutor::new(dir.path().to_string_lossy().to_string()));
+        crate::dynamic_workflow::register_dynamic_workflow(executor.registry());
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            executor,
+            ToolContext::new(dir.path().to_path_buf()),
+            AgentConfig {
+                permission_checker: Some(Arc::new(TargetPermission {
+                    target: "program",
+                    decision: PermissionDecision::Deny,
+                })),
+                budget_guard: Some(Arc::new(TargetToolBudget { target: "program" })),
+                ..Default::default()
+            },
+        );
+        let result = agent
+            .invoke_model_tool(
+                crate::tools::ToolInvocation::agent(
+                    "dynamic-internal-program-budget",
+                    "dynamic_workflow",
+                    serde_json::json!({
+                        "source": r#"
+async function run(_ctx, _inputs) {
+  return { type: "complete", output: { marker: "must-not-complete" } };
+}
+"#,
+                        "run_id": format!("internal-budget-{}", uuid::Uuid::new_v4()),
+                        "allowed_tools": []
+                    }),
+                    Vec::new(),
+                ),
+                Some("dynamic-internal-program-budget"),
+                &None,
+                &tokio_util::sync::CancellationToken::new(),
+                &agent.tool_context,
+            )
+            .await;
+
+        assert_ne!(result.exit_code, 0);
+        assert!(
+            result.output.contains("Budget exhausted"),
+            "{}",
+            result.output
+        );
+        assert!(!result.output.contains("must-not-complete"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn dynamic_workflow_script_step_obeys_budget_without_side_effects() {
         let dir = tempfile::tempdir().unwrap();
         let calls = Arc::new(AtomicUsize::new(0));

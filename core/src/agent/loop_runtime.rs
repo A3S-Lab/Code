@@ -129,6 +129,15 @@ impl AgentLoop {
             rewrite_latest_user_prompt(&mut state.messages, prompt_before_hooks, effective_prompt);
         }
 
+        // The invocation owns the control inbox for this run.  Keeping the
+        // handle local makes every safe-point operation cheap and ensures a
+        // standalone AgentLoop (which has no invocation binding) behaves
+        // exactly as before.
+        let run_control = self
+            .bound_invocation
+            .as_ref()
+            .and_then(|invocation| invocation.run_control());
+
         loop {
             // `max_tool_rounds` bounds evidence gathering, not the agent's
             // ability to return the evidence it already collected. Reserve one
@@ -139,6 +148,22 @@ impl AgentLoop {
                 state.messages.push(Message::user(TOOL_BUDGET_FINALIZATION));
             }
             let turn = state.next_turn();
+            if let Some(control) = &run_control {
+                let snapshot = control.update_turn(turn).await;
+                Self::apply_pending_run_controls(
+                    control,
+                    &mut state,
+                    &event_tx,
+                    &snapshot,
+                    self.config.host_env.now_ms(),
+                )
+                .await;
+                // An interrupt is cooperative but should prevent opening a
+                // new provider/capability turn once it has been observed.
+                if cancel_token.is_cancelled() {
+                    return Ok(state.finish_interrupted());
+                }
+            }
             let capability_turn = match self
                 .capability_runtime
                 .as_ref()
@@ -182,6 +207,17 @@ impl AgentLoop {
                 // whole turn is dropped and the agent "forgets" what was just asked
                 // when the user continues.
                 Err(_) if scoped_cancellation.is_cancelled() => {
+                    if let Some(control) = &run_control {
+                        let snapshot = control.snapshot().await;
+                        Self::apply_pending_run_controls(
+                            control,
+                            &mut state,
+                            &event_tx,
+                            &snapshot,
+                            self.config.host_env.now_ms(),
+                        )
+                        .await;
+                    }
                     if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
                         return Err(state.finish_failed(error));
                     }
@@ -262,6 +298,17 @@ impl AgentLoop {
                 // Same as above: a cancelled tool round commits its partial
                 // history rather than being dropped.
                 if scoped_cancellation.is_cancelled() {
+                    if let Some(control) = &run_control {
+                        let snapshot = control.snapshot().await;
+                        Self::apply_pending_run_controls(
+                            control,
+                            &mut state,
+                            &event_tx,
+                            &snapshot,
+                            self.config.host_env.now_ms(),
+                        )
+                        .await;
+                    }
                     if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
                         return Err(state.finish_failed(error));
                     }
@@ -283,6 +330,58 @@ impl AgentLoop {
             // settled, and `state.messages` is consistent. The runtime sink
             // drains every preceding event before acknowledging persistence.
             self.persist_loop_checkpoint(turn, &state, session_id).await;
+        }
+    }
+
+    /// Consume controls only at loop safe points. Steering becomes a normal
+    /// user message in the run-owned transcript; interrupt requests have
+    /// already fired the run cancellation token when accepted.
+    async fn apply_pending_run_controls(
+        control: &crate::run_control::RunControlInbox,
+        state: &mut ExecutionLoopState,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        snapshot: &crate::run_control::RunControlSnapshot,
+        now_ms: u64,
+    ) {
+        let pending = control.drain().await;
+        for pending in pending {
+            let (input, reason) = match &pending.request.command {
+                crate::run_control::RunControlCommand::Steer { input } => {
+                    (Some(input.clone()), None)
+                }
+                crate::run_control::RunControlCommand::Interrupt { reason, .. } => {
+                    (None, reason.clone())
+                }
+            };
+            let receipt = control
+                .mark_applied(
+                    &pending,
+                    snapshot.turn_id.clone(),
+                    snapshot.turn_revision,
+                    now_ms,
+                )
+                .await;
+            // A session close can settle a drained request before this safe
+            // point is acknowledged. Only mutate the loop transcript after
+            // the inbox confirms that this invocation won the race.
+            if receipt.state != crate::run_control::RunControlReceiptState::Applied {
+                continue;
+            }
+            if let Some(input) = &input {
+                state.messages.push(Message::user(input));
+            }
+            if let Some(tx) = event_tx {
+                tx.send(AgentEvent::RunControlApplied {
+                    request_id: receipt.request_id,
+                    operation: receipt.operation,
+                    turn_id: receipt.turn_id,
+                    turn_revision: receipt.turn_revision,
+                    input,
+                    reason,
+                })
+                .await
+                .ok();
+            }
         }
     }
 

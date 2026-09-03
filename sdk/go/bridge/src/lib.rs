@@ -119,6 +119,9 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_pending_subagent_tasks",
     "session_cancel_subagent_task",
     "session_cancel_run",
+    "session_steer",
+    "session_interrupt",
+    "session_run_control_snapshot",
     "session_pending_confirmations",
     "session_confirm_tool_use",
     "session_cancel_confirmations",
@@ -1345,6 +1348,46 @@ impl BridgeState {
                     .cancel_run(&run_id)
                     .await;
                 Ok(json!({ "cancelled": cancelled }))
+            }
+            "session_steer" => {
+                let input: String = required(&request.params, "input")?;
+                let mut steer = a3s_code_core::SteerRequest::new(input);
+                steer.request_id = optional(&request.params, "request_id")?;
+                steer.run_id = optional(&request.params, "run_id")?;
+                steer.expected_turn_id = optional(&request.params, "expected_turn_id")?;
+                steer.expected_turn_revision = optional(&request.params, "expected_turn_revision")?;
+                steer.deadline_ms = optional(&request.params, "deadline_ms")?;
+                let receipt = self
+                    .request_session(&request.params)
+                    .await?
+                    .steer(steer)
+                    .await?;
+                encode(receipt)
+            }
+            "session_interrupt" => {
+                let mut interrupt = a3s_code_core::InterruptRequest::new();
+                interrupt.reason = optional(&request.params, "reason")?;
+                interrupt.force = optional::<bool>(&request.params, "force")?.unwrap_or(false);
+                interrupt.request_id = optional(&request.params, "request_id")?;
+                interrupt.run_id = optional(&request.params, "run_id")?;
+                interrupt.expected_turn_id = optional(&request.params, "expected_turn_id")?;
+                interrupt.expected_turn_revision =
+                    optional(&request.params, "expected_turn_revision")?;
+                interrupt.deadline_ms = optional(&request.params, "deadline_ms")?;
+                let receipt = self
+                    .request_session(&request.params)
+                    .await?
+                    .interrupt(interrupt)
+                    .await?;
+                encode(receipt)
+            }
+            "session_run_control_snapshot" => {
+                let snapshot = self
+                    .request_session(&request.params)
+                    .await?
+                    .run_control_snapshot()
+                    .await;
+                encode(snapshot)
             }
             "session_pending_confirmations" => {
                 let confirmations = self

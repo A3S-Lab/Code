@@ -91,6 +91,7 @@ use a3s_code_core::{
     AgentEvent as RustAgentEvent, AgentEventProjectionV1 as RustAgentEventProjectionV1,
     AgentResult as RustAgentResult, AgentRunSpawn as RustAgentRunSpawn,
     AgentSession as RustAgentSession, EventProtocolError as RustEventProtocolError,
+    InterruptRequest as RustInterruptRequest, SteerRequest as RustSteerRequest,
     PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions,
     TaskPriorityCounts as RustTaskPriorityCounts, TaskSchedulerStats as RustTaskSchedulerStats,
     SdkCapability as RustSdkCapability, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
@@ -244,6 +245,31 @@ fn scheduler_count(value: usize) -> i64 {
 pub struct AgentRunSpawnObject {
     pub snapshot: serde_json::Value,
     pub replayed: bool,
+}
+
+/// Optional optimistic-concurrency and idempotency fields for `Session.steer`.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct SteerOptions {
+    pub request_id: Option<String>,
+    pub run_id: Option<String>,
+    pub expected_turn_id: Option<String>,
+    pub expected_turn_revision: Option<f64>,
+    pub deadline_ms: Option<f64>,
+}
+
+/// Optional optimistic-concurrency and idempotency fields for
+/// `Session.interrupt`.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct InterruptOptions {
+    pub reason: Option<String>,
+    pub force: Option<bool>,
+    pub request_id: Option<String>,
+    pub run_id: Option<String>,
+    pub expected_turn_id: Option<String>,
+    pub expected_turn_revision: Option<f64>,
+    pub deadline_ms: Option<f64>,
 }
 
 fn agent_run_spawn_to_object(spawn: &RustAgentRunSpawn) -> napi::Result<AgentRunSpawnObject> {

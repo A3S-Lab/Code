@@ -1,0 +1,144 @@
+---
+title: 'Hooks'
+description: 'Lifecycle interception and policy callbacks'
+---
+
+# Hooks
+
+Hooks register lifecycle callbacks inside a session. The registration lifecycle
+is `registerHook()`, `hookCount()`, and `unregisterHook()`.
+
+## Events
+
+The Node.js and Python registration helpers accept these stable names:
+
+```text
+pre_tool_use
+post_tool_use
+generate_start
+generate_end
+session_start
+session_end
+skill_load
+skill_unload
+pre_prompt
+post_response
+on_error
+pre_run_control
+post_run_control
+```
+
+Rust Core also exposes `permission_request`, `pre_compact`, and `post_compact`
+as first-class lifecycle points. The Go bridge can register the same serialized
+enum names. Those three names are not yet accepted by the Node.js or Python
+string parsers, so use a Rust or Go host when policy must intercept permission
+or compaction directly.
+
+Core also defines perception, memory, planning, reasoning, rate-limit,
+confirmation, success, and intent events for specialized harnesses. Treat an
+event as a policy boundary only when the protected runtime path consumes its
+decision.
+
+## Registration Example
+
+```ts
+session.registerHook(
+  'release-publish-observer',
+  'pre_tool_use',
+  { tool: 'bash', commandPattern: 'npm publish|twine upload|cargo publish' },
+  { priority: 50, timeoutMs: 1000 },
+  () => ({ action: 'continue' }),
+);
+```
+
+A handler may return `{ action: 'continue' }`, `{ action: 'skip' }`,
+`{ action: 'block', reason }`, `{ action: 'retry', reason, delayMs }`, or
+`null`/`undefined` to continue. Validate the specific event path you depend on
+before using a hook as a production gate.
+
+## Lifecycle Governance
+
+The gating events are `pre_tool_use`, `permission_request`, `pre_compact`,
+`pre_prompt`, `pre_planning`, and `pre_run_control`. A handler failure or timeout at one of these
+points fails closed. Other events are observational or advisory and continue
+when their handler infrastructure fails.
+
+`pre_tool_use` can replace arguments before the tool reaches confirmation or
+side effects:
+
+```ts
+() => ({
+  action: 'continue',
+  modified: {
+    updatedInput: { file_path: 'approved/release.txt', content: 'ready\n' },
+  },
+});
+```
+
+Core accepts `updatedInput`, `updated_input`, `args`, or a direct argument
+object inside `modified` (and also accepts the Codex-style
+`hookSpecificOutput` wrapper). The rewritten object is validated against the
+tool's JSON Schema again. Invalid rewritten arguments are rejected before any
+tool side effect.
+
+`pre_prompt` can return `modified.prompt` and optional
+`modified.additionalContext` (or `additional_context`). The resulting prompt,
+including the bounded hook-context block, replaces the actual user message
+sent to the model. `permission_request` can return `decision: 'allow'` or
+`decision: 'deny'`; `pre_compact` can block compaction. `session_start` and
+`session_end` provide matching lifecycle observations for host cleanup and
+audit.
+
+`pre_run_control` gates a typed `steer` or `interrupt` request before it enters
+the active Run inbox. `post_run_control` observes its durable accepted,
+applied, settled, or rejected receipt. A retry with the same request ID and
+payload reuses the recorded admission result instead of firing a second gating
+decision; a conflicting payload with that ID is rejected. Post-control Hook
+results are observational and cannot rewrite an already issued receipt.
+
+## Denial Feedback
+
+Use `block` when retrying the same invocation cannot succeed without changing
+the request, arguments, or policy context. Use `retry` for a temporary
+condition and include both a reason and suggested delay:
+
+```ts
+() => ({
+  action: 'retry',
+  reason: 'The policy backend is temporarily unavailable.',
+  delayMs: 1000,
+});
+```
+
+Python callbacks use `delay_ms`; Go callbacks return
+`&code.HookResponse{Action: "retry", Reason: "...", DelayMS: 1000}`.
+The current invocation is denied rather than automatically scheduled. The
+model receives the explanation and explicit retry guidance, while direct SDK
+callers receive a structured tool error:
+
+```json
+{
+  "type": "hook_denied",
+  "reason": "The policy backend is temporarily unavailable.",
+  "retryable": true,
+  "retry_after_ms": 1000
+}
+```
+
+A `block` response uses the same error type with `retryable: false` and
+`retry_after_ms: null`. Rust callers that need the retry explanation can use
+`HookEngine::fire_outcome()`; the existing `fire()` API retains its legacy
+`HookResult` projection.
+
+## Propagation
+
+Delegation and automatic subagent fan-out use the `task` tool. When a product
+depends on hook behavior across delegated runs, cover that product path with an
+integration test.
+
+## Management
+
+```ts
+console.log(session.hookCount());
+session.unregisterHook('release-publish-observer');
+```

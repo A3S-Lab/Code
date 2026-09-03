@@ -42,6 +42,17 @@ const (
 	CodeTaskAdmissionCancelled ErrorCode = "TASK_ADMISSION_CANCELLED"
 	CodeTaskSchedulerClosed    ErrorCode = "TASK_SCHEDULER_CLOSED"
 	CodeRunIdentityConflict    ErrorCode = "RUN_IDENTITY_CONFLICT"
+	CodeRunControlInvalidRequest ErrorCode = "INVALID_REQUEST"
+	CodeRunControlSessionMismatch ErrorCode = "SESSION_MISMATCH"
+	CodeRunControlRunMismatch ErrorCode = "RUN_MISMATCH"
+	CodeRunControlNoActiveRun ErrorCode = "NO_ACTIVE_RUN"
+	CodeRunControlStaleTurn ErrorCode = "STALE_TURN"
+	CodeRunControlDeadlineExceeded ErrorCode = "DEADLINE_EXCEEDED"
+	CodeRunControlQueueFull ErrorCode = "QUEUE_FULL"
+	CodeRunControlClosed ErrorCode = "CLOSED"
+	CodeRunControlDuplicateRequest ErrorCode = "DUPLICATE_REQUEST"
+	CodeRunControlHookDenied ErrorCode = "HOOK_DENIED"
+	CodeRunControlHookRetry ErrorCode = "HOOK_RETRY"
 )
 
 const (

@@ -291,6 +291,7 @@ fn finish_agent_session(
     let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel_token = Arc::new(tokio::sync::Mutex::new(None));
     let current_run_id = Arc::new(tokio::sync::Mutex::new(None));
+    let active_run_control = Arc::new(tokio::sync::Mutex::new(None));
     let run_admission = Arc::new(super::run_admission::RunAdmission::default());
     let run_store = Arc::new({
         let limits = resolved.limits.retention;
@@ -335,8 +336,13 @@ fn finish_agent_session(
         session_id: session_id.clone(),
         closed: Arc::clone(&closed),
         session_cancel: session_cancel.clone(),
+        host_env: opts
+            .host_env
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&agent.config.host_env)),
         cancel_token: Arc::clone(&cancel_token),
         current_run_id: Arc::clone(&current_run_id),
+        active_run_control: Arc::clone(&active_run_control),
         run_store: Arc::clone(&run_store),
         subagent_tasks: Arc::clone(&subagent_tasks),
         confirmation_manager: config.confirmation_manager.clone(),
@@ -400,6 +406,7 @@ fn finish_agent_session(
         agent_registry,
         cancel_token,
         current_run_id,
+        active_run_control,
         run_store,
         subagent_tasks,
         active_tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),

@@ -36,7 +36,7 @@ from the first release produced with the Intel build matrix.
 For an Intel Mac on macOS 12 or later, replace the platform suffix with
 `macosx_12_0_x86_64`.
 
-The v8.1.0 release publishes one CPython 3.10 stable-ABI (`cp310-abi3`) wheel
+The v8.2.0 release publishes one CPython 3.10 stable-ABI (`cp310-abi3`) wheel
 per supported platform. It supports CPython 3.10–3.14 on Apple Silicon
 (macOS 11+), Intel (`x86_64`, macOS 12+), Linux glibc 2.28+ (`x86_64` and
 `aarch64`), and Windows (`x86_64` and `arm64`). Each native wheel includes
@@ -381,6 +381,31 @@ active operation before starting another one.
 Fully consuming `EventStream` is a lifecycle barrier: iteration does not finish
 ahead of core cleanup, so an immediate next conversation operation is not
 rejected because the prior stream still owns admission.
+
+## Safe-point Run Control
+
+An active run can be corrected or stopped without starting a second turn:
+
+```python
+state = await session.run_control_snapshot_async()
+options = {}
+if state:
+    options["run_id"] = state["run_id"]
+    if state.get("turn_id") is not None:
+        options["expected_turn_id"] = state["turn_id"]
+    options["expected_turn_revision"] = state["turn_revision"]
+receipt = await session.steer_async(
+    "Prioritize the failing test",
+    options,
+)
+print(receipt["state"])  # accepted, applied, or settled
+await session.interrupt_async({"reason": "User stopped the run"})
+```
+
+`steer` is applied at the next runtime safe point; `interrupt` cooperatively
+stops new work and lets the current provider/tool boundary settle. Requests
+are idempotent by `request_id`, stale turn guards are rejected, and neither
+method changes permissions, model, sandbox, budget, or output contract.
 
 ## Streaming Event Protocol
 

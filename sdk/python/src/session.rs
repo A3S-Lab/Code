@@ -1,5 +1,60 @@
 use super::*;
 
+fn py_dict_string(options: Option<&Bound<'_, PyDict>>, key: &str) -> PyResult<Option<String>> {
+    options
+        .map(|dict| {
+            dict.get_item(key)?
+                .map(|value| value.extract::<String>())
+                .transpose()
+        })
+        .transpose()
+        .map(|value| value.flatten())
+}
+
+fn py_dict_u64(options: Option<&Bound<'_, PyDict>>, key: &str) -> PyResult<Option<u64>> {
+    options
+        .map(|dict| {
+            dict.get_item(key)?
+                .map(|value| value.extract::<u64>())
+                .transpose()
+        })
+        .transpose()
+        .map(|value| value.flatten())
+}
+
+fn py_steer_request(
+    input: String,
+    options: Option<&Bound<'_, PyDict>>,
+) -> PyResult<RustSteerRequest> {
+    let mut request = RustSteerRequest::new(input);
+    request.request_id = py_dict_string(options, "request_id")?;
+    request.run_id = py_dict_string(options, "run_id")?;
+    request.expected_turn_id = py_dict_string(options, "expected_turn_id")?;
+    request.expected_turn_revision = py_dict_u64(options, "expected_turn_revision")?;
+    request.deadline_ms = py_dict_u64(options, "deadline_ms")?;
+    Ok(request)
+}
+
+fn py_interrupt_request(options: Option<&Bound<'_, PyDict>>) -> PyResult<RustInterruptRequest> {
+    let mut request = RustInterruptRequest::new();
+    request.reason = py_dict_string(options, "reason")?;
+    request.force = options
+        .map(|dict| {
+            dict.get_item("force")?
+                .map(|value| value.extract::<bool>())
+                .transpose()
+        })
+        .transpose()?
+        .flatten()
+        .unwrap_or(false);
+    request.request_id = py_dict_string(options, "request_id")?;
+    request.run_id = py_dict_string(options, "run_id")?;
+    request.expected_turn_id = py_dict_string(options, "expected_turn_id")?;
+    request.expected_turn_revision = py_dict_u64(options, "expected_turn_revision")?;
+    request.deadline_ms = py_dict_u64(options, "deadline_ms")?;
+    Ok(request)
+}
+
 // ============================================================================
 // Session
 // ============================================================================
@@ -704,6 +759,106 @@ impl PySession {
     fn cancel_run(&self, py: Python<'_>, run_id: String) -> bool {
         let session = self.inner.clone();
         py.allow_threads(move || get_runtime().block_on(session.cancel_run(&run_id)))
+    }
+
+    /// Append a user direction to the active run at its next safe point.
+    ///
+    /// ``options`` may contain ``request_id``, ``run_id``,
+    /// ``expected_turn_id``, ``expected_turn_revision`` and ``deadline_ms``.
+    /// Retries with the same request id are idempotent.
+    #[pyo3(signature = (input, options=None))]
+    fn steer(
+        &self,
+        py: Python<'_>,
+        input: String,
+        options: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let request = py_steer_request(input, options)?;
+        let session = self.inner.clone();
+        let receipt = py
+            .allow_threads(move || get_runtime().block_on(session.steer(request)))
+            .map_err(py_code_error)?;
+        let json = serde_json::to_string(&receipt)
+            .map_err(|error| PyRuntimeError::new_err(format!("Failed to serialize run-control receipt: {error}")))?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return an asyncio Future for ``steer()``.
+    #[pyo3(signature = (input, options=None))]
+    fn steer_async<'py>(
+        &self,
+        py: Python<'py>,
+        input: String,
+        options: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let request = py_steer_request(input, options)?;
+        let callable = Bound::new(
+            py,
+            AsyncSessionRunControlCall {
+                session: Arc::clone(&self.inner),
+                operation: Some(AsyncSessionRunControlOperation::Steer(request)),
+            },
+        )?;
+        run_in_asyncio_executor(py, callable.into_any())
+    }
+
+    /// Cooperatively interrupt the active run. ``options`` may contain
+    /// ``reason``, ``force``, ``request_id``, ``run_id``, optimistic turn
+    /// fields, and ``deadline_ms``.
+    #[pyo3(signature = (options=None))]
+    fn interrupt(
+        &self,
+        py: Python<'_>,
+        options: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let request = py_interrupt_request(options)?;
+        let session = self.inner.clone();
+        let receipt = py
+            .allow_threads(move || get_runtime().block_on(session.interrupt(request)))
+            .map_err(py_code_error)?;
+        let json = serde_json::to_string(&receipt)
+            .map_err(|error| PyRuntimeError::new_err(format!("Failed to serialize run-control receipt: {error}")))?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return an asyncio Future for ``interrupt()``.
+    #[pyo3(signature = (options=None))]
+    fn interrupt_async<'py>(
+        &self,
+        py: Python<'py>,
+        options: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let request = py_interrupt_request(options)?;
+        let callable = Bound::new(
+            py,
+            AsyncSessionRunControlCall {
+                session: Arc::clone(&self.inner),
+                operation: Some(AsyncSessionRunControlOperation::Interrupt(request)),
+            },
+        )?;
+        run_in_asyncio_executor(py, callable.into_any())
+    }
+
+    /// Return the active run-control snapshot, or ``None`` when idle.
+    fn run_control_snapshot(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let snapshot = py
+            .allow_threads(move || get_runtime().block_on(session.run_control_snapshot()));
+        let json = serde_json::to_string(&snapshot)
+            .map_err(|error| PyRuntimeError::new_err(format!("Failed to serialize run-control snapshot: {error}")))?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return an asyncio Future for ``run_control_snapshot()``.
+    fn run_control_snapshot_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let callable = Bound::new(
+            py,
+            AsyncSessionRunControlCall {
+                session: Arc::clone(&self.inner),
+                operation: Some(AsyncSessionRunControlOperation::Snapshot),
+            },
+        )?;
+        run_in_asyncio_executor(py, callable.into_any())
     }
 
     // ========================================================================

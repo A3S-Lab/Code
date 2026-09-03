@@ -511,7 +511,7 @@ const __a3sLegacySearchArgs = (mode, query, options = {{}}) => {{
 const __a3sCtx = Object.freeze({{
   tool: __a3sCallTool,
   tools: __a3sTools,
-  readFile: (path, options = {{}}) => __a3sCallTool("read", __a3sReadArgs(path, options)).then((r) => r.output),
+  readFile: (path, options = {{}}) => __a3sCallTool("read", __a3sReadArgs(path, options)).then((r) => r.text ?? r.output),
   read: (path, options = {{}}) => __a3sCallTool("read", __a3sReadArgs(path, options)),
   search: (query, options = {{}}) => __a3sCallTool("search", {{ ...options, query }}).then((r) => r.output),
   grep: (query, options = {{}}) => __a3sCallTool("search", __a3sLegacySearchArgs("grep", query, options)).then((r) => r.output),
@@ -586,6 +586,9 @@ async fn execute_host_tool_json(
     let metadata = result.metadata.clone();
     let exit_code = result.exit_code;
     let name = result.name;
+    let text = (tool == "read" && success)
+        .then(|| program_read_text(&output, metadata.as_ref()))
+        .flatten();
 
     {
         let mut script = state.lock().await;
@@ -601,10 +604,38 @@ async fn execute_host_tool_json(
     serde_json::to_string(&serde_json::json!({
         "name": name,
         "output": output,
+        "text": text,
         "exitCode": exit_code,
         "metadata": metadata,
     }))
     .map_err(|err| JsError::new_from_js_message("tool result", "json", err.to_string()))
+}
+
+/// Recover the line payload from the single-file `read` tool's anchored
+/// display format. `ctx.readFile` is a programmatic convenience API, while
+/// `ctx.read` deliberately retains the model-facing line numbers and
+/// continuation footer. The metadata count makes the transform structural:
+/// content that happens to resemble a continuation footer is never removed.
+fn program_read_text(output: &str, metadata: Option<&serde_json::Value>) -> Option<String> {
+    let returned_lines = metadata?
+        .pointer("/range/returned_lines")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    if returned_lines == 0 {
+        return Some(String::new());
+    }
+
+    let mut text = String::new();
+    let mut rendered_lines = output.split_inclusive('\n');
+    for _ in 0..returned_lines {
+        let rendered = rendered_lines.next()?;
+        let (anchor, content) = rendered.split_once('\t')?;
+        if anchor.len() != 6 || anchor.trim().parse::<usize>().is_err() {
+            return None;
+        }
+        text.push_str(content);
+    }
+    Some(text)
 }
 
 fn script_tool_is_allowed(

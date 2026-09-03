@@ -4,6 +4,22 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.2.0] - 2026-09-04
+
+### Added
+
+- Added synchronous and asynchronous `steer`, `interrupt`, and
+  `run_control_snapshot` session methods with typed Core-aligned receipts,
+  optimistic turn guards, deadlines, and structured run-control errors.
+- Added `run_control_applied` event projection and `pre_run_control` /
+  `post_run_control` Hook event registration.
+
+### Changed
+
+- Updated the bundled Core runtime with the layered default runtime contract,
+  monotonic Run settlement, governed dynamic-workflow execution, and exact
+  QuickJS `ctx.readFile()` text semantics.
+
 ## [8.1.0] - 2026-09-02
 
 ### Added

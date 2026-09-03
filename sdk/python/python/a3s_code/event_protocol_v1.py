@@ -55,6 +55,7 @@ KnownAgentEventTypeV1 = Literal[
     "goal_progress",
     "goal_achieved",
     "context_compacted",
+    "run_control_applied",
     "persistence_failed",
     "budget_threshold_hit",
     "passivation_requested",
@@ -112,6 +113,7 @@ AGENT_EVENT_TYPES_V1: Final[Tuple[KnownAgentEventTypeV1, ...]] = (
     "goal_progress",
     "goal_achieved",
     "context_compacted",
+    "run_control_applied",
     "persistence_failed",
     "budget_threshold_hit",
     "passivation_requested",
@@ -168,6 +170,7 @@ class EventType:
     GOAL_PROGRESS: Final[str] = "goal_progress"
     GOAL_ACHIEVED: Final[str] = "goal_achieved"
     CONTEXT_COMPACTED: Final[str] = "context_compacted"
+    RUN_CONTROL_APPLIED: Final[str] = "run_control_applied"
     PERSISTENCE_FAILED: Final[str] = "persistence_failed"
     BUDGET_THRESHOLD_HIT: Final[str] = "budget_threshold_hit"
     PASSIVATION_REQUESTED: Final[str] = "passivation_requested"

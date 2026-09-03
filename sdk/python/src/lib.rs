@@ -64,6 +64,7 @@ use a3s_code_core::{
     AgentEvent as RustAgentEvent, AgentEventProjectionV1 as RustAgentEventProjectionV1,
     AgentResult as RustAgentResult, AgentRunSpawn as RustAgentRunSpawn,
     AgentSession as RustAgentSession, EventProtocolError as RustEventProtocolError,
+    InterruptRequest as RustInterruptRequest, SteerRequest as RustSteerRequest,
     PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions, AGENT_EVENT_TYPES_V1,
     EVENT_ENVELOPE_V1_VERSION, SdkCapability as RustSdkCapability,
 };

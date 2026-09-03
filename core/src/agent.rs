@@ -696,6 +696,22 @@ pub enum AgentEvent {
     },
 
     // ========================================================================
+    // In-flight run control events
+    // ========================================================================
+    /// A host steer/interrupt request was consumed at a loop safe point.
+    #[serde(rename = "run_control_applied")]
+    RunControlApplied {
+        request_id: String,
+        operation: crate::run_control::RunControlOperation,
+        turn_id: Option<String>,
+        turn_revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+
+    // ========================================================================
     // Persistence events
     // ========================================================================
     /// Session persistence failed — SDK clients should handle this

@@ -359,7 +359,10 @@ impl InMemoryRunStore {
     pub async fn mark_failed(&self, run_id: &str, error: impl Into<String>) -> Option<RunSnapshot> {
         let mut runs = self.runs.write().await;
         let run = runs.get_mut(run_id)?;
-        if run.status == RunStatus::Cancelled {
+        // Terminal state is monotonic. A late worker error must not rewrite a
+        // completed or cancelled run (the event stream can legitimately
+        // deliver cleanup notifications after the terminal event).
+        if run.status.is_terminal() {
             return Some(run.clone());
         }
         run.status = RunStatus::Failed;
@@ -371,6 +374,12 @@ impl InMemoryRunStore {
     pub async fn mark_cancelled(&self, run_id: &str) -> Option<RunSnapshot> {
         let mut runs = self.runs.write().await;
         let run = runs.get_mut(run_id)?;
+        // Cancellation is a request, not a retroactive rewrite of an already
+        // terminal outcome. This preserves the first terminal observation
+        // under races between host close and the final End/Error event.
+        if run.status.is_terminal() {
+            return Some(run.clone());
+        }
         run.status = RunStatus::Cancelled;
         run.updated_at_ms = now_ms().max(run.updated_at_ms);
         Some(run.clone())
@@ -1501,6 +1510,44 @@ mod tests {
         assert_eq!(
             store.snapshot(&completed.id).await.unwrap().status,
             RunStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn late_terminal_markers_cannot_rewrite_the_first_terminal_outcome() {
+        let store = InMemoryRunStore::new();
+        let completed = store.create_run("session-1", "done").await;
+        store
+            .record_event(
+                &completed.id,
+                AgentEvent::End {
+                    text: "done".to_string(),
+                    usage: Default::default(),
+                    verification_summary: Box::new(
+                        crate::verification::VerificationSummary::from_reports(&[]),
+                    ),
+                    meta: None,
+                },
+            )
+            .await;
+        assert_eq!(
+            store.mark_cancelled(&completed.id).await.unwrap().status,
+            RunStatus::Completed
+        );
+        assert_eq!(
+            store
+                .mark_failed(&completed.id, "late failure")
+                .await
+                .unwrap()
+                .status,
+            RunStatus::Completed
+        );
+
+        let failed = store.create_run("session-1", "failed").await;
+        store.mark_failed(&failed.id, "provider failed").await;
+        assert_eq!(
+            store.mark_cancelled(&failed.id).await.unwrap().status,
+            RunStatus::Failed
         );
     }
 }

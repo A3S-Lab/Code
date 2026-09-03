@@ -103,6 +103,15 @@ impl BlockingRunContext {
             }
         };
         let run_id = run.id().to_string();
+        let run_control = crate::run_control::RunControlInbox::new_with_hook_executor(
+            session.session_id.clone(),
+            run_id.clone(),
+            cancel_token.clone(),
+            agent_loop.hook_executor(),
+        );
+        RunControlState::from_session(session)
+            .attach_run_control(&run_id, run_control.clone())
+            .await;
         agent_loop.set_checkpoint_run(&run_id);
         let (checkpoint_sink, checkpoints) = runtime_checkpoint_channel(session);
         if let Some(checkpoint_sink) = checkpoint_sink {
@@ -119,7 +128,8 @@ impl BlockingRunContext {
                 Some(runtime_tx),
                 cancel_token,
             )
-            .with_agent_events(agent_event_tx, agent_event_barrier);
+            .with_agent_events(agent_event_tx, agent_event_barrier)
+            .with_run_control(run_control);
         let runtime_collector = RuntimeEventSink::from_session(session, &run_id).spawn_collector(
             runtime_rx,
             Some(agent_events),
@@ -318,6 +328,15 @@ impl StreamRunContext {
         capability_run: crate::capability::SessionCapabilityRun,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
+        let run_control = crate::run_control::RunControlInbox::new_with_hook_executor(
+            session.session_id.clone(),
+            run_id.clone(),
+            cancel_token.clone(),
+            agent_loop.hook_executor(),
+        );
+        RunControlState::from_session(session)
+            .attach_run_control(&run_id, run_control.clone())
+            .await;
         let (tx, rx) = mpsc::channel(256);
         let (runtime_tx, runtime_rx) = mpsc::channel(256);
         agent_loop.set_checkpoint_run(&run_id);
@@ -335,7 +354,8 @@ impl StreamRunContext {
                 Some(runtime_tx),
                 cancel_token,
             )
-            .with_agent_events(agent_event_tx, agent_event_barrier);
+            .with_agent_events(agent_event_tx, agent_event_barrier)
+            .with_run_control(run_control);
         let worker_state = lifecycle.worker_state();
         let forwarder = RuntimeEventSink::from_session(session, &run_id).spawn_forwarder(
             runtime_rx,

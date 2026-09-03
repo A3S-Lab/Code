@@ -1,0 +1,196 @@
+---
+title: 'Memory'
+description: 'Remember task outcomes and recall them later by similarity, tags, or recency.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Memory
+
+Persistent memory lets a session record what worked (and what didn't) and pull
+those facts back later. SDK sessions have a default file-backed store at
+`<workspace>/.a3s/memory`; the TUI defaults to `~/.a3s/memory` so its `/memory`
+panel and live session browse the same durable store. Pass a `memoryStore` only
+when you want to override the path or backend. You can write outcomes explicitly
+with `rememberSuccess` / `rememberFailure`, then retrieve them with
+`recallSimilar`, `recallByTags`, or `memoryRecent`.
+
+LLM extraction is also enabled by default. It runs after significant completed
+turns to distill durable preferences, workflows, decisions, and failure lessons,
+while trivial turns are skipped.
+Default stores consolidate exact and conservative near-duplicate memories into a
+canonical item, while conflict-like memories remain separate for future recall.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_file_memory("./.a3s/memory"))
+        .build()
+        .await?;
+    let memory = session.memory().expect("memory is configured");
+
+    memory
+        .remember_success(
+            "refactored auth module",
+            &["read".into(), "edit".into(), "bash".into()],
+            "all tests passed after extracting AuthService",
+        )
+        .await?;
+    memory
+        .remember_failure(
+            "migration attempt",
+            "psql connection refused on port 5432",
+            &["bash".into()],
+        )
+        .await?;
+
+    let recent = memory.get_recent(10).await?;
+    let by_tags = memory
+        .recall_by_tags(&["read".into(), "edit".into()], 5)
+        .await?;
+    let similar = memory.recall_similar("auth refactor", 5).await?;
+    println!("{} {} {}", recent.len(), by_tags.len(), similar.len());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, FileMemoryStore } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  memoryStore: new FileMemoryStore('./.a3s/memory'),
+});
+
+// Record outcomes as the agent works.
+await session.rememberSuccess(
+  'refactored auth module',
+  ['read', 'edit', 'bash'],
+  'all tests passed after extracting AuthService',
+);
+await session.rememberFailure(
+  'migration attempt',
+  ['bash'],
+  'psql connection refused on port 5432',
+);
+
+// Recall later — by recency, by tool tags, or by semantic similarity.
+const recent = await session.memoryRecent(10);
+const byTags = await session.recallByTags(['read', 'edit'], 5);
+const similar = await session.recallSimilar('auth refactor', 5);
+
+console.log(recent.length, byTags.length, similar.length);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, FileMemoryStore
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.memory_store = FileMemoryStore("./.a3s/memory")
+session = agent.session("/repo", opts)
+
+# Record outcomes as the agent works. Python helpers are synchronous — no await.
+session.remember_success(
+    "refactored auth module",
+    ["read", "edit", "bash"],
+    "all tests passed after extracting AuthService",
+)
+session.remember_failure(
+    "migration attempt",
+    ["bash"],
+    "psql connection refused on port 5432",
+)
+
+# Recall later — by recency, by tool tags, or by semantic similarity.
+recent = session.memory_recent(10)
+by_tags = session.recall_by_tags(["read", "edit"], 5)
+similar = session.recall_similar("auth refactor", 5)
+
+print(len(recent), len(by_tags), len(similar))
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v8"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	options := &code.SessionOptions{FileMemoryDir: "./.a3s/memory"}
+
+	first, err := agent.Session(ctx, "/repo", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := first.RememberSuccess(
+		ctx,
+		"auth verification rule",
+		[]string{"cargo", "test"},
+		"Authentication changes must pass cargo test.",
+	); err != nil {
+		log.Fatal(err)
+	}
+	if err := first.Close(ctx); err != nil {
+		log.Fatal(err)
+	}
+
+	second, err := agent.Session(ctx, "/repo", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer second.Close(context.Background())
+	items, err := second.RecallSimilar(
+		ctx,
+		"verification required for authentication changes",
+		5,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, item := range items {
+		fmt.Println(item.Content)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+All four SDKs expose explicit memory write/query helpers. In Go these are
+`RememberSuccess`, `RememberFailure`, `RecallSimilar`, `RecallByTags`,
+`MemoryRecent`, and the working/short-term memory methods. The remember methods
+take a short task description, the tools involved (also used as tags), and the
+outcome text. If the default file store cannot be created, the session falls
+back to in-process memory and exposes an init warning.

@@ -100,6 +100,15 @@ fn boundaries_present_in_every_assembled_style_prompt() {
             prompt.contains("secrets"),
             "{style:?} prompt missing secret-handling rule"
         );
+        assert_eq!(
+            prompt.matches("## Runtime Contract").count(),
+            1,
+            "{style:?} prompt must contain one runtime contract"
+        );
+        assert!(
+            prompt.contains("A steer is a user correction"),
+            "{style:?} prompt missing safe-point run-control rule"
+        );
     }
 }
 
