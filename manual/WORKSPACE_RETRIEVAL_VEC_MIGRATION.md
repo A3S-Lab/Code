@@ -146,8 +146,8 @@ Required operator invariants are:
 
 ## Qualification evidence
 
-The 2026-09-02 Windows x86-64 qualification used release benchmark report
-schema 4 and profile `workspace-retrieval-v3`:
+The earlier 2026-09-02 Windows x86-64 qualification used release benchmark
+report schema 4 and profile `workspace-retrieval-v3`:
 
 | Gate | Result | Limit |
 | --- | ---: | ---: |
@@ -161,16 +161,27 @@ schema 4 and profile `workspace-retrieval-v3`:
 | Closed authoritative and shadow state | zero records and bytes | required |
 
 The 2026-09-03 validation refresh rebuilt the release benchmark against Vec
-`41283f6315906a2737b5a8e8612ac876a8dc9c04` on the same Windows x86-64 class of
-host (25,000 records, 384 dimensions, top-20, 100 measured queries, 20
-warmups). Exact p95 was 8.5055 ms, hybrid RRF-only p95 was 49.9420 ms, and
-deterministic-rerank p95 was 51.3222 ms; all three remained within their
-30/100/100 ms budgets. Both hybrid arms compared 120/120 queries with zero
-mismatches, failed queries, initialization failures, and failed mutations;
-the shadow reported 25,000 records, 196 successful mutations, and
-54,500,008 accounted bytes. The reranker added 1.3802 ms at p95 and stayed
-inside its 10 ms delta budget. The process exited successfully after the
-close/cleanup assertions.
+`41283f6315906a2737b5a8e8612ac876a8dc9c04` and Code `93dbb5f337da832149bfd94e5989a7530bf6b9db`
+on the same Windows x86-64 class of host (25,000 records, 384 dimensions,
+top-20, 100 measured queries, 20 warmups). The current release profile reports:
+
+| Gate | Result | Limit |
+| --- | ---: | ---: |
+| Exact p95 | 7.9257 ms | <= 30 ms |
+| Hybrid RRF-only p95 | 67.9645 ms | <= 100 ms |
+| Hybrid deterministic-rerank p95 | 70.2005 ms | <= 100 ms |
+| Deterministic reranker p95 delta | 2.2360 ms | <= 10 ms |
+| Vec records per hybrid arm | 25,000 | exactly 25,000 |
+| Vec accounted bytes per hybrid arm | 54,500,008 | reported, not an RSS claim |
+| Vec revision / successful mutations | 196 / 196 | no failed mutation |
+| Vec comparisons per hybrid arm | 120/120 matching | zero mismatch/failure |
+| Closed authoritative and shadow state | zero records and bytes | required |
+
+Both hybrid arms compared 120/120 queries with zero mismatches, failed
+queries, initialization failures, or failed mutations. The process exited
+successfully after the close/cleanup assertions. `accounted_bytes` remains a
+logical Vec estimate; it is not process RSS, committed virtual memory, or
+temporary-directory size.
 
 Additional local gates passed:
 
@@ -186,11 +197,17 @@ Additional local gates passed:
   Windows native Node.js/Python workspace-retrieval lifecycle tests.
 
 A3S Vec CI run
-[`33517845653`](https://github.com/A3S-Lab/Vec/actions/runs/33517845653)
+[`33705867979`](https://github.com/A3S-Lab/Vec/actions/runs/33705867979)
 passed MSRV 1.75, Linux x86-64/ARM64, Windows x86-64, macOS ARM64/Intel hosted,
 format, lint, docs, feature, and fuzz jobs. Actual macOS 12 Intel hardware or an
 equivalent external runner remains a release gate; the hosted Intel job is not
 claimed as that evidence.
+
+The Code validation workflows for the same pin also passed: the complete CI
+matrix is recorded in
+[`33712033250`](https://github.com/A3S-Lab/Code/actions/runs/33712033250), and
+the release-profile qualification is recorded in
+[`33712033140`](https://github.com/A3S-Lab/Code/actions/runs/33712033140).
 
 The repository-wide strict rustdoc command is currently blocked by pre-existing
 private or broken links in `core/src/mcp/result.rs` and `core/src/workspace/s3`.
