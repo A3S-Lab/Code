@@ -429,15 +429,15 @@ disk measurements, and rollback evidence remain in place until that gate is
 closed.
 
 The semantic runtime now consumes a Code-owned `WorkspaceVectorIndex` contract
-(`32a70cd7926fbdf3210fd0ee822b4f718cbee108`; Vec dependency refresh
-`7e3b083e`; revision-CAS implementation
+(`708a85e3ac070640ca5fb8173d0b06e6070152e7`; Vec dependency refresh
+`13585ccd`; revision-CAS implementation
 `b5540a869e742ce7a98348f27997970619a754b6`). The legacy
 `a3s-memory::VectorIndex` trait is imported only by the explicit compatibility
 adapter; Vec-primary and Memory-primary selection, publication, and
 differential logic share that boundary. Code CI and the release-profile
-qualification for this contract passed in runs
-[`33763816993`](https://github.com/A3S-Lab/Code/actions/runs/33763816993) and
-[`33763816547`](https://github.com/A3S-Lab/Code/actions/runs/33763816547).
+qualification for this contract are recorded in runs
+[`33773373773`](https://github.com/A3S-Lab/Code/actions/runs/33773373773) and
+[`33773373522`](https://github.com/A3S-Lab/Code/actions/runs/33773373522).
 The Vec implementation now also provides real global revision-CAS with one
 logical revision per partition publication, including stale-writer and
 concurrent-writer tests.
@@ -767,7 +767,7 @@ Current implementation status:
 | `CODE-C2` | Delivered | Rust Core adds compatible line, fixed UTF-8 window, recursive prioritized-separator, and host-injected custom range strategies; Code validates complete coverage and budgets, owns IDs/digests/lines, charges overlap memory, contains host failures, and wires explicit configuration into session-owned catalogs without allowing silent overrides of host-owned catalogs |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
 | `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `3293f572` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
-| `VEC-SHADOW1` | Delivered | Code's workspace-retrieval shadow pins the validated Vec `7e3b083e`, keeps A3S Memory as the only result authority, mirrors each admitted vector batch once into a session-local temporary Vec collection, compares exact IDs/partitions/f32 scores and search accounting under one publication gate, exposes bounded cross-SDK diagnostics, and contains every shadow failure. The 25,000 x 384 release profile compares 120/120 queries in both hybrid arms with zero mismatch/failure and releases both engines on close |
+| `VEC-SHADOW1` | Delivered | Code's workspace-retrieval shadow pins the validated Vec `13585ccd`, keeps A3S Memory as the only result authority, mirrors each admitted vector batch once into a session-local temporary Vec collection, compares exact IDs/partitions/f32 scores and search accounting under one publication gate, exposes bounded cross-SDK diagnostics, and contains every shadow failure. The 25,000 x 384 release profile compares 120/120 queries in both hybrid arms with zero mismatch/failure and releases both engines on close |
 | `CODE-Q1` | Delivered | Structured semantic search through the unified `search` tool, bounded query embedding, immutable catalog/vector revision fencing, current-file digest and byte-range verification, coverage metadata, cancellation, and explicit fallback |
 | `CODE-H1` | Delivered | Exact literal, A3S Vec FTS/BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
