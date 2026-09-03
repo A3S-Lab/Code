@@ -1,12 +1,11 @@
 use super::memory_vector_adapter::MemoryVectorIndexAdapter;
 use super::vec_shadow_store::{VecShadowFailure, VecShadowSnapshot, VecShadowStore};
 use super::vector_contract::{
-    VectorIndexChangeToken, VectorIndexDescriptor, VectorIndexError, VectorIndexObservation,
-    VectorIndexStatus, VectorMetric, VectorMutationConsistency, VectorNormalization, VectorRecord,
-    VectorResult, VectorRevision, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
-    WorkspaceVectorIndex,
+    VectorBudgetResource, VectorIndexChangeToken, VectorIndexDescriptor, VectorIndexError,
+    VectorIndexObservation, VectorIndexStatus, VectorMetric, VectorMutationConsistency,
+    VectorNormalization, VectorRecord, VectorResult, VectorRevision, VectorSearchHit,
+    VectorSearchRequest, VectorSearchResult, WorkspaceVectorIndex,
 };
-use a3s_memory::vector::VectorBudgetResource;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 

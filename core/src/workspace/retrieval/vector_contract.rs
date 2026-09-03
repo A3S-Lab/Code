@@ -8,9 +8,10 @@
 //! workspace contract to that dependency's trait.
 
 pub(super) use a3s_memory::vector::{
-    VectorIndexChangeToken, VectorIndexDescriptor, VectorIndexError, VectorIndexObservation,
-    VectorIndexStatus, VectorMetric, VectorMutationConsistency, VectorNormalization, VectorRecord,
-    VectorResult, VectorRevision, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
+    VectorBudgetResource, VectorIndexChangeToken, VectorIndexDescriptor, VectorIndexError,
+    VectorIndexObservation, VectorIndexStatus, VectorMetric, VectorMutationConsistency,
+    VectorNormalization, VectorRecord, VectorResult, VectorRevision, VectorSearchHit,
+    VectorSearchRequest, VectorSearchResult,
 };
 
 /// Session-owned vector index used by workspace semantic retrieval.
