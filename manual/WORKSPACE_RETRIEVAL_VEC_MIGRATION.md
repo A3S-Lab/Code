@@ -1,11 +1,12 @@
 # Workspace Retrieval A3S Vec Migration
 
-Status: developer shadow, 2026-09-02.
+Status: developer shadow, 2026-09-03.
 
 This document defines the first A3S Code integration gate for A3S Vec. It is a
 differential migration, not a serving-backend switch. Code commit
-`4163d8e3a1a96bbae430dc987005acaa362efb30` pins A3S Vec commit
-`019fdb929a57dee1803691e6def60df3946d9561`.
+`4163d8e3a1a96bbae430dc987005acaa362efb30` introduced the shadow; the
+current validation pin is A3S Vec commit
+`41283f6315906a2737b5a8e8612ac876a8dc9c04`.
 
 ## Authority contract
 
@@ -159,13 +160,27 @@ schema 4 and profile `workspace-retrieval-v3`:
 | Vec comparisons per hybrid arm | 120/120 matching | zero mismatch/failure |
 | Closed authoritative and shadow state | zero records and bytes | required |
 
+The 2026-09-03 validation refresh rebuilt the release benchmark against Vec
+`41283f6315906a2737b5a8e8612ac876a8dc9c04` on the same Windows x86-64 class of
+host (25,000 records, 384 dimensions, top-20, 100 measured queries, 20
+warmups). Exact p95 was 8.5055 ms, hybrid RRF-only p95 was 49.9420 ms, and
+deterministic-rerank p95 was 51.3222 ms; all three remained within their
+30/100/100 ms budgets. Both hybrid arms compared 120/120 queries with zero
+mismatches, failed queries, initialization failures, and failed mutations;
+the shadow reported 25,000 records, 196 successful mutations, and
+54,500,008 accounted bytes. The reranker added 1.3802 ms at p95 and stayed
+inside its 10 ms delta budget. The process exited successfully after the
+close/cleanup assertions.
+
 Additional local gates passed:
 
 - four focused Vec adapter tests, including 384-dimensional bit-exact scores,
   partition filters, replacement, removal, clear, and close;
 - the 64-generation replacement soak;
-- the complete serial Core suite with 2,990 library tests plus offline
-  integration and doc tests, with no failure;
+- the complete serial Core library suite (2,991 tests discovered; 2,976
+  passed, 13 ignored) with the two PowerShell-7-dependent native-sandbox tests
+  explicitly blocked by this host, plus the focused shadow tests and offline
+  integration/doc checks;
 - workspace all-target check and strict Clippy;
 - strict Node.js and Python Clippy, Go bridge tests, SDK mapping tests, and real
   Windows native Node.js/Python workspace-retrieval lifecycle tests.
