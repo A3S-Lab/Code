@@ -191,6 +191,18 @@ RSS or temporary-disk claim. The complete authority, mapping, failure, and
 promotion contract is in
 [Workspace Retrieval A3S Vec Migration](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
+### VEC-PRIMARY1 gated authority qualification
+
+The same Code candidate also supports an explicit, typed `A3sVec` serving
+authority for developer qualification. `A3sMemory` remains the default and is
+kept as the differential oracle when Vec is selected; no automatic fallback is
+performed. On the same Windows x86-64 host and schema-v4 workload, the
+Vec-primary run reported exact/hybrid/deterministic p95 values of
+8.6440/53.0470/53.0967 ms, 25,000 records per arm, 120/120 matching queries,
+zero shadow failures, and zero records/bytes after close. These numbers are
+directional local evidence only: they do not close the Intel macOS 12, RSS,
+crash-recovery, or P7 duplicate-backend removal gates.
+
 ### CODE-R2 deterministic rerank qualification
 
 The version-2 benchmark runs two separately constructed sessions over the same

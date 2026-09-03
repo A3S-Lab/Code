@@ -63,6 +63,7 @@ pub(super) type VecShadowResult<T> = Result<T, VecShadowFailure>;
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct VecShadowSnapshot {
     pub(super) revision: u64,
+    pub(super) partition_count: usize,
     pub(super) record_count: usize,
     pub(super) accounted_bytes: usize,
 }
@@ -77,6 +78,7 @@ pub(super) struct VecShadowSearchHit {
 #[derive(Debug)]
 pub(super) struct VecShadowSearchResult {
     pub(super) hits: Vec<VecShadowSearchHit>,
+    pub(super) snapshot: VecShadowSnapshot,
     pub(super) searched_records: usize,
     pub(super) truncated: bool,
 }
@@ -108,6 +110,8 @@ impl VecShadowStore {
             u32::try_from(descriptor.dimension).map_err(|_| VecShadowFailure::InvalidContract)?;
         let max_records =
             u64::try_from(descriptor.max_records).map_err(|_| VecShadowFailure::InvalidContract)?;
+        let max_bytes =
+            u64::try_from(descriptor.max_bytes).map_err(|_| VecShadowFailure::InvalidContract)?;
         let schema = CollectionSchema::builder("workspace-vector-shadow")
             .add_field(FieldSchema::new(
                 RECORD_ID_FIELD,
@@ -136,6 +140,7 @@ impl VecShadowStore {
             .build()?;
         let limits = CollectionResourceLimits::new()
             .try_with_max_documents(max_records)?
+            .try_with_max_accounted_bytes(max_bytes)?
             .try_with_max_query_candidates(max_records)?
             .try_with_max_write_batch_documents(max_records)?;
         let mut options = CollectionOptions::new()?;
@@ -147,7 +152,7 @@ impl VecShadowStore {
             .to_str()
             .ok_or(VecShadowFailure::FileSystem)?;
         let collection = Collection::create(collection_path, &schema, Some(&options))?;
-        let snapshot = snapshot(&collection)?;
+        let snapshot = snapshot(&collection, 0)?;
         Ok((
             Self {
                 inner: Arc::new(VecShadowInner {
@@ -251,7 +256,7 @@ fn replace_partition(
     } else {
         state.partitions.insert(partition, new_keys);
     }
-    snapshot(&collection)
+    snapshot(&collection, state.partitions.len())
 }
 
 fn clear(inner: &VecShadowInner) -> VecShadowResult<VecShadowSnapshot> {
@@ -269,7 +274,7 @@ fn clear(inner: &VecShadowInner) -> VecShadowResult<VecShadowSnapshot> {
         .collect::<Vec<_>>();
     delete_keys(&collection, &keys)?;
     state.partitions.clear();
-    snapshot(&collection)
+    snapshot(&collection, 0)
 }
 
 fn search(
@@ -329,11 +334,17 @@ fn search(
             })
         })
         .collect::<VecShadowResult<Vec<_>>>()?;
+    let snapshot = snapshot(&collection, state_partition_count(&inner.state))?;
     Ok(VecShadowSearchResult {
         truncated: searched_records > hits.len(),
         hits,
+        snapshot,
         searched_records,
     })
+}
+
+fn state_partition_count(state: &Mutex<VecShadowState>) -> usize {
+    lock_unpoisoned(state).partitions.len()
 }
 
 fn close(inner: &VecShadowInner) -> VecShadowResult<()> {
@@ -408,10 +419,11 @@ fn checked_write(result: WriteResult) -> VecShadowResult<()> {
     }
 }
 
-fn snapshot(collection: &Collection) -> VecShadowResult<VecShadowSnapshot> {
+fn snapshot(collection: &Collection, partition_count: usize) -> VecShadowResult<VecShadowSnapshot> {
     let stats = collection.stats()?;
     Ok(VecShadowSnapshot {
         revision: stats.revision,
+        partition_count,
         record_count: usize::try_from(stats.doc_count).unwrap_or(usize::MAX),
         accounted_bytes: usize::try_from(stats.accounted_bytes).unwrap_or(usize::MAX),
     })

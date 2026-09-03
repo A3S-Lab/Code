@@ -1,10 +1,19 @@
 use super::super::vec_shadow::ShadowVectorIndex;
+use super::super::vec_shadow_store::VecShadowStore;
 use super::super::WorkspaceVecShadowPhase;
-use a3s_memory::vector::{VectorIndex, VectorIndexDescriptor, VectorRecord, VectorSearchRequest};
+use super::super::WorkspaceVectorEngine;
+use a3s_memory::vector::{
+    VectorIndex, VectorIndexDescriptor, VectorIndexError, VectorMutationConsistency, VectorRecord,
+    VectorRevision, VectorSearchRequest,
+};
 
 #[tokio::test]
 async fn vec_shadow_matches_memory_ranking_and_partition_filters() {
-    let index = ShadowVectorIndex::new(VectorIndexDescriptor::new(3)).unwrap();
+    let index = ShadowVectorIndex::new_with_engine(
+        VectorIndexDescriptor::new(3),
+        WorkspaceVectorEngine::A3sMemory,
+    )
+    .unwrap();
     let tied = vec![1.0, 2.0, 3.0];
     index
         .replace_partition("src/a.rs", vec![VectorRecord::new("z", tied.clone())])
@@ -62,7 +71,11 @@ async fn vec_shadow_matches_memory_ranking_and_partition_filters() {
 
 #[tokio::test]
 async fn vec_shadow_tracks_replacement_removal_and_clear() {
-    let index = ShadowVectorIndex::new(VectorIndexDescriptor::new(2)).unwrap();
+    let index = ShadowVectorIndex::new_with_engine(
+        VectorIndexDescriptor::new(2),
+        WorkspaceVectorEngine::A3sMemory,
+    )
+    .unwrap();
     index
         .replace_partition(
             "src/lib.rs",
@@ -99,7 +112,11 @@ async fn vec_shadow_tracks_replacement_removal_and_clear() {
 
 #[tokio::test]
 async fn unsupported_shadow_labels_never_change_memory_results() {
-    let index = ShadowVectorIndex::new(VectorIndexDescriptor::new(2)).unwrap();
+    let index = ShadowVectorIndex::new_with_engine(
+        VectorIndexDescriptor::new(2),
+        WorkspaceVectorEngine::A3sMemory,
+    )
+    .unwrap();
     let record = VectorRecord::new("labelled", vec![1.0, 0.0]).with_label("scope", "workspace");
     index
         .replace_partition("src/lib.rs", vec![record])
@@ -123,7 +140,11 @@ async fn unsupported_shadow_labels_never_change_memory_results() {
 #[tokio::test]
 async fn vec_shadow_matches_high_dimension_scores_bit_for_bit() {
     let dimension = 384;
-    let index = ShadowVectorIndex::new(VectorIndexDescriptor::new(dimension)).unwrap();
+    let index = ShadowVectorIndex::new_with_engine(
+        VectorIndexDescriptor::new(dimension),
+        WorkspaceVectorEngine::A3sMemory,
+    )
+    .unwrap();
     let first = (0..dimension)
         .map(|offset| ((offset % 17) as f32 - 8.0) / 9.0)
         .collect::<Vec<_>>();
@@ -154,4 +175,132 @@ async fn vec_shadow_matches_high_dimension_scores_bit_for_bit() {
     assert_eq!(shadow.compared_queries, 1);
     assert_eq!(shadow.matching_queries, 1);
     assert_eq!(shadow.mismatched_queries, 0);
+}
+
+#[tokio::test]
+async fn vec_primary_serves_and_keeps_memory_shadow_in_sync() {
+    let index = ShadowVectorIndex::new_with_engine(
+        VectorIndexDescriptor::new(2),
+        WorkspaceVectorEngine::A3sVec,
+    )
+    .unwrap();
+    assert_eq!(index.active_engine(), WorkspaceVectorEngine::A3sVec);
+
+    index
+        .replace_partition(
+            "src/lib.rs",
+            vec![
+                VectorRecord::new("near", vec![1.0, 0.0]),
+                VectorRecord::new("far", vec![0.0, 1.0]),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let result = index
+        .search(VectorSearchRequest::new(vec![1.0, 0.0], 2))
+        .await
+        .unwrap();
+    assert_eq!(
+        result
+            .hits
+            .iter()
+            .map(|hit| hit.id.as_str())
+            .collect::<Vec<_>>(),
+        ["near", "far"]
+    );
+    let diagnostics = index.shadow_status();
+    assert_eq!(diagnostics.phase, WorkspaceVecShadowPhase::Ready);
+    assert_eq!(diagnostics.record_count, 2);
+    assert_eq!(diagnostics.compared_queries, 1);
+    assert_eq!(diagnostics.matching_queries, 1);
+    assert_eq!(diagnostics.mismatched_queries, 0);
+
+    index.clear().await.unwrap();
+    index.close().await;
+    assert_eq!(index.shadow_status().phase, WorkspaceVecShadowPhase::Closed);
+}
+
+#[tokio::test]
+async fn vec_primary_advertises_partition_atomic_mutations_without_fake_cas() {
+    let index = ShadowVectorIndex::new_with_engine(
+        VectorIndexDescriptor::new(2),
+        WorkspaceVectorEngine::A3sVec,
+    )
+    .unwrap();
+    assert_eq!(
+        index.mutation_consistency(),
+        VectorMutationConsistency::PartitionAtomic
+    );
+
+    let error = index
+        .replace_partition_if_revision(
+            "src/lib.rs",
+            VectorRevision::new(0),
+            vec![VectorRecord::new("record", vec![1.0, 0.0])],
+        )
+        .await
+        .expect_err("Vec must not claim unsupported global revision CAS");
+    assert_eq!(error, VectorIndexError::ConditionalMutationUnsupported);
+    assert_eq!(index.status().record_count, 0);
+    assert_eq!(index.shadow_status().phase, WorkspaceVecShadowPhase::Ready);
+}
+
+#[tokio::test]
+async fn vec_primary_rejects_invalid_contracts_before_mutating_the_collection() {
+    let index = ShadowVectorIndex::new_with_engine(
+        VectorIndexDescriptor::new(2),
+        WorkspaceVectorEngine::A3sVec,
+    )
+    .unwrap();
+
+    let dimension_error = index
+        .replace_partition("src/lib.rs", vec![VectorRecord::new("bad", vec![1.0])])
+        .await
+        .expect_err("dimension mismatches must fail before Vec admission");
+    assert!(matches!(
+        dimension_error,
+        VectorIndexError::DimensionMismatch { .. }
+    ));
+    assert_eq!(index.status().record_count, 0);
+
+    let query_error = index
+        .search(VectorSearchRequest::new(vec![0.0, 0.0], 1))
+        .await
+        .expect_err("zero query vectors must fail before a Vec query");
+    assert!(matches!(query_error, VectorIndexError::ZeroVector { .. }));
+    assert_eq!(index.shadow_status().failed_mutations, 1);
+    assert_eq!(index.shadow_status().failed_queries, 1);
+}
+
+#[tokio::test]
+async fn vec_partition_replacement_rolls_back_after_resource_rejection() {
+    let descriptor = VectorIndexDescriptor::new(2).with_max_bytes(1_024);
+    let (store, initial) = VecShadowStore::create(&descriptor).unwrap();
+    assert_eq!(initial.record_count, 0);
+    let first = store
+        .replace_partition(
+            "src/lib.rs".to_owned(),
+            vec![VectorRecord::new("old", vec![1.0, 0.0])],
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.record_count, 1);
+
+    let oversized = store
+        .replace_partition(
+            "src/lib.rs".to_owned(),
+            vec![VectorRecord::new("x".repeat(4_096), vec![0.0, 1.0])],
+        )
+        .await
+        .expect_err("the Vec byte policy must reject an oversized replacement");
+    assert_eq!(oversized.code(), "vec_resource_exhausted");
+
+    let result = store
+        .search(VectorSearchRequest::new(vec![1.0, 0.0], 1))
+        .await
+        .unwrap();
+    assert_eq!(result.snapshot.record_count, 1);
+    assert_eq!(result.hits[0].id, "old");
+    store.close().await.unwrap();
 }

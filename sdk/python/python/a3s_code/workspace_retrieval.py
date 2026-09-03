@@ -12,7 +12,7 @@ EmbeddingNormalization = Literal["none", "unit"]
 WorkspaceRetrievalPhase = Literal[
     "disabled", "building", "ready", "degraded", "closed"
 ]
-WorkspaceVectorEngine = Literal["a3s_memory"]
+WorkspaceVectorEngine = Literal["a3s_memory", "a3s_vec"]
 WorkspaceVecShadowPhase = Literal["disabled", "ready", "degraded", "closed"]
 WorkspaceRetrievalChannel = Literal["exact", "lexical", "structural", "semantic"]
 WorkspaceSemanticFallbackReason = Literal[

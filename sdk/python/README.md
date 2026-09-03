@@ -180,10 +180,11 @@ Semantic retrieval is opt-in and belongs to one session. Exact, glob, BM25,
 Code Intelligence, and RRF need no embedding or reranking model. Dense semantic
 mode requires an embedding callback, but the callback can run a small model
 locally on CPU; no remote API or GPU is required. A3S Code owns chunking,
-Memory-authoritative bounded vectors, hybrid ranking, source-digest
-verification, and shutdown. During the A3S Vec migration preview it mirrors the
-same admitted vectors into a temporary session-local shadow, compares results,
-and still serves only Memory. Nothing is persisted to a vector database.
+bounded vector authority, hybrid ranking, source-digest verification, and
+shutdown. `A3sMemory` is the compatibility serving default; the gated A3S Vec
+preview can be selected with the typed `WorkspaceVectorEngineOption.A3sVec`,
+while the other engine remains a differential shadow. Nothing is persisted to
+a vector database.
 
 ```python
 from a3s_code import (
@@ -192,6 +193,7 @@ from a3s_code import (
     RecursiveWorkspaceChunkingStrategy,
     SessionOptions,
     WorkspaceRetrievalOptions,
+    WorkspaceVectorEngineOption,
 )
 
 async def embed(request):
@@ -229,6 +231,8 @@ retrieval = WorkspaceRetrievalOptions(
 )
 retrieval.max_records = 100_000
 retrieval.max_bytes = 128 * 1024 * 1024
+# Developer qualification only; omission keeps the Memory compatibility path.
+# retrieval.vector_engine = WorkspaceVectorEngineOption.A3sVec
 
 options = SessionOptions()
 options.workspace_retrieval = retrieval
@@ -248,11 +252,12 @@ the session cancels the active embedding coroutine. The exported
 `WorkspaceRetrievalStatus["batching"]` reports logical document batches,
 physical provider requests, limit flush reasons, the theoretical request lower
 bound, and time to first ready file for the current catalog generation.
-`WorkspaceRetrievalStatus["active_vector_engine"]` remains `"a3s_memory"`.
-`["vec_shadow"]` contains only bounded lifecycle, resource, mutation, and
-parity counters; it cannot change returned hits. Closing requires zero shadow
-records and accounted bytes. The SDK exposes no primitive backend selector;
-see the [migration contract](../../manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+`WorkspaceRetrievalStatus["active_vector_engine"]` is `"a3s_memory"` by
+default or `"a3s_vec"` for the typed preview. `['vec_shadow']` contains only
+bounded lifecycle, resource, mutation, and parity counters; it cannot change
+returned hits. Closing requires zero shadow records and accounted bytes. Raw
+backend-name selectors are not accepted; see the
+[migration contract](../../manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 The reranker argument is optional; omit it to preserve RRF-only. Its typed
 fields bound candidates, sampled feature bytes, fingerprints, and checked

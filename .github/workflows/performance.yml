@@ -119,6 +119,14 @@ jobs:
           --example workspace_retrieval_benchmark
           | tee performance-results/workspace-retrieval.json
 
+      - name: Qualify workspace retrieval with the Vec-primary preview
+        env:
+          A3S_WORKSPACE_VECTOR_ENGINE: a3s_vec
+        run: >-
+          cargo run --locked --release -p a3s-code-core
+          --example workspace_retrieval_benchmark
+          | tee performance-results/workspace-retrieval-vec-primary.json
+
       - name: Qualify Flow projection and State Graph replay
         run: >-
           cargo run --locked --release -p a3s-code-core
@@ -156,7 +164,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           reports=(performance-results/*.json)
-          test "${#reports[@]}" -eq 7
+          test "${#reports[@]}" -eq 8
           for report in "${reports[@]}"; do
             jq -e '.passed == true' "$report" >/dev/null
           done

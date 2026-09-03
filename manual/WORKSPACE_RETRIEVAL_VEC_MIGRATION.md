@@ -1,20 +1,22 @@
 # Workspace Retrieval A3S Vec Migration
 
-Status: developer shadow, 2026-09-03.
+Status: developer shadow with a gated Vec-primary preview, 2026-09-03.
 
 This document defines the first A3S Code integration gate for A3S Vec. It is a
-differential migration, not a serving-backend switch. Code commit
+differential migration, not a stable serving-backend promotion. Code commit
 `4163d8e3a1a96bbae430dc987005acaa362efb30` introduced the shadow; the
 current validation pin is A3S Vec commit
 `41283f6315906a2737b5a8e8612ac876a8dc9c04`.
 
 ## Authority contract
 
-A3S Memory remains the only authoritative vector engine for semantic and
-hybrid workspace retrieval. Its result determines hits, ordering, scores,
-searched-record counts, truncation, fallbacks, and errors. The Vec shadow may
-collect evidence and degrade its own status, but it cannot change any of those
-serving decisions.
+`A3sMemory` is the compatibility default. A trusted host may explicitly select
+the gated `A3sVec` preview through the typed `WorkspaceVectorEngine` option.
+Exactly one selected engine is authoritative for each session: its result
+determines hits, ordering, scores, searched-record counts, truncation,
+fallbacks, and errors. The other engine is a differential shadow; it may
+collect evidence and degrade its own status, but it cannot change serving
+decisions or silently fail over.
 
 One admitted embedding response follows this path:
 
@@ -26,14 +28,15 @@ Embedding Provider
 Code publication gate
         |----------------------|
         v                      v
-A3S Memory authority    A3S Vec shadow
+selected authority       differential shadow
+(Memory or Vec)          (the other engine)
         |                      |
-        | query result         | differential result
+        | serving result       | comparison evidence
         |----------------------|
                    |
                    v
         compare, record counters,
-        return Memory result unchanged
+        return selected result unchanged
 ```
 
 Code does not call the Embedding Provider a second time. It clones the same
@@ -43,8 +46,10 @@ and cancellation checks.
 
 ## Session and storage ownership
 
-Each retrieval-enabled session owns one Memory index and, when initialization
-succeeds, one Vec collection. The collection is created below an
+Each retrieval-enabled session owns one selected primary index and one
+differential shadow when initialization succeeds. The Memory-default mode owns
+a Memory primary plus a Vec collection; the gated Vec-primary mode owns a Vec
+collection plus a Memory shadow. The Vec collection is created below an
 operating-system temporary directory with manual durability. It is not shared,
 checkpointed, reopened, or exposed as a vector-database service. Closing the
 session clears and closes the collection before releasing the temporary
@@ -93,7 +98,9 @@ One Code-owned asynchronous read/write gate spans both engines:
   and close acquire the write side;
 - search acquires the read side, runs Memory and Vec concurrently, then records
   the comparison;
-- Memory mutates first and remains authoritative;
+- the selected primary mutates first and remains authoritative;
+- Memory-default sessions mirror into Vec; Vec-primary sessions mirror into
+  Memory;
 - Vec replacement fetches the previous partition, deletes it, inserts the new
   documents, and attempts rollback if insertion fails;
 - synchronous Vec work runs in Tokio's blocking pool. The owned operation guard
@@ -102,17 +109,20 @@ One Code-owned asynchronous read/write gate spans both engines:
 
 Vec initialization, mutation, query, worker, filesystem, filter, unsupported
 label, rollback, or write-rejection failures increment only bounded counters
-and set `vec_shadow.phase = degraded`. Logs contain a static failure code, not
-the path, query, vector, document, or backend error body. A mismatch also
-degrades the shadow and returns the Memory result unchanged.
+and set `vec_shadow.phase = degraded`. In Vec-primary mode, a primary failure is
+returned to the caller and never silently replaced by Memory; in Memory-default
+mode, a Vec shadow failure leaves the Memory result available. Logs contain a
+static failure code, not the path, query, vector, document, or backend error
+body. A mismatch degrades the shadow and leaves the selected primary result
+unchanged.
 
 ## Resource contract
 
-Memory's `max_records` and `max_bytes` remain the authoritative admission
-limits. Vec receives `max_records` as its maximum documents, query candidates,
-and write-batch documents. Memory's byte limit is not reinterpreted as a Vec
-storage limit because the engines use different layouts. Vec instead reports
-its deterministic `accounted_bytes` estimate for review.
+`max_records` and `max_bytes` are applied to the selected primary and its
+shadow descriptor. Vec additionally enforces the same ceilings as collection
+document, query-candidate, write-batch, and accounted-byte limits. Its storage
+layout is different from Memory's, so `accounted_bytes` is a Vec logical
+estimate and is not expected to equal Memory's `byte_count`.
 
 `accounted_bytes` is not process RSS, committed virtual memory, or temporary
 directory size. Promotion requires separate RSS, disk, and latency
@@ -123,8 +133,9 @@ limit or permit additional serving records.
 
 `WorkspaceRetrievalStatus` adds two backward-compatible fields:
 
-- `active_vector_engine` / `activeVectorEngine` is `a3s_memory` for an enabled
-  runtime and absent for a disabled runtime;
+- `active_vector_engine` / `activeVectorEngine` is `a3s_memory` by default or
+  `a3s_vec` for an explicitly selected preview, and absent for a disabled
+  runtime;
 - `vec_shadow` / `vecShadow` reports `phase`, `revision`, `record_count`,
   `accounted_bytes`, initialization and mutation outcomes, and compared,
   matching, mismatched, and failed query counts.
@@ -135,13 +146,20 @@ Rust uses `active_vector_engine` and `vec_shadow`. Node.js uses
 `VecShadow` while its bridge JSON remains snake_case. Legacy serialized Rust
 status without these fields loads with no active engine and a disabled shadow.
 
+The selector is typed at every supported boundary: Rust uses
+`WorkspaceVectorEngine::A3sMemory`/`A3sVec`, Node uses
+`WorkspaceVectorEngineOption.A3sMemory`/`A3sVec`, Python uses the native
+`WorkspaceVectorEngineOption` enum, and Go uses
+`WorkspaceVectorEngineA3SMemory`/`WorkspaceVectorEngineA3SVec`. Raw backend
+name strings are rejected by the native option paths.
+
 Required operator invariants are:
 
-- `active_vector_engine == a3s_memory` for every enabled session;
+- `active_vector_engine` equals the requested typed engine;
 - `matching_queries == compared_queries`;
 - `mismatched_queries == 0` and `failed_queries == 0` before promotion;
 - `record_count == vector_records` after a ready generation when no shadow
-  failure has occurred;
+  failure has occurred (the count describes the selected primary in Vec mode);
 - both authoritative and shadow record/byte counts are zero after close.
 
 ## Qualification evidence
@@ -214,6 +232,21 @@ The full Code workspace strict rustdoc command (`cargo doc --locked
 the current candidate. This includes the migration adapter and its public SDK
 facades; no rustdoc diagnostic is suppressed for the Vec integration.
 
+The same revision was then run with the explicit Vec-primary selector on the
+same Windows x86-64 host (25,000 records, 384 dimensions, top-20, 100 measured
+queries, 20 warmups). These are local directional measurements, not a
+cross-platform release claim:
+
+| Engine | Exact p95 | Hybrid RRF p95 | Deterministic p95 | Vec comparisons |
+| --- | ---: | ---: | ---: | ---: |
+| `a3s_memory` default | 10.3539 ms | 60.5463 ms | 55.3652 ms | 120/120 |
+| `a3s_vec` preview | 8.6440 ms | 53.0470 ms | 53.0967 ms | 120/120 |
+
+Both runs reported zero mismatches, failed queries, failed mutations, and
+initialization failures, and both closed with zero records and bytes. The
+Vec-primary run's logical accounted bytes were 54,500,008 per hybrid arm.
+The benchmark does not measure process RSS, crash recovery, or macOS 12 Intel.
+
 ## Promotion gates
 
 Vec must not become authoritative until a separate decision records all of the
@@ -231,17 +264,19 @@ following:
 7. an independent oracle retained during any canary serving phase;
 8. an explicit decision about whether and when the Memory path may be removed.
 
-This gate satisfies none of those decisions implicitly. The Memory path must
-remain present and authoritative until the later promotion is reviewed and
-committed.
+The typed selector design is now implemented, but this gate satisfies none of
+the remaining platform, RSS, recovery, lexical-migration, or release decisions
+implicitly. The Memory path must remain present and the default until the
+later promotion is reviewed and committed.
 
 ## Rollback
 
 A shadow-only regression does not require data migration because the Vec
-collection is session-local and temporary. Roll back the deployed Code binary
-to a revision before `4163d8e`, then recreate affected sessions. There is no
-public primitive backend selector and no separate shadow configuration knob in
-this gate.
+collection is session-local and temporary. Recreate affected sessions with the
+typed `WorkspaceVectorEngine::A3sMemory` compatibility default (or disable
+workspace retrieval) and roll back the deployed Code binary if needed. There is
+no public primitive backend selector and no automatic fallback from a selected
+primary to its shadow.
 
 If the regression affects the complete semantic runtime or creates unacceptable
 latency before a binary rollback is available, use the existing trusted host

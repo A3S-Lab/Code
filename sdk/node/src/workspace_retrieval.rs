@@ -34,7 +34,9 @@ pub use chunking::{
     FixedWindowWorkspaceChunkingStrategy, LineWorkspaceChunkingStrategy,
     RecursiveWorkspaceChunkingStrategy,
 };
-pub use options::{WorkspaceRetrievalOptions, WorkspaceRetrievalOptionsObject};
+pub use options::{
+    WorkspaceRetrievalOptions, WorkspaceRetrievalOptionsObject, WorkspaceVectorEngineOption,
+};
 pub use provider::CallbackEmbeddingProvider;
 pub use rerank::DeterministicWorkspaceReranker;
 pub use types::*;

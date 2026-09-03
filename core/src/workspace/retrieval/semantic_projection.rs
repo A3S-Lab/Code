@@ -285,7 +285,7 @@ pub(super) fn publish_progress(
         total_failures: state.total_failures,
         vector_records: vector.record_count,
         vector_bytes: vector.byte_count,
-        active_vector_engine: Some(super::WorkspaceVectorEngine::A3sMemory),
+        active_vector_engine: Some(index.active_engine()),
         vec_shadow: index.shadow_status(),
         batching: state.batching.clone(),
         model,

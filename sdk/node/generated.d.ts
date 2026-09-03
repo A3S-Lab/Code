@@ -925,12 +925,19 @@ export interface MemoryMaintenanceHealth {
   phase: string
   jobs: Array<MemoryMaintenanceJobHealth>
 }
+/** Typed authority selection for the gated workspace retrieval preview. */
+export const enum WorkspaceVectorEngineOption {
+  A3sMemory = 'a3s_memory',
+  A3sVec = 'a3s_vec'
+}
 export interface WorkspaceRetrievalOptionsObject {
   /** Opaque live provider identity. Pass a `WorkspaceRetrievalOptions` instance. */
   instanceId: string
   maxRecords?: number
   maxBytes?: number
   shutdownTimeoutMs?: number
+  /** Typed vector authority; omission preserves the Memory compatibility default. */
+  vectorEngine?: WorkspaceVectorEngineOption
   /** Opaque validated reranker snapshot; empty preserves RRF-only. */
   rerankerInstanceId: string
   /** Opaque validated chunking snapshot; empty preserves line chunking. */
@@ -2047,7 +2054,7 @@ export declare class RecursiveWorkspaceChunkingStrategy {
 }
 /** Typed options that enable ephemeral semantic retrieval for one session. */
 export declare class WorkspaceRetrievalOptions {
-  constructor(provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null, chunkingStrategy?: LineWorkspaceChunkingStrategy | FixedWindowWorkspaceChunkingStrategy | RecursiveWorkspaceChunkingStrategy | null)
+  constructor(provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null, chunkingStrategy?: LineWorkspaceChunkingStrategy | FixedWindowWorkspaceChunkingStrategy | RecursiveWorkspaceChunkingStrategy | null, vectorEngine?: WorkspaceVectorEngineOption | null)
   /** Return the opaque provider identity used by structural SessionOptions conversion. */
   get instanceId(): string
   get maxRecords(): number
@@ -2056,6 +2063,8 @@ export declare class WorkspaceRetrievalOptions {
   set maxBytes(value: number)
   get shutdownTimeoutMs(): number
   set shutdownTimeoutMs(value: number)
+  get vectorEngine(): WorkspaceVectorEngineOption
+  set vectorEngine(value: WorkspaceVectorEngineOption)
   /** Return the opaque reranker snapshot used by structural conversion. */
   get rerankerInstanceId(): string
   /** Return the opaque chunking snapshot used by structural conversion. */

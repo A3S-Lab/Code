@@ -43,6 +43,8 @@ _ensure_native()
 del _ensure_native
 
 from ._native import *
+# Typed workspace vector authority selector exported by the native bridge.
+from ._native import WorkspaceVectorEngineOption
 from .event_protocol_v1 import (
     AGENT_EVENT_TYPES_V1,
     AgentEventTypeV1,

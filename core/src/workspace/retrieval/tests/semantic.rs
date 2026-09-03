@@ -70,6 +70,36 @@ async fn builds_file_partitions_asynchronously_and_exposes_partial_readiness() {
 }
 
 #[tokio::test]
+async fn vec_can_be_selected_as_the_serving_workspace_authority() {
+    let catalog = populated_catalog(&[("a.rs", "vec primary authority\n")]);
+    let provider = ControlledProvider::immediate(vec![ProviderOutcome::Success]);
+    let provider_port: Arc<dyn EmbeddingProvider> = provider;
+    let options = WorkspaceRetrievalOptions::new(provider_port)
+        .with_vector_engine(WorkspaceVectorEngine::A3sVec);
+    let runtime = WorkspaceRetrievalRuntime::start(catalog, options, CancellationToken::new())
+        .expect("Vec-primary workspace runtime must construct");
+
+    let ready = wait_for_status(&runtime, |status| {
+        status.phase == WorkspaceRetrievalPhase::Ready
+    })
+    .await;
+    assert_eq!(
+        ready.active_vector_engine,
+        Some(WorkspaceVectorEngine::A3sVec)
+    );
+    assert_eq!(ready.vector_records, 1);
+    assert_eq!(ready.vec_shadow.phase, WorkspaceVecShadowPhase::Ready);
+    assert_eq!(ready.vec_shadow.record_count, 1);
+
+    runtime.close().await;
+    assert_eq!(runtime.status().phase, WorkspaceRetrievalPhase::Closed);
+    assert_eq!(
+        runtime.status().vec_shadow.phase,
+        WorkspaceVecShadowPhase::Closed
+    );
+}
+
+#[tokio::test]
 async fn invalidates_a_changed_partition_before_reembedding_it() {
     let catalog = populated_catalog(&[("a.rs", "old token\n"), ("b.rs", "stable token\n")]);
     let provider = ControlledProvider::gated(vec![ProviderOutcome::Success; 3]);

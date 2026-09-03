@@ -32,6 +32,7 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLineWorkspaceChunkingStrategy>()?;
     m.add_class::<PyFixedWindowWorkspaceChunkingStrategy>()?;
     m.add_class::<PyRecursiveWorkspaceChunkingStrategy>()?;
+    m.add_class::<PyWorkspaceVectorEngineOption>()?;
     m.add_class::<PyWorkspaceRetrievalOptions>()?;
     m.add_class::<PyServeHandle>()?;
     m.add_class::<PySessionQueueConfig>()?;

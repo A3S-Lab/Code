@@ -26,6 +26,7 @@ mod types;
 mod vec_shadow;
 mod vec_shadow_document;
 mod vec_shadow_store;
+mod vector_authority;
 mod verification;
 
 pub use catalog::{ChunkCatalogSnapshot, WorkspaceChunkCatalog};
