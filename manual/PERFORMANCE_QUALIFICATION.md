@@ -100,8 +100,8 @@ gate:
 
 | Serving engine | Exact p95 | Hybrid RRF p95 | Deterministic p95 | Differential result |
 | --- | ---: | ---: | ---: | --- |
-| `a3s_memory` (default) | 10.3539 ms | 60.5463 ms | 55.3652 ms | 120/120, zero failures |
-| `a3s_vec` (typed preview) | 8.6440 ms | 53.0470 ms | 53.0967 ms | 120/120, zero failures |
+| `a3s_memory` (default) | 7.5379 ms | 49.0593 ms | 48.7440 ms | 120/120, zero failures |
+| `a3s_vec` (typed preview) | 7.4195 ms | 47.4571 ms | 48.7821 ms | 120/120, zero failures |
 
 The Vec-primary run retained 25,000 records per hybrid arm and reported
 54,500,008 logical Vec-accounted bytes per arm; close released all records and
@@ -155,6 +155,7 @@ gh run download <run-id> --repo A3S-Lab/Code
 The current workflow requires exactly eight JSON files (including the
 Vec-primary workspace-retrieval report) and rejects any report
 whose top-level `passed` value is not `true`. The authoritative run above
-contains all seven, including `DM-QUAL1`. The capability ledger explains how
+contains all eight, including the Vec-primary workspace report and `DM-QUAL1`.
+The capability ledger explains how
 these profiles combine with deterministic correctness, SDK runtime, and
 external qualification evidence.

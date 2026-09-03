@@ -228,6 +228,11 @@ impl ShadowVectorIndex {
                 );
             }
         }
+        if let Some(shadow) = &self.memory_shadow {
+            if let Err(error) = shadow.clear().await {
+                tracing::warn!(error = %error, "A3S Memory workspace shadow close clear failed");
+            }
+        }
         if let Err(error) = self.primary.close().await {
             tracing::warn!(
                 error = %error,

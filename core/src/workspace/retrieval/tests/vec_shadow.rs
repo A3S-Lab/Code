@@ -222,6 +222,28 @@ async fn vec_primary_serves_and_keeps_memory_shadow_in_sync() {
 }
 
 #[tokio::test]
+async fn vec_primary_close_releases_memory_shadow_without_a_prior_clear() {
+    let index = ShadowVectorIndex::new_with_engine(
+        VectorIndexDescriptor::new(2),
+        WorkspaceVectorEngine::A3sVec,
+    )
+    .unwrap();
+    index
+        .replace_partition(
+            "src/retained.rs",
+            vec![VectorRecord::new("retained", vec![1.0, 0.0])],
+        )
+        .await
+        .unwrap();
+
+    index.close().await;
+    let closed = index.shadow_status();
+    assert_eq!(closed.phase, WorkspaceVecShadowPhase::Closed);
+    assert_eq!(closed.record_count, 0);
+    assert_eq!(closed.accounted_bytes, 0);
+}
+
+#[tokio::test]
 async fn vec_primary_advertises_partition_atomic_mutations_without_fake_cas() {
     let index = ShadowVectorIndex::new_with_engine(
         VectorIndexDescriptor::new(2),

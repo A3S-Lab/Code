@@ -4,7 +4,8 @@ Status: developer shadow with a gated Vec-primary preview, 2026-09-03.
 
 This document defines the first A3S Code integration gate for A3S Vec. It is a
 differential migration, not a stable serving-backend promotion. Code commit
-`4163d8e3a1a96bbae430dc987005acaa362efb30` introduced the shadow; the
+`788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced the gated Vec-primary
+authority slice; the
 current validation pin is A3S Vec commit
 `41283f6315906a2737b5a8e8612ac876a8dc9c04`.
 
@@ -179,16 +180,17 @@ report schema 4 and profile `workspace-retrieval-v3`:
 | Closed authoritative and shadow state | zero records and bytes | required |
 
 The 2026-09-03 validation refresh rebuilt the release benchmark against Vec
-`41283f6315906a2737b5a8e8612ac876a8dc9c04` and Code `93dbb5f337da832149bfd94e5989a7530bf6b9db`
+`41283f6315906a2737b5a8e8612ac876a8dc9c04` and Code
+`788bc61a458cafe3c6809a65d9e1e8c733a97a2e`
 on the same Windows x86-64 class of host (25,000 records, 384 dimensions,
 top-20, 100 measured queries, 20 warmups). The current release profile reports:
 
 | Gate | Result | Limit |
 | --- | ---: | ---: |
-| Exact p95 | 7.9257 ms | <= 30 ms |
-| Hybrid RRF-only p95 | 67.9645 ms | <= 100 ms |
-| Hybrid deterministic-rerank p95 | 70.2005 ms | <= 100 ms |
-| Deterministic reranker p95 delta | 2.2360 ms | <= 10 ms |
+| Exact p95 | 7.5379 ms | <= 30 ms |
+| Hybrid RRF-only p95 | 49.0593 ms | <= 100 ms |
+| Hybrid deterministic-rerank p95 | 48.7440 ms | <= 100 ms |
+| Deterministic reranker p95 delta | -0.3153 ms | <= 10 ms positive addition |
 | Vec records per hybrid arm | 25,000 | exactly 25,000 |
 | Vec accounted bytes per hybrid arm | 54,500,008 | reported, not an RSS claim |
 | Vec revision / successful mutations | 196 / 196 | no failed mutation |
@@ -206,7 +208,7 @@ Additional local gates passed:
 - four focused Vec adapter tests, including 384-dimensional bit-exact scores,
   partition filters, replacement, removal, clear, and close;
 - the 64-generation replacement soak;
-- the complete serial Core library suite (2,991 tests discovered; 2,976
+- the complete serial Core all-target suite (3,059 tests discovered; 3,044
   passed, 13 ignored) with the two PowerShell-7-dependent native-sandbox tests
   explicitly blocked by this host, plus the focused shadow tests and offline
   integration/doc checks;
@@ -239,8 +241,8 @@ cross-platform release claim:
 
 | Engine | Exact p95 | Hybrid RRF p95 | Deterministic p95 | Vec comparisons |
 | --- | ---: | ---: | ---: | ---: |
-| `a3s_memory` default | 10.3539 ms | 60.5463 ms | 55.3652 ms | 120/120 |
-| `a3s_vec` preview | 8.6440 ms | 53.0470 ms | 53.0967 ms | 120/120 |
+| `a3s_memory` default | 7.5379 ms | 49.0593 ms | 48.7440 ms | 120/120 |
+| `a3s_vec` preview | 7.4195 ms | 47.4571 ms | 48.7821 ms | 120/120 |
 
 Both runs reported zero mismatches, failed queries, failed mutations, and
 initialization failures, and both closed with zero records and bytes. The
