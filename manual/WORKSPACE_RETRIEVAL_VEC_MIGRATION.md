@@ -7,7 +7,7 @@ This document defines the A3S Code integration gates for A3S Vec. Semantic
 vector migration is still differential evidence, not a stable serving-backend
 promotion. Code commit `788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced
 the gated Vec-primary authority slice; the current validation pin is Code
-`b5540a869e742ce7a98348f27997970619a754b6` with A3S Vec commit
+`1c117f87b2c42568f1eedce94188c6780fe3af6a` with A3S Vec commit
 `41283f6315906a2737b5a8e8612ac876a8dc9c04`.
 
 Workspace retrieval consumes a Code-owned `WorkspaceVectorIndex` contract. The
@@ -208,17 +208,17 @@ report schema 4 and profile `workspace-retrieval-v3`:
 | Closed authoritative and shadow state | zero records and bytes | required |
 
 The 2026-09-03 validation refresh rebuilt the release benchmark against Vec
-`41283f6315906a2737b5a8e8612ac876a8dc9c04` and Code
-`788bc61a458cafe3c6809a65d9e1e8c733a97a2e`
-on the same Windows x86-64 class of host (25,000 records, 384 dimensions,
-top-20, 100 measured queries, 20 warmups). The current release profile reports:
+`41283f6315906a2737b5a8e8612ac876a8dc9c04` and the current Code
+`1c117f87b2c42568f1eedce94188c6780fe3af6a` on Linux x86-64 (4 logical CPUs;
+25,000 records, 384 dimensions, top-20, 100 measured queries, 20 warmups).
+The revision-bound release profile reports:
 
 | Gate | Result | Limit |
 | --- | ---: | ---: |
-| Exact p95 | 7.5379 ms | <= 30 ms |
-| Hybrid RRF-only p95 | 49.0593 ms | <= 100 ms |
-| Hybrid deterministic-rerank p95 | 48.7440 ms | <= 100 ms |
-| Deterministic reranker p95 delta | -0.3153 ms | <= 10 ms positive addition |
+| Exact p95 (Memory / Vec-primary) | 9.5296 / 9.5806 ms | <= 30 ms |
+| Hybrid RRF-only p95 (Memory / Vec-primary) | 52.4909 / 55.6923 ms | <= 100 ms |
+| Hybrid deterministic-rerank p95 (Memory / Vec-primary) | 53.0744 / 52.8478 ms | <= 100 ms |
+| Deterministic reranker p95 delta (Memory / Vec-primary) | +0.5835 / 0.0000 ms | <= 10 ms positive addition |
 | Vec records per hybrid arm | 25,000 | exactly 25,000 |
 | Vec accounted bytes per hybrid arm | 54,500,008 | reported, not an RSS claim |
 | Vec revision / successful mutations | 196 / 196 | no failed mutation |
@@ -226,10 +226,12 @@ top-20, 100 measured queries, 20 warmups). The current release profile reports:
 | Closed authoritative and shadow state | zero records and bytes | required |
 
 Both hybrid arms compared 120/120 queries with zero mismatches, failed
-queries, initialization failures, or failed mutations. The process exited
-successfully after the close/cleanup assertions. `accounted_bytes` remains a
-logical Vec estimate; it is not process RSS, committed virtual memory, or
-temporary-directory size.
+queries, initialization failures, or failed mutations. The Memory-primary and
+Vec-primary workspace-build measurements were 2,167.34 ms and 2,188.84 ms;
+the Vec-primary logical vector accounting was 54,500,008 bytes versus
+40,177,548 bytes for Memory-primary. These values are process/run observations,
+not SLOs. `accounted_bytes` remains a logical Vec estimate; it is not process
+RSS, committed virtual memory, or temporary-directory size.
 
 Additional local gates passed:
 
@@ -246,7 +248,7 @@ Additional local gates passed:
 - strict Node.js and Python Clippy, Go bridge tests, SDK mapping tests, and real
   Windows native Node.js/Python workspace-retrieval lifecycle tests.
 
-A3S Vec CI run
+The revision-bound A3S Vec CI run
 [`33705867979`](https://github.com/A3S-Lab/Vec/actions/runs/33705867979)
 passed MSRV 1.75, Linux x86-64/ARM64, Windows x86-64, macOS ARM64/Intel hosted,
 format, lint, docs, feature, and fuzz jobs. Actual macOS 12 Intel hardware or an
@@ -254,20 +256,20 @@ equivalent external runner remains a release gate; the hosted Intel job is not
 claimed as that evidence.
 
 The Code validation workflows for the current architecture pin also passed:
-the complete CI matrix is recorded in
-[`33746458356`](https://github.com/A3S-Lab/Code/actions/runs/33746458356), and
-the release-profile qualification is recorded in
-[`33746458015`](https://github.com/A3S-Lab/Code/actions/runs/33746458015).
+the complete 10-job CI matrix is recorded in
+[`33747647083`](https://github.com/A3S-Lab/Code/actions/runs/33747647083), and
+the release-profile qualification plus machine-readable metrics are recorded
+in [`33747646942`](https://github.com/A3S-Lab/Code/actions/runs/33747646942).
 
 The latest hosted release-profile artifact ran on Linux x86-64 (4 logical
 CPUs, 25,000 records, 384 dimensions, top-20, 100 measured queries and 20
-warmups). Memory-primary reported exact p95 7.7799 ms, hybrid RRF-only p95
-50.2334 ms, and deterministic-rerank p95 52.2498 ms. The explicit Vec-primary
-preview reported exact p95 7.8582 ms, hybrid RRF-only p95 55.4365 ms, and
-deterministic-rerank p95 54.3475 ms. Both profiles matched 120/120
+warmups). Memory-primary reported exact p95 9.5296 ms, hybrid RRF-only p95
+52.4909 ms, and deterministic-rerank p95 53.0744 ms. The explicit Vec-primary
+preview reported exact p95 9.5806 ms, hybrid RRF-only p95 55.6923 ms, and
+deterministic-rerank p95 52.8478 ms. Both profiles matched 120/120
 comparisons with zero mismatches, failed queries, failed mutations, or
 initialization failures and closed with zero records and bytes. Vec-primary
-workspace construction was 6,684.3 ms versus 3,851.9 ms for Memory-primary,
+workspace construction was 2,188.8 ms versus 2,167.3 ms for Memory-primary,
 and its logical vector bytes were 54,500,008 versus 40,177,548; these are
 directional logical measurements, not process RSS or a cross-platform SLO.
 
@@ -276,10 +278,10 @@ The full Code workspace strict rustdoc command (`cargo doc --locked
 the current candidate. This includes the migration adapter and its public SDK
 facades; no rustdoc diagnostic is suppressed for the Vec integration.
 
-The same revision was then run with the explicit Vec-primary selector on the
-same Windows x86-64 host (25,000 records, 384 dimensions, top-20, 100 measured
-queries, 20 warmups). These are local directional measurements, not a
-cross-platform release claim:
+For historical context, an earlier local run used the explicit Vec-primary
+selector on a Windows x86-64 host (25,000 records, 384 dimensions, top-20,
+100 measured queries, 20 warmups). Those values are retained as local
+directional measurements, not as the current hosted qualification:
 
 | Engine | Exact p95 | Hybrid RRF p95 | Deterministic p95 | Vec comparisons |
 | --- | ---: | ---: | ---: | ---: |
