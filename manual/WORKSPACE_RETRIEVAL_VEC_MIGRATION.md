@@ -8,7 +8,7 @@ vector migration is still differential evidence, not a stable serving-backend
 promotion. Code commit `788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced
 the gated Vec-primary authority slice; the current validation pin is Code
 `1c117f87b2c42568f1eedce94188c6780fe3af6a` with A3S Vec commit
-`41283f6315906a2737b5a8e8612ac876a8dc9c04`.
+`c758521c8dac97cc9b3cbcad199031238983883f`.
 
 Workspace retrieval consumes a Code-owned `WorkspaceVectorIndex` contract. The
 legacy Memory trait is bound only inside the compatibility adapter, so new
@@ -207,18 +207,18 @@ report schema 4 and profile `workspace-retrieval-v3`:
 | Vec comparisons per hybrid arm | 120/120 matching | zero mismatch/failure |
 | Closed authoritative and shadow state | zero records and bytes | required |
 
-The 2026-09-03 validation refresh rebuilt the release benchmark against Vec
-`41283f6315906a2737b5a8e8612ac876a8dc9c04` and the current Code
-`1c117f87b2c42568f1eedce94188c6780fe3af6a` on Linux x86-64 (4 logical CPUs;
-25,000 records, 384 dimensions, top-20, 100 measured queries, 20 warmups).
-The revision-bound release profile reports:
+The 2026-09-03 local revision-bound rerun rebuilt the release benchmark against
+Vec `c758521c8dac97cc9b3cbcad199031238983883f` and the current Code
+`1c117f87b2c42568f1eedce94188c6780fe3af6a` on WSL2 Linux x86-64 (20 logical
+CPUs; 25,000 records, 384 dimensions, top-20, 100 measured queries, 20
+warmups). The revision-bound local profile reports:
 
 | Gate | Result | Limit |
 | --- | ---: | ---: |
-| Exact p95 (Memory / Vec-primary) | 9.5296 / 9.5806 ms | <= 30 ms |
-| Hybrid RRF-only p95 (Memory / Vec-primary) | 52.4909 / 55.6923 ms | <= 100 ms |
-| Hybrid deterministic-rerank p95 (Memory / Vec-primary) | 53.0744 / 52.8478 ms | <= 100 ms |
-| Deterministic reranker p95 delta (Memory / Vec-primary) | +0.5835 / 0.0000 ms | <= 10 ms positive addition |
+| Exact p95 (Memory / Vec-primary) | 9.5645 / 11.2247 ms | <= 30 ms |
+| Hybrid RRF-only p95 (Memory / Vec-primary) | 65.8471 / 67.9207 ms | <= 100 ms |
+| Hybrid deterministic-rerank p95 (Memory / Vec-primary) | 66.8913 / 65.4382 ms | <= 100 ms |
+| Deterministic reranker p95 delta (Memory / Vec-primary) | +1.0442 / 0.0000 ms | <= 10 ms positive addition |
 | Vec records per hybrid arm | 25,000 | exactly 25,000 |
 | Vec accounted bytes per hybrid arm | 54,500,008 | reported, not an RSS claim |
 | Vec revision / successful mutations | 196 / 196 | no failed mutation |
@@ -227,11 +227,13 @@ The revision-bound release profile reports:
 
 Both hybrid arms compared 120/120 queries with zero mismatches, failed
 queries, initialization failures, or failed mutations. The Memory-primary and
-Vec-primary workspace-build measurements were 2,167.34 ms and 2,188.84 ms;
+Vec-primary workspace-build measurements were 2,612.18 ms and 2,775.11 ms;
 the Vec-primary logical vector accounting was 54,500,008 bytes versus
 40,177,548 bytes for Memory-primary. These values are process/run observations,
 not SLOs. `accounted_bytes` remains a logical Vec estimate; it is not process
-RSS, committed virtual memory, or temporary-directory size.
+RSS, committed virtual memory, or temporary-directory size. A hosted CI rerun
+for this new dependency pin is still required before treating the numbers as
+release evidence.
 
 Additional local gates passed:
 
