@@ -7,8 +7,8 @@ This document defines the A3S Code integration gates for A3S Vec. Semantic
 vector migration is still differential evidence, not a stable serving-backend
 promotion. Code commit `788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced
 the gated Vec-primary authority slice; the current validation pin is Code
-`1c117f87b2c42568f1eedce94188c6780fe3af6a` with A3S Vec commit
-`c758521c8dac97cc9b3cbcad199031238983883f`.
+`d833ce3efa59fc1682d4c70819212a1ea905b8af` with A3S Vec commit
+`7e3b083e36ab5aeb300b2c45d6d59280971087da`.
 
 Workspace retrieval consumes a Code-owned `WorkspaceVectorIndex` contract. The
 legacy Memory trait is bound only inside the compatibility adapter, so new
@@ -208,8 +208,8 @@ report schema 4 and profile `workspace-retrieval-v3`:
 | Closed authoritative and shadow state | zero records and bytes | required |
 
 The 2026-09-03 local revision-bound rerun rebuilt the release benchmark against
-Vec `c758521c8dac97cc9b3cbcad199031238983883f` and the current Code
-`1c117f87b2c42568f1eedce94188c6780fe3af6a` on WSL2 Linux x86-64 (20 logical
+Vec `7e3b083e36ab5aeb300b2c45d6d59280971087da` and Code
+`d833ce3efa59fc1682d4c70819212a1ea905b8af` on WSL2 Linux x86-64 (20 logical
 CPUs; 25,000 records, 384 dimensions, top-20, 100 measured queries, 20
 warmups). The revision-bound local profile reports:
 
@@ -231,9 +231,9 @@ Vec-primary workspace-build measurements were 2,612.18 ms and 2,775.11 ms;
 the Vec-primary logical vector accounting was 54,500,008 bytes versus
 40,177,548 bytes for Memory-primary. These values are process/run observations,
 not SLOs. `accounted_bytes` remains a logical Vec estimate; it is not process
-RSS, committed virtual memory, or temporary-directory size. A hosted CI rerun
-for this new dependency pin is still required before treating the numbers as
-release evidence.
+RSS, committed virtual memory, or temporary-directory size. The hosted
+revision-bound refresh is recorded above; neither hosted nor local numbers
+replace the actual macOS 12 Intel runtime gate.
 
 Additional local gates passed:
 
@@ -251,27 +251,27 @@ Additional local gates passed:
   Windows native Node.js/Python workspace-retrieval lifecycle tests.
 
 The revision-bound A3S Vec CI run
-[`33705867979`](https://github.com/A3S-Lab/Vec/actions/runs/33705867979)
+[`33756531584`](https://github.com/A3S-Lab/Vec/actions/runs/33756531584)
 passed MSRV 1.75, Linux x86-64/ARM64, Windows x86-64, macOS ARM64/Intel hosted,
 format, lint, docs, feature, and fuzz jobs. Actual macOS 12 Intel hardware or an
 equivalent external runner remains a release gate; the hosted Intel job is not
 claimed as that evidence.
 
 The Code validation workflows for the current architecture pin also passed:
-the complete 10-job CI matrix is recorded in
-[`33747647083`](https://github.com/A3S-Lab/Code/actions/runs/33747647083), and
+the complete CI matrix is recorded in
+[`33759848635`](https://github.com/A3S-Lab/Code/actions/runs/33759848635), and
 the release-profile qualification plus machine-readable metrics are recorded
-in [`33747646942`](https://github.com/A3S-Lab/Code/actions/runs/33747646942).
+in [`33759848329`](https://github.com/A3S-Lab/Code/actions/runs/33759848329).
 
 The latest hosted release-profile artifact ran on Linux x86-64 (4 logical
 CPUs, 25,000 records, 384 dimensions, top-20, 100 measured queries and 20
-warmups). Memory-primary reported exact p95 9.5296 ms, hybrid RRF-only p95
-52.4909 ms, and deterministic-rerank p95 53.0744 ms. The explicit Vec-primary
-preview reported exact p95 9.5806 ms, hybrid RRF-only p95 55.6923 ms, and
-deterministic-rerank p95 52.8478 ms. Both profiles matched 120/120
+warmups). Memory-primary reported exact p95 10.3866 ms, hybrid RRF-only p95
+67.0145 ms, and deterministic-rerank p95 68.0596 ms. The explicit Vec-primary
+preview reported exact p95 10.6689 ms, hybrid RRF-only p95 69.5786 ms, and
+deterministic-rerank p95 68.2852 ms. Both profiles matched 120/120
 comparisons with zero mismatches, failed queries, failed mutations, or
 initialization failures and closed with zero records and bytes. Vec-primary
-workspace construction was 2,188.8 ms versus 2,167.3 ms for Memory-primary,
+workspace construction was 2,413.4 ms versus 2,613.5 ms for Memory-primary,
 and its logical vector bytes were 54,500,008 versus 40,177,548; these are
 directional logical measurements, not process RSS or a cross-platform SLO.
 

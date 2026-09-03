@@ -279,7 +279,7 @@ dependencies = [
 [[package]]
 name = "a3s-vec"
 version = "0.1.0"
-source = "git+https://github.com/A3S-Lab/Vec.git?rev=c758521c8dac97cc9b3cbcad199031238983883f#c758521c8dac97cc9b3cbcad199031238983883f"
+source = "git+https://github.com/A3S-Lab/Vec.git?rev=7e3b083e36ab5aeb300b2c45d6d59280971087da#7e3b083e36ab5aeb300b2c45d6d59280971087da"
 dependencies = [
  "bincode",
  "bitmaps",
