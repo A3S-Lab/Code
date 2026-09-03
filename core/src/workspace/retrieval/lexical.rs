@@ -1,38 +1,20 @@
 use super::catalog::ChunkCatalogSnapshot;
-use super::types::{WorkspaceChunk, WorkspaceIndexError};
+use super::types::{WorkspaceChunk, WorkspaceIndexError, WorkspaceIndexResult};
 use crate::workspace::WorkspacePath;
+use a3s_vec::{
+    Collection, CollectionOptions, CollectionSchema, DataType, Doc, Durability, FieldSchema, Fts,
+    IndexParams, SearchQuery,
+};
 use std::collections::{HashMap, HashSet};
-use std::mem::size_of;
 use std::sync::Arc;
+use tempfile::TempDir;
 
-pub(crate) const K1: f64 = 1.2;
-pub(crate) const B: f64 = 0.75;
 const DEFAULT_QUERY_TERM_LIMIT: usize = 32;
 const DEFAULT_CANDIDATE_FILE_LIMIT: usize = 256;
 const DEFAULT_RESULT_LIMIT: usize = 10;
 const MAX_RESULT_LIMIT: usize = 25;
 const MAX_QUERY_BYTES: usize = 2_048;
 const DEFAULT_RESULTS_PER_FILE: usize = 2;
-
-#[derive(Debug, Clone)]
-pub(crate) struct Bm25Document {
-    pub(crate) term_frequencies: HashMap<String, u32>,
-    pub(crate) length: usize,
-}
-
-impl Bm25Document {
-    pub(crate) fn from_text(text: &str) -> Self {
-        let tokens = tokenize(text);
-        let mut term_frequencies = HashMap::new();
-        for token in &tokens {
-            *term_frequencies.entry(token.clone()).or_insert(0) += 1;
-        }
-        Self {
-            term_frequencies,
-            length: tokens.len(),
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LexicalSearchRequest {
@@ -75,95 +57,218 @@ pub struct LexicalSearchResult {
     pub hits: Vec<LexicalSearchHit>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct Posting {
-    document: usize,
-    term_frequency: u32,
+/// One session-local A3S Vec FTS projection.
+///
+/// The caller owns admission, chunking, and source verification. This helper
+/// owns only the token postings and BM25 score calculation. It is shared by
+/// the incremental catalog and the bounded query-time compatibility path so
+/// there is no second Code-local BM25 implementation.
+pub(crate) struct VecLexicalIndex {
+    collection: Collection,
+    // Keep the temporary directory alive for the collection handle. The
+    // collection field is declared first so it is released before the
+    // directory during normal Rust drop order.
+    _temp_dir: TempDir,
+    terms: HashSet<String>,
+    ordinals: HashMap<String, usize>,
+    document_count: usize,
+    estimated_bytes: usize,
 }
 
-pub(crate) struct LexicalPartition {
-    chunks: Arc<[Arc<WorkspaceChunk>]>,
-    documents: Arc<[Bm25Document]>,
-    postings: HashMap<String, Arc<[Posting]>>,
-    pub(crate) document_count: usize,
-    pub(crate) total_document_terms: usize,
-}
+impl VecLexicalIndex {
+    /// Build an index from stable keys and source text.
+    ///
+    /// `K` and `T` deliberately accept both borrowed and owned values. The
+    /// collection copies normalized tokens into its own documents, while the
+    /// caller can retain its source text without coupling it to the index.
+    pub(crate) fn build<I, K, T>(documents: I) -> Result<Self, a3s_vec::Error>
+    where
+        I: IntoIterator<Item = (K, T)>,
+        K: AsRef<str>,
+        T: AsRef<str>,
+    {
+        let mut body = FieldSchema::new("body", DataType::String, false, 0)?;
+        let fts = IndexParams::fts(Some("whitespace"), None, None)?;
+        body.set_index_params(&fts)?;
+        let schema = CollectionSchema::builder("workspace_lexical")
+            .add_field(body)
+            .build()?;
+        let temp_dir = tempfile::tempdir()?;
+        let collection_path = temp_dir
+            .path()
+            .join("collection")
+            .to_str()
+            .ok_or_else(|| a3s_vec::Error::invalid_argument("lexical path is not UTF-8"))?
+            .to_owned();
+        let mut options = CollectionOptions::new()?;
+        options.set_durability(Durability::Manual)?;
+        let collection = Collection::create(&collection_path, &schema, Some(&options))?;
 
-impl LexicalPartition {
-    pub(crate) fn build(chunks: Arc<[Arc<WorkspaceChunk>]>) -> Self {
-        let indexed = chunks
-            .iter()
-            .filter_map(|chunk| {
-                let document = Bm25Document::from_text(&chunk.text);
-                (document.length > 0).then(|| (Arc::clone(chunk), document))
-            })
-            .collect::<Vec<_>>();
-        let (chunks, documents): (Vec<_>, Vec<_>) = indexed.into_iter().unzip();
-        let mut postings = HashMap::<String, Vec<Posting>>::new();
-        for (document, stats) in documents.iter().enumerate() {
-            for (term, term_frequency) in &stats.term_frequencies {
-                postings.entry(term.clone()).or_default().push(Posting {
-                    document,
-                    term_frequency: *term_frequency,
-                });
+        let mut docs = Vec::new();
+        let mut terms = HashSet::new();
+        let mut ordinals = HashMap::new();
+        for (key, text) in documents {
+            let key = key.as_ref();
+            if key.is_empty() || key.contains('\0') {
+                return Err(a3s_vec::Error::invalid_argument(
+                    "lexical document key must be non-empty and contain no NUL byte",
+                ));
+            }
+            if ordinals.contains_key(key) {
+                return Err(a3s_vec::Error::invalid_argument(
+                    "lexical document keys must be unique",
+                ));
+            }
+            let tokens = tokenize(text.as_ref());
+            if tokens.is_empty() {
+                continue;
+            }
+            // Keep the caller ordinal dense over indexed documents. Empty
+            // source chunks are intentionally omitted from the FTS
+            // collection, so using the input position here would make a
+            // later non-empty chunk resolve to the wrong source chunk.
+            let indexed_ordinal = ordinals.len();
+            ordinals.insert(key.to_owned(), indexed_ordinal);
+            terms.extend(tokens.iter().cloned());
+            let mut document = Doc::with_pk(key)?;
+            document.add_string("body", &tokens.join(" "))?;
+            docs.push(document);
+        }
+        if !docs.is_empty() {
+            let references = docs.iter().collect::<Vec<_>>();
+            let result = collection.insert(&references)?;
+            if result.error_count != 0 {
+                return Err(a3s_vec::Error::failed_precondition(format!(
+                    "lexical document insert rejected {} document(s)",
+                    result.error_count
+                )));
             }
         }
-        let total_document_terms = documents.iter().map(|document| document.length).sum();
-        Self {
-            chunks: Arc::from(chunks),
-            document_count: documents.len(),
-            total_document_terms,
-            documents: Arc::from(documents),
-            postings: postings
-                .into_iter()
-                .map(|(term, postings)| (term, Arc::from(postings)))
-                .collect(),
-        }
+        let estimated_bytes =
+            usize::try_from(collection.stats()?.accounted_bytes).unwrap_or(usize::MAX);
+        Ok(Self {
+            collection,
+            _temp_dir: temp_dir,
+            terms,
+            document_count: ordinals.len(),
+            ordinals,
+            estimated_bytes,
+        })
     }
 
-    fn has_any_term(&self, terms: &[String]) -> bool {
-        terms.iter().any(|term| self.postings.contains_key(term))
+    pub(crate) fn document_count(&self) -> usize {
+        self.document_count
     }
 
     pub(crate) fn estimated_bytes(&self) -> usize {
-        let document_bytes = self
-            .documents
-            .len()
-            .saturating_mul(size_of::<Bm25Document>());
-        let frequency_bytes = self.documents.iter().fold(0usize, |total, document| {
-            let entries = document
-                .term_frequencies
-                .capacity()
-                .saturating_mul(size_of::<(String, u32)>() + 1);
-            let strings = document
-                .term_frequencies
-                .keys()
-                .fold(0usize, |bytes, term| bytes.saturating_add(term.capacity()));
-            total.saturating_add(entries).saturating_add(strings)
-        });
-        let posting_map_bytes = self
-            .postings
-            .capacity()
-            .saturating_mul(size_of::<(String, Arc<[Posting]>)>() + 1);
-        let postings_bytes = self
-            .postings
-            .iter()
-            .fold(0usize, |total, (term, postings)| {
-                total
-                    .saturating_add(term.capacity())
-                    .saturating_add(postings.len().saturating_mul(size_of::<Posting>()))
-            });
-        let chunk_refs = self
-            .chunks
-            .len()
-            .saturating_mul(size_of::<Arc<WorkspaceChunk>>());
-        size_of::<Self>()
-            .saturating_add(document_bytes)
-            .saturating_add(frequency_bytes)
-            .saturating_add(posting_map_bytes)
-            .saturating_add(postings_bytes)
-            .saturating_add(chunk_refs)
+        self.estimated_bytes
     }
+
+    pub(crate) fn has_any_term(&self, terms: &[String]) -> bool {
+        terms.iter().any(|term| self.terms.contains(term))
+    }
+
+    /// Search and return `(caller_ordinal, score)` pairs.
+    pub(crate) fn search(
+        &self,
+        terms: &[String],
+        limit: usize,
+    ) -> Result<Vec<(usize, f64)>, a3s_vec::Error> {
+        if terms.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut fts = Fts::new()?;
+        fts.set_match_string(&terms.join(" "))?;
+        let topk = i32::try_from(limit)
+            .map_err(|_| a3s_vec::Error::invalid_argument("lexical result limit exceeds i32"))?;
+        let mut query = SearchQuery::fts("body", &fts, topk)?;
+        query.set_output_fields(&[])?;
+        let documents = self.collection.query(&query)?;
+        Ok(documents
+            .into_iter()
+            .filter_map(|document| {
+                let key = document.get_pk()?;
+                let ordinal = *self.ordinals.get(key)?;
+                Some((ordinal, f64::from(document.get_score())))
+            })
+            .collect())
+    }
+}
+
+pub(crate) struct LexicalPartition {
+    index: VecLexicalIndex,
+    chunks: Arc<[Arc<WorkspaceChunk>]>,
+    pub(crate) document_count: usize,
+}
+
+impl LexicalPartition {
+    /// Build the catalog's lexical partition through the A3S Vec FTS API.
+    ///
+    /// Code still owns chunk admission and path policy, while tokenization,
+    /// postings, BM25 statistics, and deterministic score ordering are owned
+    /// by the same engine used by the standalone Vec crate. The collection is
+    /// deliberately temporary: workspace source remains authoritative and no
+    /// durable SQLite/sqlite-vec path is introduced by lexical search.
+    pub(crate) fn build(chunks: Arc<[Arc<WorkspaceChunk>]>) -> WorkspaceIndexResult<Self> {
+        let indexed_chunks: Arc<[Arc<WorkspaceChunk>]> = Arc::from(
+            chunks
+                .iter()
+                .filter(|chunk| !tokenize(chunk.text.as_ref()).is_empty())
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        let index = VecLexicalIndex::build(
+            indexed_chunks
+                .iter()
+                .map(|chunk| (chunk.id.as_str(), chunk.text.as_ref())),
+        )
+        .map_err(|error| lexical_build_error("index", error))?;
+        let document_count = index.document_count();
+        Ok(Self {
+            index,
+            chunks: indexed_chunks,
+            document_count,
+        })
+    }
+
+    fn has_any_term(&self, terms: &[String]) -> bool {
+        self.index.has_any_term(terms)
+    }
+
+    pub(crate) fn estimated_bytes(&self) -> usize {
+        self.index.estimated_bytes()
+    }
+
+    fn search(
+        &self,
+        terms: &[String],
+        limit: usize,
+    ) -> WorkspaceIndexResult<Vec<(Arc<WorkspaceChunk>, f64)>> {
+        if terms.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.index
+            .search(terms, limit)
+            .map_err(|error| lexical_query_error("FTS search", error))
+            .map(|hits| {
+                hits.into_iter()
+                    .filter_map(|(ordinal, score)| {
+                        self.chunks
+                            .get(ordinal)
+                            .cloned()
+                            .map(|chunk| (chunk, score))
+                    })
+                    .collect()
+            })
+    }
+}
+
+fn lexical_build_error(context: &str, error: a3s_vec::Error) -> WorkspaceIndexError {
+    WorkspaceIndexError::InvalidConfig(format!("A3S Vec lexical {context} failed: {error}"))
+}
+
+fn lexical_query_error(context: &str, error: a3s_vec::Error) -> WorkspaceIndexError {
+    WorkspaceIndexError::InvalidQuery(format!("A3S Vec lexical {context} failed: {error}"))
 }
 
 pub(crate) fn search_catalog(
@@ -198,6 +303,7 @@ pub(crate) fn search_catalog(
         .into_iter()
         .take(request.max_candidate_files)
         .collect::<Vec<_>>();
+    let selected_files = selected.len();
     let document_count = selected
         .iter()
         .map(|(_, file)| file.lexical.document_count)
@@ -214,62 +320,14 @@ pub(crate) fn search_catalog(
             hits: Vec::new(),
         });
     }
-    let total_terms = selected
-        .iter()
-        .map(|(_, file)| file.lexical.total_document_terms)
-        .sum::<usize>();
-    let average_document_length = (total_terms as f64 / document_count as f64).max(1.0);
-    let mut scores = selected
-        .iter()
-        .map(|(_, file)| vec![0.0f64; file.lexical.document_count])
-        .collect::<Vec<_>>();
-
-    for term in &terms {
-        let document_frequency = selected
-            .iter()
-            .map(|(_, file)| {
-                file.lexical
-                    .postings
-                    .get(term)
-                    .map_or(0, |postings| postings.len())
-            })
-            .sum::<usize>() as f64;
-        if document_frequency == 0.0 {
-            continue;
-        }
-        let corpus_size = document_count as f64;
-        let inverse_document_frequency =
-            (1.0 + (corpus_size - document_frequency + 0.5) / (document_frequency + 0.5)).ln();
-        for ((_, file), file_scores) in selected.iter().zip(&mut scores) {
-            let Some(postings) = file.lexical.postings.get(term) else {
-                continue;
-            };
-            for posting in postings.iter() {
-                let document = &file.lexical.documents[posting.document];
-                let term_frequency = posting.term_frequency as f64;
-                let length_ratio = document.length as f64 / average_document_length;
-                let denominator = term_frequency + K1 * (1.0 - B + B * length_ratio);
-                file_scores[posting.document] += inverse_document_frequency
-                    * (term_frequency * (K1 + 1.0) / denominator.max(f64::EPSILON));
+    let mut ranked = Vec::new();
+    for (_, file) in selected {
+        for (chunk, score) in file.lexical.search(&terms, request.limit)? {
+            if score.is_finite() && score > 0.0 {
+                ranked.push(LexicalSearchHit { chunk, score });
             }
         }
     }
-
-    let mut ranked = selected
-        .iter()
-        .zip(scores)
-        .flat_map(|((_, file), file_scores)| {
-            file_scores
-                .into_iter()
-                .enumerate()
-                .filter(|(_, score)| score.is_finite() && *score > 0.0)
-                .map(|(document, score)| LexicalSearchHit {
-                    chunk: Arc::clone(&file.lexical.chunks[document]),
-                    score,
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
     ranked.sort_by(|left, right| {
         right
             .score
@@ -298,7 +356,7 @@ pub(crate) fn search_catalog(
         source_revision: snapshot.source_revision(),
         query_terms: terms,
         matching_files,
-        selected_files: selected.len(),
+        selected_files,
         scored_chunks: document_count,
         candidate_truncated,
         hits,
@@ -379,53 +437,6 @@ pub(crate) fn tokenize(text: &str) -> Vec<String> {
     }
     flush_word(&mut word, &mut tokens);
     tokens
-}
-
-pub(crate) fn score_documents(query_terms: &[String], documents: &[Bm25Document]) -> Vec<f64> {
-    let mut scores = vec![0.0; documents.len()];
-    if query_terms.is_empty() || documents.is_empty() {
-        return scores;
-    }
-
-    let document_count = documents.len() as f64;
-    let average_document_length = documents
-        .iter()
-        .map(|document| document.length)
-        .sum::<usize>() as f64
-        / document_count;
-    let average_document_length = average_document_length.max(1.0);
-    let mut seen = HashSet::new();
-
-    for term in query_terms {
-        if !seen.insert(term.as_str()) {
-            continue;
-        }
-        let document_frequency = documents
-            .iter()
-            .filter(|document| document.term_frequencies.contains_key(term))
-            .count() as f64;
-        if document_frequency == 0.0 {
-            continue;
-        }
-        let inverse_document_frequency =
-            (1.0 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5)).ln();
-
-        for (document, score) in documents.iter().zip(&mut scores) {
-            let term_frequency = document
-                .term_frequencies
-                .get(term)
-                .copied()
-                .unwrap_or_default() as f64;
-            if term_frequency == 0.0 {
-                continue;
-            }
-            let length_ratio = document.length as f64 / average_document_length;
-            let denominator = term_frequency + K1 * (1.0 - B + B * length_ratio);
-            *score += inverse_document_frequency
-                * (term_frequency * (K1 + 1.0) / denominator.max(f64::EPSILON));
-        }
-    }
-    scores
 }
 
 fn flush_word(word: &mut String, tokens: &mut Vec<String>) {

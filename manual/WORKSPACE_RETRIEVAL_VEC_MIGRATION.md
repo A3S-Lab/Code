@@ -1,12 +1,12 @@
 # Workspace Retrieval A3S Vec Migration
 
-Status: developer shadow with a gated Vec-primary preview, 2026-09-03.
+Status: lexical engine cutover delivered; semantic Vec-primary remains a gated
+developer preview, 2026-09-03.
 
-This document defines the first A3S Code integration gate for A3S Vec. It is a
-differential migration, not a stable serving-backend promotion. Code commit
-`788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced the gated Vec-primary
-authority slice; the
-current validation pin is A3S Vec commit
+This document defines the A3S Code integration gates for A3S Vec. Semantic
+vector migration is still differential evidence, not a stable serving-backend
+promotion. Code commit `788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced
+the gated Vec-primary authority slice; the current validation pin is A3S Vec commit
 `41283f6315906a2737b5a8e8612ac876a8dc9c04`.
 
 ## Authority contract
@@ -44,6 +44,23 @@ Code does not call the Embedding Provider a second time. It clones the same
 already-admitted records only after the provider response has passed the
 existing dimension, finiteness, normalization, identity, byte, generation,
 and cancellation checks.
+
+## Lexical authority
+
+The workspace lexical path now has one implementation: A3S Vec FTS with the
+`whitespace` tokenizer over Code's normalized identifier/CJK token stream. The
+incremental per-file catalog and the bounded scanner used when a custom backend
+cannot provide a manifest catalog both construct temporary, manual-durability
+Vec collections. Code still owns candidate-file policy, chunk boundaries, path
+filters, source reads, and result rendering; it no longer computes BM25
+postings or scores locally. The collection is discarded with the query or
+catalog generation and is never a durable SQLite/`sqlite-vec` workspace index.
+
+The public result shape remains `algorithm: "bm25"` for compatibility. Metadata
+identifies `engine: "a3s_vec_fts"` and `tokenizer: "whitespace"`, so operators
+can distinguish the engine without relying on a primitive backend selector.
+The locked nine-query fixture, identifier/CJK cases, glob/path limits, and both
+catalog and query-time paths must remain equal to the frozen baseline.
 
 ## Session and storage ownership
 
@@ -207,6 +224,8 @@ Additional local gates passed:
 
 - four focused Vec adapter tests, including 384-dimensional bit-exact scores,
   partition filters, replacement, removal, clear, and close;
+- the catalog-backed and query-time BM25 suites (14 tests) after the lexical
+  cutover, with the locked nine-query ordering unchanged;
 - the 64-generation replacement soak;
 - the complete serial Core all-target suite (3,059 tests discovered; 3,044
   passed, 13 ignored) with the two PowerShell-7-dependent native-sandbox tests
@@ -266,10 +285,11 @@ following:
 7. an independent oracle retained during any canary serving phase;
 8. an explicit decision about whether and when the Memory path may be removed.
 
-The typed selector design is now implemented, but this gate satisfies none of
-the remaining platform, RSS, recovery, lexical-migration, or release decisions
-implicitly. The Memory path must remain present and the default until the
-later promotion is reviewed and committed.
+The typed selector design and the lexical engine cutover are implemented, but
+this gate does not satisfy the remaining platform, RSS, recovery, semantic
+vector-removal, or release decisions implicitly. The Memory path must remain
+present and the default until the later semantic promotion is reviewed and
+committed.
 
 ## Rollback
 

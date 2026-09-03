@@ -158,7 +158,7 @@ telemetry remain opt-in.
 | Agent runtime           | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, and replay                                                                                                                                 | Baseline                                                                                                                                                                  |
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
-| Workspace retrieval     | Asynchronous session-owned chunk catalog, incremental BM25, Memory-authoritative exact vectors, a session-local A3S Vec differential shadow, hybrid RRF, optional deterministic CPU reranking, readiness/parity metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
+| Workspace retrieval     | Asynchronous session-owned chunk catalog, A3S Vec FTS/BM25 lexical ranking, Memory-authoritative exact vectors, a session-local A3S Vec differential shadow, hybrid RRF, optional deterministic CPU reranking, readiness/parity metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
 | Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, host-persisted safe refresh checkpoints, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
@@ -378,7 +378,7 @@ the model.
 
 | Concern                     | Built-in surface                                                                                                                                                                           |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Files and directories       | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, native BM25, semantic diagnostics, and hybrid retrieval modes |
+| Files and directories       | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, A3S Vec FTS/BM25, semantic diagnostics, and hybrid retrieval modes |
 | Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination                                                                                               |
 | Code intelligence           | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools                                                                                |
 | Web evidence                | Quality-gated headless → HTTP/RSS → API `web_search` with shared admission, session circuits, and request coalescing; plus bounded `web_fetch`, source normalization, and SSRF protections |
@@ -502,15 +502,15 @@ The non-content modes ask built-in workspace backends to count matches without
 constructing discarded match text. In `mode: "glob"`, `search` retains a
 backend's recency or relevance order by default; request `sort: "path"` when
 cursor pages require stable lexical ordering. Use `mode: "bm25"` for bounded
-dependency-free lexical ranking over workspace text chunks. Retrieval-enabled
+A3S Vec FTS/BM25 lexical ranking over workspace text chunks. Retrieval-enabled
 manifest-backed local workspaces build one bounded, session-local chunk catalog
-asynchronously and reuse its incremental BM25 postings across queries. Session
-construction does not wait for indexing; BM25 transparently uses the existing
-query-time scanner until the first catalog revision is ready. Catalog metadata
-reports `mode: "incremental_catalog"` and zero query-time file reads. Custom
-workspace backends keep the compatible scanner path unless they provide a
-catalog capability. Plain manifest and Code Intelligence sessions do not start
-this additional catalog work.
+asynchronously and reuse its Vec FTS postings across queries. Session
+construction does not wait for indexing; BM25 transparently uses the same
+temporary Vec FTS engine over a bounded scan until the first catalog revision
+is ready. Catalog metadata reports `mode: "incremental_catalog"` and zero
+query-time file reads. Custom workspace backends therefore do not introduce a
+second Code-local BM25 scorer. Plain manifest and Code Intelligence sessions do
+not start this additional catalog work.
 
 Latency-sensitive hosts may construct
 `ManifestWorkspaceBackend::new_deferred` or
@@ -538,7 +538,7 @@ before attaching `local_with_retrieval_backend`; session options cannot
 silently replace that host-owned strategy or its budgets.
 
 No embedding or reranking model is required for the baseline workspace search:
-exact, glob, incremental BM25, Code Intelligence, and RRF execute locally on
+exact, glob, A3S Vec FTS/BM25, Code Intelligence, and RRF execute locally on
 CPU and remain available when Workspace Retrieval is omitted. Dense semantic
 search necessarily needs a text-to-vector function, but that function may be a
 host-injected in-process CPU callback; it is not required to be remote or use a
@@ -615,7 +615,7 @@ ranges and invalid-window behavior, while arbitrary custom range callbacks
 remain a trusted Rust-host extension. Strategy validation precedes provider
 execution, and Go completes it before callback registration.
 
-Hybrid mode creates independent exact-literal, incremental BM25, optional Code
+Hybrid mode creates independent exact-literal, A3S Vec FTS/BM25, optional Code
 Intelligence symbol, and positive-similarity semantic candidate lists. It
 fuses one-based ranks with reciprocal-rank fusion (`k=60`) instead of mixing
 uncalibrated scores. Exact ASCII identifier tokens occupy a protected tier;

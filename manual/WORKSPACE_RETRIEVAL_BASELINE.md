@@ -9,7 +9,7 @@ evidence are recorded separately in the
 This document records the measurement context, quality baseline, release
 budgets, and adversarial trust boundaries for the first Workspace Retrieval
 implementation. The machine-readable fixtures live in
-`core/tests/fixtures/workspace-retrieval-v1/` and the real native BM25 tool
+`core/tests/fixtures/workspace-retrieval-v1/` and the real A3S Vec FTS/BM25 tool
 executes them in the core test suite.
 
 ## Quality baseline
@@ -18,7 +18,7 @@ The synthetic v1 corpus has nine judged queries: two exact multi-term queries,
 two identifier queries, two exact CJK queries, and three paraphrase queries.
 The labels are independent of the returned BM25 paths.
 
-| Metric | Native BM25 v1 |
+| Metric | A3S Vec FTS/BM25 v1 |
 | --- | ---: |
 | Recall@10 | 0.6667 (6/9) |
 | Mean reciprocal rank | 0.6667 |
@@ -69,8 +69,8 @@ Reference machine:
 
 ## Locked release budgets
 
-These are qualification targets, not measurements attributed to the current
-query-time BM25 implementation.
+These are qualification targets, not measurements attributed to the bounded
+query-time compatibility scan.
 
 | Boundary | Budget |
 | --- | --- |
@@ -130,10 +130,12 @@ estimated lexical-index memory at 64 MiB each, in addition to file and chunk
 limits. A file that would exceed a budget is reported as a failed partition;
 already admitted smaller files remain queryable and publication stays atomic.
 
-Native BM25 reuses the catalog's per-file postings after its first source
-revision. Until then, and for custom providers without a catalog, it retains the
-compatible query-time scanner. The locked nine-query result ordering is equal
-on both paths, while the incremental path reports zero query-time file reads.
+A3S Vec FTS/BM25 reuses the catalog's per-file postings after its first source
+revision. Until then, and for custom providers without a catalog, it builds the
+same bounded temporary Vec projection over the query-time scan. The locked
+nine-query result ordering is equal on both paths, while the incremental path
+reports zero query-time file reads. Code owns only admission, chunking, source
+verification, and rendering; it no longer carries a second BM25 scorer.
 
 ## CODE-E1 implementation evidence
 

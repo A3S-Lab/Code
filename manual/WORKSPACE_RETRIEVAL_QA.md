@@ -98,7 +98,7 @@ also avoids reopening a mutable path to obtain link-count evidence.
 The locked fixture contains nine queries spanning exact terms, identifiers,
 CJK, and paraphrases.
 
-| Metric | Native BM25 | Hybrid | Gate |
+| Metric | A3S Vec FTS/BM25 | Hybrid | Gate |
 | --- | ---: | ---: | --- |
 | Recall@10 | 0.6667 | 1.0000 | Hybrid at least 0.85 and at least +0.15 |
 | Mean reciprocal rank | 0.6667 | 1.0000 | Improve without identifier regression |
@@ -108,7 +108,7 @@ CJK, and paraphrases.
 
 The gate is implemented by
 `locked_hybrid_fixture_meets_quality_and_identifier_gates`; it exercises the
-real catalog, native BM25, semantic partition, RRF, diversity, and current-file
+real catalog, A3S Vec FTS/BM25, semantic partition, RRF, diversity, and current-file
 verification paths.
 
 ## Performance results

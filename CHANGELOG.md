@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Routed both manifest-backed and bounded no-catalog workspace BM25 searches
+  through one session-local A3S Vec FTS projection (`whitespace` tokenizer),
+  removing the duplicate Code-local postings/scoring implementation while
+  preserving the locked result and source-rendering contract. Semantic vector
+  authority remains behind the typed migration preview until its platform,
+  resource, recovery, and rollback gates are closed.
+
 ## [8.1.0] - 2026-09-02
 
 ### Added
