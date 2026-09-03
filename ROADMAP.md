@@ -428,11 +428,15 @@ decision: the Memory path, differential checks, platform qualification, RSS/
 disk measurements, and rollback evidence remain in place until that gate is
 closed.
 
-The semantic runtime now consumes a Code-owned `WorkspaceVectorIndex` contract.
-The legacy `a3s-memory::VectorIndex` trait is imported only by the explicit
-compatibility adapter; Vec-primary and Memory-primary selection, publication,
-and differential logic share that boundary. This is an architecture step, not
-the semantic removal/promotion decision.
+The semantic runtime now consumes a Code-owned `WorkspaceVectorIndex` contract
+(`aee2521905de9bc65296a4911e373f6d541edab8`). The legacy
+`a3s-memory::VectorIndex` trait is imported only by the explicit compatibility
+adapter; Vec-primary and Memory-primary selection, publication, and
+differential logic share that boundary. Code CI and the release-profile
+qualification for this contract passed in runs
+[`33742847131`](https://github.com/A3S-Lab/Code/actions/runs/33742847131) and
+[`33742847140`](https://github.com/A3S-Lab/Code/actions/runs/33742847140).
+This is an architecture step, not the semantic removal/promotion decision.
 
 ### 6.2 First-principles decisions
 

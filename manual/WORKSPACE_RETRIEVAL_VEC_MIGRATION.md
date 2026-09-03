@@ -6,7 +6,8 @@ developer preview, 2026-09-03.
 This document defines the A3S Code integration gates for A3S Vec. Semantic
 vector migration is still differential evidence, not a stable serving-backend
 promotion. Code commit `788bc61a458cafe3c6809a65d9e1e8c733a97a2e` introduced
-the gated Vec-primary authority slice; the current validation pin is A3S Vec commit
+the gated Vec-primary authority slice; the current validation pin is Code
+`aee2521905de9bc65296a4911e373f6d541edab8` with A3S Vec commit
 `41283f6315906a2737b5a8e8612ac876a8dc9c04`.
 
 Workspace retrieval consumes a Code-owned `WorkspaceVectorIndex` contract. The
@@ -248,11 +249,23 @@ format, lint, docs, feature, and fuzz jobs. Actual macOS 12 Intel hardware or an
 equivalent external runner remains a release gate; the hosted Intel job is not
 claimed as that evidence.
 
-The Code validation workflows for the same pin also passed: the complete CI
-matrix is recorded in
-[`33712033250`](https://github.com/A3S-Lab/Code/actions/runs/33712033250), and
+The Code validation workflows for the current architecture pin also passed:
+the complete CI matrix is recorded in
+[`33742847131`](https://github.com/A3S-Lab/Code/actions/runs/33742847131), and
 the release-profile qualification is recorded in
-[`33712033140`](https://github.com/A3S-Lab/Code/actions/runs/33712033140).
+[`33742847140`](https://github.com/A3S-Lab/Code/actions/runs/33742847140).
+
+The latest hosted release-profile artifact ran on Linux x86-64 (4 logical
+CPUs, 25,000 records, 384 dimensions, top-20, 100 measured queries and 20
+warmups). Memory-primary reported exact p95 7.7799 ms, hybrid RRF-only p95
+50.2334 ms, and deterministic-rerank p95 52.2498 ms. The explicit Vec-primary
+preview reported exact p95 7.8582 ms, hybrid RRF-only p95 55.4365 ms, and
+deterministic-rerank p95 54.3475 ms. Both profiles matched 120/120
+comparisons with zero mismatches, failed queries, failed mutations, or
+initialization failures and closed with zero records and bytes. Vec-primary
+workspace construction was 6,684.3 ms versus 3,851.9 ms for Memory-primary,
+and its logical vector bytes were 54,500,008 versus 40,177,548; these are
+directional logical measurements, not process RSS or a cross-platform SLO.
 
 The full Code workspace strict rustdoc command (`cargo doc --locked
 --workspace --all-features --no-deps` with `RUSTDOCFLAGS=-D warnings`) passed on
