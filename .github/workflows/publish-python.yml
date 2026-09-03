@@ -29,14 +29,18 @@ jobs:
         settings:
           - host: macos-latest
             target: aarch64-apple-darwin
+            python_architecture: arm64
           - host: macos-15-intel
             target: x86_64-apple-darwin
+            python_architecture: x64
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: 2_28
+            python_architecture: x64
           - host: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             manylinux: 2_28
+            python_architecture: arm64
           - host: windows-11-arm
             target: aarch64-pc-windows-msvc
             # The hosted ARM64 image does not provide CPython 3.10 ARM64.
@@ -46,6 +50,7 @@ jobs:
             python_architecture: arm64
           - host: windows-latest
             target: x86_64-pc-windows-msvc
+            python_architecture: x64
 
     name: Build ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
@@ -65,7 +70,7 @@ jobs:
           # the release wheel; the bootstrap's compatibility matrix is tested
           # separately in sdk/python-bootstrap/tests.
           python-version: ${{ matrix.settings.python_version || '3.10' }}
-          architecture: ${{ matrix.settings.python_architecture || 'x64' }}
+          architecture: ${{ matrix.settings.python_architecture }}
 
       - name: Install Rust
         # Pinned: brotli 8.0.3 (transitive via optional SDK features) fails
