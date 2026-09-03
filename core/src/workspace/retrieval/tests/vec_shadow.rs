@@ -302,7 +302,9 @@ async fn vec_primary_supports_revision_cas_and_rejects_stale_writers() {
             actual: VectorRevision::new(2),
         }
     );
-    assert_eq!(index.shadow_status().phase, WorkspaceVecShadowPhase::Ready);
+    let diagnostics = index.shadow_status();
+    assert_eq!(diagnostics.phase, WorkspaceVecShadowPhase::Ready);
+    assert_eq!(diagnostics.failed_mutations, 0);
 }
 
 #[tokio::test]
