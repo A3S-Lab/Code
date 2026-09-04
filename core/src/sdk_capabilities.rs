@@ -165,6 +165,13 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
         host_owned: true,
     },
     CapabilitySpec {
+        id: "evaluation_substrate",
+        category: "evaluation",
+        description: "Project bounded evidence, isolated auxiliary lifecycle, and immutable evaluation records through a versioned wire envelope.",
+        operations: &["evaluation.evidence", "evaluation.auxiliary", "evaluation.result", "evaluation.wire_v1"],
+        host_owned: true,
+    },
+    CapabilitySpec {
         id: "web_search",
         category: "web",
         description: "Search HTTP, native, RSS, and JavaScript-rendered engines through a3s-search v3.1.0.",
@@ -284,6 +291,7 @@ mod tests {
             "governed_tools",
             "web_search",
             "moli_runtime",
+            "evaluation_substrate",
             "persistence",
             "governance",
             "run_control",

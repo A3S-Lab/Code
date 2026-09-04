@@ -9,6 +9,7 @@ mod auxiliary_run;
 mod evidence;
 mod identity;
 mod journal;
+mod protocol;
 mod result;
 mod supervision;
 
@@ -34,6 +35,12 @@ pub use journal::{
     ExecutionFactInputV1, ExecutionFactJournal, ExecutionFactKindV1, ExecutionFactPageV1,
     ExecutionFactRecorder, ExecutionFactSnapshotV1, ExecutionFactV1, FactAppendOutcomeV1,
     InMemoryExecutionFactJournal, JournalError, EXECUTION_FACT_SCHEMA_V1,
+};
+pub use protocol::{
+    EvaluationProtocolError, EvaluationWireEnvelopeV1, EvaluationWireKindDescriptorV1,
+    EvaluationWireKindV1, EvaluationWireTypeV1, EVALUATION_PROTOCOL_MAX_MESSAGE_BYTES,
+    EVALUATION_PROTOCOL_SCHEMA_V1, EVALUATION_PROTOCOL_VERSION_V1,
+    EVALUATION_WIRE_KIND_DESCRIPTORS_V1,
 };
 pub use result::{
     EvaluationRecordV1, EvaluationResultSink, EvaluationResultV1, EvaluationStoreError,

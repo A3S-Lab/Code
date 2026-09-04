@@ -114,6 +114,8 @@ jobs:
       - name: Check SDK protocol and API alignment
         run: |
           node scripts/generate_event_protocol_artifacts.mjs --check
+          node scripts/generate_evaluation_protocol_artifacts.mjs --check
+          node scripts/check_evaluation_protocol_artifacts.mjs
           node scripts/sdk_api_alignment_check.mjs
 
       - uses: actions/setup-go@v6

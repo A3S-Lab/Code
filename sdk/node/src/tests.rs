@@ -55,6 +55,9 @@ fn sdk_capability_inventory_is_projected_from_core_without_drift() {
     assert!(capabilities.iter().any(|item| item.id == "moli_runtime"));
     assert!(capabilities
         .iter()
+        .any(|item| item.id == "evaluation_substrate"));
+    assert!(capabilities
+        .iter()
         .all(|item| !item.operations.is_empty() && !item.description.is_empty()));
 }
 

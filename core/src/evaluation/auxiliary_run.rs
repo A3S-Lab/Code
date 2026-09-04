@@ -349,7 +349,8 @@ impl AuxiliaryRunOutputV1 {
         })
     }
 
-    fn validate(
+    /// Validate a serialized output at a host/process boundary.
+    pub fn validate(
         &self,
         max_bytes: usize,
         schema: Option<&serde_json::Value>,

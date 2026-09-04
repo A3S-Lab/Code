@@ -132,6 +132,42 @@ A production host should implement `EvaluationResultSink` over its durable
 object store and apply its own authorization, encryption, retention, and
 cross-process fencing.
 
+## Versioned wire projection
+
+`EvaluationWireEnvelopeV1` is the additive process boundary for the contracts
+above. Its JSON shape is intentionally small and strict:
+
+```json
+{
+  "schema": "a3s.code.evaluation-wire.v1",
+  "version": 1,
+  "kind": "evidence_snapshot",
+  "payload": { "...": "EvidenceSnapshotV1 fields" }
+}
+```
+
+The version-one catalog carries an evidence read request or snapshot, an
+auxiliary specification, snapshot, or bounded output, and an evaluation
+result or immutable record. Core validates the envelope identity, encoded-size
+bound, closed kind catalog, and the selected Rust payload with
+`deny_unknown_fields`; a host still binds an auxiliary specification to the
+actual evidence snapshot at admission time. Unknown top-level or payload
+fields and unsupported versions fail closed.
+
+The Node.js declaration (`sdk/node/evaluation-protocol-v1.d.ts`), Python
+typing module (`sdk/python/python/a3s_code/evaluation_protocol_v1.py`), Go
+projection (`sdk/go/evaluation_protocol_v1.go`), catalog, and negative
+fixtures are generated from `core/src/evaluation/protocol.rs`:
+
+```text
+node scripts/generate_evaluation_protocol_artifacts.mjs --check
+node scripts/check_evaluation_protocol_artifacts.mjs
+```
+
+SDK payloads remain opaque JSON/bytes by design. This preserves one Core schema
+authority while allowing a host to add a typed transport adapter without
+turning Code into a reviewer or Cloud business-transport implementation.
+
 ## Minimal composition
 
 ```rust
@@ -182,6 +218,8 @@ From the Code repository, run the focused substrate checks:
 cargo test -p a3s-code-core evaluation:: --lib -- --nocapture
 cargo test -p a3s-code-core --test evaluation_substrate -- --nocapture
 cargo clippy -p a3s-code-core --all-targets -- -D warnings
+node scripts/generate_evaluation_protocol_artifacts.mjs --check
+node scripts/check_evaluation_protocol_artifacts.mjs
 ```
 
 Release qualification additionally requires the normal workspace feature

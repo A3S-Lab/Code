@@ -65,6 +65,8 @@ cargo fmt --all --check
 
 echo "[4/13] Checking SDK API alignment"
 node scripts/generate_event_protocol_artifacts.mjs --check
+node scripts/generate_evaluation_protocol_artifacts.mjs --check
+node scripts/check_evaluation_protocol_artifacts.mjs
 node scripts/sdk_api_alignment_check.mjs
 node sdk/node/scripts/patch-loader.mjs --check
 

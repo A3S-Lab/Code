@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   isolated auxiliary runs with cancellation and capability ceilings, host
   boundary supervision, and immutable result CAS storage. Reviewer rubrics,
   findings, authorization, and Cloud audit semantics remain host-owned.
+- Added the strict `EvaluationWireEnvelopeV1` process boundary for evidence,
+  auxiliary lifecycle, and result records. Node.js, Python, and Go projections,
+  the catalog, and unknown-field/version fixtures are generated from the Rust
+  catalog and checked for parity in CI and release preflight.
 
 ## [8.2.0] - 2026-09-04
 

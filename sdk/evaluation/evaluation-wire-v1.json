@@ -1,0 +1,49 @@
+{
+  "schema": "a3s.code.evaluation-wire.v1",
+  "version": 1,
+  "max_message_bytes": 33554432,
+  "kinds": [
+    {
+      "variant": "EvidenceReadRequest",
+      "constant": "EVIDENCE_READ_REQUEST",
+      "wire_name": "evidence_read_request",
+      "payload_type": "EvidenceReadRequestV1"
+    },
+    {
+      "variant": "EvidenceSnapshot",
+      "constant": "EVIDENCE_SNAPSHOT",
+      "wire_name": "evidence_snapshot",
+      "payload_type": "EvidenceSnapshotV1"
+    },
+    {
+      "variant": "AuxiliaryRunSpec",
+      "constant": "AUXILIARY_RUN_SPEC",
+      "wire_name": "auxiliary_run_spec",
+      "payload_type": "AuxiliaryRunSpecV1"
+    },
+    {
+      "variant": "AuxiliaryRunSnapshot",
+      "constant": "AUXILIARY_RUN_SNAPSHOT",
+      "wire_name": "auxiliary_run_snapshot",
+      "payload_type": "AuxiliaryRunSnapshotV1"
+    },
+    {
+      "variant": "AuxiliaryRunOutput",
+      "constant": "AUXILIARY_RUN_OUTPUT",
+      "wire_name": "auxiliary_run_output",
+      "payload_type": "AuxiliaryRunOutputV1"
+    },
+    {
+      "variant": "EvaluationResult",
+      "constant": "EVALUATION_RESULT",
+      "wire_name": "evaluation_result",
+      "payload_type": "EvaluationResultV1"
+    },
+    {
+      "variant": "EvaluationRecord",
+      "constant": "EVALUATION_RECORD",
+      "wire_name": "evaluation_record",
+      "payload_type": "EvaluationRecordV1"
+    }
+  ]
+}
