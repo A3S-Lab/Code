@@ -167,8 +167,8 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
     CapabilitySpec {
         id: "evaluation_substrate",
         category: "evaluation",
-        description: "Project bounded evidence, isolated auxiliary lifecycle, and immutable evaluation records through a versioned wire envelope.",
-        operations: &["evaluation.evidence", "evaluation.auxiliary", "evaluation.result", "evaluation.wire_v1"],
+        description: "Project bounded evidence, isolated auxiliary lifecycle, restart-safe dispatch claims, and immutable evaluation records through versioned boundaries.",
+        operations: &["evaluation.evidence", "evaluation.auxiliary", "evaluation.dispatch_ledger", "evaluation.result", "evaluation.result_store", "evaluation.wire_v1"],
         host_owned: true,
     },
     CapabilitySpec {

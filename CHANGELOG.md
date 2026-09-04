@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   auxiliary lifecycle, and result records. Node.js, Python, and Go projections,
   the catalog, and unknown-field/version fixtures are generated from the Rust
   catalog and checked for parity in CI and release preflight.
+- Added bounded Tokio/file-backed evaluation result CAS and a restart-safe
+  dispatch lease ledger with atomic publication, cross-process fencing,
+  corruption checks, and retention controls. The provider-neutral
+  qualification suite and release performance profile cover restart, replay,
+  cancellation, redaction, and resource limits; evaluator policy and business
+  authorization remain host-owned.
 
 ## [8.2.0] - 2026-09-04
 

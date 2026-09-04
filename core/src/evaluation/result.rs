@@ -238,6 +238,12 @@ pub enum EvaluationStoreError {
     Conflict,
     #[error("evaluation result serialization failed: {0}")]
     Serialization(String),
+    #[error("evaluation result store I/O failed: {0}")]
+    Storage(String),
+    #[error("evaluation result store is corrupt: {0}")]
+    Corrupt(String),
+    #[error("evaluation result store exceeds its configured size limit")]
+    SizeLimit,
 }
 
 #[async_trait]
@@ -248,6 +254,24 @@ pub trait EvaluationResultSink: Send + Sync {
     ) -> Result<EvaluationWriteOutcomeV1, EvaluationStoreError>;
     async fn get(&self, record_digest: &str) -> Option<EvaluationRecordV1>;
     async fn list_for_target(&self, target: &ExecutionTargetV1) -> Vec<EvaluationRecordV1>;
+
+    /// Error-reporting read variant for hosts that need to distinguish a
+    /// missing record from a corrupt or unavailable backing store.  Legacy
+    /// implementations may use the compatibility methods above; the default
+    /// keeps those implementations source-compatible.
+    async fn get_checked(
+        &self,
+        record_digest: &str,
+    ) -> Result<Option<EvaluationRecordV1>, EvaluationStoreError> {
+        Ok(self.get(record_digest).await)
+    }
+
+    async fn list_for_target_checked(
+        &self,
+        target: &ExecutionTargetV1,
+    ) -> Result<Vec<EvaluationRecordV1>, EvaluationStoreError> {
+        Ok(self.list_for_target(target).await)
+    }
 }
 
 #[derive(Debug, Default)]

@@ -196,7 +196,9 @@ fork authority.
 | `EVAL-SUP1` | Delivered | Host-injected boundary policy and `EvaluationSupervisor` with turn/terminal/event triggers, debounce, pending admission, deterministic auxiliary IDs, and non-blocking completion watchers | Concurrent observations respect `max_pending`; replay never double-dispatches; policy remains outside Core and supervisor shutdown releases pending work |
 | `EVAL-STORE1` | Delivered | Generic async `EvaluationResultSink` and content-addressed `EvaluationRecordV1` CAS contract with bounded in-memory reference implementation | Exact result replay is idempotent, conflicting writes fail closed, records are queryable by execution target, and no decision enum is imposed by Core |
 | `EVAL-PROTO1` | Delivered | Additive `EvaluationWireEnvelopeV1` projection for evidence requests/snapshots, auxiliary lifecycle values, and immutable result records, with one Rust catalog and generated Node/Python/Go declarations | Strict Rust decode validates schema/version/kind, size, and typed payloads; generated catalog and negative fixtures are parity-checked across SDK projections; Cloud remains the business transport owner |
-| `EVAL-GA1` | Planned | External evaluator qualification and production adapters | A new evaluator can be implemented outside Core; adversarial prompt-injection/secret-redaction, restart, retention, cancellation, performance, strict Clippy, rustdoc, and packaged SDK gates are green |
+| `EVAL-DUR1` | Delivered | Bounded Tokio/file-backed `EvaluationResultSink` and restart-safe `EvaluationDispatchLedger` adapters with atomic publication, cross-process fencing, checked corruption paths, and FIFO/lease retention | Independent instances serialize writes; reopened generations validate every digest and identity; expired claims can be taken over; completed claims suppress replay; no raw evaluator prompt or rubric is persisted by Core |
+| `EVAL-QUAL1` | Delivered | Provider-free qualification suite for adversarial redaction, durable restart/replay, retention, cancellation composition, and strict wire/result boundaries | Seven integration tests pass locally; release performance profile is wired with deterministic resource checks; no product reviewer vocabulary or Cloud authorization enters Core |
+| `EVAL-GA1` | Planned | External evaluator qualification and production adapters | A new evaluator can be implemented outside Core; adversarial prompt-injection/secret-redaction, restart, retention, cancellation, performance, strict Clippy, rustdoc, and packaged SDK gates are green in a hosted release run |
 
 The delivered gates intentionally stop at the common mechanism. Core does not
 ship a reviewer prompt, rubric, severity/threshold policy, shadow-review
@@ -206,7 +208,8 @@ parser, authentication flow, or Cloud audit endpoint. A host supplies an
 `StructuredAuxiliaryExecutor` or its own provider-neutral implementation.
 
 The dependency order is `EVAL-FND1 -> EVAL-JRN1 -> EVAL-EVID1 -> EVAL-AUX1 ->
-EVAL-SUP1 -> EVAL-STORE1 -> EVAL-PROTO1 -> EVAL-GA1`. `EVAL-PROTO1` may begin
+EVAL-SUP1 -> EVAL-STORE1 -> EVAL-PROTO1 -> EVAL-DUR1 -> EVAL-QUAL1 ->
+EVAL-GA1`. `EVAL-PROTO1` may begin
 schema fixtures after the first four gates, but cannot claim compatibility
 until all lifecycle and recovery invariants are covered. Durable fact/result
 storage, tenant authorization, retention, placement, and business lineage

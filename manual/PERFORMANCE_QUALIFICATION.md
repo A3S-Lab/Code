@@ -73,6 +73,14 @@ Hosted-runner `fsync` timing varies substantially across otherwise successful
 runs, so the contract uses a user-visible ceiling with headroom instead of
 publishing the fastest sample as an SLA.
 
+The change-scoped `evaluation-substrate-v1` profile now measures bounded
+evaluation-result publication, reopen/retention validation, and strict wire
+round trips without a provider or network. It is wired into the release
+workflow and increases the required report set from eight to nine. This
+change does not claim a hosted-run artifact for the new profile; the next
+scheduled or pull-request run must supply that independent evidence before a
+new GA release claim is made.
+
 ## Deterministic work and resource results
 
 | Profile              | Evidence                                                                                                                                                                                                                                                                                        |
@@ -152,10 +160,12 @@ gh run watch <run-id> --repo A3S-Lab/Code --exit-status
 gh run download <run-id> --repo A3S-Lab/Code
 ```
 
-The current workflow requires exactly eight JSON files (including the
-Vec-primary workspace-retrieval report) and rejects any report
-whose top-level `passed` value is not `true`. The authoritative run above
-contains all eight, including the Vec-primary workspace report and `DM-QUAL1`.
+The current workflow requires exactly nine JSON files (including the
+Vec-primary workspace and evaluation-substrate reports) and rejects any report
+whose top-level `passed` value is not `true`. The previously recorded
+authoritative run contains the original eight reports, including the
+Vec-primary workspace report and `DM-QUAL1`; the evaluation-substrate report
+will be added by the next scheduled or pull-request run.
 The capability ledger explains how
 these profiles combine with deterministic correctness, SDK runtime, and
 external qualification evidence.

@@ -19,8 +19,11 @@ Code owns the execution-local facts and lifecycle contracts:
 - `AuxiliaryRunService` admits an isolated, cancellable auxiliary execution
   under a declared capability ceiling and output schema.
 - `EvaluationSupervisor` applies a host-injected boundary policy and limits
-  pending dispatches without blocking the parent run.
-- `EvaluationResultSink` stores immutable, content-addressed result records.
+  pending dispatches without blocking the parent run. An optional
+  `EvaluationDispatchLedger` makes dispatch leases and replay suppression
+  survive a supervisor restart.
+- `EvaluationResultSink` stores immutable, content-addressed result records;
+  `FileEvaluationResultStore` is a bounded, crash-safe reference adapter.
 
 The host or Cloud remains responsible for authorization, tenant projection,
 durable retention, placement, business audit, checkpoint/fork lineage,
@@ -116,6 +119,14 @@ Failed evidence or auxiliary admission releases the reservation so a host may
 retry the same fact. Cancellation propagates through the supervisor token and
 never turns an auxiliary result into an implicit parent-run decision.
 
+For restart-safe operation, construct the supervisor with a
+`FileEvaluationDispatchLedger` (or a host implementation of the same trait).
+The ledger stores only a deterministic dispatch id, a request digest, an owner
+lease, and a terminal receipt. A live lease yields `Suppressed`; an expired
+lease can be taken over; a completed receipt yields `Ignored`. The ledger is a
+fencing mechanism, not an authorization system, and its owner id must be
+generated and scoped by the host.
+
 ## Result persistence
 
 `EvaluationResultV1.decision` is an open host-defined string. Core validates
@@ -130,7 +141,13 @@ an immutable record digest. The in-memory sink provides a reference CAS:
 
 A production host should implement `EvaluationResultSink` over its durable
 object store and apply its own authorization, encryption, retention, and
-cross-process fencing.
+cross-process fencing. Code also provides `FileEvaluationResultStore` for a
+filesystem-first host: it validates every reopened record, uses Tokio I/O,
+serializes mutations with an `fs2` lock, writes a synced temporary generation,
+and atomically replaces the data file. `open`/`validate_store` and the checked
+read methods report corruption; the legacy no-error reads fail closed. The
+configured FIFO bound is an adapter bound, not a tenant-retention or deletion
+policy.
 
 ## Versioned wire projection
 
@@ -217,6 +234,8 @@ From the Code repository, run the focused substrate checks:
 ```text
 cargo test -p a3s-code-core evaluation:: --lib -- --nocapture
 cargo test -p a3s-code-core --test evaluation_substrate -- --nocapture
+cargo test -p a3s-code-core --test evaluation_qualification -- --nocapture
+cargo run --locked --release -p a3s-code-core --example evaluation_substrate_benchmark
 cargo clippy -p a3s-code-core --all-targets -- -D warnings
 node scripts/generate_evaluation_protocol_artifacts.mjs --check
 node scripts/check_evaluation_protocol_artifacts.mjs
@@ -224,5 +243,9 @@ node scripts/check_evaluation_protocol_artifacts.mjs
 
 Release qualification additionally requires the normal workspace feature
 matrix, rustdoc warning gate, protocol/SDK schema fixtures, restart and
-retention tests, adversarial redaction tests, and a durable host adapter. Those
-are tracked as `EVAL-PROTO1` and `EVAL-GA1` in [`ROADMAP.md`](../ROADMAP.md).
+retention tests, adversarial redaction tests, a performance profile, and a
+durable host adapter. The change-scoped qualification suite covers the file
+result store and dispatch ledger; the hosted release profile is wired in
+`performance.yml` and must produce the same machine-readable report on the
+next scheduled or pull-request run. These are tracked as `EVAL-PROTO1` and
+`EVAL-GA1` in [`ROADMAP.md`](../ROADMAP.md).
