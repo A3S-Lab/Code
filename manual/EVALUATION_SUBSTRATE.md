@@ -242,10 +242,14 @@ node scripts/check_evaluation_protocol_artifacts.mjs
 ```
 
 Release qualification additionally requires the normal workspace feature
-matrix, the automated `RUSTDOCFLAGS=-D warnings` rustdoc gate, protocol/SDK schema fixtures, restart and
-retention tests, adversarial redaction tests, a performance profile, and a
-durable host adapter. The change-scoped qualification suite covers the file
-result store and dispatch ledger; the hosted release profile is wired in
-`performance.yml` and must produce the same machine-readable report on the
-next scheduled or pull-request run. These are tracked as `EVAL-PROTO1` and
-`EVAL-GA1` in [`ROADMAP.md`](../ROADMAP.md).
+matrix, the automated `RUSTDOCFLAGS=-D warnings` rustdoc gate, protocol/SDK
+schema fixtures, restart and retention tests, adversarial redaction tests, a
+performance profile, and a durable host adapter. The change-scoped
+qualification suite covers the file result store and dispatch ledger. Hosted
+run [`33844533910`](https://github.com/A3S-Lab/Code/actions/runs/33844533910)
+produced and validated all nine machine-readable performance reports; the
+hosted [Code CI run `33847689080`](https://github.com/A3S-Lab/Code/actions/runs/33847689080)
+then passed the strict release gate, including rustdoc, Clippy, feature-gated
+tests, convergence, packaged SDK, hermetic, and cross-platform checks. These
+are tracked as `EVAL-PROTO1` and `EVAL-GA1` in
+[`ROADMAP.md`](../ROADMAP.md).
