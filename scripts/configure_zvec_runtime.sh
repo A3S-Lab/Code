@@ -16,11 +16,15 @@ if [[ $# -ne 2 ]]; then
 fi
 
 TARGET="$1"
-RUNTIME_DIR="$2"
-[[ -d "$RUNTIME_DIR" ]] || {
-  echo "zvec runtime directory does not exist: $RUNTIME_DIR" >&2
+RUNTIME_DIR_INPUT="$2"
+[[ -d "$RUNTIME_DIR_INPUT" ]] || {
+  echo "zvec runtime directory does not exist: $RUNTIME_DIR_INPUT" >&2
   exit 1
 }
+# Cargo commands in this repository intentionally run from several nested
+# SDK directories.  Always export an absolute path so the linker does not
+# reinterpret a workspace-relative staging directory at that new cwd.
+RUNTIME_DIR="$(cd -- "$RUNTIME_DIR_INPUT" && pwd -P)"
 [[ -n "${GITHUB_ENV:-}" && -n "${GITHUB_PATH:-}" ]] || {
   echo "GITHUB_ENV and GITHUB_PATH are required" >&2
   exit 1

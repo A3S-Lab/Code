@@ -167,16 +167,19 @@ class ZvecPackagingTests(unittest.TestCase):
         env = os.environ.copy()
         env.update({"GITHUB_ENV": str(github_env), "GITHUB_PATH": str(github_path)})
         result = subprocess.run(
-            ["bash", str(CONFIGURE_RUNTIME_SCRIPT), "x86_64-unknown-linux-gnu", str(runtime)],
+            ["bash", str(CONFIGURE_RUNTIME_SCRIPT), "x86_64-unknown-linux-gnu", "runtime"],
             env=env,
             text=True,
             capture_output=True,
             check=False,
+            cwd=self.root,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"ZVEC_LIB_DIR={runtime}", github_env.read_text(encoding="utf-8"))
-        self.assertIn(f"LD_LIBRARY_PATH={runtime}", github_env.read_text(encoding="utf-8"))
-        self.assertEqual(github_path.read_text(encoding="utf-8").strip(), str(runtime))
+        resolved_runtime = runtime.resolve()
+        env_text = github_env.read_text(encoding="utf-8")
+        self.assertIn(f"ZVEC_LIB_DIR={resolved_runtime}", env_text)
+        self.assertIn(f"LD_LIBRARY_PATH={resolved_runtime}", env_text)
+        self.assertEqual(github_path.read_text(encoding="utf-8").strip(), str(resolved_runtime))
 
 
 if __name__ == "__main__":
