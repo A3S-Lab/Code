@@ -177,7 +177,42 @@ supplied bootstrap from untouched generation zero to the checkpoint's exact
 historical generation. It never resolves `latest`, and a missing, mismatched,
 or partially prepared batch publishes neither the Session nor target Run.
 
-### 3.2 Scoped capability program
+### 3.2 Common execution-fact and auxiliary-evaluation substrate
+
+The evaluation substrate is deliberately provider-neutral. It supplies the
+runtime mechanisms that a host may use to build a reviewer, verifier, quality
+gate, or other evaluator; it does not define any product rubric or finding
+vocabulary. The substrate is implemented as a sidecar over the existing Run
+journal, `EventEnvelopeV1`, `ArtifactStore`, structured LLM engine, and scoped
+capability lifecycle. It must not create a second Cloud audit, checkpoint, or
+fork authority.
+
+| Gate | State | Code-owned outcome | Exit criteria |
+| --- | --- | --- | --- |
+| `EVAL-FND1` | Delivered | Versioned `ExecutionTargetV1`/`ExecutionFrameV1`, domain-separated digests, bounded limits, and explicit Code/host/Cloud ownership | Identities reject malformed or non-canonical values; no reviewer-specific terms or Cloud business identifiers are required by Core |
+| `EVAL-JRN1` | Delivered | Digest-only `ExecutionFactV1` journal with contiguous cursors, artifact-reference extraction, idempotent append, FIFO retention, and explicit retention gaps | Reordered/conflicting events fail closed; exact replay is idempotent; retained facts never contain raw prompt, Tool output, or argument content |
+| `EVAL-EVID1` | Delivered | Atomic RunStore observation projected through `EvidenceReader` into bounded `EvidenceSnapshotV1`, with digest-only or explicitly bounded payload modes and optional artifact/terminal-text access | State and event window come from one Run generation; prompt/result/error byte counts and digests remain available when plaintext is omitted; source/fact window drift marks evidence incomplete; content, byte, cursor, artifact, and redaction tests pass |
+| `EVAL-AUX1` | Delivered | `AuxiliaryRunSpecV1`, capability ceiling checks, independent cancellation/deadline, structured-output adapter, bounded JSON output, idempotent IDs, lifecycle handles, and terminal retention | Auxiliary execution cannot broaden a declared parent ceiling; timeout, cancellation, panic, schema mismatch, duplicate admission, and output overflow all settle deterministically |
+| `EVAL-SUP1` | Delivered | Host-injected boundary policy and `EvaluationSupervisor` with turn/terminal/event triggers, debounce, pending admission, deterministic auxiliary IDs, and non-blocking completion watchers | Concurrent observations respect `max_pending`; replay never double-dispatches; policy remains outside Core and supervisor shutdown releases pending work |
+| `EVAL-STORE1` | Delivered | Generic async `EvaluationResultSink` and content-addressed `EvaluationRecordV1` CAS contract with bounded in-memory reference implementation | Exact result replay is idempotent, conflicting writes fail closed, records are queryable by execution target, and no decision enum is imposed by Core |
+| `EVAL-PROTO1` | Planned | Additive host/SDK projection for evidence pages, auxiliary lifecycle, and result records | Rust/Node/Python/Go schemas and unknown-field/version fixtures are generated and parity-checked; Cloud remains the business transport owner |
+| `EVAL-GA1` | Planned | External evaluator qualification and production adapters | A new evaluator can be implemented outside Core; adversarial prompt-injection/secret-redaction, restart, retention, cancellation, performance, strict Clippy, rustdoc, and packaged SDK gates are green |
+
+The delivered gates intentionally stop at the common mechanism. Core does not
+ship a reviewer prompt, rubric, severity/threshold policy, shadow-review
+strategy, disposition/reflag workflow, product UI, scientific artifact
+parser, authentication flow, or Cloud audit endpoint. A host supplies an
+`EvaluationPolicy` and `AuxiliaryExecutor`; it may use the built-in
+`StructuredAuxiliaryExecutor` or its own provider-neutral implementation.
+
+The dependency order is `EVAL-FND1 -> EVAL-JRN1 -> EVAL-EVID1 -> EVAL-AUX1 ->
+EVAL-SUP1 -> EVAL-STORE1 -> EVAL-PROTO1 -> EVAL-GA1`. `EVAL-PROTO1` may begin
+schema fixtures after the first four gates, but cannot claim compatibility
+until all lifecycle and recovery invariants are covered. Durable fact/result
+storage, tenant authorization, retention, placement, and business lineage
+remain host/Cloud adapter responsibilities behind the published traits.
+
+### 3.3 Scoped capability program
 
 The [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md)
 adopts Cordis-style context, fiber, and reversible-effect lifecycle semantics
@@ -310,7 +345,7 @@ does not acquire, publish, mutate, or retire an A3S Use generation. Delegated
 runs inherit the exact parent Profile, and resume rejects a different explicit
 Profile.
 
-### 3.3 Durable memory program
+### 3.4 Durable memory program
 
 The durable-memory program adds reusable, evidence-backed agent state without
 turning an extraction model or a storage backend into a truth authority. A3S

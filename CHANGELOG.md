@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added the provider-neutral evaluation substrate: versioned execution
+  identities, digest-only fact journals, atomic bounded evidence snapshots,
+  isolated auxiliary runs with cancellation and capability ceilings, host
+  boundary supervision, and immutable result CAS storage. Reviewer rubrics,
+  findings, authorization, and Cloud audit semantics remain host-owned.
+
 ## [8.2.0] - 2026-09-04
 
 ### Added
