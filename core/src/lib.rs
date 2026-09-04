@@ -92,6 +92,7 @@ pub mod durable_memory;
 pub mod dynamic_workflow;
 pub mod embedding;
 pub mod error;
+pub mod evaluation;
 pub mod event_protocol;
 pub mod flow_graph;
 pub(crate) mod git;
@@ -223,6 +224,28 @@ pub use embedding::{
 };
 pub use error::SessionBuildResource;
 pub use error::{CodeError, Result};
+pub use evaluation::{
+    digest_bytes, digest_json, validate_digest, AuxiliaryCapabilityProfileV1, AuxiliaryExecutor,
+    AuxiliaryModeV1, AuxiliaryRunContextV1, AuxiliaryRunError, AuxiliaryRunHandle,
+    AuxiliaryRunOutputV1, AuxiliaryRunService, AuxiliaryRunSnapshotV1, AuxiliaryRunSpecV1,
+    AuxiliaryRunStateV1, EvaluationBoundaryV1, EvaluationDispatch, EvaluationDispatchOutcome,
+    EvaluationPlanV1, EvaluationPolicy, EvaluationRecordV1, EvaluationResultSink,
+    EvaluationResultV1, EvaluationStoreError, EvaluationSupervisor, EvaluationWriteOutcomeV1,
+    EventCursorV1, EvidenceArtifactV1, EvidenceContentModeV1, EvidenceError, EvidenceEventV1,
+    EvidenceLimitsV1, EvidenceReadRequestV1, EvidenceReader, EvidenceRunStateV1,
+    EvidenceSnapshotV1, ExecutionFactInputV1, ExecutionFactJournal, ExecutionFactKindV1,
+    ExecutionFactPageV1, ExecutionFactRecorder, ExecutionFactSnapshotV1, ExecutionFactV1,
+    ExecutionFrameV1, ExecutionTargetV1, FactAppendOutcomeV1, IdentityError,
+    InMemoryAuxiliaryRunService, InMemoryEvaluationResultStore, InMemoryExecutionFactJournal,
+    JournalError, RunEvidenceReader, StructuredAuxiliaryExecutor, SupervisorError,
+    AUXILIARY_MAX_OUTPUT_BYTES, AUXILIARY_MAX_STEPS, AUXILIARY_OUTPUT_SCHEMA_V1,
+    AUXILIARY_RUN_SCHEMA_V1, AUXILIARY_SNAPSHOT_SCHEMA_V1, EVALUATION_MAX_COOLDOWN_MS,
+    EVALUATION_MAX_ID_BYTES, EVALUATION_MAX_PENDING, EVALUATION_PLAN_SCHEMA_V1,
+    EVALUATION_RECORD_SCHEMA_V1, EVALUATION_RESULT_SCHEMA_V1, EVIDENCE_MAX_ARTIFACTS,
+    EVIDENCE_MAX_ARTIFACT_BYTES, EVIDENCE_MAX_EVENTS, EVIDENCE_MAX_EVENT_BYTES,
+    EVIDENCE_MAX_PROMPT_BYTES, EVIDENCE_MAX_RESULT_BYTES, EVIDENCE_SNAPSHOT_SCHEMA_V1,
+    EXECUTION_FACT_SCHEMA_V1, EXECUTION_FRAME_SCHEMA_V1, EXECUTION_TARGET_SCHEMA_V1,
+};
 pub use event_protocol::{
     run_event_envelope_v1, AgentEventProjectionV1, AgentEventTypeV1, EventEnvelopeV1,
     EventProtocolError, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
