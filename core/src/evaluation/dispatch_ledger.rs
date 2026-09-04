@@ -133,7 +133,7 @@ impl EvaluationDispatchLedger for MemoryEvaluationDispatchLedger {
         now_ms: u64,
         lease_ms: u64,
     ) -> Result<EvaluationDispatchClaimOutcome, EvaluationDispatchLedgerError> {
-        validate_claim_args(dispatch_id, request_digest, owner_id, lease_ms)?;
+        validate_claim_args(dispatch_id, request_digest, owner_id, now_ms, lease_ms)?;
         let mut records = self.records.lock().await;
         claim_record(
             &mut records,
@@ -153,7 +153,7 @@ impl EvaluationDispatchLedger for MemoryEvaluationDispatchLedger {
         now_ms: u64,
         lease_ms: u64,
     ) -> Result<bool, EvaluationDispatchLedgerError> {
-        validate_claim_args(dispatch_id, request_digest, owner_id, lease_ms)?;
+        validate_claim_args(dispatch_id, request_digest, owner_id, now_ms, lease_ms)?;
         let mut records = self.records.lock().await;
         Ok(renew_record(
             &mut records,
@@ -378,7 +378,7 @@ impl EvaluationDispatchLedger for FileEvaluationDispatchLedger {
         now_ms: u64,
         lease_ms: u64,
     ) -> Result<EvaluationDispatchClaimOutcome, EvaluationDispatchLedgerError> {
-        validate_claim_args(dispatch_id, request_digest, owner_id, lease_ms)?;
+        validate_claim_args(dispatch_id, request_digest, owner_id, now_ms, lease_ms)?;
         self.mutate(|records| {
             claim_record(
                 records,
@@ -400,7 +400,7 @@ impl EvaluationDispatchLedger for FileEvaluationDispatchLedger {
         now_ms: u64,
         lease_ms: u64,
     ) -> Result<bool, EvaluationDispatchLedgerError> {
-        validate_claim_args(dispatch_id, request_digest, owner_id, lease_ms)?;
+        validate_claim_args(dispatch_id, request_digest, owner_id, now_ms, lease_ms)?;
         self.mutate(|records| {
             Ok(renew_record(
                 records,
@@ -458,9 +458,13 @@ fn validate_claim_args(
     dispatch_id: &str,
     request_digest: &str,
     owner_id: &str,
+    now_ms: u64,
     lease_ms: u64,
 ) -> Result<(), EvaluationDispatchLedgerError> {
     validate_identity_args(dispatch_id, request_digest, owner_id)?;
+    if now_ms == 0 {
+        return Err(EvaluationDispatchLedgerError::InvalidField("now_ms"));
+    }
     if lease_ms == 0 {
         return Err(EvaluationDispatchLedgerError::InvalidField("lease_ms"));
     }
@@ -546,6 +550,7 @@ fn renew_record(
     if record.request_digest != request_digest
         || record.status != DispatchClaimStatus::Pending
         || record.owner_id != owner_id
+        || record.lease_expires_at_ms <= now_ms
     {
         return false;
     }
@@ -576,6 +581,12 @@ fn complete_record(
         return Err(EvaluationDispatchLedgerError::InvalidField(
             "completed_at_ms",
         ));
+    }
+    // A completion after lease expiry is stale. Without this fence, a
+    // suspended worker could publish a terminal receipt after another worker
+    // is entitled to take over the dispatch.
+    if record.lease_expires_at_ms <= completed_at_ms {
+        return Err(EvaluationDispatchLedgerError::Conflict);
     }
     record.status = DispatchClaimStatus::Completed;
     record.lease_expires_at_ms = 0;

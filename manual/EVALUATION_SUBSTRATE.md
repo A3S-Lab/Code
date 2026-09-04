@@ -241,6 +241,17 @@ node scripts/generate_evaluation_protocol_artifacts.mjs --check
 node scripts/check_evaluation_protocol_artifacts.mjs
 ```
 
+The first-principles regression set also exercises the failure boundaries that
+are easy to miss in a reviewer host: auxiliary waiters register their
+notification before checking output, terminal snapshots are consistent with
+their output or error, dispatch leases fence zero-time and stale-worker
+completions, evidence binds event metadata and fact/event payloads to the same
+cursor, artifact selection is canonical before limits are applied, and the
+fact journal retains frame identity after FIFO trimming. These checks are
+provider-free and belong in every implementation's pre-release gate; live
+provider, network, Cloud, and host-artifact authenticity checks remain separate
+host-owned gates.
+
 Release qualification additionally requires the normal workspace feature
 matrix, the automated `RUSTDOCFLAGS=-D warnings` rustdoc gate, protocol/SDK
 schema fixtures, restart and retention tests, adversarial redaction tests, a

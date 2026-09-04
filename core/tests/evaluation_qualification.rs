@@ -207,6 +207,46 @@ async fn dispatch_ledger_survives_reopen_and_enforces_leases() {
 }
 
 #[tokio::test]
+async fn dispatch_leases_fence_stale_workers_and_reject_zero_time() {
+    let ledger = a3s_code_core::evaluation::InMemoryEvaluationDispatchLedger::new();
+    let request_digest = digest_bytes("dispatch-request", b"fenced");
+    assert!(matches!(
+        ledger
+            .claim("dispatch-fenced", &request_digest, "owner-a", 0, 10)
+            .await,
+        Err(a3s_code_core::evaluation::EvaluationDispatchLedgerError::InvalidField("now_ms"))
+    ));
+    assert!(matches!(
+        ledger
+            .claim("dispatch-fenced", &request_digest, "owner-a", 100, 10)
+            .await
+            .unwrap(),
+        EvaluationDispatchClaimOutcome::Claimed { attempt: 1 }
+    ));
+    assert!(!ledger
+        .renew("dispatch-fenced", &request_digest, "owner-a", 110, 10,)
+        .await
+        .unwrap());
+    assert!(matches!(
+        ledger
+            .complete("dispatch-fenced", &request_digest, "owner-a", 110)
+            .await,
+        Err(a3s_code_core::evaluation::EvaluationDispatchLedgerError::Conflict)
+    ));
+    assert!(matches!(
+        ledger
+            .claim("dispatch-fenced", &request_digest, "owner-b", 111, 10)
+            .await
+            .unwrap(),
+        EvaluationDispatchClaimOutcome::Claimed { attempt: 2 }
+    ));
+    ledger
+        .complete("dispatch-fenced", &request_digest, "owner-b", 115)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn supervisor_uses_durable_claims_across_restart_boundaries() {
     let directory = tempfile::tempdir().unwrap();
     let ledger =

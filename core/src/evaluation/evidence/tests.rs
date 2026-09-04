@@ -1,6 +1,6 @@
 use super::*;
 use crate::agent::AgentEvent;
-use crate::evaluation::journal::InMemoryExecutionFactJournal;
+use crate::evaluation::journal::{ExecutionFactKindV1, InMemoryExecutionFactJournal};
 use crate::run::RunStatus;
 use crate::tools::ToolArtifact;
 
@@ -37,6 +37,58 @@ async fn fixture() -> (Arc<InMemoryRunStore>, ExecutionTargetV1, ArtifactStore) 
         ExecutionTargetV1::new("session-1", "run-1"),
         artifacts,
     )
+}
+
+#[tokio::test]
+async fn artifact_projection_is_canonical_even_when_store_insertion_is_not() {
+    let runs = Arc::new(InMemoryRunStore::new());
+    let run = runs.create_run("session-artifacts", "prompt").await;
+    for (uri, content) in [("a3s://artifact/z", "z"), ("a3s://artifact/a", "a")] {
+        runs.record_event(
+            &run.id,
+            AgentEvent::ToolEnd {
+                id: uri.to_string(),
+                name: "read".to_string(),
+                args: None,
+                output: content.to_string(),
+                exit_code: 0,
+                metadata: Some(serde_json::json!({"artifact_uri": uri})),
+                error_kind: None,
+            },
+        )
+        .await;
+    }
+    let artifacts = ArtifactStore::new();
+    // Deliberately insert in reverse lexical order. The evidence contract is
+    // URI sorted regardless of the backing store's insertion order.
+    for (uri, content) in [
+        ("a3s://artifact/z", "z-content"),
+        ("a3s://artifact/a", "a-content"),
+    ] {
+        artifacts.put(ToolArtifact {
+            artifact_id: uri.to_string(),
+            artifact_uri: uri.to_string(),
+            tool_name: "read".to_string(),
+            content: content.to_string(),
+            original_bytes: content.len(),
+            shown_bytes: content.len(),
+        });
+    }
+    let target = ExecutionTargetV1::new("session-artifacts", &run.id);
+    let snapshot = RunEvidenceReader::new(runs)
+        .with_artifacts(artifacts)
+        .read(EvidenceReadRequestV1::new(target))
+        .await
+        .expect("evidence should not depend on insertion order");
+    assert_eq!(
+        snapshot
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.artifact_uri.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a3s://artifact/a", "a3s://artifact/z"]
+    );
+    snapshot.validate().expect("canonical snapshot");
 }
 
 #[tokio::test]
@@ -185,6 +237,75 @@ async fn bounded_event_payload_tampering_is_rejected_before_snapshot_digest() {
         snapshot.validate(),
         Err(EvidenceError::DigestMismatch("payload_digest"))
     ));
+}
+
+#[tokio::test]
+async fn event_metadata_binding_is_checked_even_when_digest_is_recomputed() {
+    let (runs, target, _) = fixture().await;
+    let mut snapshot = RunEvidenceReader::new(runs)
+        .read(EvidenceReadRequestV1::new(target.clone()))
+        .await
+        .unwrap();
+    snapshot.events[0].event.metadata.as_mut().unwrap()["run_id"] =
+        Value::String("another-run".into());
+    snapshot.events[0].payload_digest = digest_bytes(
+        "a3s.code.evidence.event-payload.v1",
+        &serde_json::to_vec(&snapshot.events[0].event).unwrap(),
+    );
+    snapshot.snapshot_digest = snapshot.expected_digest().unwrap();
+    assert!(matches!(
+        snapshot.validate(),
+        Err(EvidenceError::TargetMismatch)
+    ));
+}
+
+#[tokio::test]
+async fn recomputed_event_digest_cannot_break_fact_payload_binding() {
+    let (runs, target, artifacts) = fixture().await;
+    let facts = Arc::new(InMemoryExecutionFactJournal::new());
+    let event = runs.events(&target.run_id).await.remove(0);
+    facts
+        .append_event(ExecutionFrameV1::root(target.clone()), &event)
+        .unwrap();
+    let mut request = EvidenceReadRequestV1::new(target);
+    request.content_mode = EvidenceContentModeV1::BoundedPayload;
+    let mut snapshot = RunEvidenceReader::new(runs)
+        .with_facts(facts)
+        .with_artifacts(artifacts)
+        .read(request)
+        .await
+        .unwrap();
+    snapshot.events[0].event.payload["output"] = Value::String("forged".into());
+    let encoded = serde_json::to_vec(&snapshot.events[0].event).unwrap();
+    snapshot.events[0].payload_digest =
+        digest_bytes("a3s.code.evidence.event-payload.v1", &encoded);
+    snapshot.events[0].payload_bytes = encoded.len() as u64;
+    snapshot.snapshot_digest = snapshot.expected_digest().unwrap();
+    let validation = snapshot.validate();
+    assert!(matches!(
+        validation,
+        Err(EvidenceError::InvalidField("facts.events"))
+    ));
+}
+
+#[tokio::test]
+async fn fact_and_event_cross_binding_cannot_be_claimed_complete() {
+    let (runs, target, _) = fixture().await;
+    let facts = Arc::new(InMemoryExecutionFactJournal::new());
+    let event = runs.events(&target.run_id).await.remove(0);
+    let mut fact =
+        ExecutionFactV1::from_run_event(ExecutionFrameV1::root(target.clone()), &event).unwrap();
+    fact.event_type = "different_event".into();
+    fact.kind = ExecutionFactKindV1::Other;
+    fact.fact_digest = fact.expected_digest().unwrap();
+    facts.append(fact).unwrap();
+    let reader = RunEvidenceReader::new(runs).with_facts(facts);
+    let snapshot = reader
+        .read(EvidenceReadRequestV1::new(target))
+        .await
+        .expect("mismatched generations remain inspectable");
+    assert!(!snapshot.complete);
+    snapshot.validate().expect("incomplete snapshot is valid");
 }
 
 #[test]

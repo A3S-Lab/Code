@@ -217,6 +217,9 @@ impl ExecutionFactV1 {
         {
             return Err(JournalError::InvalidField("event_type"));
         }
+        if self.kind != ExecutionFactKindV1::from_event_type(&self.event_type) {
+            return Err(JournalError::InvalidField("kind"));
+        }
         validate_digest(&self.payload_digest)
             .map_err(|_| JournalError::InvalidField("payload_digest"))?;
         if self.payload_bytes == 0
@@ -280,6 +283,8 @@ pub enum JournalError {
     DigestMismatch(&'static str),
     #[error("execution fact target does not match the journal key")]
     TargetMismatch,
+    #[error("execution fact frame conflicts with existing target history")]
+    FrameConflict,
     #[error("execution fact sequence is not contiguous")]
     SequenceGap,
     #[error("execution fact sequence conflicts with an existing fact")]
@@ -351,6 +356,10 @@ struct FactBuffer {
     facts: VecDeque<ExecutionFactV1>,
     serialized_bytes: usize,
     latest_sequence_exclusive: u64,
+    /// The frame is part of the target's immutable identity plane. Keep it
+    /// separately from the retained FIFO window so a fully trimmed journal
+    /// cannot silently accept a different parent or generation later.
+    frame: Option<ExecutionFrameV1>,
 }
 
 /// Bounded in-memory implementation used by the native harness and tests.
@@ -415,6 +424,13 @@ impl ExecutionFactJournal for InMemoryExecutionFactJournal {
             .write()
             .map_err(|_| JournalError::InvalidField("lock"))?;
         let buffer = state.entry(target).or_default();
+        if let Some(frame) = &buffer.frame {
+            if frame != &fact.frame {
+                return Err(JournalError::FrameConflict);
+            }
+        } else {
+            buffer.frame = Some(fact.frame.clone());
+        }
         if let Some(existing) = buffer
             .facts
             .iter()
@@ -599,6 +615,42 @@ mod tests {
         assert!(matches!(
             journal.append(conflicting),
             Err(JournalError::SequenceConflict)
+        ));
+    }
+
+    #[test]
+    fn fact_kind_is_derived_from_the_event_type() {
+        let mut forged = fact(0);
+        forged.kind = ExecutionFactKindV1::Lifecycle;
+        forged.fact_digest = forged.expected_digest().unwrap();
+        assert!(matches!(
+            forged.validate(),
+            Err(JournalError::InvalidField("kind"))
+        ));
+    }
+
+    #[test]
+    fn journal_keeps_frame_identity_after_fifo_retention() {
+        let journal = InMemoryExecutionFactJournal::with_limits(Some(1), None);
+        journal.append(fact(0)).unwrap();
+        journal.append(fact(1)).unwrap();
+        let target = ExecutionTargetV1::new("session-1", "run-1");
+        let forged = ExecutionFactV1::from_input(ExecutionFactInputV1 {
+            frame: ExecutionFrameV1::child(
+                target,
+                ExecutionTargetV1::new("session-parent", "parent-run"),
+            ),
+            sequence: 2,
+            observed_at_ms: 3,
+            event_type: "tool_end".to_string(),
+            payload_digest: digest_bytes("test", &[2]),
+            payload_bytes: 1,
+            artifact_refs: Vec::new(),
+        })
+        .unwrap();
+        assert!(matches!(
+            journal.append(forged),
+            Err(JournalError::FrameConflict)
         ));
     }
 

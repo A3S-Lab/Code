@@ -429,8 +429,10 @@ impl AuxiliaryRunSnapshotV1 {
             return Err(AuxiliaryRunError::InvalidField("updated_at_ms"));
         }
         match self.state {
-            AuxiliaryRunStateV1::Completed if self.output_digest.is_none() => {
-                return Err(AuxiliaryRunError::InvalidField("output_digest"));
+            AuxiliaryRunStateV1::Completed
+                if self.output_digest.is_none() || self.error.is_some() =>
+            {
+                return Err(AuxiliaryRunError::InvalidField("state"));
             }
             AuxiliaryRunStateV1::Queued | AuxiliaryRunStateV1::Running
                 if self.output_digest.is_some() || self.error.is_some() =>
@@ -440,9 +442,9 @@ impl AuxiliaryRunSnapshotV1 {
             AuxiliaryRunStateV1::Failed
             | AuxiliaryRunStateV1::Cancelled
             | AuxiliaryRunStateV1::TimedOut
-                if self.output_digest.is_some() =>
+                if self.output_digest.is_some() || self.error.is_none() =>
             {
-                return Err(AuxiliaryRunError::InvalidField("output_digest"));
+                return Err(AuxiliaryRunError::InvalidField("state"));
             }
             _ => {}
         }
@@ -530,10 +532,22 @@ impl AuxiliaryRunHandle {
 
     pub async fn wait(&self) -> Result<AuxiliaryRunOutputV1, AuxiliaryRunError> {
         loop {
+            // Enable the notification before checking the output. Merely
+            // constructing `Notified` does not register a waiter; `enable`
+            // does. Without it, `notify_waiters` can run between the check
+            // and the await and leave a waiter asleep forever.
+            let notified = self.entry.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if let Some(result) = self.entry.output.lock().await.clone() {
-                return result;
+                // The worker publishes the terminal snapshot before the
+                // output. Keep `wait` linearizable for callers that observe
+                // both handles independently.
+                if self.entry.snapshot.lock().await.state.is_terminal() {
+                    return result;
+                }
             }
-            self.entry.notify.notified().await;
+            notified.await;
         }
     }
 }
@@ -673,15 +687,15 @@ impl InMemoryAuxiliaryRunService {
             Err(_) => None,
         };
         {
-            let mut output = entry.output.lock().await;
-            *output = Some(stored_result);
-        }
-        {
             let mut snapshot = entry.snapshot.lock().await;
             snapshot.state = state;
             snapshot.updated_at_ms = now_ms().max(snapshot.updated_at_ms);
             snapshot.error = error_text;
             snapshot.output_digest = output_digest;
+        }
+        {
+            let mut output = entry.output.lock().await;
+            *output = Some(stored_result);
         }
         entry.notify.notify_waiters();
         self.order.write().await.push_back(entry.spec.id.clone());
