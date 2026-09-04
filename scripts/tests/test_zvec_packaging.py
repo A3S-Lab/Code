@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[2]
 PACKAGE_SCRIPT = ROOT / "scripts" / "package_zvec.sh"
 RUSTFLAGS_SCRIPT = ROOT / "scripts" / "zvec_rustflags.sh"
+CONFIGURE_RUNTIME_SCRIPT = ROOT / "scripts" / "configure_zvec_runtime.sh"
 
 
 class ZvecPackagingTests(unittest.TestCase):
@@ -157,6 +158,25 @@ class ZvecPackagingTests(unittest.TestCase):
         )
         self.assertNotEqual(unsafe.returncode, 0)
         self.assertIn("unsafe", unsafe.stderr)
+
+    def test_ci_runtime_configuration_exports_loader_path(self) -> None:
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        github_env = self.root / "github-env"
+        github_path = self.root / "github-path"
+        env = os.environ.copy()
+        env.update({"GITHUB_ENV": str(github_env), "GITHUB_PATH": str(github_path)})
+        result = subprocess.run(
+            ["bash", str(CONFIGURE_RUNTIME_SCRIPT), "x86_64-unknown-linux-gnu", str(runtime)],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"ZVEC_LIB_DIR={runtime}", github_env.read_text(encoding="utf-8"))
+        self.assertIn(f"LD_LIBRARY_PATH={runtime}", github_env.read_text(encoding="utf-8"))
+        self.assertEqual(github_path.read_text(encoding="utf-8").strip(), str(runtime))
 
 
 if __name__ == "__main__":

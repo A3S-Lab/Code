@@ -54,7 +54,8 @@ jobs:
           set -euo pipefail
           mkdir -p zvec-runtime
           bash scripts/package_zvec.sh "${{ matrix.target }}" zvec-runtime
-          echo "ZVEC_LIB_DIR=$PWD/zvec-runtime" >> "$GITHUB_ENV"
+          bash scripts/configure_zvec_runtime.sh \
+            "${{ matrix.target }}" zvec-runtime
           echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
           ZVEC_FLAGS="$(bash scripts/zvec_rustflags.sh "${{ matrix.target }}" zvec)"
           echo "RUSTFLAGS=$ZVEC_FLAGS" >> "$GITHUB_ENV"

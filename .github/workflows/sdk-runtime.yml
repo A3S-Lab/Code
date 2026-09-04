@@ -34,7 +34,8 @@ jobs:
           mkdir -p sdk/node/zvec
           bash scripts/package_zvec.sh \
             x86_64-unknown-linux-gnu sdk/node/zvec
-          echo "ZVEC_LIB_DIR=$PWD/sdk/node/zvec" >> "$GITHUB_ENV"
+          bash scripts/configure_zvec_runtime.sh \
+            x86_64-unknown-linux-gnu sdk/node/zvec
           echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
           echo "RUSTFLAGS=$(bash scripts/zvec_rustflags.sh x86_64-unknown-linux-gnu zvec)" >> "$GITHUB_ENV"
 
@@ -109,6 +110,7 @@ jobs:
           export ZVEC_LIB_DIR="$PWD/sdk/python/python/a3s_code/zvec"
           export ZVEC_AUTO_BUILD=0
           export RUSTFLAGS="$(bash scripts/zvec_rustflags.sh x86_64-unknown-linux-gnu zvec)"
+          export LD_LIBRARY_PATH="$ZVEC_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           maturin develop --locked --manifest-path sdk/python/Cargo.toml
           python -m pytest -q sdk/python/tests sdk/python/test_confirmation_inheritance.py
           python sdk/python/tests/test_budget_guard.py

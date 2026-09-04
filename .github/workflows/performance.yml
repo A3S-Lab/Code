@@ -14,6 +14,7 @@ on:
       - "core/Cargo.toml"
       - "core/resources/zvec-runtime-manifest.json"
       - "scripts/package_zvec.sh"
+      - "scripts/configure_zvec_runtime.sh"
       - "scripts/zvec_rustflags.sh"
       - "core/examples/agent_convergence_benchmark.rs"
       - "core/examples/code_intelligence_benchmark.rs"
@@ -49,6 +50,7 @@ on:
       - "core/Cargo.toml"
       - "core/resources/zvec-runtime-manifest.json"
       - "scripts/package_zvec.sh"
+      - "scripts/configure_zvec_runtime.sh"
       - "scripts/zvec_rustflags.sh"
       - "core/examples/agent_convergence_benchmark.rs"
       - "core/examples/code_intelligence_benchmark.rs"
@@ -111,7 +113,8 @@ jobs:
           set -euo pipefail
           mkdir -p zvec-runtime
           bash scripts/package_zvec.sh x86_64-unknown-linux-gnu zvec-runtime
-          echo "ZVEC_LIB_DIR=$PWD/zvec-runtime" >> "$GITHUB_ENV"
+          bash scripts/configure_zvec_runtime.sh \
+            x86_64-unknown-linux-gnu zvec-runtime
           echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
           echo "RUSTFLAGS=$(bash scripts/zvec_rustflags.sh x86_64-unknown-linux-gnu zvec)" >> "$GITHUB_ENV"
 

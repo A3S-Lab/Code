@@ -640,6 +640,9 @@ fn fd_path(fd: i32, _descriptor_path: &std::path::Path) -> Option<std::path::Pat
 
     #[cfg(not(target_os = "macos"))]
     {
+        // Linux resolves the descriptor through its path argument; retain
+        // the fd in the shared signature for macOS' fcntl-based resolver.
+        let _ = fd;
         let target = fs::read_link(_descriptor_path).ok()?;
         Some(std::path::PathBuf::from(
             target

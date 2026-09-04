@@ -123,7 +123,8 @@ jobs:
             cp sdk/python/python/a3s_code/zvec/zvec_c_api.dll \
               sdk/python/python/a3s_code/zvec_c_api.dll
           fi
-          echo "ZVEC_LIB_DIR=$PWD/sdk/python/python/a3s_code/zvec" >> "$GITHUB_ENV"
+          bash scripts/configure_zvec_runtime.sh \
+            "${{ matrix.settings.target }}" sdk/python/python/a3s_code/zvec
           echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
           ZVEC_FLAGS="$(bash scripts/zvec_rustflags.sh \
             "${{ matrix.settings.target }}" zvec)"
