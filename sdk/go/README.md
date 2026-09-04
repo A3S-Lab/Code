@@ -64,6 +64,11 @@ To build the bridge from a source checkout:
 
 ```bash
 bash .github/setup-workspace.sh
+mkdir -p zvec-runtime
+bash scripts/package_zvec.sh "$(rustc -vV | sed -n 's/^host: //p')" zvec-runtime
+export ZVEC_LIB_DIR="$PWD/zvec-runtime"
+export ZVEC_AUTO_BUILD=0
+export RUSTFLAGS="$(bash scripts/zvec_rustflags.sh "$(rustc -vV | sed -n 's/^host: //p')" zvec)"
 cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge
 ```
 
@@ -114,10 +119,9 @@ than Go source.
 ## Ephemeral workspace retrieval
 
 Inject a context-aware embedding provider to build a bounded, session-owned,
-ephemeral index without CGO or a vector database service. `A3sMemory` is the
-compatibility serving default. The gated A3S Vec migration preview can be
-selected with the typed `WorkspaceVectorEngineA3SVec`; the other engine is
-retained as a differential shadow and is never an implicit fallback.
+ephemeral index without CGO or a vector database service. A3S Memory is the
+single semantic vector projection, and product bridge builds use zvec-rust for
+lexical FTS/BM25. Minimal bridge builds may explicitly select portable BM25.
 The host owns network access and credentials; A3S Code owns chunking,
 validation, indexing, hybrid ranking, source verification, and cleanup.
 
@@ -175,8 +179,10 @@ if err != nil {
 retrieval.ChunkingStrategy = chunking
 retrieval.MaxRecords = 100_000
 retrieval.MaxBytes = 128 * 1024 * 1024
-// Developer qualification only; omission keeps the Memory compatibility path.
-// retrieval.VectorEngine = code.WorkspaceVectorEngineA3SVec
+// An omitted engine follows the bridge's compiled default (zvec-rust for a
+// native product build, portable BM25 for a --no-default-features build).
+// A minimal bridge can explicitly select the dependency-free scorer:
+// retrieval.LexicalEngine = code.WorkspaceLexicalEnginePortable
 
 session, err := agent.Session(ctx, "/my-project", &code.SessionOptions{
 	WorkspaceRetrieval: retrieval,
@@ -204,13 +210,16 @@ retry categories without copying remote response bodies into diagnostics.
 `WorkspaceRetrievalStatus.Batching` reports logical document batches, physical
 provider requests, limit flush reasons, the theoretical request lower bound,
 and time to first ready file for the current catalog generation.
-`WorkspaceRetrievalStatus.ActiveVectorEngine` is
-`WorkspaceVectorEngineA3SMemory` when the option is omitted, or
-`WorkspaceVectorEngineA3SVec` for the typed preview. `VecShadow` exposes only
-bounded lifecycle, resource, mutation, and parity counters; it cannot change
-returned hits. Closing requires zero shadow records and accounted bytes. Raw
-backend-name selectors are rejected; see the
-[migration contract](../../manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+`WorkspaceRetrievalStatus.LexicalEngine` identifies the selected lexical
+projection. Product builds report `zvec_rust_fts_v1`; minimal builds report
+`portable_bm25_v1`. Status also exposes coverage, vector records/bytes,
+batching, and bounded failure counters. Semantic vectors are owned only by
+A3S Memory and are released on close. Raw backend-name selectors are rejected;
+see the [backend contract](../../manual/WORKSPACE_RETRIEVAL_BACKENDS.md).
+
+`WorkspaceLexicalEngineZvecRust` selects the official Rust binding's temporary
+FTS projection for the session-owned catalog. An unsupported selection fails
+during session initialization and does not silently fall back.
 
 `Reranker` is a sealed typed option. Leave it `nil` to preserve RRF-only, or
 configure the object returned by `NewDeterministicWorkspaceReranker` to bound

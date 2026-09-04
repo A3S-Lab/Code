@@ -185,6 +185,7 @@ impl WorkspaceCatalogReconciler {
             let file_system = Arc::clone(&self.file_system);
             let chunking = self.catalog.chunking();
             let chunking_strategy = self.catalog.chunking_strategy();
+            let lexical_engine = self.catalog.lexical_engine();
             let source_revision = snapshot.version;
             async move {
                 let path = WorkspacePath::from_normalized(manifest.path.clone());
@@ -207,6 +208,7 @@ impl WorkspaceCatalogReconciler {
                                 &content,
                                 chunking,
                                 &chunking_strategy,
+                                lexical_engine,
                             )
                         })
                         .await;

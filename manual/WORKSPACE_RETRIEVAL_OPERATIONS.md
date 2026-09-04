@@ -5,10 +5,10 @@
 This runbook turns Workspace Retrieval qualification into an operational
 decision. The capability is suitable for retrieval-dependent generation when
 the gates below pass, but it remains explicit, session-bound, ephemeral, and
-default-off. `A3sMemory` is the compatibility serving default; a trusted host
-may select the gated `A3sVec` preview through the typed engine option. Neither
-mode creates a durable workspace index, replaces exact or BM25 search, parses
-non-text assets, or changes the compatible line-chunking and RRF-only defaults.
+default-off. A3S Memory is the sole semantic vector projection and zvec-rust is
+the product lexical projection. Neither creates a durable workspace index,
+replaces exact or BM25 search, parses non-text assets, or changes the compatible
+line-chunking and RRF-only defaults.
 
 The service boundary is:
 
@@ -99,7 +99,7 @@ profile.
 | Edited-generation observation / first-publication p95 | <= 2,000 / 1,000 ms | 1,054 / 40 ms | Disable semantic edits if revisions stop advancing |
 | Document-request amplification | <= 1.10x lower bound | 1.0000x | Inspect batching before increasing provider capacity |
 | Non-text provider inputs | 0 | 0 | Treat as a source-egress incident and disable immediately |
-| Exact / hybrid local query p95, 25,000 vectors | <= 30 / 100 ms | 8.294-12.302 / 51.145-54.429 ms | Fall back to exact/BM25 and inspect candidate or source-read growth |
+| Exact vector / native hybrid local query p95 | <= 30 / 100 ms | 7.776 ms (25,000 x 384) / 12.103 ms (4 files, 512 chunks) | Fall back to exact/BM25 and inspect candidate, descriptor, or source-read growth |
 | Runtime memory, 25,000-vector profile | <= 256 MiB default session budget | 41,397,932 accounted bytes | Reduce admitted scope or close the session; never spill vectors implicitly |
 | Close p95 and post-close vectors, generation fixture | <= 6,000 ms and 0 records/bytes | 5,018 ms and 0/0 | Stop rollout if cleanup exceeds its bound or retains vectors |
 | Repeated single-file replacement | Constant live record count | 64 generations, one live vector | Treat growth as a generation leak and close the session |
@@ -115,6 +115,12 @@ The local CPU ACL-host run similarly reports 27,460/28,661 ms task p50/p95 and
 artifact admission, cold ONNX load, asynchronous indexing, and remote DeepSeek
 latency rather than representing query-only latency.
 
+The exact and hybrid values in the table are separate schema-v5 workloads: the
+25,000-record gate measures the A3S Memory exact vector index, while the native
+hybrid gate measures four zvec-rust FTS partitions with 128 chunks per file and
+warm-cache authoritative source rereads. They are not a single 25,000-vector
+hybrid corpus claim.
+
 ## Required telemetry
 
 Expose and retain aggregate, non-sensitive fields only:
@@ -123,9 +129,8 @@ Expose and retain aggregate, non-sensitive fields only:
   chunk count;
 - catalog, source, and vector revisions;
 - queue depth, vector record count, and accounted vector bytes;
-- active vector engine plus Vec shadow phase, revision, records, accounted
-  bytes, initialization/mutation outcomes, and compared/matching/mismatched/
-  failed query counters;
+- selected lexical engine, initialization outcome, and bounded lexical failure
+  counters;
 - document inputs, physical provider requests, the batch-limit lower bound,
   flush reasons, amplification, and time to first ready publication;
 - semantic/hybrid channel status, rerank mode/version, truncation, fallback
@@ -133,12 +138,11 @@ Expose and retain aggregate, non-sensitive fields only:
 - provider/model/revision identity without URL, headers, environment-variable
   names, credentials, source text, vectors, prompts, or snippets.
 
-Alert on a degraded retrieval or Vec shadow phase, failed files above zero,
-any Vec mismatch or failed query, a Vec record-count divergence after ready,
+Alert on a degraded retrieval or lexical phase, failed files above zero,
 coverage that stops
 advancing, source revision advancing without a later vector revision, request
 amplification above 1.10x, non-text input above zero, a rerank fallback spike,
-or nonzero Memory or Vec records/bytes after close. A shadow alert does not
+or nonzero semantic-vector records/bytes after close. A shadow alert does not
 authorize serving its result. Raw source and vector data must never be added to
 telemetry to diagnose these conditions.
 
@@ -156,11 +160,9 @@ A query must never render a stale or deleted chunk after the corresponding
 workspace revision is observed. During replacement it may see the previous or
 new immutable partition, never a partially written partition.
 
-The retrieval phase and Vec shadow phase are independent. `ready` retrieval
-with a `degraded` shadow means the selected primary remains eligible to serve
-while differential evidence is unqualified. `active_vector_engine` must equal
-the requested typed engine; `a3s_memory` is expected when the option is omitted.
-There is no automatic switch to the shadow after a primary failure.
+Semantic and lexical phases have independent failure domains. A ready semantic
+projection can continue serving when a native lexical partition is degraded,
+and a lexical failure cannot change semantic authority or source verification.
 
 ## Rollback
 
@@ -182,12 +184,11 @@ be disabled. If the Embedding Provider, admission boundary, revision fencing,
 memory accounting, or cleanup invariant regresses, disable the complete
 retrieval runtime.
 
-If the Vec shadow regresses in Memory-default mode, Memory still owns every
-serving result. If the Vec-primary preview regresses, recreate sessions with
-the typed `A3sMemory` compatibility default (or disable retrieval); the
-temporary collection carries no durable data to migrate. Roll back the deployed
-Code binary to a known-good revision if required. The option boundary rejects
-raw backend-name strings and never performs an implicit primary/shadow switch.
+If the native lexical runtime regresses, select the explicit portable engine in
+a minimal build or disable lexical retrieval while retaining exact, semantic,
+and Code Intelligence paths. No vector migration is required because semantic
+state is session-ephemeral. Roll back the deployed Code binary to a known-good
+revision if required; the option boundary rejects raw backend-name strings.
 
 ## Release procedure
 
@@ -204,7 +205,8 @@ cargo test --locked -p a3s-code-core --lib `
   agent_api::retrieval_qa_tests::repeated_source_generations_replace_vectors_without_accumulation `
   -- --ignored --exact --test-threads=1
 
-# Local release latency, Memory/Vec parity, batching, quality, and cleanup gates.
+# Local release latency, semantic-vector/lexical parity, batching, quality, and
+# cleanup gates.
 cargo run --release -p a3s-code-core --example workspace_retrieval_benchmark
 ```
 

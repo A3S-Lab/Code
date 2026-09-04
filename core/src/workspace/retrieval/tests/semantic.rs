@@ -1,7 +1,6 @@
 use super::super::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkCatalog, WorkspaceRetrievalOptions,
     WorkspaceRetrievalPhase, WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus,
-    WorkspaceVecShadowPhase, WorkspaceVectorEngine,
 };
 use crate::embedding::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingProvider, EmbeddingProviderDescriptor,
@@ -55,48 +54,8 @@ async fn builds_file_partitions_asynchronously_and_exposes_partial_readiness() {
     assert_eq!(ready.indexed_chunks, 2);
     assert_eq!(ready.coverage_bps, 10_000);
     assert_eq!(ready.vector_records, 2);
-    assert_eq!(
-        ready.active_vector_engine,
-        Some(WorkspaceVectorEngine::A3sMemory)
-    );
-    assert_eq!(ready.vec_shadow.phase, WorkspaceVecShadowPhase::Ready);
-    assert_eq!(ready.vec_shadow.record_count, 2);
-    assert_eq!(ready.vec_shadow.failed_mutations, 0);
-    runtime.close().await;
-    assert_eq!(
-        runtime.status().vec_shadow.phase,
-        WorkspaceVecShadowPhase::Closed
-    );
-}
-
-#[tokio::test]
-async fn vec_can_be_selected_as_the_serving_workspace_authority() {
-    let catalog = populated_catalog(&[("a.rs", "vec primary authority\n")]);
-    let provider = ControlledProvider::immediate(vec![ProviderOutcome::Success]);
-    let provider_port: Arc<dyn EmbeddingProvider> = provider;
-    let options = WorkspaceRetrievalOptions::new(provider_port)
-        .with_vector_engine(WorkspaceVectorEngine::A3sVec);
-    let runtime = WorkspaceRetrievalRuntime::start(catalog, options, CancellationToken::new())
-        .expect("Vec-primary workspace runtime must construct");
-
-    let ready = wait_for_status(&runtime, |status| {
-        status.phase == WorkspaceRetrievalPhase::Ready
-    })
-    .await;
-    assert_eq!(
-        ready.active_vector_engine,
-        Some(WorkspaceVectorEngine::A3sVec)
-    );
-    assert_eq!(ready.vector_records, 1);
-    assert_eq!(ready.vec_shadow.phase, WorkspaceVecShadowPhase::Ready);
-    assert_eq!(ready.vec_shadow.record_count, 1);
-
     runtime.close().await;
     assert_eq!(runtime.status().phase, WorkspaceRetrievalPhase::Closed);
-    assert_eq!(
-        runtime.status().vec_shadow.phase,
-        WorkspaceVecShadowPhase::Closed
-    );
 }
 
 #[tokio::test]

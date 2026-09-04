@@ -1,27 +1,22 @@
 //! Code-owned vector contract for session-local workspace retrieval.
 //!
 //! The workspace runtime must not know which storage implementation supplies
-//! vectors.  The compatibility Memory implementation and the A3S Vec adapter
-//! are kept behind [`WorkspaceVectorIndex`].  The public value types are
-//! re-exported from the compatibility crate for now so the migration remains
-//! wire- and error-compatible; only this module is allowed to bind the
-//! workspace contract to that dependency's trait.
+//! vectors. The Memory adapter is kept behind [`WorkspaceVectorIndex`] so the
+//! semantic projection can remain independent of storage details. The public
+//! value types are re-exported from the Memory crate through this narrow
+//! contract boundary.
 
 pub(super) use a3s_memory::vector::{
-    VectorBudgetResource, VectorIndexChangeToken, VectorIndexDescriptor, VectorIndexError,
-    VectorIndexObservation, VectorIndexStatus, VectorMetric, VectorMutationConsistency,
-    VectorNormalization, VectorRecord, VectorResult, VectorRevision, VectorSearchHit,
+    VectorIndexChangeToken, VectorIndexDescriptor, VectorIndexError, VectorIndexObservation,
+    VectorIndexStatus, VectorMutationConsistency, VectorRecord, VectorResult, VectorRevision,
     VectorSearchRequest, VectorSearchResult,
 };
 
 /// Session-owned vector index used by workspace semantic retrieval.
 ///
-/// Implementations publish complete partition generations atomically.  The
-/// selected implementation is authoritative for one session; any other
-/// implementation is used only as a differential shadow.
-// The contract intentionally mirrors the complete lifecycle surface so the
-// migration can preserve revision-fenced publication while swapping the
-// compatibility implementation for Vec.
+/// Implementations publish complete partition generations atomically and use
+/// revision-fenced mutations so delayed embedding work cannot overwrite a
+/// newer catalog generation.
 #[allow(dead_code)]
 #[async_trait::async_trait]
 pub(super) trait WorkspaceVectorIndex: Send + Sync {

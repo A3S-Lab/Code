@@ -1,7 +1,7 @@
 use super::super::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkCatalog, WorkspaceRetrievalOptions,
     WorkspaceRetrievalPhase, WorkspaceRetrievalRuntime, WorkspaceSemanticFallbackReason,
-    WorkspaceSemanticSearchRequest, WorkspaceVecShadowPhase, WorkspaceVectorEngine,
+    WorkspaceSemanticSearchRequest,
 };
 use crate::embedding::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingProvider, EmbeddingProviderDescriptor,
@@ -39,45 +39,7 @@ async fn semantic_query_ranks_filters_and_verifies_current_source() {
     assert!(result.hits[0].chunk.text.contains("temporary session"));
     assert_eq!(result.fallback, None);
     assert_eq!(result.status.phase, WorkspaceRetrievalPhase::Ready);
-    assert_eq!(
-        result.status.vec_shadow.phase,
-        WorkspaceVecShadowPhase::Ready
-    );
-    assert_eq!(result.status.vec_shadow.compared_queries, 1);
-    assert_eq!(result.status.vec_shadow.matching_queries, 1);
     assert_eq!(fixture.files.read_paths(), vec!["src/cache.rs"]);
-    fixture.runtime.close().await;
-}
-
-#[tokio::test]
-async fn vec_primary_authority_serves_verified_semantic_hits() {
-    let fixture = QueryFixture::start_with_engine(
-        &[
-            ("src/cache.rs", "release temporary session vector memory\n"),
-            ("docs/guide.md", "authentication token rotation guide\n"),
-        ],
-        WorkspaceVectorEngine::A3sVec,
-    )
-    .await;
-
-    let result = fixture
-        .search(
-            WorkspaceSemanticSearchRequest::new("session cleanup")
-                .with_path("src")
-                .with_include("*.rs")
-                .with_limit(1),
-        )
-        .await;
-
-    assert_eq!(result.hits.len(), 1);
-    assert_eq!(result.hits[0].chunk.path.as_ref(), "src/cache.rs");
-    assert_eq!(
-        result.status.active_vector_engine,
-        Some(WorkspaceVectorEngine::A3sVec)
-    );
-    assert_eq!(result.status.vec_shadow.compared_queries, 1);
-    assert_eq!(result.status.vec_shadow.matching_queries, 1);
-    assert_eq!(result.fallback, None);
     fixture.runtime.close().await;
 }
 
@@ -208,19 +170,12 @@ struct QueryFixture {
 
 impl QueryFixture {
     async fn start(entries: &[(&str, &str)]) -> Self {
-        Self::start_with_engine(entries, WorkspaceVectorEngine::A3sMemory).await
-    }
-
-    async fn start_with_engine(
-        entries: &[(&str, &str)],
-        vector_engine: WorkspaceVectorEngine,
-    ) -> Self {
         let catalog = populated_catalog(entries);
         let files = MemoryFiles::from_entries(entries);
         let provider: Arc<dyn EmbeddingProvider> = Arc::new(QueryProvider::new());
         let runtime = WorkspaceRetrievalRuntime::start(
             catalog,
-            WorkspaceRetrievalOptions::new(provider).with_vector_engine(vector_engine),
+            WorkspaceRetrievalOptions::new(provider),
             CancellationToken::new(),
         )
         .unwrap();

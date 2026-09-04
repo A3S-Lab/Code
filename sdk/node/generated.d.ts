@@ -946,10 +946,10 @@ export interface MemoryMaintenanceHealth {
   phase: string
   jobs: Array<MemoryMaintenanceJobHealth>
 }
-/** Typed authority selection for the gated workspace retrieval preview. */
-export const enum WorkspaceVectorEngineOption {
-  A3sMemory = 'a3s_memory',
-  A3sVec = 'a3s_vec'
+/** Typed lexical FTS implementation for the session-owned workspace catalog. */
+export const enum WorkspaceLexicalEngineOption {
+  Portable = 'portable',
+  ZvecRust = 'zvec_rust'
 }
 export interface WorkspaceRetrievalOptionsObject {
   /** Opaque live provider identity. Pass a `WorkspaceRetrievalOptions` instance. */
@@ -957,8 +957,8 @@ export interface WorkspaceRetrievalOptionsObject {
   maxRecords?: number
   maxBytes?: number
   shutdownTimeoutMs?: number
-  /** Typed vector authority; omission preserves the Memory compatibility default. */
-  vectorEngine?: WorkspaceVectorEngineOption
+  /** Typed lexical FTS engine; omission selects the product default. */
+  lexicalEngine?: WorkspaceLexicalEngineOption
   /** Opaque validated reranker snapshot; empty preserves RRF-only. */
   rerankerInstanceId: string
   /** Opaque validated chunking snapshot; empty preserves line chunking. */
@@ -1003,19 +1003,6 @@ export interface WorkspaceEmbeddingBatchMetricsObject {
   timeToFirstReadyMs?: number
   nonTextInputs: number
 }
-export interface WorkspaceVecShadowStatusObject {
-  phase: string
-  revision: number
-  recordCount: number
-  accountedBytes: number
-  initializationFailures: number
-  successfulMutations: number
-  failedMutations: number
-  comparedQueries: number
-  matchingQueries: number
-  mismatchedQueries: number
-  failedQueries: number
-}
 export interface WorkspaceRetrievalStatusObject {
   phase: string
   catalogRevision: number
@@ -1032,8 +1019,8 @@ export interface WorkspaceRetrievalStatusObject {
   totalFailures: number
   vectorRecords: number
   vectorBytes: number
-  activeVectorEngine?: string
-  vecShadow: WorkspaceVecShadowStatusObject
+  /** Stable lexical implementation identifier for diagnostics. */
+  lexicalEngine: string
   batching: WorkspaceEmbeddingBatchMetricsObject
   model?: EmbeddingProviderDescriptorObject
 }
@@ -2093,7 +2080,7 @@ export declare class RecursiveWorkspaceChunkingStrategy {
 }
 /** Typed options that enable ephemeral semantic retrieval for one session. */
 export declare class WorkspaceRetrievalOptions {
-  constructor(provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null, chunkingStrategy?: LineWorkspaceChunkingStrategy | FixedWindowWorkspaceChunkingStrategy | RecursiveWorkspaceChunkingStrategy | null, vectorEngine?: WorkspaceVectorEngineOption | null)
+  constructor(provider: CallbackEmbeddingProvider, reranker?: DeterministicWorkspaceReranker | null, chunkingStrategy?: LineWorkspaceChunkingStrategy | FixedWindowWorkspaceChunkingStrategy | RecursiveWorkspaceChunkingStrategy | null, lexicalEngine?: WorkspaceLexicalEngineOption | null)
   /** Return the opaque provider identity used by structural SessionOptions conversion. */
   get instanceId(): string
   get maxRecords(): number
@@ -2102,8 +2089,8 @@ export declare class WorkspaceRetrievalOptions {
   set maxBytes(value: number)
   get shutdownTimeoutMs(): number
   set shutdownTimeoutMs(value: number)
-  get vectorEngine(): WorkspaceVectorEngineOption
-  set vectorEngine(value: WorkspaceVectorEngineOption)
+  get lexicalEngine(): WorkspaceLexicalEngineOption
+  set lexicalEngine(value: WorkspaceLexicalEngineOption)
   /** Return the opaque reranker snapshot used by structural conversion. */
   get rerankerInstanceId(): string
   /** Return the opaque chunking snapshot used by structural conversion. */

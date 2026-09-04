@@ -4,6 +4,56 @@
 //! providers. It is the single source of chunk boundaries for lexical and
 //! future semantic retrieval.
 
+#[cfg(feature = "zvec-rust-fts")]
+use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+/// Coordinates native workspace resources with host process creation.
+///
+/// The zvec C++ library opens descriptors without `O_CLOEXEC`. Native
+/// indexing therefore takes the write side of this gate for its complete
+/// open/query/close scope, while every Code-owned child-process spawn takes
+/// the read side for the fork/exec boundary. This also covers macOS
+/// `posix_spawn`, for which `pthread_atfork` handlers are not guaranteed to
+/// run.
+#[cfg(feature = "zvec-rust-fts")]
+static NATIVE_RESOURCE_GATE: OnceLock<RwLock<()>> = OnceLock::new();
+
+#[cfg(feature = "zvec-rust-fts")]
+pub(crate) struct NativeResourceOperationGuard {
+    _guard: RwLockWriteGuard<'static, ()>,
+}
+
+#[cfg(feature = "zvec-rust-fts")]
+pub(crate) struct NativeProcessSpawnGuard {
+    _guard: RwLockReadGuard<'static, ()>,
+}
+
+#[cfg(feature = "zvec-rust-fts")]
+pub(crate) fn native_resource_operation() -> Result<NativeResourceOperationGuard, String> {
+    NATIVE_RESOURCE_GATE
+        .get_or_init(|| RwLock::new(()))
+        .write()
+        .map(|guard| NativeResourceOperationGuard { _guard: guard })
+        .map_err(|_| "native workspace resource gate poisoned".to_owned())
+}
+
+#[cfg(feature = "zvec-rust-fts")]
+pub(crate) fn native_process_spawn() -> NativeProcessSpawnGuard {
+    let guard = NATIVE_RESOURCE_GATE
+        .get_or_init(|| RwLock::new(()))
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    NativeProcessSpawnGuard { _guard: guard }
+}
+
+#[cfg(not(feature = "zvec-rust-fts"))]
+pub(crate) struct NativeProcessSpawnGuard;
+
+#[cfg(not(feature = "zvec-rust-fts"))]
+pub(crate) fn native_process_spawn() -> NativeProcessSpawnGuard {
+    NativeProcessSpawnGuard
+}
+
 mod catalog;
 mod chunk;
 mod chunking_strategy;
@@ -24,12 +74,10 @@ mod semantic_runtime;
 mod semantic_status;
 mod semantic_types;
 mod types;
-mod vec_shadow;
-mod vec_shadow_document;
-mod vec_shadow_store;
-mod vector_authority;
 mod vector_contract;
 mod verification;
+#[cfg(feature = "zvec-rust-fts")]
+mod zvec_rust;
 
 pub use catalog::{ChunkCatalogSnapshot, WorkspaceChunkCatalog};
 pub(crate) use chunk::digest_content;
@@ -51,11 +99,11 @@ pub use semantic_types::{
     WorkspaceEmbeddingBatchMetrics, WorkspaceRetrievalError, WorkspaceRetrievalOptions,
     WorkspaceRetrievalPhase, WorkspaceRetrievalResult, WorkspaceRetrievalStatus,
     WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
-    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult, WorkspaceVecShadowPhase,
-    WorkspaceVecShadowStatus, WorkspaceVectorEngine,
+    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult,
 };
 pub use types::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunk, WorkspaceChunkId, WorkspaceIndexError,
+    WorkspaceLexicalEngine,
 };
 pub(crate) use verification::retain_verified;
 

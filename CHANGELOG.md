@@ -41,17 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `run_control` to the product capability inventory so all four SDKs can
   discover the new control-plane surface without version parsing.
 - Routed both manifest-backed and bounded no-catalog workspace BM25 searches
-  through one session-local A3S Vec FTS projection (`whitespace` tokenizer),
+  through the official zvec-rust FTS projection (`whitespace` tokenizer),
   removing the duplicate Code-local postings/scoring implementation while
-  preserving the locked result and source-rendering contract. Semantic vector
-  authority remains behind the typed migration preview until its platform,
-  resource, recovery, and rollback gates are closed.
-- Isolated the compatibility `a3s-memory` vector trait behind a single
-  workspace adapter; semantic retrieval now consumes the Code-owned vector
-  contract and cannot accidentally couple new runtime code to Memory methods.
-- Added revision-CAS to the temporary Vec workspace adapter. Delayed and
-  concurrent partition writers are checked at one Code-owned logical revision,
-  with stale mutations rejected before Vec storage is touched.
+  preserving the locked result and source-rendering contract. Minimal builds
+  retain an explicitly reported portable BM25 path.
+- Consolidated semantic retrieval on one A3S Memory exact-vector adapter with
+  revision-CAS publication, immutable partitions, and bounded close cleanup.
+  No duplicate semantic projection or hidden authority selector remains.
 
 ### Fixed
 
@@ -92,12 +88,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   custom handles remain explicit overrides and non-local workspace backends
   retain their own command runners.
 
-- Added a Code-owned A3S Vec migration shadow for semantic workspace
-  retrieval. A3S Memory remains the only serving authority; the same admitted
-  vectors are mirrored once into a session-local, temporary Vec collection and
-  query results are compared bit-for-bit behind a shared publication gate.
-  Rust, Node.js, Python, and Go expose the active engine plus bounded,
-  non-sensitive shadow lifecycle, resource, mutation, and parity counters.
+- Added the session-local workspace retrieval backend contract. Product builds
+  use zvec-rust FTS/BM25 for lexical ranking and A3S Memory for exact semantic
+  vectors; native handles are bounded and all SDKs expose the same typed result
+  and lifecycle surface.
 - Added post-build `AgentReleaseManifest::bind_publication` and a minimal
   BuildKit publication fixture. The fixture packages an exact Linux A3S CLI
   binary without its final manifest, pushes one OCI image manifest, binds the

@@ -830,12 +830,9 @@ mod tests {
     use std::process::Command;
 
     fn run_git(path: &std::path::Path, args: &[&str]) {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .output()
-            .unwrap();
+        let mut command = Command::new("git");
+        command.arg("-C").arg(path).args(args);
+        let output = crate::tools::process::output_std_with_native_gate(&mut command).unwrap();
         assert!(
             output.status.success(),
             "git {:?} failed: {}",

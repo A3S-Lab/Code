@@ -23,13 +23,17 @@ required-features = ["durable-memory-sqlite"]
 # Internal crates
 a3s-common = "0.1.1"
 a3s-memory = { version = "0.1.4", git = "https://github.com/A3S-Lab/Memory.git", rev = "97a5e885d196be77dc1823ad86238e77d942ed73" }
-a3s-vec = { version = "0.1.0", git = "https://github.com/A3S-Lab/Vec.git", rev = "13585ccd3f956f6cb7d669b2ee6acc7096fca03d", default-features = false }
 a3s-lane = "0.5"
 # Pin the Search release so the browser-engine and Moli adapter APIs cannot
 # drift underneath the Code runtime manager.
 a3s-search = { version = "=3.1.0", git = "https://github.com/A3S-Lab/Search.git", rev = "c30e3dd04de8f2874113cda435439d6938bd3eb6", default-features = false }
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false }
 a3s-sandbox = { version = "=0.1.0", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "09c46aaf18e4be2c881459fa71ece8a9d8c45283" }
+# Official zvec Rust binding used by the workspace full-text index. The
+# dependency is optional so minimal/no-native builds can retain the portable
+# scorer, while product builds enable the bundled feature and ship the
+# attested platform library beside the executable.
+zvec_rust = { package = "zvec-rust", version = "=0.7.0", optional = true, default-features = false }
 
 # Async runtime
 tokio = { version = "1.35", features = [
@@ -140,7 +144,7 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [features]
-default = ["headless-search"]
+default = ["headless-search", "zvec-rust-fts-bundled"]
 # Enable the locally durable SQLite vector index for semantic-memory hosts.
 durable-memory-sqlite = ["a3s-memory/sqlite"]
 # Enable browser-backed search plus managed browser lifecycle
@@ -149,6 +153,14 @@ durable-memory-sqlite = ["a3s-memory/sqlite"]
 # Lightpanda remain selectable through configuration. HTTP/RSS and native API
 # search remain available when default features are disabled.
 headless-search = ["a3s-search/moli", "a3s-search/lightpanda"]
+# Compile the official zvec Rust/C-API FTS adapter. The default product feature
+# below enables the upstream bundled resolver for local development and CI;
+# release packaging must still copy and verify the matching native library.
+zvec-rust-fts = ["dep:zvec_rust"]
+# Permit the upstream build script to resolve a platform prebuilt library when
+# no vendored `ZVEC_LIB_DIR` is supplied. Packagers should set `ZVEC_LIB_DIR`
+# to the verified artifact so builds remain reproducible and offline.
+zvec-rust-fts-bundled = ["zvec-rust-fts", "zvec_rust/bundled"]
 # Enable OpenTelemetry OTLP export for traces and metrics.
 # When active, `TelemetryConfig::init()` sets up OTLP exporter + tracing subscriber.
 telemetry = [

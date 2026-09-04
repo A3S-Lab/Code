@@ -147,7 +147,7 @@ fn resolve_workspace_services(
     {
         return Err(CodeError::SessionConfiguration {
             field: "workspace_retrieval",
-            message: "chunking strategy and catalog limits must be configured on the host-supplied workspace chunk catalog"
+            message: "chunking strategy, catalog limits, and lexical engine must be configured on the host-supplied workspace chunk catalog"
                 .to_owned(),
         });
     }
@@ -158,10 +158,11 @@ fn resolve_workspace_services(
             if let Some(options) = retrieval_options.as_ref() {
                 if options.has_catalog_configuration() {
                     backend
-                        .configure_chunk_catalog(
+                        .configure_chunk_catalog_with_engine(
                             options.chunking_strategy.clone().unwrap_or_default(),
                             options.chunking.unwrap_or_default(),
                             options.catalog_limits.unwrap_or_default(),
+                            options.lexical_engine,
                         )
                         .map_err(|error| CodeError::SessionInitialization {
                             resource: SessionBuildResource::WorkspaceRetrieval,

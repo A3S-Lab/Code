@@ -1,7 +1,7 @@
+use super::memory_vector_adapter::MemoryVectorIndexAdapter;
 use super::semantic_batch::plan_semantic_batches;
 use super::semantic_runtime::{BuildState, CatalogPartition, ReadyPartition};
 use super::semantic_status::SemanticStatusCell;
-use super::vec_shadow::ShadowVectorIndex;
 use super::vector_contract::{VectorRecord, WorkspaceVectorIndex};
 use super::{
     ChunkCatalogSnapshot, WorkspaceChunkCatalog, WorkspaceRetrievalPhase, WorkspaceRetrievalStatus,
@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) struct ProjectionContext<'a> {
     pub(super) catalog: &'a WorkspaceChunkCatalog,
-    pub(super) index: &'a ShadowVectorIndex,
+    pub(super) index: &'a MemoryVectorIndexAdapter,
     pub(super) executor: &'a EmbeddingExecutor,
     pub(super) status: &'a SemanticStatusCell,
     pub(super) snapshot: &'a ChunkCatalogSnapshot,
@@ -186,7 +186,7 @@ pub(super) async fn project_pending_partitions(
 }
 
 pub(super) async fn remove_stale_partition(
-    index: &ShadowVectorIndex,
+    index: &MemoryVectorIndexAdapter,
     state: &mut BuildState,
     path: &str,
 ) -> bool {
@@ -222,7 +222,7 @@ pub(super) fn catalog_revision_matches(catalog: &WorkspaceChunkCatalog, revision
 pub(super) fn publish_progress(
     status: &SemanticStatusCell,
     snapshot: &ChunkCatalogSnapshot,
-    index: &ShadowVectorIndex,
+    index: &MemoryVectorIndexAdapter,
     state: &BuildState,
     queue_depth: usize,
     semantic_failure: bool,
@@ -285,8 +285,7 @@ pub(super) fn publish_progress(
         total_failures: state.total_failures,
         vector_records: vector.record_count,
         vector_bytes: vector.byte_count,
-        active_vector_engine: Some(index.active_engine()),
-        vec_shadow: index.shadow_status(),
+        lexical_engine: snapshot.lexical_engine(),
         batching: state.batching.clone(),
         model,
     });

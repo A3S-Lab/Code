@@ -156,8 +156,16 @@ async fn test_moli_headless_search_actual() {
             "web_search",
             &serde_json::json!({
                 "query": "Rust programming language",
-                "engines": ["google"],
-                "limit": 3,
+                // Google may deliberately return an anti-automation challenge
+                // for shared CI/developer egress IPs. Bing's browser-rendered
+                // result page gives us a real Moli process boundary and a
+                // deterministic parser contract without weakening the test to
+                // accept an empty result set.
+                "engines": ["bing_browser"],
+                // A single-result contract keeps this test focused on the
+                // Moli process/render/parser path. Multi-source quorum and
+                // tier fallback are covered by the deterministic suites.
+                "limit": 1,
                 "timeout": 20,
                 "format": "json"
             }),
@@ -167,7 +175,22 @@ async fn test_moli_headless_search_actual() {
         .expect("Moli search should dispatch");
 
     assert_eq!(output.exit_code, 0, "{}", output.output);
-    assert!(output.output.contains("results"), "{}", output.output);
+    let payload: serde_json::Value =
+        serde_json::from_str(&output.output).expect("Moli search should return JSON");
+    let results = payload
+        .as_array()
+        .or_else(|| payload["results"].as_array())
+        .expect("Moli search JSON should contain a results array");
+    assert!(!results.is_empty(), "{}", output.output);
+    assert!(
+        results.iter().any(|result| {
+            result["url"]
+                .as_str()
+                .is_some_and(|url| url.starts_with("http"))
+        }),
+        "{}",
+        output.output
+    );
 }
 
 #[tokio::test]

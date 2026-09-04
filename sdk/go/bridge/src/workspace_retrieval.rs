@@ -31,8 +31,9 @@ pub(super) struct BridgeWorkspaceRetrievalOptions {
     dimension: usize,
     #[serde(default)]
     normalization: BridgeEmbeddingNormalization,
+    /// Omission delegates the default to the bridge's compiled feature set.
     #[serde(default)]
-    vector_engine: BridgeWorkspaceVectorEngine,
+    lexical_engine: Option<BridgeWorkspaceLexicalEngine>,
     #[serde(default = "default_provider_timeout_ms")]
     provider_timeout_ms: u64,
     #[serde(default = "default_max_records")]
@@ -53,12 +54,21 @@ enum BridgeEmbeddingNormalization {
     Unit,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum BridgeWorkspaceVectorEngine {
-    #[default]
-    A3sMemory,
-    A3sVec,
+enum BridgeWorkspaceLexicalEngine {
+    Portable,
+    ZvecRust,
+}
+
+impl Default for BridgeWorkspaceLexicalEngine {
+    fn default() -> Self {
+        if cfg!(feature = "zvec-rust-fts") {
+            Self::ZvecRust
+        } else {
+            Self::Portable
+        }
+    }
 }
 
 impl BridgeWorkspaceRetrievalOptions {
@@ -114,11 +124,13 @@ impl BridgeWorkspaceRetrievalOptions {
                 max_bytes: self.max_bytes,
                 shutdown_timeout: Duration::from_millis(self.shutdown_timeout_ms),
             });
-        retrieval = retrieval.with_vector_engine(match self.vector_engine {
-            BridgeWorkspaceVectorEngine::A3sMemory => {
-                a3s_code_core::WorkspaceVectorEngine::A3sMemory
+        retrieval = retrieval.with_lexical_engine(match self.lexical_engine.unwrap_or_default() {
+            BridgeWorkspaceLexicalEngine::Portable => {
+                a3s_code_core::WorkspaceLexicalEngine::Portable
             }
-            BridgeWorkspaceVectorEngine::A3sVec => a3s_code_core::WorkspaceVectorEngine::A3sVec,
+            BridgeWorkspaceLexicalEngine::ZvecRust => {
+                a3s_code_core::WorkspaceLexicalEngine::ZvecRust
+            }
         });
         if let Some(reranker) = reranker {
             retrieval = retrieval.with_rerank_options(reranker);
@@ -306,23 +318,7 @@ pub(super) fn status_value(status: &WorkspaceRetrievalStatus) -> Value {
         "total_failures": status.total_failures,
         "vector_records": status.vector_records,
         "vector_bytes": status.vector_bytes,
-        "active_vector_engine": status.active_vector_engine.map(|engine| match engine {
-            a3s_code_core::WorkspaceVectorEngine::A3sMemory => "a3s_memory",
-            a3s_code_core::WorkspaceVectorEngine::A3sVec => "a3s_vec",
-        }),
-        "vec_shadow": {
-            "phase": format!("{:?}", status.vec_shadow.phase).to_ascii_lowercase(),
-            "revision": status.vec_shadow.revision,
-            "record_count": status.vec_shadow.record_count,
-            "accounted_bytes": status.vec_shadow.accounted_bytes,
-            "initialization_failures": status.vec_shadow.initialization_failures,
-            "successful_mutations": status.vec_shadow.successful_mutations,
-            "failed_mutations": status.vec_shadow.failed_mutations,
-            "compared_queries": status.vec_shadow.compared_queries,
-            "matching_queries": status.vec_shadow.matching_queries,
-            "mismatched_queries": status.vec_shadow.mismatched_queries,
-            "failed_queries": status.vec_shadow.failed_queries,
-        },
+        "lexical_engine": status.lexical_engine.stable_id(),
         "batching": {
             "document_inputs": status.batching.document_inputs,
             "document_text_bytes": status.batching.document_text_bytes,
@@ -489,36 +485,5 @@ mod tests {
         assert_eq!(value["algorithm"], "rrf_k60+deterministic_mmr_v1");
         assert_eq!(value["accounted_scratch_bytes"], 4_096);
         assert!(value.get("requestedMode").is_none());
-    }
-
-    #[test]
-    fn vector_migration_status_uses_go_snake_case_fields() {
-        let mut status = WorkspaceRetrievalStatus::disabled();
-        status.active_vector_engine = Some(a3s_code_core::WorkspaceVectorEngine::A3sMemory);
-        status.vec_shadow = a3s_code_core::WorkspaceVecShadowStatus {
-            phase: a3s_code_core::WorkspaceVecShadowPhase::Ready,
-            revision: 7,
-            record_count: 11,
-            accounted_bytes: 4_096,
-            compared_queries: 3,
-            matching_queries: 3,
-            ..Default::default()
-        };
-
-        let value = status_value(&status);
-        assert_eq!(value["active_vector_engine"], "a3s_memory");
-        assert_eq!(value["vec_shadow"]["phase"], "ready");
-        assert_eq!(value["vec_shadow"]["record_count"], 11);
-        assert_eq!(value["vec_shadow"]["matching_queries"], 3);
-        assert!(value.get("activeVectorEngine").is_none());
-    }
-
-    #[test]
-    fn vec_primary_status_uses_the_stable_engine_literal() {
-        let mut status = WorkspaceRetrievalStatus::disabled();
-        status.active_vector_engine = Some(a3s_code_core::WorkspaceVectorEngine::A3sVec);
-
-        let value = status_value(&status);
-        assert_eq!(value["active_vector_engine"], "a3s_vec");
     }
 }

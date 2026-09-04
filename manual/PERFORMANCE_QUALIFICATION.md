@@ -85,28 +85,16 @@ publishing the fastest sample as an SLA.
 | Flow and State Graph | Replay preserved 1,001 objects and 1,000 relations. Serialized events occupied 9,657,128 bytes against a 64 MiB ceiling.                                                                                                                                                                        |
 | Persistence          | Twenty-three generations overwrote one logical session without file accumulation. Memory and file stores both returned one session, preserved snapshot identity and byte shape, and left zero files and zero bytes after delete.                                                                |
 
-The change-scoped 2026-09-02 workspace-retrieval schema-v4 run additionally
-qualified the A3S Vec differential shadow: both 25,000-record hybrid arms
-matched 120/120 Memory queries with zero mismatch/failure, reported 54,500,008
-Vec accounted bytes, and released both engines on close. Exact, RRF-only, and
-deterministic hybrid p95 were 6.7343, 50.7850, and 49.7348 ms. This is not an
-RSS, disk, or Vec-serving-authority claim; see the
-[migration contract](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
-
-The 2026-09-03 change-scoped rerun exercised the typed Vec-primary preview on
-the same Windows x86-64 host. The default Memory and explicit Vec paths both
-passed the existing 30/100/100 ms p95 budgets and the 120-query differential
-gate:
-
-| Serving engine | Exact p95 | Hybrid RRF p95 | Deterministic p95 | Differential result |
-| --- | ---: | ---: | ---: | --- |
-| `a3s_memory` (default) | 7.5379 ms | 49.0593 ms | 48.7440 ms | 120/120, zero failures |
-| `a3s_vec` (typed preview) | 7.4195 ms | 47.4571 ms | 48.7821 ms | 120/120, zero failures |
-
-The Vec-primary run retained 25,000 records per hybrid arm and reported
-54,500,008 logical Vec-accounted bytes per arm; close released all records and
-bytes. These are same-host directional measurements, not RSS, disk, recovery,
-or macOS 12 Intel qualification.
+The change-scoped 2026-09-04 schema-v5 workspace-retrieval run qualifies the
+official zvec-rust FTS path alongside the existing A3S Memory semantic
+projection. The locked exact, identifier, CJK, hybrid, concurrent-replacement,
+and close gates pass. Native collection handles are flushed and closed before
+publication; a four-entry hot-handle cap plus transient cold opens keeps RocksDB
+descriptors bounded. Portable minimal builds pass the same lexical result
+contract and are identified in metadata as `portable_bm25_v1`. The schema-v5
+benchmark separates its 25,000-record exact-vector workload from the
+four-file/512-chunk native hybrid workload. See the
+[backend contract](WORKSPACE_RETRIEVAL_BACKENDS.md).
 
 ## Hermetic integration results
 
@@ -153,9 +141,9 @@ gh run download <run-id> --repo A3S-Lab/Code
 ```
 
 The current workflow requires exactly eight JSON files (including the
-Vec-primary workspace-retrieval report) and rejects any report
+native workspace-retrieval report) and rejects any report
 whose top-level `passed` value is not `true`. The authoritative run above
-contains all eight, including the Vec-primary workspace report and `DM-QUAL1`.
+contains all eight, including the native workspace report and `DM-QUAL1`.
 The capability ledger explains how
 these profiles combine with deterministic correctness, SDK runtime, and
 external qualification evidence.

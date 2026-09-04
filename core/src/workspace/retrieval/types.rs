@@ -100,6 +100,31 @@ pub struct ChunkCatalogLimits {
     pub max_index_bytes: usize,
 }
 
+/// Local full-text index implementation used by the workspace chunk catalog.
+///
+/// The normal product build selects the official `zvec-rust` binding. A
+/// dependency-free portable scorer remains available only for minimal builds
+/// that intentionally disable the native feature; it keeps the model-free
+/// `bm25` capability usable in constrained environments and is reported
+/// explicitly in result metadata.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceLexicalEngine {
+    #[cfg_attr(feature = "zvec-rust-fts", default)]
+    ZvecRust,
+    #[cfg_attr(not(feature = "zvec-rust-fts"), default)]
+    Portable,
+}
+
+impl WorkspaceLexicalEngine {
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::ZvecRust => "zvec_rust_fts_v1",
+            Self::Portable => "portable_bm25_v1",
+        }
+    }
+}
+
 impl Default for ChunkCatalogLimits {
     fn default() -> Self {
         Self {

@@ -11,7 +11,7 @@ description = "A3S Code Node.js bindings - Native addon via napi-rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-a3s-code-core = { version = "8.2.0", path = "../../core", features = ["headless-search", "s3", "serve"] }
+a3s-code-core = { version = "8.2.0", path = "../../core", default-features = false, features = ["headless-search", "s3", "serve"] }
 napi = { version = "2", features = ["async", "napi6", "serde-json"] }
 napi-derive = "2"
 tokio = { version = "1.35", features = ["full"] }
@@ -23,3 +23,14 @@ async-trait = "0.1"
 
 [build-dependencies]
 napi-build = "2"
+
+[features]
+# Product SDK builds use the verified, bundled zvec-rust FTS backend by default.
+# Minimal embedders can pass --no-default-features and retain the portable
+# lexical scorer without compiling or downloading a native library.
+default = ["zvec-rust-fts-bundled"]
+# Compile the native adapter against a staged, target-matched libzvec_c_api.
+zvec-rust-fts = ["a3s-code-core/zvec-rust-fts"]
+# Local qualification convenience; release workflows set ZVEC_LIB_DIR to the
+# verified artifact staging path instead of relying on an implicit download.
+zvec-rust-fts-bundled = ["zvec-rust-fts", "a3s-code-core/zvec-rust-fts-bundled"]

@@ -1,8 +1,11 @@
-pub(super) use crate::workspace::retrieval::lexical::{query_terms, tokenize, VecLexicalIndex};
+pub(super) use crate::workspace::retrieval::lexical::{
+    build_lexical_index, query_terms, tokenize, LexicalIndex,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::WorkspaceLexicalEngine;
 
     #[test]
     fn tokenizer_preserves_identifiers_and_adds_code_subterms() {
@@ -44,33 +47,39 @@ mod tests {
     }
 
     #[test]
-    fn vec_fts_prefers_documents_covering_more_query_terms() {
-        let index = VecLexicalIndex::build([
-            ("short", "cache cache cache"),
-            ("broad", "cache invalidation policy"),
-        ])
-        .expect("Vec FTS index must build");
+    fn fts_prefers_documents_covering_more_query_terms() {
+        let index = build_lexical_index(
+            [
+                ("short", "cache cache cache"),
+                ("broad", "cache invalidation policy"),
+            ],
+            WorkspaceLexicalEngine::default(),
+        )
+        .expect("FTS index must build");
         let hits = index
             .search(&query_terms("cache invalidation", 16), 2)
-            .expect("Vec FTS query must succeed");
+            .expect("FTS query must succeed");
 
         assert_eq!(hits[0].0, 1, "hits: {hits:?}");
         assert!(hits[0].1 > hits[1].1, "hits: {hits:?}");
     }
 
     #[test]
-    fn vec_fts_applies_document_length_normalization() {
-        let index = VecLexicalIndex::build([
-            ("compact", "needle compact"),
-            (
-                "long",
-                "needle filler filler filler filler filler filler filler filler filler",
-            ),
-        ])
-        .expect("Vec FTS index must build");
+    fn fts_applies_document_length_normalization() {
+        let index = build_lexical_index(
+            [
+                ("compact", "needle compact"),
+                (
+                    "long",
+                    "needle filler filler filler filler filler filler filler filler filler",
+                ),
+            ],
+            WorkspaceLexicalEngine::default(),
+        )
+        .expect("FTS index must build");
         let hits = index
             .search(&query_terms("needle", 16), 2)
-            .expect("Vec FTS query must succeed");
+            .expect("FTS query must succeed");
 
         assert_eq!(hits[0].0, 0, "hits: {hits:?}");
         assert!(hits[0].1 > hits[1].1, "hits: {hits:?}");

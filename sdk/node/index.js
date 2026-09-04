@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { StateGraphRuntime, strictReplay, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, ToolPresentationMode, BrowserBackend, moliRuntimeInfo, ensureMoli, moliDefaultVersion, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceVectorEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
+const { StateGraphRuntime, strictReplay, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, ToolPresentationMode, BrowserBackend, moliRuntimeInfo, ensureMoli, moliDefaultVersion, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
 
 module.exports.StateGraphRuntime = StateGraphRuntime
 module.exports.strictReplay = strictReplay
@@ -330,7 +330,7 @@ module.exports.Session = Session
 module.exports.LineWorkspaceChunkingStrategy = LineWorkspaceChunkingStrategy
 module.exports.FixedWindowWorkspaceChunkingStrategy = FixedWindowWorkspaceChunkingStrategy
 module.exports.RecursiveWorkspaceChunkingStrategy = RecursiveWorkspaceChunkingStrategy
-module.exports.WorkspaceVectorEngineOption = WorkspaceVectorEngineOption
+module.exports.WorkspaceLexicalEngineOption = WorkspaceLexicalEngineOption
 module.exports.WorkspaceRetrievalOptions = WorkspaceRetrievalOptions
 module.exports.CallbackEmbeddingProvider = CallbackEmbeddingProvider
 module.exports.DeterministicWorkspaceReranker = DeterministicWorkspaceReranker

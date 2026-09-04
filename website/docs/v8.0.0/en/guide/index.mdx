@@ -41,7 +41,7 @@ same events, so every UI does not need its own agent loop.
 | Scheduled work  | Run scheduled AgentDir turns through `serveAgentDir` / `serve_agent_dir`; each schedule keeps a stable `schedule:<name>` session.                                                                                                                                                                                           |
 | Access control  | Apply permission rules, user confirmation, budgets, Workspace path checks, tool timeouts, lifecycle hooks, and output cleanup during execution.                                                                                                                                                                             |
 | Workspaces      | [Workspace backends](/guide/workspace-backends) support local files, application-provided workspaces, optional S3-compatible storage, and remote Git services. The native Harness can isolate conversations in detached Git worktrees.                                                                                      |
-| Retrieval       | [Workspace retrieval](/guide/context#workspace-retrieval) adds an asynchronous session-owned text catalog, incremental BM25, optional host embeddings, Memory-authoritative exact vectors, a temporary A3S Vec differential shadow, hybrid RRF, and optional deterministic CPU reranking without a vector database service. |
+| Retrieval       | [Workspace retrieval](/guide/context#workspace-retrieval) adds an asynchronous session-owned text catalog, zvec-rust FTS/BM25, optional host embeddings, A3S Memory exact vectors, hybrid RRF, and optional deterministic CPU reranking without a vector database service. |
 | Events          | `EventEnvelopeV1` is shared by Rust, Node.js, Python, and Go. Unknown event payloads and metadata are preserved.                                                                                                                                                                                                            |
 | Save and resume | Session snapshots, run events, traces, artifacts, loop/workflow checkpoints, and memory stores make sessions recoverable.                                                                                                                                                                                                   |
 | Verification    | [Verification](/guide/verification) runs named checks and returns reports, summaries, artifacts, traces, and replay data.                                                                                                                                                                                                   |
@@ -60,10 +60,9 @@ same events, so every UI does not need its own agent loop.
   chunking, readiness and batching metrics, optional deterministic reranking,
   cancellation, current-source digest verification, and bounded cleanup.
   Non-text assets are rejected before chunking or embedding.
-- The A3S Vec developer shadow mirrors each already-admitted vector batch once,
-  compares it with the A3S Memory oracle, and exposes non-sensitive parity and
-  lifecycle counters. Memory remains the only serving engine; this is not a
-  backend promotion.
+- Product builds use zvec-rust for lexical FTS/BM25 and A3S Memory for exact
+  semantic vectors. Native lexical handles are bounded and temporary; semantic
+  vectors are released with the owning session.
 - Model-bound run evidence records the effective capability and policy
   identity, retrieval generation, input shape, repeated Tool-result context,
   and normalized usage without retaining new prompt, source, vector,

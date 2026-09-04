@@ -256,12 +256,14 @@ deterministic in-process adapter does not qualify real-model quality, provider
 network or billing, an operating-system process restart, remote CAS/leases, or
 remote failover; those remain `DM-PROD1` host evidence.
 
-The workspace-retrieval benchmark report schema 4 also gates the
-Memory-authoritative [A3S Vec migration shadow](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
-Each 25,000-record hybrid arm must expose `a3s_memory` as the active engine,
-compare all 120 queries, report zero Vec mismatch/failure, and release both
-Memory and Vec records and accounted bytes on close. This is differential
-evidence only; it does not qualify Vec as a serving authority.
+The workspace-retrieval benchmark report schema 5 also gates the native
+zvec-rust lexical projection and the A3S Memory semantic projection. Its exact
+arm uses 25,000 normalized 384-dimensional vectors; its hybrid arms use four
+files with 128 chunks each so the native multi-partition path is measured
+directly. Both workloads must pass their locked quality/latency/resource gates,
+and close must release all semantic records and bytes. A portable
+`--no-default-features` run verifies the explicit fallback contract; neither
+path changes current-source verification or exact-search authority.
 
 ## Runtime surface ledger
 

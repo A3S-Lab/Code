@@ -12,24 +12,35 @@ jobs:
         settings:
           - host: macos-latest
             target: aarch64-apple-darwin
+            zvec: true
           - host: macos-15-intel
             target: x86_64-apple-darwin
+            # zvec-rust v0.7.0 does not publish a macOS Intel asset; this
+            # package is intentionally built with the portable lexical path.
+            zvec: false
           - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            zvec: true
           - host: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             zig: true
+            zvec: false
           - host: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             zig: true
+            zvec: true
           - host: ubuntu-22.04
             target: aarch64-unknown-linux-musl
             zig: true
+            zvec: false
           - host: windows-latest
             target: x86_64-pc-windows-msvc
+            zvec: true
           - host: windows-11-arm
             target: aarch64-pc-windows-msvc
             zig: false
+            # No verified zvec-rust v0.7.0 ARM64 Windows asset yet.
+            zvec: false
 
     name: Build ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
@@ -78,6 +89,20 @@ jobs:
         with:
           version: 0.13.0
 
+      - name: Stage verified zvec runtime
+        if: matrix.settings.zvec
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p zvec-runtime
+          bash scripts/package_zvec.sh \
+            "${{ matrix.settings.target }}" zvec-runtime
+          echo "ZVEC_LIB_DIR=$PWD/zvec-runtime" >> "$GITHUB_ENV"
+          echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
+          ZVEC_FLAGS="$(bash scripts/zvec_rustflags.sh \
+            "${{ matrix.settings.target }}" zvec)"
+          echo "RUSTFLAGS=$ZVEC_FLAGS" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         working-directory: sdk/node
         run: npm install
@@ -86,11 +111,15 @@ jobs:
         working-directory: sdk/node
         shell: bash
         run: |
-          if [ "${{ matrix.settings.zig }}" = "true" ]; then
-            npx napi build --platform --release --target ${{ matrix.settings.target }} --zig --js index.js --dts generated.d.ts
-          else
-            npx napi build --platform --release --target ${{ matrix.settings.target }} --js index.js --dts generated.d.ts
+          set -euo pipefail
+          NAPI_ARGS=(--platform --release --target "${{ matrix.settings.target }}" --js index.js --dts generated.d.ts)
+          if [[ "${{ matrix.settings.zig }}" == "true" ]]; then
+            NAPI_ARGS+=(--zig)
           fi
+          if [[ "${{ matrix.settings.zvec }}" != "true" ]]; then
+            NAPI_ARGS+=(--cargo-flags "--no-default-features")
+          fi
+          npx napi build "${NAPI_ARGS[@]}"
           node scripts/patch-loader.mjs
 
       - name: Verify Intel macOS addon
@@ -158,6 +187,7 @@ jobs:
             local node_file="$5"
             local libc="${6:-}"
             local moli_target="$7"
+            local zvec_enabled="$8"
 
             mkdir -p "npm/$dir/moli"
             cp "$node_file" "npm/$dir/$node_file"
@@ -167,6 +197,17 @@ jobs:
               bash ../../scripts/package_moli.sh "$moli_target" "npm/$dir/moli"
             fi
 
+            if [[ "$zvec_enabled" == "true" ]]; then
+              mkdir -p "npm/$dir/zvec"
+              bash ../../scripts/package_zvec.sh "$moli_target" "npm/$dir/zvec"
+              # Windows does not search a child directory for dependent DLLs;
+              # keep a same-directory copy beside the N-API module while the
+              # metadata and non-Windows loaders continue to use zvec/.
+              if [[ "$moli_target" == *-windows-* ]]; then
+                cp "npm/$dir/zvec/zvec_c_api.dll" "npm/$dir/zvec_c_api.dll"
+              fi
+            fi
+
             cat > "npm/$dir/package.json" <<JSON
           {
             "name": "@a3s-lab/${pkg_name}",
@@ -174,7 +215,7 @@ jobs:
             "os": ["$os"],
             "cpu": ["$cpu"],
             "main": "$node_file",
-            "files": ["$node_file", "moli", "moli/**"],
+            "files": ["$node_file", "moli", "moli/**", "zvec", "zvec/**", "zvec_c_api.dll"],
             "description": "Native binding for @a3s-lab/code ($dir)",
             "license": "MIT",
             "repository": {
@@ -186,14 +227,14 @@ jobs:
           JSON
           }
 
-          create_pkg "darwin-arm64" "code-darwin-arm64" "darwin" "arm64" "index.darwin-arm64.node" "" "aarch64-apple-darwin"
-          create_pkg "darwin-x64" "code-darwin-x64" "darwin" "x64" "index.darwin-x64.node" "" "x86_64-apple-darwin"
-          create_pkg "linux-x64-gnu" "code-linux-x64-gnu" "linux" "x64" "index.linux-x64-gnu.node" "glibc" "x86_64-unknown-linux-gnu"
-          create_pkg "linux-x64-musl" "code-linux-x64-musl" "linux" "x64" "index.linux-x64-musl.node" "musl" "x86_64-unknown-linux-musl"
-          create_pkg "linux-arm64-gnu" "code-linux-arm64-gnu" "linux" "arm64" "index.linux-arm64-gnu.node" "glibc" "aarch64-unknown-linux-gnu"
-          create_pkg "linux-arm64-musl" "code-linux-arm64-musl" "linux" "arm64" "index.linux-arm64-musl.node" "musl" "aarch64-unknown-linux-musl"
-          create_pkg "win32-arm64-msvc" "code-win32-arm64-msvc" "win32" "arm64" "index.win32-arm64-msvc.node" "" "aarch64-pc-windows-msvc"
-          create_pkg "win32-x64-msvc" "code-win32-x64-msvc" "win32" "x64" "index.win32-x64-msvc.node" "" "x86_64-pc-windows-msvc"
+          create_pkg "darwin-arm64" "code-darwin-arm64" "darwin" "arm64" "index.darwin-arm64.node" "" "aarch64-apple-darwin" true
+          create_pkg "darwin-x64" "code-darwin-x64" "darwin" "x64" "index.darwin-x64.node" "" "x86_64-apple-darwin" false
+          create_pkg "linux-x64-gnu" "code-linux-x64-gnu" "linux" "x64" "index.linux-x64-gnu.node" "glibc" "x86_64-unknown-linux-gnu" true
+          create_pkg "linux-x64-musl" "code-linux-x64-musl" "linux" "x64" "index.linux-x64-musl.node" "musl" "x86_64-unknown-linux-musl" false
+          create_pkg "linux-arm64-gnu" "code-linux-arm64-gnu" "linux" "arm64" "index.linux-arm64-gnu.node" "glibc" "aarch64-unknown-linux-gnu" true
+          create_pkg "linux-arm64-musl" "code-linux-arm64-musl" "linux" "arm64" "index.linux-arm64-musl.node" "musl" "aarch64-unknown-linux-musl" false
+          create_pkg "win32-arm64-msvc" "code-win32-arm64-msvc" "win32" "arm64" "index.win32-arm64-msvc.node" "" "aarch64-pc-windows-msvc" false
+          create_pkg "win32-x64-msvc" "code-win32-x64-msvc" "win32" "x64" "index.win32-x64-msvc.node" "" "x86_64-pc-windows-msvc" true
 
           find npm -mindepth 1 -maxdepth 2 -type f | sort
           find . -maxdepth 1 -name '*.node' -delete

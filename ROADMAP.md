@@ -452,31 +452,23 @@ The program preserves the existing search surfaces:
   contents. Code verifies returned snippets against the current workspace
   revision before exposing them.
 
-#### A3S Vec lexical cutover (2026-09-03)
+#### Workspace retrieval backend consolidation (2026-09-04)
 
-The catalog-backed and no-catalog BM25 routes now share one Code-owned adapter
-to A3S Vec FTS (`whitespace` tokenizer). The frozen relevance fixture and the
-catalog lifecycle suite remain green, and metadata identifies the engine as
-`a3s_vec_fts`. This closes the duplicate Code-local lexical scorer portion of
-the migration. Semantic vector authority is still a separate developer-shadow
-decision: the Memory path, differential checks, platform qualification, RSS/
-disk measurements, and rollback evidence remain in place until that gate is
-closed.
+The workspace catalog now has one explicit lexical boundary. Product builds
+use the official `zvec-rust` FTS adapter (`zvec_rust_fts_v1`) with the
+whitespace analyzer; intentionally minimal builds use the separately reported
+portable BM25 implementation (`portable_bm25_v1`). Both paths share Code's
+admission, tokenizer, chunk identity, source-digest verification, limits, and
+result contract. The native adapter batches writes, closes collections before
+publication, bounds concurrent native handles, and verifies packaged libraries
+per target.
 
-The semantic runtime now consumes a Code-owned `WorkspaceVectorIndex` contract
-(`708a85e3ac070640ca5fb8173d0b06e6070152e7`; Vec dependency refresh
-`13585ccd`; revision-CAS implementation
-`b5540a869e742ce7a98348f27997970619a754b6`). The legacy
-`a3s-memory::VectorIndex` trait is imported only by the explicit compatibility
-adapter; Vec-primary and Memory-primary selection, publication, and
-differential logic share that boundary. Code CI and the release-profile
-qualification for this contract are recorded in runs
-[`33773373773`](https://github.com/A3S-Lab/Code/actions/runs/33773373773) and
-[`33773373522`](https://github.com/A3S-Lab/Code/actions/runs/33773373522).
-The Vec implementation now also provides real global revision-CAS with one
-logical revision per partition publication, including stale-writer and
-concurrent-writer tests.
-This is an architecture step, not the semantic removal/promotion decision.
+Semantic retrieval is deliberately simpler: A3S Memory is the single exact
+in-memory vector projection. Embeddings are validated once, published by
+generation and partition, and released with the owning session. There is no
+duplicate semantic index, shadow authority, or hidden backend selector. A
+lexical failure can reduce lexical coverage but cannot change semantic
+authority or current-source verification.
 
 ### 6.2 First-principles decisions
 
@@ -512,7 +504,7 @@ This is an architecture step, not the semantic removal/promotion decision.
 12. RRF and overlap-aware reranking consume Code-specific ranges, identifier
     tiers, and channel evidence, so they belong in Code rather than the generic
     A3S Memory vector kernel. A neural reranker is host-injected and default-off.
-13. The model-free CPU path is the product baseline: exact, glob, A3S Vec FTS/BM25,
+13. The model-free CPU path is the product baseline: exact, glob, zvec-rust FTS/BM25,
     Code Intelligence, RRF, and deterministic MMR remain useful without an
     Embedding Provider. Dense semantic mode is an optional enhancement and must
     degrade to those paths when its provider is absent or unhealthy.
@@ -534,7 +526,7 @@ WorkspaceFileSystem ── admitted reads ─> WorkspaceRetrievalRuntime
                               │                             │
                     ┌─────────┴─────────┐                   v
                      v                   v          InMemoryVectorIndex
-               A3S Vec FTS         source evidence       (a3s-memory)
+             zvec-rust FTS         source evidence       (a3s-memory)
                     │                   │                   │
 query ─> exact/symbol/lexical/semantic candidate generation ┘
                     │
@@ -565,10 +557,10 @@ server and must produce equivalent fallback chunks when it is unavailable.
 | Subproject | Owns | Must not own |
 | --- | --- | --- |
 | `a3s-memory` | Public `VectorIndex` contract, vector/result types, exact in-memory implementation, dynamic dimensions, atomic partition replacement/removal, immutable query snapshots, deterministic ordering, and memory budgets | Workspaces, files, code chunking, embedding clients, model configuration, session lifecycle, hybrid/rerank policy, or prompt context |
-| `a3s-code-core/workspace` | Text admission, typed/custom chunk strategies, shared `ChunkCatalog`, A3S Vec FTS lexical projection, manifest reconciliation, path/revision metadata, and structured `WorkspaceRetrieval` provider contract | Non-text parsing, provider credentials, host UI, or durable cross-session cache policy |
+| `a3s-code-core/workspace` | Text admission, typed/custom chunk strategies, shared `ChunkCatalog`, zvec-rust FTS lexical projection, manifest reconciliation, path/revision metadata, and structured `WorkspaceRetrieval` provider contract | Non-text parsing, provider credentials, host UI, or durable cross-session cache policy |
 | `a3s-code-core/embedding` | Host-injected `EmbeddingProvider` contract, provider descriptor, batching, cancellation, bounded retry, and normalized embedding errors | Vector storage or workspace traversal |
 | `a3s-code-core/session` | `WorkspaceRetrievalRuntime`, asynchronous construction, prioritization, query-time promotion, cancellation, close/replace/resume behavior, and session isolation | Process-global mutable indexes or hidden persistence |
-| `a3s-code-core/tools` | `semantic`/`hybrid` search modes, A3S Vec FTS lexical fallback, RRF fusion, bounded overlap-aware reranking, path filters, source anchors, and coverage/status metadata | A second chunker or direct filesystem traversal outside `WorkspaceServices` |
+| `a3s-code-core/tools` | `semantic`/`hybrid` search modes, zvec-rust FTS lexical fallback, RRF fusion, bounded overlap-aware reranking, path filters, source anchors, and coverage/status metadata | A second chunker or direct filesystem traversal outside `WorkspaceServices` |
 | Code SDKs | Typed retrieval/chunking options, typed Embedding Provider injection, status/result DTOs, and lifecycle parity across Rust, Node, Python, and Go | Primitive strategy/backend names or SDK-specific ranking behavior |
 | CLI/TUI and other hosts | ACL wiring, opt-in controls, readiness/degraded presentation, diagnostics, provider-secret handling, and optional local CPU provider adapters/model-artifact admission | Reimplementing indexing, placing model runtimes in Core/Memory, or making a host-specific search protocol |
 | Tests, benchmarks, and docs | Shared relevance fixtures, adversarial lifecycle tests, performance baselines, examples, and operator guidance | Production-only correctness assumptions that cannot be tested deterministically |
@@ -631,7 +623,7 @@ core/src/workspace/retrieval/
 ├── chunk.rs               # deterministic bounded chunking
 ├── chunking_strategy.rs   # built-in and host range splitters
 ├── catalog.rs             # shared immutable chunk snapshots
-├── lexical.rs             # A3S Vec FTS/BM25 projection
+├── lexical.rs             # typed zvec-rust/portable FTS projection
 ├── semantic_runtime.rs    # embedding queue and vector partitions
 ├── hybrid_rank.rs         # RRF and deterministic diversity
 └── rerank.rs              # bounded deterministic second-stage reranker
@@ -643,10 +635,10 @@ non-text asset.
 
 The compatibility BM25 path selects candidates, reads files, and creates
 bounded 80-line chunks. Both the incremental catalog and the no-catalog
-fallback now hand their normalized token stream to the same temporary A3S Vec
-FTS projection; Code retains only candidate policy, source verification, and
-rendering. The model-facing BM25 result shape and source anchors remain
-compatible during the semantic vector migration.
+fallback now hand their normalized token stream to the same bounded lexical
+projection; product builds use zvec-rust FTS and minimal builds use portable
+BM25. Code retains candidate policy, source verification, and rendering. The
+model-facing BM25 result shape and source anchors remain stable.
 
 The existing default session path currently constructs plain local workspace
 services without a manifest. When WSR is enabled for a local session, session
@@ -798,13 +790,12 @@ Current implementation status:
 | --- | --- | --- |
 | `WSR-00` | Delivered | Versioned relevance and lifecycle fixtures, native BM25 CI baseline, reference sizing profile, locked budgets, and adversarial trust-boundary review |
 | `MEM-V1` | Delivered | A3S Memory `main` commit `3293f572` adds the public exact ephemeral vector kernel, streamlines the contiguous exact-scan hot path, and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, benchmark, Clippy, and rustdoc gates |
-| `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, A3S Vec FTS/BM25 postings, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read catalog path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
+| `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, zvec-rust FTS/BM25 postings with a portable minimal-build path, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read catalog path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
 | `CODE-C2` | Delivered | Rust Core adds compatible line, fixed UTF-8 window, recursive prioritized-separator, and host-injected custom range strategies; Code validates complete coverage and budgets, owns IDs/digests/lines, charges overlap memory, contains host failures, and wires explicit configuration into session-owned catalogs without allowing silent overrides of host-owned catalogs |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
 | `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `3293f572` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
-| `VEC-SHADOW1` | Delivered | Code's workspace-retrieval shadow pins the validated Vec `13585ccd`, keeps A3S Memory as the only result authority, mirrors each admitted vector batch once into a session-local temporary Vec collection, compares exact IDs/partitions/f32 scores and search accounting under one publication gate, exposes bounded cross-SDK diagnostics, and contains every shadow failure. The 25,000 x 384 release profile compares 120/120 queries in both hybrid arms with zero mismatch/failure and releases both engines on close |
 | `CODE-Q1` | Delivered | Structured semantic search through the unified `search` tool, bounded query embedding, immutable catalog/vector revision fencing, current-file digest and byte-range verification, coverage metadata, cancellation, and explicit fallback |
-| `CODE-H1` | Delivered | Exact literal, A3S Vec FTS/BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
+| `CODE-H1` | Delivered | Exact literal, zvec-rust FTS/BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
 | `SDK-C2` | Delivered | Node, Python, and Go expose typed line/fixed/recursive strategy objects and recursive separator lists while omission preserves line chunking. A shared Core-owned fixture locks identical byte ranges and invalid windows; primitive names are rejected, Go validates before callback registration, the bridge revalidates typed one-of blocks, and arbitrary custom splitters remain on the Rust host boundary. Native Node/Python and real Go-to-Rust multi-chunk integration gates pass |
 | `SDK-R2` | Delivered | Node, Python, and Go expose typed deterministic-reranker objects while omission preserves RRF-only. SDK/Core defaults and hard bounds align, primitive algorithm names are not accepted, invalid settings fail before provider calls or Go callback registration, result DTOs report versioned evidence, and native Node/Python plus real Go-to-Rust bridge integration gates pass |
@@ -829,18 +820,17 @@ The paired real-model task and batching evidence is in
 [`manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md`](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md).
 The chunk strategy and rerank boundary is in
 [`manual/WORKSPACE_RETRIEVAL_CHUNKING.md`](manual/WORKSPACE_RETRIEVAL_CHUNKING.md).
-The A3S Vec differential rollout and promotion boundary is in
-[`manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md`](manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+The lexical/semantic backend contract and package qualification are in
+[`manual/WORKSPACE_RETRIEVAL_BACKENDS.md`](manual/WORKSPACE_RETRIEVAL_BACKENDS.md).
 
 | Gate | Owner | Depends on | Deliverable | Exit criteria |
 | --- | --- | --- | --- | --- |
 | `WSR-00` | Code core/tests | None | Versioned retrieval fixture corpus, current BM25 baseline, sizing data, threat model, and locked quality/latency budgets | Baseline is reproducible in CI and separates identifier, paraphrase, CJK, and lifecycle cases |
 | `MEM-V1` | A3S Memory | `WSR-00` contract draft | Public vector types/trait and `InMemoryVectorIndex` | Contract, oracle, concurrency, invalid-input, budget, and cleanup tests pass without SQLite features |
-| `CODE-C1` | Code workspace | `WSR-00` | Shared chunk catalog, eligibility policy, deterministic chunker, A3S Vec FTS lexical postings, and manifest reconciliation | Unchanged files are not reread; create/change/delete/rename and lag recovery are deterministic |
+| `CODE-C1` | Code workspace | `WSR-00` | Shared chunk catalog, eligibility policy, deterministic chunker, zvec-rust FTS lexical postings, and manifest reconciliation | Unchanged files are not reread; create/change/delete/rename and lag recovery are deterministic |
 | `CODE-C2` | Code workspace | `CODE-C1` | Typed built-in chunk strategies, validated Rust custom range port, overlap accounting, and session catalog configuration | UTF-8, gaps, progress, size/count, panic, ownership, deterministic-ID, and async session tests pass; the default line strategy is unchanged |
 | `CODE-E1` | Code model/session | `WSR-00` | Host-injected Embedding Provider contract, batching, cancellation, and typed errors | Deterministic fake provider proves dimensions, cancellation, retry bounds, and descriptor changes |
 | `CODE-S1` | Code session | `MEM-V1`, `CODE-C1`, `CODE-E1` | Asynchronous session retrieval runtime and vector partition lifecycle | Session creation does not wait; partial readiness works; close drops all owned tasks and memory |
-| `VEC-SHADOW1` | Code session | `CODE-S1`, A3S Vec resource limits | Memory-authoritative differential adapter with a session-local Vec shadow | Identical admitted records are mirrored without a second embedding call; all compared results match bit-for-bit; failures cannot alter serving results; status is non-sensitive; both engines release on close |
 | `CODE-Q1` | Code tools | `CODE-S1` | Structured semantic search, verified snippets, status/coverage metadata, and fallback | No stale/deleted hit is rendered and existing search modes have no behavior regression |
 | `CODE-H1` | Code tools/intelligence | `CODE-Q1` | Exact, BM25, symbol, and semantic candidate fusion | Hybrid meets locked quality gates and preserves identifier precision |
 | `SDK-R1` | Code SDKs | `CODE-S1`, `CODE-Q1` | Rust/Node/Python/Go typed options, status DTOs, lifecycle parity, and examples | SDK alignment checks and language-specific integration tests pass |
@@ -999,11 +989,14 @@ physical batches against a 391-request lower bound, with 1.0x amplification,
 9-10 ms time to first file-atomic publication, and all latency, memory, scratch,
 quality, and cleanup gates passing.
 
-The schema-v4 `VEC-SHADOW1` follow-up keeps Memory authoritative and adds Vec
-differential evidence to both hybrid arms. Each arm retained 25,000 Vec records,
-compared and matched all 120 queries with zero failure, and released both
-engines on close. Exact, RRF-only, and deterministic p95 were 6.7343, 50.7850,
-and 49.7348 ms, so the existing latency gates remain green.
+The schema-v5 backend follow-up keeps Memory as the semantic authority and
+qualifies the zvec-rust lexical path in both hybrid arms. Native handles use a
+four-entry hot cache with transient open/query/close for colder partitions;
+concurrent replacement/query bursts stay within the descriptor budget,
+package manifests are target-verified, and the same exact, RRF-only, and
+deterministic latency gates remain in force. The benchmark keeps the 25,000 x
+384 exact-vector profile separate from its four-file, 512-chunk native hybrid
+fixture so each gate names the workload it actually measures.
 
 Knowledge-compiler integration is not part of `CODE-B2`. It starts with a
 separate cross-project ADR and fixture for the typed artifact/provenance handoff;
@@ -1040,7 +1033,9 @@ later gate may not silently weaken them to make an implementation pass.
 - On the reference profile, exact top-20 vector search over 25,000 normalized
   384-dimensional records has release-mode p95 at or below 30 ms.
 - Hybrid local ranking, excluding external query-embedding network latency and
-  source reads, has p95 at or below 100 ms for the same corpus.
+  including warm-cache authoritative source reads, has p95 at or below 100 ms
+  on the schema-v5 four-file, 512-chunk native fixture. The 25,000-record
+  exact-vector gate remains a separate workload.
 - The deterministic second-stage reranker examines at most 100 fused candidates,
   adds at most 10 ms p95 on the reference profile, and uses at most 4 MiB of
   checked per-query scratch memory. A host neural reranker has a separate,
@@ -1103,12 +1098,10 @@ design. Delivered `HOST-LCPU1` adds the qualified CLI-local CPU route; it does
 not block model-free search, require a new default, or move inference and
 model-artifact ownership into Code Core or A3S Memory.
 
-Delivered `VEC-SHADOW1` is migration evidence, not a backend promotion. A3S
-Memory remains the only engine allowed to affect hits, scores, fallbacks, or
-errors. Promoting Vec requires a separate compatibility decision after the
-external macOS 12 Intel gate, sustained zero-mismatch evidence, resource and
-latency review, and an explicit rollback design. Removing the Memory path is
-out of scope for this gate.
+The semantic Memory projection and lexical zvec-rust projection have separate
+failure domains. A lexical package or native-runtime failure degrades lexical
+coverage and leaves exact/semantic paths available; it cannot promote a
+different vector authority or bypass current-source verification.
 
 ### 6.12 WSR non-goals
 

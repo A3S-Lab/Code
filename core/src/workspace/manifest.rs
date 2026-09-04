@@ -8,7 +8,7 @@
 
 use super::retrieval::{
     ChunkCatalogLimits, ChunkingConfig, LocalWorkspaceCatalogRuntime, WorkspaceChunkCatalog,
-    WorkspaceChunkingStrategy, WorkspaceIndexError,
+    WorkspaceChunkingStrategy, WorkspaceIndexError, WorkspaceLexicalEngine,
 };
 use super::{
     escape_control_chars_for_display, validate_relative_pattern, CommandOutput, CommandRequest,
@@ -561,7 +561,28 @@ impl ManifestWorkspaceBackend {
         chunking: ChunkingConfig,
         limits: ChunkCatalogLimits,
     ) -> Result<Arc<WorkspaceChunkCatalog>, WorkspaceIndexError> {
-        let catalog = WorkspaceChunkCatalog::new_with_strategy(strategy, chunking, limits)?;
+        self.configure_chunk_catalog_with_engine(
+            strategy,
+            chunking,
+            limits,
+            WorkspaceLexicalEngine::default(),
+        )
+    }
+
+    /// Configure the catalog with an explicit typed lexical engine.
+    pub fn configure_chunk_catalog_with_engine(
+        &self,
+        strategy: WorkspaceChunkingStrategy,
+        chunking: ChunkingConfig,
+        limits: ChunkCatalogLimits,
+        lexical_engine: WorkspaceLexicalEngine,
+    ) -> Result<Arc<WorkspaceChunkCatalog>, WorkspaceIndexError> {
+        let catalog = WorkspaceChunkCatalog::new_with_strategy_and_engine(
+            strategy,
+            chunking,
+            limits,
+            lexical_engine,
+        )?;
         let file_system: Arc<dyn WorkspaceFileSystem> = self.catalog_local.clone();
         let runtime = LocalWorkspaceCatalogRuntime::start_with_catalog(
             Arc::clone(&self.manifest),

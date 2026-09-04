@@ -3,7 +3,8 @@ use crate::embedding::{
     EmbeddingError, EmbeddingExecutorConfig, EmbeddingProvider, EmbeddingProviderDescriptor,
 };
 use crate::workspace::{
-    ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkingStrategy, WorkspaceRerankOptions,
+    ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkingStrategy, WorkspaceLexicalEngine,
+    WorkspaceRerankOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -64,15 +65,15 @@ impl WorkspaceSemanticIndexLimits {
 
 /// Typed, host-owned semantic retrieval configuration for one session.
 ///
-/// A provider object is injected directly. The vector implementation can be
-/// selected only through [`WorkspaceVectorEngine`], never by a backend-name
-/// string.
+/// A provider object is injected directly. Semantic vectors are maintained by
+/// the session-local Memory index; lexical indexing is configured separately
+/// through [`WorkspaceLexicalEngine`].
 #[derive(Clone)]
 pub struct WorkspaceRetrievalOptions {
     pub(crate) provider: Arc<dyn EmbeddingProvider>,
     pub(crate) embedding: EmbeddingExecutorConfig,
     pub(crate) index_limits: WorkspaceSemanticIndexLimits,
-    pub(crate) vector_engine: WorkspaceVectorEngine,
+    pub(crate) lexical_engine: WorkspaceLexicalEngine,
     pub(crate) chunking_strategy: Option<WorkspaceChunkingStrategy>,
     pub(crate) chunking: Option<ChunkingConfig>,
     pub(crate) catalog_limits: Option<ChunkCatalogLimits>,
@@ -87,7 +88,7 @@ impl WorkspaceRetrievalOptions {
             provider,
             embedding: EmbeddingExecutorConfig::default(),
             index_limits: WorkspaceSemanticIndexLimits::default(),
-            vector_engine: WorkspaceVectorEngine::A3sMemory,
+            lexical_engine: WorkspaceLexicalEngine::default(),
             chunking_strategy: None,
             chunking: None,
             catalog_limits: None,
@@ -108,15 +109,15 @@ impl WorkspaceRetrievalOptions {
         self
     }
 
-    /// Select the workspace vector authority for this session.
+    /// Select the lexical FTS implementation used by the session-owned
+    /// workspace catalog.
     ///
-    /// `A3sMemory` remains the compatibility default. `A3sVec` enables the
-    /// bounded Vec-primary path and keeps a Memory shadow for differential
-    /// evidence and rollback review. Hosts should promote it only after the
-    /// cross-platform and migration gates recorded in the release runbook are
-    /// green.
-    pub fn with_vector_engine(mut self, engine: WorkspaceVectorEngine) -> Self {
-        self.vector_engine = engine;
+    /// `ZvecRust` is the production default when the native feature is
+    /// enabled. Minimal builds use the explicitly reported portable fallback;
+    /// hosts that provide their own workspace services must configure that
+    /// catalog directly instead of using this session option.
+    pub fn with_lexical_engine(mut self, engine: WorkspaceLexicalEngine) -> Self {
+        self.lexical_engine = engine;
         self
     }
 
@@ -171,7 +172,10 @@ impl WorkspaceRetrievalOptions {
     }
 
     pub(crate) fn has_catalog_configuration(&self) -> bool {
-        self.chunking_strategy.is_some() || self.chunking.is_some() || self.catalog_limits.is_some()
+        self.lexical_engine != WorkspaceLexicalEngine::default()
+            || self.chunking_strategy.is_some()
+            || self.chunking.is_some()
+            || self.catalog_limits.is_some()
     }
 }
 
@@ -182,7 +186,7 @@ impl fmt::Debug for WorkspaceRetrievalOptions {
             .field("provider", &"<host-injected>")
             .field("embedding", &self.embedding)
             .field("index_limits", &self.index_limits)
-            .field("vector_engine", &self.vector_engine)
+            .field("lexical_engine", &self.lexical_engine)
             .field("chunking_strategy", &self.chunking_strategy)
             .field("chunking", &self.chunking)
             .field("catalog_limits", &self.catalog_limits)
@@ -204,44 +208,6 @@ pub enum WorkspaceRetrievalPhase {
     Ready,
     Degraded,
     Closed,
-}
-
-/// Vector engine whose results are authoritative for workspace retrieval.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceVectorEngine {
-    #[default]
-    A3sMemory,
-    A3sVec,
-}
-
-/// Lifecycle state of the session-local A3S Vec migration shadow.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceVecShadowPhase {
-    #[default]
-    Disabled,
-    Ready,
-    Degraded,
-    Closed,
-}
-
-/// Non-sensitive differential evidence for the A3S Vec migration shadow.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceVecShadowStatus {
-    pub phase: WorkspaceVecShadowPhase,
-    pub revision: u64,
-    pub record_count: usize,
-    /// A3S Vec's deterministic authoritative-document and derived-index estimate.
-    pub accounted_bytes: usize,
-    pub initialization_failures: u64,
-    pub successful_mutations: u64,
-    pub failed_mutations: u64,
-    pub compared_queries: u64,
-    pub matching_queries: u64,
-    pub mismatched_queries: u64,
-    pub failed_queries: u64,
 }
 
 /// Machine-readable batching evidence for the current catalog generation.
@@ -289,11 +255,12 @@ pub struct WorkspaceRetrievalStatus {
     pub total_failures: u64,
     pub vector_records: usize,
     pub vector_bytes: usize,
-    /// The engine that produced query results. The Vec shadow never changes it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_vector_engine: Option<WorkspaceVectorEngine>,
+    /// Lexical implementation serving the catalog for this session.
+    ///
+    /// This is diagnostic metadata only; semantic vectors are always owned by
+    /// the A3S Memory adapter.
     #[serde(default)]
-    pub vec_shadow: WorkspaceVecShadowStatus,
+    pub lexical_engine: super::WorkspaceLexicalEngine,
     #[serde(default)]
     pub batching: WorkspaceEmbeddingBatchMetrics,
     pub model: Option<EmbeddingProviderDescriptor>,
@@ -407,8 +374,7 @@ impl WorkspaceRetrievalStatus {
             total_failures: 0,
             vector_records: 0,
             vector_bytes: 0,
-            active_vector_engine: None,
-            vec_shadow: WorkspaceVecShadowStatus::default(),
+            lexical_engine: super::WorkspaceLexicalEngine::default(),
             batching: WorkspaceEmbeddingBatchMetrics::default(),
             model: None,
         }
@@ -417,7 +383,6 @@ impl WorkspaceRetrievalStatus {
     pub(crate) fn building(model: EmbeddingProviderDescriptor) -> Self {
         Self {
             phase: WorkspaceRetrievalPhase::Building,
-            active_vector_engine: Some(WorkspaceVectorEngine::A3sMemory),
             model: Some(model),
             ..Self::disabled()
         }

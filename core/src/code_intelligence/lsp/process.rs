@@ -3,7 +3,9 @@
 use super::client::LspClient;
 use super::router::ServerRequestRouter;
 use crate::code_intelligence::language_profile::LanguageServerCommand;
-use crate::tools::process::{configure_process_group, ProcessGroupGuard};
+use crate::tools::process::{
+    configure_process_group, spawn_tokio_with_native_gate, ProcessGroupGuard,
+};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -82,9 +84,11 @@ impl LspProcess {
             .kill_on_drop(true);
         configure_process_group(&mut process);
 
-        let mut child = process.spawn().map_err(|source| LspProcessError::Spawn {
-            program: command.program.clone(),
-            source,
+        let mut child = spawn_tokio_with_native_gate(&mut process).map_err(|source| {
+            LspProcessError::Spawn {
+                program: command.program.clone(),
+                source,
+            }
         })?;
         let process_group = ProcessGroupGuard::for_child(&child);
         let stdout = child

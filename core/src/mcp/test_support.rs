@@ -213,12 +213,13 @@ pub(crate) fn compile_fake_server(output: &Path) {
         } else {
             "mcp-fake-server"
         });
-        let result = std::process::Command::new("rustc")
+        let mut command = std::process::Command::new("rustc");
+        command
             .arg("--edition=2021")
             .arg(source)
             .arg("-o")
-            .arg(&binary)
-            .output()
+            .arg(&binary);
+        let result = crate::tools::process::output_std_with_native_gate(&mut command)
             .expect("rustc must be available while Cargo tests are running");
         assert!(
             result.status.success(),

@@ -101,7 +101,7 @@ pub(super) async fn command_output_with_timeout(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     crate::tools::process::configure_process_group(&mut command);
-    let mut child = command.spawn().ok()?;
+    let mut child = crate::tools::process::spawn_tokio_with_native_gate(&mut command).ok()?;
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
     let output = crate::tools::process::read_process_output(&mut child, timeout_ms, None)
         .await

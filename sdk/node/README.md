@@ -90,10 +90,9 @@ returns the same session ID and closes the previous object.
 ## Ephemeral Workspace Retrieval
 
 Inject an asynchronous embedding callback to build a session-owned,
-ephemeral index without a vector database service. `A3sMemory` is the
-compatibility serving default. The gated A3S Vec migration preview can be
-selected with the typed `WorkspaceVectorEngineOption.A3sVec`; the other engine
-is retained as a differential shadow and never becomes an implicit fallback.
+ephemeral index without a vector database service. A3S Memory is the single
+semantic vector projection, and product builds use zvec-rust for lexical
+FTS/BM25. A minimal build may explicitly select the portable lexical engine.
 The callback receives bounded batches and an `AbortSignal`; pass the signal to
 the provider HTTP request so session close, query cancellation, and deadlines
 stop source-code egress promptly.
@@ -104,7 +103,7 @@ const {
   DeterministicWorkspaceReranker,
   RecursiveWorkspaceChunkingStrategy,
   WorkspaceRetrievalOptions,
-  WorkspaceVectorEngineOption,
+  WorkspaceLexicalEngineOption,
 } = require('@a3s-lab/code')
 
 const provider = new CallbackEmbeddingProvider(
@@ -141,8 +140,9 @@ const retrieval = new WorkspaceRetrievalOptions(provider, reranker, chunking)
 retrieval.maxRecords = 100_000
 retrieval.maxBytes = 128 * 1024 * 1024
 
-// Developer qualification only; omission keeps the Memory compatibility path.
-// retrieval.vectorEngine = WorkspaceVectorEngineOption.A3sVec
+// Product builds use zvec-rust FTS by default. A minimal build can opt into
+// the dependency-free scorer explicitly:
+// retrieval.lexicalEngine = WorkspaceLexicalEngineOption.Portable
 
 const session = await agent.sessionAsync('/my-project', {
   workspaceRetrieval: retrieval,
@@ -164,14 +164,11 @@ physical provider requests, limit flush reasons, the theoretical request lower
 bound, and time to first ready file. These counters reset for each catalog
 generation and exclude non-text inputs by construction.
 
-`activeVectorEngine` is `a3s_memory` by default or `a3s_vec` when the typed
-preview is selected. `vecShadow` exposes only bounded phase, revision,
-resource, mutation, and parity counters. A degraded shadow or mismatch never
-substitutes its hits for the selected primary result. After close,
-`vecShadow.recordCount` and `vecShadow.accountedBytes` must both be zero. The
-SDK exposes only the typed engine enum; raw backend-name selectors are not
-accepted. See the
-[migration contract](../../manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+Status exposes the selected lexical engine, coverage, vector records/bytes,
+batching, and bounded failure counters. Semantic vectors are owned only by A3S
+Memory and are released on close. The SDK exposes typed engine and strategy
+objects; raw backend-name selectors are not accepted. See the
+[backend contract](../../manual/WORKSPACE_RETRIEVAL_BACKENDS.md).
 
 The reranker is optional: omit the second constructor argument to preserve
 RRF-only. Its typed fields bound candidates, sampled feature bytes,
@@ -186,6 +183,14 @@ chunking override is needed. Omission preserves the compatible line strategy.
 Targets, overlap, and recursive separator lists are immutable and validated by
 Core before indexing or provider execution. Primitive strategy names are not
 accepted, and custom range callbacks remain a Rust-host-only extension.
+
+`WorkspaceLexicalEngineOption.ZvecRust` selects the official Rust binding's
+temporary FTS projection for the session-owned catalog. Supported platform
+packages carry the attested zvec sidecar and use this engine by default;
+platforms without an upstream zvec asset are built with the explicit portable
+fallback. A source build made with `--no-default-features` likewise defaults to
+portable BM25, and selecting zvec-rust there fails during session
+initialization instead of silently changing engines.
 
 The shared [cross-SDK evaluation](../evaluation/README.md) documents the
 hermetic fixture gate and the opt-in real DeepSeek parity run. It uses one

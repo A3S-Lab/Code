@@ -5,7 +5,6 @@ use notify::{
     Event, EventKind,
 };
 use std::collections::HashSet;
-use std::process::Command;
 
 fn write(path: &Path, body: &[u8]) {
     if let Some(parent) = path.parent() {
@@ -15,16 +14,16 @@ fn write(path: &Path, body: &[u8]) {
 }
 
 fn git_available() -> bool {
-    Command::new("git").arg("--version").output().is_ok()
+    let mut command = std::process::Command::new("git");
+    crate::tools::process::output_std_with_native_gate(&mut command)
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn run_git(root: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .status()
-        .unwrap();
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(root).args(args);
+    let status = crate::tools::process::status_std_with_native_gate(&mut command).unwrap();
     assert!(
         status.success(),
         "git command failed: git -C {root:?} {args:?}"

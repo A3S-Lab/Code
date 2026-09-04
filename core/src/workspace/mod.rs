@@ -43,13 +43,12 @@ pub use retrieval::{
     WorkspaceEligibilityPolicy, WorkspaceEmbeddingBatchMetrics, WorkspaceHybridChannelRank,
     WorkspaceHybridChannelStatus, WorkspaceHybridFallbackReason, WorkspaceHybridSearchHit,
     WorkspaceHybridSearchRequest, WorkspaceHybridSearchResult, WorkspaceIndexError,
-    WorkspaceRerankAlgorithm, WorkspaceRerankFallbackReason, WorkspaceRerankMode,
-    WorkspaceRerankOptions, WorkspaceRerankStatus, WorkspaceRetrievalChannel,
+    WorkspaceLexicalEngine, WorkspaceRerankAlgorithm, WorkspaceRerankFallbackReason,
+    WorkspaceRerankMode, WorkspaceRerankOptions, WorkspaceRerankStatus, WorkspaceRetrievalChannel,
     WorkspaceRetrievalError, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
     WorkspaceRetrievalResult, WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus,
     WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
-    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult, WorkspaceVecShadowPhase,
-    WorkspaceVecShadowStatus, WorkspaceVectorEngine,
+    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult,
 };
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};

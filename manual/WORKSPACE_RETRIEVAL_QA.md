@@ -98,7 +98,7 @@ also avoids reopening a mutable path to obtain link-count evidence.
 The locked fixture contains nine queries spanning exact terms, identifiers,
 CJK, and paraphrases.
 
-| Metric | A3S Vec FTS/BM25 | Hybrid | Gate |
+| Metric | zvec-rust FTS/BM25 | Hybrid | Gate |
 | --- | ---: | ---: | --- |
 | Recall@10 | 0.6667 | 1.0000 | Hybrid at least 0.85 and at least +0.15 |
 | Mean reciprocal rank | 0.6667 | 1.0000 | Improve without identifier regression |
@@ -108,7 +108,7 @@ CJK, and paraphrases.
 
 The gate is implemented by
 `locked_hybrid_fixture_meets_quality_and_identifier_gates`; it exercises the
-real catalog, A3S Vec FTS/BM25, semantic partition, RRF, diversity, and current-file
+real catalog, zvec-rust FTS/BM25, semantic partition, RRF, diversity, and current-file
 verification paths.
 
 ## Performance results
@@ -173,35 +173,34 @@ amplification and zero non-text inputs.
 The host additionally matches Core's one logical/physical/lower-bound batch
 against an independent embedding-server request count for each 39-chunk session.
 
-### VEC-SHADOW1 differential qualification
+### Native lexical qualification
 
-The 2026-09-02 schema-v4 release run adds a Code-owned A3S Vec shadow without
-changing the Memory serving oracle or embedding amplification. Both the
-RRF-only and deterministic-rerank sessions retained exactly 25,000 Vec records,
-reported 54,500,008 accounted Vec bytes, reached revision 196 after 196
-successful mutations, compared all 120 measured queries, and recorded 120
-matches with zero mismatch, query failure, or mutation failure. Close returned
-both Memory and Vec record/byte observations to zero.
+The 2026-09-04 schema-v5 backend run uses the official zvec-rust FTS adapter for
+the catalog and query-time lexical paths. The locked exact, identifier, and CJK
+fixture passes; portable minimal builds pass the same result contract. Native
+collections are flushed and closed before publication. Up to four hot
+read-only handles are retained globally; colder partitions use a bounded
+open/query/close path, so concurrent replacement and query churn stays below
+the macOS descriptor budget without reverting to a second BM25 implementation.
+A package-manifest test verifies the target, archive, SHA-256, and loader path
+before a release artifact is accepted.
 
-Exact, RRF-only hybrid, and deterministic hybrid p95 were 6.7343, 50.7850, and
-49.7348 ms respectively, below the unchanged 30/100/100 ms gates. These values
-are a change-scoped local run and do not rewrite the historical qualification
-runs above. Vec `accounted_bytes` is a deterministic engine estimate, not an
-RSS or temporary-disk claim. The complete authority, mapping, failure, and
-promotion contract is in
-[Workspace Retrieval A3S Vec Migration](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+The release-mode macOS arm64 qualification emitted one independent exact
+25,000-record/384-dimensional measurement and two native hybrid measurements
+over four files with 128 chunks each (512 chunks total). Exact p50/p95/max was
+7.178/7.776/8.408 ms with 38,700,013 accounted bytes. RRF-only hybrid
+p50/p95/max was 10.417/12.103/18.347 ms; deterministic rerank was
+11.567/12.512/18.353 ms, with 26 maximum candidates, 27,308 feature bytes,
+41,146 scratch bytes, and a 0.410 ms positive p95 delta. All eight measured
+requests met the lower-bound and cleanup gates, with zero lexical or rerank
+fallbacks. These figures qualify the schema-v5 workload on the recorded
+machine; they do not replace the locked Windows reference budgets above.
 
-### VEC-PRIMARY1 gated authority qualification
-
-The same Code candidate also supports an explicit, typed `A3sVec` serving
-authority for developer qualification. `A3sMemory` remains the default and is
-kept as the differential oracle when Vec is selected; no automatic fallback is
-performed. On the same Windows x86-64 host and schema-v4 workload, the
-Vec-primary run reported exact/hybrid/deterministic p95 values of
-7.4195/47.4571/48.7821 ms, 25,000 records per arm, 120/120 matching queries,
-zero shadow failures, and zero records/bytes after close. These numbers are
-directional local evidence only: they do not close the Intel macOS 12, RSS,
-crash-recovery, or P7 duplicate-backend removal gates.
+Semantic retrieval is backed only by the A3S Memory exact index. One validated
+provider response creates one Memory partition; no duplicate semantic index or
+authority comparison is performed. A native lexical failure is surfaced as a
+bounded lexical degradation and leaves exact, semantic, and source-verification
+paths available.
 
 ### CODE-R2 deterministic rerank qualification
 

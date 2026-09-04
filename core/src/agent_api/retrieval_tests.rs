@@ -491,6 +491,47 @@ async fn session_owned_workspace_uses_the_explicit_chunking_strategy() {
     session.close().await;
 }
 
+#[cfg(feature = "zvec-rust-fts")]
+#[tokio::test]
+async fn session_owned_workspace_uses_the_explicit_zvec_lexical_engine() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("cache.rs"),
+        "pub fn invalidate_session_cache() { /* bounded cache policy */ }\n",
+    )
+    .unwrap();
+    let provider: Arc<dyn EmbeddingProvider> = Arc::new(ImmediateProvider {
+        inputs: Arc::new(AtomicUsize::new(0)),
+    });
+    let options = SessionOptions::new().with_workspace_retrieval(
+        WorkspaceRetrievalOptions::new(provider)
+            .with_lexical_engine(crate::WorkspaceLexicalEngine::ZvecRust),
+    );
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+    let session = agent
+        .session_async(workspace.path().to_string_lossy(), Some(options))
+        .await
+        .unwrap();
+    wait_for_ready(&session).await;
+
+    let result = session
+        .tool(
+            "search",
+            serde_json::json!({"mode": "bm25", "query": "session cache policy"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.exit_code, 0, "{}", result.output);
+    assert_eq!(
+        result.metadata.unwrap()["parameters"]["engine"],
+        crate::WorkspaceLexicalEngine::ZvecRust.stable_id()
+    );
+    session.close().await;
+}
+
 #[tokio::test]
 async fn session_owned_workspace_applies_explicit_deterministic_reranking() {
     let _permit = crate::test_support::resource_intensive_test_permit().await;

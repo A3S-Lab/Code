@@ -93,7 +93,7 @@ fn spawn_windows_shell(
     ]);
     prepare_windows_command(&mut powershell, workspace, command_env);
 
-    powershell.spawn().map_err(|source| {
+    crate::tools::process::spawn_tokio_with_native_gate(&mut powershell).map_err(|source| {
         std::io::Error::new(
             source.kind(),
             format!(
@@ -135,7 +135,7 @@ pub(crate) fn spawn_shell(
         if let Some(env) = command_env {
             cmd.envs(env);
         }
-        cmd.spawn()
+        crate::tools::process::spawn_tokio_with_native_gate(&mut cmd)
     }
 }
 

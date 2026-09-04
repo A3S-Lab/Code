@@ -1,19 +1,10 @@
-extern crate napi_build;
-
 fn main() {
-    napi_build::setup();
-    emit_zvec_runtime_rpath();
-}
-
-fn emit_zvec_runtime_rpath() {
     if std::env::var_os("CARGO_FEATURE_ZVEC_RUST_FTS").is_none() {
         return;
     }
     match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("macos") => println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path/zvec"),
         Ok("linux") => println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/zvec"),
-        // Windows LoadLibrary searches the module directory. The packager
-        // places zvec_c_api.dll beside the .node/bridge executable.
         _ => {}
     }
 }

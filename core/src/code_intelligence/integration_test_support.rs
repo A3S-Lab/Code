@@ -12,12 +12,13 @@ pub(super) fn compile_fake_server(output: &Path) {
         } else {
             "code-intelligence-fake-lsp"
         });
-        let result = Command::new("rustc")
+        let mut command = Command::new("rustc");
+        command
             .arg("--edition=2021")
             .arg(source)
             .arg("-o")
-            .arg(&binary)
-            .output()
+            .arg(&binary);
+        let result = crate::tools::process::output_std_with_native_gate(&mut command)
             .expect("rustc must be available while Cargo tests are running");
         assert!(
             result.status.success(),

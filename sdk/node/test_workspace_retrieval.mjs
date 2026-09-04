@@ -55,6 +55,10 @@ const provider = new mod.CallbackEmbeddingProvider(
   },
 )
 const retrieval = new mod.WorkspaceRetrievalOptions(provider)
+assert.equal(retrieval.lexicalEngine, mod.WorkspaceLexicalEngineOption.ZvecRust)
+retrieval.lexicalEngine = mod.WorkspaceLexicalEngineOption.ZvecRust
+assert.equal(retrieval.lexicalEngine, mod.WorkspaceLexicalEngineOption.ZvecRust)
+retrieval.lexicalEngine = mod.WorkspaceLexicalEngineOption.Portable
 retrieval.maxRecords = 100
 retrieval.maxBytes = 1024 * 1024
 
@@ -73,10 +77,8 @@ try {
   }
   assert.equal(status.phase, 'ready', JSON.stringify(status))
   assert.ok(status.indexedChunks > 0)
-  assert.equal(status.activeVectorEngine, 'a3s_memory')
-  assert.equal(status.vecShadow.phase, 'ready')
-  assert.equal(status.vecShadow.recordCount, status.vectorRecords)
-  assert.equal(status.vecShadow.failedMutations, 0)
+  assert.equal(status.vectorRecords, status.indexedChunks)
+  assert.equal(status.lexicalEngine, 'portable_bm25_v1')
   assert.ok(status.batching.documentInputs > 0)
   assert.ok(status.batching.documentTextBytes > 0)
   assert.ok(status.batching.batchLimitLowerBound > 0)
@@ -90,9 +92,8 @@ try {
   const semantic = await session.semanticSearch({ query: 'cleanup session resources', limit: 3 })
   assert.equal(semantic.hits[0].chunk.path, 'src/session_cleanup.rs')
   assert.equal(semantic.hits[0].chunk.digestVerified, true)
-  assert.equal(semantic.status.activeVectorEngine, 'a3s_memory')
-  assert.ok(semantic.status.vecShadow.comparedQueries >= 1)
-  assert.equal(semantic.status.vecShadow.mismatchedQueries, 0)
+  assert.equal(semantic.status.phase, 'ready')
+  assert.equal(semantic.status.lexicalEngine, 'portable_bm25_v1')
 
   const hybrid = await session.hybridSearch({ query: 'terminate_owned_tasks', limit: 3 })
   assert.equal(hybrid.hits[0].chunk.path, 'src/session_cleanup.rs')
@@ -107,41 +108,6 @@ try {
   assert.ok(providerCalls >= 2)
 } finally {
   await session.closeAsync()
-}
-
-const vecRetrieval = new mod.WorkspaceRetrievalOptions(
-  provider,
-  null,
-  null,
-  mod.WorkspaceVectorEngineOption.A3sVec,
-)
-vecRetrieval.maxRecords = 100
-vecRetrieval.maxBytes = 1024 * 1024
-const vecSession = await agent.sessionAsync(workspace, {
-  workspaceRetrieval: vecRetrieval,
-})
-try {
-  const deadline = Date.now() + 10_000
-  let status = vecSession.workspaceRetrievalStatus()
-  while (status.phase === 'building' && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    status = vecSession.workspaceRetrievalStatus()
-  }
-  assert.equal(status.phase, 'ready', JSON.stringify(status))
-  assert.equal(status.activeVectorEngine, 'a3s_vec')
-  assert.ok(status.indexedChunks > 0)
-  assert.equal(status.vecShadow.phase, 'ready')
-  assert.equal(status.vecShadow.recordCount, status.vectorRecords)
-  const semantic = await vecSession.semanticSearch({
-    query: 'cleanup session resources',
-    limit: 3,
-  })
-  assert.equal(semantic.hits[0].chunk.path, 'src/session_cleanup.rs')
-  assert.equal(semantic.status.activeVectorEngine, 'a3s_vec')
-  assert.ok(semantic.status.vecShadow.comparedQueries >= 1)
-  assert.equal(semantic.status.vecShadow.mismatchedQueries, 0)
-} finally {
-  await vecSession.closeAsync()
 }
 
 const lineChunking = new mod.LineWorkspaceChunkingStrategy()
@@ -278,9 +244,8 @@ while (!observedAbort && Date.now() < abortDeadline) {
 assert.equal(observedAbort, true, 'session close must abort the active host provider request')
 const closedStatus = slowSession.workspaceRetrievalStatus()
 assert.equal(closedStatus.phase, 'closed')
-assert.equal(closedStatus.vecShadow.phase, 'closed')
-assert.equal(closedStatus.vecShadow.recordCount, 0)
-assert.equal(closedStatus.vecShadow.accountedBytes, 0)
+assert.equal(closedStatus.vectorRecords, 0)
+assert.equal(closedStatus.vectorBytes, 0)
 await agent.close()
 fs.rmSync(tmpRoot, { recursive: true, force: true })
 

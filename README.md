@@ -159,7 +159,7 @@ telemetry remain opt-in.
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Evaluation substrate    | Provider-neutral execution targets/frames, digest-only fact journals, atomic bounded evidence snapshots, isolated auxiliary runs, host boundary supervision, and immutable result CAS | Inject an `EvaluationPolicy`/`AuxiliaryExecutor`; Core supplies mechanisms, while reviewer rubrics, findings, authorization, and Cloud audit remain host-owned |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
-| Workspace retrieval     | Asynchronous session-owned chunk catalog, A3S Vec FTS/BM25 lexical ranking, Memory-authoritative exact vectors, a session-local A3S Vec differential shadow, hybrid RRF, optional deterministic CPU reranking, readiness/parity metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database                                      |
+| Workspace retrieval     | Asynchronous session-owned chunk catalog, official zvec-rust FTS/BM25 by default, Memory-backed exact vectors, hybrid RRF, optional deterministic CPU reranking, readiness/coverage metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database; native zvec builds require an attested platform library |
 | Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, host-persisted safe refresh checkpoints, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
@@ -393,7 +393,7 @@ the model.
 
 | Concern                     | Built-in surface                                                                                                                                                                           |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Files and directories       | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, A3S Vec FTS/BM25, semantic diagnostics, and hybrid retrieval modes |
+| Files and directories       | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, zvec-rust FTS/BM25, semantic diagnostics, and hybrid retrieval modes |
 | Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination                                                                                               |
 | Code intelligence           | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools                                                                                |
 | Web evidence                | Quality-gated headless → HTTP/RSS → API `web_search` with shared admission, session circuits, and request coalescing; plus bounded `web_fetch`, source normalization, and SSRF protections |
@@ -517,11 +517,15 @@ The non-content modes ask built-in workspace backends to count matches without
 constructing discarded match text. In `mode: "glob"`, `search` retains a
 backend's recency or relevance order by default; request `sort: "path"` when
 cursor pages require stable lexical ordering. Use `mode: "bm25"` for bounded
-A3S Vec FTS/BM25 lexical ranking over workspace text chunks. Retrieval-enabled
+zvec-rust FTS/BM25 lexical ranking over workspace text chunks. Retrieval-enabled
 manifest-backed local workspaces build one bounded, session-local chunk catalog
-asynchronously and reuse its Vec FTS postings across queries. Session
-construction does not wait for indexing; BM25 transparently uses the same
-temporary Vec FTS engine over a bounded scan until the first catalog revision
+asynchronously and reuse its FTS postings across queries. A typed, opt-in
+`WorkspaceLexicalEngine::ZvecRust` selector can use the official `zvec-rust`
+binding when the product build supplies a verified `libzvec_c_api`. Minimal
+`--no-default-features` builds use the explicitly reported portable BM25
+implementation; product builds never silently switch engines.
+Session construction does not wait for indexing; BM25 transparently uses the
+same temporary selected FTS engine over a bounded scan until the first catalog revision
 is ready. Catalog metadata reports `mode: "incremental_catalog"` and zero
 query-time file reads. Custom workspace backends therefore do not introduce a
 second Code-local BM25 scorer. Plain manifest and Code Intelligence sessions do
@@ -553,7 +557,7 @@ before attaching `local_with_retrieval_backend`; session options cannot
 silently replace that host-owned strategy or its budgets.
 
 No embedding or reranking model is required for the baseline workspace search:
-exact, glob, A3S Vec FTS/BM25, Code Intelligence, and RRF execute locally on
+exact, glob, zvec-rust FTS/BM25, Code Intelligence, and RRF execute locally on
 CPU and remain available when Workspace Retrieval is omitted. Dense semantic
 search necessarily needs a text-to-vector function, but that function may be a
 host-injected in-process CPU callback; it is not required to be remote or use a
@@ -567,15 +571,12 @@ typed bounded retries, and rejects partial, duplicate, unknown, dimension-
 mismatched, non-finite, non-normalized, or descriptor-drifted responses. Input
 text and vector values are redacted from Code-owned `Debug` output and errors.
 `SessionOptions::with_workspace_retrieval(WorkspaceRetrievalOptions::new(...))`
-binds that contract to a session. A3S Memory remains the exact, session-owned
-serving projection. During the migration preview, Code mirrors the same
-already-admitted `VectorRecord` values into a session-local A3S Vec collection
-under an operating-system temporary directory. It does not embed twice, and
-Vec hits never serve a query: Code compares their IDs, partitions, scores,
-searched-record count, and truncation flag against the Memory result while
-returning Memory unchanged. A Vec initialization, mutation, query, or parity
-failure degrades only the shadow. Neither projection is durable or shared
-across sessions, and recreating a session rebuilds both from admitted source.
+binds that contract to a session. A3S Memory is the single exact, session-owned
+semantic serving projection. Embeddings are validated once, inserted into
+bounded Memory partitions, and released with the session; there is no duplicate
+vector projection or hidden authority selector. The lexical projection is
+independent and uses zvec-rust FTS/BM25, so a lexical failure can degrade only
+lexical coverage while semantic results retain their Memory contract.
 Code reuses the admitted chunk catalog,
 starts indexing without delaying `session_async`, coalesces chunks from the
 same catalog generation across files up to the configured input, text-byte,
@@ -592,10 +593,6 @@ remains asynchronous.
 
 `AgentSession::workspace_retrieval_status` reports building, ready, degraded,
 or closed state, revisions, coverage, queue depth, failures, and vector memory.
-`active_vector_engine` identifies A3S Memory as the result authority, while
-`vec_shadow` reports the temporary Vec collection phase, revision, records,
-accounted bytes, mutation outcomes, compared/matching/mismatched queries, and
-query failures without source, vector, path, or query values.
 Its `batching` object adds current-generation document inputs and bytes, logical
 batches, physical provider requests including retries, the three-limit request
 lower bound, flush reasons, time to first file-atomic publication, and the
@@ -630,7 +627,7 @@ ranges and invalid-window behavior, while arbitrary custom range callbacks
 remain a trusted Rust-host extension. Strategy validation precedes provider
 execution, and Go completes it before callback registration.
 
-Hybrid mode creates independent exact-literal, A3S Vec FTS/BM25, optional Code
+Hybrid mode creates independent exact-literal, zvec-rust FTS/BM25, optional Code
 Intelligence symbol, and positive-similarity semantic candidate lists. It
 fuses one-based ranks with reciprocal-rank fusion (`k=60`) instead of mixing
 uncalibrated scores. Exact ASCII identifier tokens occupy a protected tier;
@@ -1134,9 +1131,8 @@ for each supported GNU/macOS/Windows target include the matching Moli sidecar.
 All official SDKs expose the same ordered `sdk-capabilities` inventory, event
 protocol, state-graph operations, and Moli diagnostics/provisioning APIs. Use
 that contract to negotiate optional features. Node.js, Python, and Go hosts can inject typed asynchronous embedding
-providers for session-owned, Memory-authoritative semantic and hybrid workspace
-retrieval; the internal Vec migration shadow remains unselectable and never
-serves results. Provider cancellation follows query and session lifecycle, and
+providers for session-owned, Memory-backed semantic and hybrid workspace
+retrieval. Provider cancellation follows query and session lifecycle, and
 no SDK requires a vector database service. Remote embedding admits only
 conservative source paths,
 rejects hard-linked aliases, and revalidates logical and resolved paths at read
@@ -1451,7 +1447,7 @@ the v1 schema or claiming external Runtime certification.
 | [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md)                               | Paired task/rerank ablations, built-in chunk matrix, cross-SDK real-model parity, custom negative control, non-text boundary, metrics, and batching follow-up |
 | [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md)                                               | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan                                                                   |
 | [Workspace Retrieval Operations](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)                                           | Production SLOs, telemetry, state response, generation gates, and configuration-only rollback                                                                 |
-| [Workspace Retrieval Vec Migration](manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md)                                    | Memory authority, Vec shadow mapping, parity/resource evidence, failure isolation, promotion gates, and rollback                                               |
+| [Workspace Retrieval Backends](manual/WORKSPACE_RETRIEVAL_BACKENDS.md)                                              | zvec-rust lexical indexing, Memory semantic vectors, resource bounds, packaging, and rollback                                                                       |
 | [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md)                                                            | Filesystem-first tool and agent definitions                                                                                                                   |
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md)                                                           | Admission schema, identity, compatibility, and security boundary                                                                                              |
 | [Changelog](CHANGELOG.md)                                                                                            | Release history and migration-relevant changes                                                                                                                |
@@ -1478,10 +1474,10 @@ evidence ledger. Dedicated CI jobs build and load the Node.js and Python native
 modules before running their host-language contracts; a successful Rust
 `cargo check` alone is not counted as SDK runtime evidence.
 
-The retrieval benchmark emits schema-v4 JSON and fails when the locked
-25,000 x 384 exact-vector or hybrid p95 budgets are exceeded, either Vec
-shadow arm compares fewer than all 120 queries, any comparison differs or
-fails, or either vector engine retains records after close. See the
+The retrieval benchmark emits schema-v5 JSON. It keeps the locked 25,000 x 384
+exact-vector gate separate from a four-file, 512-chunk native lexical/hybrid
+profile, and fails when either p95 budget, batching, rerank, or cleanup gate is
+exceeded. See the
 [qualification report](manual/WORKSPACE_RETRIEVAL_QA.md) for the reference
 profile, inclusion rules, and measured results.
 

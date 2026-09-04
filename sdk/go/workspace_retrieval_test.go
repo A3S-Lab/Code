@@ -66,8 +66,7 @@ func TestWorkspaceRetrievalProviderLifecycle(t *testing.T) {
 			}
 			retrieval, ok := wire["workspace_retrieval"].(workspaceRetrievalWireOptions)
 			if !ok || retrieval.HandlerID == "" || retrieval.Dimension != 4 ||
-				retrieval.DeterministicReranker != nil ||
-				retrieval.VectorEngine != WorkspaceVectorEngineA3SMemory {
+				retrieval.DeterministicReranker != nil || retrieval.LexicalEngine != "" {
 				t.Fatalf("retrieval wire options = %#v", wire["workspace_retrieval"])
 			}
 			runtime.mu.Lock()
@@ -131,7 +130,7 @@ func TestWorkspaceRetrievalProviderLifecycle(t *testing.T) {
 	}
 }
 
-func TestWorkspaceRetrievalVecEngineIsTypedAndWired(t *testing.T) {
+func TestWorkspaceRetrievalLexicalEngineIsTypedAndWired(t *testing.T) {
 	provider := &fixtureEmbeddingProvider{
 		embed: func(
 			_ context.Context,
@@ -146,21 +145,21 @@ func TestWorkspaceRetrievalVecEngineIsTypedAndWired(t *testing.T) {
 	options := &SessionOptions{
 		WorkspaceRetrieval: NewWorkspaceRetrievalOptions(provider),
 	}
-	options.WorkspaceRetrieval.VectorEngine = WorkspaceVectorEngineA3SVec
+	options.WorkspaceRetrieval.LexicalEngine = WorkspaceLexicalEngineZvecRust
 	prepared, callbackID, err := prepareWorkspaceRetrievalOptions(runtime, options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.unregisterCallback(callbackID)
 	wire := prepared.(map[string]any)["workspace_retrieval"].(workspaceRetrievalWireOptions)
-	if wire.VectorEngine != WorkspaceVectorEngineA3SVec {
-		t.Fatalf("vector engine wire = %q", wire.VectorEngine)
+	if wire.LexicalEngine != WorkspaceLexicalEngineZvecRust {
+		t.Fatalf("lexical engine wire = %q", wire.LexicalEngine)
 	}
 
-	options.WorkspaceRetrieval.VectorEngine = WorkspaceVectorEngine("unsupported")
+	options.WorkspaceRetrieval.LexicalEngine = WorkspaceLexicalEngine("unsupported")
 	_, invalidCallbackID, err := prepareWorkspaceRetrievalOptions(runtime, options)
 	if err == nil || invalidCallbackID != "" {
-		t.Fatalf("unsupported vector engine = callback %q, error %v", invalidCallbackID, err)
+		t.Fatalf("unsupported lexical engine = callback %q, error %v", invalidCallbackID, err)
 	}
 }
 
@@ -389,14 +388,8 @@ func TestWorkspaceRetrievalTypedSessionMethods(t *testing.T) {
 			switch operation {
 			case "session_workspace_retrieval_status":
 				return map[string]any{
-					"phase":                "ready",
-					"indexed_chunks":       2,
-					"active_vector_engine": "a3s_memory",
-					"vec_shadow": map[string]any{
-						"phase":            "ready",
-						"record_count":     2,
-						"compared_queries": 3,
-					},
+					"phase":          "ready",
+					"indexed_chunks": 2,
 				}, nil
 			case "session_semantic_search":
 				return map[string]any{
@@ -446,11 +439,7 @@ func TestWorkspaceRetrievalTypedSessionMethods(t *testing.T) {
 	}
 	session := testSession(runtime)
 	status, err := session.WorkspaceRetrievalStatus(context.Background())
-	if err != nil || status.Phase != WorkspaceRetrievalReady || status.IndexedChunks != 2 ||
-		status.ActiveVectorEngine == nil ||
-		*status.ActiveVectorEngine != WorkspaceVectorEngineA3SMemory ||
-		status.VecShadow.Phase != WorkspaceVecShadowReady ||
-		status.VecShadow.ComparedQueries != 3 {
+	if err != nil || status.Phase != WorkspaceRetrievalReady || status.IndexedChunks != 2 {
 		t.Fatalf("status = %#v, %v", status, err)
 	}
 	semantic, err := session.SemanticSearch(context.Background(), WorkspaceSearchRequest{
@@ -554,12 +543,6 @@ func TestRustBridgeWorkspaceRetrievalIntegration(t *testing.T) {
 	if status.IndexedChunks < 2 {
 		t.Fatalf("fixed-window strategy did not create multiple chunks: %#v", status)
 	}
-	if status.ActiveVectorEngine == nil ||
-		*status.ActiveVectorEngine != WorkspaceVectorEngineA3SMemory ||
-		status.VecShadow.Phase != WorkspaceVecShadowReady ||
-		status.VecShadow.RecordCount != status.VectorRecords {
-		t.Fatalf("unexpected vector migration status: %#v", status)
-	}
 	if status.Batching.DocumentInputs == 0 || status.Batching.BatchLimitLowerBound == 0 ||
 		status.Batching.DocumentProviderRequests*10 > status.Batching.BatchLimitLowerBound*11 ||
 		status.Batching.NonTextInputs != 0 || status.Batching.TimeToFirstReadyMS == nil {
@@ -576,12 +559,6 @@ func TestRustBridgeWorkspaceRetrievalIntegration(t *testing.T) {
 		semantic.Hits[0].Chunk.Path != "src/session_cleanup.rs" ||
 		!semantic.Hits[0].Chunk.DigestVerified {
 		t.Fatalf("semantic result = %#v", semantic)
-	}
-	if semantic.Status.ActiveVectorEngine == nil ||
-		*semantic.Status.ActiveVectorEngine != WorkspaceVectorEngineA3SMemory ||
-		semantic.Status.VecShadow.ComparedQueries == 0 ||
-		semantic.Status.VecShadow.MismatchedQueries != 0 {
-		t.Fatalf("semantic migration status = %#v", semantic.Status)
 	}
 	hybrid, err := session.HybridSearch(ctx, WorkspaceSearchRequest{
 		Query: "terminate_owned_tasks",
@@ -679,10 +656,6 @@ func TestRustBridgeWorkspaceRetrievalIntegration(t *testing.T) {
 	}
 	if closed.Phase != WorkspaceRetrievalClosed {
 		t.Fatalf("closed status = %#v", closed)
-	}
-	if closed.VecShadow.Phase != WorkspaceVecShadowClosed ||
-		closed.VecShadow.RecordCount != 0 || closed.VecShadow.AccountedBytes != 0 {
-		t.Fatalf("closed migration status = %#v", closed.VecShadow)
 	}
 }
 

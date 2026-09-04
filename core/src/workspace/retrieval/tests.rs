@@ -1,7 +1,9 @@
 use super::catalog::WorkspaceChunkCatalog;
 use super::chunk::{chunk_file, ChunkFileRequest};
 use super::eligibility::WorkspaceEligibilityPolicy;
-use super::types::{ChunkCatalogLimits, ChunkingConfig, WorkspaceIndexError};
+use super::types::{
+    ChunkCatalogLimits, ChunkingConfig, WorkspaceIndexError, WorkspaceLexicalEngine,
+};
 use super::LexicalSearchRequest;
 use crate::workspace::{LocalWorkspaceFile, LocalWorkspaceFileStatus, WorkspacePath};
 use serde::Deserialize;
@@ -14,7 +16,6 @@ mod rerank;
 mod semantic;
 mod semantic_batching;
 mod semantic_query;
-mod vec_shadow;
 
 #[test]
 fn chunking_is_utf8_safe_deterministic_and_bounded_by_lines_and_bytes() {
@@ -231,7 +232,7 @@ fn incremental_lexical_search_preserves_bm25_identifier_and_cjk_behavior() {
 }
 
 #[test]
-fn lexical_search_maps_vec_hits_after_ignoring_empty_chunks() {
+fn lexical_search_maps_backend_hits_after_ignoring_empty_chunks() {
     let catalog = WorkspaceChunkCatalog::new(
         ChunkingConfig {
             max_lines: 1,
@@ -291,6 +292,170 @@ fn incremental_lexical_index_matches_the_locked_native_bm25_fixture() {
             .collect::<Vec<_>>();
         assert_eq!(paths, query.expected_bm25_paths, "query {}", query.id);
     }
+}
+
+#[cfg(feature = "zvec-rust-fts")]
+#[test]
+fn zvec_rust_lexical_backend_preserves_the_workspace_result_contract() {
+    let fixture = [
+        (
+            "src/path_policy.rs",
+            "pub struct LocalWorkspaceAccessPolicy;\n",
+        ),
+        ("src/cache.rs", "session cache invalidation policy\n"),
+        ("src/zh.rs", "工作区权限策略阻止越界访问\n"),
+    ];
+    let engines = [
+        WorkspaceLexicalEngine::Portable,
+        WorkspaceLexicalEngine::ZvecRust,
+    ];
+
+    for engine in engines {
+        let catalog = WorkspaceChunkCatalog::new_with_engine(
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+            engine,
+        )
+        .unwrap();
+        assert_eq!(catalog.lexical_engine(), engine);
+        for (revision, (path, content)) in fixture.iter().enumerate() {
+            catalog
+                .replace_file(
+                    &WorkspacePath::from_normalized(*path),
+                    Some("rust"),
+                    revision as u64 + 1,
+                    content,
+                )
+                .unwrap();
+        }
+
+        let snapshot = catalog.snapshot().unwrap();
+        for query in [
+            ("LocalWorkspaceAccessPolicy", "src/path_policy.rs"),
+            ("工作区权限策略", "src/zh.rs"),
+            ("login token validation", ""),
+        ] {
+            let result = snapshot
+                .lexical_search(&LexicalSearchRequest::new(query.0))
+                .unwrap();
+            assert_eq!(
+                result.lexical_engine.stable_id(),
+                engine.stable_id(),
+                "engine metadata drifted"
+            );
+            if query.1.is_empty() {
+                assert!(result.hits.is_empty(), "engine {engine:?}");
+            } else {
+                assert_eq!(result.hits[0].chunk.path.as_ref(), query.1);
+                assert!(result.hits.iter().all(|hit| hit.score.is_finite()));
+            }
+        }
+    }
+}
+
+#[cfg(feature = "zvec-rust-fts")]
+#[test]
+fn zvec_rust_lexical_snapshot_supports_concurrent_queries() {
+    let catalog = WorkspaceChunkCatalog::new_with_engine(
+        ChunkingConfig::default(),
+        ChunkCatalogLimits::default(),
+        WorkspaceLexicalEngine::ZvecRust,
+    )
+    .unwrap();
+    for index in 0..8 {
+        catalog
+            .replace_file(
+                &WorkspacePath::from_normalized(format!("src/module_{index}.rs")),
+                Some("rust"),
+                index + 1,
+                &format!("pub fn cache_invalidation_{index}() {{}}\n"),
+            )
+            .unwrap();
+    }
+    let snapshot = Arc::new(catalog.snapshot().unwrap());
+    let workers = (0..8)
+        .map(|_| {
+            let snapshot = Arc::clone(&snapshot);
+            std::thread::spawn(move || {
+                let result = snapshot
+                    .lexical_search(&LexicalSearchRequest::new("cache invalidation"))
+                    .unwrap();
+                assert!(!result.hits.is_empty());
+                assert!(result.hits.iter().all(|hit| hit.score.is_finite()));
+            })
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}
+
+#[cfg(feature = "zvec-rust-fts")]
+#[test]
+fn zvec_rust_lexical_backend_matches_locked_bm25_paths() {
+    #[derive(Debug, Deserialize)]
+    struct Fixture {
+        documents: Vec<FixtureDocument>,
+        queries: Vec<FixtureQuery>,
+    }
+    #[derive(Debug, Deserialize)]
+    struct FixtureDocument {
+        path: String,
+        content: String,
+    }
+    #[derive(Debug, Deserialize)]
+    struct FixtureQuery {
+        id: String,
+        query: String,
+        expected_bm25_paths: Vec<String>,
+    }
+
+    let fixture: Fixture = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/workspace-retrieval-v1/corpus.json"
+    )))
+    .expect("workspace retrieval fixture must parse");
+    let catalog = WorkspaceChunkCatalog::new_with_engine(
+        ChunkingConfig::default(),
+        ChunkCatalogLimits::default(),
+        WorkspaceLexicalEngine::ZvecRust,
+    )
+    .expect("zvec catalog must construct");
+    for (revision, document) in fixture.documents.iter().enumerate() {
+        catalog
+            .replace_file(
+                &WorkspacePath::from_normalized(&document.path),
+                document.path.ends_with(".rs").then_some("rust"),
+                revision as u64 + 1,
+                &document.content,
+            )
+            .expect("zvec catalog replacement must succeed");
+    }
+    let snapshot = catalog.snapshot().expect("zvec snapshot must exist");
+
+    for query in fixture.queries {
+        let result = snapshot
+            .lexical_search(&LexicalSearchRequest::new(&query.query))
+            .unwrap_or_else(|error| panic!("query '{}' failed: {error}", query.id));
+        let paths = result
+            .hits
+            .iter()
+            .map(|hit| hit.chunk.path.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, query.expected_bm25_paths, "query '{}'", query.id);
+    }
+}
+
+#[cfg(not(feature = "zvec-rust-fts"))]
+#[test]
+fn zvec_rust_selection_fails_closed_without_the_native_feature() {
+    let error = WorkspaceChunkCatalog::new_with_engine(
+        ChunkingConfig::default(),
+        ChunkCatalogLimits::default(),
+        WorkspaceLexicalEngine::ZvecRust,
+    )
+    .unwrap_err();
+    assert!(matches!(error, WorkspaceIndexError::InvalidConfig(_)));
 }
 
 #[test]

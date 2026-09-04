@@ -20,7 +20,7 @@ from a3s_code import (
     SessionOptions,
     WorkspaceHybridSearchResult,
     WorkspaceRetrievalOptions,
-    WorkspaceVectorEngineOption,
+    WorkspaceLexicalEngineOption,
     WorkspaceRetrievalStatus,
     WorkspaceSemanticSearchResult,
 )
@@ -92,6 +92,10 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 normalization="unit",
             )
             retrieval = WorkspaceRetrievalOptions(provider)
+            assert retrieval.lexical_engine == WorkspaceLexicalEngineOption.ZvecRust
+            retrieval.lexical_engine = WorkspaceLexicalEngineOption.ZvecRust
+            assert retrieval.lexical_engine == WorkspaceLexicalEngineOption.ZvecRust
+            retrieval.lexical_engine = WorkspaceLexicalEngineOption.Portable
             retrieval.max_records = 100
             retrieval.max_bytes = 1024 * 1024
             options = SessionOptions()
@@ -125,13 +129,8 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 status = await asyncio.wait_for(wait_until_ready(), timeout=10)
                 assert status["phase"] == "ready", status
                 assert status["indexed_chunks"] > 0
-                assert status["active_vector_engine"] == "a3s_memory"
-                assert status["vec_shadow"]["phase"] == "ready"
-                assert (
-                    status["vec_shadow"]["record_count"]
-                    == status["vector_records"]
-                )
-                assert status["vec_shadow"]["failed_mutations"] == 0
+                assert status["vector_records"] == status["indexed_chunks"]
+                assert status["lexical_engine"] == "portable_bm25_v1"
                 batching = status["batching"]
                 assert batching["document_inputs"] > 0
                 assert batching["document_text_bytes"] > 0
@@ -151,9 +150,8 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 )
                 assert semantic["hits"][0]["chunk"]["path"] == "src/session_cleanup.rs"
                 assert semantic["hits"][0]["chunk"]["digest_verified"] is True
-                assert semantic["status"]["active_vector_engine"] == "a3s_memory"
-                assert semantic["status"]["vec_shadow"]["compared_queries"] >= 1
-                assert semantic["status"]["vec_shadow"]["mismatched_queries"] == 0
+                assert semantic["status"]["phase"] == "ready"
+                assert semantic["status"]["lexical_engine"] == "portable_bm25_v1"
 
                 hybrid = cast(
                     WorkspaceHybridSearchResult,
@@ -179,45 +177,6 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 assert provider_calls >= 2
             finally:
                 await session.close_async()
-
-            vec_options = SessionOptions()
-            vec_options.workspace_retrieval = WorkspaceRetrievalOptions(
-                provider, vector_engine=WorkspaceVectorEngineOption.A3sVec
-            )
-            vec_session = await agent.session_async(str(workspace), vec_options)
-            try:
-                vec_status = cast(
-                    WorkspaceRetrievalStatus,
-                    vec_session.workspace_retrieval_status(),
-                )
-                while vec_status["phase"] == "building":
-                    await asyncio.sleep(0.02)
-                    vec_status = cast(
-                        WorkspaceRetrievalStatus,
-                        vec_session.workspace_retrieval_status(),
-                    )
-                assert vec_status["phase"] == "ready", vec_status
-                assert vec_status["active_vector_engine"] == "a3s_vec"
-                assert vec_status["indexed_chunks"] > 0
-                assert vec_status["vec_shadow"]["phase"] == "ready"
-                assert (
-                    vec_status["vec_shadow"]["record_count"]
-                    == vec_status["vector_records"]
-                )
-                vec_semantic = cast(
-                    WorkspaceSemanticSearchResult,
-                    await vec_session.semantic_search_async(
-                        {"query": "cleanup session resources", "limit": 3}
-                    ),
-                )
-                assert vec_semantic["hits"][0]["chunk"]["path"] == (
-                    "src/session_cleanup.rs"
-                )
-                assert vec_semantic["status"]["active_vector_engine"] == "a3s_vec"
-                assert vec_semantic["status"]["vec_shadow"]["compared_queries"] >= 1
-                assert vec_semantic["status"]["vec_shadow"]["mismatched_queries"] == 0
-            finally:
-                await vec_session.close_async()
 
             line_chunking = LineWorkspaceChunkingStrategy()
             assert repr(line_chunking) == "LineWorkspaceChunkingStrategy()"
@@ -397,9 +356,8 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 slow_session.workspace_retrieval_status(),
             )
             assert closed["phase"] == "closed"
-            assert closed["vec_shadow"]["phase"] == "closed"
-            assert closed["vec_shadow"]["record_count"] == 0
-            assert closed["vec_shadow"]["accounted_bytes"] == 0
+            assert closed["vector_records"] == 0
+            assert closed["vector_bytes"] == 0
             await agent.close_async()
 
     asyncio.run(scenario())

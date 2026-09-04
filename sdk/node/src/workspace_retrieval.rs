@@ -11,7 +11,7 @@ use a3s_code_core::{
     WorkspaceHybridSearchResult as RustHybridSearchResult, WorkspaceRerankFallbackReason,
     WorkspaceRerankMode, WorkspaceRerankStatus, WorkspaceRetrievalStatus,
     WorkspaceSemanticSearchHit, WorkspaceSemanticSearchRequest as RustSemanticSearchRequest,
-    WorkspaceSemanticSearchResult as RustSemanticSearchResult, WorkspaceVectorEngine,
+    WorkspaceSemanticSearchResult as RustSemanticSearchResult,
 };
 use async_trait::async_trait;
 use napi::bindgen_prelude::Promise;
@@ -35,7 +35,7 @@ pub use chunking::{
     RecursiveWorkspaceChunkingStrategy,
 };
 pub use options::{
-    WorkspaceRetrievalOptions, WorkspaceRetrievalOptionsObject, WorkspaceVectorEngineOption,
+    WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, WorkspaceRetrievalOptionsObject,
 };
 pub use provider::CallbackEmbeddingProvider;
 pub use rerank::DeterministicWorkspaceReranker;

@@ -1,10 +1,10 @@
-//! A3S Vec FTS/BM25 workspace search.
+//! zvec-rust FTS/BM25 workspace search.
 
 mod ranking;
 #[cfg(test)]
 mod tests;
 
-use self::ranking::{query_terms, tokenize, VecLexicalIndex};
+use self::ranking::{build_lexical_index, query_terms, tokenize, LexicalIndex};
 use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::workspace::{
@@ -73,7 +73,7 @@ impl Tool for Bm25Tool {
     }
 
     fn description(&self) -> &str {
-        "Rank workspace text chunks with A3S Vec FTS/BM25 lexical relevance. Use for multi-term or natural-language repository searches; use grep for exact strings and regular expressions."
+        "Rank workspace text chunks with zvec-rust FTS/BM25 lexical relevance. Use for multi-term or natural-language repository searches; use grep for exact strings and regular expressions."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -223,7 +223,7 @@ impl Tool for Bm25Tool {
         };
         let mut ranked = lexical
             .search(&terms, scan.sources.len())
-            .map_err(|error| anyhow::anyhow!("A3S Vec FTS query failed: {error}"))?
+            .map_err(|error| anyhow::anyhow!("lexical FTS query failed: {error}"))?
             .into_iter()
             .filter(|(_, score)| score.is_finite() && *score > 0.0)
             .collect::<Vec<_>>();
@@ -406,7 +406,7 @@ fn incremental_search_metadata(
         "algorithm": "bm25",
         "mode": "incremental_catalog",
         "parameters": {
-            "engine": "a3s_vec_fts",
+            "engine": result.lexical_engine.stable_id(),
             "tokenizer": "whitespace",
             "chunk_lines": CHUNK_LINES,
         },
@@ -583,13 +583,15 @@ async fn scan_candidates(paths: Vec<WorkspacePath>, ctx: &ToolContext) -> ScanOu
     outcome
 }
 
-fn build_scan_index(scan: &ScanOutcome) -> Result<VecLexicalIndex, a3s_vec::Error> {
-    VecLexicalIndex::build(
+fn build_scan_index(scan: &ScanOutcome) -> Result<LexicalIndex> {
+    build_lexical_index(
         scan.sources
             .iter()
             .enumerate()
             .map(|(index, source)| (format!("scan-{index}"), source.lines.join("\n"))),
+        crate::workspace::WorkspaceLexicalEngine::default(),
     )
+    .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 fn render_result(
@@ -664,7 +666,7 @@ fn search_metadata(
     serde_json::json!({
         "algorithm": "bm25",
         "parameters": {
-            "engine": "a3s_vec_fts",
+            "engine": crate::workspace::WorkspaceLexicalEngine::default().stable_id(),
             "tokenizer": "whitespace",
             "chunk_lines": CHUNK_LINES,
         },

@@ -1,13 +1,11 @@
 use super::catalog::ChunkCatalogSnapshot;
-use super::types::{WorkspaceChunk, WorkspaceIndexError, WorkspaceIndexResult};
-use crate::workspace::WorkspacePath;
-use a3s_vec::{
-    Collection, CollectionOptions, CollectionSchema, DataType, Doc, Durability, FieldSchema, Fts,
-    IndexParams, SearchQuery,
+use super::types::{
+    WorkspaceChunk, WorkspaceIndexError, WorkspaceIndexResult, WorkspaceLexicalEngine,
 };
+use crate::workspace::WorkspacePath;
 use std::collections::{HashMap, HashSet};
+use std::mem::size_of;
 use std::sync::Arc;
-use tempfile::TempDir;
 
 const DEFAULT_QUERY_TERM_LIMIT: usize = 32;
 const DEFAULT_CANDIDATE_FILE_LIMIT: usize = 256;
@@ -15,7 +13,6 @@ const DEFAULT_RESULT_LIMIT: usize = 10;
 const MAX_RESULT_LIMIT: usize = 25;
 const MAX_QUERY_BYTES: usize = 2_048;
 const DEFAULT_RESULTS_PER_FILE: usize = 2;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LexicalSearchRequest {
     pub query: String,
@@ -49,6 +46,7 @@ pub struct LexicalSearchHit {
 pub struct LexicalSearchResult {
     pub catalog_revision: u64,
     pub source_revision: u64,
+    pub lexical_engine: WorkspaceLexicalEngine,
     pub query_terms: Vec<String>,
     pub matching_files: usize,
     pub selected_files: usize,
@@ -57,159 +55,286 @@ pub struct LexicalSearchResult {
     pub hits: Vec<LexicalSearchHit>,
 }
 
-/// One session-local A3S Vec FTS projection.
-///
-/// The caller owns admission, chunking, and source verification. This helper
-/// owns only the token postings and BM25 score calculation. It is shared by
-/// the incremental catalog and the bounded query-time compatibility path so
-/// there is no second Code-local BM25 implementation.
-pub(crate) struct VecLexicalIndex {
-    collection: Collection,
-    // Keep the temporary directory alive for the collection handle. The
-    // collection field is declared first so it is released before the
-    // directory during normal Rust drop order.
-    _temp_dir: TempDir,
+/// One dependency-free lexical document used by minimal builds.
+#[derive(Debug, Clone)]
+struct PortableDocument {
+    term_frequencies: HashMap<String, u32>,
+    length: usize,
+}
+
+impl PortableDocument {
+    fn from_tokens(tokens: &[String]) -> Self {
+        let mut term_frequencies = HashMap::new();
+        for token in tokens {
+            *term_frequencies.entry(token.clone()).or_insert(0) += 1;
+        }
+        Self {
+            term_frequencies,
+            length: tokens.len(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PortablePosting {
+    document: usize,
+    term_frequency: u32,
+}
+
+/// Small, deterministic scorer used by minimal builds that intentionally omit
+/// the native zvec artifact. It shares the exact tokenizer and result contract
+/// with the zvec path, so disabling native artifacts never removes BM25.
+pub(crate) struct PortableLexicalIndex {
+    documents: Vec<PortableDocument>,
+    postings: HashMap<String, Vec<PortablePosting>>,
     terms: HashSet<String>,
-    ordinals: HashMap<String, usize>,
-    document_count: usize,
     estimated_bytes: usize,
 }
 
-impl VecLexicalIndex {
-    /// Build an index from stable keys and source text.
-    ///
-    /// `K` and `T` deliberately accept both borrowed and owned values. The
-    /// collection copies normalized tokens into its own documents, while the
-    /// caller can retain its source text without coupling it to the index.
-    pub(crate) fn build<I, K, T>(documents: I) -> Result<Self, a3s_vec::Error>
-    where
-        I: IntoIterator<Item = (K, T)>,
-        K: AsRef<str>,
-        T: AsRef<str>,
-    {
-        let mut body = FieldSchema::new("body", DataType::String, false, 0)?;
-        let fts = IndexParams::fts(Some("whitespace"), None, None)?;
-        body.set_index_params(&fts)?;
-        let schema = CollectionSchema::builder("workspace_lexical")
-            .add_field(body)
-            .build()?;
-        let temp_dir = tempfile::tempdir()?;
-        let collection_path = temp_dir
-            .path()
-            .join("collection")
-            .to_str()
-            .ok_or_else(|| a3s_vec::Error::invalid_argument("lexical path is not UTF-8"))?
-            .to_owned();
-        let mut options = CollectionOptions::new()?;
-        options.set_durability(Durability::Manual)?;
-        let collection = Collection::create(&collection_path, &schema, Some(&options))?;
-
-        let mut docs = Vec::new();
+impl PortableLexicalIndex {
+    fn build(documents: &[(String, String)]) -> WorkspaceIndexResult<Self> {
+        let mut seen_keys = HashSet::new();
+        let mut indexed = Vec::new();
         let mut terms = HashSet::new();
-        let mut ordinals = HashMap::new();
         for (key, text) in documents {
-            let key = key.as_ref();
             if key.is_empty() || key.contains('\0') {
-                return Err(a3s_vec::Error::invalid_argument(
-                    "lexical document key must be non-empty and contain no NUL byte",
+                return Err(WorkspaceIndexError::InvalidConfig(
+                    "lexical document key must be non-empty and contain no NUL byte".to_owned(),
                 ));
             }
-            if ordinals.contains_key(key) {
-                return Err(a3s_vec::Error::invalid_argument(
-                    "lexical document keys must be unique",
+            if !seen_keys.insert(key) {
+                return Err(WorkspaceIndexError::InvalidConfig(
+                    "lexical document keys must be unique".to_owned(),
                 ));
             }
-            let tokens = tokenize(text.as_ref());
+            let tokens = tokenize(text);
             if tokens.is_empty() {
                 continue;
             }
-            // Keep the caller ordinal dense over indexed documents. Empty
-            // source chunks are intentionally omitted from the FTS
-            // collection, so using the input position here would make a
-            // later non-empty chunk resolve to the wrong source chunk.
-            let indexed_ordinal = ordinals.len();
-            ordinals.insert(key.to_owned(), indexed_ordinal);
             terms.extend(tokens.iter().cloned());
-            let mut document = Doc::with_pk(key)?;
-            document.add_string("body", &tokens.join(" "))?;
-            docs.push(document);
+            indexed.push(PortableDocument::from_tokens(&tokens));
         }
-        if !docs.is_empty() {
-            let references = docs.iter().collect::<Vec<_>>();
-            let result = collection.insert(&references)?;
-            if result.error_count != 0 {
-                return Err(a3s_vec::Error::failed_precondition(format!(
-                    "lexical document insert rejected {} document(s)",
-                    result.error_count
-                )));
+        let mut postings = HashMap::<String, Vec<PortablePosting>>::new();
+        for (document, stats) in indexed.iter().enumerate() {
+            for (term, frequency) in &stats.term_frequencies {
+                postings
+                    .entry(term.clone())
+                    .or_default()
+                    .push(PortablePosting {
+                        document,
+                        term_frequency: *frequency,
+                    });
             }
         }
-        let estimated_bytes =
-            usize::try_from(collection.stats()?.accounted_bytes).unwrap_or(usize::MAX);
+        let estimated_bytes = size_of::<Self>()
+            .saturating_add(indexed.len().saturating_mul(size_of::<PortableDocument>()))
+            .saturating_add(
+                indexed
+                    .iter()
+                    .flat_map(|document| document.term_frequencies.keys())
+                    .map(|term| term.capacity())
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                postings
+                    .iter()
+                    .map(|(term, values)| {
+                        term.capacity().saturating_add(
+                            values.len().saturating_mul(size_of::<PortablePosting>()),
+                        )
+                    })
+                    .sum::<usize>(),
+            );
         Ok(Self {
-            collection,
-            _temp_dir: temp_dir,
+            documents: indexed,
+            postings,
             terms,
-            document_count: ordinals.len(),
-            ordinals,
             estimated_bytes,
         })
     }
 
-    pub(crate) fn document_count(&self) -> usize {
-        self.document_count
+    fn document_count(&self) -> usize {
+        self.documents.len()
     }
 
-    pub(crate) fn estimated_bytes(&self) -> usize {
+    fn estimated_bytes(&self) -> usize {
         self.estimated_bytes
     }
 
-    pub(crate) fn has_any_term(&self, terms: &[String]) -> bool {
+    fn has_any_term(&self, terms: &[String]) -> bool {
         terms.iter().any(|term| self.terms.contains(term))
     }
 
-    /// Search and return `(caller_ordinal, score)` pairs.
+    fn search(&self, terms: &[String], limit: usize) -> WorkspaceIndexResult<Vec<(usize, f64)>> {
+        if terms.is_empty() || limit == 0 || self.documents.is_empty() {
+            return Ok(Vec::new());
+        }
+        const K1: f64 = 1.2;
+        const B: f64 = 0.75;
+        let document_count = self.documents.len() as f64;
+        let average_length = (self
+            .documents
+            .iter()
+            .map(|document| document.length)
+            .sum::<usize>() as f64
+            / document_count)
+            .max(1.0);
+        let mut scores = vec![0.0; self.documents.len()];
+        let mut seen = HashSet::new();
+        for term in terms {
+            if !seen.insert(term.as_str()) {
+                continue;
+            }
+            let Some(postings) = self.postings.get(term) else {
+                continue;
+            };
+            let document_frequency = postings.len() as f64;
+            let idf = (1.0
+                + (document_count - document_frequency + 0.5) / (document_frequency + 0.5))
+                .ln();
+            for posting in postings {
+                let length_ratio = self.documents[posting.document].length as f64 / average_length;
+                let frequency = posting.term_frequency as f64;
+                let denominator = frequency + K1 * (1.0 - B + B * length_ratio);
+                scores[posting.document] +=
+                    idf * (frequency * (K1 + 1.0) / denominator.max(f64::EPSILON));
+            }
+        }
+        let mut hits = scores
+            .into_iter()
+            .enumerate()
+            .filter(|(_, score)| score.is_finite() && *score > 0.0)
+            .collect::<Vec<_>>();
+        hits.sort_by(|left, right| {
+            right
+                .1
+                .total_cmp(&left.1)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        hits.truncate(limit);
+        Ok(hits)
+    }
+}
+
+/// Backend-neutral lexical index handle. The native zvec binding is the
+/// product default; the portable variant is available only for minimal builds.
+pub(crate) enum LexicalIndex {
+    Portable(PortableLexicalIndex),
+    #[cfg(feature = "zvec-rust-fts")]
+    ZvecRust(super::zvec_rust::ZvecRustLexicalIndex),
+}
+
+impl LexicalIndex {
+    fn build(
+        documents: &[(String, String)],
+        engine: WorkspaceLexicalEngine,
+    ) -> WorkspaceIndexResult<Self> {
+        match engine {
+            WorkspaceLexicalEngine::Portable => {
+                PortableLexicalIndex::build(documents).map(Self::Portable)
+            }
+            WorkspaceLexicalEngine::ZvecRust => {
+                #[cfg(feature = "zvec-rust-fts")]
+                {
+                    super::zvec_rust::ZvecRustLexicalIndex::build(
+                        documents
+                            .iter()
+                            .map(|(key, text)| (key.as_str(), text.as_str())),
+                    )
+                    .map(Self::ZvecRust)
+                    .map_err(|error| {
+                        WorkspaceIndexError::InvalidConfig(format!(
+                            "zvec-rust lexical index failed: {error}"
+                        ))
+                    })
+                }
+                #[cfg(not(feature = "zvec-rust-fts"))]
+                {
+                    Err(WorkspaceIndexError::InvalidConfig(
+                        "WorkspaceLexicalEngine::ZvecRust requires the zvec-rust-fts feature"
+                            .to_owned(),
+                    ))
+                }
+            }
+        }
+    }
+
+    pub(crate) fn document_count(&self) -> usize {
+        match self {
+            Self::Portable(index) => index.document_count(),
+            #[cfg(feature = "zvec-rust-fts")]
+            Self::ZvecRust(index) => index.document_count(),
+        }
+    }
+
+    pub(crate) fn estimated_bytes(&self) -> usize {
+        match self {
+            Self::Portable(index) => index.estimated_bytes(),
+            #[cfg(feature = "zvec-rust-fts")]
+            Self::ZvecRust(index) => index.estimated_bytes(),
+        }
+    }
+
+    pub(crate) fn has_any_term(&self, terms: &[String]) -> bool {
+        match self {
+            Self::Portable(index) => index.has_any_term(terms),
+            #[cfg(feature = "zvec-rust-fts")]
+            Self::ZvecRust(index) => index.has_any_term(terms),
+        }
+    }
+
     pub(crate) fn search(
         &self,
         terms: &[String],
         limit: usize,
-    ) -> Result<Vec<(usize, f64)>, a3s_vec::Error> {
-        if terms.is_empty() || limit == 0 {
-            return Ok(Vec::new());
+    ) -> WorkspaceIndexResult<Vec<(usize, f64)>> {
+        match self {
+            Self::Portable(index) => index.search(terms, limit),
+            #[cfg(feature = "zvec-rust-fts")]
+            Self::ZvecRust(index) => index.search(terms, limit).map_err(|error| {
+                WorkspaceIndexError::InvalidQuery(format!("zvec-rust FTS search failed: {error}"))
+            }),
         }
-        let mut fts = Fts::new()?;
-        fts.set_match_string(&terms.join(" "))?;
-        let topk = i32::try_from(limit)
-            .map_err(|_| a3s_vec::Error::invalid_argument("lexical result limit exceeds i32"))?;
-        let mut query = SearchQuery::fts("body", &fts, topk)?;
-        query.set_output_fields(&[])?;
-        let documents = self.collection.query(&query)?;
-        Ok(documents
-            .into_iter()
-            .filter_map(|document| {
-                let key = document.get_pk()?;
-                let ordinal = *self.ordinals.get(key)?;
-                Some((ordinal, f64::from(document.get_score())))
-            })
-            .collect())
     }
 }
 
+/// Build one bounded lexical index through the selected backend.
+///
+/// The query-time path and incremental workspace catalog intentionally call the
+/// same function, keeping backend selection in one place.
+pub(crate) fn build_lexical_index<I, K, T>(
+    documents: I,
+    engine: WorkspaceLexicalEngine,
+) -> WorkspaceIndexResult<LexicalIndex>
+where
+    I: IntoIterator<Item = (K, T)>,
+    K: AsRef<str>,
+    T: AsRef<str>,
+{
+    let documents = documents
+        .into_iter()
+        .map(|(key, text)| (key.as_ref().to_owned(), text.as_ref().to_owned()))
+        .collect::<Vec<_>>();
+    LexicalIndex::build(&documents, engine)
+}
+
 pub(crate) struct LexicalPartition {
-    index: VecLexicalIndex,
+    index: LexicalIndex,
     chunks: Arc<[Arc<WorkspaceChunk>]>,
     pub(crate) document_count: usize,
 }
 
 impl LexicalPartition {
-    /// Build the catalog's lexical partition through the A3S Vec FTS API.
+    /// Build the catalog's lexical partition through the selected FTS API.
     ///
     /// Code still owns chunk admission and path policy, while tokenization,
     /// postings, BM25 statistics, and deterministic score ordering are owned
-    /// by the same engine used by the standalone Vec crate. The collection is
-    /// deliberately temporary: workspace source remains authoritative and no
-    /// durable SQLite/sqlite-vec path is introduced by lexical search.
-    pub(crate) fn build(chunks: Arc<[Arc<WorkspaceChunk>]>) -> WorkspaceIndexResult<Self> {
+    /// by the selected engine. Workspace source remains authoritative and no
+    /// durable cross-session index is introduced by lexical search.
+    pub(crate) fn build(
+        chunks: Arc<[Arc<WorkspaceChunk>]>,
+        engine: WorkspaceLexicalEngine,
+    ) -> WorkspaceIndexResult<Self> {
         let indexed_chunks: Arc<[Arc<WorkspaceChunk>]> = Arc::from(
             chunks
                 .iter()
@@ -217,12 +342,12 @@ impl LexicalPartition {
                 .cloned()
                 .collect::<Vec<_>>(),
         );
-        let index = VecLexicalIndex::build(
+        let index = build_lexical_index(
             indexed_chunks
                 .iter()
                 .map(|chunk| (chunk.id.as_str(), chunk.text.as_ref())),
-        )
-        .map_err(|error| lexical_build_error("index", error))?;
+            engine,
+        )?;
         let document_count = index.document_count();
         Ok(Self {
             index,
@@ -247,28 +372,17 @@ impl LexicalPartition {
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        self.index
-            .search(terms, limit)
-            .map_err(|error| lexical_query_error("FTS search", error))
-            .map(|hits| {
-                hits.into_iter()
-                    .filter_map(|(ordinal, score)| {
-                        self.chunks
-                            .get(ordinal)
-                            .cloned()
-                            .map(|chunk| (chunk, score))
-                    })
-                    .collect()
-            })
+        self.index.search(terms, limit).map(|hits| {
+            hits.into_iter()
+                .filter_map(|(ordinal, score)| {
+                    self.chunks
+                        .get(ordinal)
+                        .cloned()
+                        .map(|chunk| (chunk, score))
+                })
+                .collect()
+        })
     }
-}
-
-fn lexical_build_error(context: &str, error: a3s_vec::Error) -> WorkspaceIndexError {
-    WorkspaceIndexError::InvalidConfig(format!("A3S Vec lexical {context} failed: {error}"))
-}
-
-fn lexical_query_error(context: &str, error: a3s_vec::Error) -> WorkspaceIndexError {
-    WorkspaceIndexError::InvalidQuery(format!("A3S Vec lexical {context} failed: {error}"))
 }
 
 pub(crate) fn search_catalog(
@@ -312,6 +426,7 @@ pub(crate) fn search_catalog(
         return Ok(LexicalSearchResult {
             catalog_revision: snapshot.revision(),
             source_revision: snapshot.source_revision(),
+            lexical_engine: snapshot.lexical_engine(),
             query_terms: terms,
             matching_files,
             selected_files: selected.len(),
@@ -321,8 +436,13 @@ pub(crate) fn search_catalog(
         });
     }
     let mut ranked = Vec::new();
+    // The final contract admits at most `max_results_per_file` hits from any
+    // one file. Asking each backend for more candidates only adds native FTS
+    // work (and result materialization) without changing the observable
+    // ordering.
+    let per_file_limit = request.limit.min(request.max_results_per_file);
     for (_, file) in selected {
-        for (chunk, score) in file.lexical.search(&terms, request.limit)? {
+        for (chunk, score) in file.lexical.search(&terms, per_file_limit)? {
             if score.is_finite() && score > 0.0 {
                 ranked.push(LexicalSearchHit { chunk, score });
             }
@@ -354,6 +474,7 @@ pub(crate) fn search_catalog(
     Ok(LexicalSearchResult {
         catalog_revision: snapshot.revision(),
         source_revision: snapshot.source_revision(),
+        lexical_engine: snapshot.lexical_engine(),
         query_terms: terms,
         matching_files,
         selected_files,

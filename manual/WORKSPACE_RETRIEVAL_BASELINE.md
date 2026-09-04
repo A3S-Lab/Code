@@ -9,7 +9,7 @@ evidence are recorded separately in the
 This document records the measurement context, quality baseline, release
 budgets, and adversarial trust boundaries for the first Workspace Retrieval
 implementation. The machine-readable fixtures live in
-`core/tests/fixtures/workspace-retrieval-v1/` and the real A3S Vec FTS/BM25 tool
+`core/tests/fixtures/workspace-retrieval-v1/` and the real zvec-rust FTS/BM25 tool
 executes them in the core test suite.
 
 ## Quality baseline
@@ -18,7 +18,7 @@ The synthetic v1 corpus has nine judged queries: two exact multi-term queries,
 two identifier queries, two exact CJK queries, and three paraphrase queries.
 The labels are independent of the returned BM25 paths.
 
-| Metric | A3S Vec FTS/BM25 v1 |
+| Metric | zvec-rust FTS/BM25 v1 |
 | --- | ---: |
 | Recall@10 | 0.6667 (6/9) |
 | Mean reciprocal rank | 0.6667 |
@@ -85,6 +85,12 @@ dimension, record count, and whether source reads or provider latency were
 included. A later gate may tighten these budgets but cannot weaken them without
 an explicit roadmap decision and new fixture version.
 
+The schema-v5 qualification keeps these historical 25,000-record exact-vector
+budgets intact and measures native lexical/hybrid behavior on a separate
+four-file, 512-chunk fixture. That hybrid profile includes warm-cache
+authoritative source rereads and reports its workload explicitly; it must not
+be described as a 25,000-vector hybrid measurement.
+
 ## Adversarial trust boundaries
 
 | Threat | Required invariant | Deterministic evidence |
@@ -130,12 +136,13 @@ estimated lexical-index memory at 64 MiB each, in addition to file and chunk
 limits. A file that would exceed a budget is reported as a failed partition;
 already admitted smaller files remain queryable and publication stays atomic.
 
-A3S Vec FTS/BM25 reuses the catalog's per-file postings after its first source
+zvec-rust FTS/BM25 reuses the catalog's per-file indexes after its first source
 revision. Until then, and for custom providers without a catalog, it builds the
-same bounded temporary Vec projection over the query-time scan. The locked
+same bounded temporary lexical projection over the query-time scan. The locked
 nine-query result ordering is equal on both paths, while the incremental path
-reports zero query-time file reads. Code owns only admission, chunking, source
-verification, and rendering; it no longer carries a second BM25 scorer.
+reports zero query-time file reads. Minimal builds use the separately reported
+portable scorer. Code owns admission, chunking, source verification, and
+rendering; it does not carry a second product BM25 implementation.
 
 ## CODE-E1 implementation evidence
 
@@ -191,37 +198,25 @@ catalog and lexical paths stay available.
 
 `AgentSession::workspace_retrieval_status` exposes phase, catalog/source/vector
 revisions, eligible/catalog/indexed file and chunk counts, basis-point coverage,
-queue depth, current and cumulative failures, vector records/bytes, and the
-immutable model descriptor. It also exposes A3S Memory as the active vector
-engine and a bounded `vec_shadow` observation containing only lifecycle,
-resource, mutation, and parity counters. Session close cancels active embedding,
+queue depth, current and cumulative failures, vector records/bytes, batching,
+and the immutable model descriptor. Session close cancels active embedding,
 joins or aborts the single owned task within the configured deadline, clears
-and drops the Memory index, closes the session-local temporary Vec collection,
-and shuts down only local manifest/catalog work created by that session.
+and drops the Memory index, releases lexical catalog partitions, and shuts down
+only local manifest/catalog work created by that session.
 Host-owned workspaces retain their external lifecycle. Regression
 tests cover partial readiness, update-during-embedding fencing, per-file
 degradation, build-after-start failure cleanup, default disablement, custom
 workspace rejection, synchronous rejection, idempotent close, and weak-reference
 vector cleanup.
 
-## VEC-SHADOW1 migration evidence
+## Backend consolidation evidence
 
-Code dependency commit `708a85e3` mirrors each already-validated Memory
-`VectorRecord` batch into the current A3S Vec validation pin `13585ccd` without
-a second provider call. Memory remains the only result oracle. Queries execute
-under one publication gate;
-Vec IDs, partitions, f32 score bits, searched-record counts, and truncation are
-compared, but the Memory result is returned unchanged. Any Vec initialization,
-mutation, query, resource, or comparison failure degrades only the shadow.
-
-The Vec collection is session-local and created below an operating-system
-temporary directory with manual durability. It is not a durable workspace
-index or shared service. The authoritative Memory `max_records` and `max_bytes`
-limits remain unchanged; Vec receives the record ceiling for documents, write
-batches, and query candidates and reports its separate `accounted_bytes`
-estimate. See [Workspace Retrieval A3S Vec Migration](WORKSPACE_RETRIEVAL_VEC_MIGRATION.md)
-for the mapping, failure isolation, benchmark evidence, promotion gates, and
-binary rollback boundary.
+The lexical and semantic projections now have one implementation each in
+product builds: zvec-rust for FTS/BM25 and A3S Memory for exact semantic
+vectors. There is no duplicate vector projection or authority selector. The
+native lexical lifecycle, platform package contract, fallback build, descriptor
+limits, and rollback boundary are documented in
+[Workspace Retrieval Backends](WORKSPACE_RETRIEVAL_BACKENDS.md).
 
 ## CODE-Q1 implementation evidence
 

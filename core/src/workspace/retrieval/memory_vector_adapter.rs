@@ -1,9 +1,8 @@
-//! Compatibility adapter for the legacy A3S Memory vector implementation.
+//! Adapter for the session-local A3S Memory vector implementation.
 //!
 //! Workspace retrieval talks only to [`WorkspaceVectorIndex`]. Keeping the
-//! dependency-owned trait import in this one module makes the migration
-//! boundary explicit and prevents the semantic runtime from accidentally
-//! growing Memory-specific behavior.
+//! dependency-owned trait import in this one module keeps the semantic runtime
+//! independent of Memory-specific implementation details.
 
 use super::vector_contract::{
     VectorIndexChangeToken, VectorIndexDescriptor, VectorIndexObservation, VectorIndexStatus,

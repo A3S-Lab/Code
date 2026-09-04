@@ -1,18 +1,24 @@
-//! Locked release qualification for session-ephemeral workspace retrieval.
+//! Release qualification for session-local workspace retrieval.
 //!
-//! Run from the Code repository root:
+//! Run from the Code repository root with:
 //!
-//! `cargo run -p a3s-code-core --example workspace_retrieval_benchmark --release`
+//! `cargo run --locked --release -p a3s-code-core --example workspace_retrieval_benchmark`
+//!
+//! The benchmark exercises the production architecture: A3S Memory owns the
+//! exact semantic vectors, the selected lexical engine owns FTS/BM25, hybrid
+//! channels are fused with RRF, and the optional deterministic reranker is
+//! bounded by its public resource contract. The embedding provider is
+//! deterministic so the measurements exclude network variability.
 
 use a3s_code_core::embedding::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingProvider, EmbeddingProviderDescriptor,
     EmbeddingProviderError, EmbeddingVector,
 };
 use a3s_code_core::{
-    Agent, CodeConfig, SessionOptions, WorkspaceHybridSearchRequest, WorkspaceRerankMode,
+    Agent, ChunkCatalogLimits, ChunkingConfig, CodeConfig, SessionOptions,
+    WorkspaceHybridSearchRequest, WorkspaceLexicalEngine, WorkspaceRerankMode,
     WorkspaceRerankOptions, WorkspaceRetrievalOptions, WorkspaceRetrievalPhase,
-    WorkspaceSemanticIndexLimits, WorkspaceVecShadowPhase, WorkspaceVecShadowStatus,
-    WorkspaceVectorEngine,
+    WorkspaceSemanticIndexLimits,
 };
 use a3s_memory::vector::{
     InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor, VectorRecord, VectorSearchRequest,
@@ -25,7 +31,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-const RECORD_COUNT: usize = 25_000;
+// Keep the exact-vector gate compatible with the historical release profile.
+const EXACT_RECORD_COUNT: usize = 25_000;
 const DIMENSION: usize = 384;
 const TOP_K: usize = 20;
 const WARMUP_SAMPLES: usize = 20;
@@ -36,10 +43,17 @@ const RERANK_P95_DELTA_BUDGET_MS: f64 = 10.0;
 const RERANK_SCRATCH_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 const RERANK_CANDIDATE_BUDGET: usize = 100;
 const MAX_VECTOR_BYTES: usize = 128 * 1024 * 1024;
-const MAX_COMBINED_BYTES: usize = 256 * 1024 * 1024;
-const CHUNKS_PER_FILE: usize = 128;
-const LINES_PER_CHUNK: usize = 80;
-const VECTOR_ENGINE_ENV: &str = "A3S_WORKSPACE_VECTOR_ENGINE";
+const MAX_CATALOG_BYTES: usize = 256 * 1024 * 1024;
+
+// The hybrid fixture is intentionally multi-chunk per file. Four sizeable
+// partitions exercise the native zvec path while avoiding an artificial
+// descriptor storm: zvec/RocksDB owns several descriptors per collection and
+// Code's catalog deliberately keeps that resource bounded.
+const HYBRID_FILE_COUNT: usize = 4;
+const HYBRID_CHUNKS_PER_FILE: usize = 128;
+const HYBRID_LINES_PER_CHUNK: usize = 16;
+const HYBRID_RECORD_COUNT: usize = HYBRID_FILE_COUNT * HYBRID_CHUNKS_PER_FILE;
+const LEXICAL_ENGINE_ENV: &str = "A3S_WORKSPACE_LEXICAL_ENGINE";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -48,36 +62,41 @@ async fn main() -> Result<()> {
     }
 
     let exact = benchmark_exact_vector_search().await?;
-    let vector_engine = configured_vector_engine()?;
+    let lexical_engine = configured_lexical_engine()?;
     let hybrid_rrf = benchmark_hybrid_search(
         WorkspaceRerankOptions::default(),
         "workspace-retrieval-qualification-rrf",
-        vector_engine,
+        lexical_engine,
     )
     .await?;
-    let hybrid = benchmark_hybrid_search(
+    let hybrid_deterministic = benchmark_hybrid_search(
         WorkspaceRerankOptions::deterministic(),
         "workspace-retrieval-qualification-rerank",
-        vector_engine,
+        lexical_engine,
     )
     .await?;
+
     let exact_passed = exact.latency.p95_ms <= EXACT_P95_BUDGET_MS;
-    let hybrid_rrf_passed =
-        hybrid_rrf.latency.p95_ms <= HYBRID_P95_BUDGET_MS && hybrid_rrf.batching_passed();
-    let hybrid_deterministic_passed =
-        hybrid.latency.p95_ms <= HYBRID_P95_BUDGET_MS && hybrid.batching_passed();
-    let hybrid_passed = hybrid_rrf_passed && hybrid_deterministic_passed;
-    let rerank_p95_signed_delta_ms = hybrid.latency.p95_ms - hybrid_rrf.latency.p95_ms;
-    let rerank_p95_added_ms = rerank_p95_signed_delta_ms.max(0.0);
-    let rerank_passed = rerank_p95_added_ms <= RERANK_P95_DELTA_BUDGET_MS
-        && hybrid.max_evaluated_candidates <= RERANK_CANDIDATE_BUDGET
-        && hybrid.max_accounted_scratch_bytes <= RERANK_SCRATCH_BUDGET_BYTES
-        && hybrid.rerank_fallbacks == 0;
+    let rrf_passed = hybrid_rrf.latency.p95_ms <= HYBRID_P95_BUDGET_MS
+        && hybrid_rrf.batching_passed()
+        && hybrid_rrf.semantic_passed();
+    let deterministic_passed = hybrid_deterministic.latency.p95_ms <= HYBRID_P95_BUDGET_MS
+        && hybrid_deterministic.batching_passed()
+        && hybrid_deterministic.semantic_passed();
+    let signed_rerank_delta = hybrid_deterministic.latency.p95_ms - hybrid_rrf.latency.p95_ms;
+    let added_rerank_delta = signed_rerank_delta.max(0.0);
+    let rerank_passed = added_rerank_delta <= RERANK_P95_DELTA_BUDGET_MS
+        && hybrid_deterministic.max_input_candidates <= RERANK_CANDIDATE_BUDGET
+        && hybrid_deterministic.max_evaluated_candidates <= RERANK_CANDIDATE_BUDGET
+        && hybrid_deterministic.max_accounted_scratch_bytes <= RERANK_SCRATCH_BUDGET_BYTES
+        && hybrid_deterministic.rerank_fallbacks == 0;
+    let passed = exact_passed && rrf_passed && deterministic_passed && rerank_passed;
+
     let report = json!({
-        "schemaVersion": 4,
-        "profile": "workspace-retrieval-v3",
+        "schemaVersion": 5,
+        "profile": "workspace-retrieval-v5",
         "build": "release",
-        "vectorEngine": vector_engine,
+        "lexicalEngine": lexical_engine.stable_id(),
         "machine": {
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
@@ -85,8 +104,12 @@ async fn main() -> Result<()> {
             "processor": std::env::var("PROCESSOR_IDENTIFIER").ok(),
         },
         "parameters": {
-            "records": RECORD_COUNT,
+            "exactRecords": EXACT_RECORD_COUNT,
             "dimension": DIMENSION,
+            "hybridFiles": HYBRID_FILE_COUNT,
+            "hybridChunksPerFile": HYBRID_CHUNKS_PER_FILE,
+            "hybridRecords": HYBRID_RECORD_COUNT,
+            "linesPerChunk": HYBRID_LINES_PER_CHUNK,
             "topK": TOP_K,
             "warmupSamples": WARMUP_SAMPLES,
             "measuredSamples": MEASURED_SAMPLES,
@@ -102,57 +125,38 @@ async fn main() -> Result<()> {
             "budgetP95Ms": EXACT_P95_BUDGET_MS,
             "passed": exact_passed,
         },
-        "hybridRrfOnly": hybrid_json(&hybrid_rrf, hybrid_rrf_passed),
-        "hybridDeterministic": hybrid_json(&hybrid, hybrid_deterministic_passed),
+        "hybridRrfOnly": hybrid_json(&hybrid_rrf, rrf_passed),
+        "hybridDeterministic": hybrid_json(&hybrid_deterministic, deterministic_passed),
         "rerankComparison": {
             "rrfOnlyP95Ms": hybrid_rrf.latency.p95_ms,
-            "deterministicP95Ms": hybrid.latency.p95_ms,
-            "p95SignedDeltaMs": rerank_p95_signed_delta_ms,
-            "p95AddedMs": rerank_p95_added_ms,
+            "deterministicP95Ms": hybrid_deterministic.latency.p95_ms,
+            "p95SignedDeltaMs": signed_rerank_delta,
+            "p95AddedMs": added_rerank_delta,
             "budgetP95DeltaMs": RERANK_P95_DELTA_BUDGET_MS,
-            "maxInputCandidates": hybrid.max_input_candidates,
-            "maxEvaluatedCandidates": hybrid.max_evaluated_candidates,
+            "maxInputCandidates": hybrid_deterministic.max_input_candidates,
+            "maxEvaluatedCandidates": hybrid_deterministic.max_evaluated_candidates,
             "candidateBudget": RERANK_CANDIDATE_BUDGET,
-            "maxFeatureBytes": hybrid.max_feature_bytes,
-            "maxAccountedScratchBytes": hybrid.max_accounted_scratch_bytes,
+            "maxFeatureBytes": hybrid_deterministic.max_feature_bytes,
+            "maxAccountedScratchBytes": hybrid_deterministic.max_accounted_scratch_bytes,
             "scratchBudgetBytes": RERANK_SCRATCH_BUDGET_BYTES,
-            "fallbacks": hybrid.rerank_fallbacks,
+            "fallbacks": hybrid_deterministic.rerank_fallbacks,
             "passed": rerank_passed,
         },
-        "hybrid": {
-            "vectorEngine": hybrid.vector_engine,
-            "p50Ms": hybrid.latency.p50_ms,
-            "p95Ms": hybrid.latency.p95_ms,
-            "maxMs": hybrid.latency.max_ms,
-            "workspaceBuildMs": hybrid.workspace_build_ms,
-            "sessionConstructionMs": hybrid.session_construction_ms,
-            "sourceBytes": hybrid.source_bytes,
-            "vectorBytes": hybrid.vector_bytes,
-            "documentEmbeddingInputs": hybrid.document_embedding_inputs,
-            "documentEmbeddingRequests": hybrid.document_embedding_requests,
-            "documentBatchLimitLowerBound": hybrid.document_batch_limit_lower_bound,
-            "documentRequestAmplification": hybrid.document_request_amplification,
-            "queryEmbeddingInputs": hybrid.query_embedding_inputs,
-            "providerNetworkIncluded": false,
-            "authoritativeSourceReads": "included from the warm OS cache",
-            "budgetP95Ms": HYBRID_P95_BUDGET_MS,
-            "passed": hybrid_passed,
-        },
         "resourceCeilings": {
-            "vectorBytes": MAX_VECTOR_BYTES,
-            "catalogLexicalAndVectorBytes": MAX_COMBINED_BYTES,
+            "semanticVectorBytes": MAX_VECTOR_BYTES,
+            "catalogLexicalAndTextBytes": MAX_CATALOG_BYTES,
         },
-        "passed": exact_passed && hybrid_passed && rerank_passed,
+        "passed": passed,
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
 
-    if !exact_passed || !hybrid_passed || !rerank_passed {
+    if !passed {
         bail!(
             "workspace retrieval qualification failed: exact p95 {:.3} ms, RRF p95 {:.3} ms, deterministic p95 {:.3} ms, rerank delta {:.3} ms",
             exact.latency.p95_ms,
             hybrid_rrf.latency.p95_ms,
-            hybrid.latency.p95_ms,
-            rerank_p95_added_ms,
+            hybrid_deterministic.latency.p95_ms,
+            added_rerank_delta,
         );
     }
     Ok(())
@@ -160,18 +164,18 @@ async fn main() -> Result<()> {
 
 async fn benchmark_exact_vector_search() -> Result<ExactMeasurement> {
     let descriptor = VectorIndexDescriptor::new(DIMENSION)
-        .with_max_records(RECORD_COUNT)
+        .with_max_records(EXACT_RECORD_COUNT)
         .with_max_bytes(MAX_VECTOR_BYTES);
     let index = InMemoryVectorIndex::new(descriptor)?;
-    let records = (0..RECORD_COUNT)
+    let records = (0..EXACT_RECORD_COUNT)
         .map(|index| VectorRecord::new(format!("record-{index:05}"), basis_vector(index)))
         .collect();
     let build_started = Instant::now();
     let status = index.replace_partition("qualification", records).await?;
     let build_ms = elapsed_ms(build_started.elapsed());
-    if status.record_count != RECORD_COUNT {
+    if status.record_count != EXACT_RECORD_COUNT {
         bail!(
-            "exact index admitted {} records instead of {RECORD_COUNT}",
+            "exact index admitted {} records instead of {EXACT_RECORD_COUNT}",
             status.record_count
         );
     }
@@ -208,66 +212,34 @@ async fn benchmark_exact_vector_search() -> Result<ExactMeasurement> {
     })
 }
 
-fn hybrid_json(measurement: &HybridMeasurement, passed: bool) -> serde_json::Value {
-    json!({
-        "vectorEngine": measurement.vector_engine,
-        "p50Ms": measurement.latency.p50_ms,
-        "p95Ms": measurement.latency.p95_ms,
-        "maxMs": measurement.latency.max_ms,
-        "workspaceBuildMs": measurement.workspace_build_ms,
-        "sessionConstructionMs": measurement.session_construction_ms,
-        "sourceBytes": measurement.source_bytes,
-        "vectorBytes": measurement.vector_bytes,
-        "documentEmbeddingInputs": measurement.document_embedding_inputs,
-        "documentEmbeddingRequests": measurement.document_embedding_requests,
-        "documentBatches": measurement.document_batches,
-        "documentBatchLimitLowerBound": measurement.document_batch_limit_lower_bound,
-        "documentRequestAmplification": measurement.document_request_amplification,
-        "generationCompleteFlushes": measurement.generation_complete_flushes,
-        "timeToFirstReadyMs": measurement.time_to_first_ready_ms,
-        "nonTextInputs": measurement.non_text_inputs,
-        "queryEmbeddingInputs": measurement.query_embedding_inputs,
-        "activeVectorEngine": measurement.active_vector_engine,
-        "vecShadow": {
-            "phase": measurement.vec_shadow.phase,
-            "revision": measurement.vec_shadow.revision,
-            "recordCount": measurement.vec_shadow.record_count,
-            "accountedBytes": measurement.vec_shadow.accounted_bytes,
-            "successfulMutations": measurement.vec_shadow.successful_mutations,
-            "comparedQueries": measurement.vec_shadow.compared_queries,
-            "matchingQueries": measurement.vec_shadow.matching_queries,
-            "initializationFailures": measurement.vec_shadow.initialization_failures,
-            "failedMutations": measurement.vec_shadow.failed_mutations,
-            "mismatchedQueries": measurement.vec_shadow.mismatched_queries,
-            "failedQueries": measurement.vec_shadow.failed_queries,
-            "passed": measurement.migration_passed(),
-        },
-        "providerNetworkIncluded": false,
-        "authoritativeSourceReads": "included from the warm OS cache",
-        "budgetP95Ms": HYBRID_P95_BUDGET_MS,
-        "passed": passed,
-    })
-}
-
 async fn benchmark_hybrid_search(
     rerank: WorkspaceRerankOptions,
     session_id: &str,
-    vector_engine: WorkspaceVectorEngine,
+    lexical_engine: WorkspaceLexicalEngine,
 ) -> Result<HybridMeasurement> {
     let workspace = tempfile::tempdir()?;
-    let source_bytes = write_workspace(workspace.path())?;
+    let source_bytes = write_hybrid_workspace(workspace.path())?;
     let provider = Arc::new(BenchmarkProvider::new());
-    let provider_port: Arc<dyn EmbeddingProvider> = provider.clone();
-    let retrieval = WorkspaceRetrievalOptions::new(provider_port)
+    let retrieval = WorkspaceRetrievalOptions::new(provider.clone())
         .with_index_limits(WorkspaceSemanticIndexLimits {
-            max_records: RECORD_COUNT,
+            max_records: HYBRID_RECORD_COUNT,
             max_bytes: MAX_VECTOR_BYTES,
             shutdown_timeout: Duration::from_secs(5),
         })
-        .with_vector_engine(vector_engine)
+        .with_lexical_engine(lexical_engine)
+        .with_chunking_config(ChunkingConfig {
+            max_lines: HYBRID_LINES_PER_CHUNK,
+            max_bytes: 16 * 1024,
+            max_chunks_per_file: HYBRID_CHUNKS_PER_FILE,
+        })
+        .with_catalog_limits(ChunkCatalogLimits {
+            max_files: HYBRID_FILE_COUNT,
+            max_chunks: HYBRID_RECORD_COUNT,
+            max_text_bytes: MAX_CATALOG_BYTES,
+            max_index_bytes: MAX_CATALOG_BYTES,
+        })
         .with_rerank_options(rerank);
-    let config = benchmark_code_config()?;
-    let agent = Agent::from_config(config).await?;
+    let agent = Agent::from_config(benchmark_config()?).await?;
     let session_started = Instant::now();
     let session = agent
         .session_async(
@@ -280,26 +252,41 @@ async fn benchmark_hybrid_search(
         )
         .await?;
     let session_construction_ms = elapsed_ms(session_started.elapsed());
+
     let status = tokio::time::timeout(Duration::from_secs(120), async {
         loop {
             let status = session.workspace_retrieval_status();
-            if status.phase == WorkspaceRetrievalPhase::Ready
-                && status.vector_records == RECORD_COUNT
-            {
-                return Ok(status);
+            match status.phase {
+                WorkspaceRetrievalPhase::Ready
+                    if status.indexed_files == HYBRID_FILE_COUNT
+                        && status.indexed_chunks == HYBRID_RECORD_COUNT
+                        && status.vector_records == HYBRID_RECORD_COUNT =>
+                {
+                    return Ok(status);
+                }
+                WorkspaceRetrievalPhase::Degraded => {
+                    bail!("semantic workspace build degraded: {status:?}");
+                }
+                WorkspaceRetrievalPhase::Closed => {
+                    bail!("semantic workspace closed while building");
+                }
+                _ => tokio::time::sleep(Duration::from_millis(10)).await,
             }
-            if status.phase == WorkspaceRetrievalPhase::Degraded {
-                bail!("semantic workspace build degraded: {status:?}");
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .context("semantic workspace build exceeded 120 seconds")??;
-    let workspace_build_ms = elapsed_ms(session_started.elapsed());
-    if provider.document_inputs.load(Ordering::Acquire) != RECORD_COUNT {
+
+    if status.lexical_engine != lexical_engine {
         bail!(
-            "provider received {} document inputs instead of {RECORD_COUNT}",
+            "workspace status selected {:?}, expected {:?}",
+            status.lexical_engine,
+            lexical_engine
+        );
+    }
+    if provider.document_inputs.load(Ordering::Acquire) != HYBRID_RECORD_COUNT {
+        bail!(
+            "provider received {} document inputs instead of {HYBRID_RECORD_COUNT}",
             provider.document_inputs.load(Ordering::Acquire)
         );
     }
@@ -314,77 +301,62 @@ async fn benchmark_hybrid_search(
     let document_request_amplification =
         document_embedding_requests as f64 / document_batch_limit_lower_bound.max(1) as f64;
 
-    let request = WorkspaceHybridSearchRequest::new("x").with_limit(TOP_K);
+    let request = WorkspaceHybridSearchRequest::new("cache invalidation").with_limit(TOP_K);
     let rerank_observation = RerankObservation::default();
     for _ in 0..WARMUP_SAMPLES {
         let result = session.hybrid_search(request.clone()).await?;
-        if result.hits.is_empty() {
-            bail!("hybrid warmup returned no verified hits");
-        }
-        rerank_observation.observe(&result, rerank.mode)?;
+        validate_hybrid(&result, rerank.mode, lexical_engine)?;
+        rerank_observation.observe(&result)?;
     }
     let document_inputs_before_measurement = provider.document_inputs.load(Ordering::Acquire);
     let latency = measure_async(MEASURED_SAMPLES, || async {
         let result = session.hybrid_search(request.clone()).await?;
-        if result.hits.is_empty() {
-            bail!("hybrid sample returned no verified hits");
-        }
-        rerank_observation.observe(&result, rerank.mode)?;
+        validate_hybrid(&result, rerank.mode, lexical_engine)?;
+        rerank_observation.observe(&result)?;
         Ok(())
     })
     .await?;
-    let document_embedding_inputs = provider.document_inputs.load(Ordering::Acquire);
-    if document_embedding_inputs != document_inputs_before_measurement {
+    if provider.document_inputs.load(Ordering::Acquire) != document_inputs_before_measurement {
         bail!("repeated hybrid queries re-embedded unchanged source chunks");
     }
     let query_embedding_inputs = provider.query_inputs.load(Ordering::Acquire);
-    if query_embedding_inputs != WARMUP_SAMPLES + MEASURED_SAMPLES {
+    let expected_queries = WARMUP_SAMPLES + MEASURED_SAMPLES;
+    if query_embedding_inputs != expected_queries {
         bail!(
-            "provider received {query_embedding_inputs} query inputs instead of {}",
-            WARMUP_SAMPLES + MEASURED_SAMPLES
+            "provider received {query_embedding_inputs} query inputs instead of {expected_queries}"
         );
     }
-    let query_embedding_requests = provider.query_requests.load(Ordering::Acquire);
-    if query_embedding_requests != WARMUP_SAMPLES + MEASURED_SAMPLES {
+    if provider.query_requests.load(Ordering::Acquire) != expected_queries {
         bail!(
-            "provider received {query_embedding_requests} query requests instead of {}",
-            WARMUP_SAMPLES + MEASURED_SAMPLES
+            "provider received {} query requests instead of {expected_queries}",
+            provider.query_requests.load(Ordering::Acquire)
         );
     }
-    let migration = session.workspace_retrieval_status();
-    let expected_queries = (WARMUP_SAMPLES + MEASURED_SAMPLES) as u64;
-    if migration.active_vector_engine != Some(vector_engine)
-        || migration.vec_shadow.phase != WorkspaceVecShadowPhase::Ready
-        || migration.vec_shadow.record_count != RECORD_COUNT
-        || migration.vec_shadow.compared_queries != expected_queries
-        || migration.vec_shadow.matching_queries != expected_queries
-        || migration.vec_shadow.initialization_failures != 0
-        || migration.vec_shadow.failed_mutations != 0
-        || migration.vec_shadow.mismatched_queries != 0
-        || migration.vec_shadow.failed_queries != 0
-    {
-        bail!("A3S Vec migration shadow failed the Memory-oracle qualification: {migration:?}");
+
+    let final_status = session.workspace_retrieval_status();
+    if !matches!(final_status.phase, WorkspaceRetrievalPhase::Ready) {
+        bail!("workspace became unavailable during qualification: {final_status:?}");
     }
-    let vector_bytes = status.vector_bytes;
+    let vector_bytes = final_status.vector_bytes;
     session.close().await;
     let closed = session.workspace_retrieval_status();
     if closed.phase != WorkspaceRetrievalPhase::Closed
         || closed.vector_records != 0
         || closed.vector_bytes != 0
-        || closed.vec_shadow.phase != WorkspaceVecShadowPhase::Closed
-        || closed.vec_shadow.record_count != 0
-        || closed.vec_shadow.accounted_bytes != 0
     {
-        bail!("session retained semantic vector state after close");
+        bail!("session retained semantic vector state after close: {closed:?}");
     }
 
     Ok(HybridMeasurement {
         latency,
-        workspace_build_ms,
+        lexical_engine,
+        workspace_build_ms: elapsed_ms(session_started.elapsed()),
         session_construction_ms,
         source_bytes,
+        catalog_files: status.catalog_files,
+        catalog_chunks: status.catalog_chunks,
         vector_bytes,
-        document_embedding_inputs,
+        document_embedding_inputs: status.batching.document_inputs,
         document_embedding_requests,
         document_batches: status.batching.document_batches,
         document_batch_limit_lower_bound,
@@ -393,9 +365,6 @@ async fn benchmark_hybrid_search(
         time_to_first_ready_ms: status.batching.time_to_first_ready_ms,
         non_text_inputs: status.batching.non_text_inputs,
         query_embedding_inputs,
-        vector_engine,
-        active_vector_engine: migration.active_vector_engine,
-        vec_shadow: migration.vec_shadow,
         max_input_candidates: rerank_observation.input_candidates.load(Ordering::Acquire),
         max_evaluated_candidates: rerank_observation
             .evaluated_candidates
@@ -408,43 +377,71 @@ async fn benchmark_hybrid_search(
     })
 }
 
-#[derive(Default)]
-struct RerankObservation {
-    input_candidates: AtomicUsize,
-    evaluated_candidates: AtomicUsize,
-    feature_bytes: AtomicUsize,
-    accounted_scratch_bytes: AtomicUsize,
-    fallbacks: AtomicUsize,
-}
-
-impl RerankObservation {
-    fn observe(
-        &self,
-        result: &a3s_code_core::WorkspaceHybridSearchResult,
-        requested_mode: WorkspaceRerankMode,
-    ) -> Result<()> {
-        if result.rerank.requested_mode != requested_mode {
-            bail!("hybrid result reported an unexpected requested rerank mode");
-        }
-        if result.rerank.applied_mode != requested_mode {
-            bail!("hybrid result did not apply the requested bounded reranker");
-        }
-        if result.rerank.fallback.is_some() {
-            self.fallbacks.fetch_add(1, Ordering::AcqRel);
-        }
-        self.input_candidates
-            .fetch_max(result.rerank.input_candidates, Ordering::AcqRel);
-        self.evaluated_candidates
-            .fetch_max(result.rerank.evaluated_candidates, Ordering::AcqRel);
-        self.feature_bytes
-            .fetch_max(result.rerank.feature_bytes, Ordering::AcqRel);
-        self.accounted_scratch_bytes
-            .fetch_max(result.rerank.accounted_scratch_bytes, Ordering::AcqRel);
-        Ok(())
+fn validate_hybrid(
+    result: &a3s_code_core::WorkspaceHybridSearchResult,
+    requested_mode: WorkspaceRerankMode,
+    lexical_engine: WorkspaceLexicalEngine,
+) -> Result<()> {
+    if result.hits.is_empty() {
+        bail!("hybrid query returned no verified hits");
     }
+    if result.rerank.requested_mode != requested_mode
+        || result.rerank.applied_mode != requested_mode
+        || result.rerank.fallback.is_some()
+    {
+        bail!("unexpected reranker status: {:?}", result.rerank);
+    }
+    if result.semantic_status.lexical_engine != lexical_engine {
+        bail!("hybrid result reported an unexpected lexical engine");
+    }
+    let lexical = result
+        .channels
+        .iter()
+        .find(|channel| channel.channel == a3s_code_core::WorkspaceRetrievalChannel::Lexical)
+        .context("hybrid result omitted the lexical channel")?;
+    if lexical.candidate_count == 0 {
+        bail!("hybrid query did not exercise the lexical channel");
+    }
+    if result.hits.iter().any(|hit| hit.chunk.source_revision == 0) {
+        bail!("hybrid result contained an unverified source chunk");
+    }
+    Ok(())
 }
 
-fn benchmark_code_config() -> Result<CodeConfig> {
+fn hybrid_json(measurement: &HybridMeasurement, passed: bool) -> serde_json::Value {
+    json!({
+        "lexicalEngine": measurement.lexical_engine.stable_id(),
+        "p50Ms": measurement.latency.p50_ms,
+        "p95Ms": measurement.latency.p95_ms,
+        "maxMs": measurement.latency.max_ms,
+        "workspaceBuildMs": measurement.workspace_build_ms,
+        "sessionConstructionMs": measurement.session_construction_ms,
+        "sourceBytes": measurement.source_bytes,
+        "catalogFiles": measurement.catalog_files,
+        "catalogChunks": measurement.catalog_chunks,
+        "vectorBytes": measurement.vector_bytes,
+        "documentEmbeddingInputs": measurement.document_embedding_inputs,
+        "documentEmbeddingRequests": measurement.document_embedding_requests,
+        "documentBatches": measurement.document_batches,
+        "documentBatchLimitLowerBound": measurement.document_batch_limit_lower_bound,
+        "documentRequestAmplification": measurement.document_request_amplification,
+        "generationCompleteFlushes": measurement.generation_complete_flushes,
+        "timeToFirstReadyMs": measurement.time_to_first_ready_ms,
+        "nonTextInputs": measurement.non_text_inputs,
+        "queryEmbeddingInputs": measurement.query_embedding_inputs,
+        "maxInputCandidates": measurement.max_input_candidates,
+        "maxEvaluatedCandidates": measurement.max_evaluated_candidates,
+        "maxFeatureBytes": measurement.max_feature_bytes,
+        "maxAccountedScratchBytes": measurement.max_accounted_scratch_bytes,
+        "rerankFallbacks": measurement.rerank_fallbacks,
+        "providerNetworkIncluded": false,
+        "authoritativeSourceReads": "included from the warm OS cache",
+        "budgetP95Ms": HYBRID_P95_BUDGET_MS,
+        "passed": passed,
+    })
+}
+
+fn benchmark_config() -> Result<CodeConfig> {
     CodeConfig::from_acl(
         r#"
 default_model = "qualification/unused"
@@ -458,19 +455,21 @@ providers "qualification" {
     .map_err(anyhow::Error::msg)
 }
 
-fn write_workspace(root: &std::path::Path) -> Result<usize> {
-    let mut remaining = RECORD_COUNT;
-    let mut file_index = 0usize;
+fn write_hybrid_workspace(root: &std::path::Path) -> Result<usize> {
     let mut source_bytes = 0usize;
-    while remaining > 0 {
-        let chunks = remaining.min(CHUNKS_PER_FILE);
-        let content = "x\n".repeat(chunks * LINES_PER_CHUNK);
+    for file in 0..HYBRID_FILE_COUNT {
+        let mut content = String::new();
+        for chunk in 0..HYBRID_CHUNKS_PER_FILE {
+            for line in 0..HYBRID_LINES_PER_CHUNK {
+                content.push_str(&format!(
+                    "pub fn cache_invalidation_{file}_{chunk}_{line}() {{ /* session cache policy */ }}\n"
+                ));
+            }
+        }
         source_bytes = source_bytes
             .checked_add(content.len())
             .context("workspace source byte count overflowed")?;
-        std::fs::write(root.join(format!("bench-{file_index:04}.rs")), content)?;
-        remaining -= chunks;
-        file_index += 1;
+        std::fs::write(root.join(format!("module_{file:04}.rs")), content)?;
     }
     Ok(source_bytes)
 }
@@ -488,6 +487,25 @@ fn stable_slot(value: &str) -> usize {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash as usize % DIMENSION
+}
+
+fn configured_lexical_engine() -> Result<WorkspaceLexicalEngine> {
+    match std::env::var(LEXICAL_ENGINE_ENV).as_deref() {
+        Ok("zvec_rust") => {
+            if !cfg!(feature = "zvec-rust-fts") {
+                bail!(
+                    "{LEXICAL_ENGINE_ENV}=zvec_rust requires the zvec-rust-fts feature; use a native build or select portable"
+                );
+            }
+            Ok(WorkspaceLexicalEngine::ZvecRust)
+        }
+        Ok("portable") => Ok(WorkspaceLexicalEngine::Portable),
+        Ok(value) => bail!("{LEXICAL_ENGINE_ENV} must be 'zvec_rust' or 'portable', got '{value}'"),
+        Err(std::env::VarError::NotPresent) => Ok(WorkspaceLexicalEngine::default()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("{LEXICAL_ENGINE_ENV} must contain valid UTF-8")
+        }
+    }
 }
 
 async fn measure_async<F, Fut>(samples: usize, mut operation: F) -> Result<Latency>
@@ -512,24 +530,38 @@ where
 fn percentile_ms(durations: &[Duration], percentile: usize) -> f64 {
     let rank = (durations.len() * percentile)
         .div_ceil(100)
-        .saturating_sub(1);
-    elapsed_ms(durations[rank.min(durations.len() - 1)])
+        .saturating_sub(1)
+        .min(durations.len().saturating_sub(1));
+    elapsed_ms(durations[rank])
 }
 
 fn elapsed_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
 }
 
-fn configured_vector_engine() -> Result<WorkspaceVectorEngine> {
-    match std::env::var(VECTOR_ENGINE_ENV).as_deref() {
-        Ok("a3s_memory") | Err(std::env::VarError::NotPresent) => {
-            Ok(WorkspaceVectorEngine::A3sMemory)
+#[derive(Default)]
+struct RerankObservation {
+    input_candidates: AtomicUsize,
+    evaluated_candidates: AtomicUsize,
+    feature_bytes: AtomicUsize,
+    accounted_scratch_bytes: AtomicUsize,
+    fallbacks: AtomicUsize,
+}
+
+impl RerankObservation {
+    fn observe(&self, result: &a3s_code_core::WorkspaceHybridSearchResult) -> Result<()> {
+        if result.rerank.fallback.is_some() {
+            self.fallbacks.fetch_add(1, Ordering::AcqRel);
         }
-        Ok("a3s_vec") => Ok(WorkspaceVectorEngine::A3sVec),
-        Ok(value) => bail!("{VECTOR_ENGINE_ENV} must be 'a3s_memory' or 'a3s_vec', got '{value}'"),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            bail!("{VECTOR_ENGINE_ENV} must contain valid UTF-8")
-        }
+        self.input_candidates
+            .fetch_max(result.rerank.input_candidates, Ordering::AcqRel);
+        self.evaluated_candidates
+            .fetch_max(result.rerank.evaluated_candidates, Ordering::AcqRel);
+        self.feature_bytes
+            .fetch_max(result.rerank.feature_bytes, Ordering::AcqRel);
+        self.accounted_scratch_bytes
+            .fetch_max(result.rerank.accounted_scratch_bytes, Ordering::AcqRel);
+        Ok(())
     }
 }
 
@@ -546,7 +578,7 @@ impl BenchmarkProvider {
         Self {
             descriptor: EmbeddingProviderDescriptor::new(
                 "deterministic",
-                "workspace-retrieval-benchmark-v1",
+                "workspace-retrieval-benchmark-v5",
                 DIMENSION,
             ),
             document_inputs: AtomicUsize::new(0),
@@ -596,9 +628,7 @@ impl EmbeddingProvider for BenchmarkProvider {
                 } else {
                     self.document_inputs.fetch_add(1, Ordering::AcqRel);
                 }
-                let mut values = vec![0.0; DIMENSION];
-                values[stable_slot(input.id())] = 1.0;
-                EmbeddingVector::new(input.id(), values)
+                EmbeddingVector::new(input.id(), basis_vector(stable_slot(input.id())))
             })
             .collect();
         Ok(EmbeddingBatchResponse::new(self.descriptor(), vectors))
@@ -619,9 +649,12 @@ struct ExactMeasurement {
 
 struct HybridMeasurement {
     latency: Latency,
+    lexical_engine: WorkspaceLexicalEngine,
     workspace_build_ms: f64,
     session_construction_ms: f64,
     source_bytes: usize,
+    catalog_files: usize,
+    catalog_chunks: usize,
     vector_bytes: usize,
     document_embedding_inputs: usize,
     document_embedding_requests: usize,
@@ -632,9 +665,6 @@ struct HybridMeasurement {
     time_to_first_ready_ms: Option<u64>,
     non_text_inputs: usize,
     query_embedding_inputs: usize,
-    vector_engine: WorkspaceVectorEngine,
-    active_vector_engine: Option<WorkspaceVectorEngine>,
-    vec_shadow: WorkspaceVecShadowStatus,
     max_input_candidates: usize,
     max_evaluated_candidates: usize,
     max_feature_bytes: usize,
@@ -644,26 +674,18 @@ struct HybridMeasurement {
 
 impl HybridMeasurement {
     fn batching_passed(&self) -> bool {
-        self.document_batch_limit_lower_bound > 0
+        self.document_embedding_inputs == HYBRID_RECORD_COUNT
+            && self.document_batch_limit_lower_bound > 0
+            && self.document_embedding_requests == self.document_batches
             && self.document_embedding_requests.saturating_mul(10)
                 <= self.document_batch_limit_lower_bound.saturating_mul(11)
-            && self.document_embedding_requests == self.document_batches
             && self.non_text_inputs == 0
             && self.time_to_first_ready_ms.is_some()
-            && self.migration_passed()
     }
 
-    fn migration_passed(&self) -> bool {
-        let expected_queries = (WARMUP_SAMPLES + MEASURED_SAMPLES) as u64;
-        self.active_vector_engine == Some(self.vector_engine)
-            && self.vec_shadow.phase == WorkspaceVecShadowPhase::Ready
-            && self.vec_shadow.record_count == RECORD_COUNT
-            && self.vec_shadow.successful_mutations > 0
-            && self.vec_shadow.compared_queries == expected_queries
-            && self.vec_shadow.matching_queries == expected_queries
-            && self.vec_shadow.initialization_failures == 0
-            && self.vec_shadow.failed_mutations == 0
-            && self.vec_shadow.mismatched_queries == 0
-            && self.vec_shadow.failed_queries == 0
+    fn semantic_passed(&self) -> bool {
+        self.catalog_files == HYBRID_FILE_COUNT
+            && self.catalog_chunks == HYBRID_RECORD_COUNT
+            && self.vector_bytes <= MAX_VECTOR_BYTES
     }
 }

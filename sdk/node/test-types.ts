@@ -45,7 +45,10 @@ import type {
   EventEnvelopeV1,
   KnownAgentEventTypeV1,
 } from './index.js'
-import { ToolPresentationMode, WorkspaceVectorEngineOption } from './index.js'
+import {
+  ToolPresentationMode,
+  WorkspaceLexicalEngineOption,
+} from './index.js'
 
 // Forced uses so unused-import lint stays quiet.
 declare const _session: Session
@@ -78,11 +81,9 @@ declare const _lineChunking: LineWorkspaceChunkingStrategy
 declare const _fixedChunking: FixedWindowWorkspaceChunkingStrategy
 declare const _recursiveChunking: RecursiveWorkspaceChunkingStrategy
 declare const _retrievalOptions: WorkspaceRetrievalOptions
-const _vectorEngineOption: WorkspaceVectorEngineOption = WorkspaceVectorEngineOption.A3sVec
+const _lexicalEngineOption: WorkspaceLexicalEngineOption =
+  WorkspaceLexicalEngineOption.ZvecRust
 declare const _retrievalStatus: WorkspaceRetrievalStatusObject
-const _activeVectorEngine: string | undefined = _retrievalStatus.activeVectorEngine
-const _vecShadowPhase: string = _retrievalStatus.vecShadow.phase
-const _vecShadowComparedQueries: number = _retrievalStatus.vecShadow.comparedQueries
 declare const _semanticResult: WorkspaceSemanticSearchResultObject
 declare const _hybridResult: WorkspaceHybridSearchResultObject
 declare const _rerankStatus: WorkspaceRerankStatusObject
@@ -100,7 +101,7 @@ const _chunkingArgument:
   | RecursiveWorkspaceChunkingStrategy
   | null
   | undefined = _workspaceRetrievalConstructorArgs[2]
-const _vectorEngineArgument: WorkspaceVectorEngineOption | null | undefined =
+const _lexicalEngineArgument: WorkspaceLexicalEngineOption | null | undefined =
   _workspaceRetrievalConstructorArgs[3]
 const _primitiveRerankerIsRejected: 'deterministic' extends NonNullable<
   _WorkspaceRetrievalConstructorArgs[1]
@@ -144,9 +145,8 @@ void _session.workspaceRetrievalStatus()
 void _session.semanticSearch({ query: 'session cleanup', limit: 5 })
 void _session.hybridSearch({ query: 'terminate_owned_tasks', path: 'src' })
 void _retrievalOptions.maxRecords
-void _retrievalOptions.vectorEngine
-void _vectorEngineOption
-void _vectorEngineArgument
+void _lexicalEngineOption
+void _lexicalEngineArgument
 void _deterministicReranker.maxCandidates
 void _rerankerArgument
 void _primitiveRerankerIsRejected

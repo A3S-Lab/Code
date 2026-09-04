@@ -154,18 +154,16 @@ Preview mechanical edits with `dry_run: true`, then apply the same edit with
 Dense retrieval is an explicit host capability. It is not a durable vector
 database and it is not enabled by the selected chat model. The host supplies a
 typed embedding provider; A3S Code owns text admission, chunking, batching,
-response validation, bounded vector authority, hybrid ranking, current-source
-verification, accounting, and cleanup. `A3sMemory` is the compatibility
-default. A trusted developer can select the gated A3S Vec authority through
-the typed engine option; the other engine remains a differential shadow and
-never becomes an implicit fallback.
+response validation, bounded vector storage, hybrid ranking, current-source
+verification, accounting, and cleanup. A3S Memory is the single semantic vector
+projection. Lexical BM25 uses zvec-rust in product builds and has an explicit
+portable minimal-build fallback.
 
 ```js
 import {
   CallbackEmbeddingProvider,
   RecursiveWorkspaceChunkingStrategy,
   WorkspaceRetrievalOptions,
-  WorkspaceVectorEngineOption,
 } from "@a3s-lab/code";
 
 const provider = new CallbackEmbeddingProvider(
@@ -201,8 +199,6 @@ const retrieval = new WorkspaceRetrievalOptions(
 );
 retrieval.maxRecords = 100_000;
 retrieval.maxBytes = 128 * 1024 * 1024;
-// Developer qualification only; omission keeps the Memory compatibility path.
-// retrieval.vectorEngine = WorkspaceVectorEngineOption.A3sVec;
 
 const session = await agent.sessionAsync("/repo", {
   workspaceRetrieval: retrieval,
@@ -224,10 +220,10 @@ publish atomically, so queries may use partial coverage while building. Closing
 the session cancels provider work, joins the indexer within a deadline, and
 releases all accounted vector records and bytes.
 
-`activeVectorEngine` is `a3s_memory` by default or `a3s_vec` for the typed
-preview. `vecShadow` reports the internal migration shadow phase, records,
-accounted bytes, and parity counters. A degraded shadow never changes returned
-hits, and close requires both its record and byte observations to be zero.
+Status also reports the selected lexical engine (`zvec_rust_fts_v1` in product
+builds or `portable_bm25_v1` in a minimal build), along with coverage, vector
+records/bytes, batching, and bounded failure counters. Semantic vectors are
+owned only by A3S Memory and are released on close.
 
 Only manifest-admitted UTF-8 text enters chunking and embeddings. Generated,
 oversized, credential-bearing, `.a3s` control, and non-text files are excluded.
@@ -235,10 +231,10 @@ Before returning a hit, Code rereads the source and verifies its full-file
 digest and exact chunk range. Stale, deleted, unreadable, or superseded chunks
 are not exposed.
 
-The default serving index is an exact, bounded `InMemoryVectorIndex`. The typed
-preview can serve through a temporary A3S Vec collection while retaining a
-Memory differential shadow. Recreating a session rebuilds both session-local
-engines; sessions do not share either.
+The default serving index is an exact, bounded `InMemoryVectorIndex`, while the
+lexical projection is a temporary zvec-rust FTS collection per catalog
+partition. Recreating a session rebuilds both session-local projections; sessions
+do not share them.
 If persistence or a shared vector service is required, the embedding host owns
 that separate system and must preserve Code's source-verification boundary.
 

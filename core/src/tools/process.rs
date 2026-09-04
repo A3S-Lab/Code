@@ -175,6 +175,43 @@ pub(crate) fn configure_std_process_group(command: &mut std::process::Command) {
     let _ = command;
 }
 
+/// Spawn a Tokio child while excluding concurrent native workspace indexing.
+///
+/// macOS may implement `Command::spawn` with `posix_spawn`, which does not
+/// invoke `pthread_atfork` handlers. Taking the read side of the workspace
+/// resource gate therefore remains necessary even after the zvec adapter has
+/// installed its fork hooks.
+pub(crate) fn spawn_tokio_with_native_gate(command: &mut Command) -> io::Result<Child> {
+    let _native_spawn = crate::workspace::retrieval::native_process_spawn();
+    command.spawn()
+}
+
+/// Blocking counterpart used by synchronous workspace and Git discovery.
+pub(crate) fn spawn_std_with_native_gate(
+    command: &mut std::process::Command,
+) -> io::Result<std::process::Child> {
+    let _native_spawn = crate::workspace::retrieval::native_process_spawn();
+    command.spawn()
+}
+
+/// Run a short-lived blocking command while protecting the fork/exec boundary
+/// from descriptors opened by the native workspace index.
+#[cfg(test)]
+pub(crate) fn output_std_with_native_gate(
+    command: &mut std::process::Command,
+) -> io::Result<std::process::Output> {
+    let _native_spawn = crate::workspace::retrieval::native_process_spawn();
+    command.output()
+}
+
+#[cfg(test)]
+pub(crate) fn status_std_with_native_gate(
+    command: &mut std::process::Command,
+) -> io::Result<std::process::ExitStatus> {
+    let _native_spawn = crate::workspace::retrieval::native_process_spawn();
+    command.status()
+}
+
 pub(crate) struct ProcessGroupGuard {
     #[cfg(unix)]
     process_group: Option<i32>,
@@ -390,7 +427,7 @@ mod tests {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         configure_process_group(&mut command);
-        command.spawn().unwrap()
+        spawn_tokio_with_native_gate(&mut command).unwrap()
     }
 
     #[cfg(unix)]

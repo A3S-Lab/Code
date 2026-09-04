@@ -4,7 +4,9 @@
 
 use super::McpTransport;
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification};
-use crate::tools::process::{configure_process_group, ProcessGroupGuard};
+use crate::tools::process::{
+    configure_process_group, spawn_tokio_with_native_gate, ProcessGroupGuard,
+};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -80,8 +82,7 @@ impl StdioTransport {
             cmd.env(key, value);
         }
 
-        let mut child = cmd
-            .spawn()
+        let mut child = spawn_tokio_with_native_gate(&mut cmd)
             .with_context(|| format!("Failed to spawn MCP server: {} {:?}", command, args))?;
         let process_group = ProcessGroupGuard::for_child(&child);
 

@@ -28,4 +28,6 @@ features = ["extension-module"]
 module-name = "a3s_code._native"
 include = [
     { path = "python/a3s_code/moli/**", format = "wheel" },
+    { path = "python/a3s_code/zvec/**", format = "wheel" },
+    { path = "python/a3s_code/zvec_c_api.dll", format = "wheel" },
 ]

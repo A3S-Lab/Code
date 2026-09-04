@@ -17,7 +17,7 @@ name = "a3s-code-go-bridge"
 path = "src/main.rs"
 
 [dependencies]
-a3s-code-core = { version = "8.2.0", path = "../../../core", features = ["headless-search", "s3", "serve"] }
+a3s-code-core = { version = "8.2.0", path = "../../../core", default-features = false, features = ["headless-search", "s3", "serve"] }
 async-trait = "0.1"
 anyhow = "1.0"
 base64 = "0.22"
@@ -35,3 +35,9 @@ tokio-util = "0.7"
 
 [dev-dependencies]
 tempfile = "3.10"
+
+[features]
+default = ["zvec-rust-fts-bundled"]
+# Compile the native adapter against a staged, target-specific zvec library.
+zvec-rust-fts = ["a3s-code-core/zvec-rust-fts"]
+zvec-rust-fts-bundled = ["zvec-rust-fts", "a3s-code-core/zvec-rust-fts-bundled"]

@@ -113,7 +113,7 @@ fn command_stdout_cancellable(
 ) -> Option<(ExitStatus, Vec<u8>)> {
     command.stdout(Stdio::piped()).stderr(Stdio::null());
     crate::tools::process::configure_std_process_group(&mut command);
-    let mut child = command.spawn().ok()?;
+    let mut child = crate::tools::process::spawn_std_with_native_gate(&mut command).ok()?;
     let mut process_group =
         crate::tools::process::ProcessGroupGuard::for_process_id(Some(child.id()));
     let mut stdout = child.stdout.take()?;

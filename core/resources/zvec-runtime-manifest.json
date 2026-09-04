@@ -1,0 +1,32 @@
+{
+  "schema": "a3s-code/zvec-runtime-manifest/v1",
+  "repository": "https://github.com/zvec-ai/zvec-rust",
+  "version": "0.7.0",
+  "assets": {
+    "aarch64-apple-darwin": {
+      "archive": "zvec-prebuilt-aarch64-apple-darwin.tar.gz",
+      "format": "tar.gz",
+      "library": "libzvec_c_api.dylib",
+      "sha256": "59c41dcbaab69b9fbcf3ca0f1997f58f189a025657fd09a464dca199107cdeb2"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "archive": "zvec-prebuilt-aarch64-unknown-linux-gnu.tar.gz",
+      "format": "tar.gz",
+      "library": "libzvec_c_api.so",
+      "sha256": "0195a85f07370d7bcbf26f990bf794e31430e00224c8b9303d43ea677db6f77d"
+    },
+    "x86_64-pc-windows-msvc": {
+      "archive": "zvec-prebuilt-x86_64-pc-windows-msvc.tar.gz",
+      "format": "tar.gz",
+      "library": "zvec_c_api.dll",
+      "import_library": "zvec_c_api.lib",
+      "sha256": "d8fe5585ad83066038f6e60990fe6e69528637a58fffc5024ca211c187a9d49a"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "archive": "zvec-prebuilt-x86_64-unknown-linux-gnu.tar.gz",
+      "format": "tar.gz",
+      "library": "libzvec_c_api.so",
+      "sha256": "7e9adbeadc42c772665efed45112220aa895d3f7963fa03c016102f2f414c37f"
+    }
+  }
+}

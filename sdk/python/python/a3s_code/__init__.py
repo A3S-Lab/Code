@@ -43,8 +43,8 @@ _ensure_native()
 del _ensure_native
 
 from ._native import *
-# Typed workspace vector authority selector exported by the native bridge.
-from ._native import WorkspaceVectorEngineOption
+# Typed workspace lexical engine selector exported by the native bridge.
+from ._native import WorkspaceLexicalEngineOption
 from .event_protocol_v1 import (
     AGENT_EVENT_TYPES_V1,
     AgentEventTypeV1,
@@ -75,12 +75,10 @@ from .workspace_retrieval import (
     WorkspaceHybridFallbackReason,
     WorkspaceHybridSearchHit,
     WorkspaceHybridSearchResult,
+    WorkspaceLexicalEngine,
     WorkspaceRetrievalChannel,
     WorkspaceRetrievalPhase,
     WorkspaceRetrievalStatus,
-    WorkspaceVecShadowPhase,
-    WorkspaceVecShadowStatus,
-    WorkspaceVectorEngine,
     WorkspaceRerankAlgorithm,
     WorkspaceRerankFallbackReason,
     WorkspaceRerankMode,

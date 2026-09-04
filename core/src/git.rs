@@ -293,8 +293,7 @@ fn run_git_os_with_executable_and_env(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     crate::tools::process::configure_std_process_group(&mut command);
-    let mut child = command
-        .spawn()
+    let mut child = crate::tools::process::spawn_std_with_native_gate(&mut command)
         .map_err(|e| anyhow!("Failed to execute git: {}", e))?;
     let stdout = child
         .stdout

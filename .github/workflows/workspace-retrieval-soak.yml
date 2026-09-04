@@ -16,7 +16,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v4
@@ -42,14 +48,25 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install protoc -y
 
+      - name: Stage verified zvec runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p zvec-runtime
+          bash scripts/package_zvec.sh "${{ matrix.target }}" zvec-runtime
+          echo "ZVEC_LIB_DIR=$PWD/zvec-runtime" >> "$GITHUB_ENV"
+          echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
+          ZVEC_FLAGS="$(bash scripts/zvec_rustflags.sh "${{ matrix.target }}" zvec)"
+          echo "RUSTFLAGS=$ZVEC_FLAGS" >> "$GITHUB_ENV"
+
       - name: Run bounded retrieval churn
         run: >-
           cargo test --locked -p a3s-code-core --lib
           agent_api::retrieval_qa_tests::repeated_source_generations_replace_vectors_without_accumulation
           -- --ignored --exact --test-threads=1
 
-      - name: Run bounded Vec-primary retrieval churn
+      - name: Run bounded portable retrieval churn
         run: >-
-          cargo test --locked -p a3s-code-core --lib
-          agent_api::retrieval_qa_tests::repeated_source_generations_replace_vec_primary_without_accumulation
+          cargo test --locked --no-default-features -p a3s-code-core --lib
+          agent_api::retrieval_qa_tests::repeated_source_generations_replace_vectors_without_accumulation
           -- --ignored --exact --test-threads=1

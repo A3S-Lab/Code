@@ -20,26 +20,32 @@ jobs:
             target: x86_64-unknown-linux-gnu
             executable: a3s-code-go-bridge
             suffix: ""
+            zvec: true
           - host: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             executable: a3s-code-go-bridge
             suffix: ""
+            zvec: true
           - host: macos-15-intel
             target: x86_64-apple-darwin
             executable: a3s-code-go-bridge
             suffix: ""
+            zvec: false
           - host: macos-latest
             target: aarch64-apple-darwin
             executable: a3s-code-go-bridge
             suffix: ""
+            zvec: true
           - host: windows-latest
             target: x86_64-pc-windows-msvc
             executable: a3s-code-go-bridge.exe
             suffix: .exe
+            zvec: true
           - host: windows-11-arm
             target: aarch64-pc-windows-msvc
             executable: a3s-code-go-bridge.exe
             suffix: .exe
+            zvec: false
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v6
@@ -60,13 +66,32 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Stage verified zvec runtime
+        if: matrix.settings.zvec
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p zvec-runtime
+          bash scripts/package_zvec.sh \
+            "${{ matrix.settings.target }}" zvec-runtime
+          echo "ZVEC_LIB_DIR=$PWD/zvec-runtime" >> "$GITHUB_ENV"
+          echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
+          ZVEC_FLAGS="$(bash scripts/zvec_rustflags.sh \
+            "${{ matrix.settings.target }}" zvec)"
+          echo "RUSTFLAGS=$ZVEC_FLAGS" >> "$GITHUB_ENV"
+
       - name: Build bridge
-        run: >-
-          cargo build
-          --release
-          --package a3s-code-go-bridge
-          --bin a3s-code-go-bridge
-          --target ${{ matrix.settings.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          CARGO_ARGS=(build --release --no-default-features
+            --package a3s-code-go-bridge
+            --bin a3s-code-go-bridge
+            --target "${{ matrix.settings.target }}")
+          if [[ "${{ matrix.settings.zvec }}" == "true" ]]; then
+            CARGO_ARGS+=(--features zvec-rust-fts-bundled)
+          fi
+          cargo "${CARGO_ARGS[@]}"
 
       - name: Package bridge
         shell: bash
@@ -82,6 +107,14 @@ jobs:
           cp "$SOURCE" "dist/bundle/${{ matrix.settings.executable }}"
           bash scripts/package_moli.sh \
             "${{ matrix.settings.target }}" dist/bundle/moli
+          if [[ "${{ matrix.settings.zvec }}" == "true" ]]; then
+            mkdir -p dist/bundle/zvec
+            bash scripts/package_zvec.sh \
+              "${{ matrix.settings.target }}" dist/bundle/zvec
+            if [[ "${{ matrix.settings.target }}" == *-windows-* ]]; then
+              cp dist/bundle/zvec/zvec_c_api.dll dist/bundle/zvec_c_api.dll
+            fi
+          fi
           BUNDLE_ASSET="${ASSET%.exe}.tar.gz"
           tar -czf "dist/$BUNDLE_ASSET" -C dist/bundle .
           rm -rf -- dist/bundle

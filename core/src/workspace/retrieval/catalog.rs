@@ -2,6 +2,7 @@ use super::chunk::{chunk_file_with_strategy, ChunkFileRequest};
 use super::lexical::{search_catalog, LexicalPartition, LexicalSearchRequest, LexicalSearchResult};
 use super::types::{
     ChunkCatalogLimits, ChunkingConfig, WorkspaceChunk, WorkspaceIndexError, WorkspaceIndexResult,
+    WorkspaceLexicalEngine,
 };
 use super::WorkspaceChunkingStrategy;
 use crate::workspace::{LocalWorkspaceFile, LocalWorkspaceFileStatus, WorkspacePath};
@@ -14,6 +15,7 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub struct ChunkCatalogSnapshot {
     pub(crate) state: Arc<CatalogState>,
+    pub(crate) lexical_engine: WorkspaceLexicalEngine,
 }
 
 impl std::fmt::Debug for ChunkCatalogSnapshot {
@@ -22,6 +24,7 @@ impl std::fmt::Debug for ChunkCatalogSnapshot {
             .debug_struct("ChunkCatalogSnapshot")
             .field("revision", &self.revision())
             .field("source_revision", &self.source_revision())
+            .field("lexical_engine", &self.lexical_engine)
             .field("file_count", &self.file_count())
             .field("chunk_count", &self.chunk_count())
             .field("text_bytes", &self.text_bytes())
@@ -37,6 +40,11 @@ impl ChunkCatalogSnapshot {
 
     pub fn source_revision(&self) -> u64 {
         self.state.source_revision
+    }
+
+    /// Return the lexical engine that produced this immutable snapshot.
+    pub fn lexical_engine(&self) -> WorkspaceLexicalEngine {
+        self.lexical_engine
     }
 
     pub fn file_count(&self) -> usize {
@@ -95,6 +103,7 @@ pub struct WorkspaceChunkCatalog {
     chunking: ChunkingConfig,
     chunking_strategy: WorkspaceChunkingStrategy,
     limits: ChunkCatalogLimits,
+    lexical_engine: WorkspaceLexicalEngine,
     state: RwLock<Arc<CatalogState>>,
     updates: watch::Sender<ChunkCatalogSnapshot>,
 }
@@ -105,6 +114,7 @@ impl std::fmt::Debug for WorkspaceChunkCatalog {
             .debug_struct("WorkspaceChunkCatalog")
             .field("chunking", &self.chunking)
             .field("chunking_strategy", &self.chunking_strategy)
+            .field("lexical_engine", &self.lexical_engine)
             .field("limits", &self.limits)
             .field("snapshot", &self.snapshot().ok())
             .finish()
@@ -116,7 +126,26 @@ impl WorkspaceChunkCatalog {
         chunking: ChunkingConfig,
         limits: ChunkCatalogLimits,
     ) -> WorkspaceIndexResult<Arc<Self>> {
-        Self::new_with_strategy(WorkspaceChunkingStrategy::Lines, chunking, limits)
+        Self::new_with_strategy_and_engine(
+            WorkspaceChunkingStrategy::Lines,
+            chunking,
+            limits,
+            WorkspaceLexicalEngine::default(),
+        )
+    }
+
+    /// Construct a catalog with an explicit lexical engine.
+    pub fn new_with_engine(
+        chunking: ChunkingConfig,
+        limits: ChunkCatalogLimits,
+        lexical_engine: WorkspaceLexicalEngine,
+    ) -> WorkspaceIndexResult<Arc<Self>> {
+        Self::new_with_strategy_and_engine(
+            WorkspaceChunkingStrategy::Lines,
+            chunking,
+            limits,
+            lexical_engine,
+        )
     }
 
     /// Construct a bounded catalog with an explicit text splitting strategy.
@@ -125,19 +154,41 @@ impl WorkspaceChunkCatalog {
         chunking: ChunkingConfig,
         limits: ChunkCatalogLimits,
     ) -> WorkspaceIndexResult<Arc<Self>> {
+        Self::new_with_strategy_and_engine(
+            chunking_strategy,
+            chunking,
+            limits,
+            WorkspaceLexicalEngine::default(),
+        )
+    }
+
+    /// Construct a bounded catalog with explicit chunking and lexical engines.
+    pub fn new_with_strategy_and_engine(
+        chunking_strategy: WorkspaceChunkingStrategy,
+        chunking: ChunkingConfig,
+        limits: ChunkCatalogLimits,
+        lexical_engine: WorkspaceLexicalEngine,
+    ) -> WorkspaceIndexResult<Arc<Self>> {
         let chunking = chunking.validate()?;
         chunking_strategy
             .validate_for(chunking)
             .map_err(|error| super::chunking_strategy::map_strategy_error("<catalog>", error))?;
         let limits = limits.validate()?;
+        if lexical_engine == WorkspaceLexicalEngine::ZvecRust && !cfg!(feature = "zvec-rust-fts") {
+            return Err(WorkspaceIndexError::InvalidConfig(
+                "WorkspaceLexicalEngine::ZvecRust requires the zvec-rust-fts feature".to_owned(),
+            ));
+        }
         let state = Arc::new(CatalogState::default());
         let (updates, _) = watch::channel(ChunkCatalogSnapshot {
             state: Arc::clone(&state),
+            lexical_engine,
         });
         Ok(Arc::new(Self {
             chunking,
             chunking_strategy,
             limits,
+            lexical_engine,
             state: RwLock::new(state),
             updates,
         }))
@@ -147,11 +198,13 @@ impl WorkspaceChunkCatalog {
         let state = Arc::new(CatalogState::default());
         let (updates, _) = watch::channel(ChunkCatalogSnapshot {
             state: Arc::clone(&state),
+            lexical_engine: WorkspaceLexicalEngine::default(),
         });
         Arc::new(Self {
             chunking: ChunkingConfig::default(),
             chunking_strategy: WorkspaceChunkingStrategy::Lines,
             limits: ChunkCatalogLimits::default(),
+            lexical_engine: WorkspaceLexicalEngine::default(),
             state: RwLock::new(state),
             updates,
         })
@@ -166,6 +219,7 @@ impl WorkspaceChunkCatalog {
             .read()
             .map(|state| ChunkCatalogSnapshot {
                 state: Arc::clone(&state),
+                lexical_engine: self.lexical_engine,
             })
             .map_err(|_| WorkspaceIndexError::LockPoisoned)
     }
@@ -198,6 +252,7 @@ impl WorkspaceChunkCatalog {
             content,
             self.chunking,
             &self.chunking_strategy,
+            self.lexical_engine,
         )?);
         let mut state = self
             .state
@@ -247,6 +302,11 @@ impl WorkspaceChunkCatalog {
 
     pub(crate) fn limits(&self) -> ChunkCatalogLimits {
         self.limits
+    }
+
+    /// Return the typed lexical engine selected for this catalog.
+    pub fn lexical_engine(&self) -> WorkspaceLexicalEngine {
+        self.lexical_engine
     }
 
     pub(crate) fn publish_reconciliation(
@@ -311,7 +371,10 @@ impl WorkspaceChunkCatalog {
             failed_file_count,
         });
         *state = Arc::clone(&next);
-        let snapshot = ChunkCatalogSnapshot { state: next };
+        let snapshot = ChunkCatalogSnapshot {
+            state: next,
+            lexical_engine: self.lexical_engine,
+        };
         self.updates.send_replace(snapshot.clone());
         Ok(snapshot)
     }
@@ -408,6 +471,7 @@ impl CatalogFile {
         content: &str,
         chunking: ChunkingConfig,
         chunking_strategy: &WorkspaceChunkingStrategy,
+        lexical_engine: WorkspaceLexicalEngine,
     ) -> WorkspaceIndexResult<Self> {
         let chunked = chunk_file_with_strategy(
             ChunkFileRequest {
@@ -420,7 +484,10 @@ impl CatalogFile {
             chunking_strategy,
         )?;
         let chunks: Arc<[Arc<WorkspaceChunk>]> = Arc::from(chunked.chunks);
-        let lexical = Arc::new(LexicalPartition::build(Arc::clone(&chunks))?);
+        let lexical = Arc::new(LexicalPartition::build(
+            Arc::clone(&chunks),
+            lexical_engine,
+        )?);
         let estimated_index_bytes = lexical
             .estimated_bytes()
             .saturating_add(

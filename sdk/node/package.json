@@ -30,7 +30,10 @@
     "event-protocol-v1.d.ts",
     "*.node",
     "moli",
-    "moli/**"
+    "moli/**",
+    "zvec",
+    "zvec/**",
+    "zvec_c_api.dll"
   ],
   "devDependencies": {
     "@napi-rs/cli": "^2",
