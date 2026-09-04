@@ -10,6 +10,7 @@ from scripts.check_scoped_capability_architecture import (
     EXPECTED_INVARIANTS,
     EXPECTED_OWNERS,
     EXPECTED_STATES,
+    numbered_heading,
     table_after_heading,
     verify_contract,
 )
@@ -37,6 +38,17 @@ class ScopedCapabilityArchitectureTests(unittest.TestCase):
         )
         self.assertEqual(parsed.headers, ("Gate", "State"))
         self.assertEqual(parsed.rows, (("`CAP-FND1`", "Delivered"),))
+
+    def test_numbered_heading_ignores_section_index(self) -> None:
+        text = "### 3.3 Scoped capability program\n"
+        self.assertEqual(
+            numbered_heading(text, 3, "Scoped capability program"),
+            "### 3.3 Scoped capability program",
+        )
+
+    def test_numbered_heading_rejects_a_different_title(self) -> None:
+        with self.assertRaisesRegex(ArchitectureContractError, "missing heading title"):
+            numbered_heading("### 3.3 Other section\n", 3, "Scoped capability program")
 
     def test_repository_contract_accepts_canonical_tables_and_local_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -74,7 +86,7 @@ class ScopedCapabilityArchitectureTests(unittest.TestCase):
                 encoding="utf-8",
             )
             roadmap.write_text(
-                "### 3.2 Scoped capability program\n\n"
+                "### 3.3 Scoped capability program\n\n"
                 + table(
                     ("Gate", "State", "Code-owned outcome", "Exit criteria"),
                     [

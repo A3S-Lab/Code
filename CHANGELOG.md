@@ -14,6 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   isolated auxiliary runs with cancellation and capability ceilings, host
   boundary supervision, and immutable result CAS storage. Reviewer rubrics,
   findings, authorization, and Cloud audit semantics remain host-owned.
+- Added the strict `EvaluationWireEnvelopeV1` process boundary for evidence,
+  auxiliary lifecycle, and result records. Node.js, Python, and Go projections,
+  the catalog, and unknown-field/version fixtures are generated from the Rust
+  catalog and checked for parity in CI and release preflight.
+- Added bounded Tokio/file-backed evaluation result CAS and a restart-safe
+  dispatch lease ledger with atomic publication, cross-process fencing,
+  corruption checks, and retention controls. The provider-neutral
+  qualification suite and release performance profile cover restart, replay,
+  cancellation, redaction, and resource limits; evaluator policy and business
+  authorization remain host-owned.
+- Added a strict rustdoc warning gate to CI, release checks, and the local
+  release preflight so public evaluation contracts are qualified with the same
+  `-D warnings` policy before publication.
+- Increased the hosted Code CI workspace-check budget to 45 minutes so a cold
+  runner can finish the complete default and feature-gated suites instead of
+  being cancelled while tests are still progressing.
 
 ## [8.2.0] - 2026-09-04
 

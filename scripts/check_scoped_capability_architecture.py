@@ -98,6 +98,20 @@ def table_after_heading(text: str, heading: str) -> MarkdownTable:
     return MarkdownTable(headers=headers, rows=tuple(rows))
 
 
+def numbered_heading(text: str, level: int, title: str) -> str:
+    """Find a numbered Markdown heading without coupling to its section index."""
+
+    prefix = "#" * level
+    pattern = re.compile(
+        rf"^{re.escape(prefix)}\s+(?:\d+(?:\.\d+)*\s+)?"
+        rf"{re.escape(title)}\s*$"
+    )
+    for line in text.splitlines():
+        if pattern.fullmatch(line.strip()):
+            return line.strip()
+    raise ArchitectureContractError(f"missing heading title: {title}")
+
+
 def _column(table: MarkdownTable, name: str) -> tuple[str, ...]:
     try:
         index = table.headers.index(name)
@@ -171,7 +185,8 @@ def verify_contract(
     _verify_owners(contract_text)
     _verify_invariants(contract_text)
     _verify_gate_table(contract_text, "## Delivery gates")
-    _verify_gate_table(roadmap_text, "### 3.2 Scoped capability program")
+    scoped_heading = numbered_heading(roadmap_text, 3, "Scoped capability program")
+    _verify_gate_table(roadmap_text, scoped_heading)
     _verify_local_links(contract_text, contract_path, roadmap_path.parent)
     return (
         "scoped capability architecture complete: "

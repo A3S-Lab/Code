@@ -1,0 +1,54 @@
+{
+  "schema": "a3s.code.evaluation-wire.v1",
+  "version": 1,
+  "valid": {
+    "schema": "a3s.code.evaluation-wire.v1",
+    "version": 1,
+    "kind": "evidence_read_request",
+    "payload": {
+      "target": {
+        "schema": "a3s.code.execution-target.v1",
+        "session_id": "fixture-session",
+        "run_id": "fixture-run"
+      }
+    }
+  },
+  "unknown_top_level_field": {
+    "schema": "a3s.code.evaluation-wire.v1",
+    "version": 1,
+    "kind": "evidence_read_request",
+    "payload": {
+      "target": {
+        "schema": "a3s.code.execution-target.v1",
+        "session_id": "fixture-session",
+        "run_id": "fixture-run"
+      }
+    },
+    "future_field": true
+  },
+  "unknown_payload_field": {
+    "schema": "a3s.code.evaluation-wire.v1",
+    "version": 1,
+    "kind": "evidence_read_request",
+    "payload": {
+      "target": {
+        "schema": "a3s.code.execution-target.v1",
+        "session_id": "fixture-session",
+        "run_id": "fixture-run"
+      },
+      "future_field": true
+    }
+  },
+  "unsupported_version": {
+    "schema": "a3s.code.evaluation-wire.v1",
+    "version": 2,
+    "kind": "evidence_read_request",
+    "payload": {
+      "target": {
+        "schema": "a3s.code.execution-target.v1",
+        "session_id": "fixture-session",
+        "run_id": "fixture-run"
+      }
+    }
+  }
+}

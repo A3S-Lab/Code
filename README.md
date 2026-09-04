@@ -157,7 +157,7 @@ telemetry remain opt-in.
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent runtime           | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, replay, and safe-point `steer`/`interrupt` run control                                                                                                                                          | Baseline                                                                                                                                                                  |
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
-| Evaluation substrate    | Provider-neutral execution targets/frames, digest-only fact journals, atomic bounded evidence snapshots, isolated auxiliary runs, host boundary supervision, and immutable result CAS | Inject an `EvaluationPolicy`/`AuxiliaryExecutor`; Core supplies mechanisms, while reviewer rubrics, findings, authorization, and Cloud audit remain host-owned |
+| Evaluation substrate    | Provider-neutral execution targets/frames, digest-only fact journals, atomic bounded evidence snapshots, isolated auxiliary runs, host boundary supervision, restart-safe dispatch leases, durable result CAS, and strict versioned Rust/Node/Python/Go wire projections | Inject an `EvaluationPolicy`/`AuxiliaryExecutor` and optionally a dispatch/result store; Core supplies mechanisms and generated transport schemas, while reviewer rubrics, findings, authorization, and Cloud audit remain host-owned |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, official zvec-rust FTS/BM25 by default, Memory-backed exact vectors, hybrid RRF, optional deterministic CPU reranking, readiness/coverage metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database; native zvec builds require an attested platform library |
 | Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, host-persisted safe refresh checkpoints, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
@@ -187,10 +187,15 @@ configurable and can be disabled.
 
 The common evaluation substrate follows the same boundary: Code records
 digest-only execution facts, reads bounded evidence, supervises isolated
-auxiliary runs, and exposes an immutable result contract. A host can build a
-reviewer or verifier by injecting its own policy and structured executor; Core
-does not define a rubric, finding vocabulary, decision threshold, UI, or Cloud
-audit workflow. See [Evaluation Substrate](manual/EVALUATION_SUBSTRATE.md).
+auxiliary runs, exposes an immutable result contract, and projects those
+values through the strict `EvaluationWireEnvelopeV1` generated for Rust,
+Node.js, Python, and Go. Optional file-backed result and dispatch adapters add
+bounded atomic persistence and restart-safe fencing without taking ownership
+of host authorization or business retention. A host can build a reviewer or
+verifier by injecting its own policy and structured executor; Core does not
+define a rubric, finding vocabulary, decision threshold, UI, or Cloud audit
+workflow. See
+[Evaluation Substrate](manual/EVALUATION_SUBSTRATE.md).
 
 The default system prompt is assembled in layers: a compact agent loop, the
 runtime authority/run-control contract, the canonical repository-tool schema,
@@ -1439,7 +1444,7 @@ the v1 schema or claiming external Runtime certification.
 | [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md)                                           | A3S Use ownership, typed scopes, immutable generations, reversible effects, migration gates, and verification invariants                                      |
 | [Performance Qualification](manual/PERFORMANCE_QUALIFICATION.md)                                                     | Release-profile workloads, inclusion rules, p50/p95/max results, resource ceilings, hermetic integrations, run links, and artifact digests                    |
 | [Harness Model-Call Evidence](manual/HARNESS_EVIDENCE.md)                                                            | Capability/input/usage snapshots, repeated-context diagnostics, event ordering, redaction boundary, validation, and replay                                    |
-| [Evaluation Substrate](manual/EVALUATION_SUBSTRATE.md)                                                               | Provider-neutral execution facts, bounded evidence, isolated auxiliary runs, supervision, result CAS, and ownership boundaries                               |
+| [Evaluation Substrate](manual/EVALUATION_SUBSTRATE.md)                                                               | Provider-neutral execution facts, bounded evidence, isolated auxiliary runs, restart-safe dispatch, durable result CAS, and ownership boundaries                |
 | [Go SDK](sdk/go/README.md)                                                                                           | Bridge installation, sessions, event streaming, direct tools, errors, and release compatibility                                                               |
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md)                                                       | Language runtime, capability boundary, lifecycle, and verification                                                                                            |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md)                                               | Architecture, quality budgets, lifecycle, and adversarial trust boundaries                                                                                    |

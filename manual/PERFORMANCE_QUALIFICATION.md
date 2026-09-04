@@ -13,6 +13,7 @@ claims.
 | Evidence                                                        | GitHub Actions run                                                        | Artifact                              | Archive SHA-256                                                    |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------ |
 | Seven release performance profiles                              | [`33304362997`](https://github.com/A3S-Lab/Code/actions/runs/33304362997) | `performance-33304362997-1`           | `0c3e497f546ed3917555036fe972a051f38c89d9062f62e0727a6990665bdf42` |
+| Nine release performance profiles (including evaluation substrate) | [`33844533910`](https://github.com/A3S-Lab/Code/actions/runs/33844533910) | `performance-33844533910-1`           | `c6062c73f46fae51d665fc754a2bf7824db02648b1ccf5c6dbbf3ac3e92ff7e3` |
 | MinIO, controlled Chrome/CDP, and local OpenTelemetry Collector | [`32130843684`](https://github.com/A3S-Lab/Code/actions/runs/32130843684) | `hermetic-integrations-32130843684-1` | `7d6a3dea89bea20ffa9be82d0feab14f96a168196bba2f55b8cb2c7c89d2c975` |
 
 GitHub reported both digests for the uploaded ZIP archives. The artifacts are
@@ -72,6 +73,17 @@ The file-save result is intentionally reported rather than normalized away.
 Hosted-runner `fsync` timing varies substantially across otherwise successful
 runs, so the contract uses a user-visible ceiling with headroom instead of
 publishing the fastest sample as an SLA.
+
+The change-scoped `evaluation-substrate-v1` profile now measures bounded
+evaluation-result publication, reopen/retention validation, and strict wire
+round trips without a provider or network. It is wired into the release
+workflow and increases the required report set from eight to nine. Hosted run
+[`33844533910`](https://github.com/A3S-Lab/Code/actions/runs/33844533910)
+produced all nine reports and passed the new profile on Linux x86-64 (four
+logical CPUs): result-write p95 137.600 ms, reopen/validation p95 0.865 ms,
+wire-round-trip p95 2.185 ms, 24 retained records, 15,511 persisted bytes,
+and two regular files. The profile intentionally excludes provider, network,
+and Cloud latency; those remain host qualification boundaries.
 
 ## Deterministic work and resource results
 
@@ -140,10 +152,12 @@ gh run watch <run-id> --repo A3S-Lab/Code --exit-status
 gh run download <run-id> --repo A3S-Lab/Code
 ```
 
-The current workflow requires exactly eight JSON files (including the
-native workspace-retrieval report) and rejects any report
+The current workflow requires exactly nine JSON files (including the native
+zvec-rust workspace and evaluation-substrate reports) and rejects any report
 whose top-level `passed` value is not `true`. The authoritative run above
-contains all eight, including the native workspace report and `DM-QUAL1`.
+contains all nine reports, including the native workspace and evaluation
+substrate records; its archive digest can be checked before the 30-day
+retention window expires.
 The capability ledger explains how
 these profiles combine with deterministic correctness, SDK runtime, and
 external qualification evidence.

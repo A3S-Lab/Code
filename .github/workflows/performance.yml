@@ -22,6 +22,7 @@ on:
       - "core/examples/durable_memory_semantic_refresh_benchmark/**"
       - "core/examples/flow_graph_benchmark.rs"
       - "core/examples/persistence_benchmark.rs"
+      - "core/examples/evaluation_substrate_benchmark.rs"
       - "core/examples/workspace_retrieval_benchmark.rs"
       - "core/src/code_intelligence/**"
       - "core/src/context/**"
@@ -37,6 +38,7 @@ on:
       - "core/src/tools/**"
       - "core/src/flow_graph/**"
       - "core/src/state_graph/**"
+      - "core/src/evaluation/**"
       - "core/src/workspace/retrieval/**"
   pull_request:
     branches: [main]
@@ -55,6 +57,7 @@ on:
       - "core/examples/durable_memory_semantic_refresh_benchmark/**"
       - "core/examples/flow_graph_benchmark.rs"
       - "core/examples/persistence_benchmark.rs"
+      - "core/examples/evaluation_substrate_benchmark.rs"
       - "core/examples/workspace_retrieval_benchmark.rs"
       - "core/src/code_intelligence/**"
       - "core/src/context/**"
@@ -70,6 +73,7 @@ on:
       - "core/src/tools/**"
       - "core/src/flow_graph/**"
       - "core/src/state_graph/**"
+      - "core/src/evaluation/**"
       - "core/src/workspace/retrieval/**"
 
 concurrency:
@@ -172,13 +176,19 @@ jobs:
           --example persistence_benchmark
           | tee performance-results/persistence.json
 
+      - name: Qualify evaluation substrate persistence and wire boundaries
+        run: >-
+          cargo run --locked --release -p a3s-code-core
+          --example evaluation_substrate_benchmark
+          | tee performance-results/evaluation-substrate.json
+
       - name: Validate performance reports
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
           reports=(performance-results/*.json)
-          test "${#reports[@]}" -eq 8
+          test "${#reports[@]}" -eq 9
           for report in "${reports[@]}"; do
             jq -e '.passed == true' "$report" >/dev/null
           done

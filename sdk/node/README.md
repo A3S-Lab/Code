@@ -22,6 +22,11 @@ expose read-only diagnostics and verified shared-cache provisioning. Multiple
 Code processes reuse the same per-user installation; set
 `autoDownloadMoli: false` in `HeadlessConfig` for strict offline operation.
 
+The package also exports the generated `EvaluationWireEnvelopeV1` declarations
+for hosts that transport Code evidence, auxiliary-run lifecycle, or immutable
+evaluation records. The catalog is strict and versioned; payload validation
+remains owned by Rust Core. See the [evaluation substrate manual](../../manual/EVALUATION_SUBSTRATE.md).
+
 ## Quick Start
 
 ```js

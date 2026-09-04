@@ -3,6 +3,7 @@ use crate::evaluation::evidence::{EvidenceReadRequestV1, RunEvidenceReader};
 use crate::evaluation::identity::{digest_bytes, ExecutionTargetV1};
 use crate::run::InMemoryRunStore;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 struct FixtureExecutor {
     calls: AtomicUsize,
@@ -142,6 +143,80 @@ async fn output_schema_and_limit_are_enforced() {
         handle.wait().await,
         Err(AuxiliaryRunError::OutputSchemaMismatch)
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_waiters_cannot_miss_terminal_notification() {
+    struct YieldingExecutor;
+    #[async_trait]
+    impl AuxiliaryExecutor for YieldingExecutor {
+        async fn execute(
+            &self,
+            _context: AuxiliaryRunContextV1,
+        ) -> Result<serde_json::Value, AuxiliaryRunError> {
+            // Give waiter tasks a chance to enter the check/register window.
+            tokio::task::yield_now().await;
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    let evidence = evidence().await;
+    let service = InMemoryAuxiliaryRunService::new(Arc::new(YieldingExecutor));
+    for index in 0..256 {
+        let spec = AuxiliaryRunSpecV1::new(
+            ExecutionFrameV1::root(evidence.target.clone()),
+            "wait-race",
+            "return",
+            evidence.snapshot_digest.clone(),
+        )
+        .with_id(format!("aux-wait-race-{index}"));
+        let handle = service.spawn(spec, evidence.clone(), None).await.unwrap();
+        let waiters = (0..4)
+            .map(|_| {
+                let handle = handle.clone();
+                tokio::spawn(async move { handle.wait().await })
+            })
+            .collect::<Vec<_>>();
+        for waiter in waiters {
+            let result = tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .expect("terminal notification must not be lost")
+                .expect("waiter task must not panic")
+                .expect("fixture executor succeeds");
+            assert_eq!(result.value["ok"], true);
+        }
+        assert!(handle.snapshot().await.state.is_terminal());
+    }
+}
+
+#[test]
+fn auxiliary_snapshot_state_and_terminal_fields_are_consistent() {
+    let target = ExecutionTargetV1::new("session-snapshot", "run-snapshot");
+    let frame = ExecutionFrameV1::root(target);
+    let spec = AuxiliaryRunSpecV1::new(
+        frame.clone(),
+        "snapshot",
+        "return",
+        digest_bytes("evidence", b"snapshot"),
+    );
+    let mut snapshot = AuxiliaryRunSnapshotV1 {
+        schema: AUXILIARY_SNAPSHOT_SCHEMA_V1.to_string(),
+        id: spec.id.clone(),
+        parent: frame,
+        mode: spec.mode,
+        state: AuxiliaryRunStateV1::Failed,
+        spec_digest: spec.digest().unwrap(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        output_digest: None,
+        error: None,
+    };
+    assert!(matches!(
+        snapshot.validate(),
+        Err(AuxiliaryRunError::InvalidField("state"))
+    ));
+    snapshot.error = Some("failed".into());
+    assert!(snapshot.validate().is_ok());
 }
 
 #[tokio::test]

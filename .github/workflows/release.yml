@@ -100,6 +100,11 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      - name: Rustdoc warning gate
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --all-features --no-deps
+
       - name: Clippy
         run: cargo clippy --workspace --lib --bins -- -D warnings
 
@@ -123,6 +128,8 @@ jobs:
       - name: Check SDK protocol and API alignment
         run: |
           node scripts/generate_event_protocol_artifacts.mjs --check
+          node scripts/generate_evaluation_protocol_artifacts.mjs --check
+          node scripts/check_evaluation_protocol_artifacts.mjs
           node scripts/sdk_api_alignment_check.mjs
 
       - uses: actions/setup-go@v6

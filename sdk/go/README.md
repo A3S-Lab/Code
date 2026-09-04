@@ -44,6 +44,12 @@ the packaged/shared runtime and downloads the pinned Moli release only when
 automatic provisioning is enabled. The cache is per-user and protected by a
 cross-process lock, so multiple Go programs do not install duplicate browsers.
 
+The generated `EvaluationWireEnvelopeV1` projection carries the same strict
+version-one evidence, auxiliary-run, and evaluation-record envelope used by
+Core and the other SDKs. Use `DecodeEvaluationWireEnvelopeV1` at a Go process
+boundary; concrete payload validation remains a Core responsibility. See the
+[evaluation substrate manual](../../manual/EVALUATION_SUBSTRATE.md).
+
 ```go
 capabilities, err := code.SDKCapabilities(ctx)
 if err != nil {

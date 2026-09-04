@@ -195,8 +195,22 @@ fork authority.
 | `EVAL-AUX1` | Delivered | `AuxiliaryRunSpecV1`, capability ceiling checks, independent cancellation/deadline, structured-output adapter, bounded JSON output, idempotent IDs, lifecycle handles, and terminal retention | Auxiliary execution cannot broaden a declared parent ceiling; timeout, cancellation, panic, schema mismatch, duplicate admission, and output overflow all settle deterministically |
 | `EVAL-SUP1` | Delivered | Host-injected boundary policy and `EvaluationSupervisor` with turn/terminal/event triggers, debounce, pending admission, deterministic auxiliary IDs, and non-blocking completion watchers | Concurrent observations respect `max_pending`; replay never double-dispatches; policy remains outside Core and supervisor shutdown releases pending work |
 | `EVAL-STORE1` | Delivered | Generic async `EvaluationResultSink` and content-addressed `EvaluationRecordV1` CAS contract with bounded in-memory reference implementation | Exact result replay is idempotent, conflicting writes fail closed, records are queryable by execution target, and no decision enum is imposed by Core |
-| `EVAL-PROTO1` | Planned | Additive host/SDK projection for evidence pages, auxiliary lifecycle, and result records | Rust/Node/Python/Go schemas and unknown-field/version fixtures are generated and parity-checked; Cloud remains the business transport owner |
-| `EVAL-GA1` | Planned | External evaluator qualification and production adapters | A new evaluator can be implemented outside Core; adversarial prompt-injection/secret-redaction, restart, retention, cancellation, performance, strict Clippy, rustdoc, and packaged SDK gates are green |
+| `EVAL-PROTO1` | Delivered | Additive `EvaluationWireEnvelopeV1` projection for evidence requests/snapshots, auxiliary lifecycle values, and immutable result records, with one Rust catalog and generated Node/Python/Go declarations | Strict Rust decode validates schema/version/kind, size, and typed payloads; generated catalog and negative fixtures are parity-checked across SDK projections; Cloud remains the business transport owner |
+| `EVAL-DUR1` | Delivered | Bounded Tokio/file-backed `EvaluationResultSink` and restart-safe `EvaluationDispatchLedger` adapters with atomic publication, cross-process fencing, checked corruption paths, and FIFO/lease retention | Independent instances serialize writes; reopened generations validate every digest and identity; expired claims can be taken over; completed claims suppress replay; no raw evaluator prompt or rubric is persisted by Core |
+| `EVAL-QUAL1` | Delivered | Provider-free qualification suite for adversarial redaction, durable restart/replay, retention, cancellation composition, and strict wire/result boundaries | Seven integration tests pass locally; release performance profile is wired with deterministic resource checks; no product reviewer vocabulary or Cloud authorization enters Core |
+| `EVAL-GA1` | Delivered | External evaluator composition through host-owned policy/executor/result sinks, bounded file-backed result and dispatch adapters, and hosted release qualification | A new evaluator can be implemented outside Core; adversarial prompt-injection/secret-redaction, restart, retention, cancellation, performance, strict Clippy, rustdoc, and packaged SDK gates are green in hosted qualification runs |
+
+EVAL-GA1 evidence is now complete for the provider-neutral Code boundary. The
+hosted [Code CI run 33847689080](https://github.com/A3S-Lab/Code/actions/runs/33847689080)
+passed strict rustdoc and Clippy, default and feature-gated Rust tests, the
+convergence benchmark, packaged Node.js/Python/Go SDK checks, hermetic
+integration checks, and retrieval soak on Linux, macOS, and Windows. The
+hosted [performance run 33844533910](https://github.com/A3S-Lab/Code/actions/runs/33844533910)
+validated all nine machine-readable profiles, including the evaluation
+substrate profile and its bounded persistence/reopen/wire budgets. This closes
+the common mechanism gate; real providers, external network or Cloud
+qualification, reviewer rubric/authentication, and product workflows remain
+host-owned responsibilities.
 
 The delivered gates intentionally stop at the common mechanism. Core does not
 ship a reviewer prompt, rubric, severity/threshold policy, shadow-review
@@ -206,7 +220,8 @@ parser, authentication flow, or Cloud audit endpoint. A host supplies an
 `StructuredAuxiliaryExecutor` or its own provider-neutral implementation.
 
 The dependency order is `EVAL-FND1 -> EVAL-JRN1 -> EVAL-EVID1 -> EVAL-AUX1 ->
-EVAL-SUP1 -> EVAL-STORE1 -> EVAL-PROTO1 -> EVAL-GA1`. `EVAL-PROTO1` may begin
+EVAL-SUP1 -> EVAL-STORE1 -> EVAL-PROTO1 -> EVAL-DUR1 -> EVAL-QUAL1 ->
+EVAL-GA1`. `EVAL-PROTO1` may begin
 schema fixtures after the first four gates, but cannot claim compatibility
 until all lifecycle and recovery invariants are covered. Durable fact/result
 storage, tenant authorization, retention, placement, and business lineage

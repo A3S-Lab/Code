@@ -44,8 +44,15 @@ import type {
   AgentEventV1,
   EventEnvelopeV1,
   KnownAgentEventTypeV1,
+  // From evaluation-protocol-v1.d.ts (generated from the Rust catalog):
+  EvaluationWireEnvelopeV1,
+  EvaluationWireMessageV1,
+  EvaluationWireKindV1,
+  KnownEvaluationWireKindV1,
 } from './index.js'
 import {
+  EVALUATION_WIRE_KINDS_V1,
+  EvaluationWireTypeV1,
   ToolPresentationMode,
   WorkspaceLexicalEngineOption,
 } from './index.js'
@@ -123,6 +130,21 @@ declare const _versionedEvent: AgentEventV1
 declare const _envelope: EventEnvelopeV1<{ opaque: Array<number> }>
 const _knownEventType: KnownAgentEventTypeV1 = 'tool_execution_start'
 const _futureEventType: AgentEventTypeV1 = 'future_event'
+const _evaluationEnvelope: EvaluationWireEnvelopeV1 = {
+  schema: 'a3s.code.evaluation-wire.v1',
+  version: 1,
+  kind: 'evidence_snapshot',
+  payload: { snapshot_digest: 'sha256:' + 'a'.repeat(64) },
+}
+declare const _evaluationMessage: EvaluationWireMessageV1
+const _evaluationKind: EvaluationWireKindV1 = 'evaluation_record'
+const _knownEvaluationKind: KnownEvaluationWireKindV1 = 'evidence_snapshot'
+void _evaluationEnvelope
+void _evaluationMessage
+void _evaluationKind
+void _knownEvaluationKind
+void EvaluationWireTypeV1.EVALUATION_RECORD
+void EVALUATION_WIRE_KINDS_V1
 const _busyCode: A3sCodeErrorCode = 'SESSION_BUSY'
 const _serveFailureCode: A3sCodeErrorCode = 'SERVE_STARTUP_FAILED'
 

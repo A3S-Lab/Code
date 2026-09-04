@@ -51,6 +51,12 @@ capability inventory, and `moli_runtime_info()` / `ensure_moli_async()` expose
 runtime diagnostics and provisioning without requiring callers to manage a
 browser process.
 
+`a3s_code.evaluation_protocol_v1` exposes the generated version-one envelope
+constants, kind catalog, and typing aliases for transporting bounded evidence,
+auxiliary lifecycle values, and immutable evaluation records. Rust Core remains
+the single authority for strict payload validation; see the [evaluation
+substrate manual](../../manual/EVALUATION_SUBSTRATE.md).
+
 If the selected interpreter has no pip, initialize it first and keep the
 interpreter consistent for all commands:
 

@@ -4,6 +4,7 @@ use super::identity::{
     digest_bytes, digest_json, validate_digest, ExecutionFrameV1, ExecutionTargetV1,
 };
 use super::journal::{ExecutionFactInputV1, ExecutionFactJournal, ExecutionFactV1};
+use crate::agent::AgentEvent;
 use crate::event_protocol::{run_event_envelope_v1, EventEnvelopeV1};
 use crate::run::{InMemoryRunStore, RunSnapshot, RunStatus};
 use crate::tools::ArtifactStore;
@@ -26,6 +27,7 @@ const MAX_REFERENCED_ARTIFACTS: usize = 256;
 const MAX_ARTIFACT_URI_BYTES: usize = 1024;
 const MAX_TOOL_NAME_BYTES: usize = 256;
 const MAX_EVENT_TYPE_BYTES: usize = 256;
+const MAX_EVENT_METADATA_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -412,7 +414,7 @@ impl EvidenceSnapshotV1 {
             previous_fact = Some((fact.sequence, fact.observed_at_ms));
         }
         let mut previous_event: Option<(u64, u64)> = None;
-        for event in &self.events {
+        for (index, event) in self.events.iter().enumerate() {
             validate_digest(&event.payload_digest)
                 .map_err(|_| EvidenceError::InvalidDigest("payload_digest"))?;
             let payload = serde_json::to_vec(&event.event).map_err(EvidenceError::Serialization)?;
@@ -428,6 +430,12 @@ impl EvidenceSnapshotV1 {
             {
                 return Err(EvidenceError::InvalidField("event"));
             }
+            validate_event_metadata(
+                &event.event,
+                &self.target,
+                event.sequence,
+                event.occurred_at_ms,
+            )?;
             if event.occurred_at_ms > self.observed_at_ms {
                 return Err(EvidenceError::InvalidField("events.occurred_at_ms"));
             }
@@ -468,6 +476,20 @@ impl EvidenceSnapshotV1 {
                     != digest_bytes("a3s.code.evidence.event-payload.v1", &payload)
             {
                 return Err(EvidenceError::DigestMismatch("payload_digest"));
+            }
+            if let Some(fact) = self.facts.get(index) {
+                // A fact and an event at the same cursor must describe the
+                // same source observation. A snapshot may be marked
+                // incomplete while two independently captured stores are
+                // converging, but it must never claim that mismatched data is
+                // a complete evidence window.
+                let pair_matches = fact.sequence == event.sequence
+                    && fact.event_type == event.event.event_type
+                    && fact.observed_at_ms == event.occurred_at_ms
+                    && fact_payload_matches_event(fact, event);
+                if !pair_matches && self.complete {
+                    return Err(EvidenceError::InvalidField("facts.events"));
+                }
             }
             previous_event = Some((event.sequence, event.occurred_at_ms));
         }
@@ -801,6 +823,19 @@ impl RunEvidenceReader {
             // when their generations disagree.
             complete = false;
         }
+        if events.len() != facts.len()
+            || events.iter().zip(&facts).any(|(event, fact)| {
+                event.sequence != fact.sequence
+                    || event.event.event_type != fact.event_type
+                    || event.occurred_at_ms != fact.observed_at_ms
+                    || !fact_payload_matches_event(fact, event)
+            })
+        {
+            // The fact journal and the run store are separate observations.
+            // Preserve the bounded data for diagnostics, but make the
+            // generation unusable for a gate until the host reconciles it.
+            complete = false;
+        }
         if references_truncated {
             complete = false;
         }
@@ -847,7 +882,13 @@ impl RunEvidenceReader {
         };
         let mut artifacts = Vec::new();
         let mut total_bytes = 0usize;
-        for artifact in store.artifacts() {
+        // ArtifactStore preserves insertion order, while the evidence wire
+        // contract is canonical URI order. Sort before applying byte/count
+        // limits so the selected projection is deterministic as well as
+        // validatable.
+        let mut stored_artifacts = store.artifacts();
+        stored_artifacts.sort_by(|left, right| left.artifact_uri.cmp(&right.artifact_uri));
+        for artifact in stored_artifacts {
             if !references.contains(&artifact.artifact_uri) {
                 continue;
             }
@@ -928,6 +969,68 @@ fn is_redacted_payload(value: &Value, digest: &str, bytes: u64) -> bool {
         && object.get("content") == Some(&Value::String("redacted".to_string()))
         && object.get("digest").and_then(Value::as_str) == Some(digest)
         && object.get("bytes").and_then(Value::as_u64) == Some(bytes)
+}
+
+fn validate_event_metadata(
+    event: &EventEnvelopeV1,
+    target: &ExecutionTargetV1,
+    sequence: u64,
+    occurred_at_ms: u64,
+) -> Result<(), EvidenceError> {
+    let metadata = event
+        .metadata
+        .as_ref()
+        .ok_or(EvidenceError::InvalidField("event.metadata"))?;
+    let encoded = serde_json::to_vec(metadata).map_err(EvidenceError::Serialization)?;
+    if encoded.len() > MAX_EVENT_METADATA_BYTES {
+        return Err(EvidenceError::InvalidLimit);
+    }
+    let object = metadata
+        .as_object()
+        .ok_or(EvidenceError::InvalidField("event.metadata"))?;
+    let exact = object.get("run_id").and_then(Value::as_str) == Some(target.run_id.as_str())
+        && object.get("session_id").and_then(Value::as_str) == Some(target.session_id.as_str())
+        && object.get("sequence").and_then(Value::as_u64) == Some(sequence)
+        && object.get("timestamp_ms").and_then(Value::as_u64) == Some(occurred_at_ms);
+    if !exact {
+        return Err(EvidenceError::TargetMismatch);
+    }
+    Ok(())
+}
+
+/// Compare an unredacted event projection with the digest-only fact that was
+/// captured from the same runtime event. The fact and evidence layers use
+/// different wire domains, so rebuild the original AgentEvent JSON shape by
+/// restoring its top-level `type` field. Redacted payload markers deliberately
+/// skip this check: their digest is the retained source commitment, not the
+/// marker's digest.
+fn fact_payload_matches_event(fact: &ExecutionFactV1, event: &EvidenceEventV1) -> bool {
+    if is_redacted_payload(
+        &event.event.payload,
+        &event.payload_digest,
+        event.payload_bytes,
+    ) {
+        return true;
+    }
+    let Some(mut object) = event.event.payload.as_object().cloned() else {
+        return false;
+    };
+    object.insert(
+        "type".to_string(),
+        Value::String(event.event.event_type.clone()),
+    );
+    // Deserialize back through the runtime enum before serializing. This
+    // restores the exact variant field order used when the fact digest was
+    // captured; serializing the intermediate JSON map directly can reorder
+    // keys and produce a different byte digest for the same event.
+    let Ok(runtime_event) = serde_json::from_value::<AgentEvent>(Value::Object(object)) else {
+        return false;
+    };
+    let Ok(encoded) = serde_json::to_vec(&runtime_event) else {
+        return false;
+    };
+    u64::try_from(encoded.len()).ok() == Some(fact.payload_bytes)
+        && digest_bytes("a3s.code.execution-fact.payload.v1", &encoded) == fact.payload_digest
 }
 
 fn collect_refs_from_value(value: &Value, refs: &mut BTreeSet<String>) -> bool {

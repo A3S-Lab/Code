@@ -52,6 +52,24 @@ from .event_protocol_v1 import (
     EventType,
     KnownAgentEventTypeV1,
 )
+from .evaluation_protocol_v1 import (
+    EVALUATION_PROTOCOL_MAX_MESSAGE_BYTES,
+    EVALUATION_PROTOCOL_SCHEMA_V1,
+    EVALUATION_PROTOCOL_VERSION_V1,
+    EVALUATION_WIRE_KINDS_V1,
+    EvaluationWireEnvelopeV1,
+    EvaluationWireKindV1,
+    EvaluationWirePayloadV1,
+    EvaluationWireTypeV1,
+    EvidenceReadRequestPayloadV1,
+    EvidenceSnapshotPayloadV1,
+    AuxiliaryRunSpecPayloadV1,
+    AuxiliaryRunSnapshotPayloadV1,
+    AuxiliaryRunOutputPayloadV1,
+    EvaluationResultPayloadV1,
+    EvaluationRecordPayloadV1,
+    KnownEvaluationWireKindV1,
+)
 from .errors import CodeErrorCode
 from .memory_maintenance import (
     MemoryMaintenanceHealth,

@@ -49,6 +49,11 @@ jobs:
         run: npm ci
         working-directory: sdk/node
 
+      - name: Check evaluation protocol projection
+        run: |
+          node scripts/generate_evaluation_protocol_artifacts.mjs --check
+          node scripts/check_evaluation_protocol_artifacts.mjs
+
       - name: Build Node SDK native module
         run: npm run build:debug
         working-directory: sdk/node
@@ -91,6 +96,8 @@ jobs:
       - name: Build and test Python SDK runtime
         shell: bash
         run: |
+          node scripts/generate_evaluation_protocol_artifacts.mjs --check
+          node scripts/check_evaluation_protocol_artifacts.mjs
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip
