@@ -54,16 +54,16 @@ raise_open_file_limit() {
 cd "$WORKSPACE"
 raise_open_file_limit
 
-echo "[1/13] Checking patch hygiene"
+echo "[1/14] Checking patch hygiene"
 git diff --check
 
-echo "[2/13] Checking release version consistency"
+echo "[2/14] Checking release version consistency"
 scripts/check_release_versions.sh
 
-echo "[3/13] Checking formatting"
+echo "[3/14] Checking formatting"
 cargo fmt --all --check
 
-echo "[4/13] Checking SDK API alignment"
+echo "[4/14] Checking SDK API alignment"
 node scripts/generate_event_protocol_artifacts.mjs --check
 node scripts/generate_evaluation_protocol_artifacts.mjs --check
 node scripts/check_evaluation_protocol_artifacts.mjs
@@ -72,26 +72,29 @@ python3 scripts/check_capability_verification.py
 node scripts/sdk_api_alignment_check.mjs
 node sdk/node/scripts/patch-loader.mjs --check
 
-echo "[5/13] Running default Rust test suite"
+echo "[5/14] Checking rustdoc warnings"
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
+
+echo "[6/14] Running default Rust test suite"
 cargo test --workspace
 
-echo "[6/13] Running feature-gated library tests"
+echo "[7/14] Running feature-gated library tests"
 cargo test --workspace --all-features --lib
 
-echo "[7/13] Building and testing Node SDK"
+echo "[8/14] Building and testing Node SDK"
 (
   unset A3S_CONFIG_FILE A3S_OPENAI_API_KEY A3S_OPENAI_BASE_URL MINIMAX_API_KEY MINIMAX_BASE_URL
   cd sdk/node && npm run build:debug && npm test && npm run test:helpers
 )
 
-echo "[8/13] Type-checking Node examples"
+echo "[9/14] Type-checking Node examples"
 (cd sdk/node/examples && npm run typecheck)
 
-echo "[9/13] Compiling Python SDK shim"
+echo "[10/14] Compiling Python SDK shim"
 PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/private/tmp/a3s-code-pycache}" \
   python3 -m compileall sdk/python/python >/dev/null
 
-echo "[10/13] Running Go SDK bridge integration"
+echo "[11/14] Running Go SDK bridge integration"
 cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
 TARGET_ROOT="${CARGO_TARGET_DIR:-$WORKSPACE/target}"
 if [[ "$TARGET_ROOT" != /* ]]; then
@@ -107,10 +110,10 @@ fi
     go test ./...
 )
 
-echo "[11/13] Checking ACL env injection dry run"
+echo "[12/14] Checking ACL env injection dry run"
 A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh --dry-run
 
-echo "[12/13] Checking real-provider ACL env smoke availability"
+echo "[13/14] Checking real-provider ACL env smoke availability"
 CONFIG_HAS_DEFAULT_PROVIDER_CREDS=0
 if [ -f "$CONFIG_FILE" ]; then
   CONFIG_HAS_DEFAULT_PROVIDER_CREDS="$(
@@ -174,17 +177,17 @@ if [ "${SKIP_REAL_PROVIDER:-0}" = "1" ]; then
     exit 2
   fi
   echo "skipped real-provider smoke by explicit SKIP_REAL_PROVIDER=1" >&2
-  echo "[13/13] Skipping SDK real-provider smoke"
+  echo "[14/14] Skipping SDK real-provider smoke"
 elif [ "$CONFIG_HAS_DEFAULT_PROVIDER_CREDS" = "1" ]; then
   A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh
-  echo "[13/13] Running SDK real-provider smoke"
+  echo "[14/14] Running SDK real-provider smoke"
   A3S_CONFIG_FILE="$CONFIG_FILE" scripts/sdk_real_config_env_integration.sh
 elif [ "${REQUIRE_REAL_PROVIDER:-0}" = "1" ]; then
   echo "missing credentials for the configured default provider; real-provider smoke is required" >&2
   exit 2
 else
   echo "skipped real-provider smoke; configure credentials for the default provider before tagging" >&2
-  echo "[13/13] Skipping SDK real-provider smoke"
+  echo "[14/14] Skipping SDK real-provider smoke"
 fi
 
 echo "release preflight completed"

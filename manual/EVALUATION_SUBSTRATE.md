@@ -242,7 +242,7 @@ node scripts/check_evaluation_protocol_artifacts.mjs
 ```
 
 Release qualification additionally requires the normal workspace feature
-matrix, rustdoc warning gate, protocol/SDK schema fixtures, restart and
+matrix, the automated `RUSTDOCFLAGS=-D warnings` rustdoc gate, protocol/SDK schema fixtures, restart and
 retention tests, adversarial redaction tests, a performance profile, and a
 durable host adapter. The change-scoped qualification suite covers the file
 result store and dispatch ledger; the hosted release profile is wired in

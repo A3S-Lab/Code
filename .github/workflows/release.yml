@@ -90,6 +90,11 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      - name: Rustdoc warning gate
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --all-features --no-deps
+
       - name: Clippy
         run: cargo clippy --workspace --lib --bins -- -D warnings
 
