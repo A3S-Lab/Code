@@ -158,6 +158,7 @@ telemetry remain opt-in.
 | Agent runtime           | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, replay, and safe-point `steer`/`interrupt` run control                                                                                                                                          | Baseline                                                                                                                                                                  |
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
 | Evaluation substrate    | Provider-neutral execution targets/frames, digest-only fact journals, atomic bounded evidence snapshots, isolated auxiliary runs, host boundary supervision, restart-safe dispatch leases, durable result CAS, and strict versioned Rust/Node/Python/Go wire projections | Inject an `EvaluationPolicy`/`AuxiliaryExecutor` and optionally a dispatch/result store; Core supplies mechanisms and generated transport schemas, while reviewer rubrics, findings, authorization, and Cloud audit remain host-owned |
+| Native research contracts | Versioned digest-bound research runs, evidence facts, provenance receipts, review findings, and project events with bounded fields and fail-closed lifecycle transitions | Hosts bind exact source/evidence snapshots and `RunCapabilityBindingV1`; A3S Use supplies package/environment identity and Desktop/Cloud own scientific policy, review decisions, retention, and publication |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, official zvec-rust FTS/BM25 by default, Memory-backed exact vectors, hybrid RRF, optional deterministic CPU reranking, readiness/coverage metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database; native zvec builds require an attested platform library |
 | Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, host-persisted safe refresh checkpoints, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
@@ -202,6 +203,14 @@ runtime authority/run-control contract, the canonical repository-tool schema,
 and shared safety boundaries. The host runtime remains authoritative for every
 permission, approval, budget, cancellation, and sandbox decision; prompt text
 does not grant a capability that the current session has not exposed.
+
+Scientific workflows use the same boundary. `a3s-code-core::research` binds a
+run to exact project, source, evidence, and Code/Use capability identities;
+records digest-only observations; and issues provenance and review shapes that
+can be rendered by a host. It deliberately leaves package resolution,
+reviewer rubrics, acceptance thresholds, human approval, retention, and
+publication to A3S Use and the host application. See
+[Native Research Contracts](manual/RESEARCH_CONTRACTS.md).
 
 ## Configure the runtime
 

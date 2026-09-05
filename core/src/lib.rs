@@ -88,6 +88,7 @@ pub mod commands;
 pub(crate) mod compaction;
 pub mod config;
 pub mod context;
+pub mod core_identity;
 pub mod durable_memory;
 pub mod dynamic_workflow;
 pub mod embedding;
@@ -115,6 +116,7 @@ pub mod program;
 pub(crate) mod prompts;
 pub mod queue;
 pub mod release;
+pub mod research;
 pub mod retention;
 pub(crate) mod retry;
 pub mod rl_trajectory;
@@ -198,6 +200,14 @@ pub use cognitive_context::{
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,
+};
+pub use core_identity::{
+    ArtifactRef, CapabilityStamp, CoreEventIdentity, CoreIdentity, CoreIdentityError,
+    EvidenceCursor, LogicalClock, ManualLogicalClock, OperationId, SourceRevision,
+    SystemLogicalClock, CORE_EVENT_IDENTITY_DIGEST_DOMAIN_V1, CORE_EVENT_IDENTITY_SCHEMA_V1,
+    CORE_EVENT_PAYLOAD_DIGEST_DOMAIN_V1, CORE_IDENTITY_MAX_ARTIFACT_BYTES,
+    CORE_IDENTITY_MAX_EVENT_TYPE_BYTES, CORE_IDENTITY_MAX_ID_BYTES,
+    CORE_IDENTITY_MAX_MEDIA_TYPE_BYTES, CORE_IDENTITY_MAX_PAYLOAD_BYTES, CORE_IDENTITY_SCHEMA_V1,
 };
 pub use durable_memory::{
     DurableMemoryActivation, DurableMemoryBindingV1, DurableMemoryMode, DurableMemoryRecallChannel,
@@ -294,6 +304,15 @@ pub use orchestration::{
     WorkflowStepRecord, WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
 };
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
+pub use research::{
+    ResearchArtifactKindV1, ResearchContractError, ResearchEventV1, ResearchEvidenceFactKindV1,
+    ResearchEvidenceFactV1, ResearchProvenanceReceiptV1, ResearchReproducibilityV1,
+    ResearchReviewCategoryV1, ResearchReviewFindingV1, ResearchReviewLocationV1,
+    ResearchReviewSeverityV1, ResearchReviewStatusV1, ResearchRunStatusV1, ResearchRunV1,
+    RESEARCH_ARTIFACT_KINDS, RESEARCH_EVENT_SCHEMA_V1, RESEARCH_EVIDENCE_FACT_SCHEMA_V1,
+    RESEARCH_PROVENANCE_RECEIPT_SCHEMA_V1, RESEARCH_REVIEW_FINDING_SCHEMA_V1,
+    RESEARCH_RUN_SCHEMA_V1,
+};
 pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecorder};
 pub use run::{
     ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunReservation,

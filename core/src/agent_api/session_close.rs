@@ -194,7 +194,10 @@ impl SessionCloseHandle {
         let had_active_token = self.cancel_token.lock().await.is_some();
         if had_active_token {
             if let Some(run_id) = self.current_run_id.lock().await.clone() {
-                let _ = self.run_store.mark_cancelled(&run_id).await;
+                let _ = self
+                    .run_store
+                    .settle_terminal(&run_id, crate::run::RunTerminalTransition::Cancelled)
+                    .await;
                 if let Some(hook) = &self.hook_executor {
                     hook.record_run_cancelled(&run_id, &self.session_id, Some("cancelled by host"))
                         .await;

@@ -28,11 +28,45 @@ impl RunStatus {
     }
 }
 
+/// One terminal outcome applied to an admitted Run.
+///
+/// `Completed` is normally materialized by the authoritative `End` event,
+/// while cancellation and failure are applied by control or lifecycle
+/// boundaries that may finish before an event arrives. Keeping the transition
+/// type beside the Run store gives every caller one typed write primitive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RunTerminalTransition {
+    Completed,
+    Cancelled,
+    Failed(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunEventRecord {
     pub sequence: usize,
     pub timestamp_ms: u64,
     pub event: AgentEvent,
+}
+
+impl RunEventRecord {
+    /// Project this retained run event into the shared Core identity plane.
+    ///
+    /// The projection is intentionally computed on demand so the existing
+    /// persisted run/event wire shape remains unchanged during migration.
+    pub fn core_identity(
+        &self,
+        operation_id: crate::core_identity::OperationId,
+        source_revision: crate::core_identity::SourceRevision,
+        capability_stamp: Option<crate::core_identity::CapabilityStamp>,
+    ) -> Result<crate::core_identity::CoreEventIdentity, crate::core_identity::CoreIdentityError>
+    {
+        crate::core_identity::CoreEventIdentity::from_run_event(
+            operation_id,
+            source_revision,
+            capability_stamp,
+            self,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,6 +417,26 @@ impl InMemoryRunStore {
         run.status = RunStatus::Cancelled;
         run.updated_at_ms = now_ms().max(run.updated_at_ms);
         Some(run.clone())
+    }
+
+    /// Apply one terminal transition without allowing a late outcome to
+    /// rewrite an already terminal Run.
+    ///
+    /// Successful Runs are finalized by `AgentEvent::End`, so the
+    /// `Completed` transition is intentionally a read-only acknowledgement.
+    /// Cancellation and failure share the same monotonic primitives used by
+    /// the rest of the Run API, which keeps host cancellation and lifecycle
+    /// cleanup on one typed storage boundary.
+    pub(crate) async fn settle_terminal(
+        &self,
+        run_id: &str,
+        transition: RunTerminalTransition,
+    ) -> Option<RunSnapshot> {
+        match transition {
+            RunTerminalTransition::Completed => self.snapshot(run_id).await,
+            RunTerminalTransition::Cancelled => self.mark_cancelled(run_id).await,
+            RunTerminalTransition::Failed(error) => self.mark_failed(run_id, error).await,
+        }
     }
 
     pub async fn snapshot(&self, run_id: &str) -> Option<RunSnapshot> {
@@ -1183,7 +1237,10 @@ impl RunHandle {
         let token = self.cancel_token.lock().await.clone();
         if let Some(token) = token {
             token.cancel();
-            let _ = self.store.mark_cancelled(&self.id).await;
+            let _ = self
+                .store
+                .settle_terminal(&self.id, RunTerminalTransition::Cancelled)
+                .await;
             if let Some(executor) = &self.hook_executor {
                 executor
                     .record_run_cancelled(&self.id, &self.session_id, Some("cancelled by host"))
@@ -1549,5 +1606,48 @@ mod tests {
             store.mark_cancelled(&failed.id).await.unwrap().status,
             RunStatus::Failed
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_sink_preserves_event_completion_and_rejects_late_outcomes() {
+        let store = InMemoryRunStore::new();
+        let completed = store.create_run("session-1", "done").await;
+        store
+            .record_event(
+                &completed.id,
+                AgentEvent::End {
+                    text: "done".to_string(),
+                    usage: Default::default(),
+                    verification_summary: Box::new(
+                        crate::verification::VerificationSummary::from_reports(&[]),
+                    ),
+                    meta: None,
+                },
+            )
+            .await;
+
+        let acknowledged = store
+            .settle_terminal(&completed.id, RunTerminalTransition::Completed)
+            .await
+            .expect("completed Run remains observable");
+        assert_eq!(acknowledged.status, RunStatus::Completed);
+
+        let failed = store.create_run("session-1", "fails").await;
+        let failed = store
+            .settle_terminal(
+                &failed.id,
+                RunTerminalTransition::Failed("provider failed".to_string()),
+            )
+            .await
+            .expect("failed Run remains observable");
+        assert_eq!(failed.status, RunStatus::Failed);
+        assert_eq!(failed.error.as_deref(), Some("provider failed"));
+
+        let unchanged = store
+            .settle_terminal(&failed.id, RunTerminalTransition::Cancelled)
+            .await
+            .expect("late cancellation remains observable");
+        assert_eq!(unchanged.status, RunStatus::Failed);
+        assert_eq!(unchanged.error.as_deref(), Some("provider failed"));
     }
 }

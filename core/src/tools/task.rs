@@ -16,7 +16,7 @@
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
 use crate::llm::structured::{
-    generate_blocking, parse_validated_output, StructuredMode, StructuredRequest,
+    generate_blocking_with_cancellation, parse_validated_output, StructuredMode, StructuredRequest,
 };
 use crate::llm::{LlmClient, ToolDefinition};
 use crate::mcp::{McpBinding, McpManager};

@@ -611,29 +611,8 @@ impl RunCleanupState {
         *self.cancel_token.lock().await = Some(token);
     }
 
-    /// Share the per-run cancel-token slot. Used by stream worker state to
-    /// observe cancellation when classifying a failed run.
-    pub(super) fn cancel_token_slot(
-        &self,
-    ) -> Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>> {
-        Arc::clone(&self.cancel_token)
-    }
-
     pub(super) async fn clear_cancel_token(&self) {
         *self.cancel_token.lock().await = None;
-    }
-
-    /// Returns `true` when the per-run cancellation token (or any parent it
-    /// was derived from, such as the session-level token) has been fired.
-    /// Used by lifecycle `complete()` to classify a failed run as `Cancelled`
-    /// vs `Failed` when an `Err` comes back from the agent loop.
-    pub(super) async fn was_cancelled(&self) -> bool {
-        self.cancel_token
-            .lock()
-            .await
-            .as_ref()
-            .map(|t| t.is_cancelled())
-            .unwrap_or(false)
     }
 
     pub(super) async fn finish(&self) {

@@ -4,6 +4,7 @@ use super::identity::{
     digest_bytes, digest_json, validate_digest, ExecutionFrameV1, ExecutionTargetV1,
 };
 use crate::agent::AgentEvent;
+use crate::core_identity::canonical_event_payload;
 use crate::run::RunEventRecord;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -93,18 +94,17 @@ impl ExecutionFactInputV1 {
         observed_at_ms: u64,
         event: &AgentEvent,
     ) -> Result<Self, JournalError> {
-        let encoded = serde_json::to_vec(event)
+        let canonical = canonical_event_payload(event)
             .map_err(|error| JournalError::Serialization(error.to_string()))?;
-        let event_type = event.event_type_v1().to_string();
         let value = serde_json::to_value(event)
             .map_err(|error| JournalError::Serialization(error.to_string()))?;
         Ok(Self {
             frame,
             sequence,
             observed_at_ms,
-            event_type,
-            payload_digest: digest_bytes("a3s.code.execution-fact.payload.v1", &encoded),
-            payload_bytes: u64::try_from(encoded.len())
+            event_type: canonical.event_type,
+            payload_digest: digest_bytes("a3s.code.execution-fact.payload.v1", &canonical.wire),
+            payload_bytes: u64::try_from(canonical.wire.len())
                 .map_err(|_| JournalError::InvalidField("payload_bytes"))?,
             artifact_refs: collect_artifact_refs(&value),
         })

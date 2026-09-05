@@ -580,11 +580,8 @@ impl TaskExecutor {
             mode: StructuredMode::Tool,
             max_repair_attempts: 2,
         };
-        let result = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => anyhow::bail!("Operation cancelled by user"),
-            result = generate_blocking(llm_client, &req) => result?,
-        };
+        let result =
+            generate_blocking_with_cancellation(llm_client, &req, cancellation.clone()).await?;
         Ok(result.object)
     }
 
@@ -607,11 +604,8 @@ impl TaskExecutor {
             mode: StructuredMode::Tool,
             max_repair_attempts: 2,
         };
-        let result = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => anyhow::bail!("Operation cancelled by user"),
-            result = generate_blocking(llm_client, &req) => result?,
-        };
+        let result =
+            generate_blocking_with_cancellation(llm_client, &req, cancellation.clone()).await?;
         Ok(result.object)
     }
 }
