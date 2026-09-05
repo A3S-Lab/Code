@@ -10,7 +10,9 @@ use crate::execution_identity::{
     FLOW_STEP_IDENTITY_DOMAIN_V1,
 };
 use crate::llm::{ModelGenerationAdmission, ModelGenerationConcurrency};
-use crate::task_scheduler::{TaskLease, TaskPriority as SchedulerTaskPriority, TaskScheduler};
+use crate::task_scheduler::{
+    TaskLease, TaskPriority as SchedulerTaskPriority, TaskScheduler, TaskSchedulerQuota,
+};
 use crate::tools::{
     registry_tool_invoker, Tool, ToolContext, ToolInvoker, ToolOutput, ToolRegistry, ToolResult,
 };
@@ -60,6 +62,13 @@ const DEFAULT_DYNAMIC_WORKFLOW_LEASE_MS: u64 = 30_000;
 const MAX_DYNAMIC_WORKFLOW_SETTLE: Duration = Duration::from_secs(5);
 const MAX_DYNAMIC_WORKFLOW_CONTROL_REASON_BYTES: usize = 4 * 1024;
 const DYNAMIC_WORKFLOW_LEASE_RELATIVE_PATH: &str = "leases";
+
+fn dynamic_workflow_scheduler_quota_limit(limits: &DynamicWorkflowScriptLimits) -> usize {
+    limits
+        .max_concurrent_steps
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_STEPS)
+        .clamp(1, MAX_MAX_CONCURRENT_STEPS)
+}
 
 /// Runtime build used to pin newly-created dynamic workflow runs.
 ///
@@ -364,6 +373,11 @@ pub struct DynamicWorkflowControlDiagnostics {
     pub workflow: DynamicWorkflowHealthSnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scheduler: Option<crate::task_scheduler::TaskSchedulerHealthSnapshot>,
+    /// Live owner-quota occupancy for this workflow when direct Flow steps
+    /// use the shared scheduler. The projection is absent when the runtime is
+    /// session-bound or has no scheduler.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduler_quota: Option<crate::task_scheduler::TaskSchedulerQuotaSnapshot>,
 }
 
 /// Bounded, host-facing projection of one dynamic workflow continuation.
@@ -551,6 +565,9 @@ pub struct DynamicWorkflowRuntime {
     /// should leave this unset to avoid nested single-slot deadlocks.
     task_scheduler: Option<Arc<TaskScheduler>>,
     admit_steps_globally: bool,
+    /// Optional owner quota for direct script-backed Flow steps. The quota is
+    /// enforced by the same scheduler actor as global capacity.
+    scheduler_quota: Option<crate::task_scheduler::TaskSchedulerQuota>,
     continuation_lease: Option<Arc<DynamicWorkflowLease>>,
 }
 
@@ -577,6 +594,7 @@ impl DynamicWorkflowRuntime {
             step_admission: DynamicStepAdmission::new(DEFAULT_MAX_CONCURRENT_STEPS),
             task_scheduler: None,
             admit_steps_globally: false,
+            scheduler_quota: None,
             continuation_lease: None,
         }
     }
@@ -618,6 +636,18 @@ impl DynamicWorkflowRuntime {
         self
     }
 
+    /// Bind a digest-only owner quota to scheduler-backed Flow admissions.
+    ///
+    /// This does not create another queue or workflow authority; it only tells
+    /// the existing scheduler how many slots this runtime may own at once.
+    pub fn with_task_scheduler_quota(
+        mut self,
+        quota: crate::task_scheduler::TaskSchedulerQuota,
+    ) -> Self {
+        self.scheduler_quota = Some(quota);
+        self
+    }
+
     fn with_continuation_lease(mut self, lease: Arc<DynamicWorkflowLease>) -> Self {
         self.continuation_lease = Some(lease);
         self
@@ -626,6 +656,22 @@ impl DynamicWorkflowRuntime {
     /// Return local Flow-step admission counters for diagnostics and hosts.
     pub fn admission_stats(&self) -> DynamicWorkflowAdmissionStats {
         self.step_admission.stats()
+    }
+
+    /// Return the live owner-quota projection for this runtime, when it is
+    /// layered on an agent-wide scheduler. The projection contains only the
+    /// digest identity and current occupancy; Flow history and worker leases
+    /// remain independent authorities.
+    pub async fn scheduler_quota_snapshot(
+        &self,
+    ) -> std::result::Result<
+        Option<crate::task_scheduler::TaskSchedulerQuotaSnapshot>,
+        crate::task_scheduler::TaskSchedulerError,
+    > {
+        match (&self.task_scheduler, &self.scheduler_quota) {
+            (Some(scheduler), Some(quota)) => scheduler.quota_snapshot(quota).await.map(Some),
+            _ => Ok(None),
+        }
     }
 
     async fn admit_step(&self, invocation: &StepInvocation) -> a3s_flow::Result<DynamicStepLease> {
@@ -657,18 +703,34 @@ impl DynamicWorkflowRuntime {
                     "global Flow-step admission requires a configured task scheduler".to_string(),
                 ));
             };
-            let task_lease = scheduler
-                .acquire_with_identity(
-                    SchedulerTaskPriority::Foreground,
-                    format!(
-                        "flow:{}:{}:{}",
-                        invocation.run_id, invocation.step_id, invocation.step_name
-                    ),
-                    Some(identity),
-                    &self.context.cancellation_token(),
-                )
-                .await
-                .map_err(|error| a3s_flow::FlowError::Runtime(error.to_string()))?;
+            let label = format!(
+                "flow:{}:{}:{}",
+                invocation.run_id, invocation.step_id, invocation.step_name
+            );
+            let task_lease = match self.scheduler_quota.as_ref() {
+                Some(quota) => {
+                    scheduler
+                        .acquire_with_quota(
+                            SchedulerTaskPriority::Foreground,
+                            label,
+                            quota,
+                            Some(identity),
+                            &self.context.cancellation_token(),
+                        )
+                        .await
+                }
+                None => {
+                    scheduler
+                        .acquire_with_identity(
+                            SchedulerTaskPriority::Foreground,
+                            label,
+                            Some(identity),
+                            &self.context.cancellation_token(),
+                        )
+                        .await
+                }
+            }
+            .map_err(|error| a3s_flow::FlowError::Runtime(error.to_string()))?;
             lease = lease.with_task_lease(task_lease);
         }
         Ok(lease)
@@ -731,7 +793,7 @@ impl DynamicWorkflowRuntime {
         step_name: &str,
     ) -> a3s_flow::Result<ToolContext> {
         if step_name != GENERATE_OBJECT_TOOL {
-            return Ok(self.context.clone());
+            return Ok(self.context.clone().with_run_id(run_id.to_string()));
         }
         if let (Some(admission), Some(client)) = (
             self.parallel_generation_admission.as_ref(),
@@ -750,6 +812,7 @@ impl DynamicWorkflowRuntime {
                 return self
                     .context
                     .clone()
+                    .with_run_id(run_id.to_string())
                     .with_llm_client(forked_client)
                     .with_model_generation_permit(admission.clone(), Arc::new(permit))
                     .map_err(|error| {
@@ -760,7 +823,7 @@ impl DynamicWorkflowRuntime {
             }
         }
         let Some(admission) = self.context.model_generation_admission() else {
-            return Ok(self.context.clone());
+            return Ok(self.context.clone().with_run_id(run_id.to_string()));
         };
         let permit = admission
             .acquire(&self.context.cancellation_token())
@@ -772,6 +835,7 @@ impl DynamicWorkflowRuntime {
             })?;
         self.context
             .clone()
+            .with_run_id(run_id.to_string())
             .with_model_generation_permit(admission, Arc::new(permit))
             .map_err(|error| {
                 a3s_flow::FlowError::Runtime(format!(
@@ -780,13 +844,19 @@ impl DynamicWorkflowRuntime {
             })
     }
 
-    async fn run_tool_step(&self, tool_name: &str, args: Value) -> a3s_flow::Result<Value> {
+    async fn run_tool_step(
+        &self,
+        run_id: &str,
+        tool_name: &str,
+        args: Value,
+    ) -> a3s_flow::Result<Value> {
+        let context = self.context.clone().with_run_id(run_id.to_string());
         let result = self
             .invoker
             .invoke(
                 self.context
                     .nested_tool_invocation(tool_name.to_string(), args),
-                &self.context,
+                &context,
             )
             .await;
         if result.exit_code != 0 {
@@ -810,7 +880,11 @@ impl FlowRuntime for DynamicWorkflowRuntime {
         self.ensure_continuation_lease().await?;
         let payload = invocation_payload("workflow", &invocation.run_id, &invocation.history)
             .with("input", invocation.input);
-        let result = self.run_script(payload.into_value(), &self.context).await?;
+        let context = self
+            .context
+            .clone()
+            .with_run_id(invocation.run_id.to_string());
+        let result = self.run_script(payload.into_value(), &context).await?;
         serde_json::from_value(script_result(&result)?).map_err(a3s_flow::FlowError::from)
     }
 
@@ -821,7 +895,7 @@ impl FlowRuntime for DynamicWorkflowRuntime {
             TASK_TOOL | PARALLEL_TASK_TOOL
         ) {
             return self
-                .run_tool_step(&invocation.step_name, invocation.input)
+                .run_tool_step(&invocation.run_id, &invocation.step_name, invocation.input)
                 .await;
         }
 
@@ -1831,9 +1905,29 @@ impl DynamicWorkflowControl {
             })?),
             None => None,
         };
+        let scheduler_quota = if self.admit_steps_globally {
+            if let (Some(scheduler), Some(quota)) = (
+                self.task_scheduler.as_ref(),
+                // Diagnostics are valid before a control handle has started
+                // its run. `allow_missing` keeps this read-only projection
+                // from turning an observation into an implicit start/lookup
+                // precondition while still deriving the same stable claim
+                // identity that the first drive will use.
+                self.prepare(true).await?.scheduler_quota,
+            ) {
+                Some(scheduler.quota_snapshot(&quota).await.map_err(|error| {
+                    anyhow::anyhow!("read dynamic workflow scheduler quota: {error}")
+                })?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         Ok(DynamicWorkflowControlDiagnostics {
             workflow: self.metrics.snapshot(),
             scheduler,
+            scheduler_quota,
         })
     }
 
@@ -1990,7 +2084,7 @@ impl Tool for DynamicWorkflowTool {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_else(|| default_allowed_tools(&registry));
-        let limits = args
+        let limits: DynamicWorkflowScriptLimits = args
             .get("limits")
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
@@ -2083,7 +2177,7 @@ impl Tool for DynamicWorkflowTool {
         };
         let lease_claim = match claim_dynamic_workflow_lease(
             lease_ledger,
-            claim_identity,
+            claim_identity.clone(),
             self.continuation_lease_ms,
             Arc::clone(&self.metrics),
         )
@@ -2105,12 +2199,34 @@ impl Tool for DynamicWorkflowTool {
         };
         let parent_cancellation = ctx.cancellation_token();
         let child_cancellation = parent_cancellation.child_token();
-        let workflow_context = ctx.clone().with_cancellation(child_cancellation.clone());
+        let workflow_context = ctx
+            .clone()
+            .with_run_id(run_id.clone())
+            .with_cancellation(child_cancellation.clone());
+        let scheduler_quota = if self.admit_steps_globally && self.task_scheduler.is_some() {
+            Some(
+                TaskSchedulerQuota::new(
+                    lease
+                        .as_ref()
+                        .map(|lease| lease.identity.clone())
+                        .unwrap_or_else(|| claim_identity.clone()),
+                    dynamic_workflow_scheduler_quota_limit(&limits),
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!("build dynamic workflow scheduler quota: {error}")
+                })?,
+            )
+        } else {
+            None
+        };
         let mut runtime = DynamicWorkflowRuntime::new(registry, workflow_context.clone(), source)
             .with_allowed_tools(allowed_tools)
             .with_limits(limits);
         if let Some(scheduler) = &self.task_scheduler {
             runtime = runtime.with_task_scheduler(Arc::clone(scheduler), self.admit_steps_globally);
+            if let Some(quota) = scheduler_quota {
+                runtime = runtime.with_task_scheduler_quota(quota);
+            }
         }
         if let Some(lease) = lease.as_ref() {
             runtime = runtime.with_continuation_lease(Arc::new(lease.clone()));
@@ -2256,6 +2372,7 @@ struct DynamicWorkflowControlPreparation {
     runtime_build_id: RuntimeBuildId,
     runtime_build_compatibility: RuntimeBuildCompatibility,
     claim_identity: ExecutionIdentityV1,
+    scheduler_quota: Option<TaskSchedulerQuota>,
     lease_ledger: Arc<dyn FlowDecisionLedger>,
 }
 
@@ -2325,6 +2442,19 @@ impl DynamicWorkflowControl {
         .map_err(|error| {
             anyhow::anyhow!("dynamic workflow continuation identity rejected: {error}")
         })?;
+        let scheduler_quota = if self.admit_steps_globally && self.task_scheduler.is_some() {
+            Some(
+                TaskSchedulerQuota::new(
+                    claim_identity.clone(),
+                    dynamic_workflow_scheduler_quota_limit(&self.limits),
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!("build dynamic workflow scheduler quota: {error}")
+                })?,
+            )
+        } else {
+            None
+        };
         let lease_ledger = dynamic_workflow_lease_ledger_for_context(
             self.continuation_lease_ledger.as_ref(),
             &self.memory_continuation_lease_ledger,
@@ -2339,6 +2469,7 @@ impl DynamicWorkflowControl {
             runtime_build_id,
             runtime_build_compatibility,
             claim_identity,
+            scheduler_quota,
             lease_ledger,
         })
     }
@@ -2358,6 +2489,9 @@ impl DynamicWorkflowControl {
         .with_limits(self.limits.clone());
         if let Some(scheduler) = &self.task_scheduler {
             runtime = runtime.with_task_scheduler(Arc::clone(scheduler), self.admit_steps_globally);
+            if let Some(quota) = preparation.scheduler_quota.clone() {
+                runtime = runtime.with_task_scheduler_quota(quota);
+            }
         }
         if let Some(lease) = lease {
             runtime = runtime.with_continuation_lease(Arc::new(lease.clone()));

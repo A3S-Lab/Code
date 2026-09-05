@@ -208,6 +208,9 @@ pub struct TaskExecutor {
     /// foreground steps must be admitted independently. Model-invoked task
     /// tools inherit the enclosing run's lease and leave this false.
     schedule_foreground: bool,
+    /// Transient run/host scope used to derive the owner quota. Only the
+    /// digest-derived identity crosses into the scheduler actor.
+    admission_scope: Option<String>,
 }
 
 impl TaskExecutor {
@@ -238,6 +241,7 @@ impl TaskExecutor {
             subagent_tracker: None,
             task_scheduler: None,
             schedule_foreground: false,
+            admission_scope: None,
         }
     }
 
@@ -279,6 +283,7 @@ impl TaskExecutor {
             subagent_tracker: None,
             task_scheduler: None,
             schedule_foreground: false,
+            admission_scope: None,
         }
     }
 
@@ -316,6 +321,10 @@ impl TaskExecutor {
         scoped.search_retry_budget = Some(ctx.search_retry_budget());
         scoped.search_request_coalescer = Some(ctx.search_request_coalescer());
         scoped.capability_context = ctx.capability_context();
+        scoped.admission_scope = ctx
+            .run_id()
+            .map(|run_id| format!("run:{run_id}"))
+            .or_else(|| ctx.session_id.as_deref().map(|id| format!("session:{id}")));
         if ctx.has_run_governance() {
             scoped.parent_context = scoped.parent_context.take().map(|parent| {
                 parent.with_run_governance(
@@ -578,9 +587,45 @@ impl TaskExecutor {
             } else {
                 None
             };
+        let admission_quota =
+            if (params.background || self.schedule_foreground) && self.task_scheduler.is_some() {
+                let scope = self.admission_scope.clone().unwrap_or_else(|| {
+                    parent_session_id
+                        .map(|session_id| format!("session:{session_id}"))
+                        .unwrap_or_else(|| "host".to_string())
+                });
+                Some(
+                    crate::task_scheduler::TaskSchedulerQuota::for_scope(
+                        &scope,
+                        self.max_parallel_tasks,
+                    )
+                    .map_err(|error| anyhow::anyhow!(error))?,
+                )
+            } else {
+                None
+            };
         let _task_lease = if params.background || self.schedule_foreground {
             match &self.task_scheduler {
-                Some(scheduler) => Some(
+                Some(scheduler) => Some(if let Some(quota) = admission_quota.as_ref() {
+                    scheduler
+                        .acquire_with_quota(
+                            if params.background {
+                                crate::task_scheduler::TaskPriority::Background
+                            } else {
+                                crate::task_scheduler::TaskPriority::Foreground
+                            },
+                            format!(
+                                "{}:subagent:{}",
+                                parent_session_id.unwrap_or("host"),
+                                task_id
+                            ),
+                            quota,
+                            execution_identity.clone(),
+                            &cancel_token,
+                        )
+                        .await
+                        .map_err(|error| anyhow::anyhow!(error))?
+                } else {
                     scheduler
                         .acquire_with_identity(
                             if params.background {
@@ -597,8 +642,8 @@ impl TaskExecutor {
                             &cancel_token,
                         )
                         .await
-                        .map_err(|error| anyhow::anyhow!(error))?,
-                ),
+                        .map_err(|error| anyhow::anyhow!(error))?
+                }),
                 None => None,
             }
         } else {

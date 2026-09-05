@@ -209,6 +209,10 @@ pub struct ToolContext {
     pub workspace: PathBuf,
     /// Optional session ID for session-aware tools
     pub session_id: Option<String>,
+    /// Run identity for the invocation that owns this context. This is kept
+    /// separate from `session_id` so detached work from different runs cannot
+    /// accidentally share an admission scope.
+    run_id: Option<String>,
     /// Optional sender for streaming tool output deltas during execution
     pub event_tx: Option<ToolEventSender>,
     /// Optional agent event sender for tools that emit high-level agent events (e.g., SubagentStart)
@@ -314,6 +318,7 @@ impl std::fmt::Debug for ToolContext {
         f.debug_struct("ToolContext")
             .field("workspace", &self.workspace)
             .field("session_id", &self.session_id)
+            .field("run_id", &self.run_id)
             .field("sandbox", &self.sandbox.is_some())
             .field("workspace_services", &self.workspace_services)
             .field(
@@ -374,6 +379,7 @@ impl ToolContext {
         Self {
             workspace: canonical_workspace,
             session_id: None,
+            run_id: None,
             event_tx: None,
             agent_event_tx: None,
             agent_event_barrier: None,
@@ -411,6 +417,17 @@ impl ToolContext {
         }
         self.session_id = Some(session_id);
         self
+    }
+
+    /// Bind the context to one agent-run identity.
+    pub(crate) fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
+        self.run_id = Some(run_id.into());
+        self
+    }
+
+    /// Return the run identity bound to this invocation, when available.
+    pub(crate) fn run_id(&self) -> Option<&str> {
+        self.run_id.as_deref()
     }
 
     /// Set the event sender for streaming tool output

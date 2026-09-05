@@ -648,7 +648,11 @@ async fn dynamic_workflow_can_layer_global_scheduler_admission_without_step_dead
             }"#,
         )
         .with_allowed_tools(["flow_probe".to_string()])
-        .with_task_scheduler(Arc::clone(&scheduler), true),
+        .with_task_scheduler(Arc::clone(&scheduler), true)
+        .with_task_scheduler_quota(
+            crate::task_scheduler::TaskSchedulerQuota::for_scope("dynamic:global-admission-run", 1)
+                .unwrap(),
+        ),
     );
 
     let first_runtime = Arc::clone(&runtime);
@@ -705,6 +709,14 @@ async fn dynamic_workflow_can_layer_global_scheduler_admission_without_step_dead
     second.await.unwrap().unwrap();
     assert_eq!(runtime.admission_stats().peak_active_steps, 2);
     assert_eq!(scheduler.stats().await.unwrap().active, 0);
+    let quota = runtime
+        .scheduler_quota_snapshot()
+        .await
+        .unwrap()
+        .expect("runtime quota is configured");
+    assert_eq!(quota.max_active, 1);
+    assert_eq!(quota.active, 0);
+    assert_eq!(quota.pending, 0);
     scheduler.shutdown().await;
 }
 
@@ -2201,7 +2213,7 @@ async function run(ctx, inputs) {
 }
 "#;
     let control = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
-        .with_task_scheduler(Arc::clone(&scheduler), false)
+        .with_task_scheduler(Arc::clone(&scheduler), true)
         .with_continuation_lease_ledger(Arc::clone(&ledger), 1_000)
         .control(
             "control-diagnostics-run",
@@ -2210,6 +2222,10 @@ async function run(ctx, inputs) {
             &executor.registry().context(),
         )
         .unwrap();
+
+    let initial_diagnostics = control.diagnostics().await.unwrap();
+    assert_eq!(initial_diagnostics.workflow.claim_attempts, 0);
+    assert_eq!(initial_diagnostics.scheduler_quota.unwrap().active, 0);
 
     let completed = control.drive().await.unwrap();
     assert_eq!(completed.status, WorkflowRunStatus::Completed);
@@ -2222,6 +2238,12 @@ async function run(ctx, inputs) {
     assert_eq!(scheduler_health.max_active, 1);
     assert_eq!(scheduler_health.active, 0);
     assert_eq!(scheduler_health.pending, 0);
+    let scheduler_quota = diagnostics
+        .scheduler_quota
+        .expect("global workflow quota is projected");
+    assert_eq!(scheduler_quota.active, 0);
+    assert_eq!(scheduler_quota.pending, 0);
+    assert!(!scheduler_quota.blocked);
     scheduler.shutdown().await;
 }
 
