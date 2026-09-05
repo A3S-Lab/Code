@@ -198,7 +198,7 @@ impl AgentLoop {
 
     fn sanitize_final_text(&self, text: &str) -> String {
         if let Some(ref sp) = self.config.security_provider {
-            sp.sanitize_output(text)
+            crate::security::sanitize_text(sp.as_ref(), text)
         } else {
             text.to_string()
         }

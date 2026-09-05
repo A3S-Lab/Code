@@ -7,10 +7,15 @@
 pub mod config;
 pub mod default;
 mod event_sanitizer;
+mod value;
 
 pub use config::{RedactionStrategy, SecurityConfig, SensitivityLevel};
 pub use default::{DefaultSecurityConfig, DefaultSecurityProvider, SensitivePattern};
 pub(crate) use event_sanitizer::AgentEventStreamSanitizer;
+pub use value::{
+    sanitize_tainted_json, sanitize_tainted_text, sanitize_text, SanitizationState, SecurityLabel,
+    TaintLabel, TaintedValue, TrustLevel,
+};
 
 use crate::hooks::HookEngine;
 
@@ -22,7 +27,7 @@ pub(crate) fn sanitize_tool_error_kind(
 ) -> crate::tools::ToolErrorKind {
     use crate::tools::ToolErrorKind;
 
-    let text = |value: &str| provider.sanitize_output(value);
+    let text = |value: &str| sanitize_text(provider, value);
     match kind {
         ToolErrorKind::VersionConflict {
             path,
@@ -82,7 +87,7 @@ pub fn sanitize_agent_event(
     use crate::agent::AgentEvent;
 
     fn text(provider: &dyn SecurityProvider, value: &str) -> String {
-        provider.sanitize_output(value)
+        sanitize_text(provider, value)
     }
 
     fn optional_text(provider: &dyn SecurityProvider, value: &Option<String>) -> Option<String> {
@@ -94,19 +99,9 @@ pub fn sanitize_agent_event(
     }
 
     fn json(provider: &dyn SecurityProvider, value: &serde_json::Value) -> serde_json::Value {
-        match value {
-            serde_json::Value::String(value) => serde_json::Value::String(text(provider, value)),
-            serde_json::Value::Array(values) => {
-                serde_json::Value::Array(values.iter().map(|value| json(provider, value)).collect())
-            }
-            serde_json::Value::Object(values) => serde_json::Value::Object(
-                values
-                    .iter()
-                    .map(|(key, value)| (key.clone(), json(provider, value)))
-                    .collect(),
-            ),
-            value => value.clone(),
-        }
+        sanitize_tainted_json(provider, TaintedValue::untrusted(value.clone()))
+            .into_parts()
+            .0
     }
 
     fn optional_json(
