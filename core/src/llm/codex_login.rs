@@ -162,7 +162,7 @@ impl LlmClient for CodexLoginClient {
                 return Ok(response);
             }
         }
-        Err(anyhow!("codex stream closed before response.completed"))
+        Err(anyhow!("codex stream closed before a terminal response"))
     }
 
     async fn complete_streaming(
