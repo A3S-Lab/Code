@@ -224,8 +224,8 @@ pub use durable_memory::{
     DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
 };
 pub use dynamic_workflow::{
-    dynamic_workflow_continuation_identity, dynamic_workflow_execution_plan,
-    dynamic_workflow_step_identity, dynamic_workflow_store_path,
+    dynamic_workflow_claim_identity, dynamic_workflow_continuation_identity,
+    dynamic_workflow_execution_plan, dynamic_workflow_step_identity, dynamic_workflow_store_path,
     register_dynamic_workflow_with_scheduler, DynamicWorkflowAdmissionStats,
     DynamicWorkflowRuntime, DynamicWorkflowScriptLimits, DynamicWorkflowTool,
     DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID, DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,

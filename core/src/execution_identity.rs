@@ -27,6 +27,10 @@ pub const DYNAMIC_WORKFLOW_INPUT_IDENTITY_DOMAIN_V1: &str =
 /// durable immutable facts.
 pub const DYNAMIC_WORKFLOW_CONTINUATION_IDENTITY_DOMAIN_V1: &str =
     "a3s.code.dynamic-workflow.continuation.identity.v1";
+/// Identity domain for the stable root claim that fences one dynamic
+/// workflow continuation while workers replay its evolving step history.
+pub const DYNAMIC_WORKFLOW_CLAIM_IDENTITY_DOMAIN_V1: &str =
+    "a3s.code.dynamic-workflow.claim.identity.v1";
 /// Identity domain for the immutable definition of a projected execution plan.
 pub const EXECUTION_PLAN_IDENTITY_DOMAIN_V1: &str = "a3s.code.execution-plan.identity.v1";
 pub const WORKFLOW_STEP_IDENTITY_DOMAIN_V1: &str = "a3s.code.workflow-step.identity.v1";

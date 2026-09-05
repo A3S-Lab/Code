@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added parent-cancellation and worker-takeover fencing for dynamic workflows.
+  Each run derives one stable digest-only claim identity, uses a shared local
+  file lease (or an injected host ledger), renews the lease while Flow replay
+  and inline retries are active, and rechecks ownership before workflow and
+  step admission. Expired owners cannot complete a reclaimed run; cooperative
+  parent cancellation settles and releases only after the execution future has
+  stopped, while an unsettled future keeps its lease fenced until expiry.
 - Added mixed-generation qualification for dynamic workflows. New runs pin
   the Code runtime build, continuation identities are reconstructed from the
   durable Run/step definitions without a second journal, and changed source,
