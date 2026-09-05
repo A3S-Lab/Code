@@ -88,6 +88,7 @@ pub mod commands;
 pub(crate) mod compaction;
 pub mod config;
 pub mod context;
+pub mod core_identity;
 pub mod durable_memory;
 pub mod dynamic_workflow;
 pub mod embedding;
@@ -199,6 +200,14 @@ pub use cognitive_context::{
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,
+};
+pub use core_identity::{
+    ArtifactRef, CapabilityStamp, CoreEventIdentity, CoreIdentity, CoreIdentityError,
+    EvidenceCursor, LogicalClock, ManualLogicalClock, OperationId, SourceRevision,
+    SystemLogicalClock, CORE_EVENT_IDENTITY_DIGEST_DOMAIN_V1, CORE_EVENT_IDENTITY_SCHEMA_V1,
+    CORE_EVENT_PAYLOAD_DIGEST_DOMAIN_V1, CORE_IDENTITY_MAX_ARTIFACT_BYTES,
+    CORE_IDENTITY_MAX_EVENT_TYPE_BYTES, CORE_IDENTITY_MAX_ID_BYTES,
+    CORE_IDENTITY_MAX_MEDIA_TYPE_BYTES, CORE_IDENTITY_MAX_PAYLOAD_BYTES, CORE_IDENTITY_SCHEMA_V1,
 };
 pub use durable_memory::{
     DurableMemoryActivation, DurableMemoryBindingV1, DurableMemoryMode, DurableMemoryRecallChannel,

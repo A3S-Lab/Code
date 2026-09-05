@@ -35,6 +35,27 @@ pub struct RunEventRecord {
     pub event: AgentEvent,
 }
 
+impl RunEventRecord {
+    /// Project this retained run event into the shared Core identity plane.
+    ///
+    /// The projection is intentionally computed on demand so the existing
+    /// persisted run/event wire shape remains unchanged during migration.
+    pub fn core_identity(
+        &self,
+        operation_id: crate::core_identity::OperationId,
+        source_revision: crate::core_identity::SourceRevision,
+        capability_stamp: Option<crate::core_identity::CapabilityStamp>,
+    ) -> Result<crate::core_identity::CoreEventIdentity, crate::core_identity::CoreIdentityError>
+    {
+        crate::core_identity::CoreEventIdentity::from_run_event(
+            operation_id,
+            source_revision,
+            capability_stamp,
+            self,
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveToolSnapshot {
     pub id: String,
