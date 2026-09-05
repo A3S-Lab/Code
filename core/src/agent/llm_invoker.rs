@@ -130,6 +130,89 @@ impl ModelCallOutcome {
     }
 }
 
+/// The streaming model-call shapes handled by the middleware boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelStreamKind {
+    Streaming,
+    StreamingStructured,
+}
+
+/// Typed input to the run-bound streaming middleware.
+struct ModelStreamRequest<'a> {
+    kind: ModelStreamKind,
+    messages: &'a [Message],
+    system: Option<&'a str>,
+    tools: &'a [ToolDefinition],
+    directive: Option<&'a StructuredDirective>,
+    caller_cancellation: CancellationToken,
+}
+
+impl<'a> ModelStreamRequest<'a> {
+    fn completion(
+        messages: &'a [Message],
+        system: Option<&'a str>,
+        tools: &'a [ToolDefinition],
+        caller_cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            kind: ModelStreamKind::Streaming,
+            messages,
+            system,
+            tools,
+            directive: None,
+            caller_cancellation,
+        }
+    }
+
+    fn structured(
+        messages: &'a [Message],
+        system: Option<&'a str>,
+        tools: &'a [ToolDefinition],
+        directive: &'a StructuredDirective,
+        caller_cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            kind: ModelStreamKind::StreamingStructured,
+            messages,
+            system,
+            tools,
+            directive: Some(directive),
+            caller_cancellation,
+        }
+    }
+
+    fn observation(
+        &self,
+        presentation_application: ModelPresentationApplicationV1,
+    ) -> ModelCallObservation<'a> {
+        let kind = match self.kind {
+            ModelStreamKind::Streaming => ModelInputKindV1::Streaming,
+            ModelStreamKind::StreamingStructured => ModelInputKindV1::StreamingStructured,
+        };
+        ModelCallObservation::with_presentation_application(
+            kind,
+            self.messages,
+            self.system,
+            self.tools,
+            self.directive,
+            estimate_prompt_tokens(self.messages, self.system, self.tools),
+            presentation_application,
+        )
+    }
+}
+
+/// Typed output of the streaming middleware. The receiver owns the proxy
+/// lifetime; dropping it is the explicit signal to cancel provider work.
+struct ModelStreamOutcome {
+    receiver: mpsc::Receiver<StreamEvent>,
+}
+
+impl ModelStreamOutcome {
+    fn into_receiver(self) -> mpsc::Receiver<StreamEvent> {
+        self.receiver
+    }
+}
+
 impl LlmInvoker {
     fn new(inner: Arc<dyn LlmClient>, invocation: InvocationContext) -> Self {
         Self {
@@ -386,6 +469,45 @@ impl LlmInvoker {
         });
         rx
     }
+
+    /// Execute one typed streaming request through the common middleware
+    /// phases while retaining receiver-owned provider lifetime semantics.
+    async fn invoke_stream_model(
+        &self,
+        request: ModelStreamRequest<'_>,
+    ) -> anyhow::Result<ModelStreamOutcome> {
+        let observation = request.observation(self.presentation_application);
+        let caller_cancellation = request.caller_cancellation.clone();
+        let receiver = match request.kind {
+            ModelStreamKind::Streaming => {
+                self.invoke_stream(observation, caller_cancellation, |provider_token| {
+                    self.inner.complete_streaming(
+                        request.messages,
+                        request.system,
+                        request.tools,
+                        provider_token,
+                    )
+                })
+                .await?
+            }
+            ModelStreamKind::StreamingStructured => {
+                let directive = request.directive.ok_or_else(|| {
+                    anyhow::anyhow!("structured streaming request is missing its directive")
+                })?;
+                self.invoke_stream(observation, caller_cancellation, |provider_token| {
+                    self.inner.complete_streaming_structured(
+                        request.messages,
+                        request.system,
+                        request.tools,
+                        directive,
+                        provider_token,
+                    )
+                })
+                .await?
+            }
+        };
+        Ok(ModelStreamOutcome { receiver })
+    }
 }
 
 #[async_trait]
@@ -434,20 +556,14 @@ impl LlmClient for LlmInvoker {
         tools: &[ToolDefinition],
         cancel_token: CancellationToken,
     ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
-        let observation = ModelCallObservation::with_presentation_application(
-            ModelInputKindV1::Streaming,
+        self.invoke_stream_model(ModelStreamRequest::completion(
             messages,
             system,
             tools,
-            None,
-            estimate_prompt_tokens(messages, system, tools),
-            self.presentation_application,
-        );
-        self.invoke_stream(observation, cancel_token, |provider_token| {
-            self.inner
-                .complete_streaming(messages, system, tools, provider_token)
-        })
+            cancel_token,
+        ))
         .await
+        .map(ModelStreamOutcome::into_receiver)
     }
 
     fn native_structured_support(&self) -> NativeStructuredSupport {
@@ -476,25 +592,15 @@ impl LlmClient for LlmInvoker {
         directive: &StructuredDirective,
         cancel_token: CancellationToken,
     ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
-        let observation = ModelCallObservation::with_presentation_application(
-            ModelInputKindV1::StreamingStructured,
+        self.invoke_stream_model(ModelStreamRequest::structured(
             messages,
             system,
             tools,
-            Some(directive),
-            estimate_prompt_tokens(messages, system, tools),
-            self.presentation_application,
-        );
-        self.invoke_stream(observation, cancel_token, |provider_token| {
-            self.inner.complete_streaming_structured(
-                messages,
-                system,
-                tools,
-                directive,
-                provider_token,
-            )
-        })
+            directive,
+            cancel_token,
+        ))
         .await
+        .map(ModelStreamOutcome::into_receiver)
     }
 }
 
