@@ -904,7 +904,7 @@ impl TaskExecutor {
             }
         }
         if let Some(provider) = child_security_provider.as_deref() {
-            output = provider.sanitize_output(&output);
+            output = crate::security::sanitize_text(provider, &output);
             if let Some(value) = structured.take() {
                 let sanitized = output_schema.as_ref().map_or_else(
                     || sanitize_task_json(provider, &value),

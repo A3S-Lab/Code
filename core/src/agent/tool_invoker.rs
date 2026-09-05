@@ -104,6 +104,14 @@ impl ScopedToolInvoker {
     }
 
     async fn emit_tool_request_bound(&self, invocation: &ToolInvocation) -> Result<(), String> {
+        let identity = invocation
+            .idempotency_identity((!self.session_id.is_empty()).then_some(self.session_id.as_str()))
+            .map_err(|error| format!("Failed to derive Tool request identity: {error}"))?;
+        tracing::trace!(
+            tool_id = invocation.id.as_str(),
+            idempotency_key = identity.key(),
+            "Tool request identity bound at the governed value boundary"
+        );
         let Some(tx) = &self.event_tx else {
             return Ok(());
         };
@@ -411,7 +419,12 @@ impl ScopedToolInvoker {
 
         let mut result = normalized.into_tool_result(invocation.name.clone());
         if let Some(provider) = &self.agent.config.security_provider {
-            result.output = provider.sanitize_output(&result.output);
+            result.output = crate::security::sanitize_tainted_text(
+                provider.as_ref(),
+                crate::security::TaintedValue::untrusted(result.output),
+            )
+            .into_parts()
+            .0;
             result.error_kind = result
                 .error_kind
                 .as_ref()

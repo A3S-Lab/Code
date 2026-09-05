@@ -225,6 +225,48 @@ impl ToolInvocation {
             recent_tools: Vec::new(),
         }
     }
+
+    /// Derive a replay-stable identity for this logical tool request.
+    ///
+    /// The transport `id` is intentionally excluded: providers and nested
+    /// orchestrators may assign a fresh delivery id while retrying the same
+    /// name/arguments at the same scope. The caller still owns the ledger that
+    /// decides whether this identity is currently claimable or completed.
+    pub(crate) fn idempotency_identity(
+        &self,
+        scope: Option<&str>,
+    ) -> Result<
+        crate::execution_identity::ExecutionIdentityV1,
+        crate::execution_identity::ExecutionIdentityError,
+    > {
+        let origin = match self.origin {
+            InvocationOrigin::Agent => "agent",
+            InvocationOrigin::Nested => "nested",
+            InvocationOrigin::RuntimeInternal => "runtime_internal",
+            InvocationOrigin::HostDirect(HostDirectPolicy::TrustedControlPlane) => {
+                "host_direct_trusted"
+            }
+            InvocationOrigin::HostDirect(HostDirectPolicy::GovernedControlPlane) => {
+                "host_direct_governed"
+            }
+            InvocationOrigin::HostDirectNested(HostDirectPolicy::TrustedControlPlane) => {
+                "host_direct_nested_trusted"
+            }
+            InvocationOrigin::HostDirectNested(HostDirectPolicy::GovernedControlPlane) => {
+                "host_direct_nested_governed"
+            }
+        };
+        crate::execution_identity::ExecutionIdentityV1::derive(
+            crate::execution_identity::TOOL_INVOCATION_IDENTITY_DOMAIN_V1,
+            &serde_json::json!({
+                "scope": scope,
+                "origin": origin,
+                "name": self.name,
+                "args": self.args,
+                "recent_tools": self.recent_tools,
+            }),
+        )
+    }
 }
 
 /// Execution boundary used by orchestrator tools instead of a raw registry.
@@ -328,6 +370,31 @@ mod tests {
 
         assert!(lifetime.upgrade().is_some());
         assert!(invoker.available_tools().is_empty());
+    }
+
+    #[test]
+    fn tool_identity_is_stable_across_delivery_ids() {
+        let first = ToolInvocation::agent(
+            "delivery-a",
+            "read",
+            serde_json::json!({"path": "src/lib.rs"}),
+            vec!["batch".to_string()],
+        );
+        let second = ToolInvocation::agent(
+            "delivery-b",
+            "read",
+            serde_json::json!({"path": "src/lib.rs"}),
+            vec!["batch".to_string()],
+        );
+
+        assert_eq!(
+            first.idempotency_identity(Some("session-1")).unwrap(),
+            second.idempotency_identity(Some("session-1")).unwrap()
+        );
+        assert_ne!(
+            first.idempotency_identity(Some("session-1")).unwrap(),
+            first.idempotency_identity(Some("session-2")).unwrap()
+        );
     }
 
     #[test]

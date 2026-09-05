@@ -95,6 +95,7 @@ pub mod embedding;
 pub mod error;
 pub mod evaluation;
 pub mod event_protocol;
+pub mod execution_identity;
 pub mod flow_graph;
 pub(crate) mod git;
 pub mod harness_evidence;
