@@ -226,7 +226,9 @@ pub use durable_memory::{
 pub use dynamic_workflow::{
     dynamic_workflow_claim_identity, dynamic_workflow_continuation_identity,
     dynamic_workflow_execution_plan, dynamic_workflow_step_identity, dynamic_workflow_store_path,
-    register_dynamic_workflow_with_scheduler, DynamicWorkflowAdmissionStats,
+    register_dynamic_workflow, register_dynamic_workflow_with_event_store,
+    register_dynamic_workflow_with_scheduler, CrossProcessFlowEventStore,
+    DynamicWorkflowAdmissionStats, DynamicWorkflowControl, DynamicWorkflowControlSnapshot,
     DynamicWorkflowRuntime, DynamicWorkflowScriptLimits, DynamicWorkflowTool,
     DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID, DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,
 };
@@ -275,11 +277,11 @@ pub use event_protocol::{
 };
 pub use flow_graph::{
     run_object_id as flow_run_object_id, step_object_id as flow_step_object_id,
-    FileFlowDecisionLedger, FlowDecision, FlowDecisionClaimOutcome, FlowDecisionDispatchError,
-    FlowDecisionDispatcher, FlowDecisionHealthSnapshot, FlowDecisionHealthStatus,
-    FlowDecisionLedger, FlowDecisionRequest, FlowDecisionSink, FlowDecisionStep,
-    FlowGraphHealthSnapshot, FlowGraphHealthStatus, FlowGraphObserver, MemoryFlowDecisionLedger,
-    FLOW_GRAPH_SOURCE,
+    FileFlowDecisionLedger, FlowDecision, FlowDecisionClaimOutcome, FlowDecisionClaimState,
+    FlowDecisionDispatchError, FlowDecisionDispatcher, FlowDecisionHealthSnapshot,
+    FlowDecisionHealthStatus, FlowDecisionLedger, FlowDecisionRequest, FlowDecisionSink,
+    FlowDecisionStep, FlowGraphHealthSnapshot, FlowGraphHealthStatus, FlowGraphObserver,
+    MemoryFlowDecisionLedger, FLOW_GRAPH_SOURCE,
 };
 pub use harness_evidence::{
     HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, ModelPresentationApplicationV1,

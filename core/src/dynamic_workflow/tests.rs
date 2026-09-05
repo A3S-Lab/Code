@@ -20,6 +20,19 @@ fn registered_dynamic_workflow_does_not_retain_its_registry() {
     assert!(lifetime.upgrade().is_none());
 }
 
+#[test]
+fn event_store_registration_does_not_retain_its_registry() {
+    let registry = Arc::new(ToolRegistry::new(std::path::PathBuf::from(
+        "dynamic-workflow-store-cycle-test",
+    )));
+    let lifetime = Arc::downgrade(&registry);
+    register_dynamic_workflow_with_event_store(&registry, Arc::new(InMemoryEventStore::new()));
+
+    drop(registry);
+
+    assert!(lifetime.upgrade().is_none());
+}
+
 struct DelayedObjectClient {
     delay: Duration,
 }
@@ -2091,6 +2104,148 @@ return {
             ["status"],
         "waiting"
     );
+}
+
+#[tokio::test]
+async fn dynamic_workflow_control_projects_and_settles_durable_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let ledger: Arc<dyn FlowDecisionLedger> = Arc::new(MemoryFlowDecisionLedger::new());
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const cancellationRequested = inputs.history.some((entry) =>
+      entry.event && entry.event.type === "run_cancellation_requested"
+    );
+    if (cancellationRequested) return { type: "cancel" };
+    return {
+      type: "wait_until",
+      wait_id: "operator",
+      resume_at: "2099-01-01T00:00:00Z",
+    };
+  }
+  return { type: "fail", error: "unexpected invocation" };
+}
+"#;
+    let input = json!({ "secret": "must-not-enter-projection" });
+    let control = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_continuation_lease_ledger(Arc::clone(&ledger), 1_000)
+        .control(
+            "control-cancellation-run",
+            source,
+            input.clone(),
+            &executor.registry().context(),
+        )
+        .unwrap();
+
+    let suspended = control.drive().await.unwrap();
+    assert_eq!(suspended.status, WorkflowRunStatus::Suspended);
+    assert!(!suspended.cancellation_requested);
+    assert!(matches!(
+        suspended.worker_lease,
+        FlowDecisionClaimState::Pending { .. }
+    ));
+    assert!(!suspended.worker_lease.is_live_at(dynamic_workflow_now_ms()));
+    let encoded = serde_json::to_string(&suspended).unwrap();
+    assert!(!encoded.contains("must-not-enter-projection"));
+    assert!(!encoded.contains(source));
+
+    let cancelled = control
+        .request_cancellation(Some("operator stop".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(cancelled.status, WorkflowRunStatus::Cancelled);
+    assert!(cancelled.cancellation_requested);
+    assert!(matches!(
+        cancelled.worker_lease,
+        FlowDecisionClaimState::Completed { .. }
+    ));
+
+    let inspected = control.inspect().await.unwrap();
+    assert_eq!(inspected, cancelled);
+    let history = control.history().await.unwrap();
+    assert!(history
+        .iter()
+        .any(|event| matches!(event.event, FlowEvent::RunCancellationRequested { .. })));
+    assert!(history
+        .iter()
+        .any(|event| matches!(event.event, FlowEvent::RunCancelled { .. })));
+    let _ = input;
+}
+
+#[tokio::test]
+async fn dynamic_workflow_control_reuses_a_host_owned_event_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let store: Arc<dyn FlowEventStore> = Arc::new(InMemoryEventStore::new());
+    let source =
+        "async function run(ctx, inputs) { return { type: 'complete', output: { hosted: true } }; }";
+    let tool = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_flow_event_store(Arc::clone(&store));
+    let args = json!({
+        "source": source,
+        "run_id": "host-owned-store-run",
+    });
+    let result = tool
+        .execute(&args, &executor.registry().context())
+        .await
+        .unwrap();
+    assert!(result.success, "{}", result.content);
+    let control = tool
+        .control(
+            "host-owned-store-run",
+            source,
+            json!({}),
+            &executor.registry().context(),
+        )
+        .unwrap();
+    let snapshot = control.inspect().await.unwrap();
+    assert_eq!(snapshot.status, WorkflowRunStatus::Completed);
+    assert_eq!(snapshot.last_sequence, 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_process_flow_store_serializes_independent_writers() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = Arc::new(CrossProcessFlowEventStore::new(directory.path()));
+    let second = Arc::new(CrossProcessFlowEventStore::new(directory.path()));
+    let spec = WorkflowSpec::rust_embedded(
+        "a3s-code.dynamic-workflow",
+        source_hash("cross-process-store"),
+        "ptc",
+        "run",
+    )
+    .with_runtime_build(
+        RuntimeBuildId::new(DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID.to_string()).unwrap(),
+    );
+    first
+        .append(
+            "cross-process-store",
+            FlowEvent::RunCreated {
+                spec,
+                input: json!({}),
+            },
+        )
+        .await
+        .unwrap();
+
+    let (left, right) = tokio::join!(
+        first.append_if_sequence("cross-process-store", 1, FlowEvent::RunStarted,),
+        second.append_if_sequence("cross-process-store", 1, FlowEvent::RunStarted,),
+    );
+    assert_eq!(left.is_ok() as u8 + right.is_ok() as u8, 1);
+    let conflict = if left.is_err() { left } else { right };
+    assert!(matches!(
+        conflict,
+        Err(a3s_flow::FlowError::EventConflict {
+            expected_sequence: 1,
+            actual_sequence: 2,
+            ..
+        })
+    ));
+    let history = second.list("cross-process-store").await.unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(matches!(history[1].event, FlowEvent::RunStarted));
 }
 
 #[test]

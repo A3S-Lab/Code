@@ -55,6 +55,7 @@ runtime mode. The cross-repository implementation plan is tracked in the
 | `CAR-05` | Planned | Pass restart, exact replay, cancellation, hostile Tool output, bounded-content, Secret-redaction, checkpoint, and cleanup conformance through one Cloud-managed Box workload | No direct Code-to-node control path |
 | `WORKFLOW-RESULT1` | Delivered | Resumable workflow checkpoints and Flow decision claims share canonical execution identities and bounded digest-only result receipts; stale or unreadable state fails closed while legacy records remain loadable | Core checkpoint, Flow ledger, restart, takeover, and identity-fencing tests pass; host policy and business retention remain outside Code |
 | `WORKFLOW-SCHED1` | Delivered | Dynamic Flow history projects into the canonical `ExecutionPlan`; step admission shares cancellation and bounded per-workflow quotas, while standalone scheduler leases carry digest-only step identities and delegated tasks use the same identity boundary | Plan identity is stable across status changes; resumed projections retain prior steps; local and global admission tests cover priority, cancellation, serialization, and the max-active=1 nested-deadlock boundary |
+| `WORKFLOW-CONTROL1` | Delivered | A host-facing dynamic-workflow control handle coordinates bounded inspection, trusted history, Flow durable cancellation/terminal transitions, identity-bound worker leases, and cross-process local event-store locking | Independent-process qualification covers busy ownership, killed-worker lease expiry/takeover, cancellation settlement, digest-only projections, and optimistic event-conflict retry; Flow remains the only workflow authority |
 
 Observation precedes mutation: `CAR-02` must provide useful read-only context
 diagnostics before `CAR-03` can reduce any Tool result. The first transform
@@ -344,6 +345,33 @@ external effects still require the invoked Tool or host to provide its own
 idempotency/receipt contract; Code does not pretend that a lease can undo an
 effect that was committed outside the Flow journal. Cloud/Use ownership,
 retention, and business retry policy remain outside Code.
+
+### 3.3.5 Host control and cross-process recovery
+
+`DynamicWorkflowTool::control` is the single host-facing boundary for dynamic
+workflow inspection and mutation. It binds the caller's exact source, input,
+runtime policy, registry, and workspace store before any operation runs. The
+bounded `DynamicWorkflowControlSnapshot` exposes status, sequence, step
+counts, cancellation presence, continuation/plan identities, runtime build,
+and a redacted worker-lease state; it never exposes source, input, step
+arguments, outputs, or owner tokens. `history()` is separate and explicitly
+trusted because it returns those durable values.
+
+`drive`, `request_cancellation`, and `force_cancel` first claim the same
+identity-bound lease used by the model-visible Tool. A live worker is reported
+as busy instead of being interrupted through a second control plane. Once a
+claim is owned, Flow appends or replays the authoritative cancellation and
+terminal events, while a bounded heartbeat/settlement loop renews and then
+completes or releases the claim. An unsettled future remains fenced until
+lease expiry. Local JSONL history is wrapped by
+`CrossProcessFlowEventStore`, which serializes appends and reads across
+processes without projecting a second state machine. The qualification test
+spawns independent workers, kills an owner, waits for takeover, settles a
+cleanup-aware cancellation, and forces optimistic event conflicts so Flow's
+existing bounded retries are exercised. Remote or database-backed hosts can
+inject one typed `FlowEventStore` through `with_flow_event_store`; the same
+store is then shared by model-visible execution and the control handle, so a
+non-local host does not silently fall back to a fresh in-memory journal.
 
 ### 3.4 Scoped capability program
 

@@ -63,7 +63,10 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   file-backed (or host-injected) lease, heartbeats keep live owners fenced,
   stale workers are rejected before workflow/step admission, and parent
   cancellation settles or leaves the lease fenced rather than releasing an
-  in-flight worker.
+  in-flight worker. Hosts can bind one `DynamicWorkflowControl` handle to
+  inspect a bounded digest-only snapshot, read trusted history, drive a run,
+  or request/force durable cancellation; local journals use a cross-process
+  lock while Flow remains the sole event authority.
 
 Go consumers must update the module path to
 `github.com/A3S-Lab/Code/sdk/go/v8`. See [CHANGELOG.md](CHANGELOG.md) for the
@@ -1048,7 +1051,20 @@ worker claim identity intentionally excludes evolving plan progress, so
 takeover and retry use one stable digest. Local claim metadata lives under
 `.a3s/workflow/leases`; A3S Flow's event history remains the sole workflow
 authority, and the sidecar contains only bounded digests, owner leases, and
-attempt state.
+attempt state. A host can obtain a control handle with
+`DynamicWorkflowTool::control(run_id, source, input, ctx)`. Its `inspect()`
+projection omits source, input, step arguments, outputs, and owner tokens;
+`history()` is an explicitly trusted full-history escape hatch. Mutating
+control operations acquire the same worker lease as the model-visible tool,
+then coordinate Flow's durable cancellation/terminal transition and settle
+the lease. Local workspace history is wrapped by a small cross-process file
+lock so independent workers cannot corrupt a JSONL append; optimistic Flow
+sequence conflicts still remain the retry authority. Remote/database-backed
+hosts can supply a typed `Arc<dyn FlowEventStore>` through
+`with_flow_event_store` (or register the weak-registry helper
+`register_dynamic_workflow_with_event_store`); Code then uses that same store
+for the model-visible Tool and its control handle without creating an in-memory
+shadow journal.
 
 Delegated tasks, workflows, and Skill child runs retain the parent sandbox and
 intersect local permission policy with the parent checker. A child auto-approve
