@@ -2,7 +2,7 @@
 
 use super::auxiliary_run::{
     AuxiliaryCapabilityProfileV1, AuxiliaryModeV1, AuxiliaryRunError, AuxiliaryRunHandle,
-    AuxiliaryRunService, AuxiliaryRunSpecV1,
+    AuxiliaryRunOutputV1, AuxiliaryRunService, AuxiliaryRunSpecV1,
 };
 use super::dispatch_ledger::{
     EvaluationDispatchClaimOutcome, EvaluationDispatchLedger, EVALUATION_DISPATCH_LEASE_GRACE_MS,
@@ -13,6 +13,9 @@ use super::evidence::{
 };
 use super::identity::{digest_json, ExecutionFrameV1, ExecutionTargetV1};
 use super::journal::{ExecutionFactJournal, ExecutionFactV1, JournalError};
+use crate::execution_identity::{
+    ExecutionClaimV1, ExecutionResultOutcomeV1, ExecutionResultReceiptV1,
+};
 use crate::run::RunEventRecord;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -201,8 +204,9 @@ struct SupervisorState {
     /// hole.
     admitting: HashSet<(ExecutionTargetV1, u64, String)>,
     /// Claims that have been admitted in the durable ledger and still need a
-    /// terminal completion receipt. Values are request digests so a stale
-    /// watcher can never remove a newer takeover claim.
+    /// terminal completion receipt. The typed claim keeps canonical identity,
+    /// the legacy request digest, and owner together so a stale watcher can
+    /// never remove a newer takeover claim.
     ledger_claims: HashMap<String, crate::execution_identity::ExecutionClaimV1>,
 }
 
@@ -371,7 +375,12 @@ impl EvaluationSupervisor {
         if let Some(ledger) = &self.dispatch_ledger {
             for claim in claims {
                 if let Err(error) = ledger
-                    .release(claim.record_id(), claim.ledger_key(), claim.owner_id())
+                    .release_with_identity(
+                        claim.record_id(),
+                        claim.ledger_key(),
+                        claim.identity(),
+                        claim.owner_id(),
+                    )
                     .await
                 {
                     tracing::warn!(
@@ -485,9 +494,10 @@ impl EvaluationSupervisor {
         if let Some(ledger) = &self.dispatch_ledger {
             let lease_ms = dispatch_lease_ms(plan.timeout_ms);
             let claim_outcome = ledger
-                .claim(
+                .claim_with_identity(
                     claim.record_id(),
                     claim.ledger_key(),
+                    claim.identity(),
                     claim.owner_id(),
                     now,
                     lease_ms,
@@ -571,6 +581,7 @@ impl EvaluationSupervisor {
         spec.timeout_ms = plan.timeout_ms;
         spec.output_schema = plan.output_schema;
         spec.id = dispatch_id.clone();
+        let evidence_digest = evidence.snapshot_digest.clone();
         let handle = match self
             .auxiliary
             .spawn(spec, evidence, Some(self.cancellation.child_token()))
@@ -599,14 +610,15 @@ impl EvaluationSupervisor {
                 // `interval` ticks immediately once; the initial claim already
                 // has a full lease, so the first renewal can wait one period.
                 heartbeat.tick().await;
-                loop {
+                let result = loop {
                     tokio::select! {
-                        _ = watcher.wait() => break,
+                        result = watcher.wait() => break result,
                         _ = heartbeat.tick() => {
                             match ledger
-                                .renew(
+                                .renew_with_identity(
                                     watcher_claim.record_id(),
                                     watcher_claim.ledger_key(),
+                                    watcher_claim.identity(),
                                     watcher_claim.owner_id(),
                                     now_ms(),
                                     lease_ms,
@@ -632,19 +644,38 @@ impl EvaluationSupervisor {
                         }
                     }
                     if !claim_owned {
-                        let _ = watcher.wait().await;
-                        break;
+                        break watcher.wait().await;
                     }
-                }
+                };
                 if claim_owned {
-                    let _ = ledger
-                        .complete(
-                            watcher_claim.record_id(),
-                            watcher_claim.ledger_key(),
-                            watcher_claim.owner_id(),
-                            now_ms(),
-                        )
-                        .await;
+                    match result_receipt(&watcher_claim, &evidence_digest, &result) {
+                        Ok(receipt) => {
+                            if let Err(error) = ledger
+                                .complete_with_receipt(
+                                    watcher_claim.record_id(),
+                                    watcher_claim.ledger_key(),
+                                    watcher_claim.identity(),
+                                    watcher_claim.owner_id(),
+                                    &receipt,
+                                    now_ms(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    dispatch_id = %watcher_claim.record_id(),
+                                    error = %error,
+                                    "failed to persist evaluation result receipt"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                dispatch_id = %watcher_claim.record_id(),
+                                error = %error,
+                                "failed to build evaluation result receipt"
+                            );
+                        }
+                    }
                 }
             } else {
                 let _ = watcher.wait().await;
@@ -674,7 +705,12 @@ impl EvaluationSupervisor {
     async fn release_dispatch_claim(&self, claim: &crate::execution_identity::ExecutionClaimV1) {
         if let Some(ledger) = &self.dispatch_ledger {
             if let Err(error) = ledger
-                .release(claim.record_id(), claim.ledger_key(), claim.owner_id())
+                .release_with_identity(
+                    claim.record_id(),
+                    claim.ledger_key(),
+                    claim.identity(),
+                    claim.owner_id(),
+                )
                 .await
             {
                 tracing::warn!(
@@ -745,6 +781,31 @@ fn dispatch_execution_identity(
         }),
     )
     .map_err(|error| SupervisorError::Evidence(error.to_string()))
+}
+
+fn result_receipt(
+    claim: &ExecutionClaimV1,
+    evidence_digest: &str,
+    result: &Result<AuxiliaryRunOutputV1, AuxiliaryRunError>,
+) -> Result<ExecutionResultReceiptV1, crate::execution_identity::ExecutionIdentityError> {
+    match result {
+        Ok(output) => claim.result_receipt(
+            evidence_digest,
+            ExecutionResultOutcomeV1::Succeeded,
+            Some(output.output_digest.clone()),
+            output.output_bytes,
+        ),
+        Err(AuxiliaryRunError::Cancelled) => claim.result_receipt(
+            evidence_digest,
+            ExecutionResultOutcomeV1::Cancelled,
+            None,
+            0,
+        ),
+        Err(AuxiliaryRunError::TimedOut) => {
+            claim.result_receipt(evidence_digest, ExecutionResultOutcomeV1::TimedOut, None, 0)
+        }
+        Err(_) => claim.result_receipt(evidence_digest, ExecutionResultOutcomeV1::Failed, None, 0),
+    }
 }
 
 fn dispatch_lease_ms(timeout_ms: Option<u64>) -> u64 {

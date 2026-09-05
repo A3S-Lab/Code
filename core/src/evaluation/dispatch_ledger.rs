@@ -1,12 +1,13 @@
 //! Durable, provider-neutral dispatch claims for auxiliary evaluations.
 //!
-//! The ledger records only an evaluator dispatch identity and its lease.  It
-//! does not record prompts, rubric decisions, tenant data, or business audit
-//! state.  A host may use the in-memory implementation for a process-scoped
-//! supervisor or the file implementation when replay protection must survive
-//! a restart.
+//! The ledger records only an evaluator dispatch identity, its lease, and an
+//! optional digest-only terminal result receipt. It does not record prompts,
+//! rubric decisions, tenant data, or business audit state. A host may use the
+//! in-memory implementation for a process-scoped supervisor or the file
+//! implementation when replay protection must survive a restart.
 
 use super::identity::validate_digest;
+use crate::execution_identity::{ExecutionIdentityV1, ExecutionResultReceiptV1};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -57,6 +58,25 @@ pub trait EvaluationDispatchLedger: Send + Sync {
         lease_ms: u64,
     ) -> Result<EvaluationDispatchClaimOutcome, EvaluationDispatchLedgerError>;
 
+    /// Claim a dispatch while binding its canonical execution identity. The
+    /// default keeps third-party ledgers source-compatible; built-in ledgers
+    /// persist and fence on the identity.
+    async fn claim_with_identity(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<EvaluationDispatchClaimOutcome, EvaluationDispatchLedgerError> {
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        self.claim(dispatch_id, request_digest, owner_id, now_ms, lease_ms)
+            .await
+    }
+
     async fn renew(
         &self,
         dispatch_id: &str,
@@ -66,6 +86,24 @@ pub trait EvaluationDispatchLedger: Send + Sync {
         lease_ms: u64,
     ) -> Result<bool, EvaluationDispatchLedgerError>;
 
+    /// Renew a claim only when both its legacy ledger key and canonical
+    /// identity still match the admitted worker.
+    async fn renew_with_identity(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<bool, EvaluationDispatchLedgerError> {
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        self.renew(dispatch_id, request_digest, owner_id, now_ms, lease_ms)
+            .await
+    }
+
     async fn complete(
         &self,
         dispatch_id: &str,
@@ -74,12 +112,58 @@ pub trait EvaluationDispatchLedger: Send + Sync {
         completed_at_ms: u64,
     ) -> Result<(), EvaluationDispatchLedgerError>;
 
+    /// Complete a claim with a bounded digest-only result receipt.
+    async fn complete_with_receipt(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        receipt: &ExecutionResultReceiptV1,
+        completed_at_ms: u64,
+    ) -> Result<(), EvaluationDispatchLedgerError> {
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        receipt
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("result_receipt"))?;
+        if &receipt.identity != identity {
+            return Err(EvaluationDispatchLedgerError::Conflict);
+        }
+        self.complete(dispatch_id, request_digest, owner_id, completed_at_ms)
+            .await
+    }
+
     async fn release(
         &self,
         dispatch_id: &str,
         request_digest: &str,
         owner_id: &str,
     ) -> Result<(), EvaluationDispatchLedgerError>;
+
+    /// Release a claim only when its canonical identity also matches. Legacy
+    /// implementations fall back to the existing request/owner fence.
+    async fn release_with_identity(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+    ) -> Result<(), EvaluationDispatchLedgerError> {
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        self.release(dispatch_id, request_digest, owner_id).await
+    }
+
+    /// Read the terminal receipt when the ledger supports result persistence.
+    async fn completed_receipt(
+        &self,
+        _dispatch_id: &str,
+    ) -> Result<Option<ExecutionResultReceiptV1>, EvaluationDispatchLedgerError> {
+        Ok(None)
+    }
 
     async fn prune_completed(&self, before_ms: u64)
         -> Result<usize, EvaluationDispatchLedgerError>;
@@ -96,6 +180,8 @@ enum DispatchClaimStatus {
 #[serde(deny_unknown_fields)]
 struct DispatchClaimRecord {
     request_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution_identity: Option<ExecutionIdentityV1>,
     status: DispatchClaimStatus,
     owner_id: String,
     lease_expires_at_ms: u64,
@@ -103,6 +189,8 @@ struct DispatchClaimRecord {
     created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result_receipt: Option<ExecutionResultReceiptV1>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -139,6 +227,32 @@ impl EvaluationDispatchLedger for MemoryEvaluationDispatchLedger {
             &mut records,
             dispatch_id,
             request_digest,
+            None,
+            owner_id,
+            now_ms,
+            lease_ms,
+        )
+    }
+
+    async fn claim_with_identity(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<EvaluationDispatchClaimOutcome, EvaluationDispatchLedgerError> {
+        validate_claim_args(dispatch_id, request_digest, owner_id, now_ms, lease_ms)?;
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        let mut records = self.records.lock().await;
+        claim_record(
+            &mut records,
+            dispatch_id,
+            request_digest,
+            Some(identity),
             owner_id,
             now_ms,
             lease_ms,
@@ -159,6 +273,32 @@ impl EvaluationDispatchLedger for MemoryEvaluationDispatchLedger {
             &mut records,
             dispatch_id,
             request_digest,
+            None,
+            owner_id,
+            now_ms,
+            lease_ms,
+        ))
+    }
+
+    async fn renew_with_identity(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<bool, EvaluationDispatchLedgerError> {
+        validate_claim_args(dispatch_id, request_digest, owner_id, now_ms, lease_ms)?;
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        let mut records = self.records.lock().await;
+        Ok(renew_record(
+            &mut records,
+            dispatch_id,
+            request_digest,
+            Some(identity),
             owner_id,
             now_ms,
             lease_ms,
@@ -178,7 +318,40 @@ impl EvaluationDispatchLedger for MemoryEvaluationDispatchLedger {
             &mut records,
             dispatch_id,
             request_digest,
+            None,
             owner_id,
+            None,
+            completed_at_ms,
+        )
+    }
+
+    async fn complete_with_receipt(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        receipt: &ExecutionResultReceiptV1,
+        completed_at_ms: u64,
+    ) -> Result<(), EvaluationDispatchLedgerError> {
+        validate_identity_args(dispatch_id, request_digest, owner_id)?;
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        receipt
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("result_receipt"))?;
+        if &receipt.identity != identity {
+            return Err(EvaluationDispatchLedgerError::Conflict);
+        }
+        let mut records = self.records.lock().await;
+        complete_record(
+            &mut records,
+            dispatch_id,
+            request_digest,
+            Some(identity),
+            owner_id,
+            Some(receipt),
             completed_at_ms,
         )
     }
@@ -191,7 +364,38 @@ impl EvaluationDispatchLedger for MemoryEvaluationDispatchLedger {
     ) -> Result<(), EvaluationDispatchLedgerError> {
         validate_identity_args(dispatch_id, request_digest, owner_id)?;
         let mut records = self.records.lock().await;
-        release_record(&mut records, dispatch_id, request_digest, owner_id)
+        release_record(&mut records, dispatch_id, request_digest, None, owner_id)
+    }
+
+    async fn release_with_identity(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+    ) -> Result<(), EvaluationDispatchLedgerError> {
+        validate_identity_args(dispatch_id, request_digest, owner_id)?;
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        let mut records = self.records.lock().await;
+        release_record(
+            &mut records,
+            dispatch_id,
+            request_digest,
+            Some(identity),
+            owner_id,
+        )
+    }
+
+    async fn completed_receipt(
+        &self,
+        dispatch_id: &str,
+    ) -> Result<Option<ExecutionResultReceiptV1>, EvaluationDispatchLedgerError> {
+        let records = self.records.lock().await;
+        Ok(records
+            .get(dispatch_id)
+            .and_then(|record| record.result_receipt.clone()))
     }
 
     async fn prune_completed(
@@ -384,6 +588,7 @@ impl EvaluationDispatchLedger for FileEvaluationDispatchLedger {
                 records,
                 dispatch_id,
                 request_digest,
+                None,
                 owner_id,
                 now_ms,
                 lease_ms,
@@ -406,6 +611,7 @@ impl EvaluationDispatchLedger for FileEvaluationDispatchLedger {
                 records,
                 dispatch_id,
                 request_digest,
+                None,
                 owner_id,
                 now_ms,
                 lease_ms,
@@ -427,7 +633,9 @@ impl EvaluationDispatchLedger for FileEvaluationDispatchLedger {
                 records,
                 dispatch_id,
                 request_digest,
+                None,
                 owner_id,
+                None,
                 completed_at_ms,
             )
         })
@@ -441,8 +649,129 @@ impl EvaluationDispatchLedger for FileEvaluationDispatchLedger {
         owner_id: &str,
     ) -> Result<(), EvaluationDispatchLedgerError> {
         validate_identity_args(dispatch_id, request_digest, owner_id)?;
-        self.mutate(|records| release_record(records, dispatch_id, request_digest, owner_id))
+        self.mutate(|records| release_record(records, dispatch_id, request_digest, None, owner_id))
             .await
+    }
+
+    async fn claim_with_identity(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<EvaluationDispatchClaimOutcome, EvaluationDispatchLedgerError> {
+        validate_claim_args(dispatch_id, request_digest, owner_id, now_ms, lease_ms)?;
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        self.mutate(|records| {
+            claim_record(
+                records,
+                dispatch_id,
+                request_digest,
+                Some(identity),
+                owner_id,
+                now_ms,
+                lease_ms,
+            )
+        })
+        .await
+    }
+
+    async fn renew_with_identity(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<bool, EvaluationDispatchLedgerError> {
+        validate_claim_args(dispatch_id, request_digest, owner_id, now_ms, lease_ms)?;
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        self.mutate(|records| {
+            Ok(renew_record(
+                records,
+                dispatch_id,
+                request_digest,
+                Some(identity),
+                owner_id,
+                now_ms,
+                lease_ms,
+            ))
+        })
+        .await
+    }
+
+    async fn complete_with_receipt(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        receipt: &ExecutionResultReceiptV1,
+        completed_at_ms: u64,
+    ) -> Result<(), EvaluationDispatchLedgerError> {
+        validate_identity_args(dispatch_id, request_digest, owner_id)?;
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        receipt
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("result_receipt"))?;
+        if &receipt.identity != identity {
+            return Err(EvaluationDispatchLedgerError::Conflict);
+        }
+        self.mutate(|records| {
+            complete_record(
+                records,
+                dispatch_id,
+                request_digest,
+                Some(identity),
+                owner_id,
+                Some(receipt),
+                completed_at_ms,
+            )
+        })
+        .await
+    }
+
+    async fn release_with_identity(
+        &self,
+        dispatch_id: &str,
+        request_digest: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+    ) -> Result<(), EvaluationDispatchLedgerError> {
+        validate_identity_args(dispatch_id, request_digest, owner_id)?;
+        identity
+            .validate()
+            .map_err(|_| EvaluationDispatchLedgerError::InvalidField("execution_identity"))?;
+        self.mutate(|records| {
+            release_record(
+                records,
+                dispatch_id,
+                request_digest,
+                Some(identity),
+                owner_id,
+            )
+        })
+        .await
+    }
+
+    async fn completed_receipt(
+        &self,
+        dispatch_id: &str,
+    ) -> Result<Option<ExecutionResultReceiptV1>, EvaluationDispatchLedgerError> {
+        Ok(self
+            .read_records()
+            .await?
+            .get(dispatch_id)
+            .and_then(|record| record.result_receipt.clone()))
     }
 
     async fn prune_completed(
@@ -493,6 +822,7 @@ fn claim_record(
     records: &mut BTreeMap<String, DispatchClaimRecord>,
     dispatch_id: &str,
     request_digest: &str,
+    identity: Option<&ExecutionIdentityV1>,
     owner_id: &str,
     now_ms: u64,
     lease_ms: u64,
@@ -504,17 +834,29 @@ fn claim_record(
                 dispatch_id.to_string(),
                 DispatchClaimRecord {
                     request_digest: request_digest.to_string(),
+                    execution_identity: identity.cloned(),
                     status: DispatchClaimStatus::Pending,
                     owner_id: owner_id.to_string(),
                     lease_expires_at_ms,
                     attempts: 1,
                     created_at_ms: now_ms,
                     completed_at_ms: None,
+                    result_receipt: None,
                 },
             );
             Ok(EvaluationDispatchClaimOutcome::Claimed { attempt: 1 })
         }
         Some(record) if record.request_digest != request_digest => {
+            Ok(EvaluationDispatchClaimOutcome::Conflict)
+        }
+        Some(record)
+            if identity.is_some_and(|identity| {
+                record
+                    .execution_identity
+                    .as_ref()
+                    .is_some_and(|record_identity| record_identity != identity)
+            }) =>
+        {
             Ok(EvaluationDispatchClaimOutcome::Conflict)
         }
         Some(record) if record.status == DispatchClaimStatus::Completed => {
@@ -526,6 +868,9 @@ fn claim_record(
             })
         }
         Some(record) => {
+            if record.execution_identity.is_none() {
+                record.execution_identity = identity.cloned();
+            }
             record.owner_id = owner_id.to_string();
             record.lease_expires_at_ms = lease_expires_at_ms;
             record.attempts = record.attempts.saturating_add(1);
@@ -540,6 +885,7 @@ fn renew_record(
     records: &mut BTreeMap<String, DispatchClaimRecord>,
     dispatch_id: &str,
     request_digest: &str,
+    identity: Option<&ExecutionIdentityV1>,
     owner_id: &str,
     now_ms: u64,
     lease_ms: u64,
@@ -548,6 +894,12 @@ fn renew_record(
         return false;
     };
     if record.request_digest != request_digest
+        || identity.is_some_and(|identity| {
+            record
+                .execution_identity
+                .as_ref()
+                .is_some_and(|record_identity| record_identity != identity)
+        })
         || record.status != DispatchClaimStatus::Pending
         || record.owner_id != owner_id
         || record.lease_expires_at_ms <= now_ms
@@ -562,7 +914,9 @@ fn complete_record(
     records: &mut BTreeMap<String, DispatchClaimRecord>,
     dispatch_id: &str,
     request_digest: &str,
+    identity: Option<&ExecutionIdentityV1>,
     owner_id: &str,
+    result_receipt: Option<&ExecutionResultReceiptV1>,
     completed_at_ms: u64,
 ) -> Result<(), EvaluationDispatchLedgerError> {
     let record = records
@@ -571,7 +925,20 @@ fn complete_record(
     if record.request_digest != request_digest {
         return Err(EvaluationDispatchLedgerError::Conflict);
     }
+    if identity.is_some_and(|identity| {
+        record
+            .execution_identity
+            .as_ref()
+            .is_some_and(|record_identity| record_identity != identity)
+    }) {
+        return Err(EvaluationDispatchLedgerError::Conflict);
+    }
     if record.status == DispatchClaimStatus::Completed {
+        if let (Some(expected), Some(actual)) = (record.result_receipt.as_ref(), result_receipt) {
+            if expected != actual {
+                return Err(EvaluationDispatchLedgerError::Conflict);
+            }
+        }
         return Ok(());
     }
     if record.owner_id != owner_id {
@@ -588,6 +955,10 @@ fn complete_record(
     if record.lease_expires_at_ms <= completed_at_ms {
         return Err(EvaluationDispatchLedgerError::Conflict);
     }
+    if let Some(identity) = identity {
+        record.execution_identity = Some(identity.clone());
+    }
+    record.result_receipt = result_receipt.cloned();
     record.status = DispatchClaimStatus::Completed;
     record.lease_expires_at_ms = 0;
     record.completed_at_ms = Some(completed_at_ms);
@@ -598,12 +969,21 @@ fn release_record(
     records: &mut BTreeMap<String, DispatchClaimRecord>,
     dispatch_id: &str,
     request_digest: &str,
+    identity: Option<&ExecutionIdentityV1>,
     owner_id: &str,
 ) -> Result<(), EvaluationDispatchLedgerError> {
     let Some(record) = records.get_mut(dispatch_id) else {
         return Ok(());
     };
-    if record.request_digest != request_digest || record.status == DispatchClaimStatus::Completed {
+    if record.request_digest != request_digest
+        || identity.is_some_and(|identity| {
+            record
+                .execution_identity
+                .as_ref()
+                .is_some_and(|record_identity| record_identity != identity)
+        })
+        || record.status == DispatchClaimStatus::Completed
+    {
         return Ok(());
     }
     if record.owner_id == owner_id {
@@ -669,6 +1049,25 @@ async fn read_records_from_path(
         validate_text("dispatch_id", dispatch_id)?;
         validate_digest(&record.request_digest)
             .map_err(|_| EvaluationDispatchLedgerError::InvalidField("request_digest"))?;
+        if let Some(identity) = &record.execution_identity {
+            identity.validate().map_err(|_| {
+                EvaluationDispatchLedgerError::Corrupt("execution identity is invalid".to_string())
+            })?;
+        }
+        if let Some(receipt) = &record.result_receipt {
+            receipt.validate().map_err(|_| {
+                EvaluationDispatchLedgerError::Corrupt("result receipt is invalid".to_string())
+            })?;
+            if record
+                .execution_identity
+                .as_ref()
+                .is_some_and(|identity| identity != &receipt.identity)
+            {
+                return Err(EvaluationDispatchLedgerError::Corrupt(
+                    "result receipt identity does not match claim".to_string(),
+                ));
+            }
+        }
         if !record.owner_id.is_empty() {
             validate_text("owner_id", &record.owner_id)?;
         }
@@ -685,6 +1084,7 @@ async fn read_records_from_path(
         match record.status {
             DispatchClaimStatus::Pending
                 if record.completed_at_ms.is_some()
+                    || record.result_receipt.is_some()
                     || (record.owner_id.is_empty() && record.lease_expires_at_ms != 0)
                     || (!record.owner_id.is_empty() && record.lease_expires_at_ms == 0) =>
             {
@@ -709,4 +1109,100 @@ async fn read_records_from_path(
 
 fn storage_error(operation: &str, error: impl std::fmt::Display) -> EvaluationDispatchLedgerError {
     EvaluationDispatchLedgerError::Storage(format!("{operation}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution_identity::{ExecutionResultOutcomeV1, EXECUTION_RESULT_RECEIPT_SCHEMA_V1};
+
+    fn identity(domain: &str) -> ExecutionIdentityV1 {
+        ExecutionIdentityV1::derive(domain, &serde_json::json!({"request": "bounded"})).unwrap()
+    }
+
+    fn receipt(identity: ExecutionIdentityV1) -> ExecutionResultReceiptV1 {
+        ExecutionResultReceiptV1 {
+            schema: EXECUTION_RESULT_RECEIPT_SCHEMA_V1.to_string(),
+            identity,
+            evidence_digest:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            outcome: ExecutionResultOutcomeV1::Succeeded,
+            result_digest: Some(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            ),
+            result_bytes: 1,
+        }
+    }
+
+    #[test]
+    fn legacy_claim_record_deserializes_without_identity_or_receipt() {
+        let value = serde_json::json!({
+            "request_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "status": "pending",
+            "owner_id": "owner-1",
+            "lease_expires_at_ms": 101,
+            "attempts": 1,
+            "created_at_ms": 1
+        });
+        let record: DispatchClaimRecord = serde_json::from_value(value).unwrap();
+        assert!(record.execution_identity.is_none());
+        assert!(record.result_receipt.is_none());
+    }
+
+    #[tokio::test]
+    async fn identity_fences_claim_renewal_and_terminal_receipt() {
+        let ledger = MemoryEvaluationDispatchLedger::new();
+        let canonical = identity("a3s.test.identity");
+        let wrong = identity("a3s.test.other");
+        let request_digest =
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+        assert!(matches!(
+            ledger
+                .claim_with_identity("dispatch-1", request_digest, &canonical, "owner-1", 1, 100)
+                .await
+                .unwrap(),
+            EvaluationDispatchClaimOutcome::Claimed { attempt: 1 }
+        ));
+        assert!(!ledger
+            .renew_with_identity("dispatch-1", request_digest, &wrong, "owner-1", 2, 100)
+            .await
+            .unwrap());
+        assert!(ledger
+            .renew_with_identity("dispatch-1", request_digest, &canonical, "owner-1", 2, 100)
+            .await
+            .unwrap());
+
+        let result = receipt(canonical.clone());
+        ledger
+            .complete_with_receipt(
+                "dispatch-1",
+                request_digest,
+                &canonical,
+                "owner-1",
+                &result,
+                3,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.completed_receipt("dispatch-1").await.unwrap(),
+            Some(result)
+        );
+        assert!(matches!(
+            ledger
+                .complete_with_receipt(
+                    "dispatch-1",
+                    request_digest,
+                    &wrong,
+                    "owner-1",
+                    &receipt(wrong.clone()),
+                    4,
+                )
+                .await,
+            Err(EvaluationDispatchLedgerError::Conflict)
+        ));
+    }
 }

@@ -16,6 +16,8 @@ pub const TOOL_INVOCATION_IDENTITY_DOMAIN_V1: &str = "a3s.code.tool-invocation.i
 pub const FLOW_DECISION_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-decision.identity.v1";
 pub const EVALUATION_DISPATCH_IDENTITY_DOMAIN_V1: &str = "a3s.code.evaluation-dispatch.identity.v1";
 pub const EVALUATION_DISPATCH_REQUEST_DOMAIN_V1: &str = "a3s.code.evaluation-dispatch.request.v1";
+pub const EXECUTION_RESULT_RECEIPT_SCHEMA_V1: &str = "a3s.code.execution-result-receipt.v1";
+pub const EXECUTION_RESULT_MAX_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ExecutionIdentityError {
@@ -29,6 +31,10 @@ pub enum ExecutionIdentityError {
     DigestMismatch,
     #[error("execution claim field `{0}` is empty")]
     InvalidClaimField(&'static str),
+    #[error("execution result receipt field `{0}` is invalid")]
+    InvalidReceiptField(&'static str),
+    #[error("execution result receipt exceeds its byte limit")]
+    ReceiptSizeLimit,
 }
 
 /// A portable, domain-separated content identity.
@@ -96,6 +102,57 @@ impl ExecutionIdentityV1 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionResultOutcomeV1 {
+    Succeeded,
+    Failed,
+    Cancelled,
+    TimedOut,
+}
+
+/// A bounded, digest-only terminal result bound to one execution claim and
+/// the evidence snapshot consumed by that execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionResultReceiptV1 {
+    pub schema: String,
+    pub identity: ExecutionIdentityV1,
+    pub evidence_digest: String,
+    pub outcome: ExecutionResultOutcomeV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_digest: Option<String>,
+    pub result_bytes: u64,
+}
+
+impl ExecutionResultReceiptV1 {
+    pub fn validate(&self) -> Result<(), ExecutionIdentityError> {
+        if self.schema != EXECUTION_RESULT_RECEIPT_SCHEMA_V1 {
+            return Err(ExecutionIdentityError::InvalidReceiptField("schema"));
+        }
+        self.identity.validate()?;
+        validate_digest(&self.evidence_digest)
+            .map_err(|_| ExecutionIdentityError::InvalidReceiptField("evidence_digest"))?;
+        if self.result_bytes > EXECUTION_RESULT_MAX_BYTES {
+            return Err(ExecutionIdentityError::ReceiptSizeLimit);
+        }
+        match (&self.result_digest, self.result_bytes, self.outcome) {
+            (Some(digest), bytes, ExecutionResultOutcomeV1::Succeeded) => {
+                validate_digest(digest)
+                    .map_err(|_| ExecutionIdentityError::InvalidReceiptField("result_digest"))?;
+                if bytes == 0 {
+                    return Err(ExecutionIdentityError::InvalidReceiptField("result_bytes"));
+                }
+            }
+            (None, 0, ExecutionResultOutcomeV1::Failed)
+            | (None, 0, ExecutionResultOutcomeV1::Cancelled)
+            | (None, 0, ExecutionResultOutcomeV1::TimedOut) => {}
+            _ => return Err(ExecutionIdentityError::InvalidReceiptField("outcome")),
+        }
+        Ok(())
+    }
+}
+
 /// Binds a semantic execution identity to the key used by an existing claim
 /// ledger. The ledger key is kept separate so old persisted receipts remain
 /// replay-compatible while new code can carry one typed identity through all
@@ -151,6 +208,25 @@ impl ExecutionClaimV1 {
     pub(crate) fn owner_id(&self) -> &str {
         &self.owner_id
     }
+
+    pub(crate) fn result_receipt(
+        &self,
+        evidence_digest: impl Into<String>,
+        outcome: ExecutionResultOutcomeV1,
+        result_digest: Option<String>,
+        result_bytes: u64,
+    ) -> Result<ExecutionResultReceiptV1, ExecutionIdentityError> {
+        let receipt = ExecutionResultReceiptV1 {
+            schema: EXECUTION_RESULT_RECEIPT_SCHEMA_V1.to_string(),
+            identity: self.identity.clone(),
+            evidence_digest: evidence_digest.into(),
+            outcome,
+            result_digest,
+            result_bytes,
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
 }
 
 fn canonicalize(value: serde_json::Value) -> serde_json::Value {
@@ -167,6 +243,20 @@ fn canonicalize(value: serde_json::Value) -> serde_json::Value {
         }
         value => value,
     }
+}
+
+fn validate_digest(value: &str) -> Result<(), ExecutionIdentityError> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(ExecutionIdentityError::InvalidDigest);
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(ExecutionIdentityError::InvalidDigest);
+    }
+    Ok(())
 }
 
 fn validate_domain(domain: &str) -> Result<(), ExecutionIdentityError> {
@@ -247,5 +337,39 @@ mod tests {
         assert_eq!(claim.owner_id(), "owner-1");
         let debug = format!("{claim:?}");
         assert!(!debug.contains("do-not-persist"));
+    }
+
+    #[test]
+    fn result_receipt_is_digest_only_and_bounded() {
+        let identity = ExecutionIdentityV1::derive("a3s.test", &"request").unwrap();
+        let claim =
+            ExecutionClaimV1::new(identity.clone(), "record-1", "legacy-hash", "owner-1").unwrap();
+        let receipt = claim
+            .result_receipt(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ExecutionResultOutcomeV1::Succeeded,
+                Some(
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .into(),
+                ),
+                12,
+            )
+            .unwrap();
+        receipt.validate().unwrap();
+        assert_eq!(receipt.identity, identity);
+        assert!(!format!("{receipt:?}").contains("request"));
+
+        let invalid = ExecutionResultReceiptV1 {
+            schema: EXECUTION_RESULT_RECEIPT_SCHEMA_V1.into(),
+            identity: receipt.identity,
+            evidence_digest: receipt.evidence_digest,
+            outcome: ExecutionResultOutcomeV1::Succeeded,
+            result_digest: None,
+            result_bytes: 0,
+        };
+        assert!(matches!(
+            invalid.validate(),
+            Err(ExecutionIdentityError::InvalidReceiptField("outcome"))
+        ));
     }
 }
