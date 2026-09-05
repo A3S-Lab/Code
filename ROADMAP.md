@@ -20,6 +20,10 @@ defines shared ownership and dependency order. This roadmap must not create a
 second Cloud Agent lifecycle, scheduler, queue, Secret store, usage ledger, or
 checkpoint authority.
 
+Scientific discovery is a product composition over this runtime, not a new
+runtime mode. The cross-repository implementation plan is tracked in the
+[scientific discovery platform roadmap](https://github.com/A3S-Lab/a3s/blob/main/docs/scientific-discovery-platform-roadmap.md).
+
 ## 2. Current foundation
 
 - `Agent`, `AgentSession`, governed Tool invocation, model adapters, bounded
@@ -234,7 +238,27 @@ until all lifecycle and recovery invariants are covered. Durable fact/result
 storage, tenant authorization, retention, placement, and business lineage
 remain host/Cloud adapter responsibilities behind the published traits.
 
-### 3.3 Scoped capability program
+### 3.3 Native scientific research contracts
+
+The first Code-side slice makes scientific execution observable and
+reproducible without importing a foreign Harness or moving scientific policy
+into Core. These contracts are transport and integrity primitives: A3S Use
+binds the selected package/environment generation, while the host or Desktop
+decides how to search, review, approve, retain, and publish results.
+
+| Gate | State | Code-owned outcome | Exit criteria |
+| --- | --- | --- | --- |
+| `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, and lifecycle validation | Eleven focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, and strict unknown-field rejection fail closed |
+| `RESEARCH-EXEC1` | Planned | Host adapter that drives a research run through source capture, evidence append, artifact publication, and evaluator dispatch while retaining one Code Run identity | Integration tests prove restart, cancellation, contiguous evidence, artifact immutability, and exact Code/Use binding across a real workspace |
+| `RESEARCH-REVIEW1` | Planned | Host-owned reviewer composition over the generic evaluation substrate, projecting bounded findings and human decisions without a Core rubric | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral |
+
+The delivered contract slice is documented in
+[Native Research Contracts](manual/RESEARCH_CONTRACTS.md). It is deliberately
+small: it does not claim a complete project aggregate, scientific knowledge
+graph, package registry, or publication service. Those capabilities belong to
+the host, A3S Use, and Desktop phases in the cross-repository roadmap.
+
+### 3.4 Scoped capability program
 
 The [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md)
 adopts Cordis-style context, fiber, and reversible-effect lifecycle semantics
@@ -367,7 +391,7 @@ does not acquire, publish, mutate, or retire an A3S Use generation. Delegated
 runs inherit the exact parent Profile, and resume rejects a different explicit
 Profile.
 
-### 3.4 Durable memory program
+### 3.5 Durable memory program
 
 The durable-memory program adds reusable, evidence-backed agent state without
 turning an extraction model or a storage backend into a truth authority. A3S
