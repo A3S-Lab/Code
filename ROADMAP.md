@@ -63,15 +63,16 @@ copy or container-sized indexing allocation for hostile Tool output. Regression
 coverage includes UTF-8 head/tail retention, prefix-preserving folds, and
 250,000-item JSON arrays; the v1 algorithm and evidence binding remain stable.
 
-### 3.1 Harness architecture improvements
+### 3.1 Native Harness architecture
 
-A review of DeepSeek Harness reinforces four useful boundaries without making
-Code Core a general dependency-injection or plugin framework. The model should
-see the exact capability surface and readiness state it can act on; each run
-should bind the actual model input rather than only its intended configuration;
-temporary capabilities should have explicit lifetimes; and richer code-mode
-tool presentation should remain a host/profile concern over the same governed
-execution world.
+Code defines its own Harness contract and does not target DeepSeek Harness,
+Cordis, or another foreign runtime. First-principles review led to four native
+boundaries without making Code Core a general dependency-injection or plugin
+framework: the model sees the exact capability surface and readiness state it
+can act on; each Run binds the actual model input rather than only its intended
+configuration; temporary capabilities have explicit lifetimes; and richer
+code-mode Tool presentation remains a host/profile concern over the same
+governed execution world.
 
 | Gate | State | Code-owned outcome | Exit criteria |
 | --- | --- | --- | --- |
