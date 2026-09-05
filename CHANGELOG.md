@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the host-facing `DynamicWorkflowControl` adapter. A bound handle can
+  inspect a bounded redacted snapshot, read trusted history, resume a run, or
+  request/force durable cancellation while using the same identity-bound
+  worker lease as the model-visible tool. Local dynamic-workflow journals now
+  use a cross-process lock around the existing Flow JSONL store; Flow remains
+  the sole event authority and optimistic sequence conflicts stay retryable.
+  Hosts with a remote or database-backed adapter can inject the same typed
+  `FlowEventStore` into both model-visible execution and control operations.
+  Cross-process qualification covers a killed worker, lease expiry/takeover,
+  busy inspection, durable cancellation settlement, and injected event-store
+  conflicts across independent processes.
 - Added parent-cancellation and worker-takeover fencing for dynamic workflows.
   Each run derives one stable digest-only claim identity, uses a shared local
   file lease (or an injected host ledger), renews the lease while Flow replay
