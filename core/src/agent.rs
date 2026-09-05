@@ -951,6 +951,11 @@ impl SessionCommand for ToolCommand {
 pub(crate) struct AgentLoop {
     llm_client: Arc<dyn LlmClient>,
     model_generation_admission: crate::llm::ModelGenerationAdmission,
+    /// Whether the surrounding session explicitly owns this admission gate.
+    /// Compatibility/standalone loops keep the historical per-facade gate so
+    /// detached maintenance work (for example background memory extraction)
+    /// cannot stall the foreground turn.
+    shared_model_generation_admission: bool,
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,

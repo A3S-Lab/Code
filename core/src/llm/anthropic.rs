@@ -3,7 +3,7 @@
 use super::http::{default_http_client, normalize_base_url, HttpClient};
 use super::structured;
 use super::types::*;
-use super::LlmClient;
+use super::{LlmClient, ModelGenerationPool};
 use crate::retry::{AttemptOutcome, RetryConfig};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -282,6 +282,16 @@ impl AnthropicClient {
 
 #[async_trait]
 impl LlmClient for AnthropicClient {
+    fn model_generation_pool(&self) -> Option<ModelGenerationPool> {
+        ModelGenerationPool::for_endpoint(
+            &self.provider_name,
+            &self.model,
+            &self.base_url,
+            self.model_generation_concurrency(),
+        )
+        .ok()
+    }
+
     async fn complete(
         &self,
         messages: &[Message],

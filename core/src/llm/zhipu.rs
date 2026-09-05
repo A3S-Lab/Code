@@ -6,7 +6,7 @@
 use super::openai::OpenAiClient;
 use super::structured;
 use super::types::*;
-use super::LlmClient;
+use super::{LlmClient, ModelGenerationPool};
 use crate::retry::RetryConfig;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -68,6 +68,10 @@ impl ZhipuClient {
 
 #[async_trait]
 impl LlmClient for ZhipuClient {
+    fn model_generation_pool(&self) -> Option<ModelGenerationPool> {
+        self.0.model_generation_pool()
+    }
+
     async fn complete(
         &self,
         messages: &[Message],

@@ -51,8 +51,31 @@ impl ExecutionCoordinator {
         cancellation: &CancellationToken,
         closed: &AtomicBool,
     ) -> Result<crate::task_scheduler::TaskLease> {
+        Self::acquire_task_with_quotas(
+            scheduler,
+            priority,
+            label,
+            &[],
+            session_id,
+            cancellation,
+            closed,
+        )
+        .await
+    }
+
+    /// Acquire a scheduler lease while atomically applying all supplied quota
+    /// dimensions. The empty slice preserves the legacy unconstrained path.
+    pub(super) async fn acquire_task_with_quotas(
+        scheduler: &crate::task_scheduler::TaskScheduler,
+        priority: crate::task_scheduler::TaskPriority,
+        label: String,
+        quotas: &[crate::task_scheduler::TaskSchedulerQuota],
+        session_id: &str,
+        cancellation: &CancellationToken,
+        closed: &AtomicBool,
+    ) -> Result<crate::task_scheduler::TaskLease> {
         scheduler
-            .acquire(priority, label, cancellation)
+            .acquire_with_quotas(priority, label, quotas, None, cancellation)
             .await
             .map_err(|error| match error {
                 crate::task_scheduler::TaskSchedulerError::Cancelled
@@ -74,23 +97,28 @@ impl ExecutionCoordinator {
             })
     }
 
-    /// Acquire an optional scheduler lease for control-plane operations that
-    /// may be constructed without a Session-owned scheduler (for example,
-    /// low-level direct-tool tests).
-    pub(super) async fn acquire_optional_task(
+    /// Optional-scheduler counterpart of [`Self::acquire_task_with_quotas`].
+    pub(super) async fn acquire_optional_task_with_quotas(
         scheduler: Option<&crate::task_scheduler::TaskScheduler>,
         priority: crate::task_scheduler::TaskPriority,
         label: String,
+        quotas: &[crate::task_scheduler::TaskSchedulerQuota],
         session_id: &str,
         cancellation: &CancellationToken,
         closed: &AtomicBool,
     ) -> Result<Option<crate::task_scheduler::TaskLease>> {
         match scheduler {
-            Some(scheduler) => {
-                Self::acquire_task(scheduler, priority, label, session_id, cancellation, closed)
-                    .await
-                    .map(Some)
-            }
+            Some(scheduler) => Self::acquire_task_with_quotas(
+                scheduler,
+                priority,
+                label,
+                quotas,
+                session_id,
+                cancellation,
+                closed,
+            )
+            .await
+            .map(Some),
             None => Ok(None),
         }
     }

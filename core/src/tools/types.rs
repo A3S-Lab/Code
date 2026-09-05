@@ -683,10 +683,6 @@ impl ToolContext {
             .and_then(|reservation| reservation.claim(admission))
     }
 
-    pub(crate) fn has_model_generation_permit(&self) -> bool {
-        self.model_generation_permit.is_some()
-    }
-
     pub(crate) fn with_host_direct_policy(
         mut self,
         policy: super::invocation::HostDirectPolicy,

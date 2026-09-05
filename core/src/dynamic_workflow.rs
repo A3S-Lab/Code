@@ -70,6 +70,27 @@ fn dynamic_workflow_scheduler_quota_limit(limits: &DynamicWorkflowScriptLimits) 
         .clamp(1, MAX_MAX_CONCURRENT_STEPS)
 }
 
+fn provider_quota_for_context(
+    context: &ToolContext,
+) -> Option<crate::task_scheduler::TaskSchedulerQuota> {
+    if context
+        .model_generation_admission()
+        .is_some_and(|admission| admission.has_scheduler_quota())
+    {
+        // The session-owned generation gate already reserves this exact pool
+        // through the shared scheduler. Holding it again on the enclosing Flow
+        // step would make a single-flight provider recursively wait on itself.
+        return None;
+    }
+    let client = context.llm_client()?;
+    let pool = client.model_generation_pool()?;
+    crate::task_scheduler::TaskSchedulerQuota::new(
+        pool.identity.clone(),
+        pool.max_concurrency().get(),
+    )
+    .ok()
+}
+
 /// Runtime build used to pin newly-created dynamic workflow runs.
 ///
 /// Deployments that need a stronger revision identity can provide an explicit
@@ -568,6 +589,9 @@ pub struct DynamicWorkflowRuntime {
     /// Optional owner quota for direct script-backed Flow steps. The quota is
     /// enforced by the same scheduler actor as global capacity.
     scheduler_quota: Option<crate::task_scheduler::TaskSchedulerQuota>,
+    /// Provider/model capacity projected into the same scheduler actor as
+    /// workflow-step admission.
+    provider_quota: Option<crate::task_scheduler::TaskSchedulerQuota>,
     continuation_lease: Option<Arc<DynamicWorkflowLease>>,
 }
 
@@ -577,6 +601,7 @@ impl DynamicWorkflowRuntime {
         context: ToolContext,
         source: impl Into<String>,
     ) -> Self {
+        let provider_quota = provider_quota_for_context(&context);
         let allowed_tools = default_allowed_tools(&registry);
         // Session/agent callers install the governed gateway in ToolContext.
         // The raw registry adapter is retained only for explicit low-level
@@ -595,6 +620,7 @@ impl DynamicWorkflowRuntime {
             task_scheduler: None,
             admit_steps_globally: false,
             scheduler_quota: None,
+            provider_quota,
             continuation_lease: None,
         }
     }
@@ -609,7 +635,24 @@ impl DynamicWorkflowRuntime {
         self.parallel_generation_admission = NonZeroUsize::new(generation_concurrency)
             .filter(|maximum| maximum.get() > 1)
             .map(|maximum| {
-                ModelGenerationAdmission::new(ModelGenerationConcurrency::bounded(maximum))
+                let admission =
+                    ModelGenerationAdmission::new(ModelGenerationConcurrency::bounded(maximum));
+                match self.context.model_generation_admission() {
+                    Some(session_admission) => match admission.clone().with_scheduler_quota_from(
+                        &session_admission,
+                        "dynamic-workflow-model-generation",
+                    ) {
+                        Ok(admission) => admission,
+                        Err(error) => {
+                            tracing::warn!(
+                                %error,
+                                "failed to project session provider quota into dynamic workflow admission"
+                            );
+                            admission
+                        }
+                    },
+                    None => admission,
+                }
             });
         let step_concurrency = limits
             .max_concurrent_steps
@@ -707,28 +750,37 @@ impl DynamicWorkflowRuntime {
                 "flow:{}:{}:{}",
                 invocation.run_id, invocation.step_id, invocation.step_name
             );
-            let task_lease = match self.scheduler_quota.as_ref() {
-                Some(quota) => {
-                    scheduler
-                        .acquire_with_quota(
-                            SchedulerTaskPriority::Foreground,
-                            label,
-                            quota,
-                            Some(identity),
-                            &self.context.cancellation_token(),
-                        )
-                        .await
+            let mut quotas = Vec::with_capacity(2);
+            if let Some(quota) = self.scheduler_quota.as_ref() {
+                quotas.push(quota.clone());
+            }
+            if let Some(quota) = self.provider_quota.as_ref() {
+                if !quotas
+                    .iter()
+                    .any(|candidate| candidate.identity == quota.identity)
+                {
+                    quotas.push(quota.clone());
                 }
-                None => {
-                    scheduler
-                        .acquire_with_identity(
-                            SchedulerTaskPriority::Foreground,
-                            label,
-                            Some(identity),
-                            &self.context.cancellation_token(),
-                        )
-                        .await
-                }
+            }
+            let task_lease = if quotas.is_empty() {
+                scheduler
+                    .acquire_with_identity(
+                        SchedulerTaskPriority::Foreground,
+                        label,
+                        Some(identity),
+                        &self.context.cancellation_token(),
+                    )
+                    .await
+            } else {
+                scheduler
+                    .acquire_with_quotas(
+                        SchedulerTaskPriority::Foreground,
+                        label,
+                        &quotas,
+                        Some(identity),
+                        &self.context.cancellation_token(),
+                    )
+                    .await
             }
             .map_err(|error| a3s_flow::FlowError::Runtime(error.to_string()))?;
             lease = lease.with_task_lease(task_lease);

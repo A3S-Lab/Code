@@ -27,6 +27,13 @@ pub const FLOW_STEP_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-step.identity.v1";
 /// workflow claims or result identities.
 pub const TASK_ADMISSION_SCOPE_IDENTITY_DOMAIN_V1: &str =
     "a3s.code.task-admission-scope.identity.v1";
+/// Identity domain for a provider/model generation-capacity pool.
+///
+/// Pool identities deliberately bind only non-secret routing facts. API keys,
+/// session tokens, prompts, and request payloads must never influence or
+/// appear in a scheduler capacity key.
+pub const MODEL_GENERATION_POOL_IDENTITY_DOMAIN_V1: &str =
+    "a3s.code.model-generation-pool.identity.v1";
 /// Identity domain for the immutable input portion of a dynamic workflow.
 pub const DYNAMIC_WORKFLOW_INPUT_IDENTITY_DOMAIN_V1: &str =
     "a3s.code.dynamic-workflow.input.identity.v1";

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::llm::http::ReqwestHttpClient;
 use crate::llm::{
     default_http_client, structured, ContentBlock, HttpClient, LlmClient, LlmResponse,
-    LlmResponseMeta, Message, StreamEvent, TokenUsage, ToolDefinition,
+    LlmResponseMeta, Message, ModelGenerationPool, StreamEvent, TokenUsage, ToolDefinition,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -120,6 +120,17 @@ impl CodexLoginClient {
 
 #[async_trait]
 impl LlmClient for CodexLoginClient {
+    fn model_generation_pool(&self) -> Option<ModelGenerationPool> {
+        ModelGenerationPool::for_account_endpoint(
+            "codex",
+            &self.model,
+            CODEX_BASE,
+            &self.account_id,
+            self.model_generation_concurrency(),
+        )
+        .ok()
+    }
+
     fn with_active_generation_timeout(
         &self,
         timeout: std::time::Duration,

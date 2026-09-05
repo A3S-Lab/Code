@@ -198,6 +198,23 @@ fn finish_agent_session(
     let llm_client = Arc::clone(&resolved.llm_client);
     let model_generation_admission =
         crate::llm::ModelGenerationAdmission::new(llm_client.model_generation_concurrency());
+    let model_generation_admission = if let Some(pool) = llm_client.model_generation_pool() {
+        let quota = crate::task_scheduler::TaskSchedulerQuota::new(
+            pool.identity.clone(),
+            pool.max_concurrency().get(),
+        )
+        .map_err(|error| crate::error::CodeError::Config(error.to_string()))?;
+        model_generation_admission
+            .with_scheduler_quota(
+                Arc::clone(&agent.task_scheduler),
+                quota,
+                opts.task_priority,
+                format!("model-generation:{}", resolved.session_id),
+            )
+            .map_err(|error| crate::error::CodeError::Config(error.to_string()))?
+    } else {
+        model_generation_admission
+    };
     let tool_executor = capabilities.tool_executor;
     let trace_sink = capabilities.trace_sink;
     let agent_registry = capabilities.agent_registry;

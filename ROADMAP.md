@@ -58,6 +58,7 @@ runtime mode. The cross-repository implementation plan is tracked in the
 | `WORKFLOW-CONTROL1` | Delivered | A host-facing dynamic-workflow control handle coordinates bounded inspection, trusted history, Flow durable cancellation/terminal transitions, identity-bound worker leases, and cross-process local event-store locking | Independent-process qualification covers busy ownership, killed-worker lease expiry/takeover, cancellation settlement, digest-only projections, and optimistic event-conflict retry; Flow remains the only workflow authority |
 | `WORKFLOW-OBS1` | Delivered | Scheduler and dynamic-workflow control diagnostics expose bounded admission, fairness, lease, and takeover counters without retaining task or workflow payloads | Independent resumed workers prove aging prevents starvation; scheduler wait/occupancy counters and durable claim-takeover counters converge while Flow history and the lease remain authoritative |
 | `WORKFLOW-QUOTA1` | Delivered | The existing scheduler actor enforces typed digest-only owner quotas for standalone Flow steps and detached Task children, propagates run identity through governed Tool contexts, and exposes a live quota projection without adding a queue or store | Mixed-owner progress, quota-blocked priority work, cancellation, identity/limit conflicts, malformed scopes, idle-state pruning, dynamic diagnostics, and detached fan-out qualification pass |
+| `MODEL-ADMISSION1` | Delivered | Provider/model capacity is represented by a typed digest-only `ModelGenerationPool`; regular, streaming, and structured calls reserve that capacity through quota-only admissions in the existing scheduler, with propagation through sessions, direct Tools, delegated children, and dynamic workflows | Cross-session and mixed-provider progress, local-plus-shared quota composition, structured repair without recursive deadlock, stream/cancellation release, endpoint-credential redaction, and the full Core regression suite pass |
 
 Observation precedes mutation: `CAR-02` must provide useful read-only context
 diagnostics before `CAR-03` can reduce any Tool result. The first transform
@@ -427,6 +428,45 @@ malformed and overlong scopes, idle-state pruning, dynamic-workflow diagnostic
 projection, and detached children sharing one run quota before using free
 capacity. No scope text, prompt, Tool payload, or workflow output is retained
 by the scheduler.
+
+### 3.3.8 Provider-aware model-generation admission
+
+Model generation is now a resource boundary rather than an incidental property
+of one `LlmClient` instance. A provider adapter may publish a
+`ModelGenerationPool` whose identity is derived from the provider, model,
+endpoint origin, and optional non-secret account scope. URL credentials,
+paths, queries, fragments, prompts, outputs, and transport headers are never
+retained in that identity. Built-in Anthropic, OpenAI-compatible, Zhipu, and
+Codex clients publish the descriptor; custom clients remain conservative and
+single-flight unless they opt into the typed contract.
+
+Session construction binds the pool descriptor to the existing agent scheduler
+as a second quota dimension. The session's normal Run/Tool admission still
+consumes one global slot, while each actual provider generation acquires a
+quota-only lease from the same actor and priority queue. This preserves one
+queue and one cancellation/release authority, lets independent providers use
+free capacity, and prevents a nested model call from deadlocking when the
+global scheduler is configured with `max_active = 1`. Local client capacity
+and the shared pool capacity are both enforced; a nested workflow gate copies
+the provider binding rather than bypassing it.
+
+The `LlmInvoker` boundary covers blocking, streaming, structured, and
+streaming-structured calls. A streaming lease is owned by its supervised proxy
+until EOF, terminal `Done`, cancellation, or receiver drop. Structured repair
+rounds release each call's lease before the next round, and an outer
+preadmitted permit is transferred to the first call exactly once. Foreground
+delegated children and Flow steps carry the provider quota into their own
+admission; background/global children retain the outer provider reservation
+and use a local gate to avoid recursive acquisition. Queue wait is reported in
+the existing structured-generation metadata without exposing labels or
+payloads.
+
+Qualification covers two sessions sharing one provider pool, independent
+provider progress under a full global budget, atomic multi-quota admission,
+quota-only cancellation and release, managed stream lifetime, nested tighter
+workflow limits, and the complete 3,199-test Core library suite. This slice
+does not add provider rate-limit policy, billing, or a second scheduler;
+Gateway and host policy remain the owners of those concerns.
 
 ### 3.4 Scoped capability program
 

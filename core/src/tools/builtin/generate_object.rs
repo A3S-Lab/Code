@@ -265,17 +265,43 @@ impl Tool for GenerateObjectTool {
             max_repair_attempts,
         };
 
+        let admission = ctx
+            .model_generation_admission()
+            .unwrap_or_else(|| self.admission.clone());
+        let mut preadmitted = ctx.model_generation_permit(&admission);
         let llm_client = ctx
             .llm_client()
             .unwrap_or_else(|| Arc::clone(&self.llm_client));
         let active_timeout = Duration::from_millis(timeout_ms);
-        let llm_client = llm_client
+        let mut llm_client = llm_client
             .with_active_generation_timeout(active_timeout)
             .unwrap_or(llm_client);
-        let admission = ctx
-            .model_generation_admission()
-            .unwrap_or_else(|| self.admission.clone());
-        let preadmitted = ctx.model_generation_permit(&admission);
+        // A governed LlmInvoker admits each underlying provider call. If an
+        // outer workflow already acquired a permit, transfer it into that
+        // facade for the first call; holding it around the whole structured
+        // repair transaction would recursively deadlock a single-flight pool.
+        let managed_generation = if llm_client.model_generation_is_managed() {
+            // Pass a clone so a third-party managed facade that declines the
+            // rebinding hook does not accidentally consume the only outer
+            // permit. In that fallback case the ordinary outer admission path
+            // remains responsible for the call.
+            match llm_client.bind_model_generation_admission(admission.clone(), preadmitted.clone())
+            {
+                Some(rebound) => {
+                    llm_client = rebound;
+                    preadmitted = None;
+                    true
+                }
+                None => {
+                    tracing::warn!(
+                        "managed LLM client did not provide a model-generation rebinding hook"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
         let cancellation = ctx.cancellation_token();
         let generation = async {
             if let Some(ref tx) = ctx.event_tx {
@@ -322,19 +348,23 @@ impl Tool for GenerateObjectTool {
                 .await
             }
         };
-        let execution = run_generation_with_admission(
-            &admission,
-            preadmitted,
-            &cancellation,
-            active_timeout,
-            generation,
-        )
-        .await;
-        let admission_metadata = generation_admission_metadata(
-            admission.concurrency(),
-            execution.queue_wait,
-            timeout_ms,
-        );
+        let execution = if managed_generation {
+            run_generation_without_admission(&cancellation, active_timeout, generation).await
+        } else {
+            run_generation_with_admission(
+                &admission,
+                preadmitted,
+                &cancellation,
+                active_timeout,
+                generation,
+            )
+            .await
+        };
+        let queue_wait = execution
+            .queue_wait
+            .saturating_add(llm_client.take_model_generation_queue_wait());
+        let admission_metadata =
+            generation_admission_metadata(admission.concurrency(), queue_wait, timeout_ms);
         let result = execution.result;
 
         match result {
@@ -505,6 +535,31 @@ where
     };
     drop(permit);
     GenerationExecution { result, queue_wait }
+}
+
+/// Run a structured transaction whose individual provider calls are admitted
+/// by a governed [`LlmClient`] facade. The outer deadline still covers the
+/// complete initial-plus-repair transaction, but no second semaphore is held
+/// around it (which would deadlock a single-flight provider while the facade
+/// is trying to start its first call).
+async fn run_generation_without_admission<T, F>(
+    cancellation: &tokio_util::sync::CancellationToken,
+    active_timeout: Duration,
+    generation: F,
+) -> GenerationExecution<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    let result = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(GenerationStop::Cancelled),
+        _ = tokio::time::sleep(active_timeout) => Err(GenerationStop::TimedOut),
+        result = generation => result.map_err(GenerationStop::Failed),
+    };
+    GenerationExecution {
+        result,
+        queue_wait: Duration::ZERO,
+    }
 }
 
 fn generation_admission_metadata(
