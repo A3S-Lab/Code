@@ -297,9 +297,13 @@ impl AuxiliaryExecutor for StructuredAuxiliaryExecutor {
             return Err(AuxiliaryRunError::Cancelled);
         }
         let request = (self.request_factory)(&context);
-        let result = crate::llm::structured::generate_blocking(self.client.as_ref(), &request)
-            .await
-            .map_err(|error| AuxiliaryRunError::Executor(error.to_string()))?;
+        let result = crate::llm::structured::generate_blocking_with_cancellation(
+            self.client.as_ref(),
+            &request,
+            context.cancellation.clone(),
+        )
+        .await
+        .map_err(|error| AuxiliaryRunError::Executor(error.to_string()))?;
         if context.cancellation.is_cancelled() {
             return Err(AuxiliaryRunError::Cancelled);
         }
