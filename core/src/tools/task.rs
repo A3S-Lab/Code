@@ -419,16 +419,28 @@ impl TaskExecutor {
         schedule_foreground: bool,
     ) -> Self {
         self.provider_admission = self.provider_quota.clone().and_then(|quota| {
-            crate::llm::ModelGenerationAdmission::new(
+            let admission = crate::llm::ModelGenerationAdmission::new(
                 self.llm_client.model_generation_concurrency(),
-            )
-            .with_scheduler_quota(
-                Arc::clone(&scheduler),
-                quota,
-                crate::task_scheduler::TaskPriority::Foreground,
-                "task-child-model-generation",
-            )
-            .ok()
+            );
+            if let Some(pool) = self.llm_client.model_generation_pool() {
+                admission
+                    .with_model_generation_pool(
+                        Arc::clone(&scheduler),
+                        pool,
+                        crate::task_scheduler::TaskPriority::Foreground,
+                        "task-child-model-generation",
+                    )
+                    .ok()
+            } else {
+                admission
+                    .with_scheduler_quota(
+                        Arc::clone(&scheduler),
+                        quota,
+                        crate::task_scheduler::TaskPriority::Foreground,
+                        "task-child-model-generation",
+                    )
+                    .ok()
+            }
         });
         self.task_scheduler = Some(scheduler);
         self.schedule_foreground = schedule_foreground;

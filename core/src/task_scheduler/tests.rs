@@ -924,3 +924,160 @@ async fn independent_quota_only_provider_progress_ignores_full_global_budget() {
     drop(global);
     scheduler.shutdown().await;
 }
+
+#[tokio::test]
+async fn quota_health_retains_bounded_counters_after_the_pool_becomes_idle() {
+    let scheduler = Arc::new(scheduler(1, 60_000));
+    let provider = TaskSchedulerQuota::for_scope("provider:health", 1).unwrap();
+    let first = scheduler
+        .acquire_quota(
+            TaskPriority::Foreground,
+            "provider-health:first",
+            &provider,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let waiting = {
+        let scheduler = Arc::clone(&scheduler);
+        let provider = provider.clone();
+        tokio::spawn(async move {
+            scheduler
+                .acquire_quota(
+                    TaskPriority::Background,
+                    "provider-health:waiting",
+                    &provider,
+                    &CancellationToken::new(),
+                )
+                .await
+        })
+    };
+    wait_for_pending(&scheduler, 1).await;
+    tokio::time::sleep(Duration::from_millis(2)).await;
+
+    let blocked = scheduler.quota_health(&provider).await.unwrap();
+    assert!(blocked.observed);
+    assert!(blocked.live);
+    assert_eq!(blocked.active, 1);
+    assert_eq!(blocked.pending, 1);
+    assert!(blocked.blocked);
+    assert_eq!(blocked.admitted, 1);
+    assert_eq!(blocked.released, 0);
+
+    drop(first);
+    let second = waiting.await.unwrap().unwrap();
+    let admitted = scheduler.quota_health(&provider).await.unwrap();
+    assert_eq!(admitted.active, 1);
+    assert_eq!(admitted.pending, 0);
+    assert_eq!(admitted.admitted, 2);
+    assert_eq!(admitted.released, 1);
+    assert_eq!(admitted.peak_active, 1);
+    assert!(admitted.total_wait_micros > 0);
+    assert!(admitted.max_wait_micros >= admitted.average_wait_micros);
+
+    drop(second);
+    let retained = scheduler.quota_health(&provider).await.unwrap();
+    assert!(retained.observed);
+    assert!(!retained.live);
+    assert_eq!(retained.active, 0);
+    assert_eq!(retained.pending, 0);
+    assert_eq!(retained.admitted, 2);
+    assert_eq!(retained.released, 2);
+    let encoded = serde_json::to_string(&retained).unwrap();
+    assert!(!encoded.contains("provider:health"));
+    assert!(!encoded.contains("provider-health:first"));
+    assert!(!encoded.contains("provider-health:waiting"));
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn quota_health_records_cancellation_and_isolation_between_provider_pools() {
+    let scheduler = Arc::new(scheduler(1, 60_000));
+    let provider_a = TaskSchedulerQuota::for_scope("provider:health-a", 1).unwrap();
+    let provider_b = TaskSchedulerQuota::for_scope("provider:health-b", 1).unwrap();
+    let holder = scheduler
+        .acquire_quota(
+            TaskPriority::Foreground,
+            "provider-health-a:holder",
+            &provider_a,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let waiting = {
+        let scheduler = Arc::clone(&scheduler);
+        let provider_a = provider_a.clone();
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move {
+            scheduler
+                .acquire_quota(
+                    TaskPriority::Urgent,
+                    "provider-health-a:cancelled",
+                    &provider_a,
+                    &cancellation,
+                )
+                .await
+        })
+    };
+    wait_for_pending(&scheduler, 1).await;
+
+    let independent = scheduler
+        .acquire_quota(
+            TaskPriority::Maintenance,
+            "provider-health-b:independent",
+            &provider_b,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    cancellation.cancel();
+    assert!(matches!(
+        waiting.await.unwrap(),
+        Err(TaskSchedulerError::Cancelled)
+    ));
+
+    let health_a = scheduler.quota_health(&provider_a).await.unwrap();
+    let health_b = scheduler.quota_health(&provider_b).await.unwrap();
+    assert_eq!(health_a.cancelled, 1);
+    assert_eq!(health_a.admitted, 1);
+    assert_eq!(health_b.cancelled, 0);
+    assert_eq!(health_b.admitted, 1);
+    assert_eq!(health_b.active, 1);
+
+    drop(independent);
+    drop(holder);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn retained_quota_health_has_a_hard_identity_bound() {
+    let scheduler = scheduler(1, 60_000);
+    let mut quotas = Vec::new();
+    for index in 0..=TASK_SCHEDULER_QUOTA_HEALTH_RETENTION {
+        let quota = TaskSchedulerQuota::for_scope(&format!("retained:{index}"), 1).unwrap();
+        let lease = scheduler
+            .acquire_quota(
+                TaskPriority::Maintenance,
+                format!("retained:{index}"),
+                &quota,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        drop(lease);
+        // Actor-order the release before the next identity is inserted.
+        let _ = scheduler.quota_health(&quota).await.unwrap();
+        quotas.push(quota);
+    }
+
+    assert!(!scheduler.quota_health(&quotas[0]).await.unwrap().observed);
+    assert!(
+        scheduler
+            .quota_health(quotas.last().unwrap())
+            .await
+            .unwrap()
+            .observed
+    );
+    scheduler.shutdown().await;
+}

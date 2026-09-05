@@ -199,15 +199,10 @@ fn finish_agent_session(
     let model_generation_admission =
         crate::llm::ModelGenerationAdmission::new(llm_client.model_generation_concurrency());
     let model_generation_admission = if let Some(pool) = llm_client.model_generation_pool() {
-        let quota = crate::task_scheduler::TaskSchedulerQuota::new(
-            pool.identity.clone(),
-            pool.max_concurrency().get(),
-        )
-        .map_err(|error| crate::error::CodeError::Config(error.to_string()))?;
         model_generation_admission
-            .with_scheduler_quota(
+            .with_model_generation_pool(
                 Arc::clone(&agent.task_scheduler),
-                quota,
+                pool,
                 opts.task_priority,
                 format!("model-generation:{}", resolved.session_id),
             )

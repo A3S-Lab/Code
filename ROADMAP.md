@@ -58,7 +58,7 @@ runtime mode. The cross-repository implementation plan is tracked in the
 | `WORKFLOW-CONTROL1` | Delivered | A host-facing dynamic-workflow control handle coordinates bounded inspection, trusted history, Flow durable cancellation/terminal transitions, identity-bound worker leases, and cross-process local event-store locking | Independent-process qualification covers busy ownership, killed-worker lease expiry/takeover, cancellation settlement, digest-only projections, and optimistic event-conflict retry; Flow remains the only workflow authority |
 | `WORKFLOW-OBS1` | Delivered | Scheduler and dynamic-workflow control diagnostics expose bounded admission, fairness, lease, and takeover counters without retaining task or workflow payloads | Independent resumed workers prove aging prevents starvation; scheduler wait/occupancy counters and durable claim-takeover counters converge while Flow history and the lease remain authoritative |
 | `WORKFLOW-QUOTA1` | Delivered | The existing scheduler actor enforces typed digest-only owner quotas for standalone Flow steps and detached Task children, propagates run identity through governed Tool contexts, and exposes a live quota projection without adding a queue or store | Mixed-owner progress, quota-blocked priority work, cancellation, identity/limit conflicts, malformed scopes, idle-state pruning, dynamic diagnostics, and detached fan-out qualification pass |
-| `MODEL-ADMISSION1` | Delivered | Provider/model capacity is represented by a typed digest-only `ModelGenerationPool`; regular, streaming, and structured calls reserve that capacity through quota-only admissions in the existing scheduler, with propagation through sessions, direct Tools, delegated children, and dynamic workflows | Cross-session and mixed-provider progress, local-plus-shared quota composition, structured repair without recursive deadlock, stream/cancellation release, endpoint-credential redaction, and the full Core regression suite pass |
+| `MODEL-ADMISSION1` | Delivered | Provider/model capacity is represented by a typed digest-only `ModelGenerationPool`; regular, streaming, and structured calls reserve that capacity through quota-only admissions in the existing scheduler, with propagation through sessions, direct Tools, delegated children, and dynamic workflows | Cross-session and mixed-provider progress, local-plus-shared quota composition, structured repair without recursive deadlock, stream/cancellation release, endpoint-credential redaction, bounded per-pool health/configuration evidence, and the full Core regression suite pass |
 
 Observation precedes mutation: `CAR-02` must provide useful read-only context
 diagnostics before `CAR-03` can reduce any Tool result. The first transform
@@ -464,9 +464,21 @@ payloads.
 Qualification covers two sessions sharing one provider pool, independent
 provider progress under a full global budget, atomic multi-quota admission,
 quota-only cancellation and release, managed stream lifetime, nested tighter
-workflow limits, and the complete 3,199-test Core library suite. This slice
+workflow limits, and the complete 3,205-test Core library suite. This slice
 does not add provider rate-limit policy, billing, or a second scheduler;
 Gateway and host policy remain the owners of those concerns.
+
+The admission-hardening follow-up adds `TaskScheduler::quota_health` as a
+read-only projection over the same actor. It records admission, release,
+cancellation, and rejection counts, peak occupancy, and bounded wait
+aggregates for one digest-only quota, retaining at most 64 idle epochs and
+pruning older identities deterministically. `ModelGenerationPoolHealthSnapshot`
+composes that shared view with each facade's local reserved/available permits
+and the immutable pool descriptor; `AgentSession::model_generation_pool_health()`
+is the host-facing Rust surface. Runtime rebinds copy the exact pool identity
+while allowing a tighter local limit, and distinct provider identities retain
+isolated health epochs. No provider label, endpoint credential, prompt, output,
+or task label is added to scheduler state.
 
 ### 3.4 Scoped capability program
 

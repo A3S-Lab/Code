@@ -1165,6 +1165,20 @@ async fn concurrent_session_direct_generations_share_provider_admission() {
         queue_waits[1] >= 80,
         "the second direct generation should wait for session capacity: {queue_waits:?}"
     );
+    let pool_health = session
+        .model_generation_pool_health()
+        .await
+        .unwrap()
+        .expect("the test client publishes a provider pool");
+    let scheduler_health = pool_health
+        .scheduler
+        .expect("session provider admission is scheduler-bound");
+    assert!(scheduler_health.observed);
+    assert!(!scheduler_health.live);
+    assert_eq!(scheduler_health.active, 0);
+    assert_eq!(scheduler_health.pending, 0);
+    assert_eq!(scheduler_health.admitted, 2);
+    assert_eq!(scheduler_health.released, 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1215,6 +1229,17 @@ async fn independent_sessions_share_scheduler_backed_provider_generation_capacit
         1,
         "sessions sharing one provider pool must not exceed its capacity"
     );
+    let pool_health = first
+        .model_generation_pool_health()
+        .await
+        .unwrap()
+        .expect("the test client publishes a provider pool");
+    let scheduler_health = pool_health
+        .scheduler
+        .expect("session provider admission is scheduler-bound");
+    assert!(scheduler_health.observed);
+    assert!(scheduler_health.admitted >= 2);
+    assert!(scheduler_health.released >= 2);
     agent.close().await;
 }
 

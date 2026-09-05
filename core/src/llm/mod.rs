@@ -19,6 +19,7 @@ pub mod zhipu;
 pub use admission::{
     ModelGenerationAdmission, ModelGenerationAdmissionError, ModelGenerationConcurrency,
     ModelGenerationPermit, ModelGenerationPool, ModelGenerationPoolError,
+    ModelGenerationPoolHealthSnapshot,
 };
 pub use anthropic::AnthropicClient;
 pub use codex_login::CodexLoginClient;

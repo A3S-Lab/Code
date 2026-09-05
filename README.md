@@ -60,7 +60,9 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   delegated children, direct tools, and dynamic workflows. Leaf generations
   reserve that capacity through the existing scheduler actor without creating a
   second queue; cancellation and dropped streams release both local and shared
-  reservations automatically.
+  reservations automatically. Rust hosts can inspect a secret-free
+  `ModelGenerationPoolHealthSnapshot`; the scheduler retains only a bounded
+  recent health window for completed pool epochs.
 - **Generation-fenced workflow replay.** New dynamic workflow runs pin the
   Code runtime build and expose a digest-only continuation identity derived
   from durable immutable facts. Changed source/input, conflicting step
@@ -198,7 +200,7 @@ telemetry remain opt-in.
 | Structured output       | Native provider formats or schema-validated prompt, partial parse, and repair fallback                                                                                                                                                  | Baseline                                                                                                                                                                  |
 | MCP and Skills          | Isolated MCP transports plus filesystem, registry, inline, and live session Skills                                                                                                                                                      | Configuration or live registration                                                                                                                                        |
 | Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation                                                                                                                    | Manual tools independently configurable; automation opt-in                                                                                                                |
-| Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, digest-only owner/provider quotas, quota-only leaf reservations, occupancy snapshots, and bounded cumulative health counters | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()` or `task_scheduler_health()`; Rust hosts can use `TaskSchedulerQuota` for a scoped limit |
+| Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, digest-only owner/provider quotas, quota-only leaf reservations, occupancy snapshots, and bounded cumulative health counters | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()` or `task_scheduler_health()`; Rust hosts can use `TaskSchedulerQuota` for a scoped limit and `model_generation_pool_health()` for a session's provider pool |
 | Safe-point run control  | Typed, idempotent `steer` and cooperative `interrupt` requests with immutable Run identity, optimistic turn guards, bounded receipts, lifecycle Hooks, and durable event evidence                                                                 | Host invokes the Session control surface; requests never create a concurrent transcript operation and never change model, permissions, sandbox, or budget                    |
 | Programmable workflows  | Bounded QuickJS `program` calls, replayable A3S Flow-backed dynamic workflows, resumable step checkpoints, and digest-bound result receipts                                                                                              | `program` baseline; dynamic runtime explicitly registered                                                                                                                 |
 | Persistence             | Atomic snapshots, run events, traces, artifacts, verification, identity-bound workflow/Flow receipts, checkpoints, and optional RL trajectories                                                                                         | Configured store and host policy                                                                                                                                          |
@@ -333,6 +335,15 @@ actual blocking or streaming generation waits in the shared priority queue for
 the provider pool. Structured-output repairs release the first permit before
 the next call, so a single-flight provider cannot deadlock itself; a dropped
 stream releases its permit through the supervised proxy task.
+
+`AgentSession::model_generation_pool_health()` composes the local gate's
+reserved/available permits with the scheduler's digest-only per-pool counters.
+The scheduler keeps at most `TASK_SCHEDULER_QUOTA_HEALTH_RETENTION` idle quota
+epochs, so post-run admission, cancellation, and wait evidence remains useful
+without becoming a metrics store or retaining provider labels, credentials, or
+request payloads. A nested workflow rebind copies the exact pool identity while
+changing only its local limit; a different provider pool receives an independent
+health epoch and cannot consume the first pool's capacity.
 
 `Agent::new` accepts an ACL path or inline ACL. Build sessions asynchronously
 so configuration, stores, queues, MCP sources, and workspace services are

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added bounded provider-pool health evidence. `TaskScheduler::quota_health`
+  retains at most 64 recent digest-only quota epochs with admission, release,
+  cancellation, rejection, peak, and wait-time counters. Sessions expose the
+  composed `ModelGenerationPoolHealthSnapshot`, including local reservations
+  and shared-provider configuration, while credentials, routing labels, and
+  request payloads remain excluded. Nested admission rebinds preserve the
+  exact pool identity and independent pools remain isolated.
 - Added provider-aware model-generation admission. Built-in provider clients
   expose a digest-only `ModelGenerationPool` identity, and regular, streaming,
   and structured calls project that capacity into the existing agent-wide
