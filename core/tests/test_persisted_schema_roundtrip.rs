@@ -700,6 +700,7 @@ fn gen_workflow_checkpoint(rng: &mut Rng) -> WorkflowCheckpoint {
             .map(|_| WorkflowStepRecord {
                 task_id: rng.string(),
                 outcome: gen_step_outcome(rng),
+                result_receipt: None,
             })
             .collect(),
         checkpoint_ms: rng.u64_small(),

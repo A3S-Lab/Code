@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added identity-bound workflow result convergence. Resumable workflow
+  checkpoints and Flow decision ledgers now persist bounded, digest-only
+  terminal receipts, fence stale workers across claim/renew/complete/release,
+  and fail closed on unreadable or mismatched cached work while retaining
+  compatibility with legacy records.
 - Added the provider-neutral evaluation substrate: versioned execution
   identities, digest-only fact journals, atomic bounded evidence snapshots,
   isolated auxiliary runs with cancellation and capability ceilings, host

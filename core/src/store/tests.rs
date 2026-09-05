@@ -1,7 +1,7 @@
 use super::*;
 use crate::hitl::ConfirmationPolicy;
 use crate::llm::{Message, TokenUsage};
-use crate::orchestration::ToolSourceAnchor;
+use crate::orchestration::{workflow_step_result_receipt, AgentStepSpec, ToolSourceAnchor};
 use crate::permissions::PermissionPolicy;
 use crate::prompts::PlanningMode;
 use crate::queue::SessionQueueConfig;
@@ -1306,10 +1306,12 @@ fn sample_workflow_checkpoint(wf_id: &str) -> crate::orchestration::WorkflowChec
             WorkflowStepRecord {
                 task_id: "a".into(),
                 outcome: outcome("a", None),
+                result_receipt: None,
             },
             WorkflowStepRecord {
                 task_id: "b".into(),
                 outcome: outcome("b", Some(serde_json::json!({ "k": 1 }))),
+                result_receipt: None,
             },
         ],
         checkpoint_ms: 1_700_000_000_000,
@@ -1339,6 +1341,48 @@ async fn test_file_store_workflow_checkpoint_roundtrip() {
         .is_none());
     // Idempotent on a missing file.
     store.delete_workflow_checkpoint("wf-1").await.unwrap();
+}
+
+#[tokio::test]
+async fn test_file_store_workflow_receipt_survives_restart() {
+    let dir = tempdir().unwrap();
+    let spec = AgentStepSpec::new("receipt-step", "explore", "inspect", "bounded prompt");
+    let outcome = crate::orchestration::StepOutcome {
+        task_id: "receipt-step".to_string(),
+        session_id: "task-run-receipt-step".to_string(),
+        agent: "explore".to_string(),
+        output: "bounded output".to_string(),
+        success: true,
+        structured: None,
+        source_anchors: Vec::new(),
+    };
+    let receipt = workflow_step_result_receipt("wf-receipt", &spec, &outcome, None).unwrap();
+    let mut completed = std::collections::HashMap::new();
+    completed.insert(outcome.task_id.clone(), outcome.clone());
+    let mut receipts = std::collections::HashMap::new();
+    receipts.insert(outcome.task_id.clone(), receipt.clone());
+    let checkpoint = crate::orchestration::WorkflowCheckpoint::from_completed_with_receipts(
+        "wf-receipt",
+        &completed,
+        &receipts,
+        1,
+    );
+
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    store
+        .save_workflow_checkpoint("wf-receipt", &checkpoint)
+        .await
+        .unwrap();
+    drop(store);
+
+    let reopened = FileSessionStore::new(dir.path()).await.unwrap();
+    let loaded = reopened
+        .load_workflow_checkpoint("wf-receipt")
+        .await
+        .unwrap()
+        .expect("receipt checkpoint survives reopen");
+    loaded.ensure_loadable().unwrap();
+    assert_eq!(loaded.steps[0].result_receipt, Some(receipt));
 }
 
 #[tokio::test]

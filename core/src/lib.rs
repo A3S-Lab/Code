@@ -300,9 +300,10 @@ pub use moli_runtime::{
 };
 pub use orchestration::{
     execute_loop, execute_pipeline, execute_steps_parallel, execute_steps_parallel_resumable,
-    AgentExecutor, AgentStepSpec, BudgetSnapshot, LoopDecision, PipelineStage, StepOutcome,
-    Workflow, WorkflowBudget, WorkflowBuilder, WorkflowCheckpoint, WorkflowEvent,
-    WorkflowStepRecord, WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+    workflow_step_execution_identity, workflow_step_result_receipt, AgentExecutor, AgentStepSpec,
+    BudgetSnapshot, LoopDecision, PipelineStage, StepOutcome, Workflow, WorkflowBudget,
+    WorkflowBuilder, WorkflowCheckpoint, WorkflowEvent, WorkflowStepRecord,
+    WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
 };
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
 pub use research::{

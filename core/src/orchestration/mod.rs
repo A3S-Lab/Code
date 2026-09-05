@@ -27,7 +27,10 @@ mod executor;
 mod workflow;
 mod workflow_budget;
 
-pub use checkpoint::{WorkflowCheckpoint, WorkflowStepRecord, WORKFLOW_CHECKPOINT_SCHEMA_VERSION};
+pub use checkpoint::{
+    workflow_step_execution_identity, workflow_step_result_receipt, WorkflowCheckpoint,
+    WorkflowStepRecord, WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+};
 pub use combinators::{
     execute_loop, execute_pipeline, execute_steps_parallel_resumable, LoopDecision, PipelineStage,
 };

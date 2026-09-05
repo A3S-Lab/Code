@@ -53,6 +53,7 @@ runtime mode. The cross-repository implementation plan is tracked in the
 | `CAR-03` | In progress | Deterministic Tool-result transforms, versioned source/result evidence, exact algorithm/policy digest bindings, replay-time policy validation, and host-injected immutable original references are delivered; Cloud-managed profile admission and cross-repository conformance remain | Cloud pins policy; Code does not invent tenant policy or mutate past events |
 | `CAR-04` | In progress | Canonical `SessionCheckpointExportV1` payloads bind `SessionSnapshotV1`, optional between-tool-round logical resume evidence, and exact component/aggregate identities; a host-injected `SessionCheckpointExportSink` captures both components from one acknowledged live Run boundary after preceding events and capability-owned effects settle; every new logical checkpoint binds the source Run's exact Code catalog, authority ceiling, and optional Use cursor; recovery pins that complete historical generation before target-Run admission, and the Code Harness restores both components plus an optional exact host capability batch as one visible admission without split store prewrites; common Harness adoption and real provider/Box certification remain | Cloud `A1.6` owns checkpoint identity, immutable-object authorization, external revision fencing, retention, approval, and fork lineage |
 | `CAR-05` | Planned | Pass restart, exact replay, cancellation, hostile Tool output, bounded-content, Secret-redaction, checkpoint, and cleanup conformance through one Cloud-managed Box workload | No direct Code-to-node control path |
+| `WORKFLOW-RESULT1` | Delivered | Resumable workflow checkpoints and Flow decision claims share canonical execution identities and bounded digest-only result receipts; stale or unreadable state fails closed while legacy records remain loadable | Core checkpoint, Flow ledger, restart, takeover, and identity-fencing tests pass; host policy and business retention remain outside Code |
 
 Observation precedes mutation: `CAR-02` must provide useful read-only context
 diagnostics before `CAR-03` can reduce any Tool result. The first transform
@@ -257,6 +258,19 @@ The delivered contract slice is documented in
 small: it does not claim a complete project aggregate, scientific knowledge
 graph, package registry, or publication service. Those capabilities belong to
 the host, A3S Use, and Desktop phases in the cross-repository roadmap.
+
+### 3.3.1 Workflow result convergence
+
+Resumable orchestration now treats a workflow checkpoint as a side-effect
+boundary. Successful steps persist a bounded `ExecutionResultReceiptV1` whose
+identity includes the workflow, task specification, prompt, parent session, and
+output schema; changing a cached step or corrupting its receipt prevents a
+resume from re-running ambiguous work. Checkpoints without the optional receipt
+field remain readable for migration compatibility. Flow decision dispatch uses
+the same identity-aware claim, renewal, completion, and release boundary and
+stores a digest-only receipt for an accepted decision. The result receipt is a
+mechanism for replay and fencing; source evidence, review policy, retention, and
+publication decisions remain host responsibilities.
 
 ### 3.4 Scoped capability program
 
