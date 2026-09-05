@@ -117,6 +117,18 @@ func (session *Session) TaskSchedulerStats(ctx context.Context) (TaskSchedulerSt
 	return result, err
 }
 
+// TaskSchedulerHealth returns scheduler occupancy plus bounded cumulative
+// admission and fairness counters shared by this session and its siblings.
+func (session *Session) TaskSchedulerHealth(ctx context.Context) (TaskSchedulerHealthSnapshot, error) {
+	const op = "session_task_scheduler_health"
+	if err := validateSession(session, ctx, op); err != nil {
+		return TaskSchedulerHealthSnapshot{}, err
+	}
+	var result TaskSchedulerHealthSnapshot
+	err := session.runtime.Request(ctx, op, session.params(), &result)
+	return result, err
+}
+
 // Send executes one prompt and waits for the complete response. A nil history
 // uses and updates the session's internal conversation history.
 func (session *Session) Send(

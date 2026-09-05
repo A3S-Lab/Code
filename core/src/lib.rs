@@ -228,9 +228,10 @@ pub use dynamic_workflow::{
     dynamic_workflow_execution_plan, dynamic_workflow_step_identity, dynamic_workflow_store_path,
     register_dynamic_workflow, register_dynamic_workflow_with_event_store,
     register_dynamic_workflow_with_scheduler, CrossProcessFlowEventStore,
-    DynamicWorkflowAdmissionStats, DynamicWorkflowControl, DynamicWorkflowControlSnapshot,
-    DynamicWorkflowRuntime, DynamicWorkflowScriptLimits, DynamicWorkflowTool,
-    DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID, DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,
+    DynamicWorkflowAdmissionStats, DynamicWorkflowControl, DynamicWorkflowControlDiagnostics,
+    DynamicWorkflowControlSnapshot, DynamicWorkflowHealthSnapshot, DynamicWorkflowRuntime,
+    DynamicWorkflowScriptLimits, DynamicWorkflowTool, DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID,
+    DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,
 };
 pub use embedding::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingError, EmbeddingExecution,
@@ -360,7 +361,7 @@ pub use subagent_task_tracker::{
 };
 pub use task_scheduler::{
     TaskLease, TaskPriority, TaskPriorityCounts, TaskScheduler, TaskSchedulerConfig,
-    TaskSchedulerError, TaskSchedulerStats,
+    TaskSchedulerError, TaskSchedulerHealthSnapshot, TaskSchedulerStats,
 };
 pub use tools::{
     ImmutableContentAdapter, ImmutableContentAdapterBindingV1, ImmutableContentAdapterSession,

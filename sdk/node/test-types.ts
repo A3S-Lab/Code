@@ -162,6 +162,7 @@ void _session.agentTemplateId
 void _session.correlationId
 void _session.hasMemory
 void _session.taskSchedulerStats()
+void _session.taskSchedulerHealth()
 void _session.memoryMaintenanceHealth()
 void _session.workspaceRetrievalStatus()
 void _session.semanticSearch({ query: 'session cleanup', limit: 5 })
@@ -183,6 +184,7 @@ void _embeddingRequest.inputs[0]?.text
 void _embeddingResponse.vectors[0]?.values
 void _embeddingProvider
 void _agent.taskSchedulerStats()
+void _agent.taskSchedulerHealth()
 void _schedulerStats.activeByPriority.interactive
 void _memoryMaintenanceHealth.jobs[0]?.lastAffectedItems
 void _agent.session('repo', {

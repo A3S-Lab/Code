@@ -22,9 +22,17 @@ func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
 				if params["agent_id"] != "agent-1" {
 					t.Fatalf("unexpected agent params: %#v", params)
 				}
+			case "agent_task_scheduler_health":
+				if params["agent_id"] != "agent-1" {
+					t.Fatalf("unexpected agent health params: %#v", params)
+				}
 			case "session_task_scheduler_stats":
 				if params["session_handle"] != "session-1" {
 					t.Fatalf("unexpected session params: %#v", params)
+				}
+			case "session_task_scheduler_health":
+				if params["session_handle"] != "session-1" {
+					t.Fatalf("unexpected session health params: %#v", params)
 				}
 			default:
 				t.Fatalf("unexpected operation %q", operation)
@@ -48,10 +56,26 @@ func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	agentHealth, err := agent.TaskSchedulerHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionHealth, err := session.TaskSchedulerHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if agentStats.MaxActive != 4 || sessionStats.PendingByPriority.Background != 1 {
 		t.Fatalf("unexpected scheduler stats: agent=%#v session=%#v", agentStats, sessionStats)
 	}
-	want := []string{"agent_task_scheduler_stats", "session_task_scheduler_stats"}
+	if agentHealth.MaxActive != 4 || sessionHealth.PendingByPriority.Background != 1 {
+		t.Fatalf("unexpected scheduler health: agent=%#v session=%#v", agentHealth, sessionHealth)
+	}
+	want := []string{
+		"agent_task_scheduler_stats",
+		"session_task_scheduler_stats",
+		"agent_task_scheduler_health",
+		"session_task_scheduler_health",
+	}
 	if got := runtime.operations(); !slices.Equal(got, want) {
 		t.Fatalf("operations = %v, want %v", got, want)
 	}

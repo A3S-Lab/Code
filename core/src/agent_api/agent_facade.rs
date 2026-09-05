@@ -346,6 +346,17 @@ impl Agent {
         self.task_scheduler.stats().await
     }
 
+    /// Return occupancy and bounded cumulative admission/fairness diagnostics
+    /// for the scheduler shared by every session created from this agent.
+    pub async fn task_scheduler_health(
+        &self,
+    ) -> std::result::Result<
+        crate::task_scheduler::TaskSchedulerHealthSnapshot,
+        crate::task_scheduler::TaskSchedulerError,
+    > {
+        self.task_scheduler.health().await
+    }
+
     /// Return whether [`close`](Self::close) has been called on this agent.
     pub fn is_closed(&self) -> bool {
         self.closed.load(std::sync::atomic::Ordering::Acquire)

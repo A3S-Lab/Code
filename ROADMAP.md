@@ -56,6 +56,7 @@ runtime mode. The cross-repository implementation plan is tracked in the
 | `WORKFLOW-RESULT1` | Delivered | Resumable workflow checkpoints and Flow decision claims share canonical execution identities and bounded digest-only result receipts; stale or unreadable state fails closed while legacy records remain loadable | Core checkpoint, Flow ledger, restart, takeover, and identity-fencing tests pass; host policy and business retention remain outside Code |
 | `WORKFLOW-SCHED1` | Delivered | Dynamic Flow history projects into the canonical `ExecutionPlan`; step admission shares cancellation and bounded per-workflow quotas, while standalone scheduler leases carry digest-only step identities and delegated tasks use the same identity boundary | Plan identity is stable across status changes; resumed projections retain prior steps; local and global admission tests cover priority, cancellation, serialization, and the max-active=1 nested-deadlock boundary |
 | `WORKFLOW-CONTROL1` | Delivered | A host-facing dynamic-workflow control handle coordinates bounded inspection, trusted history, Flow durable cancellation/terminal transitions, identity-bound worker leases, and cross-process local event-store locking | Independent-process qualification covers busy ownership, killed-worker lease expiry/takeover, cancellation settlement, digest-only projections, and optimistic event-conflict retry; Flow remains the only workflow authority |
+| `WORKFLOW-OBS1` | Delivered | Scheduler and dynamic-workflow control diagnostics expose bounded admission, fairness, lease, and takeover counters without retaining task or workflow payloads | Independent resumed workers prove aging prevents starvation; scheduler wait/occupancy counters and durable claim-takeover counters converge while Flow history and the lease remain authoritative |
 
 Observation precedes mutation: `CAR-02` must provide useful read-only context
 diagnostics before `CAR-03` can reduce any Tool result. The first transform
@@ -372,6 +373,31 @@ existing bounded retries are exercised. Remote or database-backed hosts can
 inject one typed `FlowEventStore` through `with_flow_event_store`; the same
 store is then shared by model-visible execution and the control handle, so a
 non-local host does not silently fall back to a fresh in-memory journal.
+
+### 3.3.6 Scheduler fairness and bounded control observability
+
+The agent-wide admission scheduler now has a separate health projection from
+its established occupancy API. The projection is actor-owned and bounded: it
+records admissions, releases, queued cancellations/rejections, aging
+promotions, peak occupancy, and aggregate wait time, while retaining no labels,
+execution identities, or queue payloads. Aging updates the effective queue key
+only when a request crosses a priority level, so repeated diagnostics cannot
+inflate promotion counts or alter FIFO order within an aged class.
+
+`DynamicWorkflowTool` shares a process-local, digest-free metrics block with
+its control handles. It counts claim attempts, live-claim contention,
+identity conflicts, lease renewals/loss, terminal settlement, and takeover
+attempts; the durable ledger still owns the per-run attempt number and fencing
+decision. `DynamicWorkflowControl::diagnostics` composes these counters with
+the optional scheduler health snapshot as a read-only host view. It never
+creates a scheduler, event journal, or workflow state store of its own.
+
+The qualification matrix includes a resumed background workflow competing with
+a stream of newer interactive admissions. After the configured aging bound,
+the resumed step is admitted before those newer requests, and all counters
+settle with zero in-flight work. The cross-language Agent/Session surfaces
+expose the scheduler health projection through the existing typed bridge
+operations; legacy occupancy calls retain their original wire shape.
 
 ### 3.4 Scoped capability program
 

@@ -153,6 +153,16 @@ impl PyAgent {
         task_scheduler_stats_to_py(py, &stats)
     }
 
+    /// Return occupancy and bounded cumulative admission/fairness diagnostics
+    /// for the priority scheduler shared by this Agent's sessions.
+    fn task_scheduler_health(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let agent = self.inner.clone();
+        let health = py
+            .allow_threads(move || get_runtime().block_on(agent.task_scheduler_health()))
+            .map_err(py_task_scheduler_error)?;
+        task_scheduler_health_to_py(py, &health)
+    }
+
     /// Bind to a workspace directory, returning a Session.
     ///
     /// Args:

@@ -94,6 +94,7 @@ use a3s_code_core::{
     InterruptRequest as RustInterruptRequest, SteerRequest as RustSteerRequest,
     PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions,
     TaskPriorityCounts as RustTaskPriorityCounts, TaskSchedulerStats as RustTaskSchedulerStats,
+    TaskSchedulerHealthSnapshot as RustTaskSchedulerHealthSnapshot,
     SdkCapability as RustSdkCapability, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
 };
 use napi::Either;
@@ -232,7 +233,55 @@ impl From<RustTaskSchedulerStats> for TaskSchedulerStats {
     }
 }
 
+/// Bounded cumulative admission and fairness diagnostics for an Agent's
+/// shared priority scheduler.
+#[napi(object)]
+#[derive(Clone)]
+pub struct TaskSchedulerHealthSnapshot {
+    pub max_active: i64,
+    pub active: i64,
+    pub pending: i64,
+    pub active_by_priority: TaskPriorityCounts,
+    pub pending_by_priority: TaskPriorityCounts,
+    pub admitted: i64,
+    pub released: i64,
+    pub cancelled: i64,
+    pub rejected: i64,
+    pub aging_promotions: i64,
+    pub peak_active: i64,
+    pub total_wait_micros: i64,
+    pub average_wait_micros: i64,
+    pub max_wait_micros: i64,
+    pub closed: bool,
+}
+
+impl From<RustTaskSchedulerHealthSnapshot> for TaskSchedulerHealthSnapshot {
+    fn from(value: RustTaskSchedulerHealthSnapshot) -> Self {
+        Self {
+            max_active: scheduler_count(value.max_active),
+            active: scheduler_count(value.active),
+            pending: scheduler_count(value.pending),
+            active_by_priority: value.active_by_priority.into(),
+            pending_by_priority: value.pending_by_priority.into(),
+            admitted: scheduler_counter(value.admitted),
+            released: scheduler_counter(value.released),
+            cancelled: scheduler_counter(value.cancelled),
+            rejected: scheduler_counter(value.rejected),
+            aging_promotions: scheduler_counter(value.aging_promotions),
+            peak_active: scheduler_count(value.peak_active),
+            total_wait_micros: scheduler_counter(value.total_wait_micros),
+            average_wait_micros: scheduler_counter(value.average_wait_micros),
+            max_wait_micros: scheduler_counter(value.max_wait_micros),
+            closed: value.closed,
+        }
+    }
+}
+
 fn scheduler_count(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn scheduler_counter(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 

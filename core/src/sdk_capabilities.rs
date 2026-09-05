@@ -125,8 +125,8 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
     CapabilitySpec {
         id: "priority_scheduling",
         category: "orchestration",
-        description: "Share bounded priority/FIFO admission and observe scheduler occupancy.",
-        operations: &["session.task_scheduler_stats", "session.queue_stats", "session.set_lane_handler"],
+        description: "Share bounded priority/FIFO admission and observe scheduler occupancy, fairness, and lifecycle counters.",
+        operations: &["session.task_scheduler_stats", "session.task_scheduler_health", "session.queue_stats", "session.set_lane_handler"],
         host_owned: false,
     },
     CapabilitySpec {

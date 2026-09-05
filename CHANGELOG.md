@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added bounded scheduler and dynamic-workflow control observability. The
+  agent-wide scheduler now reports cumulative admissions, releases,
+  cancellations, aging promotions, peak occupancy, and wait-time aggregates
+  without retaining labels or payloads. Dynamic workflow controls expose
+  process-local claim/takeover counters and a read-only diagnostics view that
+  composes them with scheduler health; Flow history and the worker lease remain
+  the only workflow authorities. Focused qualification covers a resumed
+  workflow under sustained interactive arrivals and verifies the aged work is
+  admitted without starvation.
 - Added the host-facing `DynamicWorkflowControl` adapter. A bound handle can
   inspect a bounded redacted snapshot, read trusted history, resume a run, or
   request/force durable cancellation while using the same identity-bound

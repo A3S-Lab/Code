@@ -77,6 +77,16 @@ impl PySession {
         task_scheduler_stats_to_py(py, &stats)
     }
 
+    /// Return occupancy and bounded cumulative admission/fairness diagnostics
+    /// for the scheduler shared by this session and its siblings.
+    fn task_scheduler_health(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let health = py
+            .allow_threads(move || get_runtime().block_on(session.task_scheduler_health()))
+            .map_err(py_task_scheduler_error)?;
+        task_scheduler_health_to_py(py, &health)
+    }
+
     /// Observe periodic pruning and host-owned consolidation for this session.
     fn memory_maintenance_health(&self, py: Python<'_>) -> PyResult<PyObject> {
         memory_maintenance_health_to_py(py, &self.inner.memory_maintenance_health())

@@ -2160,6 +2160,15 @@ async function run(ctx, inputs) {
         cancelled.worker_lease,
         FlowDecisionClaimState::Completed { .. }
     ));
+    let health = control.health();
+    assert_eq!(health.claim_attempts, 2);
+    assert_eq!(health.claims, 2);
+    assert_eq!(health.takeovers, 1);
+    assert_eq!(health.already_completed, 0);
+    assert_eq!(health.busy, 0);
+    assert_eq!(health.releases, 1);
+    assert_eq!(health.completions, 1);
+    assert_eq!(health.in_flight, 0);
 
     let inspected = control.inspect().await.unwrap();
     assert_eq!(inspected, cancelled);
@@ -2171,6 +2180,49 @@ async function run(ctx, inputs) {
         .iter()
         .any(|event| matches!(event.event, FlowEvent::RunCancelled { .. })));
     let _ = input;
+}
+
+#[tokio::test]
+async fn dynamic_workflow_control_diagnostics_combine_local_claims_and_scheduler() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let scheduler = Arc::new(
+        TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 1,
+            aging_interval_ms: 10,
+        })
+        .unwrap(),
+    );
+    let ledger: Arc<dyn FlowDecisionLedger> = Arc::new(MemoryFlowDecisionLedger::new());
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") return { type: "complete", output: { ok: true } };
+  return { type: "fail", error: "unexpected invocation" };
+}
+"#;
+    let control = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_task_scheduler(Arc::clone(&scheduler), false)
+        .with_continuation_lease_ledger(Arc::clone(&ledger), 1_000)
+        .control(
+            "control-diagnostics-run",
+            source,
+            json!({}),
+            &executor.registry().context(),
+        )
+        .unwrap();
+
+    let completed = control.drive().await.unwrap();
+    assert_eq!(completed.status, WorkflowRunStatus::Completed);
+    let diagnostics = control.diagnostics().await.unwrap();
+    assert_eq!(diagnostics.workflow.claim_attempts, 1);
+    assert_eq!(diagnostics.workflow.claims, 1);
+    assert_eq!(diagnostics.workflow.completions, 1);
+    assert_eq!(diagnostics.workflow.in_flight, 0);
+    let scheduler_health = diagnostics.scheduler.expect("scheduler is configured");
+    assert_eq!(scheduler_health.max_active, 1);
+    assert_eq!(scheduler_health.active, 0);
+    assert_eq!(scheduler_health.pending, 0);
+    scheduler.shutdown().await;
 }
 
 #[tokio::test]
