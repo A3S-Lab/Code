@@ -101,6 +101,53 @@ struct SessionBindingClient {
     observed_sessions: Arc<Mutex<Vec<String>>>,
 }
 
+#[derive(Clone)]
+struct TimeoutAwareClient {
+    observed: Arc<Mutex<Vec<std::time::Duration>>>,
+}
+
+#[async_trait]
+impl LlmClient for TimeoutAwareClient {
+    fn with_active_generation_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Option<Arc<dyn LlmClient>> {
+        self.observed.lock().unwrap().push(timeout);
+        Some(Arc::new(self.clone()))
+    }
+
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        Ok(LlmResponse {
+            message: Message::assistant("ok"),
+            usage: TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            stop_reason: Some("stop".to_string()),
+            token_logprobs: Vec::new(),
+            meta: None,
+        })
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming is not used by this test")
+    }
+}
+
 #[async_trait]
 impl LlmClient for SessionBindingClient {
     fn fork_for_session(&self, session_id: &str) -> Option<Arc<dyn LlmClient>> {
@@ -367,6 +414,37 @@ async fn scoped_client_forks_provider_for_logical_session() {
     assert_eq!(
         *observed_sessions.lock().unwrap(),
         vec!["child-session".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn scoped_client_applies_configured_generation_timeout() {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let agent = AgentLoop::new(
+        Arc::new(TimeoutAwareClient {
+            observed: Arc::clone(&observed),
+        }),
+        Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string())),
+        crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp")),
+        crate::agent::AgentConfig {
+            llm_api_timeout_ms: Some(37),
+            ..crate::agent::AgentConfig::default()
+        },
+    );
+
+    let scoped = agent.scoped_llm_client_for_parts(
+        Some("timeout-session"),
+        &None,
+        &CancellationToken::new(),
+    );
+    scoped
+        .complete(&[Message::user("hello")], None, &[])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *observed.lock().unwrap(),
+        vec![std::time::Duration::from_millis(37)]
     );
 }
 

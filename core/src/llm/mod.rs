@@ -5,6 +5,7 @@
 
 mod admission;
 pub mod anthropic;
+pub mod codex_login;
 mod error;
 pub mod factory;
 pub mod http;
@@ -20,6 +21,7 @@ pub use admission::{
     ModelGenerationPermit,
 };
 pub use anthropic::AnthropicClient;
+pub use codex_login::CodexLoginClient;
 pub(crate) use error::non_retryable_llm_error_message;
 pub use error::NonRetryableLlmError;
 pub use factory::{create_client_with_config, LlmConfig};

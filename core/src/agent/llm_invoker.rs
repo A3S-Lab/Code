@@ -694,6 +694,13 @@ impl AgentLoop {
             .llm_client
             .fork_for_session(invocation.session_id())
             .unwrap_or_else(|| Arc::clone(&self.llm_client));
+        let provider_client = self
+            .config
+            .llm_api_timeout_ms
+            .and_then(|timeout_ms| {
+                provider_client.with_active_generation_timeout(Duration::from_millis(timeout_ms))
+            })
+            .unwrap_or(provider_client);
         Arc::new(LlmInvoker::new(provider_client, invocation.clone()))
     }
 
@@ -702,6 +709,13 @@ impl AgentLoop {
             .llm_client
             .fork_for_session(invocation.session_id())
             .unwrap_or_else(|| Arc::clone(&self.llm_client));
+        let provider_client = self
+            .config
+            .llm_api_timeout_ms
+            .and_then(|timeout_ms| {
+                provider_client.with_active_generation_timeout(Duration::from_millis(timeout_ms))
+            })
+            .unwrap_or(provider_client);
         Arc::new(LlmInvoker::profiled(provider_client, invocation.clone()))
     }
 
