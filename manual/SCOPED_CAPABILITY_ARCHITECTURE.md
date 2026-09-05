@@ -4,8 +4,9 @@ Status: accepted foundation; A3S Use bridge, immutable set, scoped lifecycle, at
 
 ## Decision
 
-A3S Code will adopt scoped capability lifecycle semantics inspired by
-[Cordis](https://github.com/cordiverse/cordis) without becoming a general
+A3S Code defines a native scoped capability lifecycle. It is informed by
+first-principles review of existing Harness systems, but it is not a Cordis or
+DeepSeek Harness compatibility layer and does not become a general
 dependency-injection or package-management framework.
 
 A3S Use remains the only owner of cognitive-package discovery, verification,
@@ -15,7 +16,7 @@ Use capability snapshot and projects it into product-owned Session, Run, Turn,
 and Subtask scopes. A3S Runtime, Gateway, Flow, and Knowledge continue to own
 their native execution and data lifecycles.
 
-The design adopts Cordis's useful lifecycle properties:
+The native design provides four explicit lifecycle properties:
 
 - context-local capability visibility;
 - dependency-aware activation;
