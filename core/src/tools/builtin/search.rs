@@ -15,7 +15,6 @@ enum SearchMode {
     Grep,
     Glob,
     Bm25,
-    Indexed,
     Semantic,
     Hybrid,
 }
@@ -26,13 +25,11 @@ impl SearchMode {
             Some("grep") => Ok(Self::Grep),
             Some("glob") => Ok(Self::Glob),
             Some("bm25") => Ok(Self::Bm25),
-            Some("indexed") => Ok(Self::Indexed),
             Some("semantic") => Ok(Self::Semantic),
             Some("hybrid") => Ok(Self::Hybrid),
-            Some(_) => Err(
-                "mode must be 'grep', 'glob', 'bm25', 'indexed', 'semantic', or 'hybrid'"
-                    .to_string(),
-            ),
+            Some(_) => {
+                Err("mode must be 'grep', 'glob', 'bm25', 'semantic', or 'hybrid'".to_string())
+            }
             None => Err("mode parameter is required".to_string()),
         }
     }
@@ -42,7 +39,6 @@ impl SearchMode {
             Self::Grep => "grep",
             Self::Glob => "glob",
             Self::Bm25 => "bm25",
-            Self::Indexed => "indexed",
             Self::Semantic => "semantic",
             Self::Hybrid => "hybrid",
         }
@@ -58,7 +54,7 @@ pub struct SearchTool {
     backend_search_enabled: bool,
     read_enabled: bool,
     semantic_enabled: bool,
-    indexed_enabled: bool,
+    persistent_backend_enabled: bool,
 }
 
 impl SearchTool {
@@ -67,7 +63,7 @@ impl SearchTool {
             backend_search_enabled: true,
             read_enabled,
             semantic_enabled: false,
-            indexed_enabled: false,
+            persistent_backend_enabled: false,
         }
     }
 
@@ -81,9 +77,21 @@ impl SearchTool {
         self
     }
 
-    pub fn with_indexed(mut self, enabled: bool) -> Self {
-        self.indexed_enabled = enabled;
+    /// Prefer the workspace's durable lexical projection without exposing an
+    /// implementation-specific mode in the model-facing schema.
+    pub fn with_persistent_backend(mut self, enabled: bool) -> Self {
+        self.persistent_backend_enabled = enabled;
         self
+    }
+
+    /// Compatibility alias for hosts that used the pre-transparent indexed
+    /// search switch. The model-facing schema still exposes only `bm25`; the
+    /// durable projection is an execution detail and remains selected by the
+    /// framework when it is available.
+    #[deprecated(note = "use with_persistent_backend instead")]
+    #[allow(dead_code)]
+    pub fn with_indexed(self, enabled: bool) -> Self {
+        self.with_persistent_backend(enabled)
     }
 
     fn modes(&self) -> Vec<&'static str> {
@@ -93,9 +101,6 @@ impl SearchTool {
         }
         if self.backend_search_enabled && self.read_enabled {
             modes.push("bm25");
-        }
-        if self.indexed_enabled {
-            modes.push("indexed");
         }
         if self.semantic_enabled {
             modes.extend(["semantic", "hybrid"]);
@@ -120,12 +125,6 @@ impl SearchTool {
                     .to_string(),
             );
         }
-        if mode == SearchMode::Indexed && !self.indexed_enabled {
-            return Err(
-                "mode='indexed' is unavailable because this workspace did not enable a persistent index"
-                    .to_string(),
-            );
-        }
         if matches!(mode, SearchMode::Semantic | SearchMode::Hybrid) && !self.semantic_enabled {
             return Err(format!(
                 "mode='{}' is unavailable because this session did not enable semantic retrieval",
@@ -142,10 +141,7 @@ impl SearchTool {
         adapted.insert(
             match mode {
                 SearchMode::Grep | SearchMode::Glob => "pattern",
-                SearchMode::Bm25
-                | SearchMode::Indexed
-                | SearchMode::Semantic
-                | SearchMode::Hybrid => "query",
+                SearchMode::Bm25 | SearchMode::Semantic | SearchMode::Hybrid => "query",
             }
             .to_string(),
             serde_json::Value::String(query.to_string()),
@@ -183,15 +179,17 @@ impl SearchTool {
                 copy_if_present(args, &mut adapted, "include", "glob");
                 copy_if_present(args, &mut adapted, "context", "context");
                 copy_if_present(args, &mut adapted, "limit", "limit");
-            }
-            SearchMode::Indexed => {
-                copy_if_present(args, &mut adapted, "include", "glob");
-                copy_if_present(args, &mut adapted, "context", "context");
-                copy_if_present(args, &mut adapted, "limit", "limit");
-                adapted.insert(
-                    "_persistent_index".to_owned(),
-                    serde_json::Value::Bool(true),
-                );
+                if self.persistent_backend_enabled {
+                    // Preserve the existing public `bm25` mode while routing
+                    // local manifest workspaces to their durable zvec
+                    // projection automatically. Callers do not need to know
+                    // whether the native cache is ready; Bm25Tool falls back
+                    // to the catalog path until it is available.
+                    adapted.insert(
+                        "_persistent_index".to_owned(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
             }
             SearchMode::Semantic | SearchMode::Hybrid => {
                 copy_if_present(args, &mut adapted, "include", "include");
@@ -210,7 +208,7 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the workspace with regex, glob, BM25 lexical ranking, a persistent zvec index, or session-scoped semantic similarity. Select the behavior with mode."
+        "Search the workspace with one model-selected mode. Use grep for exact text or regular expressions, glob for path discovery, bm25 for ranked lexical matches, semantic for concept similarity, and hybrid when both exact and conceptual evidence matter."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -232,14 +230,6 @@ impl Tool for SearchTool {
         if self.backend_search_enabled && self.read_enabled {
             examples.push(serde_json::json!({
                 "mode": "bm25",
-                "query": "workspace permission policy",
-                "path": "core/src",
-                "limit": 8
-            }));
-        }
-        if self.indexed_enabled {
-            examples.push(serde_json::json!({
-                "mode": "indexed",
                 "query": "workspace permission policy",
                 "path": "core/src",
                 "limit": 8
@@ -271,12 +261,12 @@ impl Tool for SearchTool {
                 "mode": {
                     "type": "string",
                     "enum": modes,
-                    "description": "Required. grep searches file contents with a regular expression; glob finds paths; bm25 ranks chunks lexically; indexed searches the persistent workspace FTS index; semantic ranks by meaning; hybrid fuses exact, lexical, symbol, and semantic evidence."
+                    "description": "Required. Choose based on the task: grep for an exact string or regex, glob for file names/paths, bm25 for known terms or multi-term relevance, semantic for a concept or paraphrase, and hybrid when the answer needs both exact identifiers and conceptual evidence. A bm25 request may use the durable local index automatically."
                 },
                 "query": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Required. A regular expression in grep mode, a glob pattern in glob mode, or a plain-text relevance query in bm25/indexed/semantic/hybrid mode."
+                    "description": "Required. A regular expression in grep mode, a glob pattern in glob mode, or a plain-text relevance query in bm25/semantic/hybrid mode."
                 },
                 "path": {
                     "type": "string",
@@ -332,9 +322,9 @@ impl Tool for SearchTool {
             {
                 ToolCapabilities::read_only_paginated(16)
             }
-            Ok(
-                SearchMode::Bm25 | SearchMode::Indexed | SearchMode::Semantic | SearchMode::Hybrid,
-            ) => ToolCapabilities::parallel_safe_read(2),
+            Ok(SearchMode::Bm25 | SearchMode::Semantic | SearchMode::Hybrid) => {
+                ToolCapabilities::parallel_safe_read(2)
+            }
             Ok(SearchMode::Grep) | Err(_) => ToolCapabilities::parallel_safe_read(16),
         }
     }
@@ -352,7 +342,6 @@ impl Tool for SearchTool {
             SearchMode::Grep => GrepTool.execute(&adapted, ctx).await?,
             SearchMode::Glob => GlobTool.execute(&adapted, ctx).await?,
             SearchMode::Bm25 => Bm25Tool.execute(&adapted, ctx).await?,
-            SearchMode::Indexed => Bm25Tool.execute(&adapted, ctx).await?,
             SearchMode::Semantic => SemanticSearchTool.execute(&adapted, ctx).await?,
             SearchMode::Hybrid => HybridSearchTool.execute(&adapted, ctx).await?,
         };
@@ -374,6 +363,11 @@ fn copy_if_present(
 fn with_search_mode(mut output: ToolOutput, mode: SearchMode) -> ToolOutput {
     match output.metadata.as_mut() {
         Some(serde_json::Value::Object(metadata)) => {
+            if let Some(execution_mode) = metadata.get("mode").cloned() {
+                metadata
+                    .entry("execution_mode".to_owned())
+                    .or_insert(execution_mode);
+            }
             metadata.insert("mode".to_string(), serde_json::json!(mode.as_str()));
         }
         Some(metadata) => {
@@ -485,26 +479,52 @@ mod tests {
     }
 
     #[test]
-    fn indexed_mode_is_explicit_and_routes_to_persistent_backend() {
-        let tool = SearchTool::new(true).with_indexed(true);
-        assert_eq!(
-            tool.parameters()["properties"]["mode"]["enum"],
-            serde_json::json!(["grep", "glob", "bm25", "indexed"])
-        );
-        let adapted = tool
+    fn bm25_mode_transparently_prefers_persistent_backend_when_available() {
+        let adapted = SearchTool::new(true)
+            .with_persistent_backend(true)
             .adapted_args(
-                SearchMode::Indexed,
-                &serde_json::json!({
-                    "mode": "indexed",
-                    "query": "workspace policy",
-                    "include": "*.rs",
-                    "limit": 5
-                }),
+                SearchMode::Bm25,
+                &serde_json::json!({"mode": "bm25", "query": "workspace policy"}),
             )
             .unwrap();
-        assert_eq!(adapted["query"], "workspace policy");
-        assert_eq!(adapted["glob"], "*.rs");
         assert_eq!(adapted["_persistent_index"], true);
+
+        let fallback = SearchTool::new(true)
+            .adapted_args(
+                SearchMode::Bm25,
+                &serde_json::json!({"mode": "bm25", "query": "workspace policy"}),
+            )
+            .unwrap();
+        assert!(fallback.get("_persistent_index").is_none());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn legacy_indexed_builder_alias_keeps_persistent_routing_compatibility() {
+        let adapted = SearchTool::new(true)
+            .with_indexed(true)
+            .adapted_args(
+                SearchMode::Bm25,
+                &serde_json::json!({"mode": "bm25", "query": "workspace policy"}),
+            )
+            .unwrap();
+        assert_eq!(adapted["_persistent_index"], true);
+        assert_eq!(
+            SearchTool::new(true).parameters()["properties"]["mode"]["enum"],
+            serde_json::json!(["grep", "glob", "bm25"])
+        );
+    }
+
+    #[test]
+    fn unified_search_preserves_the_internal_execution_path() {
+        let output = with_search_mode(
+            ToolOutput::success("fallback")
+                .with_metadata(serde_json::json!({"mode": "incremental_catalog"})),
+            SearchMode::Bm25,
+        );
+        let metadata = output.metadata.unwrap();
+        assert_eq!(metadata["mode"], "bm25");
+        assert_eq!(metadata["execution_mode"], "incremental_catalog");
     }
 
     #[test]

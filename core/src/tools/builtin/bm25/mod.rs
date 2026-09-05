@@ -172,23 +172,31 @@ impl Tool for Bm25Tool {
             .map(str::trim)
             .filter(|glob| !glob.is_empty());
 
-        if args
+        let persistent_requested = args
             .get("_persistent_index")
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            return match search_persistent_catalog(query, path, glob, limit, context_lines, ctx)
-                .await
+            .unwrap_or(false);
+        if persistent_requested {
+            if let Some(output) =
+                search_persistent_catalog(query, path.clone(), glob, limit, context_lines, ctx)
+                    .await
             {
-                Some(output) => Ok(output),
-                None => Ok(ToolOutput::error(
-                    "indexed search is not available: configure a persistent workspace index",
-                )),
-            };
+                return Ok(output);
+            }
+            // Transparent `bm25` calls continue through the catalog scorer
+            // while the durable generation is absent or building.
         }
 
-        if let Some(output) =
-            search_incremental_catalog(query, path.clone(), glob, limit, context_lines, ctx)
+        if let Some(output) = search_incremental_catalog(
+            query,
+            path.clone(),
+            glob,
+            limit,
+            context_lines,
+            persistent_requested,
+            ctx,
+        )
+        .await
         {
             return Ok(output);
         }
@@ -329,20 +337,27 @@ async fn search_persistent_catalog(
     ctx: &ToolContext,
 ) -> Option<ToolOutput> {
     let index = ctx.workspace_services.persistent_index()?;
+    if !index.is_ready() {
+        return None;
+    }
     let mut request = LexicalSearchRequest::new(query);
-    request.path = path;
+    request.path = path.clone();
     request.glob = glob.map(str::to_owned);
     // Overfetch so stale top-ranked chunks can be removed without making a
     // fresh lower-ranked result disappear from the requested page.
     request.limit = limit.saturating_mul(4).min(MAX_LIMIT);
     request.max_candidate_files = MAX_CANDIDATE_FILES;
     request.max_results_per_file = MAX_RESULTS_PER_FILE;
-    let mut result = match index.search(&request) {
-        Ok(result) => result,
+    let query_task = tokio::task::spawn_blocking(move || index.search(&request));
+    let mut result = match query_task.await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "workspace persistent bm25 query failed; falling back");
+            return None;
+        }
         Err(error) => {
-            return Some(ToolOutput::error(format!(
-                "persistent indexed search failed: {error}"
-            )))
+            tracing::debug!(%error, "workspace persistent bm25 query task failed; falling back");
+            return None;
         }
     };
     let cancellation = ctx.cancellation_token();
@@ -360,26 +375,57 @@ async fn search_persistent_catalog(
         {
             Ok(result) => result,
             Err(error) => {
-                return Some(ToolOutput::error(format!(
-                    "persistent indexed source verification failed: {error}"
-                )))
+                tracing::debug!(%error, "workspace persistent bm25 verification failed; falling back");
+                return None;
             }
         };
     result.hits = verified;
+    // A generation can remain readable while the manifest has already
+    // published a newer source revision. Returning that generation would make
+    // edits appear to disappear until the native rebuild completes. Fall back
+    // to the catalog in this window; it is the live admission authority and
+    // keeps the model-visible `bm25` call available during native churn.
+    let catalog_source_revision = ctx
+        .workspace_services
+        .chunk_catalog()
+        .and_then(|catalog| catalog.snapshot().ok())
+        .map(|snapshot| snapshot.source_revision())
+        .unwrap_or(result.source_revision);
+    let catalog_is_newer = catalog_source_revision > result.source_revision;
+    // If verification observed a stale native hit, prefer a catalog fallback
+    // only after verifying its candidates against the live filesystem too. If
+    // that fallback is not ready, the filtered native response remains safe.
+    if catalog_is_newer && (result.hits.is_empty() || filtered_stale) {
+        if let Some(output) =
+            search_incremental_catalog(query, path, glob, limit, context_lines, true, ctx).await
+        {
+            return Some(output);
+        }
+    }
     let mut output = render_incremental_result(query, result, context_lines);
     if let Some(serde_json::Value::Object(metadata)) = output.metadata.as_mut() {
         metadata.insert(
             "index_kind".to_owned(),
             serde_json::json!("persistent_zvec_fts"),
         );
+        metadata.insert(
+            "execution_mode".to_owned(),
+            serde_json::json!("persistent_zvec_fts"),
+        );
         metadata.insert("source_verified".to_owned(), serde_json::json!(true));
         metadata.insert(
             "freshness".to_owned(),
-            serde_json::json!(if filtered_stale {
+            serde_json::json!(if catalog_is_newer {
+                "rebuilding"
+            } else if filtered_stale {
                 "possibly_stale"
             } else {
                 "ready"
             }),
+        );
+        metadata.insert(
+            "catalog_source_revision".to_owned(),
+            serde_json::json!(catalog_source_revision),
         );
         metadata.insert(
             "filtered_stale".to_owned(),
@@ -393,12 +439,13 @@ async fn search_persistent_catalog(
     Some(output)
 }
 
-fn search_incremental_catalog(
+async fn search_incremental_catalog(
     query: &str,
     path: WorkspacePath,
     glob: Option<&str>,
     limit: usize,
     context_lines: usize,
+    verify_sources: bool,
     ctx: &ToolContext,
 ) -> Option<ToolOutput> {
     let catalog = ctx.workspace_services.chunk_catalog()?;
@@ -416,7 +463,7 @@ fn search_incremental_catalog(
     request.limit = limit;
     request.max_candidate_files = MAX_CANDIDATE_FILES;
     request.max_results_per_file = MAX_RESULTS_PER_FILE;
-    let result = match snapshot.lexical_search(&request) {
+    let mut result = match snapshot.lexical_search(&request) {
         Ok(result) => result,
         Err(error) => {
             return Some(ToolOutput::error(format!(
@@ -424,6 +471,50 @@ fn search_incremental_catalog(
             )))
         }
     };
+    if verify_sources {
+        let cancellation = ctx.cancellation_token();
+        let (verified, filtered_stale, verification_truncated) =
+            match crate::workspace::retrieval::retain_verified(
+                result.hits,
+                limit,
+                |hit| hit.chunk.as_ref(),
+                ctx.workspace_services.fs().as_ref(),
+                ctx.workspace_services.operation_timeout(),
+                &cancellation,
+                &cancellation,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    tracing::debug!(%error, "BM25 catalog verification failed during native fallback");
+                    return None;
+                }
+            };
+        result.hits = verified;
+        let mut output = render_incremental_result(query, result, context_lines);
+        if let Some(serde_json::Value::Object(metadata)) = output.metadata.as_mut() {
+            metadata.insert("source_verified".to_owned(), serde_json::json!(true));
+            metadata.insert(
+                "filtered_stale".to_owned(),
+                serde_json::json!(filtered_stale),
+            );
+            metadata.insert(
+                "verification_truncated".to_owned(),
+                serde_json::json!(verification_truncated),
+            );
+            metadata.insert(
+                "freshness".to_owned(),
+                serde_json::json!(if filtered_stale {
+                    "possibly_stale"
+                } else {
+                    "ready"
+                }),
+            );
+        }
+        return Some(output);
+    }
+
     Some(render_incremental_result(query, result, context_lines))
 }
 

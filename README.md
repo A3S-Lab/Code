@@ -530,18 +530,49 @@ binding when the product build supplies a verified `libzvec_c_api`. Minimal
 `--no-default-features` builds use the explicitly reported portable BM25
 implementation; product builds never silently switch engines.
 Session construction does not wait for indexing; BM25 transparently uses the
-same temporary selected FTS engine over a bounded scan until the first catalog revision
-is ready. Catalog metadata reports `mode: "incremental_catalog"` and zero
-query-time file reads. Custom workspace backends therefore do not introduce a
-second Code-local BM25 scorer. Plain manifest and Code Intelligence sessions do
-not start this additional catalog work.
+session-local catalog scorer while the first snapshot is being admitted. Once a
+durable generation is ready, the same `bm25` call switches to its zvec postings
+without changing the model-visible tool contract. The catalog route scores
+without query-time file reads. The native route verifies its bounded result
+candidates against the live filesystem so an edit cannot leak stale text.
+Custom workspace backends use the same selected Code-local BM25 scorer.
+The CPU-heavy tokenization and per-document normalization stages use Rust's
+bounded Rayon worker pool and preserve input order, while native collection
+publication remains serialized behind its atomic generation boundary.
 
-Hosts that need zvec-grep-style restart persistence can opt into
-`WorkspaceServices::local_with_indexed_retrieval`. This keeps the same manifest
+When the automatic durable projection is enabled, cold catalog admission uses
+the portable scorer as its verified fallback instead of opening one native
+collection per source file. The workspace-wide zvec generation remains the
+native serving path once ready, so startup cost scales with source bytes while
+the model-facing search contract stays unchanged.
+
+Hosts that need explicit zvec-grep-style restart persistence can use
+`WorkspaceServices::local_with_indexed_retrieval`; default local Agent
+workspaces use the same path automatically. This keeps the same manifest
 watcher and chunk admission policy, writes versioned zvec generations under
-`.a3s-code/index`, and exposes `search` with `mode: "indexed"`. The persistent
-index is workspace-owned and FTS-only; session semantic vectors remain owned by
-A3S Memory. MCP is not required and is not part of the Core dependency graph.
+`.a3s-code/index`, and lets the existing `search` `bm25` mode use that index
+automatically. Default local Agent workspaces now make the same best-effort
+configuration; an unavailable or read-only cache falls back to the catalog.
+The explicit constructor remains a compatibility convenience, so framework
+users do not need to opt in or know whether the cache is available. The
+persistent index is workspace-owned and FTS-only; session semantic vectors
+remain owned by A3S Memory. MCP is not required and is not part of the Core
+dependency graph.
+Generation publication is off the query path: a changed content snapshot is
+built in staging and atomically promoted, while same-content source revisions
+reuse the existing native postings. Catalog updates enqueue only the newest
+snapshot through a short settle window, so an editor save burst does not
+trigger one full native build per intermediate revision. Transient native or
+filesystem failures retry with bounded backoff, the status surface reports
+when a generation is building, and obsolete generations are collected after
+the new `CURRENT` is published. The release qualification entry points are
+`core/examples/workspace_persistent_index_benchmark.rs` for isolated index
+timings and `core/examples/workspace_persistent_index_production.rs` for a
+real manifest-backed workspace. The latter reports discovery/admission,
+concurrent warm-query p50/p95, same-content generation reuse, changed-content
+publication, generation cleanup, and restart reopen. The complete local gate
+is `scripts/workspace_search_production.sh`; pass `--full` when a release
+admission needs the complete Core unit suites.
 
 Latency-sensitive hosts may construct
 `ManifestWorkspaceBackend::new_deferred` or
@@ -562,10 +593,12 @@ charged to retained-text and vector-record budgets. Catalog snapshots are
 immutable and exclude generated, non-text, oversized, credential, key, and
 `.a3s` control paths. File changes are tombstoned before replacement work; a
 failed read reduces indexed coverage instead of returning stale text. The
-catalog is ephemeral and is released with its manifest-backed workspace
-backend. Hosts that share a `ManifestWorkspaceBackend` across UI, search, and
-sessions configure its catalog exactly once with `configure_chunk_catalog`
-before attaching `local_with_retrieval_backend`; session options cannot
+catalog is session-local and is released with its manifest-backed workspace
+backend; its optional persistent zvec projection is generation-versioned under
+the workspace root. Hosts that share a `ManifestWorkspaceBackend` across UI,
+search, and sessions configure its catalog exactly once with
+`configure_chunk_catalog` before attaching `local_with_retrieval_backend`;
+session options cannot
 silently replace that host-owned strategy or its budgets.
 
 No embedding or reranking model is required for the baseline workspace search:
@@ -1456,6 +1489,8 @@ the v1 schema or claiming external Runtime certification.
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md)                                                       | Language runtime, capability boundary, lifecycle, and verification                                                                                            |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md)                                               | Architecture, quality budgets, lifecycle, and adversarial trust boundaries                                                                                    |
 | [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md)                                                | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope                                                                              |
+| [Workspace Search Real-Model Qualification](manual/WORKSPACE_SEARCH_REAL_LLM.md)                                   | One bounded ACL-model gate for autonomous search-mode selection and transparent native zvec acceleration                                                     |
+| [Workspace Search Production Qualification](manual/WORKSPACE_SEARCH_PRODUCTION.md)                               | Deterministic native/portable tests plus a real manifest-backed scale, concurrency, rebuild, cleanup, and restart gate                              |
 | [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md)                               | Paired task/rerank ablations, built-in chunk matrix, cross-SDK real-model parity, custom negative control, non-text boundary, metrics, and batching follow-up |
 | [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md)                                               | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan                                                                   |
 | [Workspace Retrieval Operations](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)                                           | Production SLOs, telemetry, state response, generation gates, and configuration-only rollback                                                                 |

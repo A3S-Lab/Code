@@ -177,10 +177,19 @@ fn resolve_workspace_services(
                 Some(backend),
             )
         }
-        None => (
-            crate::workspace::WorkspaceServices::local(input.workspace),
-            None,
-        ),
+        None => {
+            // Keep the default Agent path on the same manifest/catalog
+            // authority as explicitly configured retrieval. This makes the
+            // native zvec FTS projection transparent to framework users while
+            // preserving the portable in-memory fallback in minimal builds.
+            let backend = crate::workspace::ManifestWorkspaceBackend::new(input.workspace);
+            (
+                crate::workspace::WorkspaceServices::local_with_retrieval_backend(Arc::clone(
+                    &backend,
+                )),
+                Some(backend),
+            )
+        }
     };
     if services.workspace_retrieval().is_some() {
         return Err(CodeError::SessionConfiguration {

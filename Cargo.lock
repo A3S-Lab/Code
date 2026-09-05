@@ -59,6 +59,7 @@ dependencies = [
  "opentelemetry_sdk 0.27.1",
  "percent-encoding",
  "pin-project-lite",
+ "rayon",
  "rcgen",
  "regex",
  "reqwest",

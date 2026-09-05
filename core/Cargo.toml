@@ -19,6 +19,14 @@ required-features = ["telemetry"]
 name = "durable_memory_semantic_refresh_benchmark"
 required-features = ["durable-memory-sqlite"]
 
+[[example]]
+name = "workspace_persistent_index_benchmark"
+required-features = ["zvec-rust-fts"]
+
+[[example]]
+name = "workspace_persistent_index_production"
+required-features = ["zvec-rust-fts"]
+
 [dependencies]
 # Internal crates
 a3s-common = "0.1.1"
@@ -74,6 +82,7 @@ tracing-opentelemetry = { version = "0.28", optional = true }
 
 # Async utilities
 futures = "0.3"
+rayon = "1.10"
 async-trait = "0.1"
 async-stream = "0.3"
 

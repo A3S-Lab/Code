@@ -151,7 +151,8 @@ impl WorkspaceServices {
         Self::local_with_manifest_backend(backend)
     }
 
-    /// Build local manifest services with an asynchronous ephemeral catalog.
+    /// Build local manifest services with an asynchronous catalog and the
+    /// best-effort workspace-owned persistent zvec projection.
     pub fn local_with_retrieval(root: impl Into<PathBuf>) -> Arc<Self> {
         let backend = ManifestWorkspaceBackend::new(root);
         Self::local_with_retrieval_backend(backend)
@@ -220,9 +221,9 @@ impl WorkspaceServices {
         Self::local_with_manifest_backend_and_catalog(backend, Some(catalog), persistent)
     }
 
-    /// Build local manifest-backed services with a workspace-owned persistent
-    /// zvec FTS index. Persistence is explicit so framework embedders do not
-    /// receive an unexpected on-disk index.
+    /// Build local manifest-backed services with the workspace-owned persistent
+    /// zvec FTS projection. This compatibility constructor is equivalent to
+    /// the default local retrieval path when the native feature is available.
     pub fn local_with_indexed_retrieval(root: impl Into<PathBuf>) -> Result<Arc<Self>> {
         let backend = ManifestWorkspaceBackend::new(root);
         let index_root = backend.local_root().join(".a3s-code").join("index");

@@ -48,6 +48,57 @@ async fn retrieval_is_disabled_without_explicit_typed_options() {
     );
 }
 
+#[cfg(feature = "zvec-rust-fts")]
+#[tokio::test]
+async fn default_local_agent_session_routes_bm25_to_persistent_projection() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(workspace.path().join("src")).unwrap();
+    std::fs::write(
+        workspace.path().join("src/cache.rs"),
+        "pub fn persistent_workspace_cache() { /* zvec route */ }\n",
+    )
+    .unwrap();
+    let agent = Agent::from_config(super::tests::test_config())
+        .await
+        .unwrap();
+    let session = agent
+        .session_async(workspace.path().to_string_lossy(), None)
+        .await
+        .unwrap();
+
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let result = session
+                .tool(
+                    "search",
+                    serde_json::json!({
+                        "mode": "bm25",
+                        "query": "persistent workspace cache",
+                        "limit": 1
+                    }),
+                )
+                .await
+                .unwrap();
+            if result
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("index_kind"))
+                == Some(&serde_json::json!("persistent_zvec_fts"))
+            {
+                return result;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("default local session did not publish its persistent search projection");
+    assert_eq!(result.exit_code, 0, "{}", result.output);
+    assert!(result.output.contains("src/cache.rs"), "{}", result.output);
+    session.close().await;
+    assert!(workspace.path().join(".a3s-code/index/CURRENT").is_file());
+}
+
 #[tokio::test]
 async fn explicit_disable_clears_preconfigured_retrieval_without_calling_the_provider() {
     let _permit = crate::test_support::resource_intensive_test_permit().await;

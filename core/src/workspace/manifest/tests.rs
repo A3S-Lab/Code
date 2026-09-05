@@ -232,6 +232,36 @@ async fn deferred_manifest_keeps_fallback_search_ready_until_one_way_activation(
     assert!(ready.files.iter().any(|file| file.path == "src/main.rs"));
 }
 
+#[cfg(feature = "zvec-rust-fts")]
+#[tokio::test]
+async fn automatic_persistent_retrieval_uses_portable_cold_admission() {
+    let temp = tempfile::tempdir().unwrap();
+    write(
+        &temp.path().join("src/main.rs"),
+        b"fn main() {\n    acceptance();\n}\n",
+    );
+
+    let backend = ManifestWorkspaceBackend::new_deferred(temp.path());
+    backend
+        .configure_persistent_index(temp.path().join(".a3s-code/index"))
+        .unwrap();
+    let catalog = backend.chunk_catalog();
+    assert_eq!(catalog.lexical_engine(), WorkspaceLexicalEngine::ZvecRust);
+    assert!(backend.persistent_index().is_some());
+
+    backend.manifest().activate();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if catalog.snapshot().unwrap().file_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn eager_manifest_is_active_at_construction() {
     let temp = tempfile::tempdir().unwrap();

@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use rayon::prelude::*;
 use tempfile::TempDir;
 use zvec_rust::{
     Collection, CollectionSchema, DataType, Doc, FieldSchema, Fts, IndexParams, SearchQuery,
@@ -28,6 +29,11 @@ const MAX_OPEN_COLLECTIONS: usize = 4;
 // segment teardown can briefly outlive the FFI call under heavy parallel
 // churn. Keep retries bounded while allowing that teardown to settle.
 const OPEN_RETRY_DELAYS_MS: &[u64] = &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+
+struct PreparedLexicalDocument {
+    normalized: String,
+    tokens: Vec<String>,
+}
 
 /// Process-wide zvec initialization result.
 ///
@@ -244,8 +250,8 @@ impl ZvecRustLexicalIndex {
     pub(crate) fn build<I, K, T>(documents: I) -> Result<Self, String>
     where
         I: IntoIterator<Item = (K, T)>,
-        K: AsRef<str>,
-        T: AsRef<str>,
+        K: AsRef<str> + Send + Sync,
+        T: AsRef<str> + Send + Sync,
     {
         let temp_dir = tempfile::tempdir().map_err(|error| error.to_string())?;
         let collection_path = temp_dir.path().join("collection");
@@ -265,34 +271,11 @@ impl ZvecRustLexicalIndex {
     ) -> Result<Self, String>
     where
         I: IntoIterator<Item = (K, T)>,
-        K: AsRef<str>,
-        T: AsRef<str>,
+        K: AsRef<str> + Send + Sync,
+        T: AsRef<str> + Send + Sync,
     {
-        let mut seen_keys = HashSet::new();
-        let mut prepared = Vec::<(String, String)>::new();
-        let mut terms = HashSet::new();
-
-        for (key, text) in documents {
-            let key = key.as_ref();
-            if key.is_empty() || key.contains('\0') {
-                return Err(
-                    "lexical document key must be non-empty and contain no NUL byte".into(),
-                );
-            }
-            if !seen_keys.insert(key.to_owned()) {
-                return Err("lexical document keys must be unique".into());
-            }
-
-            // Code's tokenizer is the canonical workspace analyzer.  Feeding
-            // normalized tokens to zvec keeps identifier and CJK behavior
-            // stable while delegating postings/BM25 scoring to zvec.
-            let tokens = super::lexical::tokenize(text.as_ref());
-            if tokens.is_empty() {
-                continue;
-            }
-            terms.extend(tokens.iter().cloned());
-            prepared.push((key.to_owned(), tokens.join(" ")));
-        }
+        let prepared = prepare_documents(documents)?;
+        let terms = collect_terms(&prepared);
 
         ensure_initialized()?;
 
@@ -327,19 +310,19 @@ impl ZvecRustLexicalIndex {
         let mut next_ordinal = 0usize;
         for batch in prepared.chunks(INSERT_BATCH_SIZE) {
             let mut docs = Vec::with_capacity(batch.len());
-            for (_key, text) in batch {
+            for prepared_document in batch {
                 let ordinal = next_ordinal;
                 next_ordinal = next_ordinal.saturating_add(1);
                 let native_key = format!("d{ordinal}");
                 native_ordinals.insert(native_key.clone(), ordinal);
-                let mut document = Doc::new().map_err(|error| error.to_string())?;
+                let mut native_document = Doc::new().map_err(|error| error.to_string())?;
                 // The generated key is ASCII and NUL-free, so zvec's
                 // infallible setter cannot panic for an admitted document.
-                document.set_pk(&native_key);
-                document
-                    .add_string("body", text)
+                native_document.set_pk(&native_key);
+                native_document
+                    .add_string("body", &prepared_document.normalized)
                     .map_err(|error| error.to_string())?;
-                docs.push(document);
+                docs.push(native_document);
             }
             let references = docs.iter().collect::<Vec<_>>();
             let result = {
@@ -385,10 +368,9 @@ impl ZvecRustLexicalIndex {
         // safety bound instead of an optimistic in-memory estimate.
         let estimated_bytes = directory_size(collection_root)?.max(prepared.iter().fold(
             0usize,
-            |total, (key, text)| {
+            |total, document| {
                 total
-                    .saturating_add(key.len())
-                    .saturating_add(text.len())
+                    .saturating_add(document.normalized.len())
                     .saturating_add(ESTIMATED_DOCUMENT_OVERHEAD)
             },
         ));
@@ -413,8 +395,8 @@ impl ZvecRustLexicalIndex {
     ) -> Result<Self, String>
     where
         I: IntoIterator<Item = (K, T)>,
-        K: AsRef<str>,
-        T: AsRef<str>,
+        K: AsRef<str> + Send + Sync,
+        T: AsRef<str> + Send + Sync,
     {
         if !collection_root.is_dir() {
             return Err(format!(
@@ -423,24 +405,13 @@ impl ZvecRustLexicalIndex {
             ));
         }
         ensure_initialized()?;
-        let mut terms = HashSet::new();
         let mut native_ordinals = HashMap::new();
-        let mut document_count = 0usize;
-        for (key, text) in documents {
-            let key = key.as_ref();
-            if key.is_empty() || key.contains('\0') {
-                return Err(
-                    "lexical document key must be non-empty and contain no NUL byte".into(),
-                );
-            }
-            let tokens = super::lexical::tokenize(text.as_ref());
-            if tokens.is_empty() {
-                continue;
-            }
-            terms.extend(tokens);
+        let prepared = prepare_documents(documents)?;
+        let terms = collect_terms(&prepared);
+        for document_count in 0..prepared.len() {
             native_ordinals.insert(format!("d{document_count}"), document_count);
-            document_count = document_count.saturating_add(1);
         }
+        let document_count = prepared.len();
         let estimated_bytes = directory_size(&collection_root)?.max(
             native_ordinals
                 .keys()
@@ -590,6 +561,74 @@ impl Drop for ZvecRustLexicalIndex {
             }
         }
         drop(collection);
+    }
+}
+
+fn prepare_documents<I, K, T>(documents: I) -> Result<Vec<PreparedLexicalDocument>, String>
+where
+    I: IntoIterator<Item = (K, T)>,
+    K: AsRef<str> + Send + Sync,
+    T: AsRef<str> + Send + Sync,
+{
+    let documents = documents.into_iter().collect::<Vec<_>>();
+    let mut seen_keys = HashSet::with_capacity(documents.len());
+    for (key, _) in &documents {
+        let key = key.as_ref();
+        if key.is_empty() || key.contains('\0') {
+            return Err("lexical document key must be non-empty and contain no NUL byte".into());
+        }
+        if !seen_keys.insert(key) {
+            return Err("lexical document keys must be unique".into());
+        }
+    }
+
+    let parallel = super::lexical::should_parallelize_build(
+        documents.len(),
+        documents.iter().fold(0usize, |total, (_, text)| {
+            total.saturating_add(text.as_ref().len())
+        }),
+    );
+    if parallel {
+        // Tokenization is pure CPU work and is independent for every chunk.
+        // Rayon preserves input order in the collected vector, so native
+        // ordinals remain stable and query results keep deterministic ties.
+        Ok(documents
+            .par_iter()
+            .filter_map(|(_, text)| prepare_document(text.as_ref()))
+            .collect())
+    } else {
+        Ok(documents
+            .iter()
+            .filter_map(|(_, text)| prepare_document(text.as_ref()))
+            .collect())
+    }
+}
+
+fn prepare_document(text: &str) -> Option<PreparedLexicalDocument> {
+    let tokens = super::lexical::tokenize(text);
+    (!tokens.is_empty()).then(|| PreparedLexicalDocument {
+        normalized: tokens.join(" "),
+        tokens,
+    })
+}
+
+fn collect_terms(prepared: &[PreparedLexicalDocument]) -> HashSet<String> {
+    let parallel = super::lexical::should_parallelize_build(
+        prepared.len(),
+        prepared.iter().fold(0usize, |total, document| {
+            total.saturating_add(document.normalized.len())
+        }),
+    );
+    if parallel {
+        prepared
+            .par_iter()
+            .flat_map_iter(|document| document.tokens.iter().cloned())
+            .collect()
+    } else {
+        prepared
+            .iter()
+            .flat_map(|document| document.tokens.iter().cloned())
+            .collect()
     }
 }
 
@@ -872,8 +911,27 @@ fn directory_size(root: &std::path::Path) -> Result<usize, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{open_read_only_with_retry, ZvecRustLexicalIndex};
+    use super::{open_read_only_with_retry, prepare_documents, ZvecRustLexicalIndex};
     use zvec_rust::Collection;
+
+    #[test]
+    fn parallel_tokenization_preserves_document_order() {
+        let documents = (0..128)
+            .map(|index| {
+                (
+                    format!("doc-{index:03}"),
+                    format!(
+                        "workspace_parallel_marker_{index} {}",
+                        "payload ".repeat(100)
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let prepared = prepare_documents(documents).expect("documents must tokenize");
+        assert_eq!(prepared.len(), 128);
+        assert!(prepared[0].tokens.contains(&"workspace".to_owned()));
+        assert!(prepared[127].tokens.contains(&"127".to_owned()));
+    }
 
     #[test]
     fn rejects_invalid_or_duplicate_document_keys_before_native_initialization() {

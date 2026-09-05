@@ -3,6 +3,7 @@ use super::types::{
     WorkspaceChunk, WorkspaceIndexError, WorkspaceIndexResult, WorkspaceLexicalEngine,
 };
 use crate::workspace::WorkspacePath;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::sync::Arc;
@@ -13,6 +14,17 @@ const DEFAULT_RESULT_LIMIT: usize = 10;
 const MAX_RESULT_LIMIT: usize = 25;
 const MAX_QUERY_BYTES: usize = 2_048;
 const DEFAULT_RESULTS_PER_FILE: usize = 2;
+const PARALLEL_BUILD_MIN_DOCUMENTS: usize = 128;
+const PARALLEL_BUILD_MIN_BYTES: usize = 64 * 1024;
+
+pub(crate) fn should_parallelize_build(document_count: usize, text_bytes: usize) -> bool {
+    document_count >= PARALLEL_BUILD_MIN_DOCUMENTS
+        && text_bytes >= PARALLEL_BUILD_MIN_BYTES
+        && std::thread::available_parallelism()
+            .map(|workers| workers.get() > 1)
+            .unwrap_or(true)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LexicalSearchRequest {
     pub query: String,
@@ -94,9 +106,7 @@ pub(crate) struct PortableLexicalIndex {
 impl PortableLexicalIndex {
     fn build(documents: &[(String, String)]) -> WorkspaceIndexResult<Self> {
         let mut seen_keys = HashSet::new();
-        let mut indexed = Vec::new();
-        let mut terms = HashSet::new();
-        for (key, text) in documents {
+        for (key, _) in documents {
             if key.is_empty() || key.contains('\0') {
                 return Err(WorkspaceIndexError::InvalidConfig(
                     "lexical document key must be non-empty and contain no NUL byte".to_owned(),
@@ -107,23 +117,106 @@ impl PortableLexicalIndex {
                     "lexical document keys must be unique".to_owned(),
                 ));
             }
-            let tokens = tokenize(text);
-            if tokens.is_empty() {
-                continue;
-            }
-            terms.extend(tokens.iter().cloned());
-            indexed.push(PortableDocument::from_tokens(&tokens));
         }
-        let mut postings = HashMap::<String, Vec<PortablePosting>>::new();
-        for (document, stats) in indexed.iter().enumerate() {
-            for (term, frequency) in &stats.term_frequencies {
-                postings
-                    .entry(term.clone())
-                    .or_default()
-                    .push(PortablePosting {
-                        document,
-                        term_frequency: *frequency,
-                    });
+        // Tokenization and per-document term-frequency construction are pure
+        // CPU work. Rayon keeps the resulting vector in input order, which is
+        // required for deterministic BM25 tie-breaking and chunk ordinals.
+        // Tiny partitions stay serial because scheduling overhead would cost
+        // more than the work; large rebuilds use every available worker.
+        let parallel = should_parallelize_build(
+            documents.len(),
+            documents
+                .iter()
+                .fold(0usize, |total, (_, text)| total.saturating_add(text.len())),
+        );
+        let tokenized = if parallel {
+            documents
+                .par_iter()
+                .filter_map(|(_, text)| {
+                    let tokens = tokenize(text);
+                    (!tokens.is_empty()).then_some(tokens)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            documents
+                .iter()
+                .filter_map(|(_, text)| {
+                    let tokens = tokenize(text);
+                    (!tokens.is_empty()).then_some(tokens)
+                })
+                .collect::<Vec<_>>()
+        };
+        let indexed = if parallel {
+            tokenized
+                .par_iter()
+                .map(|tokens| PortableDocument::from_tokens(tokens))
+                .collect::<Vec<_>>()
+        } else {
+            tokenized
+                .iter()
+                .map(|tokens| PortableDocument::from_tokens(tokens))
+                .collect::<Vec<_>>()
+        };
+        let terms = if parallel {
+            tokenized
+                .par_iter()
+                .flat_map_iter(|tokens| tokens.iter().cloned())
+                .collect::<HashSet<_>>()
+        } else {
+            tokenized
+                .iter()
+                .flat_map(|tokens| tokens.iter().cloned())
+                .collect::<HashSet<_>>()
+        };
+        let mut postings = if parallel {
+            indexed
+                .par_iter()
+                .enumerate()
+                .fold(
+                    HashMap::<String, Vec<PortablePosting>>::new,
+                    |mut postings, (document, stats)| {
+                        for (term, frequency) in &stats.term_frequencies {
+                            postings
+                                .entry(term.clone())
+                                .or_default()
+                                .push(PortablePosting {
+                                    document,
+                                    term_frequency: *frequency,
+                                });
+                        }
+                        postings
+                    },
+                )
+                .reduce(
+                    HashMap::<String, Vec<PortablePosting>>::new,
+                    |mut left, mut right| {
+                        for (term, mut values) in right.drain() {
+                            left.entry(term).or_default().append(&mut values);
+                        }
+                        left
+                    },
+                )
+        } else {
+            let mut postings = HashMap::<String, Vec<PortablePosting>>::new();
+            for (document, stats) in indexed.iter().enumerate() {
+                for (term, frequency) in &stats.term_frequencies {
+                    postings
+                        .entry(term.clone())
+                        .or_default()
+                        .push(PortablePosting {
+                            document,
+                            term_frequency: *frequency,
+                        });
+                }
+            }
+            postings
+        };
+        if parallel {
+            // Rayon reduction order is intentionally unspecified. Restore
+            // document order in each posting list before scoring so floating
+            // point accumulation and deterministic ties remain stable.
+            for values in postings.values_mut() {
+                values.sort_unstable_by_key(|posting| posting.document);
             }
         }
         let estimated_bytes = size_of::<Self>()
@@ -624,4 +717,38 @@ fn is_cjk(ch: char) -> bool {
             | 0x3040..=0x30ff
             | 0xac00..=0xd7af
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PortableLexicalIndex;
+
+    #[test]
+    fn large_portable_build_keeps_dense_ordinals_after_empty_documents() {
+        let documents = (0..256)
+            .map(|index| {
+                let text = if index % 13 == 0 {
+                    " \n\t".to_owned()
+                } else {
+                    format!(
+                        "{} {}",
+                        if index == 129 {
+                            "parallelneedle"
+                        } else {
+                            "common"
+                        },
+                        "workspace payload ".repeat(64)
+                    )
+                };
+                (format!("doc-{index:03}"), text)
+            })
+            .collect::<Vec<_>>();
+        let index = PortableLexicalIndex::build(&documents).expect("portable index");
+        let hits = index
+            .search(&["parallelneedle".to_owned()], 1)
+            .expect("portable query");
+        let expected_ordinal = (0..129).filter(|index| index % 13 != 0).count();
+        assert_eq!(hits.first().map(|hit| hit.0), Some(expected_ordinal));
+        assert_eq!(index.document_count(), 236);
+    }
 }

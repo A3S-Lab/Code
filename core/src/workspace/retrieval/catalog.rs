@@ -104,6 +104,7 @@ pub struct WorkspaceChunkCatalog {
     chunking_strategy: WorkspaceChunkingStrategy,
     limits: ChunkCatalogLimits,
     lexical_engine: WorkspaceLexicalEngine,
+    build_engine: WorkspaceLexicalEngine,
     state: RwLock<Arc<CatalogState>>,
     updates: watch::Sender<ChunkCatalogSnapshot>,
 }
@@ -189,22 +190,42 @@ impl WorkspaceChunkCatalog {
             chunking_strategy,
             limits,
             lexical_engine,
+            build_engine: lexical_engine,
             state: RwLock::new(state),
             updates,
         }))
     }
 
     pub(crate) fn default_catalog() -> Arc<Self> {
+        Self::default_catalog_with_engine(WorkspaceLexicalEngine::default())
+    }
+
+    /// Construct the automatic catalog with a caller-selected fallback
+    /// engine. The durable workspace projection uses native zvec for the
+    /// corpus-wide index; keeping this admission catalog portable avoids
+    /// opening one native collection per source file during a cold scan.
+    pub(crate) fn default_catalog_with_engine(engine: WorkspaceLexicalEngine) -> Arc<Self> {
+        Self::default_catalog_with_engines(engine, engine)
+    }
+
+    /// Construct the automatic catalog with separate reported and admission
+    /// engines. The durable zvec path reports its native engine to callers,
+    /// while its cold admission fallback can build portable partitions.
+    pub(crate) fn default_catalog_with_engines(
+        lexical_engine: WorkspaceLexicalEngine,
+        build_engine: WorkspaceLexicalEngine,
+    ) -> Arc<Self> {
         let state = Arc::new(CatalogState::default());
         let (updates, _) = watch::channel(ChunkCatalogSnapshot {
             state: Arc::clone(&state),
-            lexical_engine: WorkspaceLexicalEngine::default(),
+            lexical_engine,
         });
         Arc::new(Self {
             chunking: ChunkingConfig::default(),
             chunking_strategy: WorkspaceChunkingStrategy::Lines,
             limits: ChunkCatalogLimits::default(),
-            lexical_engine: WorkspaceLexicalEngine::default(),
+            lexical_engine,
+            build_engine,
             state: RwLock::new(state),
             updates,
         })
@@ -307,6 +328,10 @@ impl WorkspaceChunkCatalog {
     /// Return the typed lexical engine selected for this catalog.
     pub fn lexical_engine(&self) -> WorkspaceLexicalEngine {
         self.lexical_engine
+    }
+
+    pub(crate) fn build_engine(&self) -> WorkspaceLexicalEngine {
+        self.build_engine
     }
 
     pub(crate) fn publish_reconciliation(

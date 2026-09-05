@@ -564,13 +564,21 @@ chunk boundaries or repeatedly reading the same unchanged file. Each chunk
 contains a stable identifier, workspace-relative path, line range, language,
 optional symbol context, content digest, file revision, and bounded text.
 
-The framework also provides an explicit workspace-owned persistent FTS
-projection through `WorkspaceServices::local_with_indexed_retrieval`. It uses
-the same manifest watcher and catalog admission policy, publishes versioned
-zvec generations under `.a3s-code/index`, and exposes `search` mode
-`indexed`. This projection is lexical only; A3S Memory remains the session
-semantic authority. MCP is an optional external adapter and is not a Core
-dependency.
+The framework also provides a workspace-owned persistent FTS projection. The
+legacy `WorkspaceServices::local_with_indexed_retrieval` constructor remains a
+compatibility convenience; default local Agent workspaces configure the same
+projection automatically. It uses the same manifest watcher and catalog
+admission policy, publishes versioned zvec generations under `.a3s-code/index`,
+and transparently accelerates the model-facing `search` `bm25` route. An
+unavailable or read-only cache falls back to the catalog, with no model-visible
+mode change. This projection is lexical only; A3S Memory remains the session
+semantic authority. CPU-heavy tokenization and per-document normalization use
+Rust's bounded Rayon worker pool with stable input order; native generation
+publication remains serialized and atomic. During automatic cold admission,
+the catalog uses the portable scorer as a verified fallback so one native
+collection is not opened per source file; the workspace-wide zvec generation
+becomes the serving path once ready. MCP is an optional external adapter and
+is not a Core dependency.
 
 The compatibility chunker is deterministic and language-independent, with line
 and UTF-8 byte ceilings. Fixed UTF-8 byte windows and recursive prioritized
@@ -820,7 +828,7 @@ Current implementation status:
 | `WSR-00` | Delivered | Versioned relevance and lifecycle fixtures, native BM25 CI baseline, reference sizing profile, locked budgets, and adversarial trust-boundary review |
 | `MEM-V1` | Delivered | A3S Memory `main` commit `3293f572` adds the public exact ephemeral vector kernel, streamlines the contiguous exact-scan hot path, and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, benchmark, Clippy, and rustdoc gates |
 | `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, zvec-rust FTS/BM25 postings with a portable minimal-build path, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read catalog path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
-| `CODE-P1` | Delivered | Explicit workspace-owned persistent zvec FTS generations, atomic `CURRENT` publication, restart reopen, stale-revision fencing, shared manifest coordinator, `.a3s-code` source exclusion, and the built-in `search` `indexed` mode; native persistence and indexed-tool lifecycle tests pass |
+| `CODE-P1` | Delivered | Explicit workspace-owned persistent zvec FTS generations, atomic `CURRENT` publication, restart reopen, stale-revision fencing, shared manifest coordinator, bounded retry/backoff, obsolete-generation collection, building status, `.a3s-code` source exclusion, transparent `bm25` acceleration, portable cold-admission fallback that avoids one native collection per file, same-content generation reuse, adaptive Rayon multi-core tokenization/posting construction with stable ordinals, and native/portable release scale, concurrency, rebuild, cleanup, and restart qualification pass |
 | `CODE-C2` | Delivered | Rust Core adds compatible line, fixed UTF-8 window, recursive prioritized-separator, and host-injected custom range strategies; Code validates complete coverage and budgets, owns IDs/digests/lines, charges overlap memory, contains host failures, and wires explicit configuration into session-owned catalogs without allowing silent overrides of host-owned catalogs |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
 | `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `3293f572` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
@@ -1108,9 +1116,9 @@ proof of ranking correctness or run with repository secrets in shared CI.
 
 ### 6.11 Rollout and rollback
 
-1. **Developer preview:** feature compiled and tested but disabled unless a host
-   explicitly enables persistent indexing or injects a semantic provider;
-   expose detailed index status and the diagnostic `indexed`/`semantic` modes.
+1. **Developer preview:** native persistent FTS is enabled best-effort for
+   default local Agent workspaces; hosts without the native feature or writable
+   cache continue using the catalog and portable scorer.
 2. **Opt-in beta:** ACL and SDK configuration supported; `hybrid` recommended
    for natural-language queries while BM25 remains available explicitly.
 3. **Stable:** SDK parity, adversarial qualification, privacy documentation,
@@ -1118,10 +1126,10 @@ proof of ranking correctness or run with repository secrets in shared CI.
    of `hybrid` requires model-tool evaluation and a separate compatibility
    decision.
 
-Rollback is configuration-only: stop the persistent index coordinator, hide
-the `indexed` mode, and retain existing exact, lexical, and Code Intelligence
-paths. Existing generations remain readable for a later restart or can be
-removed explicitly by the host; no semantic session state is migrated.
+Rollback is configuration-only: stop the persistent index coordinator and
+retain existing exact, lexical, and Code Intelligence paths. Existing
+generations remain readable for a later restart or can be removed explicitly
+by the host; no semantic session state is migrated.
 
 `WSR-PROD1` completes the stable opt-in evidence for the provider-injected
 design. Delivered `HOST-LCPU1` adds the qualified CLI-local CPU route; it does

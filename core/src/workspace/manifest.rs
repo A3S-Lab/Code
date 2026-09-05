@@ -461,6 +461,7 @@ pub struct ManifestWorkspaceBackend {
     manifest: Arc<LocalWorkspaceManifest>,
     catalog_runtime: OnceLock<Arc<LocalWorkspaceCatalogRuntime>>,
     persistent_index: OnceLock<Arc<WorkspacePersistentIndex>>,
+    owns_manifest: bool,
 }
 
 impl ManifestWorkspaceBackend {
@@ -514,6 +515,7 @@ impl ManifestWorkspaceBackend {
             manifest,
             catalog_runtime: OnceLock::new(),
             persistent_index: OnceLock::new(),
+            owns_manifest: true,
         })
     }
 
@@ -530,6 +532,7 @@ impl ManifestWorkspaceBackend {
             manifest,
             catalog_runtime: OnceLock::new(),
             persistent_index: OnceLock::new(),
+            owns_manifest: false,
         })
     }
 
@@ -542,17 +545,31 @@ impl ManifestWorkspaceBackend {
     /// Catalog reads always use the source-egress boundary independently from
     /// the access policy selected for ordinary workspace tools. Unless
     /// [`Self::configure_chunk_catalog`] ran first, this enables the compatible
-    /// default catalog configuration.
+    /// default catalog configuration. Native builds also attach the durable
+    /// workspace FTS projection here; failure to create that optional local
+    /// cache degrades to the existing in-memory catalog without failing the
+    /// workspace.
     pub fn chunk_catalog(&self) -> Arc<WorkspaceChunkCatalog> {
+        self.ensure_default_persistent_index(WorkspaceLexicalEngine::default());
         self.catalog_runtime
             .get_or_init(|| {
                 let file_system: Arc<dyn WorkspaceFileSystem> = self.catalog_local.clone();
                 let persistent = self.persistent_index.get().cloned();
                 if let Some(persistent) = persistent {
+                    // The durable corpus index owns native zvec FTS. The
+                    // catalog keeps reporting that selected engine to the
+                    // retrieval contract, but uses portable partitions for
+                    // cold admission instead of opening one native collection
+                    // per source file. The catalog remains a verified
+                    // fallback while the durable generation is rebuilding.
+                    let catalog = WorkspaceChunkCatalog::default_catalog_with_engines(
+                        WorkspaceLexicalEngine::ZvecRust,
+                        WorkspaceLexicalEngine::Portable,
+                    );
                     LocalWorkspaceCatalogRuntime::start_with_catalog_and_persistent(
                         Arc::clone(&self.manifest),
                         file_system,
-                        WorkspaceChunkCatalog::default_catalog(),
+                        catalog,
                         Some(persistent),
                     )
                 } else {
@@ -624,6 +641,7 @@ impl ManifestWorkspaceBackend {
             limits,
             lexical_engine,
         )?;
+        self.ensure_default_persistent_index(lexical_engine);
         let file_system: Arc<dyn WorkspaceFileSystem> = self.catalog_local.clone();
         let runtime = LocalWorkspaceCatalogRuntime::start_with_catalog_and_persistent(
             Arc::clone(&self.manifest),
@@ -646,10 +664,38 @@ impl ManifestWorkspaceBackend {
             runtime.shutdown();
         }
         self.manifest.shutdown();
+        if let Some(index) = self.persistent_index.get() {
+            index.wait_for_idle();
+        }
     }
 
     pub fn local_root(&self) -> &Path {
         &self.local.root
+    }
+
+    /// Attach the native workspace FTS projection when it is available. This
+    /// is deliberately best-effort: a read-only checkout, a disk quota, or a
+    /// minimal build must retain the portable catalog behavior. The operation
+    /// is idempotent and runs before the shared catalog runtime starts, so all
+    /// callers continue to use one manifest watcher and one catalog authority.
+    fn ensure_default_persistent_index(&self, engine: WorkspaceLexicalEngine) {
+        #[cfg(feature = "zvec-rust-fts")]
+        {
+            if engine != WorkspaceLexicalEngine::ZvecRust
+                || self.persistent_index.get().is_some()
+                || self.catalog_runtime.get().is_some()
+            {
+                return;
+            }
+            let root = self.local.root.join(".a3s-code").join("index");
+            if let Err(error) = self.configure_persistent_index(root) {
+                tracing::debug!(%error, "workspace persistent zvec index unavailable; using session-local lexical catalog");
+            }
+        }
+        #[cfg(not(feature = "zvec-rust-fts"))]
+        {
+            let _ = engine;
+        }
     }
 
     fn manifest_ready(&self) -> Option<ManifestSearchSnapshot> {
@@ -677,6 +723,25 @@ impl ManifestWorkspaceBackend {
                     .collect()
             })
             .unwrap_or_default()
+    }
+}
+
+impl Drop for ManifestWorkspaceBackend {
+    fn drop(&mut self) {
+        // Direct WorkspaceServices users do not have the AgentSession close
+        // boundary. Stop the shared manifest/catalog owner here so automatic
+        // persistent indexing cannot outlive a temporary workspace or keep a
+        // native zvec operation running during teardown.
+        if self.owns_manifest {
+            self.shutdown();
+        } else {
+            if let Some(runtime) = self.catalog_runtime.get() {
+                runtime.shutdown();
+            }
+            if let Some(index) = self.persistent_index.get() {
+                index.wait_for_idle();
+            }
+        }
     }
 }
 

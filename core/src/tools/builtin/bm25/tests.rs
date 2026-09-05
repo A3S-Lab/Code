@@ -182,7 +182,7 @@ async fn manifest_backed_bm25_uses_the_incremental_catalog_without_query_reads()
 
 #[cfg(feature = "zvec-rust-fts")]
 #[tokio::test]
-async fn indexed_mode_uses_the_workspace_persistent_zvec_index() {
+async fn local_retrieval_automatically_uses_the_workspace_persistent_zvec_index() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("src/cache.rs");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -191,8 +191,7 @@ async fn indexed_mode_uses_the_workspace_persistent_zvec_index() {
         "pub fn invalidate_session_cache() { /* persistent session cache policy */ }\n",
     )
     .unwrap();
-    let services = crate::workspace::WorkspaceServices::local_with_indexed_retrieval(temp.path())
-        .expect("persistent retrieval services");
+    let services = crate::workspace::WorkspaceServices::local_with_retrieval(temp.path());
     let catalog = services.chunk_catalog().unwrap();
     let index = services.persistent_index().unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
@@ -221,13 +220,12 @@ async fn indexed_mode_uses_the_workspace_persistent_zvec_index() {
     assert!(result.success, "{}", result.content);
     let metadata = result.metadata.unwrap();
     assert_eq!(metadata["index_kind"], "persistent_zvec_fts");
+    assert_eq!(metadata["execution_mode"], "persistent_zvec_fts");
     assert_eq!(metadata["results"][0]["path"], "src/cache.rs");
     assert!(temp.path().join(".a3s-code/index/CURRENT").is_file());
 
     drop(context);
-    let reopened_services =
-        crate::workspace::WorkspaceServices::local_with_indexed_retrieval(temp.path())
-            .expect("reopened persistent retrieval services");
+    let reopened_services = crate::workspace::WorkspaceServices::local_with_retrieval(temp.path());
     let reopened_index = reopened_services.persistent_index().unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         while !reopened_index.is_ready() {
@@ -249,6 +247,253 @@ async fn indexed_mode_uses_the_workspace_persistent_zvec_index() {
         .await
         .unwrap();
     assert!(reopened_result.success, "{}", reopened_result.content);
+}
+
+#[cfg(feature = "zvec-rust-fts")]
+#[tokio::test]
+async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("src/state.rs");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "pub fn old_state_marker() {}\n").unwrap();
+
+    let services = crate::workspace::WorkspaceServices::local_with_retrieval(temp.path());
+    let catalog = services.chunk_catalog().unwrap();
+    let index = services.persistent_index().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let status = index.status();
+            if catalog.snapshot().unwrap().source_revision() > 0
+                && status.phase == crate::workspace::WorkspacePersistentIndexPhase::Ready
+            {
+                break status;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("initial persistent index did not become ready");
+    let initial_status = index.status();
+    let context = ToolContext::new(temp.path().to_path_buf()).with_workspace_services(services);
+
+    let initial = Bm25Tool
+        .execute(
+            &serde_json::json!({
+                "query": "old state marker",
+                "_persistent_index": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(initial.success, "{}", initial.content);
+    assert_eq!(
+        initial.metadata.as_ref().unwrap()["index_kind"],
+        "persistent_zvec_fts"
+    );
+    assert_eq!(
+        initial.metadata.as_ref().unwrap()["results"][0]["path"],
+        "src/state.rs"
+    );
+
+    // Write through the real workspace path. The query below may race with
+    // reconciliation, so either a fresh generation or source verification
+    // must prevent the old chunk from being returned.
+    std::fs::write(&path, "pub fn new_state_marker() {}\n").unwrap();
+    let replaced = Bm25Tool
+        .execute(
+            &serde_json::json!({
+                "query": "old state marker",
+                "_persistent_index": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    let replaced_metadata = replaced.metadata.as_ref().unwrap();
+    let replaced_paths = replaced_metadata["results"]
+        .as_array()
+        .map(|results| {
+            results
+                .iter()
+                .filter_map(|result| result["path"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        !replaced_paths.contains(&"src/state.rs"),
+        "stale source leaked through persistent BM25: {replaced_metadata:?}"
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let status = index.status();
+            if status.source_revision > initial_status.source_revision
+                && status.generation != initial_status.generation
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("persistent index did not publish the replacement generation");
+
+    let current = Bm25Tool
+        .execute(
+            &serde_json::json!({
+                "query": "new state marker",
+                "_persistent_index": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(current.success, "{}", current.content);
+    let current_metadata = current.metadata.as_ref().unwrap();
+    assert_eq!(current_metadata["index_kind"], "persistent_zvec_fts");
+    assert!(matches!(
+        current_metadata["freshness"].as_str(),
+        Some("ready" | "rebuilding")
+    ));
+    assert_eq!(current_metadata["results"][0]["path"], "src/state.rs");
+}
+
+#[cfg(feature = "zvec-rust-fts")]
+#[tokio::test]
+async fn persistent_bm25_falls_back_to_the_catalog_before_native_ready() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = WorkspacePath::from_normalized("src/fallback.rs");
+    let content = "pub fn fallback_ready_marker() {}\n";
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(temp.path().join(path.as_str()), content).unwrap();
+
+    let catalog = crate::workspace::WorkspaceChunkCatalog::new(
+        crate::workspace::ChunkingConfig::default(),
+        crate::workspace::ChunkCatalogLimits::default(),
+    )
+    .unwrap();
+    catalog
+        .replace_file(&path, Some("rust"), 1, content)
+        .unwrap();
+    let index = crate::workspace::WorkspacePersistentIndex::open(
+        temp.path().join(".a3s-code/index"),
+        WorkspaceLexicalEngine::ZvecRust,
+    )
+    .unwrap();
+    assert!(
+        !index.is_ready(),
+        "test must start before native publication"
+    );
+
+    let local = std::sync::Arc::new(crate::workspace::LocalWorkspaceBackend::new(
+        temp.path().to_path_buf(),
+    ));
+    let file_system: std::sync::Arc<dyn crate::workspace::WorkspaceFileSystem> = local.clone();
+    let search: std::sync::Arc<dyn crate::workspace::WorkspaceSearch> = local;
+    let services = crate::workspace::WorkspaceServices::builder(
+        crate::workspace::WorkspaceRef::new("fallback", "fallback://workspace"),
+        file_system,
+    )
+    .search(search)
+    .chunk_catalog(catalog)
+    .persistent_index(index)
+    .build();
+    let context = ToolContext::new(temp.path().to_path_buf()).with_workspace_services(services);
+
+    let result = Bm25Tool
+        .execute(
+            &serde_json::json!({
+                "query": "fallback ready marker",
+                "_persistent_index": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(result.success, "{}", result.content);
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["mode"], "incremental_catalog");
+    assert_eq!(metadata["scan"]["read_files"], 0);
+    assert_eq!(metadata["source_verified"], true);
+    assert_eq!(metadata["results"][0]["path"], "src/fallback.rs");
+
+    // Native unavailability must not weaken source verification. A catalog
+    // snapshot can lag behind an external edit before the first generation
+    // is published, so even this fallback must suppress its stale chunk.
+    std::fs::write(
+        temp.path().join(path.as_str()),
+        "pub fn unpublished_edit() {}\n",
+    )
+    .unwrap();
+    let stale_fallback = Bm25Tool
+        .execute(
+            &serde_json::json!({
+                "query": "fallback ready marker",
+                "_persistent_index": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    let stale_metadata = stale_fallback.metadata.unwrap();
+    assert_eq!(stale_metadata["source_verified"], true);
+    assert_eq!(stale_metadata["filtered_stale"], true);
+    assert_eq!(stale_metadata["returned_results"], 0);
+    std::fs::write(temp.path().join(path.as_str()), content).unwrap();
+
+    // Once a ready generation becomes older than the catalog, the same public
+    // request must remain useful instead of returning an empty stale-index
+    // page while the replacement generation is being built.
+    let catalog = context.workspace_services.chunk_catalog().unwrap();
+    let index = context.workspace_services.persistent_index().unwrap();
+    index.sync_snapshot(&catalog.snapshot().unwrap()).unwrap();
+
+    // An unchanged file can still be served by the old immutable generation
+    // while a newer snapshot is being built. Expose that state explicitly so
+    // hosts can observe rebuild progress without making the model change its
+    // public search mode.
+    let stable_path = WorkspacePath::from_normalized("src/stable.rs");
+    let stable_content = "pub fn stable_ready_marker() {}\n";
+    std::fs::write(temp.path().join(stable_path.as_str()), stable_content).unwrap();
+    catalog
+        .replace_file(&stable_path, Some("rust"), 2, stable_content)
+        .unwrap();
+    let stable = Bm25Tool
+        .execute(
+            &serde_json::json!({
+                "query": "fallback ready marker",
+                "_persistent_index": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(stable.success, "{}", stable.content);
+    let stable_metadata = stable.metadata.unwrap();
+    assert_eq!(stable_metadata["execution_mode"], "persistent_zvec_fts");
+    assert_eq!(stable_metadata["freshness"], "rebuilding");
+    assert_eq!(stable_metadata["catalog_source_revision"], 2);
+
+    let replacement = "pub fn replacement_ready_marker() {}\n";
+    std::fs::write(temp.path().join(path.as_str()), replacement).unwrap();
+    catalog
+        .replace_file(&path, Some("rust"), 3, replacement)
+        .unwrap();
+    let during_rebuild = Bm25Tool
+        .execute(
+            &serde_json::json!({
+                "query": "replacement ready marker",
+                "_persistent_index": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(during_rebuild.success, "{}", during_rebuild.content);
+    let during_metadata = during_rebuild.metadata.unwrap();
+    assert_eq!(during_metadata["mode"], "incremental_catalog");
+    assert_eq!(during_metadata["results"][0]["path"], "src/fallback.rs");
 }
 
 #[derive(Debug, Deserialize)]
