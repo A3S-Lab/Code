@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a typed per-owner admission quota to the existing agent-wide
+  scheduler. `TaskSchedulerQuota` derives a bounded digest-only identity from a
+  run or host scope, `acquire_with_quota` enforces the limit in the same actor
+  as global capacity, and `quota_snapshot` exposes live active/pending/blocked
+  occupancy without retaining scope text or queue history. Dynamic workflow
+  steps and detached Task children now carry their invocation run identity into
+  that boundary; blocked owners no longer prevent independent owners from
+  using free global slots. Cancellation, conflicting limits, malformed scopes,
+  idle-state pruning, and mixed-owner fan-out are covered by focused
+  qualification.
 - Added bounded scheduler and dynamic-workflow control observability. The
   agent-wide scheduler now reports cumulative admissions, releases,
   cancellations, aging promotions, peak occupancy, and wait-time aggregates

@@ -52,8 +52,9 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   `ExecutionPlan` used by Code planning, rebuild that plan from complete
   history on resume, and use a cancellable per-workflow concurrency gate.
   Standalone Flow adapters can additionally use the agent-wide priority
-  scheduler with a digest-only step identity; session-bound calls retain one
-  outer scheduler lease to avoid nested single-slot deadlocks.
+  scheduler with a digest-only step identity and an owner quota; session-bound
+  calls retain one outer scheduler lease to avoid nested single-slot
+  deadlocks. Detached children inherit a run/session admission scope.
 - **Generation-fenced workflow replay.** New dynamic workflow runs pin the
   Code runtime build and expose a digest-only continuation identity derived
   from durable immutable facts. Changed source/input, conflicting step
@@ -191,7 +192,7 @@ telemetry remain opt-in.
 | Structured output       | Native provider formats or schema-validated prompt, partial parse, and repair fallback                                                                                                                                                  | Baseline                                                                                                                                                                  |
 | MCP and Skills          | Isolated MCP transports plus filesystem, registry, inline, and live session Skills                                                                                                                                                      | Configuration or live registration                                                                                                                                        |
 | Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation                                                                                                                    | Manual tools independently configurable; automation opt-in                                                                                                                |
-| Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, occupancy snapshots, and bounded cumulative health counters | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()` or `task_scheduler_health()` |
+| Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, digest-only owner quotas, occupancy snapshots, and bounded cumulative health counters | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()` or `task_scheduler_health()`; Rust hosts can use `TaskSchedulerQuota` for a scoped limit |
 | Safe-point run control  | Typed, idempotent `steer` and cooperative `interrupt` requests with immutable Run identity, optimistic turn guards, bounded receipts, lifecycle Hooks, and durable event evidence                                                                 | Host invokes the Session control surface; requests never create a concurrent transcript operation and never change model, permissions, sandbox, or budget                    |
 | Programmable workflows  | Bounded QuickJS `program` calls, replayable A3S Flow-backed dynamic workflows, resumable step checkpoints, and digest-bound result receipts                                                                                              | `program` baseline; dynamic runtime explicitly registered                                                                                                                 |
 | Persistence             | Atomic snapshots, run events, traces, artifacts, verification, identity-bound workflow/Flow receipts, checkpoints, and optional RL trajectories                                                                                         | Configured store and host policy                                                                                                                                          |
@@ -280,6 +281,41 @@ requests, aging promotions, peak occupancy, and aggregate admission wait time;
 the existing `task_scheduler_stats()` shape remains the lightweight occupancy
 view. Dynamic-workflow controls additionally expose `health()` claim
 takeovers and `diagnostics()` to compose those counters with scheduler health.
+
+Rust hosts that need a noisy-neighbor bound can pass a validated
+`TaskSchedulerQuota` to `TaskScheduler::acquire_with_quota`. The quota identity
+is derived from a bounded run/host scope (the raw scope is not retained), and
+the same scheduler actor tracks its active and pending requests:
+
+```rust,no_run
+use a3s_code_core::{TaskPriority, TaskScheduler, TaskSchedulerQuota};
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+
+# async fn example(scheduler: Arc<TaskScheduler>) -> a3s_code_core::Result<()> {
+let quota = TaskSchedulerQuota::for_scope("run:example", 2)?;
+let lease = scheduler
+    .acquire_with_quota(
+        TaskPriority::Background,
+        "example:child",
+        &quota,
+        None,
+        &CancellationToken::new(),
+    )
+    .await?;
+let occupancy = scheduler.quota_snapshot(&quota).await?;
+assert!(occupancy.active <= occupancy.max_active);
+drop(lease);
+# Ok(())
+# }
+```
+
+Dynamic workflow `maxConcurrentSteps` limits direct Flow-step admissions when
+global admission is enabled. Background `task` calls derive a separate
+digest-only `run:<run_id>` (or `session:<session_id>` for low-level hosts)
+scope, so nested fan-out never reacquires the parent's single global lease.
+Quota snapshots are live projections; idle owner entries are pruned and global
+health counters remain the cumulative diagnostic surface.
 
 `Agent::new` accepts an ACL path or inline ACL. Build sessions asynchronously
 so configuration, stores, queues, MCP sources, and workspace services are

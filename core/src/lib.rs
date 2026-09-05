@@ -361,7 +361,8 @@ pub use subagent_task_tracker::{
 };
 pub use task_scheduler::{
     TaskLease, TaskPriority, TaskPriorityCounts, TaskScheduler, TaskSchedulerConfig,
-    TaskSchedulerError, TaskSchedulerHealthSnapshot, TaskSchedulerStats,
+    TaskSchedulerError, TaskSchedulerHealthSnapshot, TaskSchedulerQuota,
+    TaskSchedulerQuotaSnapshot, TaskSchedulerStats, TASK_SCHEDULER_MAX_SCOPE_BYTES,
 };
 pub use tools::{
     ImmutableContentAdapter, ImmutableContentAdapterBindingV1, ImmutableContentAdapterSession,

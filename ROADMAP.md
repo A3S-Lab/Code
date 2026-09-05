@@ -57,6 +57,7 @@ runtime mode. The cross-repository implementation plan is tracked in the
 | `WORKFLOW-SCHED1` | Delivered | Dynamic Flow history projects into the canonical `ExecutionPlan`; step admission shares cancellation and bounded per-workflow quotas, while standalone scheduler leases carry digest-only step identities and delegated tasks use the same identity boundary | Plan identity is stable across status changes; resumed projections retain prior steps; local and global admission tests cover priority, cancellation, serialization, and the max-active=1 nested-deadlock boundary |
 | `WORKFLOW-CONTROL1` | Delivered | A host-facing dynamic-workflow control handle coordinates bounded inspection, trusted history, Flow durable cancellation/terminal transitions, identity-bound worker leases, and cross-process local event-store locking | Independent-process qualification covers busy ownership, killed-worker lease expiry/takeover, cancellation settlement, digest-only projections, and optimistic event-conflict retry; Flow remains the only workflow authority |
 | `WORKFLOW-OBS1` | Delivered | Scheduler and dynamic-workflow control diagnostics expose bounded admission, fairness, lease, and takeover counters without retaining task or workflow payloads | Independent resumed workers prove aging prevents starvation; scheduler wait/occupancy counters and durable claim-takeover counters converge while Flow history and the lease remain authoritative |
+| `WORKFLOW-QUOTA1` | Delivered | The existing scheduler actor enforces typed digest-only owner quotas for standalone Flow steps and detached Task children, propagates run identity through governed Tool contexts, and exposes a live quota projection without adding a queue or store | Mixed-owner progress, quota-blocked priority work, cancellation, identity/limit conflicts, malformed scopes, idle-state pruning, dynamic diagnostics, and detached fan-out qualification pass |
 
 Observation precedes mutation: `CAR-02` must provide useful read-only context
 diagnostics before `CAR-03` can reduce any Tool result. The first transform
@@ -398,6 +399,34 @@ the resumed step is admitted before those newer requests, and all counters
 settle with zero in-flight work. The cross-language Agent/Session surfaces
 expose the scheduler health projection through the existing typed bridge
 operations; legacy occupancy calls retain their original wire shape.
+
+### 3.3.7 Per-run quota and admission identity qualification
+
+The shared scheduler now has one optional owner-quota projection layered inside
+its existing actor. `TaskSchedulerQuota` validates a bounded descriptor and can
+derive a domain-separated digest from a run/host scope; the scheduler retains
+only that identity plus active/pending counters. `acquire_with_quota` applies
+the owner limit while preserving the established global priority/FIFO and
+aging policy. A quota-blocked owner is skipped when another owner is eligible,
+so unused global capacity is not stranded behind one fan-out. Quota state is
+pruned after the last pending or active request, while `TaskScheduler::health`
+continues to provide the cumulative process view.
+
+Dynamic workflow runtimes use the stable continuation claim identity for direct
+globally admitted Flow steps. Detached background Task calls carry the exact
+invocation run identity through `ToolContext` and derive a separate
+run/session-scoped quota; this keeps nested child fan-out from reacquiring an
+outer Session lease and preserves the max-active=1 deadlock boundary. The
+workflow-local step gate and child-run quota remain explicit resource
+boundaries, and neither creates a second Flow event store, worker lease, or
+scheduler.
+
+Qualification covers two owners competing for global capacity while one is at
+its limit, queued-owner cancellation, immutable identity/limit conflicts,
+malformed and overlong scopes, idle-state pruning, dynamic-workflow diagnostic
+projection, and detached children sharing one run quota before using free
+capacity. No scope text, prompt, Tool payload, or workflow output is retained
+by the scheduler.
 
 ### 3.4 Scoped capability program
 

@@ -68,6 +68,29 @@ fn test_task_params_with_max_steps() {
 }
 
 #[test]
+fn task_executor_prefers_run_scope_over_session_scope_for_admission() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = Arc::new(TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("done")),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let context = ToolContext::new(workspace.path().to_path_buf())
+        .with_session_id("session-owner")
+        .with_run_id("run-owner");
+    let scoped = executor.scoped_for_invocation(&context);
+    assert_eq!(scoped.admission_scope.as_deref(), Some("run:run-owner"));
+
+    let session_context =
+        ToolContext::new(workspace.path().to_path_buf()).with_session_id("session-owner");
+    let session_scoped = executor.scoped_for_invocation(&session_context);
+    assert_eq!(
+        session_scoped.admission_scope.as_deref(),
+        Some("session:session-owner")
+    );
+}
+
+#[test]
 fn test_task_params_all_fields() {
     let json = r#"{
             "agent": "general",
@@ -2858,6 +2881,123 @@ async fn independent_subagent_work_uses_the_agent_scheduler_without_nested_deadl
         foreground.await.unwrap().unwrap().output,
         "scheduled foreground result"
     );
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn detached_children_share_one_run_quota_before_using_global_capacity() {
+    use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 2,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+    let client = Arc::new(BlockingCapacityLlmClient::new());
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            client.clone(),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_subagent_tracker(Arc::clone(&tracker))
+        .with_max_parallel_tasks(1)
+        .with_task_scheduler(Arc::clone(&scheduler), false),
+    );
+    let parent_session = "quota-parent".to_string();
+    let task_one = executor.clone().execute_background(
+        TaskParams {
+            agent: "worker".to_string(),
+            description: "first quota child".to_string(),
+            prompt: "hold the first child".to_string(),
+            background: true,
+            max_steps: Some(1),
+            output_schema: None,
+        },
+        None,
+        Some(parent_session.clone()),
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if client.calls() >= 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first child should reach the provider");
+
+    let task_two = executor.execute_background(
+        TaskParams {
+            agent: "worker".to_string(),
+            description: "second quota child".to_string(),
+            prompt: "wait for the run quota".to_string(),
+            background: true,
+            max_steps: Some(1),
+            output_schema: None,
+        },
+        None,
+        Some(parent_session.clone()),
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let stats = scheduler.stats().await.unwrap();
+            if stats.pending == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("second child should wait behind the owner quota");
+    let quota =
+        crate::task_scheduler::TaskSchedulerQuota::for_scope("session:quota-parent", 1).unwrap();
+    let quota_snapshot = scheduler.quota_snapshot(&quota).await.unwrap();
+    assert_eq!(quota_snapshot.active, 1);
+    assert_eq!(quota_snapshot.pending, 1);
+    assert!(quota_snapshot.blocked);
+    assert_eq!(client.calls(), 1);
+
+    client.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let first = tracker.get(&task_one).await.unwrap();
+            if first.status != SubagentStatus::Running {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first quota child should settle");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if client.calls() >= 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("second child should use the released quota slot");
+    client.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let second = tracker.get(&task_two).await.unwrap();
+            if second.status != SubagentStatus::Running {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("second quota child should settle");
+    assert_eq!(scheduler.stats().await.unwrap().active, 0);
     scheduler.shutdown().await;
 }
 

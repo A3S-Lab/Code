@@ -20,6 +20,13 @@ pub const FLOW_DECISION_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-decision.ident
 /// the former are identified by the Flow run/step/name and JSON input, while
 /// the latter are identified by an [`AgentStepSpec`](crate::orchestration::AgentStepSpec).
 pub const FLOW_STEP_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-step.identity.v1";
+/// Identity domain for a process-local scheduler admission scope.
+///
+/// Scope identities are derived from a run/host boundary and only their
+/// digest is retained by the scheduler. They are capacity keys, not durable
+/// workflow claims or result identities.
+pub const TASK_ADMISSION_SCOPE_IDENTITY_DOMAIN_V1: &str =
+    "a3s.code.task-admission-scope.identity.v1";
 /// Identity domain for the immutable input portion of a dynamic workflow.
 pub const DYNAMIC_WORKFLOW_INPUT_IDENTITY_DOMAIN_V1: &str =
     "a3s.code.dynamic-workflow.input.identity.v1";
