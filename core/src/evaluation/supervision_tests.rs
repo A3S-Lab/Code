@@ -7,6 +7,7 @@ use crate::evaluation::evidence::RunEvidenceReader;
 use crate::evaluation::evidence::{EvidenceError, EvidenceReadRequestV1};
 use crate::evaluation::identity::ExecutionTargetV1;
 use crate::evaluation::journal::InMemoryExecutionFactJournal;
+use crate::evaluation::{EvaluationDispatchLedger, InMemoryEvaluationDispatchLedger};
 use crate::run::InMemoryRunStore;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -84,6 +85,60 @@ async fn policy_is_boundary_and_replay_safe() {
         .await
         .unwrap();
     assert_eq!(replay.outcome, EvaluationDispatchOutcome::Ignored);
+}
+
+#[tokio::test]
+async fn dispatch_persists_an_evidence_bound_result_receipt() {
+    let runs = Arc::new(InMemoryRunStore::new());
+    let run = runs
+        .create_run_with_id("receipt-run".into(), "receipt-session", "prompt")
+        .await;
+    let target = ExecutionTargetV1::new("receipt-session", &run.id);
+    let ledger = Arc::new(InMemoryEvaluationDispatchLedger::new());
+    let supervisor = EvaluationSupervisor::with_dispatch_ledger(
+        Arc::new(InMemoryExecutionFactJournal::new()),
+        Arc::new(RunEvidenceReader::new(runs)),
+        Arc::new(InMemoryAuxiliaryRunService::new(Arc::new(
+            RecordingExecutor,
+        ))),
+        Arc::new(TurnPolicy),
+        ledger.clone(),
+    );
+    let record = RunEventRecord {
+        sequence: 0,
+        timestamp_ms: 1,
+        event: AgentEvent::TurnEnd {
+            turn: 1,
+            usage: crate::llm::TokenUsage::default(),
+        },
+    };
+    let dispatched = supervisor
+        .observe_event(ExecutionFrameV1::root(target), &record)
+        .await
+        .unwrap();
+    let handle = dispatched.handle.unwrap();
+    let dispatch_id = handle.id().to_string();
+    handle.wait().await.unwrap();
+
+    let receipt = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(receipt) = ledger.completed_receipt(&dispatch_id).await.unwrap() {
+                break receipt;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("evaluation watcher must persist a terminal receipt");
+    receipt.validate().unwrap();
+    assert_eq!(
+        receipt.identity.domain,
+        crate::execution_identity::EVALUATION_DISPATCH_IDENTITY_DOMAIN_V1
+    );
+    assert!(receipt.evidence_digest.starts_with("sha256:"));
+    assert!(receipt.result_digest.is_some());
+    assert!(receipt.result_bytes > 0);
+    assert!(!format!("{receipt:?}").contains("inspect the bounded evidence"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

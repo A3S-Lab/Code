@@ -15,6 +15,10 @@ mod protocol;
 mod result;
 mod supervision;
 
+pub use crate::execution_identity::{
+    ExecutionIdentityV1, ExecutionResultOutcomeV1, ExecutionResultReceiptV1,
+    EXECUTION_RESULT_MAX_BYTES, EXECUTION_RESULT_RECEIPT_SCHEMA_V1,
+};
 pub use auxiliary_run::{
     AuxiliaryCapabilityProfileV1, AuxiliaryExecutor, AuxiliaryModeV1, AuxiliaryRunContextV1,
     AuxiliaryRunError, AuxiliaryRunHandle, AuxiliaryRunOutputV1, AuxiliaryRunService,
