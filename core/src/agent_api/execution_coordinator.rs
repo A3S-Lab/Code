@@ -21,17 +21,31 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
+/// Terminal state selected exactly once for an admitted Run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RunTerminalTransition {
+    /// Agent execution returned a result without cancellation.
+    Completed,
+    /// Cancellation won the race with a result or an execution error.
+    Cancelled,
+    /// Execution failed and the Run can retain a bounded error message.
+    Failed(String),
+}
+
 /// Shared identity boundary for one admitted Agent Run.
 ///
 /// A coordinator is created after the Run has been reserved and before any
 /// provider call is started. Both blocking and streaming execution paths use
 /// this value, so run control, checkpoint identity, and cancellation cannot
 /// silently diverge between the two modes.
+#[derive(Clone)]
 pub(super) struct ExecutionCoordinator {
     session_id: String,
     run_id: String,
     cancellation: CancellationToken,
     run_control: Arc<RunControlInbox>,
+    run_store: Arc<crate::run::InMemoryRunStore>,
+    terminal_settled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ExecutionCoordinator {
@@ -114,6 +128,56 @@ impl ExecutionCoordinator {
             run_id,
             cancellation,
             run_control,
+            run_store: Arc::clone(&session.run_store),
+            terminal_settled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    pub(super) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// Select the terminal state for one execution result.
+    ///
+    /// Cancellation is sampled from the coordinator-owned token before any
+    /// lifecycle adapter clears the Session's active-token slot. This keeps
+    /// blocking and streaming paths identical when cancellation races with a
+    /// provider result or error.
+    pub(super) fn terminal_for(
+        &self,
+        succeeded: bool,
+        error: Option<String>,
+    ) -> RunTerminalTransition {
+        if self.cancellation.is_cancelled() {
+            RunTerminalTransition::Cancelled
+        } else if succeeded {
+            RunTerminalTransition::Completed
+        } else {
+            RunTerminalTransition::Failed(error.unwrap_or_else(|| "execution failed".to_owned()))
+        }
+    }
+
+    /// Apply the one terminal RunStore transition. Successful Runs are already
+    /// finalized by the normal `End` event path, so `Completed` intentionally
+    /// performs no second write. The atomic guard makes accidental duplicate
+    /// cleanup calls harmless and prevents a late failure from rewriting a
+    /// terminal cancellation.
+    pub(super) async fn settle_terminal(&self, transition: RunTerminalTransition) {
+        if self
+            .terminal_settled
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            tracing::debug!(run_id = %self.run_id, "Ignored duplicate Run terminal transition");
+            return;
+        }
+        match transition {
+            RunTerminalTransition::Completed => {}
+            RunTerminalTransition::Cancelled => {
+                let _ = self.run_store.mark_cancelled(&self.run_id).await;
+            }
+            RunTerminalTransition::Failed(error) => {
+                let _ = self.run_store.mark_failed(&self.run_id, error).await;
+            }
         }
     }
 
@@ -159,8 +223,75 @@ mod tests {
             run_id: "run-1".to_owned(),
             cancellation,
             run_control,
+            run_store: Arc::new(crate::run::InMemoryRunStore::new()),
+            terminal_settled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
         assert_eq!(coordinator.identity(), ("session-1", "run-1"));
+    }
+
+    #[test]
+    fn terminal_transition_is_deterministic_and_cancellation_wins() {
+        let cancellation = CancellationToken::new();
+        let run_control = RunControlInbox::new(
+            "session-1".to_owned(),
+            "run-1".to_owned(),
+            cancellation.clone(),
+        );
+        let coordinator = ExecutionCoordinator {
+            session_id: "session-1".to_owned(),
+            run_id: "run-1".to_owned(),
+            cancellation: cancellation.clone(),
+            run_control,
+            run_store: Arc::new(crate::run::InMemoryRunStore::new()),
+            terminal_settled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+
+        assert_eq!(
+            coordinator.terminal_for(true, None),
+            RunTerminalTransition::Completed
+        );
+        assert_eq!(
+            coordinator.terminal_for(false, Some("boom".to_owned())),
+            RunTerminalTransition::Failed("boom".to_owned())
+        );
+        cancellation.cancel();
+        assert_eq!(
+            coordinator.terminal_for(true, None),
+            RunTerminalTransition::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_transition_updates_the_run_store_once() {
+        let cancellation = CancellationToken::new();
+        let run_control = RunControlInbox::new(
+            "session-1".to_owned(),
+            "run-1".to_owned(),
+            cancellation.clone(),
+        );
+        let run_store = Arc::new(crate::run::InMemoryRunStore::new());
+        run_store
+            .create_run_with_id("run-1".to_owned(), "session-1", "prompt")
+            .await;
+        let coordinator = ExecutionCoordinator {
+            session_id: "session-1".to_owned(),
+            run_id: "run-1".to_owned(),
+            cancellation,
+            run_control,
+            run_store: Arc::clone(&run_store),
+            terminal_settled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+
+        coordinator
+            .settle_terminal(RunTerminalTransition::Failed("boom".to_owned()))
+            .await;
+        coordinator
+            .settle_terminal(RunTerminalTransition::Cancelled)
+            .await;
+
+        let snapshot = run_store.snapshot("run-1").await.unwrap();
+        assert_eq!(snapshot.status, crate::run::RunStatus::Failed);
+        assert_eq!(snapshot.error.as_deref(), Some("boom"));
     }
 }

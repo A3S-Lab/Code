@@ -5,7 +5,8 @@
 //! knowing how run handles, current-run state, persistence, and cleanup interact.
 
 use super::{
-    runtime_events::RunCleanupState, session_persistence::SessionPersistenceContext, AgentSession,
+    execution_coordinator::ExecutionCoordinator, runtime_events::RunCleanupState,
+    session_persistence::SessionPersistenceContext, AgentSession,
 };
 use crate::agent::AgentResult;
 use crate::error::{CodeError, Result};
@@ -14,14 +15,9 @@ use tokio::task::{AbortHandle, JoinHandle};
 
 #[derive(Clone)]
 pub(super) struct StreamRunWorkerState {
-    run_store: Arc<crate::run::InMemoryRunStore>,
-    run_id: String,
+    coordinator: ExecutionCoordinator,
     persistence: Option<SessionPersistenceContext>,
     should_auto_save: Arc<std::sync::atomic::AtomicBool>,
-    /// Shared per-run cancel token slot (populated by lifecycle's
-    /// `set_cancel_token`). Used to classify a failed run as `Cancelled`
-    /// when the token was fired (e.g., by `session_cancel.cancel()`).
-    cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
 }
 
 impl StreamRunWorkerState {
@@ -29,36 +25,18 @@ impl StreamRunWorkerState {
     where
         E: std::fmt::Display,
     {
-        let cancelled = self
-            .cancel_token
-            .lock()
-            .await
-            .as_ref()
-            .map(|t| t.is_cancelled())
-            .unwrap_or(false);
-        match result {
-            Ok(result) => {
-                if let Some(persistence) = &self.persistence {
-                    persistence.record_result(&result);
-                    self.should_auto_save
-                        .store(true, std::sync::atomic::Ordering::Release);
-                }
-                if cancelled {
-                    let _ = self.run_store.mark_cancelled(&self.run_id).await;
-                }
-            }
-            Err(error) => {
-                if cancelled {
-                    let _ = self.run_store.mark_cancelled(&self.run_id).await;
-                } else {
-                    let error_message = error.to_string();
-                    let _ = self
-                        .run_store
-                        .mark_failed(&self.run_id, error_message)
-                        .await;
-                }
+        let terminal = self.coordinator.terminal_for(
+            result.is_ok(),
+            result.as_ref().err().map(ToString::to_string),
+        );
+        if let Ok(result) = result {
+            if let Some(persistence) = &self.persistence {
+                persistence.record_result(&result);
+                self.should_auto_save
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
         }
+        self.coordinator.settle_terminal(terminal).await;
     }
 }
 
@@ -335,7 +313,7 @@ impl RunControlState {
 }
 
 pub(super) struct BlockingRunLifecycle {
-    run_store: Arc<crate::run::InMemoryRunStore>,
+    coordinator: ExecutionCoordinator,
     persistence: Option<SessionPersistenceContext>,
     cleanup: RunCleanupState,
 }
@@ -343,13 +321,13 @@ pub(super) struct BlockingRunLifecycle {
 impl BlockingRunLifecycle {
     pub(super) fn from_session(
         session: &AgentSession,
-        run_id: &str,
+        coordinator: ExecutionCoordinator,
         persistence: Option<SessionPersistenceContext>,
     ) -> Self {
         Self {
-            run_store: Arc::clone(&session.run_store),
+            cleanup: RunCleanupState::from_session(session, coordinator.run_id()),
+            coordinator,
             persistence,
-            cleanup: RunCleanupState::from_session(session, run_id),
         }
     }
 
@@ -365,9 +343,10 @@ impl BlockingRunLifecycle {
     where
         E: std::fmt::Display + Into<CodeError>,
     {
-        // Sample the cancellation flag *before* clearing the token so we can
-        // distinguish cancellation-driven errors from genuine failures.
-        let cancelled = self.cleanup.was_cancelled().await;
+        let terminal = self.coordinator.terminal_for(
+            result.is_ok(),
+            result.as_ref().err().map(ToString::to_string),
+        );
         self.cleanup.clear_cancel_token().await;
         let _ = runtime_collector.await;
 
@@ -386,22 +365,12 @@ impl BlockingRunLifecycle {
                     persistence.record_result(&result);
                     persistence.auto_save_if_enabled().await;
                 }
-                if cancelled {
-                    let _ = self.run_store.mark_cancelled(self.cleanup.run_id()).await;
-                }
+                self.coordinator.settle_terminal(terminal).await;
                 self.cleanup.finish().await;
                 Ok(result)
             }
             Err(error) => {
-                if cancelled {
-                    let _ = self.run_store.mark_cancelled(self.cleanup.run_id()).await;
-                } else {
-                    let error_message = error.to_string();
-                    let _ = self
-                        .run_store
-                        .mark_failed(self.cleanup.run_id(), error_message)
-                        .await;
-                }
+                self.coordinator.settle_terminal(terminal).await;
                 self.cleanup.finish().await;
                 Err(error.into())
             }
@@ -410,7 +379,7 @@ impl BlockingRunLifecycle {
 }
 
 pub(super) struct StreamRunLifecycle {
-    run_store: Arc<crate::run::InMemoryRunStore>,
+    coordinator: ExecutionCoordinator,
     persistence: Option<SessionPersistenceContext>,
     should_auto_save: Arc<std::sync::atomic::AtomicBool>,
     cleanup: RunCleanupState,
@@ -419,14 +388,14 @@ pub(super) struct StreamRunLifecycle {
 impl StreamRunLifecycle {
     pub(super) fn from_session(
         session: &AgentSession,
-        run_id: &str,
+        coordinator: ExecutionCoordinator,
         persistence: Option<SessionPersistenceContext>,
     ) -> Self {
         Self {
-            run_store: Arc::clone(&session.run_store),
+            cleanup: RunCleanupState::from_session(session, coordinator.run_id()),
+            coordinator,
             persistence,
             should_auto_save: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            cleanup: RunCleanupState::from_session(session, run_id),
         }
     }
 
@@ -436,11 +405,9 @@ impl StreamRunLifecycle {
 
     pub(super) fn worker_state(&self) -> StreamRunWorkerState {
         StreamRunWorkerState {
-            run_store: Arc::clone(&self.run_store),
-            run_id: self.cleanup.run_id().to_string(),
+            coordinator: self.coordinator.clone(),
             persistence: self.persistence.clone(),
             should_auto_save: Arc::clone(&self.should_auto_save),
-            cancel_token: self.cleanup.cancel_token_slot(),
         }
     }
 
