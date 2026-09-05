@@ -116,7 +116,8 @@ impl BlockingRunContext {
             agent_loop = agent_loop.with_checkpoint_sink(checkpoint_sink);
         }
         let (runtime_tx, runtime_rx) = mpsc::channel(2048);
-        let lifecycle = BlockingRunLifecycle::from_session(session, &run_id, persistence);
+        let lifecycle =
+            BlockingRunLifecycle::from_session(session, coordinator.clone(), persistence);
         lifecycle.set_cancel_token(cancel_token.clone()).await;
         let (agent_event_tx, agent_event_barrier, agent_events) = run_agent_event_channel(2048);
         let invocation = coordinator.invocation(
@@ -336,7 +337,7 @@ impl StreamRunContext {
         if let Some(checkpoint_sink) = checkpoint_sink {
             agent_loop = agent_loop.with_checkpoint_sink(checkpoint_sink);
         }
-        let lifecycle = StreamRunLifecycle::from_session(session, &run_id, persistence);
+        let lifecycle = StreamRunLifecycle::from_session(session, coordinator.clone(), persistence);
         lifecycle.set_cancel_token(cancel_token.clone()).await;
         let (agent_event_tx, agent_event_barrier, agent_events) = run_agent_event_channel(2048);
         let invocation = coordinator.invocation(
