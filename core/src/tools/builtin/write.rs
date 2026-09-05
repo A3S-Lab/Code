@@ -224,8 +224,13 @@ impl Tool for WriteTool {
         {
             Ok(outcome) => {
                 // Attach diff metadata
+                // Keep creation explicit instead of asking renderers to infer
+                // it from a missing `before` field.  The latter is ambiguous
+                // for older adapters that may omit one side of a payload.
+                let created = before_content.is_none();
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("file_path".to_string(), serde_json::json!(file_path));
+                metadata.insert("created".to_string(), serde_json::json!(created));
                 metadata.insert("after".to_string(), serde_json::json!(content));
                 if let Some(before) = before_content {
                     metadata.insert("before".to_string(), serde_json::json!(before));
@@ -306,6 +311,13 @@ mod tests {
             .unwrap();
 
         assert!(result.success);
+        assert_eq!(
+            result
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("created")),
+            Some(&serde_json::Value::Bool(true)),
+        );
         let content = std::fs::read_to_string(temp.path().join("new.txt")).unwrap();
         assert_eq!(content, "hello world");
     }
@@ -372,6 +384,13 @@ mod tests {
             .unwrap();
 
         assert!(result.success);
+        assert_eq!(
+            result
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("created")),
+            Some(&serde_json::Value::Bool(false)),
+        );
         let content = std::fs::read_to_string(temp.path().join("existing.txt")).unwrap();
         assert_eq!(content, "new");
     }
