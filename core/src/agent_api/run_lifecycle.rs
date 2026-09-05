@@ -157,7 +157,10 @@ impl RunControlState {
         {
             let _ = self
                 .run_store
-                .mark_failed(&snapshot.id, error.to_string())
+                .settle_terminal(
+                    &snapshot.id,
+                    crate::run::RunTerminalTransition::Failed(error.to_string()),
+                )
                 .await;
             return Err(error);
         }
@@ -165,7 +168,10 @@ impl RunControlState {
             if let Err(error) = self.bind_cognitive_package(&snapshot.id, binding).await {
                 let _ = self
                     .run_store
-                    .mark_failed(&snapshot.id, error.to_string())
+                    .settle_terminal(
+                        &snapshot.id,
+                        crate::run::RunTerminalTransition::Failed(error.to_string()),
+                    )
                     .await;
                 return Err(error);
             }
@@ -247,7 +253,10 @@ impl RunControlState {
                 )
         );
         if cancelled {
-            let _ = self.run_store.mark_cancelled(run_id).await;
+            let _ = self
+                .run_store
+                .settle_terminal(run_id, crate::run::RunTerminalTransition::Cancelled)
+                .await;
             if let Some(executor) = &self.hook_executor {
                 executor
                     .record_run_cancelled(
@@ -258,7 +267,13 @@ impl RunControlState {
                     .await;
             }
         } else {
-            let _ = self.run_store.mark_failed(run_id, error.to_string()).await;
+            let _ = self
+                .run_store
+                .settle_terminal(
+                    run_id,
+                    crate::run::RunTerminalTransition::Failed(error.to_string()),
+                )
+                .await;
         }
 
         let mut current = self.current_run_id.lock().await;
@@ -272,7 +287,10 @@ impl RunControlState {
         if let Some(token) = token {
             token.cancel();
             if let Some(run_id) = self.current_run_id.lock().await.clone() {
-                let _ = self.run_store.mark_cancelled(&run_id).await;
+                let _ = self
+                    .run_store
+                    .settle_terminal(&run_id, crate::run::RunTerminalTransition::Cancelled)
+                    .await;
                 if let Some(executor) = &self.hook_executor {
                     executor
                         .record_run_cancelled(&run_id, &self.session_id, Some("cancelled by host"))

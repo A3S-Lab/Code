@@ -14,6 +14,7 @@ use super::{
 };
 use crate::agent::{AgentEvent, AgentLoop, InvocationContext};
 use crate::error::{CodeError, Result};
+use crate::run::RunTerminalTransition;
 use crate::run_control::RunControlInbox;
 use crate::tools::AgentEventBarrier;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,17 +22,6 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
-
-/// Terminal state selected exactly once for an admitted Run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum RunTerminalTransition {
-    /// Agent execution returned a result without cancellation.
-    Completed,
-    /// Cancellation won the race with a result or an execution error.
-    Cancelled,
-    /// Execution failed and the Run can retain a bounded error message.
-    Failed(String),
-}
 
 /// Shared identity boundary for one admitted Agent Run.
 ///
@@ -215,15 +205,10 @@ impl ExecutionCoordinator {
             tracing::debug!(run_id = %self.run_id, "Ignored duplicate Run terminal transition");
             return;
         }
-        match transition {
-            RunTerminalTransition::Completed => {}
-            RunTerminalTransition::Cancelled => {
-                let _ = self.run_store.mark_cancelled(&self.run_id).await;
-            }
-            RunTerminalTransition::Failed(error) => {
-                let _ = self.run_store.mark_failed(&self.run_id, error).await;
-            }
-        }
+        let _ = self
+            .run_store
+            .settle_terminal(&self.run_id, transition)
+            .await;
     }
 
     /// Build the invocation context used by blocking and streaming workers.
