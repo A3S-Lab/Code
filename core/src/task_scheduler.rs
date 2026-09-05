@@ -7,7 +7,7 @@
 use crate::execution_identity::ExecutionIdentityV1;
 use a3s_lane::{Priority, PriorityItem, PriorityQueue};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -30,6 +30,13 @@ pub const TASK_SCHEDULER_MAX_SCOPE_BYTES: usize = 512;
 /// accounting predictable even when a host composes owner, provider, tenant,
 /// or other typed capacity descriptors.
 pub const TASK_SCHEDULER_MAX_QUOTAS: usize = 8;
+/// Maximum number of idle quota health epochs retained by one scheduler.
+///
+/// Live quotas are always observable. Once their final reservation and waiter
+/// settle, only this many most-recent digest-only records remain available for
+/// post-run diagnostics. The bound prevents ephemeral Run or provider
+/// identities from becoming an unbounded process history.
+pub const TASK_SCHEDULER_QUOTA_HEALTH_RETENTION: usize = 64;
 
 /// Relative importance of work admitted through an agent's shared scheduler.
 ///
@@ -218,6 +225,47 @@ pub struct TaskSchedulerQuotaSnapshot {
     pub pending: usize,
     /// Whether pending work is currently blocked by the owner quota.
     pub blocked: bool,
+}
+
+/// Bounded live-or-recent health for one scheduler quota identity.
+///
+/// Unlike [`TaskSchedulerQuotaSnapshot`], this projection retains cumulative
+/// counters for a small bounded window after a quota becomes idle. It contains
+/// only the validated digest identity and numeric capacity data; scheduler
+/// labels, provider routing text, prompts, and payloads are never retained.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskSchedulerQuotaHealthSnapshot {
+    /// Digest-only quota identity requested by the caller.
+    pub identity: ExecutionIdentityV1,
+    /// Immutable limit for this observed configuration epoch.
+    pub max_active: usize,
+    /// Whether this scheduler has observed the requested identity/limit epoch.
+    pub observed: bool,
+    /// Whether the quota currently has an active reservation or queued waiter.
+    pub live: bool,
+    /// Current active reservations for this identity.
+    pub active: usize,
+    /// Current queued requests for this identity.
+    pub pending: usize,
+    /// Whether pending work is currently blocked by this quota.
+    pub blocked: bool,
+    /// Successful admissions observed in the retained epoch.
+    pub admitted: u64,
+    /// Normally released reservations observed in the retained epoch.
+    pub released: u64,
+    /// Queued or active admissions cancelled by their caller.
+    pub cancelled: u64,
+    /// Pending admissions rejected while the scheduler was closing.
+    pub rejected: u64,
+    /// Highest simultaneous reservation count observed for this identity.
+    pub peak_active: usize,
+    /// Saturating sum of successful admission wait time in microseconds.
+    pub total_wait_micros: u64,
+    /// Mean successful admission wait time in microseconds.
+    pub average_wait_micros: u64,
+    /// Longest successful admission wait time in microseconds.
+    pub max_wait_micros: u64,
 }
 
 const fn default_max_active() -> usize {
@@ -562,6 +610,30 @@ impl TaskScheduler {
         rx.await.map_err(|_| TaskSchedulerError::Closed)?
     }
 
+    /// Return bounded cumulative health for one quota identity.
+    ///
+    /// The scheduler keeps a fixed number of recent idle quota epochs so a
+    /// host can inspect a completed provider generation without turning the
+    /// actor into an unbounded metrics store. A descriptor that has never been
+    /// admitted returns `observed = false` and zero counters.
+    pub async fn quota_health(
+        &self,
+        quota: &TaskSchedulerQuota,
+    ) -> Result<TaskSchedulerQuotaHealthSnapshot, TaskSchedulerError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(TaskSchedulerError::Closed);
+        }
+        quota.validate()?;
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(SchedulerMessage::QuotaHealth {
+                quota: quota.clone(),
+                reply: tx,
+            })
+            .map_err(|_| TaskSchedulerError::Closed)?;
+        rx.await.map_err(|_| TaskSchedulerError::Closed)?
+    }
+
     /// Return a consistent actor-owned occupancy snapshot.
     pub async fn stats(&self) -> Result<TaskSchedulerStats, TaskSchedulerError> {
         if self.closed.load(Ordering::Acquire) {
@@ -680,6 +752,10 @@ enum SchedulerMessage {
         quota: TaskSchedulerQuota,
         reply: oneshot::Sender<Result<TaskSchedulerQuotaSnapshot, TaskSchedulerError>>,
     },
+    QuotaHealth {
+        quota: TaskSchedulerQuota,
+        reply: oneshot::Sender<Result<TaskSchedulerQuotaHealthSnapshot, TaskSchedulerError>>,
+    },
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -701,6 +777,10 @@ struct SchedulerState {
     cancelled: HashSet<u64>,
     active: HashMap<u64, ActiveAdmission>,
     quotas: HashMap<String, QuotaState>,
+    /// Recently idle quota epochs, bounded by
+    /// [`TASK_SCHEDULER_QUOTA_HEALTH_RETENTION`].
+    retained_quota_health: HashMap<String, QuotaState>,
+    retained_quota_order: VecDeque<String>,
     closing: bool,
     shutdown_waiters: Vec<oneshot::Sender<()>>,
     counters: SchedulerCounters,
@@ -717,6 +797,54 @@ struct QuotaState {
     max_active: usize,
     active: usize,
     pending: usize,
+    admitted: u64,
+    released: u64,
+    cancelled: u64,
+    rejected: u64,
+    peak_active: usize,
+    total_wait_micros: u64,
+    max_wait_micros: u64,
+}
+
+impl QuotaState {
+    fn new(identity: ExecutionIdentityV1, max_active: usize) -> Self {
+        Self {
+            identity,
+            max_active,
+            active: 0,
+            pending: 0,
+            admitted: 0,
+            released: 0,
+            cancelled: 0,
+            rejected: 0,
+            peak_active: 0,
+            total_wait_micros: 0,
+            max_wait_micros: 0,
+        }
+    }
+
+    fn health_snapshot(&self, live: bool) -> TaskSchedulerQuotaHealthSnapshot {
+        TaskSchedulerQuotaHealthSnapshot {
+            identity: self.identity.clone(),
+            max_active: self.max_active,
+            observed: true,
+            live,
+            active: self.active,
+            pending: self.pending,
+            blocked: self.pending > 0 && self.active >= self.max_active,
+            admitted: self.admitted,
+            released: self.released,
+            cancelled: self.cancelled,
+            rejected: self.rejected,
+            peak_active: self.peak_active,
+            total_wait_micros: self.total_wait_micros,
+            average_wait_micros: self
+                .total_wait_micros
+                .checked_div(self.admitted)
+                .unwrap_or(0),
+            max_wait_micros: self.max_wait_micros,
+        }
+    }
 }
 
 async fn run_scheduler(
@@ -729,6 +857,8 @@ async fn run_scheduler(
         pending: PriorityQueue::new(),
         cancelled: HashSet::new(),
         active: HashMap::new(),
+        retained_quota_health: HashMap::new(),
+        retained_quota_order: VecDeque::new(),
         quotas: HashMap::new(),
         closing: false,
         shutdown_waiters: Vec::new(),
@@ -757,7 +887,7 @@ async fn run_scheduler(
             SchedulerMessage::Cancel(id) => {
                 if let Some(active) = state.active.remove(&id) {
                     state.counters.cancelled = state.counters.cancelled.saturating_add(1);
-                    state.release_active_quotas(&active.quota_identities);
+                    state.release_active_quotas(&active.quota_identities, true);
                 } else {
                     state.cancelled.insert(id);
                     state.purge_cancelled();
@@ -768,7 +898,7 @@ async fn run_scheduler(
             SchedulerMessage::Release(id) => {
                 if let Some(active) = state.active.remove(&id) {
                     state.counters.released = state.counters.released.saturating_add(1);
-                    state.release_active_quotas(&active.quota_identities);
+                    state.release_active_quotas(&active.quota_identities, false);
                 }
                 state.dispatch();
                 state.finish_shutdown_if_idle();
@@ -786,6 +916,10 @@ async fn run_scheduler(
             }
             SchedulerMessage::QuotaStats { quota, reply } => {
                 let result = state.quota_snapshot(&quota);
+                let _ = reply.send(result);
+            }
+            SchedulerMessage::QuotaHealth { quota, reply } => {
+                let result = state.quota_health(&quota);
                 let _ = reply.send(result);
             }
             SchedulerMessage::Shutdown(reply) => {
@@ -812,6 +946,36 @@ async fn run_scheduler(
 }
 
 impl SchedulerState {
+    fn retain_quota_health(&mut self, key: String, state: QuotaState) {
+        self.retained_quota_health.remove(&key);
+        self.retained_quota_order
+            .retain(|candidate| candidate != &key);
+        self.retained_quota_health.insert(key.clone(), state);
+        self.retained_quota_order.push_back(key);
+        while self.retained_quota_order.len() > TASK_SCHEDULER_QUOTA_HEALTH_RETENTION {
+            let Some(evicted) = self.retained_quota_order.pop_front() else {
+                break;
+            };
+            self.retained_quota_health.remove(&evicted);
+        }
+    }
+
+    fn take_retained_quota_health(
+        &mut self,
+        key: &str,
+        identity: &ExecutionIdentityV1,
+        max_active: usize,
+    ) -> Option<QuotaState> {
+        let state = self.retained_quota_health.remove(key)?;
+        self.retained_quota_order
+            .retain(|candidate| candidate != key);
+        if state.identity == *identity && state.max_active == max_active {
+            Some(state)
+        } else {
+            None
+        }
+    }
+
     fn register_pending_quotas(
         &mut self,
         quotas: &[TaskSchedulerQuota],
@@ -831,12 +995,13 @@ impl SchedulerState {
         }
         for quota in quotas {
             let key = quota.identity.digest.clone();
-            self.quotas.entry(key).or_insert_with(|| QuotaState {
-                identity: quota.identity.clone(),
-                max_active: quota.max_active,
-                active: 0,
-                pending: 0,
-            });
+            if self.quotas.contains_key(&key) {
+                continue;
+            }
+            let state = self
+                .take_retained_quota_health(&key, &quota.identity, quota.max_active)
+                .unwrap_or_else(|| QuotaState::new(quota.identity.clone(), quota.max_active));
+            self.quotas.insert(key, state);
         }
         Ok(())
     }
@@ -846,6 +1011,7 @@ impl SchedulerState {
             let key = quota.identity.digest.as_str();
             if let Some(state) = self.quotas.get_mut(key) {
                 state.pending = state.pending.saturating_sub(1);
+                state.rejected = state.rejected.saturating_add(1);
             }
             self.prune_idle_quota(key);
         }
@@ -853,14 +1019,26 @@ impl SchedulerState {
 
     fn cancel_pending(&mut self, item: QueuedAdmission) {
         self.counters.cancelled = self.counters.cancelled.saturating_add(1);
-        self.reject_pending_quotas(&item.quotas);
+        for quota in &item.quotas {
+            let key = quota.identity.digest.as_str();
+            if let Some(state) = self.quotas.get_mut(key) {
+                state.pending = state.pending.saturating_sub(1);
+                state.cancelled = state.cancelled.saturating_add(1);
+            }
+            self.prune_idle_quota(key);
+        }
         let _ = item.ready.send(Err(TaskSchedulerError::Cancelled));
     }
 
-    fn release_active_quotas(&mut self, keys: &[String]) {
+    fn release_active_quotas(&mut self, keys: &[String], cancelled: bool) {
         for key in keys {
             if let Some(state) = self.quotas.get_mut(key) {
                 state.active = state.active.saturating_sub(1);
+                if cancelled {
+                    state.cancelled = state.cancelled.saturating_add(1);
+                } else {
+                    state.released = state.released.saturating_add(1);
+                }
             }
             self.prune_idle_quota(key);
         }
@@ -872,7 +1050,9 @@ impl SchedulerState {
             .get(key)
             .is_some_and(|state| state.active == 0 && state.pending == 0);
         if remove {
-            self.quotas.remove(key);
+            if let Some(state) = self.quotas.remove(key) {
+                self.retain_quota_health(key.to_owned(), state);
+            }
         }
     }
 
@@ -910,6 +1090,44 @@ impl SchedulerState {
             active: 0,
             pending: 0,
             blocked: false,
+        })
+    }
+
+    fn quota_health(
+        &self,
+        quota: &TaskSchedulerQuota,
+    ) -> Result<TaskSchedulerQuotaHealthSnapshot, TaskSchedulerError> {
+        quota.validate()?;
+        if let Some(state) = self.quotas.get(&quota.identity.digest) {
+            if state.identity != quota.identity || state.max_active != quota.max_active {
+                return Err(TaskSchedulerError::InvalidConfig(
+                    "scheduler quota identity is already registered with a different limit"
+                        .to_string(),
+                ));
+            }
+            return Ok(state.health_snapshot(true));
+        }
+        if let Some(state) = self.retained_quota_health.get(&quota.identity.digest) {
+            if state.identity == quota.identity && state.max_active == quota.max_active {
+                return Ok(state.health_snapshot(false));
+            }
+        }
+        Ok(TaskSchedulerQuotaHealthSnapshot {
+            identity: quota.identity.clone(),
+            max_active: quota.max_active,
+            observed: false,
+            live: false,
+            active: 0,
+            pending: 0,
+            blocked: false,
+            admitted: 0,
+            released: 0,
+            cancelled: 0,
+            rejected: 0,
+            peak_active: 0,
+            total_wait_micros: 0,
+            average_wait_micros: 0,
+            max_wait_micros: 0,
         })
     }
 
@@ -985,7 +1203,7 @@ impl SchedulerState {
             if item.ready.send(Ok(())).is_err() {
                 self.active.remove(&id);
                 self.counters.cancelled = self.counters.cancelled.saturating_add(1);
-                self.release_active_quotas(&quota_identities);
+                self.release_active_quotas(&quota_identities, true);
                 continue;
             }
             self.counters.admitted = self.counters.admitted.saturating_add(1);
@@ -993,6 +1211,15 @@ impl SchedulerState {
                 self.counters.total_wait_micros.saturating_add(wait_micros);
             self.counters.max_wait_micros = self.counters.max_wait_micros.max(wait_micros);
             self.counters.peak_active = self.counters.peak_active.max(self.global_active_count());
+            for quota_key in &quota_identities {
+                if let Some(quota_state) = self.quotas.get_mut(quota_key) {
+                    quota_state.admitted = quota_state.admitted.saturating_add(1);
+                    quota_state.total_wait_micros =
+                        quota_state.total_wait_micros.saturating_add(wait_micros);
+                    quota_state.max_wait_micros = quota_state.max_wait_micros.max(wait_micros);
+                    quota_state.peak_active = quota_state.peak_active.max(quota_state.active);
+                }
+            }
             tracing::trace!(
                 admission_id = id,
                 ?priority,

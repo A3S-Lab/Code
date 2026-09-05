@@ -208,6 +208,9 @@ struct BoundedAdmission {
     max_concurrency: NonZeroUsize,
     semaphore: Arc<Semaphore>,
     scheduler: Option<Arc<SchedulerBinding>>,
+    /// Optional immutable provider pool descriptor used by host diagnostics.
+    /// The descriptor contains only a digest identity and numeric capacity.
+    pool: Option<ModelGenerationPool>,
 }
 
 #[derive(Debug)]
@@ -227,6 +230,30 @@ pub struct ModelGenerationAdmission {
     bounded: Arc<BoundedAdmission>,
 }
 
+/// Read-only, secret-free configuration and occupancy evidence for one model
+/// generation pool.
+///
+/// `local_reserved` includes permits waiting for the shared scheduler after
+/// acquiring the local client gate; it is therefore intentionally distinct
+/// from provider calls that have reached the transport. The optional scheduler
+/// projection carries the same pool identity and retains a bounded recent
+/// health epoch after the final reservation is released.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelGenerationPoolHealthSnapshot {
+    /// Immutable provider/model capacity descriptor.
+    pub pool: ModelGenerationPool,
+    /// Effective local gate limit for this admission facade.
+    pub local_max_concurrency: usize,
+    /// Local permits currently reserved by this facade.
+    pub local_reserved: usize,
+    /// Local permits immediately available to this facade.
+    pub local_available: usize,
+    /// Shared scheduler health for this pool, when the facade is scheduler-bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<crate::task_scheduler::TaskSchedulerQuotaHealthSnapshot>,
+}
+
 impl ModelGenerationAdmission {
     pub fn new(concurrency: ModelGenerationConcurrency) -> Self {
         let max_concurrency = concurrency.max_concurrency();
@@ -234,6 +261,7 @@ impl ModelGenerationAdmission {
             max_concurrency,
             semaphore: Arc::new(Semaphore::new(max_concurrency.get())),
             scheduler: None,
+            pool: None,
         });
         Self { bounded }
     }
@@ -248,7 +276,46 @@ impl ModelGenerationAdmission {
         priority: crate::task_scheduler::TaskPriority,
         label: impl Into<String>,
     ) -> Result<Self, crate::task_scheduler::TaskSchedulerError> {
+        self.with_scheduler_binding(scheduler, quota, priority, label.into(), None)
+    }
+
+    /// Attach a provider pool descriptor and its shared scheduler quota.
+    ///
+    /// The pool is configuration evidence only; live reservations continue to
+    /// be owned by the existing scheduler actor and local semaphore.
+    pub fn with_model_generation_pool(
+        self,
+        scheduler: Arc<crate::task_scheduler::TaskScheduler>,
+        pool: ModelGenerationPool,
+        priority: crate::task_scheduler::TaskPriority,
+        label: impl Into<String>,
+    ) -> Result<Self, crate::task_scheduler::TaskSchedulerError> {
+        pool.validate().map_err(|error| {
+            crate::task_scheduler::TaskSchedulerError::InvalidConfig(error.to_string())
+        })?;
+        let quota = crate::task_scheduler::TaskSchedulerQuota::new(
+            pool.identity.clone(),
+            pool.max_concurrency.get(),
+        )?;
+        self.with_scheduler_binding(scheduler, quota, priority, label.into(), Some(pool))
+    }
+
+    fn with_scheduler_binding(
+        self,
+        scheduler: Arc<crate::task_scheduler::TaskScheduler>,
+        quota: crate::task_scheduler::TaskSchedulerQuota,
+        priority: crate::task_scheduler::TaskPriority,
+        label: String,
+        pool: Option<ModelGenerationPool>,
+    ) -> Result<Self, crate::task_scheduler::TaskSchedulerError> {
         quota.validate()?;
+        if let Some(pool) = &pool {
+            if pool.identity != quota.identity || pool.max_concurrency.get() != quota.max_active {
+                return Err(crate::task_scheduler::TaskSchedulerError::InvalidConfig(
+                    "model-generation pool and scheduler quota do not match".to_string(),
+                ));
+            }
+        }
         let bounded = Arc::new(BoundedAdmission {
             max_concurrency: self.bounded.max_concurrency,
             semaphore: Arc::clone(&self.bounded.semaphore),
@@ -256,8 +323,9 @@ impl ModelGenerationAdmission {
                 scheduler,
                 quota,
                 priority,
-                label: label.into(),
+                label,
             })),
+            pool,
         });
         Ok(Self { bounded })
     }
@@ -274,11 +342,12 @@ impl ModelGenerationAdmission {
         let Some(binding) = source.bounded.scheduler.as_ref() else {
             return Ok(self);
         };
-        self.with_scheduler_quota(
+        self.with_scheduler_binding(
             Arc::clone(&binding.scheduler),
             binding.quota.clone(),
             binding.priority,
-            label,
+            label.into(),
+            source.bounded.pool.clone(),
         )
     }
 
@@ -290,6 +359,33 @@ impl ModelGenerationAdmission {
     /// scheduler actor.
     pub(crate) fn has_scheduler_quota(&self) -> bool {
         self.bounded.scheduler.is_some()
+    }
+
+    /// Return secret-free pool configuration and point-in-time health.
+    ///
+    /// `None` means this admission was created for a custom client that did
+    /// not publish a [`ModelGenerationPool`].
+    pub async fn pool_health(
+        &self,
+    ) -> Result<Option<ModelGenerationPoolHealthSnapshot>, crate::task_scheduler::TaskSchedulerError>
+    {
+        let Some(pool) = self.bounded.pool.clone() else {
+            return Ok(None);
+        };
+        let local_max_concurrency = self.bounded.max_concurrency.get();
+        let local_available = self.bounded.semaphore.available_permits();
+        let local_reserved = local_max_concurrency.saturating_sub(local_available);
+        let scheduler = match self.bounded.scheduler.as_ref() {
+            Some(binding) => Some(binding.scheduler.quota_health(&binding.quota).await?),
+            None => None,
+        };
+        Ok(Some(ModelGenerationPoolHealthSnapshot {
+            pool,
+            local_max_concurrency,
+            local_reserved,
+            local_available,
+            scheduler,
+        }))
     }
 
     /// Wait for active-generation capacity without applying an active
@@ -635,6 +731,115 @@ mod tests {
         .expect("provider quota should be released")
         .unwrap();
         drop(replacement);
+        scheduler.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pool_health_composes_local_and_scheduler_capacity_without_routing_text() {
+        let scheduler = Arc::new(
+            crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+                max_active: 1,
+                aging_interval_ms: 60_000,
+            })
+            .unwrap(),
+        );
+        let pool = ModelGenerationPool::for_client(
+            "secret-provider-name",
+            "secret-model-name",
+            Some("https://provider.test/v1/chat?api_key=secret"),
+            Some("private-account"),
+            ModelGenerationConcurrency::single_flight(),
+        )
+        .unwrap();
+        let admission = ModelGenerationAdmission::new(ModelGenerationConcurrency::single_flight())
+            .with_model_generation_pool(
+                Arc::clone(&scheduler),
+                pool.clone(),
+                crate::task_scheduler::TaskPriority::Foreground,
+                "secret-session-label",
+            )
+            .unwrap();
+
+        let configured = admission.pool_health().await.unwrap().unwrap();
+        assert_eq!(configured.pool, pool);
+        assert_eq!(configured.local_max_concurrency, 1);
+        assert_eq!(configured.local_reserved, 0);
+        assert_eq!(configured.local_available, 1);
+        assert!(!configured.scheduler.as_ref().unwrap().observed);
+
+        let permit = admission.acquire(&CancellationToken::new()).await.unwrap();
+        let active = admission.pool_health().await.unwrap().unwrap();
+        assert_eq!(active.local_reserved, 1);
+        assert_eq!(active.local_available, 0);
+        assert!(active.scheduler.as_ref().unwrap().live);
+        assert_eq!(active.scheduler.as_ref().unwrap().active, 1);
+
+        drop(permit);
+        let retained = admission.pool_health().await.unwrap().unwrap();
+        assert_eq!(retained.local_reserved, 0);
+        assert_eq!(retained.scheduler.as_ref().unwrap().released, 1);
+        assert!(!retained.scheduler.as_ref().unwrap().live);
+        let encoded = serde_json::to_string(&retained).unwrap();
+        for secret in [
+            "secret-provider-name",
+            "secret-model-name",
+            "provider.test",
+            "api_key",
+            "private-account",
+            "secret-session-label",
+        ] {
+            assert!(!encoded.contains(secret), "snapshot leaked {secret}");
+        }
+        scheduler.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn nested_runtime_rebind_retains_the_exact_provider_pool_health() {
+        let scheduler = Arc::new(
+            crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+                max_active: 1,
+                aging_interval_ms: 60_000,
+            })
+            .unwrap(),
+        );
+        let pool = ModelGenerationPool::for_endpoint(
+            "provider",
+            "model",
+            "https://provider.test",
+            ModelGenerationConcurrency::bounded(NonZeroUsize::new(2).unwrap()),
+        )
+        .unwrap();
+        let session = ModelGenerationAdmission::new(ModelGenerationConcurrency::bounded(
+            NonZeroUsize::new(2).unwrap(),
+        ))
+        .with_model_generation_pool(
+            Arc::clone(&scheduler),
+            pool.clone(),
+            crate::task_scheduler::TaskPriority::Foreground,
+            "session-generation",
+        )
+        .unwrap();
+        let nested = ModelGenerationAdmission::new(ModelGenerationConcurrency::single_flight())
+            .with_scheduler_quota_from(&session, "nested-generation")
+            .unwrap();
+
+        let health = nested.pool_health().await.unwrap().unwrap();
+        assert_eq!(health.pool, pool);
+        assert_eq!(health.local_max_concurrency, 1);
+        assert_eq!(health.scheduler.as_ref().unwrap().max_active, 2);
+        let permit = nested.acquire(&CancellationToken::new()).await.unwrap();
+        assert_eq!(
+            session
+                .pool_health()
+                .await
+                .unwrap()
+                .unwrap()
+                .scheduler
+                .unwrap()
+                .active,
+            1
+        );
+        drop(permit);
         scheduler.shutdown().await;
     }
 }

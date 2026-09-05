@@ -37,6 +37,17 @@ impl AgentSession {
         self.task_scheduler.health().await
     }
 
+    /// Return secret-free configuration and bounded health for this session's
+    /// provider/model generation pool, when the client publishes one.
+    pub async fn model_generation_pool_health(
+        &self,
+    ) -> std::result::Result<
+        Option<crate::llm::ModelGenerationPoolHealthSnapshot>,
+        crate::task_scheduler::TaskSchedulerError,
+    > {
+        self.model_generation_admission.pool_health().await
+    }
+
     /// Get a snapshot of command entries (name, description, optional usage).
     ///
     /// Acquires the command registry lock briefly and returns owned data.
