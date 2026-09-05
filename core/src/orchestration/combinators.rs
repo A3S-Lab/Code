@@ -5,9 +5,10 @@
 //! one genuinely new scheduling shape, where each item flows through a chain
 //! of stages independently — no barrier between stages.
 
-use super::checkpoint::WorkflowCheckpoint;
+use super::checkpoint::{workflow_step_result_receipt, WorkflowCheckpoint};
 use super::executor::{execute_steps_parallel, AgentExecutor, AgentStepSpec, StepOutcome};
 use crate::agent::AgentEvent;
+use crate::execution_identity::ExecutionResultReceiptV1;
 use crate::ordered_parallel::run_ordered_parallel_with_limit;
 use crate::store::SessionStore;
 use std::collections::HashMap;
@@ -106,22 +107,60 @@ pub async fn execute_steps_parallel_resumable(
     store: Arc<dyn SessionStore>,
     event_tx: Option<broadcast::Sender<AgentEvent>>,
 ) -> Vec<StepOutcome> {
-    // Prior progress. An unreadable checkpoint — e.g. one written by a newer,
-    // incompatible schema version, which the store rejects via
-    // `ensure_loadable` — is treated as *no* prior progress: the workflow
-    // re-runs from scratch rather than resuming from state it can't interpret.
-    // That's a fail-safe (do the work), but surface it rather than swallow it.
-    let done: HashMap<String, StepOutcome> = match store.load_workflow_checkpoint(workflow_id).await
-    {
-        Ok(Some(cp)) => cp.completed(),
-        Ok(None) => HashMap::new(),
-        Err(e) => {
+    // Prior progress. A checkpoint is a side-effect boundary: if it cannot be
+    // decoded or its identity does not match the current specs, fail closed
+    // rather than re-running work whose external outcome is ambiguous.
+    let (done, completed_receipts): (
+        HashMap<String, StepOutcome>,
+        HashMap<String, ExecutionResultReceiptV1>,
+    ) = match store.load_workflow_checkpoint(workflow_id).await {
+        Ok(Some(cp)) => {
+            if let Err(error) = cp.validate_for_specs(workflow_id, &specs) {
+                tracing::warn!(
+                    workflow_id = %workflow_id,
+                    error = %error,
+                    "workflow checkpoint identity conflict; refusing to re-run"
+                );
+                return specs
+                    .into_iter()
+                    .map(|spec| {
+                        StepOutcome::failed(
+                            spec.task_id,
+                            spec.agent,
+                            format!("workflow checkpoint cannot be resumed: {error}"),
+                        )
+                    })
+                    .collect();
+            }
+            let receipts = cp
+                .steps
+                .iter()
+                .filter_map(|record| {
+                    record
+                        .result_receipt
+                        .clone()
+                        .map(|receipt| (record.task_id.clone(), receipt))
+                })
+                .collect();
+            (cp.completed(), receipts)
+        }
+        Ok(None) => (HashMap::new(), HashMap::new()),
+        Err(error) => {
             tracing::warn!(
                 workflow_id = %workflow_id,
-                error = %e,
-                "workflow checkpoint unreadable; re-running the workflow from scratch"
+                error = %error,
+                "workflow checkpoint unreadable; refusing to re-run"
             );
-            HashMap::new()
+            return specs
+                .into_iter()
+                .map(|spec| {
+                    StepOutcome::failed(
+                        spec.task_id,
+                        spec.agent,
+                        format!("workflow checkpoint cannot be resumed: {error}"),
+                    )
+                })
+                .collect();
         }
     };
 
@@ -137,6 +176,7 @@ pub async fn execute_steps_parallel_resumable(
 
     // Accumulator seeded with prior progress; persisted at every step boundary.
     let acc = Arc::new(tokio::sync::Mutex::new(done.clone()));
+    let receipt_acc = Arc::new(tokio::sync::Mutex::new(completed_receipts));
     let limit = executor.concurrency_hint();
     let workflow_id_owned = workflow_id.to_string();
     let store_steps = Arc::clone(&store);
@@ -145,9 +185,11 @@ pub async fn execute_steps_parallel_resumable(
         let executor = Arc::clone(&executor);
         let event_tx = event_tx.clone();
         let acc = Arc::clone(&acc);
+        let receipt_acc = Arc::clone(&receipt_acc);
         let store = Arc::clone(&store_steps);
         let workflow_id = workflow_id_owned.clone();
         async move {
+            let spec_for_receipt = spec.clone();
             let outcome = executor.execute_step(spec, event_tx).await;
             // Step boundary: record only *successful* steps, so a failed step
             // is retried on resume (its effect didn't complete) while a
@@ -155,8 +197,28 @@ pub async fn execute_steps_parallel_resumable(
             if outcome.success {
                 let mut guard = acc.lock().await;
                 guard.insert(outcome.task_id.clone(), outcome.clone());
-                let checkpoint =
-                    WorkflowCheckpoint::from_completed(&workflow_id, &guard, now_epoch_ms());
+                let mut receipt_guard = receipt_acc.lock().await;
+                match workflow_step_result_receipt(&workflow_id, &spec_for_receipt, &outcome, None)
+                {
+                    Ok(receipt) => {
+                        receipt_guard.insert(outcome.task_id.clone(), receipt);
+                    }
+                    Err(error) => {
+                        receipt_guard.remove(&outcome.task_id);
+                        tracing::warn!(
+                            workflow_id = %workflow_id,
+                            task_id = %outcome.task_id,
+                            error = %error,
+                            "workflow result receipt unavailable; retaining legacy outcome"
+                        );
+                    }
+                }
+                let checkpoint = WorkflowCheckpoint::from_completed_with_receipts(
+                    &workflow_id,
+                    &guard,
+                    &receipt_guard,
+                    now_epoch_ms(),
+                );
                 if let Err(e) = store
                     .save_workflow_checkpoint(&workflow_id, &checkpoint)
                     .await
@@ -529,6 +591,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resumable_fences_a_cached_result_when_step_identity_changes() {
+        use crate::store::MemorySessionStore;
+        let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
+        let old_spec = AgentStepSpec::new("a", "explore", "old", "old prompt");
+        let old_outcome = cached("a", "explore", "cached-a");
+        let old_receipt = super::super::checkpoint::workflow_step_result_receipt(
+            "wf-stale",
+            &old_spec,
+            &old_outcome,
+            None,
+        )
+        .unwrap();
+        let mut done = HashMap::new();
+        done.insert("a".to_string(), old_outcome);
+        let mut receipts = HashMap::new();
+        receipts.insert("a".to_string(), old_receipt);
+        store
+            .save_workflow_checkpoint(
+                "wf-stale",
+                &WorkflowCheckpoint::from_completed_with_receipts("wf-stale", &done, &receipts, 1),
+            )
+            .await
+            .unwrap();
+
+        let ran = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let exec: Arc<dyn AgentExecutor> = Arc::new(RecordingExecutor {
+            ran: Arc::clone(&ran),
+        });
+        let specs = vec![AgentStepSpec::new("a", "explore", "new", "new prompt")];
+        let out =
+            execute_steps_parallel_resumable(exec, specs, "wf-stale", Arc::clone(&store), None)
+                .await;
+
+        assert!(
+            ran.lock().await.is_empty(),
+            "stale cached work must not run"
+        );
+        assert_eq!(out.len(), 1);
+        assert!(!out[0].success);
+        assert!(out[0].output.contains("stale result identity"));
+    }
+
+    #[tokio::test]
     async fn resumable_retains_checkpoint_recording_only_successes_on_partial_failure() {
         use crate::store::MemorySessionStore;
         let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
@@ -557,6 +662,19 @@ mod tests {
             !completed.contains_key("bad"),
             "failed step is NOT recorded → it retries on resume"
         );
+        let ok_record = cp
+            .steps
+            .iter()
+            .find(|record| record.task_id == "ok")
+            .expect("successful step record");
+        let receipt = ok_record
+            .result_receipt
+            .as_ref()
+            .expect("successful step carries a bounded result receipt");
+        receipt.validate().unwrap();
+        assert!(receipt.result_digest.is_some());
+        assert!(receipt.result_bytes > 0);
+        assert!(!format!("{receipt:?}").contains("ran:ok"));
     }
 
     struct ZeroHintExecutor;
@@ -649,14 +767,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resumable_reruns_all_when_checkpoint_load_errors() {
+    async fn resumable_fails_closed_when_checkpoint_load_errors() {
         use crate::store::MemorySessionStore;
         let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
 
         // A checkpoint written by a *newer*, incompatible schema version: the
-        // store rejects it on load. The resumable combinator must treat that as
-        // no prior progress and re-run everything (fail-safe), not panic or
-        // silently resume from state it can't read.
+        // store rejects it on load. Re-running would risk duplicating an
+        // external side effect whose outcome is unknown, so the combinator
+        // fails closed and leaves the checkpoint for explicit reconciliation.
         let mut done = std::collections::HashMap::new();
         done.insert("a".to_string(), cached("a", "explore", "old"));
         let mut cp = WorkflowCheckpoint::from_completed("wf-err", &done, 1);
@@ -674,15 +792,13 @@ mod tests {
         let out =
             execute_steps_parallel_resumable(exec, specs, "wf-err", Arc::clone(&store), None).await;
 
-        let mut ran_ids = ran.lock().await.clone();
-        ran_ids.sort();
-        assert_eq!(
-            ran_ids,
-            vec!["a".to_string(), "b".to_string()],
-            "an unreadable (future-version) checkpoint is ignored → all steps re-run"
+        assert!(
+            ran.lock().await.is_empty(),
+            "no step runs after load failure"
         );
         assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|o| o.success));
+        assert!(out.iter().all(|o| !o.success));
+        assert!(out.iter().all(|o| o.output.contains("cannot be resumed")));
     }
 
     #[tokio::test]

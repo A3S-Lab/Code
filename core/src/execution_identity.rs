@@ -14,6 +14,9 @@ pub const EXECUTION_IDENTITY_SCHEMA_V1: &str = "a3s.code.execution-identity.v1";
 pub const MODEL_CALL_IDENTITY_DOMAIN_V1: &str = "a3s.code.model-call.identity.v1";
 pub const TOOL_INVOCATION_IDENTITY_DOMAIN_V1: &str = "a3s.code.tool-invocation.identity.v1";
 pub const FLOW_DECISION_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-decision.identity.v1";
+pub const WORKFLOW_STEP_IDENTITY_DOMAIN_V1: &str = "a3s.code.workflow-step.identity.v1";
+pub const WORKFLOW_STEP_EVIDENCE_DOMAIN_V1: &str = "a3s.code.workflow-step.evidence.v1";
+pub const WORKFLOW_STEP_RESULT_DOMAIN_V1: &str = "a3s.code.workflow-step.result.v1";
 pub const EVALUATION_DISPATCH_IDENTITY_DOMAIN_V1: &str = "a3s.code.evaluation-dispatch.identity.v1";
 pub const EVALUATION_DISPATCH_REQUEST_DOMAIN_V1: &str = "a3s.code.evaluation-dispatch.request.v1";
 pub const EXECUTION_RESULT_RECEIPT_SCHEMA_V1: &str = "a3s.code.execution-result-receipt.v1";
@@ -126,6 +129,25 @@ pub struct ExecutionResultReceiptV1 {
 }
 
 impl ExecutionResultReceiptV1 {
+    pub fn new(
+        identity: ExecutionIdentityV1,
+        evidence_digest: impl Into<String>,
+        outcome: ExecutionResultOutcomeV1,
+        result_digest: Option<String>,
+        result_bytes: u64,
+    ) -> Result<Self, ExecutionIdentityError> {
+        let receipt = Self {
+            schema: EXECUTION_RESULT_RECEIPT_SCHEMA_V1.to_string(),
+            identity,
+            evidence_digest: evidence_digest.into(),
+            outcome,
+            result_digest,
+            result_bytes,
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
     pub fn validate(&self) -> Result<(), ExecutionIdentityError> {
         if self.schema != EXECUTION_RESULT_RECEIPT_SCHEMA_V1 {
             return Err(ExecutionIdentityError::InvalidReceiptField("schema"));
@@ -216,16 +238,13 @@ impl ExecutionClaimV1 {
         result_digest: Option<String>,
         result_bytes: u64,
     ) -> Result<ExecutionResultReceiptV1, ExecutionIdentityError> {
-        let receipt = ExecutionResultReceiptV1 {
-            schema: EXECUTION_RESULT_RECEIPT_SCHEMA_V1.to_string(),
-            identity: self.identity.clone(),
-            evidence_digest: evidence_digest.into(),
+        ExecutionResultReceiptV1::new(
+            self.identity.clone(),
+            evidence_digest,
             outcome,
             result_digest,
             result_bytes,
-        };
-        receipt.validate()?;
-        Ok(receipt)
+        )
     }
 }
 

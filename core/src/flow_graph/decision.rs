@@ -1,6 +1,9 @@
 use super::decision_ledger::{
     FlowDecisionClaimOutcome, FlowDecisionLedger, MemoryFlowDecisionLedger,
 };
+use crate::execution_identity::{
+    ExecutionClaimV1, ExecutionResultOutcomeV1, ExecutionResultReceiptV1,
+};
 use a3s_flow::RetryPolicy;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -207,13 +210,14 @@ impl FlowDecisionDispatcher {
         let _dispatch_guard = self.dispatch_lock.lock().await;
         let request_hash = request_hash(request)?;
         let execution_identity = request_identity(request)?;
-        let claim = crate::execution_identity::ExecutionClaimV1::new(
+        let claim = ExecutionClaimV1::new(
             execution_identity,
             &request.decision_id,
             &request_hash,
             &self.owner_id,
         )
         .map_err(|error| FlowDecisionDispatchError::Ledger(error.to_string()))?;
+        let result_receipt = decision_result_receipt(&claim, request)?;
         tracing::trace!(
             decision_id = request.decision_id.as_str(),
             identity = claim.identity().key(),
@@ -221,9 +225,10 @@ impl FlowDecisionDispatcher {
         );
         match self
             .ledger
-            .claim(
+            .claim_with_identity(
                 claim.record_id(),
                 claim.ledger_key(),
+                claim.identity(),
                 claim.owner_id(),
                 now_ms(),
                 self.lease_ms,
@@ -261,9 +266,10 @@ impl FlowDecisionDispatcher {
                 result = &mut submission => break result,
                 _ = heartbeat.tick() => {
                     let renewed = self.ledger
-                        .renew(
+                        .renew_with_identity(
                             claim.record_id(),
                             claim.ledger_key(),
+                            claim.identity(),
                             claim.owner_id(),
                             now_ms(),
                             self.lease_ms,
@@ -282,7 +288,12 @@ impl FlowDecisionDispatcher {
         if let Err(error) = submission_result {
             if let Err(release_error) = self
                 .ledger
-                .release(claim.record_id(), claim.ledger_key(), claim.owner_id())
+                .release_with_identity(
+                    claim.record_id(),
+                    claim.ledger_key(),
+                    claim.identity(),
+                    claim.owner_id(),
+                )
                 .await
             {
                 tracing::warn!(decision_id = request.decision_id, error = %release_error, "failed to release Flow decision claim");
@@ -290,10 +301,12 @@ impl FlowDecisionDispatcher {
             return Err(FlowDecisionDispatchError::Sink(error.to_string()));
         }
         self.ledger
-            .complete(
+            .complete_with_receipt(
                 claim.record_id(),
                 claim.ledger_key(),
+                claim.identity(),
                 claim.owner_id(),
+                &result_receipt,
                 now_ms(),
             )
             .await
@@ -437,6 +450,30 @@ fn request_identity(
     .map_err(|error| FlowDecisionDispatchError::Ledger(error.to_string()))
 }
 
+fn decision_result_receipt(
+    claim: &ExecutionClaimV1,
+    request: &FlowDecisionRequest,
+) -> Result<ExecutionResultReceiptV1, FlowDecisionDispatchError> {
+    let result = serde_json::to_vec(&request.decision)
+        .map_err(|error| FlowDecisionDispatchError::Ledger(error.to_string()))?;
+    let evidence_digest = crate::evaluation::digest_bytes(
+        "a3s.code.flow-decision.evidence.v1",
+        request.causation_event_id.as_bytes(),
+    );
+    let result_digest =
+        crate::evaluation::digest_bytes("a3s.code.flow-decision.result.v1", &result);
+    let result_bytes = u64::try_from(result.len())
+        .map_err(|_| FlowDecisionDispatchError::Ledger("decision result is too large".into()))?;
+    claim
+        .result_receipt(
+            evidence_digest,
+            ExecutionResultOutcomeV1::Succeeded,
+            Some(result_digest),
+            result_bytes,
+        )
+        .map_err(|error| FlowDecisionDispatchError::Ledger(error.to_string()))
+}
+
 fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -505,10 +542,20 @@ mod tests {
     #[tokio::test]
     async fn submits_once_and_rejects_fork_branches() {
         let sink = Arc::new(RecordingSink::default());
-        let dispatcher = FlowDecisionDispatcher::new("production", sink.clone());
-        assert!(dispatcher.dispatch(&request("production")).await.unwrap());
+        let ledger = Arc::new(MemoryFlowDecisionLedger::new());
+        let dispatcher =
+            FlowDecisionDispatcher::with_ledger("production", sink.clone(), ledger.clone());
+        let accepted = request("production");
+        assert!(dispatcher.dispatch(&accepted).await.unwrap());
         assert!(!dispatcher.dispatch(&request("production")).await.unwrap());
         assert_eq!(sink.0.lock().await.as_slice(), ["decision-1"]);
+        let receipt = ledger
+            .completed_receipt("decision-1")
+            .await
+            .unwrap()
+            .expect("accepted decision stores a terminal result receipt");
+        assert_eq!(receipt.identity, request_identity(&accepted).unwrap());
+        receipt.validate().unwrap();
         assert!(matches!(
             dispatcher.dispatch(&request("fork")).await,
             Err(FlowDecisionDispatchError::UnauthorizedBranch { .. })
