@@ -115,6 +115,7 @@ pub mod program;
 pub(crate) mod prompts;
 pub mod queue;
 pub mod release;
+pub mod research;
 pub mod retention;
 pub(crate) mod retry;
 pub mod rl_trajectory;
@@ -294,6 +295,15 @@ pub use orchestration::{
     WorkflowStepRecord, WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
 };
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
+pub use research::{
+    ResearchArtifactKindV1, ResearchContractError, ResearchEventV1, ResearchEvidenceFactKindV1,
+    ResearchEvidenceFactV1, ResearchProvenanceReceiptV1, ResearchReproducibilityV1,
+    ResearchReviewCategoryV1, ResearchReviewFindingV1, ResearchReviewLocationV1,
+    ResearchReviewSeverityV1, ResearchReviewStatusV1, ResearchRunStatusV1, ResearchRunV1,
+    RESEARCH_ARTIFACT_KINDS, RESEARCH_EVENT_SCHEMA_V1, RESEARCH_EVIDENCE_FACT_SCHEMA_V1,
+    RESEARCH_PROVENANCE_RECEIPT_SCHEMA_V1, RESEARCH_REVIEW_FINDING_SCHEMA_V1,
+    RESEARCH_RUN_SCHEMA_V1,
+};
 pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecorder};
 pub use run::{
     ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunReservation,
