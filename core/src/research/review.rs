@@ -159,6 +159,12 @@ impl ResearchReviewFindingV1 {
         resolution_digest: impl Into<String>,
     ) -> Result<(), ResearchContractError> {
         self.validate()?;
+        if !matches!(self.status, ResearchReviewStatusV1::Open) {
+            return Err(ResearchContractError::InvalidTransition {
+                from: self.status.as_str(),
+                to: ResearchReviewStatusV1::Resolved.as_str(),
+            });
+        }
         let resolution_digest = resolution_digest.into();
         validate_digest_field("resolutionDigest", &resolution_digest)?;
         self.status = ResearchReviewStatusV1::Resolved;
@@ -172,6 +178,12 @@ impl ResearchReviewFindingV1 {
         resolution_digest: impl Into<String>,
     ) -> Result<(), ResearchContractError> {
         self.validate()?;
+        if !matches!(self.status, ResearchReviewStatusV1::Open) {
+            return Err(ResearchContractError::InvalidTransition {
+                from: self.status.as_str(),
+                to: ResearchReviewStatusV1::Waived.as_str(),
+            });
+        }
         let resolution_digest = resolution_digest.into();
         validate_digest_field("resolutionDigest", &resolution_digest)?;
         self.status = ResearchReviewStatusV1::Waived;
@@ -338,6 +350,39 @@ mod tests {
         assert_eq!(
             finding.resolve(digest('c')),
             Err(ResearchContractError::DigestMismatch("findingDigest"))
+        );
+    }
+
+    #[test]
+    fn a_closed_finding_cannot_be_resolved_or_waived_again() {
+        let mut finding = ResearchReviewFindingV1::new(
+            "finding-1",
+            "project-1",
+            "run-1",
+            digest('a'),
+            ResearchReviewCategoryV1::Reproducibility,
+            ResearchReviewSeverityV1::Blocker,
+            "The environment receipt is missing.",
+            None,
+            vec![digest('b')],
+            "reproducibility-reviewer",
+            1,
+        )
+        .unwrap();
+        finding.resolve(digest('c')).unwrap();
+        assert_eq!(
+            finding.resolve(digest('d')),
+            Err(ResearchContractError::InvalidTransition {
+                from: "resolved",
+                to: "resolved"
+            })
+        );
+        assert_eq!(
+            finding.waive(digest('e')),
+            Err(ResearchContractError::InvalidTransition {
+                from: "resolved",
+                to: "waived"
+            })
         );
     }
 }

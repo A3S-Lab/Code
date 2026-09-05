@@ -1,6 +1,4 @@
-use super::{
-    digest, validate_digest_field, validate_id, ResearchContractError, RESEARCH_MAX_TEXT_BYTES,
-};
+use super::{digest, validate_digest_field, validate_id, ResearchContractError};
 use crate::capability::RunCapabilityBindingV1;
 use serde::{Deserialize, Serialize};
 
@@ -167,9 +165,7 @@ impl ResearchRunV1 {
             .validate()
             .map_err(|_| ResearchContractError::InvalidField("capabilityBinding"))?;
         validate_id("providerId", &self.provider_id)?;
-        if self.model_id.is_empty() || self.model_id.len() > RESEARCH_MAX_TEXT_BYTES {
-            return Err(ResearchContractError::InvalidField("modelId"));
-        }
+        validate_id("modelId", &self.model_id)?;
         if matches!(
             self.reproducibility,
             ResearchReproducibilityV1::Deterministic
@@ -337,6 +333,25 @@ mod tests {
         assert_eq!(
             run.transition_to(ResearchRunStatusV1::Admitted),
             Err(ResearchContractError::DigestMismatch("runDigest"))
+        );
+    }
+
+    #[test]
+    fn model_id_uses_the_same_single_line_identity_bound_as_provider_id() {
+        assert_eq!(
+            ResearchRunV1::new(
+                "run-1",
+                "project-1",
+                1,
+                digest('a'),
+                digest('b'),
+                binding(),
+                "local",
+                "model\nwith-newline",
+                ResearchReproducibilityV1::Exploratory,
+                None,
+            ),
+            Err(ResearchContractError::InvalidField("modelId"))
         );
     }
 }
