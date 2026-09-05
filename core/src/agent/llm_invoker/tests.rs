@@ -29,6 +29,27 @@ fn typed_model_requests_bind_their_evidence_kind() {
     assert!(structured_observation.directive.is_some());
 }
 
+#[test]
+fn typed_stream_requests_bind_their_evidence_kind() {
+    let messages = [Message::user("hello")];
+    let tools = [];
+    let cancellation = CancellationToken::new();
+    let streaming = ModelStreamRequest::completion(&messages, None, &tools, cancellation.clone());
+    assert_eq!(
+        streaming
+            .observation(ModelPresentationApplicationV1::Auxiliary)
+            .kind,
+        ModelInputKindV1::Streaming
+    );
+
+    let directive = StructuredDirective::default();
+    let structured =
+        ModelStreamRequest::structured(&messages, None, &tools, &directive, cancellation);
+    let observation = structured.observation(ModelPresentationApplicationV1::Auxiliary);
+    assert_eq!(observation.kind, ModelInputKindV1::StreamingStructured);
+    assert!(observation.directive.is_some());
+}
+
 #[async_trait]
 impl crate::budget::BudgetGuard for UsageRecordedGuard {
     async fn record_after_llm(&self, _session_id: &str, _usage: &TokenUsage) {
