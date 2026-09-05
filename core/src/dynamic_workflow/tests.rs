@@ -4,7 +4,7 @@ use crate::llm::{
 };
 use crate::tools::{register_generate_object, ToolExecutor, ToolOutput};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio_util::sync::CancellationToken;
 
 #[test]
@@ -177,6 +177,58 @@ impl Tool for FakeTaskTool {
     }
 }
 
+struct BlockingTaskTool {
+    started: Arc<AtomicUsize>,
+    release: Arc<Notify>,
+}
+
+struct BlockingProbeTool {
+    started: Arc<AtomicUsize>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl Tool for BlockingProbeTool {
+    fn name(&self) -> &str {
+        "flow_probe"
+    }
+
+    fn description(&self) -> &str {
+        "Blocking probe for global Flow-step admission tests."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({ "type": "object" })
+    }
+
+    async fn execute(&self, _args: &Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        self.release.notified().await;
+        Ok(ToolOutput::success("released"))
+    }
+}
+
+#[async_trait]
+impl Tool for BlockingTaskTool {
+    fn name(&self) -> &str {
+        TASK_TOOL
+    }
+
+    fn description(&self) -> &str {
+        "Blocking task tool for dynamic workflow admission tests."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({ "type": "object" })
+    }
+
+    async fn execute(&self, _args: &Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        self.release.notified().await;
+        Ok(ToolOutput::success("released"))
+    }
+}
+
 struct FakeRuntimeTool;
 
 #[async_trait]
@@ -304,6 +356,7 @@ async function run(ctx, inputs) {
             max_tool_calls: Some(1),
             max_output_bytes: None,
             max_concurrent_generations: None,
+            max_concurrent_steps: None,
         });
     let run = tokio::spawn(async move {
         runtime
@@ -396,6 +449,7 @@ async function run(ctx, inputs) {
                 max_tool_calls: Some(1),
                 max_output_bytes: None,
                 max_concurrent_generations: Some(2),
+                max_concurrent_steps: None,
             }),
     );
     let invocation = |step_id: &str| {
@@ -418,6 +472,252 @@ async function run(ctx, inputs) {
     assert_eq!(sessions.len(), 2);
     assert!(sessions.iter().any(|session| session.ends_with(":first")));
     assert!(sessions.iter().any(|session| session.ends_with(":second")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dynamic_workflow_step_admission_is_bounded_and_cancellable() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let started = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(Notify::new());
+    executor.register_dynamic_tool(Arc::new(BlockingTaskTool {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    }));
+    let cancellation = CancellationToken::new();
+    let context = executor
+        .registry()
+        .context()
+        .with_cancellation(cancellation.clone());
+    let runtime = Arc::new(
+        DynamicWorkflowRuntime::new(
+            Arc::clone(executor.registry()),
+            context,
+            "unused for host task steps",
+        )
+        .with_limits(DynamicWorkflowScriptLimits {
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_output_bytes: None,
+            max_concurrent_generations: None,
+            max_concurrent_steps: Some(1),
+        }),
+    );
+
+    let first_runtime = Arc::clone(&runtime);
+    let first = tokio::spawn(async move {
+        first_runtime
+            .run_step(StepInvocation::new(
+                "admission-run",
+                "first",
+                TASK_TOOL,
+                json!({}),
+                Vec::new(),
+            ))
+            .await
+    });
+    for _ in 0..1_000 {
+        if started.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    if started.load(Ordering::SeqCst) != 1 {
+        let result = first.await.unwrap();
+        panic!("first step did not enter blocking tool: {result:?}");
+    }
+
+    let second_runtime = Arc::clone(&runtime);
+    let second = tokio::spawn(async move {
+        second_runtime
+            .run_step(StepInvocation::new(
+                "admission-run",
+                "second",
+                TASK_TOOL,
+                json!({}),
+                Vec::new(),
+            ))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    let stats = runtime.admission_stats();
+    assert_eq!(stats.active_steps, 1);
+    assert_eq!(stats.admitted_steps, 1);
+    assert_eq!(stats.peak_active_steps, 1);
+
+    cancellation.cancel();
+    let second_result = tokio::time::timeout(Duration::from_secs(1), second)
+        .await
+        .expect("queued step should observe cancellation")
+        .expect("queued step task should join")
+        .expect_err("queued step must not execute after cancellation");
+    assert!(second_result.to_string().contains("admission cancelled"));
+
+    release.notify_waiters();
+    first.await.unwrap().unwrap();
+    let stats = runtime.admission_stats();
+    assert_eq!(stats.active_steps, 0);
+    assert_eq!(stats.admitted_steps, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dynamic_workflow_can_layer_global_scheduler_admission_without_step_deadlock() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let started = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(Notify::new());
+    executor.register_dynamic_tool(Arc::new(BlockingProbeTool {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    }));
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 1,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let runtime = Arc::new(
+        DynamicWorkflowRuntime::new(
+            Arc::clone(executor.registry()),
+            executor.registry().context(),
+            r#"async function run(ctx, inputs) {
+                if (inputs.kind !== "step") throw new Error("unexpected invocation");
+                return await ctx.tool("flow_probe", {});
+            }"#,
+        )
+        .with_allowed_tools(["flow_probe".to_string()])
+        .with_task_scheduler(Arc::clone(&scheduler), true),
+    );
+
+    let first_runtime = Arc::clone(&runtime);
+    let first = tokio::spawn(async move {
+        first_runtime
+            .run_step(StepInvocation::new(
+                "global-admission-run",
+                "first",
+                "flow_probe",
+                json!({}),
+                Vec::new(),
+            ))
+            .await
+    });
+    for _ in 0..1_000 {
+        if started.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+
+    let second_runtime = Arc::clone(&runtime);
+    let second = tokio::spawn(async move {
+        second_runtime
+            .run_step(StepInvocation::new(
+                "global-admission-run",
+                "second",
+                "flow_probe",
+                json!({}),
+                Vec::new(),
+            ))
+            .await
+    });
+    for _ in 0..1_000 {
+        if scheduler.stats().await.unwrap().pending == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(scheduler.stats().await.unwrap().pending, 1);
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+
+    release.notify_one();
+    first.await.unwrap().unwrap();
+    for _ in 0..1_000 {
+        if started.load(Ordering::SeqCst) == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(started.load(Ordering::SeqCst), 2);
+    release.notify_one();
+    second.await.unwrap().unwrap();
+    assert_eq!(runtime.admission_stats().peak_active_steps, 2);
+    assert_eq!(scheduler.stats().await.unwrap().active, 0);
+    scheduler.shutdown().await;
+}
+
+#[test]
+fn dynamic_flow_step_identity_is_digest_only_and_input_bound() {
+    let first =
+        dynamic_workflow_step_identity("run-1", "step-1", "read", &json!({ "path": "README.md" }))
+            .unwrap();
+    let same =
+        dynamic_workflow_step_identity("run-1", "step-1", "read", &json!({ "path": "README.md" }))
+            .unwrap();
+    let changed =
+        dynamic_workflow_step_identity("run-1", "step-1", "read", &json!({ "path": "src/lib.rs" }))
+            .unwrap();
+    assert_eq!(first, same);
+    assert_ne!(first, changed);
+    assert!(!serde_json::to_string(&first).unwrap().contains("README.md"));
+}
+
+#[test]
+fn dynamic_flow_history_projection_reconstructs_resumed_plan() {
+    let run_id = "projection-run";
+    let envelope = |sequence, event| {
+        FlowEventEnvelope::new(run_id, sequence, uuid::Uuid::new_v4(), Utc::now(), event)
+    };
+    let history = vec![
+        envelope(
+            1,
+            FlowEvent::RunCreated {
+                spec: WorkflowSpec::rust_embedded("test", "v1", "ptc", "run"),
+                input: json!({}),
+            },
+        ),
+        envelope(
+            2,
+            FlowEvent::StepCreated {
+                step_id: "first".to_string(),
+                step_name: "read".to_string(),
+                input: json!({"description": "Read source"}),
+                retry: Default::default(),
+            },
+        ),
+        envelope(
+            3,
+            FlowEvent::StepCompleted {
+                step_id: "first".to_string(),
+                output: json!({"ok": true}),
+            },
+        ),
+        envelope(
+            4,
+            FlowEvent::StepCreated {
+                step_id: "second".to_string(),
+                step_name: "write".to_string(),
+                input: json!({"title": "Write result"}),
+                retry: Default::default(),
+            },
+        ),
+        envelope(
+            5,
+            FlowEvent::StepStarted {
+                step_id: "second".to_string(),
+                attempt: 1,
+            },
+        ),
+    ];
+    let plan = dynamic_workflow_execution_plan(&history);
+    assert_eq!(plan.steps.len(), 2);
+    assert_eq!(plan.steps[0].status, TaskStatus::Completed);
+    assert_eq!(plan.steps[1].status, TaskStatus::InProgress);
+    assert_eq!(plan.steps[0].content, "Read source");
+    assert_eq!(plan.steps[1].content, "Write result");
+    assert_eq!(plan.required_tools, vec!["read", "write"]);
 }
 
 #[tokio::test]
@@ -569,6 +869,22 @@ return await ctx.read(inputs.input.path);
     assert_eq!(
         metadata["dynamic_workflow"]["snapshot"]["steps"]["read_fixture"]["status"],
         "completed"
+    );
+    assert_eq!(
+        metadata["dynamic_workflow"]["plan"]["steps"][0]["id"],
+        "read_fixture"
+    );
+    assert_eq!(
+        metadata["dynamic_workflow"]["plan"]["steps"][0]["status"],
+        "completed"
+    );
+    assert_eq!(
+        metadata["dynamic_workflow"]["plan_identity"]["domain"],
+        crate::execution_identity::EXECUTION_PLAN_IDENTITY_DOMAIN_V1
+    );
+    assert_eq!(
+        metadata["dynamic_workflow"]["admission"]["peakActiveSteps"],
+        1
     );
     assert!(
         tokio::fs::try_exists(

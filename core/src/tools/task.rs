@@ -549,11 +549,40 @@ impl TaskExecutor {
                     .await;
             }
         }
+        let execution_identity =
+            if (params.background || self.schedule_foreground) && self.task_scheduler.is_some() {
+                let mut identity_spec = AgentStepSpec::new(
+                    task_id.clone(),
+                    params.agent.clone(),
+                    params.description.clone(),
+                    params.prompt.clone(),
+                );
+                if let Some(max_steps) = params.max_steps {
+                    identity_spec = identity_spec.with_max_steps(max_steps);
+                }
+                if let Some(output_schema) = params.output_schema.clone() {
+                    identity_spec = identity_spec.with_output_schema(output_schema);
+                }
+                if let Some(parent_session_id) = parent_session_id {
+                    identity_spec = identity_spec.with_parent_session_id(parent_session_id);
+                }
+                Some(
+                    crate::orchestration::workflow_step_execution_identity(
+                        parent_session_id.unwrap_or("host"),
+                        &identity_spec,
+                    )
+                    .map_err(|error| {
+                        anyhow::anyhow!("derive delegated task execution identity: {error}")
+                    })?,
+                )
+            } else {
+                None
+            };
         let _task_lease = if params.background || self.schedule_foreground {
             match &self.task_scheduler {
                 Some(scheduler) => Some(
                     scheduler
-                        .acquire(
+                        .acquire_with_identity(
                             if params.background {
                                 crate::task_scheduler::TaskPriority::Background
                             } else {
@@ -564,6 +593,7 @@ impl TaskExecutor {
                                 parent_session_id.unwrap_or("host"),
                                 task_id
                             ),
+                            execution_identity.clone(),
                             &cancel_token,
                         )
                         .await

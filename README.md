@@ -48,6 +48,12 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   decision claims carry bounded, digest-only result receipts tied to canonical
   execution identities; stale or unreadable state fails closed, while legacy
   records remain loadable.
+- **Convergent workflow admission.** Dynamic Flow steps project into the same
+  `ExecutionPlan` used by Code planning, rebuild that plan from complete
+  history on resume, and use a cancellable per-workflow concurrency gate.
+  Standalone Flow adapters can additionally use the agent-wide priority
+  scheduler with a digest-only step identity; session-bound calls retain one
+  outer scheduler lease to avoid nested single-slot deadlocks.
 
 Go consumers must update the module path to
 `github.com/A3S-Lab/Code/sdk/go/v8`. See [CHANGELOG.md](CHANGELOG.md) for the
@@ -1018,8 +1024,13 @@ credentials, refresh, and live session-scoped add/remove operations.
 
 Dynamic workflows can bound independently session-forked structured generation
 with `maxConcurrentGenerations` (1-4); providers without session forking remain
-single-flight. Durable completed-step recovery is bound to the exact run id,
-original query, and step id rather than acting as a cross-run query cache.
+single-flight. Flow step bodies also accept `maxConcurrentSteps` (1-32,
+default 4); waiting is cancellation-aware and starts the sandbox timeout only
+after admission. Every step has a digest-only identity derived from its run,
+step, handler, and bounded input. Durable completed-step recovery is bound to
+the exact run id, original query, and step id rather than acting as a cross-run
+query cache. A resumed run reconstructs its complete plan from durable
+history, so progress does not lose steps emitted before the current process.
 
 Delegated tasks, workflows, and Skill child runs retain the parent sandbox and
 intersect local permission policy with the parent checker. A child auto-approve

@@ -4,7 +4,9 @@
 //! Flow runtime. Flow owns durable replay and step lifecycle; A3S Code's
 //! existing `program` tool remains the sandbox and tool-call boundary.
 
+use crate::execution_identity::{ExecutionIdentityV1, FLOW_STEP_IDENTITY_DOMAIN_V1};
 use crate::llm::{ModelGenerationAdmission, ModelGenerationConcurrency};
+use crate::task_scheduler::{TaskLease, TaskPriority as SchedulerTaskPriority, TaskScheduler};
 use crate::tools::{
     registry_tool_invoker, Tool, ToolContext, ToolInvoker, ToolOutput, ToolRegistry, ToolResult,
 };
@@ -27,9 +29,10 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, OwnedSemaphorePermit, Semaphore};
 
 const DYNAMIC_WORKFLOW_TOOL: &str = "dynamic_workflow";
 const GENERATE_OBJECT_TOOL: &str = "generate_object";
@@ -38,6 +41,10 @@ const TASK_TOOL: &str = "task";
 const PARALLEL_TASK_TOOL: &str = "parallel_task";
 const MAX_INLINE_RETRY_RESUMES: usize = 8;
 const MAX_INLINE_RETRY_DELAY: Duration = Duration::from_secs(5);
+const DEFAULT_MAX_CONCURRENT_STEPS: usize = 4;
+const MAX_MAX_CONCURRENT_STEPS: usize = 32;
+const MAX_FLOW_STEP_ID_BYTES: usize = 256;
+const MAX_FLOW_STEP_INPUT_BYTES: usize = 64 * 1024;
 
 /// Project-relative directory used for durable dynamic workflow history.
 pub const DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH: &str = ".a3s/workflow";
@@ -118,6 +125,132 @@ pub struct DynamicWorkflowScriptLimits {
     /// This orchestration limit is not forwarded to the PTC program sandbox.
     #[serde(default, skip_serializing)]
     pub max_concurrent_generations: Option<usize>,
+    /// Maximum Flow step bodies that may execute concurrently for one run.
+    /// This is an orchestration boundary and is never forwarded to QuickJS.
+    #[serde(default, skip_serializing)]
+    pub max_concurrent_steps: Option<usize>,
+}
+
+/// Point-in-time admission counters for one dynamic workflow runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicWorkflowAdmissionStats {
+    /// Effective per-run step concurrency limit.
+    pub max_concurrent_steps: usize,
+    /// Number of step bodies admitted since this runtime was created.
+    pub admitted_steps: usize,
+    /// Number of step bodies currently holding a local permit.
+    pub active_steps: usize,
+    /// Highest observed active step count.
+    pub peak_active_steps: usize,
+}
+
+#[derive(Clone)]
+struct DynamicStepAdmission {
+    semaphore: Arc<Semaphore>,
+    max_concurrent_steps: usize,
+    admitted_steps: Arc<AtomicUsize>,
+    active_steps: Arc<AtomicUsize>,
+    peak_active_steps: Arc<AtomicUsize>,
+}
+
+impl DynamicStepAdmission {
+    fn new(max_concurrent_steps: usize) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(max_concurrent_steps)),
+            max_concurrent_steps,
+            admitted_steps: Arc::new(AtomicUsize::new(0)),
+            active_steps: Arc::new(AtomicUsize::new(0)),
+            peak_active_steps: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    async fn acquire(
+        &self,
+        identity: ExecutionIdentityV1,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> a3s_flow::Result<DynamicStepLease> {
+        let permit = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(a3s_flow::FlowError::Runtime(
+                    "dynamic workflow step admission cancelled".to_string(),
+                ));
+            }
+            permit = Arc::clone(&self.semaphore).acquire_owned() => {
+                permit.map_err(|_| a3s_flow::FlowError::Runtime(
+                    "dynamic workflow step admission is closed".to_string(),
+                ))?
+            }
+        };
+        if cancellation.is_cancelled() {
+            drop(permit);
+            return Err(a3s_flow::FlowError::Runtime(
+                "dynamic workflow step admission cancelled".to_string(),
+            ));
+        }
+
+        let active = self.active_steps.fetch_add(1, Ordering::AcqRel) + 1;
+        self.admitted_steps.fetch_add(1, Ordering::Relaxed);
+        let mut observed = self.peak_active_steps.load(Ordering::Acquire);
+        while active > observed {
+            match self.peak_active_steps.compare_exchange(
+                observed,
+                active,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => observed = current,
+            }
+        }
+        tracing::trace!(
+            execution_identity = identity.key(),
+            active_steps = active,
+            max_concurrent_steps = self.max_concurrent_steps,
+            "dynamic workflow step admitted"
+        );
+        Ok(DynamicStepLease {
+            _permit: permit,
+            identity,
+            active_steps: Arc::clone(&self.active_steps),
+            task_lease: None,
+        })
+    }
+
+    fn stats(&self) -> DynamicWorkflowAdmissionStats {
+        DynamicWorkflowAdmissionStats {
+            max_concurrent_steps: self.max_concurrent_steps,
+            admitted_steps: self.admitted_steps.load(Ordering::Acquire),
+            active_steps: self.active_steps.load(Ordering::Acquire),
+            peak_active_steps: self.peak_active_steps.load(Ordering::Acquire),
+        }
+    }
+}
+
+struct DynamicStepLease {
+    _permit: OwnedSemaphorePermit,
+    identity: ExecutionIdentityV1,
+    active_steps: Arc<AtomicUsize>,
+    task_lease: Option<TaskLease>,
+}
+
+impl DynamicStepLease {
+    fn with_task_lease(mut self, task_lease: TaskLease) -> Self {
+        self.task_lease = Some(task_lease);
+        self
+    }
+}
+
+impl Drop for DynamicStepLease {
+    fn drop(&mut self) {
+        let active = self.active_steps.fetch_sub(1, Ordering::AcqRel) - 1;
+        tracing::trace!(
+            execution_identity = self.identity.key(),
+            active_steps = active,
+            "dynamic workflow step admission released"
+        );
+    }
 }
 
 /// Runs A3S Flow workflow and step invocations through a sandboxed PTC script.
@@ -129,6 +262,12 @@ pub struct DynamicWorkflowRuntime {
     allowed_tools: Vec<String>,
     limits: DynamicWorkflowScriptLimits,
     parallel_generation_admission: Option<ModelGenerationAdmission>,
+    step_admission: DynamicStepAdmission,
+    /// Optional global scheduler for runtimes created outside an AgentSession.
+    /// Session-bound callers already hold the enclosing scheduler lease and
+    /// should leave this unset to avoid nested single-slot deadlocks.
+    task_scheduler: Option<Arc<TaskScheduler>>,
+    admit_steps_globally: bool,
 }
 
 impl DynamicWorkflowRuntime {
@@ -151,6 +290,9 @@ impl DynamicWorkflowRuntime {
             allowed_tools,
             limits: DynamicWorkflowScriptLimits::default(),
             parallel_generation_admission: None,
+            step_admission: DynamicStepAdmission::new(DEFAULT_MAX_CONCURRENT_STEPS),
+            task_scheduler: None,
+            admit_steps_globally: false,
         }
     }
 
@@ -166,8 +308,79 @@ impl DynamicWorkflowRuntime {
             .map(|maximum| {
                 ModelGenerationAdmission::new(ModelGenerationConcurrency::bounded(maximum))
             });
+        let step_concurrency = limits
+            .max_concurrent_steps
+            .unwrap_or(DEFAULT_MAX_CONCURRENT_STEPS)
+            .clamp(1, MAX_MAX_CONCURRENT_STEPS);
+        self.step_admission = DynamicStepAdmission::new(step_concurrency);
         self.limits = limits;
         self
+    }
+
+    /// Attach the agent-wide scheduler when this runtime is used as a
+    /// standalone host adapter.
+    ///
+    /// `admit_steps_globally = false` is the correct setting for a runtime
+    /// invoked from an existing AgentSession operation: the parent operation
+    /// already owns the global lease and Flow steps use the local bounded gate.
+    pub fn with_task_scheduler(
+        mut self,
+        scheduler: Arc<TaskScheduler>,
+        admit_steps_globally: bool,
+    ) -> Self {
+        self.task_scheduler = Some(scheduler);
+        self.admit_steps_globally = admit_steps_globally;
+        self
+    }
+
+    /// Return local Flow-step admission counters for diagnostics and hosts.
+    pub fn admission_stats(&self) -> DynamicWorkflowAdmissionStats {
+        self.step_admission.stats()
+    }
+
+    async fn admit_step(&self, invocation: &StepInvocation) -> a3s_flow::Result<DynamicStepLease> {
+        let identity = dynamic_workflow_step_identity(
+            &invocation.run_id,
+            &invocation.step_id,
+            &invocation.step_name,
+            &invocation.input,
+        )
+        .map_err(|error| a3s_flow::FlowError::Runtime(error.to_string()))?;
+        let mut lease = self
+            .step_admission
+            .acquire(identity.clone(), &self.context.cancellation_token())
+            .await?;
+
+        // Host task fan-out has its own child-run scheduler boundary. Holding
+        // a second global lease here would deadlock a max_active=1 scheduler
+        // while the child waits for capacity, so only direct script-backed
+        // steps opt into the standalone global admission.
+        if self.admit_steps_globally
+            && !matches!(
+                invocation.step_name.as_str(),
+                TASK_TOOL | PARALLEL_TASK_TOOL
+            )
+        {
+            let Some(scheduler) = self.task_scheduler.as_ref() else {
+                return Err(a3s_flow::FlowError::Runtime(
+                    "global Flow-step admission requires a configured task scheduler".to_string(),
+                ));
+            };
+            let task_lease = scheduler
+                .acquire_with_identity(
+                    SchedulerTaskPriority::Foreground,
+                    format!(
+                        "flow:{}:{}:{}",
+                        invocation.run_id, invocation.step_id, invocation.step_name
+                    ),
+                    Some(identity),
+                    &self.context.cancellation_token(),
+                )
+                .await
+                .map_err(|error| a3s_flow::FlowError::Runtime(error.to_string()))?;
+            lease = lease.with_task_lease(task_lease);
+        }
+        Ok(lease)
     }
 
     async fn run_script(
@@ -293,6 +506,7 @@ impl FlowRuntime for DynamicWorkflowRuntime {
     }
 
     async fn run_step(&self, invocation: StepInvocation) -> a3s_flow::Result<Value> {
+        let _admission = self.admit_step(&invocation).await?;
         if matches!(
             invocation.step_name.as_str(),
             TASK_TOOL | PARALLEL_TASK_TOOL
@@ -318,13 +532,118 @@ impl FlowRuntime for DynamicWorkflowRuntime {
     }
 }
 
+/// Derive the stable identity for one dynamic Flow step admission.
+///
+/// The returned value is digest-only. The step input is included in the
+/// derivation so retries with different arguments cannot share a lease, but no
+/// input bytes are retained in the identity or emitted by the scheduler.
+pub fn dynamic_workflow_step_identity(
+    run_id: &str,
+    step_id: &str,
+    step_name: &str,
+    input: &Value,
+) -> Result<ExecutionIdentityV1, crate::execution_identity::ExecutionIdentityError> {
+    for (field, value) in [
+        ("run_id", run_id),
+        ("step_id", step_id),
+        ("step_name", step_name),
+    ] {
+        if value.is_empty()
+            || value.len() > MAX_FLOW_STEP_ID_BYTES
+            || value.contains('\0')
+            || value.lines().count() != 1
+        {
+            return Err(
+                crate::execution_identity::ExecutionIdentityError::InvalidClaimField(field),
+            );
+        }
+    }
+    let encoded_input = serde_json::to_vec(input).map_err(|error| {
+        crate::execution_identity::ExecutionIdentityError::Serialization(error.to_string())
+    })?;
+    if encoded_input.len() > MAX_FLOW_STEP_INPUT_BYTES {
+        return Err(
+            crate::execution_identity::ExecutionIdentityError::Serialization(format!(
+                "dynamic Flow step input exceeds {} bytes",
+                MAX_FLOW_STEP_INPUT_BYTES
+            )),
+        );
+    }
+    ExecutionIdentityV1::derive(
+        FLOW_STEP_IDENTITY_DOMAIN_V1,
+        &json!({
+            "run_id": run_id,
+            "step_id": step_id,
+            "step_name": step_name,
+            "input": input,
+        }),
+    )
+}
+
+/// Project the complete durable Flow history into Code's canonical plan model.
+///
+/// Flow remains the execution authority; this is a read-only adapter used by
+/// progress events and metadata. Replaying the full history (rather than only
+/// observing newly appended events) makes resumed runs expose the same plan as
+/// fresh runs.
+pub fn dynamic_workflow_execution_plan(history: &[FlowEventEnvelope]) -> ExecutionPlan {
+    let mut plan = ExecutionPlan::new("dynamic workflow", Complexity::Medium);
+    for envelope in history {
+        match &envelope.event {
+            FlowEvent::StepCreated {
+                step_id,
+                step_name,
+                input,
+                ..
+            } => {
+                let task = Task::new(
+                    step_id.clone(),
+                    workflow_step_description(step_id, step_name, Some(input)),
+                )
+                .with_tool(step_name.clone());
+                plan.upsert_step(task);
+            }
+            FlowEvent::StepStarted { step_id, .. } => {
+                plan.mark_status(step_id, TaskStatus::InProgress);
+            }
+            FlowEvent::StepRetrying { step_id, .. } => {
+                plan.mark_status(step_id, TaskStatus::InProgress);
+            }
+            FlowEvent::StepCompleted { step_id, .. } => {
+                plan.mark_status(step_id, TaskStatus::Completed);
+            }
+            FlowEvent::StepFailed { step_id, .. } => {
+                plan.mark_status(step_id, TaskStatus::Failed);
+            }
+            FlowEvent::RunFailed { .. }
+            | FlowEvent::RunTimedOut { .. }
+            | FlowEvent::RunRetryExhausted { .. } => {
+                for task in &mut plan.steps {
+                    if task.status.is_active() {
+                        task.status = TaskStatus::Failed;
+                    }
+                }
+            }
+            FlowEvent::RunCancelled { .. } | FlowEvent::RunHostShutdown { .. } => {
+                for task in &mut plan.steps {
+                    if task.status.is_active() {
+                        task.status = TaskStatus::Cancelled;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    plan
+}
+
 struct WorkflowProgressState {
-    tasks: Vec<Task>,
+    plan: ExecutionPlan,
 }
 
 impl WorkflowProgressState {
-    fn new() -> Self {
-        Self { tasks: Vec::new() }
+    fn new(plan: ExecutionPlan) -> Self {
+        Self { plan }
     }
 
     fn upsert_step(
@@ -335,29 +654,22 @@ impl WorkflowProgressState {
         status: TaskStatus,
     ) {
         let content = workflow_step_description(step_id, step_name, input);
-        if let Some(task) = self.tasks.iter_mut().find(|task| task.id == step_id) {
-            task.content = content;
-            task.status = status;
-            task.tool = Some(step_name.to_string());
-        } else {
-            self.tasks
-                .push(Task::new(step_id.to_string(), content).with_tool(step_name));
-            if let Some(task) = self.tasks.last_mut() {
-                task.status = status;
-            }
-        }
+        self.plan.upsert_step(
+            Task::new(step_id.to_string(), content)
+                .with_tool(step_name)
+                .with_status(status),
+        );
     }
 
     fn mark_status(&mut self, step_id: &str, status: TaskStatus) {
-        if let Some(task) = self.tasks.iter_mut().find(|task| task.id == step_id) {
-            task.status = status;
-        }
+        self.plan.mark_status(step_id, status);
     }
 
     fn step_position(&self, step_id: &str) -> (usize, usize) {
-        let total = self.tasks.len().max(1);
+        let total = self.plan.steps.len().max(1);
         let number = self
-            .tasks
+            .plan
+            .steps
             .iter()
             .position(|task| task.id == step_id)
             .map(|idx| idx + 1)
@@ -366,11 +678,20 @@ impl WorkflowProgressState {
     }
 
     fn step_description(&self, step_id: &str) -> String {
-        self.tasks
+        self.plan
+            .steps
             .iter()
             .find(|task| task.id == step_id)
             .map(|task| task.content.clone())
             .unwrap_or_else(|| step_id.to_string())
+    }
+
+    fn tasks(&self) -> &[Task] {
+        &self.plan.steps
+    }
+
+    fn snapshot(&self) -> ExecutionPlan {
+        self.plan.clone()
     }
 }
 
@@ -381,11 +702,11 @@ struct AgentEventFlowObserver {
 }
 
 impl AgentEventFlowObserver {
-    fn new(tx: broadcast::Sender<AgentEvent>, session_id: String) -> Self {
+    fn new(tx: broadcast::Sender<AgentEvent>, session_id: String, plan: ExecutionPlan) -> Self {
         Self {
             tx,
             session_id,
-            state: Mutex::new(WorkflowProgressState::new()),
+            state: Mutex::new(WorkflowProgressState::new(plan)),
         }
     }
 
@@ -405,6 +726,14 @@ impl FlowEventObserver for AgentEventFlowObserver {
                 let _ = self.tx.send(AgentEvent::PlanningStart {
                     prompt: "dynamic_workflow".to_string(),
                 });
+                let state = self.state.lock().await;
+                if !state.plan.steps.is_empty() {
+                    let plan = state.snapshot();
+                    let _ = self.tx.send(AgentEvent::PlanningEnd {
+                        estimated_steps: plan.steps.len(),
+                        plan,
+                    });
+                }
             }
             FlowEvent::StepCreated {
                 step_id,
@@ -414,11 +743,8 @@ impl FlowEventObserver for AgentEventFlowObserver {
             } => {
                 let mut state = self.state.lock().await;
                 state.upsert_step(&step_id, &step_name, Some(&input), TaskStatus::Pending);
-                self.emit_task_update(&state.tasks);
-                let mut plan = ExecutionPlan::new("dynamic workflow", Complexity::Medium);
-                for task in state.tasks.iter().cloned() {
-                    plan.add_step(task);
-                }
+                self.emit_task_update(state.tasks());
+                let plan = state.snapshot();
                 let _ = self.tx.send(AgentEvent::PlanningEnd {
                     estimated_steps: plan.steps.len(),
                     plan,
@@ -427,7 +753,7 @@ impl FlowEventObserver for AgentEventFlowObserver {
             FlowEvent::StepStarted { step_id, .. } => {
                 let mut state = self.state.lock().await;
                 state.mark_status(&step_id, TaskStatus::InProgress);
-                self.emit_task_update(&state.tasks);
+                self.emit_task_update(state.tasks());
                 let (step_number, total_steps) = state.step_position(&step_id);
                 let _ = self.tx.send(AgentEvent::StepStart {
                     description: state.step_description(&step_id),
@@ -439,7 +765,7 @@ impl FlowEventObserver for AgentEventFlowObserver {
             FlowEvent::StepCompleted { step_id, .. } => {
                 let mut state = self.state.lock().await;
                 state.mark_status(&step_id, TaskStatus::Completed);
-                self.emit_task_update(&state.tasks);
+                self.emit_task_update(state.tasks());
                 let (step_number, total_steps) = state.step_position(&step_id);
                 let _ = self.tx.send(AgentEvent::StepEnd {
                     step_id,
@@ -451,12 +777,12 @@ impl FlowEventObserver for AgentEventFlowObserver {
             FlowEvent::StepRetrying { step_id, .. } => {
                 let mut state = self.state.lock().await;
                 state.mark_status(&step_id, TaskStatus::InProgress);
-                self.emit_task_update(&state.tasks);
+                self.emit_task_update(state.tasks());
             }
             FlowEvent::StepFailed { step_id, .. } => {
                 let mut state = self.state.lock().await;
                 state.mark_status(&step_id, TaskStatus::Failed);
-                self.emit_task_update(&state.tasks);
+                self.emit_task_update(state.tasks());
                 let (step_number, total_steps) = state.step_position(&step_id);
                 let _ = self.tx.send(AgentEvent::StepEnd {
                     step_id,
@@ -465,23 +791,25 @@ impl FlowEventObserver for AgentEventFlowObserver {
                     total_steps,
                 });
             }
-            FlowEvent::RunFailed { .. } => {
+            FlowEvent::RunFailed { .. }
+            | FlowEvent::RunTimedOut { .. }
+            | FlowEvent::RunRetryExhausted { .. } => {
                 let mut state = self.state.lock().await;
-                for task in &mut state.tasks {
+                for task in &mut state.plan.steps {
                     if task.status.is_active() {
                         task.status = TaskStatus::Failed;
                     }
                 }
-                self.emit_task_update(&state.tasks);
+                self.emit_task_update(state.tasks());
             }
-            FlowEvent::RunCancelled { .. } => {
+            FlowEvent::RunCancelled { .. } | FlowEvent::RunHostShutdown { .. } => {
                 let mut state = self.state.lock().await;
-                for task in &mut state.tasks {
+                for task in &mut state.plan.steps {
                     if task.status.is_active() {
                         task.status = TaskStatus::Cancelled;
                     }
                 }
-                self.emit_task_update(&state.tasks);
+                self.emit_task_update(state.tasks());
             }
             _ => {}
         }
@@ -496,27 +824,44 @@ fn workflow_step_description(step_id: &str, step_name: &str, input: Option<&Valu
             .map(Vec::len)
             .unwrap_or(0);
         if count > 0 {
-            return format!("Fan out {count} parallel subagent task(s)");
+            return bounded_workflow_description(&format!(
+                "Fan out {count} parallel subagent task(s)"
+            ));
         }
     }
 
-    input
+    let description = input
         .and_then(|value| value.get("description").or_else(|| value.get("title")))
         .and_then(Value::as_str)
-        .map(ToString::to_string)
+        .map(str::to_string)
         .unwrap_or_else(|| {
             if step_name == step_id {
                 step_id.to_string()
             } else {
                 format!("{step_name}: {step_id}")
             }
-        })
+        });
+    bounded_workflow_description(&description)
+}
+
+fn bounded_workflow_description(value: &str) -> String {
+    const MAX_DESCRIPTION_BYTES: usize = 512;
+    if value.len() <= MAX_DESCRIPTION_BYTES {
+        return value.to_string();
+    }
+    let mut end = MAX_DESCRIPTION_BYTES.saturating_sub("…".len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
 }
 
 /// Model-visible tool that executes a dynamic workflow through A3S Flow.
 pub struct DynamicWorkflowTool {
     registry: DynamicWorkflowRegistry,
     graph_observer: Option<FlowGraphObserver>,
+    task_scheduler: Option<Arc<TaskScheduler>>,
+    admit_steps_globally: bool,
 }
 
 enum DynamicWorkflowRegistry {
@@ -538,6 +883,8 @@ impl DynamicWorkflowTool {
         Self {
             registry: DynamicWorkflowRegistry::Standalone(registry),
             graph_observer: None,
+            task_scheduler: None,
+            admit_steps_globally: false,
         }
     }
 
@@ -545,6 +892,8 @@ impl DynamicWorkflowTool {
         Self {
             registry: DynamicWorkflowRegistry::RegistryBound(Arc::downgrade(&registry)),
             graph_observer: None,
+            task_scheduler: None,
+            admit_steps_globally: false,
         }
     }
 
@@ -552,6 +901,19 @@ impl DynamicWorkflowTool {
     /// A3S Flow remains the workflow execution source of truth.
     pub fn with_graph_observer(mut self, observer: FlowGraphObserver) -> Self {
         self.graph_observer = Some(observer);
+        self
+    }
+
+    /// Configure optional global admission for direct script-backed Flow
+    /// steps. Session-bound registrations should leave this disabled because
+    /// the enclosing session operation already owns the global lease.
+    pub fn with_task_scheduler(
+        mut self,
+        scheduler: Arc<TaskScheduler>,
+        admit_steps_globally: bool,
+    ) -> Self {
+        self.task_scheduler = Some(scheduler);
+        self.admit_steps_globally = admit_steps_globally;
         self
     }
 }
@@ -600,6 +962,12 @@ impl Tool for DynamicWorkflowTool {
                             "minimum": 1,
                             "maximum": 4,
                             "description": "Optional bounded fan-out for independently session-bound generate_object steps. Providers without session forking remain single-flight."
+                        },
+                        "maxConcurrentSteps": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 32,
+                            "description": "Optional per-workflow limit for concurrently executing Flow step bodies."
                         }
                     }
                 }
@@ -633,21 +1001,35 @@ impl Tool for DynamicWorkflowTool {
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default();
 
-        let runtime = Arc::new(
-            DynamicWorkflowRuntime::new(registry, ctx.clone(), source)
-                .with_allowed_tools(allowed_tools)
-                .with_limits(limits),
-        );
+        let mut runtime = DynamicWorkflowRuntime::new(registry, ctx.clone(), source)
+            .with_allowed_tools(allowed_tools)
+            .with_limits(limits);
+        if let Some(scheduler) = &self.task_scheduler {
+            runtime = runtime.with_task_scheduler(Arc::clone(scheduler), self.admit_steps_globally);
+        }
+        let runtime = Arc::new(runtime);
+        let runtime_for_metadata = Arc::clone(&runtime);
         let requested_run_id = args.get("run_id").and_then(Value::as_str);
         let store = match flow_store_for_context(ctx, requested_run_id).await {
             Ok(store) => store,
             Err(error) => return Ok(ToolOutput::error(error.to_string())),
+        };
+        let initial_plan = if let Some(run_id) = requested_run_id {
+            let prior_history = match store.list(run_id).await {
+                Ok(history) => history,
+                Err(a3s_flow::FlowError::RunNotFound(_)) => Vec::new(),
+                Err(error) => return Ok(ToolOutput::error(error.to_string())),
+            };
+            dynamic_workflow_execution_plan(&prior_history)
+        } else {
+            ExecutionPlan::new("dynamic workflow", Complexity::Medium)
         };
         let mut observers: Vec<Arc<dyn FlowEventObserver>> = Vec::new();
         if let Some(tx) = ctx.agent_event_tx.clone() {
             observers.push(Arc::new(AgentEventFlowObserver::new(
                 tx,
                 ctx.session_id.clone().unwrap_or_default(),
+                initial_plan,
             )));
         }
         if let Some(observer) = &self.graph_observer {
@@ -700,6 +1082,11 @@ impl Tool for DynamicWorkflowTool {
         };
 
         let status = snapshot.status;
+        let plan = dynamic_workflow_execution_plan(&history);
+        let plan_identity = match plan.definition_identity() {
+            Ok(identity) => identity,
+            Err(error) => return Ok(ToolOutput::error(error.to_string())),
+        };
         let metadata = json!({
             "dynamic_workflow": {
                 "run_id": run_id,
@@ -708,6 +1095,9 @@ impl Tool for DynamicWorkflowTool {
                 "source_hash": source_hash,
                 "snapshot": snapshot,
                 "history": history,
+                "plan": plan,
+                "plan_identity": plan_identity,
+                "admission": runtime_for_metadata.admission_stats(),
             }
         });
         let output = match status {
@@ -774,6 +1164,23 @@ pub fn register_dynamic_workflow(registry: &Arc<ToolRegistry>) {
     registry.register(Arc::new(DynamicWorkflowTool::new_registry_bound(
         Arc::clone(registry),
     )));
+}
+
+/// Register a dynamic workflow tool with an explicit scheduler policy.
+///
+/// This is intended for hosts that construct a Flow runtime outside the
+/// normal AgentSession operation boundary. AgentSession registrations should
+/// use [`register_dynamic_workflow`] so the enclosing run lease remains the
+/// single global admission boundary.
+pub fn register_dynamic_workflow_with_scheduler(
+    registry: &Arc<ToolRegistry>,
+    scheduler: Arc<TaskScheduler>,
+    admit_steps_globally: bool,
+) {
+    registry.register(Arc::new(
+        DynamicWorkflowTool::new_registry_bound(Arc::clone(registry))
+            .with_task_scheduler(scheduler, admit_steps_globally),
+    ));
 }
 
 async fn flow_store_for_context(
