@@ -16,6 +16,7 @@ use crate::agent::{AgentEvent, AgentLoop, InvocationContext};
 use crate::error::{CodeError, Result};
 use crate::run_control::RunControlInbox;
 use crate::tools::AgentEventBarrier;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::{AbortHandle, JoinHandle};
@@ -49,6 +50,61 @@ pub(super) struct ExecutionCoordinator {
 }
 
 impl ExecutionCoordinator {
+    /// Acquire a task-scheduler lease using the coordinator's canonical error
+    /// mapping. Direct Tool calls use this primitive without taking the
+    /// transcript's single-flight Run lease.
+    pub(super) async fn acquire_task(
+        scheduler: &crate::task_scheduler::TaskScheduler,
+        priority: crate::task_scheduler::TaskPriority,
+        label: String,
+        session_id: &str,
+        cancellation: &CancellationToken,
+        closed: &AtomicBool,
+    ) -> Result<crate::task_scheduler::TaskLease> {
+        scheduler
+            .acquire(priority, label, cancellation)
+            .await
+            .map_err(|error| match error {
+                crate::task_scheduler::TaskSchedulerError::Cancelled
+                    if closed.load(Ordering::Acquire) =>
+                {
+                    CodeError::SessionClosed {
+                        session_id: session_id.to_owned(),
+                    }
+                }
+                crate::task_scheduler::TaskSchedulerError::Cancelled => {
+                    CodeError::TaskAdmissionCancelled {
+                        session_id: session_id.to_owned(),
+                    }
+                }
+                crate::task_scheduler::TaskSchedulerError::Closed => CodeError::TaskSchedulerClosed,
+                crate::task_scheduler::TaskSchedulerError::InvalidConfig(message) => {
+                    CodeError::Config(message)
+                }
+            })
+    }
+
+    /// Acquire an optional scheduler lease for control-plane operations that
+    /// may be constructed without a Session-owned scheduler (for example,
+    /// low-level direct-tool tests).
+    pub(super) async fn acquire_optional_task(
+        scheduler: Option<&crate::task_scheduler::TaskScheduler>,
+        priority: crate::task_scheduler::TaskPriority,
+        label: String,
+        session_id: &str,
+        cancellation: &CancellationToken,
+        closed: &AtomicBool,
+    ) -> Result<Option<crate::task_scheduler::TaskLease>> {
+        match scheduler {
+            Some(scheduler) => {
+                Self::acquire_task(scheduler, priority, label, session_id, cancellation, closed)
+                    .await
+                    .map(Some)
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Admit one session operation before it can inspect or mutate run state.
     ///
     /// Admission is deliberately part of the coordinator boundary so every
@@ -65,26 +121,15 @@ impl ExecutionCoordinator {
         }
         let lease = session.run_admission.try_acquire(&session.session_id)?;
         let label = format!("{}:{operation}", session.session_id);
-        let task_lease = session
-            .task_scheduler
-            .acquire(session.task_priority, label, &session.session_cancel)
-            .await
-            .map_err(|error| match error {
-                crate::task_scheduler::TaskSchedulerError::Cancelled if session.is_closed() => {
-                    CodeError::SessionClosed {
-                        session_id: session.session_id.clone(),
-                    }
-                }
-                crate::task_scheduler::TaskSchedulerError::Cancelled => {
-                    CodeError::TaskAdmissionCancelled {
-                        session_id: session.session_id.clone(),
-                    }
-                }
-                crate::task_scheduler::TaskSchedulerError::Closed => CodeError::TaskSchedulerClosed,
-                crate::task_scheduler::TaskSchedulerError::InvalidConfig(message) => {
-                    CodeError::Config(message)
-                }
-            })?;
+        let task_lease = Self::acquire_task(
+            &session.task_scheduler,
+            session.task_priority,
+            label,
+            &session.session_id,
+            &session.session_cancel,
+            &session.closed,
+        )
+        .await?;
         if session.is_closed() {
             return Err(CodeError::SessionClosed {
                 session_id: session.session_id.clone(),

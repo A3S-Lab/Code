@@ -4,7 +4,10 @@
 //! control-plane calls. Keeping argument shaping and result projection here
 //! prevents the public session facade from duplicating tool-specific knowledge.
 
-use super::{agent_loop_runtime::build_agent_loop, AgentSession, ReadFileOptions, ToolCallResult};
+use super::{
+    agent_loop_runtime::build_agent_loop, execution_coordinator::ExecutionCoordinator,
+    AgentSession, ReadFileOptions, ToolCallResult,
+};
 use crate::agent::{AgentEvent, AgentLoop};
 use crate::error::Result;
 use crate::llm::ToolDefinition;
@@ -152,11 +155,11 @@ impl DirectToolRuntime {
     async fn call_invocation(&self, invocation: ToolInvocation) -> Result<ToolCallResult> {
         self.ensure_open()?;
         let cancel = self.session_cancel.child_token();
-        let _task_lease = acquire_task_admission(
+        let _task_lease = ExecutionCoordinator::acquire_optional_task(
             self.task_scheduler.as_deref(),
             self.task_priority,
+            format!("{}:tool:{}", self.session_id, invocation.name),
             &self.session_id,
-            &invocation.name,
             &cancel,
             &self.closed,
         )
@@ -183,47 +186,6 @@ impl DirectToolRuntime {
         }
         Ok(())
     }
-}
-
-async fn acquire_task_admission(
-    scheduler: Option<&crate::task_scheduler::TaskScheduler>,
-    priority: crate::task_scheduler::TaskPriority,
-    session_id: &str,
-    operation: &str,
-    cancellation: &tokio_util::sync::CancellationToken,
-    closed: &AtomicBool,
-) -> Result<Option<crate::task_scheduler::TaskLease>> {
-    let Some(scheduler) = scheduler else {
-        return Ok(None);
-    };
-    scheduler
-        .acquire(
-            priority,
-            format!("{session_id}:tool:{operation}"),
-            cancellation,
-        )
-        .await
-        .map(Some)
-        .map_err(|error| match error {
-            crate::task_scheduler::TaskSchedulerError::Cancelled
-                if closed.load(Ordering::Acquire) =>
-            {
-                crate::error::CodeError::SessionClosed {
-                    session_id: session_id.to_string(),
-                }
-            }
-            crate::task_scheduler::TaskSchedulerError::Cancelled => {
-                crate::error::CodeError::TaskAdmissionCancelled {
-                    session_id: session_id.to_string(),
-                }
-            }
-            crate::task_scheduler::TaskSchedulerError::Closed => {
-                crate::error::CodeError::TaskSchedulerClosed
-            }
-            crate::task_scheduler::TaskSchedulerError::InvalidConfig(message) => {
-                crate::error::CodeError::Config(message)
-            }
-        })
 }
 
 fn project_tool_result(result: crate::tools::ToolResult) -> ToolCallResult {
